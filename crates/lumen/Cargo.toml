@@ -1,0 +1,15 @@
+[package]
+name = "lumen"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lumen"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = "2.0.12"
+skia-safe = "0.86.0"
+serde = { version = "1.0.219", features = ["derive"] }
+rangemap = "1.5.1"
+parking_lot = "0.12.4"
