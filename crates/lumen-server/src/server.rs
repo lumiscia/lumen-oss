@@ -1,6 +1,6 @@
 use std::{env, net::Ipv4Addr};
 
-use crate::{handler::generate, middleware::authorization};
+use crate::{endpoint::*, middleware::authorization};
 use anyhow::anyhow;
 use tokio::net::TcpListener;
 use tracing::info;

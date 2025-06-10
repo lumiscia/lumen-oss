@@ -75,7 +75,7 @@ async fn download_medium(
 }
 */
 
-pub(super) async fn generate(_: Request) -> viz::Result<Response> {
+pub async fn generate(_: Request) -> viz::Result<Response> {
     /*
     let sequence: Sequence = match req.json().await {
         Ok(sequence) => sequence,

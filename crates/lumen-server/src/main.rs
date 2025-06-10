@@ -3,9 +3,10 @@ use tracing_subscriber::EnvFilter;
 
 use crate::server::serve;
 
-mod handler;
+mod endpoint;
 mod middleware;
 mod server;
+mod video;
 
 const AV_LOG_PANIC: i32 = 0;
 const AV_LOG_FATAL: i32 = 8;
