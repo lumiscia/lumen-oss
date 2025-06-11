@@ -19,10 +19,10 @@ pub enum SequenceElement {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct ElementProperties {
-    /// Start in microseconds
-    pub start: u64,
-    /// Duration in microseconds
-    pub duration: u64,
+    /// Start in frames
+    pub start: usize,
+    /// Duration in frames
+    pub duration: usize,
     pub transform: Transform,
     pub transition_in: Option<Transition>,
     pub transition_out: Option<Transition>,
