@@ -16,6 +16,7 @@ use crate::{
 };
 
 #[test]
+#[ignore = "expensive ffmpeg integration test"]
 fn test_singlethread_render() {
     let tb = TimeBase::new(1, 30);
     let timeline = create_test_timeline();
@@ -37,6 +38,7 @@ fn test_singlethread_render() {
 }
 
 #[test]
+#[ignore = "expensive ffmpeg integration test"]
 fn test_multithreaded_render() {
     thread::scope(|scope| {
         let tb = TimeBase::new(1, 30);

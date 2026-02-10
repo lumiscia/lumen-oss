@@ -3,8 +3,11 @@ use tracing_subscriber::EnvFilter;
 
 use crate::server::serve;
 
+mod api_error;
+mod app_state;
 mod codecs;
 mod endpoint;
+mod jobs;
 mod middleware;
 mod server;
 #[cfg(test)]

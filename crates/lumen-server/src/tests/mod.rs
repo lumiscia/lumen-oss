@@ -1,4 +1,5 @@
 mod render;
+mod router;
 
 use lumen::{
     clip::{Layer, Timeline},
@@ -20,9 +21,9 @@ fn create_test_timeline() -> Timeline {
                 Box::new(TextElement {
                     font: Font::Arial,
                     color: ColorRGBA(
-                        (100 + i * 50) % 255,
-                        (150 + i * 30) % 255,
-                        (120 + i * 20) % 255,
+                        ((100usize + i * 50) % 255) as u8,
+                        ((150usize + i * 30) % 255) as u8,
+                        ((120usize + i * 20) % 255) as u8,
                         255,
                     ),
                     text: format!("Hello on layer {} ({})!", idx, i),
