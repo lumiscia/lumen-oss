@@ -9,8 +9,6 @@ use viz::{
     header::{CONTENT_LENGTH, CONTENT_TYPE},
 };
 
-use crate::{output::create_video, sequence::Sequence};
-
 /*
 async fn download_media(media: &Vec<Media>) -> Result<HashMap<usize, DownloadedMedia>, Response> {
     let (ok, err): (Vec<_>, Vec<_>) = futures_util::future::join_all(media.iter().map(|media| {
@@ -82,6 +80,8 @@ pub async fn generate(_: Request) -> viz::Result<Response> {
         Err(err) => return Err(err.into()),
     };
     */
+    todo!();
+    /*
     Ok(match create_video() {
         // create_video doesn't use request details in this example
         Ok(video_data) => Response::builder()
@@ -102,4 +102,5 @@ pub async fn generate(_: Request) -> viz::Result<Response> {
                 .unwrap()
         }
     })
+    */
 }

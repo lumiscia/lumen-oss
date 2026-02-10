@@ -13,27 +13,24 @@ use ac_ffmpeg::{
 };
 use anyhow::anyhow;
 
-pub struct YUV420pEncoder<T: Write> {
+pub struct H264Encoder<T: Write> {
     encoder: VideoEncoder,
     time_base: TimeBase,
     muxer: Muxer<T>,
 }
 
-impl<T: Write> YUV420pEncoder<T> {
+impl<T: Write> H264Encoder<T> {
     pub fn new(
         width: usize,
         height: usize,
         time_base: TimeBase,
         io: IO<T>,
     ) -> anyhow::Result<Self> {
-        let pixel_format = ac_ffmpeg::codec::video::frame::get_pixel_format("yuv420p");
-
         let encoder = VideoEncoder::builder("libx264")?
-            .pixel_format(pixel_format.clone())
+            .pixel_format(ac_ffmpeg::codec::video::frame::get_pixel_format("yuv420p"))
             .width(width)
             .height(height)
             .time_base(time_base.clone())
-            .set_option("preset", "ultrafast")
             .set_option("tune", "zerolatency")
             .build()?;
 

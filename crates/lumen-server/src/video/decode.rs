@@ -17,8 +17,8 @@ pub struct VideoDecoder<T> {
     demuxer: DemuxerWithStreamInfo<T>,
     decoder: FVideoDecoder,
 
-    duration: Timestamp,
-    time_base: TimeBase,
+    pub duration: Timestamp,
+    pub time_base: TimeBase,
     stream_index: usize,
 }
 
