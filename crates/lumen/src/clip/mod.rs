@@ -2,7 +2,6 @@ use thiserror::Error;
 
 mod group;
 mod layer;
-mod text;
 
 pub use group::Group;
 pub use layer::Layer;

@@ -31,7 +31,7 @@ impl ColorRGBA {
     }
 
     #[inline]
-    pub fn as_color3f(&self) -> Color4f {
+    pub fn as_color3f(&self) -> Color3f {
         self.into()
     }
 }
