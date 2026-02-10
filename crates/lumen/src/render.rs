@@ -10,8 +10,9 @@ use thiserror::Error;
 
 use crate::{
     font::{FONT_ARIAL, FontManager},
-    plan::{RenderOpKind, RenderPlan, SolidRenderOp, TextRenderOp},
-    sequence::{BlendMode as SequenceBlendMode, TextAlign},
+    media::{MediaError, MediaProvider, NoopMediaProvider},
+    plan::{RenderOp, RenderOpKind, RenderPlan, ShapeRenderOp, SolidRenderOp, TextRenderOp},
+    sequence::{BlendMode as SequenceBlendMode, ShapeContent, TextAlign},
     time::FrameIndex,
 };
 
@@ -21,6 +22,8 @@ pub enum RendererError {
     SkiaError(String),
     #[error("font `{0}` was not available")]
     FontMissing(String),
+    #[error("media error: {0}")]
+    Media(#[from] MediaError),
     #[error("frame {frame} is out of range for total frames {total_frames}")]
     FrameOutOfRange { frame: u64, total_frames: u64 },
     #[error("the provided buffer length ({provided}) was not expected length ({expected})")]
@@ -40,6 +43,7 @@ pub struct RenderContext {
 pub struct Renderer {
     plan: Arc<RenderPlan>,
     image: skia_safe::ImageInfo,
+    media: Box<dyn MediaProvider>,
     pub context: RenderContext,
 }
 
@@ -47,6 +51,7 @@ impl Renderer {
     pub fn new(
         plan: Arc<RenderPlan>,
         font_manager: impl FontManager + 'static,
+        media_provider: impl MediaProvider + 'static,
     ) -> Result<Self, RendererError> {
         let width = plan.canvas.width as usize;
         let height = plan.canvas.height as usize;
@@ -55,6 +60,7 @@ impl Renderer {
 
         Ok(Self {
             image: skia_safe::ImageInfo::new_n32_premul((width as i32, height as i32), None),
+            media: Box::new(media_provider),
             context: RenderContext {
                 width,
                 height,
@@ -64,6 +70,13 @@ impl Renderer {
             },
             plan,
         })
+    }
+
+    pub fn new_without_media(
+        plan: Arc<RenderPlan>,
+        font_manager: impl FontManager + 'static,
+    ) -> Result<Self, RendererError> {
+        Self::new(plan, font_manager, NoopMediaProvider)
     }
 
     pub fn draw_frame(&mut self, frame: FrameIndex) -> Result<(), RendererError> {
@@ -80,16 +93,7 @@ impl Renderer {
         canvas.clear(to_color(self.plan.canvas.background));
 
         for op in frame_ops {
-            match &op.kind {
-                RenderOpKind::Text(text) => self.draw_text(text, op.opacity, op.blend_mode)?,
-                RenderOpKind::Solid(solid) => self.draw_solid(solid, op.opacity, op.blend_mode),
-                RenderOpKind::Image(_) => {
-                    self.draw_placeholder(op.opacity, op.blend_mode, Color::from_argb(255, 60, 120, 220))
-                }
-                RenderOpKind::Video(_) => {
-                    self.draw_placeholder(op.opacity, op.blend_mode, Color::from_argb(255, 220, 120, 40))
-                }
-            }
+            self.draw_op(frame, &op)?;
         }
 
         Ok(())
@@ -129,12 +133,36 @@ impl Renderer {
         self.context.surface.image_snapshot()
     }
 
-    fn draw_text(
-        &mut self,
-        text: &TextRenderOp,
-        opacity: f32,
-        blend_mode: SequenceBlendMode,
-    ) -> Result<(), RendererError> {
+    fn draw_op(&mut self, frame: FrameIndex, op: &RenderOp) -> Result<(), RendererError> {
+        match &op.kind {
+            RenderOpKind::Text(text) => self.draw_text(op, text),
+            RenderOpKind::Shape(shape) => {
+                self.draw_shape(op, shape);
+                Ok(())
+            }
+            RenderOpKind::Solid(solid) => {
+                self.draw_solid(op, solid);
+                Ok(())
+            }
+            RenderOpKind::Image(asset) => {
+                if let Some(image) = self.media.image(&asset.asset_id)? {
+                    self.draw_image(op, &image);
+                }
+                Ok(())
+            }
+            RenderOpKind::Video(asset) => {
+                let local_frame = frame.0.saturating_sub(op.start_frame.0);
+                let source_frame = FrameIndex(op.source_in_frame.0.saturating_add(local_frame));
+
+                if let Some(image) = self.media.video_frame(&asset.asset_id, source_frame)? {
+                    self.draw_image(op, &image);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn draw_text(&mut self, op: &RenderOp, text: &TextRenderOp) -> Result<(), RendererError> {
         let family = text.font_family.as_deref().unwrap_or(FONT_ARIAL);
         let typeface = self
             .context
@@ -144,11 +172,11 @@ impl Renderer {
             .ok_or_else(|| RendererError::FontMissing(family.to_string()))?;
 
         let mut color = text.color.as_color4f();
-        color.a *= opacity.clamp(0.0, 1.0);
+        color.a *= op.opacity.clamp(0.0, 1.0);
 
         let mut paint = Paint::new(color, None);
         paint.set_anti_alias(true);
-        paint.set_blend_mode(to_blend_mode(blend_mode));
+        paint.set_blend_mode(to_blend_mode(op.blend_mode));
 
         let font = Font::new(typeface, text.font_size.max(1.0));
         let align = match text.align {
@@ -157,51 +185,74 @@ impl Renderer {
             TextAlign::Right => Align::Right,
         };
 
-        self.context.surface.canvas().draw_str_align(
-            &text.text,
-            (
-                self.context.width as i32 / 2,
-                self.context.height as i32 / 2,
-            ),
-            &font,
-            &paint,
-            align,
-        );
+        self.context
+            .surface
+            .canvas()
+            .draw_str_align(&text.text, (op.transform.x, op.transform.y), &font, &paint, align);
 
         Ok(())
     }
 
-    fn draw_solid(&mut self, solid: &SolidRenderOp, opacity: f32, blend_mode: SequenceBlendMode) {
+    fn draw_shape(&mut self, op: &RenderOp, shape: &ShapeRenderOp) {
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
-        paint.set_blend_mode(to_blend_mode(blend_mode));
+        paint.set_blend_mode(to_blend_mode(op.blend_mode));
 
-        let mut color = solid.color.as_color4f();
-        color.a *= opacity.clamp(0.0, 1.0);
-        paint.set_color4f(color, None);
-
-        let rect = Rect::from_xywh(
-            0.0,
-            0.0,
-            self.context.width as f32,
-            self.context.height as f32,
-        );
-        self.context.surface.canvas().draw_rect(rect, &paint);
+        match &shape.shape {
+            ShapeContent::Rectangle { fill, radius: _ } => {
+                let mut color = fill.as_color4f();
+                color.a *= op.opacity.clamp(0.0, 1.0);
+                paint.set_color4f(color, None);
+                self.context
+                    .surface
+                    .canvas()
+                    .draw_rect(op_rect(op, self.context.width as f32, self.context.height as f32), &paint);
+            }
+            ShapeContent::Ellipse { fill } => {
+                let mut color = fill.as_color4f();
+                color.a *= op.opacity.clamp(0.0, 1.0);
+                paint.set_color4f(color, None);
+                self.context
+                    .surface
+                    .canvas()
+                    .draw_oval(op_rect(op, self.context.width as f32, self.context.height as f32), &paint);
+            }
+        }
     }
 
-    fn draw_placeholder(&mut self, opacity: f32, blend_mode: SequenceBlendMode, color: Color) {
+    fn draw_solid(&mut self, op: &RenderOp, solid: &SolidRenderOp) {
         let mut paint = Paint::default();
-        paint.set_color(color.with_a((255.0 * opacity.clamp(0.0, 1.0)) as u8));
-        paint.set_blend_mode(to_blend_mode(blend_mode));
         paint.set_anti_alias(true);
+        paint.set_blend_mode(to_blend_mode(op.blend_mode));
 
-        let rect = Rect::from_xywh(
-            self.context.width as f32 * 0.1,
-            self.context.height as f32 * 0.1,
-            self.context.width as f32 * 0.8,
-            self.context.height as f32 * 0.8,
-        );
-        self.context.surface.canvas().draw_rect(rect, &paint);
+        let mut color = solid.color.as_color4f();
+        color.a *= op.opacity.clamp(0.0, 1.0);
+        paint.set_color4f(color, None);
+
+        self.context
+            .surface
+            .canvas()
+            .draw_rect(op_rect(op, self.context.width as f32, self.context.height as f32), &paint);
+    }
+
+    fn draw_image(&mut self, op: &RenderOp, image: &Image) {
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_blend_mode(to_blend_mode(op.blend_mode));
+
+        let src = Rect::from_xywh(0.0, 0.0, image.width() as f32, image.height() as f32);
+        let dst = op_rect(op, image.width() as f32, image.height() as f32);
+
+        self.context
+            .surface
+            .canvas()
+            .draw_image_rect_with_sampling_options(
+                image,
+                Some((&src, skia_safe::canvas::SrcRectConstraint::Fast)),
+                dst,
+                skia_safe::SamplingOptions::default(),
+                &paint,
+            );
     }
 }
 
@@ -215,4 +266,13 @@ fn to_blend_mode(mode: SequenceBlendMode) -> BlendMode {
         SequenceBlendMode::Multiply => BlendMode::Multiply,
         SequenceBlendMode::Screen => BlendMode::Screen,
     }
+}
+
+fn op_rect(op: &RenderOp, default_width: f32, default_height: f32) -> Rect {
+    Rect::from_xywh(
+        op.transform.x,
+        op.transform.y,
+        op.transform.width.unwrap_or(default_width),
+        op.transform.height.unwrap_or(default_height),
+    )
 }

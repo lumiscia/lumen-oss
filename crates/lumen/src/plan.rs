@@ -1,5 +1,5 @@
 use crate::{
-    sequence::{BlendMode, TextAlign, Transform},
+    sequence::{BlendMode, ShapeContent, TextAlign, Transform},
     time::{FrameIndex, Rational, Time},
 };
 
@@ -17,13 +17,40 @@ pub struct RenderPlan {
     pub duration: Time,
     pub total_frames: u64,
     pub operations: Vec<RenderOp>,
+    frame_index: Vec<Vec<usize>>,
 }
 
 impl RenderPlan {
     pub fn operations_for_frame(&self, frame: FrameIndex) -> impl Iterator<Item = &RenderOp> {
-        self.operations
+        self.frame_index[frame.0 as usize]
             .iter()
-            .filter(move |op| frame >= op.start_frame && frame < op.end_frame)
+            .filter_map(|index| self.operations.get(*index))
+    }
+
+    pub fn with_operations_index(
+        canvas: CanvasSpec,
+        fps: Rational,
+        duration: Time,
+        total_frames: u64,
+        operations: Vec<RenderOp>,
+    ) -> Self {
+        let mut frame_index = vec![Vec::new(); total_frames as usize];
+        for (op_index, op) in operations.iter().enumerate() {
+            let start = op.start_frame.0.min(total_frames) as usize;
+            let end = op.end_frame.0.min(total_frames) as usize;
+            for frame in start..end {
+                frame_index[frame].push(op_index);
+            }
+        }
+
+        Self {
+            canvas,
+            fps,
+            duration,
+            total_frames,
+            operations,
+            frame_index,
+        }
     }
 }
 
@@ -32,6 +59,7 @@ pub struct RenderOp {
     pub id: String,
     pub start_frame: FrameIndex,
     pub end_frame: FrameIndex,
+    pub source_in_frame: FrameIndex,
     pub z_index: u32,
     pub clip_index: usize,
     pub opacity: f32,
@@ -43,6 +71,7 @@ pub struct RenderOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderOpKind {
     Text(TextRenderOp),
+    Shape(ShapeRenderOp),
     Image(AssetRenderOp),
     Video(AssetRenderOp),
     Solid(SolidRenderOp),
@@ -65,4 +94,9 @@ pub struct AssetRenderOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolidRenderOp {
     pub color: crate::sequence::ColorRGBA,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapeRenderOp {
+    pub shape: ShapeContent,
 }

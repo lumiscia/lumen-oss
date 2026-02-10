@@ -55,6 +55,7 @@ pub struct Track {
 #[serde(rename_all = "snake_case")]
 pub enum TrackKind {
     Text,
+    Shape,
     Image,
     Video,
     Audio,
@@ -112,8 +113,22 @@ pub enum BlendMode {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClipContent {
     Text(TextContent),
+    Shape(ShapeContent),
     AssetRef { asset_id: String },
     Solid { color: ColorRGBA },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ShapeContent {
+    Rectangle {
+        fill: ColorRGBA,
+        #[serde(default)]
+        radius: f32,
+    },
+    Ellipse {
+        fill: ColorRGBA,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

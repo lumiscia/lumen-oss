@@ -1,6 +1,7 @@
 pub mod clip;
 pub mod compiler;
 pub mod font;
+pub mod media;
 pub mod plan;
 pub mod render;
 pub mod sequence;

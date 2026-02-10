@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::{
-    plan::{AssetRenderOp, CanvasSpec, RenderOp, RenderOpKind, RenderPlan, SolidRenderOp, TextRenderOp},
+    plan::{
+        AssetRenderOp, CanvasSpec, RenderOp, RenderOpKind, RenderPlan, ShapeRenderOp, SolidRenderOp,
+        TextRenderOp,
+    },
     sequence::{Asset, AssetKind, ClipContent, Sequence, Track, TrackKind},
     time::{FrameIndex, Rational, TimeError, frame_at_time, frames_from_time},
 };
@@ -61,17 +64,17 @@ pub fn compile_sequence(sequence: &Sequence) -> Result<RenderPlan, CompileError>
 
     operations.sort_by_key(|op| (op.start_frame, op.z_index, op.clip_index));
 
-    Ok(RenderPlan {
-        canvas: CanvasSpec {
+    Ok(RenderPlan::with_operations_index(
+        CanvasSpec {
             width: sequence.canvas.width,
             height: sequence.canvas.height,
             background: sequence.canvas.background,
         },
-        fps: sequence.timeline.fps,
-        duration: sequence.timeline.duration,
+        sequence.timeline.fps,
+        sequence.timeline.duration,
         total_frames,
         operations,
-    })
+    ))
 }
 
 fn compile_track(
@@ -95,6 +98,10 @@ fn compile_track(
                     reason: "frame range overflowed".to_string(),
                 })?,
         );
+        let source_in_frame = frame_at_time(
+            clip.source_in.unwrap_or(crate::time::Time::ZERO),
+            fps,
+        )?;
 
         if duration == 0 {
             return Err(CompileError::InvalidClip {
@@ -120,6 +127,9 @@ fn compile_track(
                 color: text.color,
                 align: text.align,
             }),
+            (TrackKind::Shape, ClipContent::Shape(shape)) => {
+                RenderOpKind::Shape(ShapeRenderOp { shape: shape.clone() })
+            }
             (TrackKind::Text, ClipContent::Solid { color }) => {
                 RenderOpKind::Solid(SolidRenderOp { color: *color })
             }
@@ -151,6 +161,7 @@ fn compile_track(
             id: clip.id.clone(),
             start_frame: start,
             end_frame: end,
+            source_in_frame,
             z_index: track_index as u32,
             clip_index,
             opacity: clip.opacity.clamp(0.0, 1.0),
