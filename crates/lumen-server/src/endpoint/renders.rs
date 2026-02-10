@@ -11,7 +11,7 @@ use crate::{
     api_error::ApiError,
     app_state::AppState,
     jobs::{ObjectBlob, RenderJobState},
-    video::ServerFontManager,
+    video::{ServerFontManager, media::AssetMediaProvider},
 };
 
 pub async fn create_render(
@@ -111,8 +111,13 @@ pub async fn get_frame(
         return Err(ApiError::bad_request("requested frame is out of range"));
     }
 
-    let mut renderer =
-        Renderer::new(std::sync::Arc::new(plan), ServerFontManager::new()).map_err(ApiError::internal)?;
+    let media = AssetMediaProvider::new(sequence.assets.clone(), plan.fps);
+    let mut renderer = Renderer::new(
+        std::sync::Arc::new(plan),
+        ServerFontManager::new(),
+        media,
+    )
+    .map_err(ApiError::internal)?;
     renderer
         .draw_frame(FrameIndex(frame_index))
         .map_err(ApiError::internal)?;

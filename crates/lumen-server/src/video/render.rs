@@ -6,6 +6,7 @@ use ac_ffmpeg::{
 };
 use anyhow::anyhow;
 use lumen::{
+    media::MediaProvider,
     plan::RenderPlan,
     render::Renderer,
     time::FrameIndex,
@@ -22,13 +23,14 @@ pub struct FFmpegRenderer {
 impl FFmpegRenderer {
     pub fn new(
         plan: Arc<RenderPlan>,
+        media_provider: impl MediaProvider + 'static,
         time_base: TimeBase,
     ) -> anyhow::Result<Self> {
         let width = plan.canvas.width as usize;
         let height = plan.canvas.height as usize;
 
         Ok(Self {
-            inner: Renderer::new(plan, ServerFontManager::new())?,
+            inner: Renderer::new(plan, ServerFontManager::new(), media_provider)?,
             source_frame: Some(
                 VideoFrameMut::black(frame::get_pixel_format("rgba"), width, height)
                     .with_time_base(time_base),

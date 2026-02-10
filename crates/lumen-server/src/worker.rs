@@ -7,7 +7,7 @@ use tracing::{error, info, instrument};
 use crate::{
     app_state::AppState,
     jobs::ObjectBlob,
-    video::{encode::H264Encoder, render::FFmpegRenderer},
+    video::{encode::H264Encoder, media::AssetMediaProvider, render::FFmpegRenderer},
 };
 
 pub fn spawn_render_worker(state: AppState) {
@@ -42,7 +42,7 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
 
         let sequence: Sequence = serde_json::from_value(record.payload)?;
         let plan = Arc::new(compile_sequence(&sequence)?);
-        let bytes = render_mp4(plan)?;
+        let bytes = render_mp4(plan, sequence.assets.clone())?;
 
         let artifact_key = format!("jobs/{job_id}/artifact.mp4");
         state
@@ -72,9 +72,10 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn render_mp4(plan: Arc<RenderPlan>) -> anyhow::Result<Vec<u8>> {
+fn render_mp4(plan: Arc<RenderPlan>, assets: Vec<lumen::sequence::Asset>) -> anyhow::Result<Vec<u8>> {
     let time_base = TimeBase::new(plan.fps.den as i32, plan.fps.num as i32);
-    let mut renderer = FFmpegRenderer::new(plan.clone(), time_base)?;
+    let media = AssetMediaProvider::new(assets, plan.fps);
+    let mut renderer = FFmpegRenderer::new(plan.clone(), media, time_base)?;
 
     let output = Cursor::new(Vec::new());
     let mut encoder = H264Encoder::new(

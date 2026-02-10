@@ -1,19 +1,7 @@
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::server::serve;
-
-mod api_error;
-mod app_state;
-mod codecs;
-mod endpoint;
-mod jobs;
-mod middleware;
-mod server;
-#[cfg(test)]
-mod tests;
-mod video;
-mod worker;
+use lumen_server::server::serve;
 
 const AV_LOG_PANIC: i32 = 0;
 const AV_LOG_FATAL: i32 = 8;

@@ -3,6 +3,10 @@ name = "lumen-server"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "lumen_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "lumen-server"
 path = "src/main.rs"

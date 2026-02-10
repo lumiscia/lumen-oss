@@ -78,19 +78,22 @@ impl<T: Read> VideoDecoder<T> {
                 }
 
                 let pts = packet.pts();
-
-                if pts > seek_to {
-                    self.current = pts;
-                    self.decoder.push(packet)?;
-                    break;
-                }
-
                 self.current = pts;
                 self.decoder.push(packet)?;
+
+                while let Some(frame) = self.decoder.take()? {
+                    frames.push(frame);
+                }
+
+                if pts > seek_to {
+                    break;
+                }
             }
         }
 
-        let end_micros = self.current.as_micros().unwrap() + duration.as_micros().unwrap();
+        let current_micros = self.current.as_micros().unwrap_or(0);
+        let duration_micros = duration.as_micros().unwrap_or(0);
+        let end_micros = current_micros.saturating_add(duration_micros);
 
         while let Some(packet) = self.demuxer.take()? {
             if packet.stream_index() != self.stream_index {
@@ -103,18 +106,16 @@ impl<T: Read> VideoDecoder<T> {
                 break;
             }
 
-            if pts.as_micros().unwrap() > end_micros {
-                self.current = pts;
-                self.decoder.push(packet)?;
-                break;
-            }
-
             self.current = pts;
             self.decoder.push(packet)?;
-        }
 
-        while let Some(frame) = self.decoder.take()? {
-            frames.push(frame);
+            while let Some(frame) = self.decoder.take()? {
+                frames.push(frame);
+            }
+
+            if pts.as_micros().unwrap_or(0) > end_micros {
+                break;
+            }
         }
 
         Ok(frames)

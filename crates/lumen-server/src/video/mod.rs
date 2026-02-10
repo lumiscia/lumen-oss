@@ -6,6 +6,7 @@ use lumen::{
 pub mod clip;
 pub mod decode;
 pub mod encode;
+pub mod media;
 pub mod render;
 
 pub(crate) struct ServerFontManager(FontMgr);
