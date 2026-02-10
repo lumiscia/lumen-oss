@@ -13,6 +13,7 @@ mod server;
 #[cfg(test)]
 mod tests;
 mod video;
+mod worker;
 
 const AV_LOG_PANIC: i32 = 0;
 const AV_LOG_FATAL: i32 = 8;

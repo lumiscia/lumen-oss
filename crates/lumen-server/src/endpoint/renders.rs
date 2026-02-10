@@ -5,21 +5,26 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     response::Response,
 };
-use serde_json::Value;
+use lumen::{compiler::compile_sequence, render::Renderer, sequence::Sequence, time::FrameIndex};
 
 use crate::{
     api_error::ApiError,
     app_state::AppState,
     jobs::{ObjectBlob, RenderJobState},
+    video::ServerFontManager,
 };
 
 pub async fn create_render(
     State(state): State<AppState>,
-    Json(sequence): Json<Value>,
+    Json(sequence): Json<Sequence>,
 ) -> Result<(StatusCode, Json<crate::jobs::RenderJobStatus>), ApiError> {
+    compile_sequence(&sequence).map_err(|err| ApiError::bad_request(err.to_string()))?;
+
+    let payload = serde_json::to_value(sequence).map_err(ApiError::internal)?;
+
     let status = state
         .job_store
-        .create(sequence)
+        .create(payload)
         .await
         .map_err(ApiError::internal)?;
 
@@ -85,29 +90,38 @@ pub async fn get_artifact(
 }
 
 pub async fn get_frame(
-    Path((job_id, _frame_index)): Path<(String, u64)>,
+    Path((job_id, frame_index)): Path<(String, u64)>,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
-    let frame_key = format!("jobs/{job_id}/frames/0");
-
-    let frame = state
-        .object_store
-        .get(&frame_key)
+    let job = state
+        .job_store
+        .get_record(&job_id)
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("render job not found"))?;
 
-    match frame {
-        Some(ObjectBlob {
-            content_type,
-            bytes,
-        }) => {
-            let mut response = Response::new(Body::from(bytes));
-            *response.status_mut() = StatusCode::OK;
-            response
-                .headers_mut()
-                .insert(header::CONTENT_TYPE, HeaderValue::from_str(&content_type)?);
-            Ok(response)
-        }
-        None => Err(ApiError::not_found("frame is not available")),
+    if job.status.state != RenderJobState::Completed {
+        return Err(ApiError::bad_request("frame preview is not ready yet"));
     }
+
+    let sequence: Sequence = serde_json::from_value(job.payload).map_err(ApiError::internal)?;
+    let plan = compile_sequence(&sequence).map_err(|err| ApiError::bad_request(err.to_string()))?;
+
+    if frame_index >= plan.total_frames {
+        return Err(ApiError::bad_request("requested frame is out of range"));
+    }
+
+    let mut renderer =
+        Renderer::new(std::sync::Arc::new(plan), ServerFontManager::new()).map_err(ApiError::internal)?;
+    renderer
+        .draw_frame(FrameIndex(frame_index))
+        .map_err(ApiError::internal)?;
+    let png = renderer.encode_png().map_err(ApiError::internal)?;
+
+    let mut response = Response::new(Body::from(png));
+    *response.status_mut() = StatusCode::OK;
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    Ok(response)
 }

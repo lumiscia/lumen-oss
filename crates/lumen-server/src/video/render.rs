@@ -6,44 +6,29 @@ use ac_ffmpeg::{
 };
 use anyhow::anyhow;
 use lumen::{
-    clip::Timeline,
+    plan::RenderPlan,
     render::Renderer,
-    skia::{AlphaType, ColorType, ImageInfo, image::CachingHint},
+    time::FrameIndex,
 };
 
 use crate::video::ServerFontManager;
 
 pub struct FFmpegRenderer {
     inner: Renderer,
-    dst_info: ImageInfo,
     source_frame: Option<VideoFrameMut>,
     scaler: VideoFrameScaler,
 }
 
 impl FFmpegRenderer {
     pub fn new(
-        width: usize,
-        height: usize,
-        duration: lumen::Timestamp,
-        rate: u16,
+        plan: Arc<RenderPlan>,
         time_base: TimeBase,
-        timeline: Arc<Timeline>,
     ) -> anyhow::Result<Self> {
+        let width = plan.canvas.width as usize;
+        let height = plan.canvas.height as usize;
+
         Ok(Self {
-            inner: Renderer::new(
-                width,
-                height,
-                duration,
-                rate,
-                timeline,
-                ServerFontManager::new(),
-            )?,
-            dst_info: ImageInfo::new(
-                (width as i32, height as i32),
-                ColorType::RGBA8888,
-                AlphaType::Premul,
-                None,
-            ),
+            inner: Renderer::new(plan, ServerFontManager::new())?,
             source_frame: Some(
                 VideoFrameMut::black(frame::get_pixel_format("rgba"), width, height)
                     .with_time_base(time_base),
@@ -60,15 +45,13 @@ impl FFmpegRenderer {
     }
 
     pub fn draw_frame(&mut self, frame: usize) -> anyhow::Result<VideoFrame> {
-        self.inner.draw_frame(frame)?;
+        self.inner.draw_frame(FrameIndex(frame as u64))?;
 
-        self.inner.context.surface.image_snapshot().read_pixels(
-            &self.dst_info,
-            &mut self.source_frame.as_mut().unwrap().planes_mut()[0].data_mut(),
-            self.inner.context.width * 4,
-            (0, 0),
-            CachingHint::Disallow,
-        );
+        let source_frame = self
+            .source_frame
+            .as_mut()
+            .ok_or_else(|| anyhow!("source_frame was unexpectedly missing"))?;
+        self.inner.read_rgba(source_frame.planes_mut()[0].data_mut())?;
 
         let frame = {
             let temp_mutable_frame = self.source_frame.take().ok_or_else(|| {
@@ -82,7 +65,7 @@ impl FFmpegRenderer {
             self.source_frame = match frozen.try_into_mut() {
                 Ok(f) => Some(f),
                 Err(_) => {
-                    panic!("Failed to convert frame back into mut");
+                    return Err(anyhow!("failed to convert frame back into mutable frame"));
                 }
             };
 

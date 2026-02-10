@@ -1,6 +1,6 @@
 use std::{env, net::Ipv4Addr};
 
-use crate::{app_state::AppState, endpoint};
+use crate::{app_state::AppState, endpoint, worker};
 use anyhow::anyhow;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -37,6 +37,7 @@ pub async fn serve() -> anyhow::Result<()> {
     info!("Started server at {}:{}", host, port);
 
     let state = AppState::with_defaults(secret);
+    worker::spawn_render_worker(state.clone());
     let app = endpoint::build_router(state);
 
     axum::serve(listener, app).await?;

@@ -8,7 +8,7 @@ pub mod decode;
 pub mod encode;
 pub mod render;
 
-struct ServerFontManager(FontMgr);
+pub(crate) struct ServerFontManager(FontMgr);
 
 impl ServerFontManager {
     pub fn new() -> Self {
