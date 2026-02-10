@@ -1,3 +1,5 @@
+use skia_safe::{Font, Paint, utils::text_utils::Align};
+
 use crate::{
     clip::{Clip, ClipError},
     render::RenderContext,
@@ -11,8 +13,23 @@ impl Clip for TextElement {
             return Err(ClipError::OutOfRange);
         }
 
-        let mut canvas = context.surface.canvas();
+        let canvas = context.surface.canvas();
 
-        todo!()
+        let font = Font::new(context.font_manager.arial().unwrap(), 120.0);
+
+        let paint = Paint::new(self.color.as_color4f(), None);
+
+        canvas.draw_str_align(
+            &self.text,
+            (
+                self.properties.transform.x.unwrap_or(0),
+                self.properties.transform.y.unwrap_or(0),
+            ),
+            &font,
+            &paint,
+            Align::Center,
+        );
+
+        Ok(())
     }
 }

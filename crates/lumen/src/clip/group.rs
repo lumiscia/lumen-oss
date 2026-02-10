@@ -1,9 +1,7 @@
-use rangemap::RangeMap;
-
-use crate::clip::Clip;
+use crate::clip::{Clip, Layer};
 
 pub struct Group {
-    layers: Vec<RangeMap<usize, Box<dyn Clip>>>,
+    pub layers: Vec<Layer>,
 }
 
 impl Clip for Group {
@@ -13,9 +11,7 @@ impl Clip for Group {
         context: &mut crate::render::RenderContext,
     ) -> Result<(), super::ClipError> {
         for layer in self.layers.iter() {
-            if let Some(clip) = layer.get(&frame) {
-                clip.draw(frame, context)?;
-            }
+            layer.draw(frame, context)?;
         }
 
         Ok(())

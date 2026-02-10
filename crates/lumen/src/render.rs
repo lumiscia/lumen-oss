@@ -32,7 +32,7 @@ pub struct RenderContext {
 pub struct Renderer {
     timeline: Arc<Timeline>,
 
-    context: RenderContext,
+    pub context: RenderContext,
 }
 
 impl Renderer {

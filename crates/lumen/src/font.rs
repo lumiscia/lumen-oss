@@ -1,11 +1,13 @@
-use skia_safe::Font;
+use skia_safe::{FontMgr, Typeface};
 
 pub const FONT_ARIAL: &str = "Arial";
 
 pub trait FontManager {
-    fn named(&self, name: &str) -> Option<Font>;
+    fn skia(&self) -> &FontMgr;
 
-    fn arial(&self) -> Option<Font> {
+    fn named(&self, name: &str) -> Option<Typeface>;
+
+    fn arial(&self) -> Option<Typeface> {
         self.named(FONT_ARIAL)
     }
 }
