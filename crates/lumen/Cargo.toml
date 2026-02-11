@@ -8,7 +8,12 @@ name = "lumen"
 path = "src/lib.rs"
 
 [dependencies]
-thiserror = "2.0.12"
-skia-safe = "0.86.0"
-serde = { version = "1.0.219", features = ["derive"] }
-rangemap = "1.5.1"
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
+skrifa = "0.40.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+vello = "0.7.0"
+pollster = "0.4.0"
+futures-intrusive = "0.5.0"

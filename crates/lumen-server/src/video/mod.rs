@@ -1,3 +1,3 @@
-pub mod decode;
-pub mod encode;
-pub mod render;
+pub mod backend;
+
+pub use backend::FfmpegRenderBackend;

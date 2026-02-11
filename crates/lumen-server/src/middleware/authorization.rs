@@ -1,86 +1,77 @@
-use viz::{
-    Body, Handler, IntoResponse, Request, RequestExt, Response, ResponseExt, StatusCode, Transform,
-    async_trait, header,
+use axum::{
+    body::Body,
+    extract::State,
+    http::{Request, header},
+    middleware::Next,
+    response::{IntoResponse, Response},
 };
 
-#[derive(Clone, Debug)]
-pub struct Config {
-    pub secret: String,
-}
+use crate::{api_error::ApiError, app_state::AppState};
 
-impl Config {
-    pub fn new(secret: String) -> Self {
-        Self { secret }
+pub async fn require_bearer(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    match validate(&state, &request) {
+        Ok(()) => next.run(request).await,
+        Err(err) => err.into_response(),
     }
 }
 
-impl<H> Transform<H> for Config
-where
-    H: Clone,
-{
-    type Output = AuthorizationMiddleware<H>;
+fn validate(state: &AppState, request: &Request<Body>) -> Result<(), ApiError> {
+    let value = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .ok_or_else(|| ApiError::unauthorized("missing authorization header"))?;
 
-    fn transform(&self, h: H) -> Self::Output {
-        AuthorizationMiddleware {
-            h,
-            config: self.clone(),
-        }
+    let value = value
+        .to_str()
+        .map_err(|_| ApiError::unauthorized("invalid authorization header"))?;
+
+    let (scheme, token) = value
+        .split_once(' ')
+        .ok_or_else(|| ApiError::unauthorized("authorization header must be bearer token"))?;
+
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return Err(ApiError::unauthorized(
+            "authorization header must use bearer scheme",
+        ));
     }
+
+    if token.is_empty() {
+        return Err(ApiError::unauthorized("bearer token is empty"));
+    }
+
+    if !constant_time_eq(token.as_bytes(), state.config.secret.as_bytes()) {
+        return Err(ApiError::unauthorized("invalid bearer token"));
+    }
+
+    Ok(())
 }
 
-#[derive(Clone, Debug)]
-pub struct AuthorizationMiddleware<H> {
-    h: H,
-    config: Config,
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let max_len = left.len().max(right.len());
+    let mut diff: usize = left.len() ^ right.len();
+
+    for index in 0..max_len {
+        let l = left.get(index).copied().unwrap_or(0);
+        let r = right.get(index).copied().unwrap_or(0);
+        diff |= (l ^ r) as usize;
+    }
+
+    diff == 0
 }
 
-#[async_trait]
-impl<H, O> Handler<Request> for AuthorizationMiddleware<H>
-where
-    H: Handler<Request, Output = viz::Result<O>>,
-    O: IntoResponse,
-{
-    type Output = viz::Result<Response>;
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
 
-    async fn call(&self, req: Request) -> Self::Output {
-        match req.header::<_, String>(header::AUTHORIZATION) {
-            Some(header) => {
-                let mut split = header.split(" ");
-
-                if split.next() != Some("Bearer") {
-                    let mut resp = Response::with(
-                        Body::Full(r#"{"error":"Unauthorized"}"#.into()),
-                        "application/json",
-                    );
-
-                    *resp.status_mut() = StatusCode::UNAUTHORIZED;
-
-                    return Ok(resp);
-                }
-
-                if split.next() != Some(&self.config.secret) {
-                    let mut resp = Response::with(
-                        Body::Full(r#"{"error":"Unauthorized"}"#.into()),
-                        "application/json",
-                    );
-
-                    *resp.status_mut() = StatusCode::UNAUTHORIZED;
-
-                    return Ok(resp);
-                }
-
-                self.h.call(req).await.map(IntoResponse::into_response)
-            }
-            None => {
-                let mut resp = Response::with(
-                    Body::Full(r#"{"error":"Unauthorized"}"#.into()),
-                    "application/json",
-                );
-
-                *resp.status_mut() = StatusCode::UNAUTHORIZED;
-
-                Ok(resp)
-            }
-        }
+    #[test]
+    fn equality_matches_exact_bytes() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"Secret"));
+        assert!(!constant_time_eq(b"secret", b"secretx"));
+        assert!(!constant_time_eq(b"", b"x"));
     }
 }

@@ -1,10 +1,9 @@
 use std::{env, net::Ipv4Addr};
 
-use crate::{endpoint::*, middleware::authorization};
+use crate::{app_state::AppState, endpoint, worker};
 use anyhow::anyhow;
 use tokio::net::TcpListener;
 use tracing::info;
-use viz::Router;
 
 pub async fn serve() -> anyhow::Result<()> {
     let host: Ipv4Addr = match env::var("HOST") {
@@ -37,11 +36,11 @@ pub async fn serve() -> anyhow::Result<()> {
 
     info!("Started server at {}:{}", host, port);
 
-    let app = Router::new()
-        .get("/generate", generate)
-        .with(authorization::Config::new(secret));
+    let state = AppState::with_defaults(secret);
+    worker::spawn_render_worker(state.clone());
+    let app = endpoint::build_router(state);
 
-    viz::serve(listener, app).await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
