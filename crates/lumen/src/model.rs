@@ -31,6 +31,7 @@ pub struct Timeline {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
     pub id: String,
+    #[serde(flatten)]
     pub kind: SourceKind,
 }
 
@@ -179,6 +180,7 @@ pub enum TextAlign {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShapeClip {
+    #[serde(flatten)]
     pub shape: Shape,
 }
 
