@@ -1,11 +1,10 @@
-pub mod clip;
-pub mod compiler;
-pub mod font;
-pub mod media;
-pub mod plan;
-pub mod render;
-pub mod sequence;
+pub mod compile;
+pub mod model;
+pub mod source_pipeline;
 pub mod time;
 
-pub use skia_safe as skia;
-pub type ImageData = [u8];
+#[cfg(not(target_arch = "wasm32"))]
+pub mod gpu;
+
+pub use compile::{CompileError, CompiledTimeline, compile_project};
+pub use model::*;
