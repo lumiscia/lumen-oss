@@ -21,33 +21,73 @@ const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
 const DEFAULT_ENCODE_QUEUE: usize = 8;
 const DEFAULT_MAX_DECODED_FRAMES: usize = 120_000;
 
+#[derive(Debug, Clone, Default)]
+pub struct RenderBackendOptions {
+    pub media_root: Option<PathBuf>,
+    pub video_encoder: Option<String>,
+    pub encode_queue: Option<usize>,
+    pub max_decoded_source_frames: Option<usize>,
+}
+
 pub struct FfmpegRenderBackend {
     timeline: Arc<CompiledTimeline>,
+    options: RenderBackendOptions,
 }
 
 impl FfmpegRenderBackend {
     pub fn new(timeline: Arc<CompiledTimeline>) -> Self {
-        Self { timeline }
+        Self {
+            timeline,
+            options: RenderBackendOptions::default(),
+        }
+    }
+
+    pub fn new_with_options(
+        timeline: Arc<CompiledTimeline>,
+        options: RenderBackendOptions,
+    ) -> Self {
+        Self { timeline, options }
     }
 
     pub fn render_to_mp4(&self, on_progress: &mut dyn FnMut(u64, u64)) -> anyhow::Result<Vec<u8>> {
+        let media_root = media_root(self.options.media_root.as_deref())?;
+        let max_decoded_source_frames = self
+            .options
+            .max_decoded_source_frames
+            .or_else(|| {
+                env::var("LUMEN_MAX_DECODED_SOURCE_FRAMES")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_MAX_DECODED_FRAMES);
         let requirements =
             collect_requirements(self.timeline.as_ref(), 0..self.timeline.total_frames())?;
-        let mut assets = prepare_assets(self.timeline.as_ref(), &requirements)?;
+        let mut assets = prepare_assets(
+            self.timeline.as_ref(),
+            &requirements,
+            &media_root,
+            max_decoded_source_frames,
+        )?;
 
         let width = self.timeline.canvas.width;
         let height = self.timeline.canvas.height;
         let fps = self.timeline.timeline.fps;
         let total_frames = self.timeline.total_frames();
 
-        let queue_capacity = env::var("LUMEN_ENCODE_QUEUE")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
+        let queue_capacity = self
+            .options
+            .encode_queue
+            .or_else(|| {
+                env::var("LUMEN_ENCODE_QUEUE")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_ENCODE_QUEUE);
 
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(queue_capacity);
-        let encoder = choose_video_encoder();
+        let encoder = choose_video_encoder(self.options.video_encoder.as_deref());
 
         let encode_handle =
             thread::spawn(move || encode_rgba_stream(width, height, fps, encoder, rx));
@@ -74,8 +114,24 @@ impl FfmpegRenderBackend {
     }
 
     pub fn render_frame_png(&self, frame: u64) -> anyhow::Result<Vec<u8>> {
+        let media_root = media_root(self.options.media_root.as_deref())?;
+        let max_decoded_source_frames = self
+            .options
+            .max_decoded_source_frames
+            .or_else(|| {
+                env::var("LUMEN_MAX_DECODED_SOURCE_FRAMES")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_MAX_DECODED_FRAMES);
         let requirements = collect_requirements(self.timeline.as_ref(), std::iter::once(frame))?;
-        let mut assets = prepare_assets(self.timeline.as_ref(), &requirements)?;
+        let mut assets = prepare_assets(
+            self.timeline.as_ref(),
+            &requirements,
+            &media_root,
+            max_decoded_source_frames,
+        )?;
 
         let mut renderer =
             GpuRenderer::new(self.timeline.canvas.width, self.timeline.canvas.height)
@@ -182,13 +238,9 @@ impl FrameProvider for PreparedAssets {
 fn prepare_assets(
     timeline: &CompiledTimeline,
     requirements: &FrameRequirements,
+    media_root: &Path,
+    max_frames: usize,
 ) -> anyhow::Result<PreparedAssets> {
-    let max_frames = env::var("LUMEN_MAX_DECODED_SOURCE_FRAMES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_MAX_DECODED_FRAMES);
-
     let total_requested_video_frames: usize = requirements.videos.values().map(BTreeSet::len).sum();
 
     if total_requested_video_frames > max_frames {
@@ -203,7 +255,7 @@ fn prepare_assets(
         let source = timeline
             .source(source_id)
             .ok_or_else(|| anyhow!("missing source `{source_id}`"))?;
-        let image = decode_image_source(source)?;
+        let image = decode_image_source(source, media_root)?;
         prepared.images.insert(source_id.clone(), image);
     }
 
@@ -216,8 +268,9 @@ fn prepare_assets(
             .ok_or_else(|| anyhow!("missing source `{source_id}`"))?
             .clone();
         let frame_set = frames.clone();
+        let decode_root = media_root.to_path_buf();
         decode_handles.push(thread::spawn(move || {
-            decode_video_source_frames(&source, fps, frame_set)
+            decode_video_source_frames(&source, fps, frame_set, &decode_root)
                 .map(|frames| (source.id.clone(), frames))
         }));
     }
@@ -233,10 +286,10 @@ fn prepare_assets(
     Ok(prepared)
 }
 
-fn decode_image_source(source: &Source) -> anyhow::Result<FrameImage> {
+fn decode_image_source(source: &Source, media_root: &Path) -> anyhow::Result<FrameImage> {
     match &source.kind {
         SourceKind::File { path, .. } => {
-            let resolved = resolve_source_file_path(path)?;
+            let resolved = resolve_source_file_path(path, media_root)?;
             let image = image::ImageReader::open(&resolved)
                 .with_context(|| format!("failed to open image `{}`", resolved.display()))?
                 .decode()
@@ -255,12 +308,13 @@ fn decode_video_source_frames(
     source: &Source,
     fps: Rational,
     requested_frames: BTreeSet<u64>,
+    media_root: &Path,
 ) -> anyhow::Result<BTreeMap<u64, FrameImage>> {
     if requested_frames.is_empty() {
         return Ok(BTreeMap::new());
     }
 
-    let (width, height) = probe_video_dimensions(source)?;
+    let (width, height) = probe_video_dimensions(source, media_root)?;
     let frame_size = frame_size(width, height)?;
     let min_requested = requested_frames
         .iter()
@@ -273,7 +327,7 @@ fn decode_video_source_frames(
         .copied()
         .ok_or_else(|| anyhow!("requested frame set unexpectedly empty"))?;
 
-    let mut command = decode_command(source, fps, min_requested, max_requested)?;
+    let mut command = decode_command(source, fps, min_requested, max_requested, media_root)?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = command
@@ -286,7 +340,9 @@ fn decode_video_source_frames(
         .ok_or_else(|| anyhow!("ffmpeg decode stdout was unavailable"))?;
 
     let mut decoded = BTreeMap::new();
-    let frame_count = max_requested.saturating_sub(min_requested).saturating_add(1);
+    let frame_count = max_requested
+        .saturating_sub(min_requested)
+        .saturating_add(1);
     for decoded_index in 0..frame_count {
         let frame_index = min_requested.saturating_add(decoded_index);
         let mut buffer = vec![0u8; frame_size];
@@ -327,6 +383,7 @@ fn decode_command(
     fps: Rational,
     min_frame: u64,
     max_frame: u64,
+    media_root: &Path,
 ) -> anyhow::Result<Command> {
     let mut command = Command::new("ffmpeg");
     command
@@ -337,7 +394,7 @@ fn decode_command(
 
     match &source.kind {
         SourceKind::File { path, .. } => {
-            let resolved = resolve_source_file_path(path)?;
+            let resolved = resolve_source_file_path(path, media_root)?;
             command.arg("-hwaccel").arg("auto").arg("-i").arg(resolved);
         }
         SourceKind::Generator { filter, .. } => {
@@ -356,7 +413,12 @@ fn decode_command(
             max_frame.saturating_add(1)
         ))
         .arg("-frames:v")
-        .arg(max_frame.saturating_sub(min_frame).saturating_add(1).to_string())
+        .arg(
+            max_frame
+                .saturating_sub(min_frame)
+                .saturating_add(1)
+                .to_string(),
+        )
         .arg("-f")
         .arg("rawvideo")
         .arg("-pix_fmt")
@@ -366,7 +428,7 @@ fn decode_command(
     Ok(command)
 }
 
-fn probe_video_dimensions(source: &Source) -> anyhow::Result<(u32, u32)> {
+fn probe_video_dimensions(source: &Source, media_root: &Path) -> anyhow::Result<(u32, u32)> {
     let mut command = Command::new("ffprobe");
     command
         .arg("-v")
@@ -380,7 +442,7 @@ fn probe_video_dimensions(source: &Source) -> anyhow::Result<(u32, u32)> {
 
     match &source.kind {
         SourceKind::File { path, .. } => {
-            command.arg(resolve_source_file_path(path)?);
+            command.arg(resolve_source_file_path(path, media_root)?);
         }
         SourceKind::Generator { filter, .. } => {
             command.arg("-f").arg("lavfi").arg("-i").arg(filter);
@@ -428,7 +490,14 @@ fn frame_size(width: u32, height: u32) -> anyhow::Result<usize> {
         .ok_or_else(|| anyhow!("frame size overflow"))
 }
 
-fn choose_video_encoder() -> String {
+fn choose_video_encoder(override_encoder: Option<&str>) -> String {
+    if let Some(encoder) = override_encoder {
+        let encoder = encoder.trim();
+        if !encoder.is_empty() {
+            return encoder.to_string();
+        }
+    }
+
     if let Ok(encoder) = env::var("LUMEN_VIDEO_ENCODER") {
         let encoder = encoder.trim();
         if !encoder.is_empty() {
@@ -511,14 +580,19 @@ fn encode_rgba_stream(
         .with_context(|| format!("failed to read encoded output `{}`", output_path.display()))
 }
 
-fn resolve_source_file_path(path: &str) -> anyhow::Result<PathBuf> {
-    let root = media_root()?;
+fn resolve_source_file_path(path: &str, root_override: &Path) -> anyhow::Result<PathBuf> {
+    let root = media_root(Some(root_override))?;
     resolve_local_path_with_root(path, &root)
 }
 
-fn media_root() -> anyhow::Result<PathBuf> {
-    let raw = env::var(MEDIA_ROOT_ENV).unwrap_or_else(|_| ".".to_string());
-    let path = PathBuf::from(raw);
+fn media_root(override_root: Option<&Path>) -> anyhow::Result<PathBuf> {
+    let path = match override_root {
+        Some(path) => path.to_path_buf(),
+        None => {
+            let raw = env::var(MEDIA_ROOT_ENV).unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(raw)
+        }
+    };
     path.canonicalize()
         .with_context(|| format!("failed to resolve media root from {MEDIA_ROOT_ENV}"))
 }

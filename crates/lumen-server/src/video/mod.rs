@@ -1,3 +1,3 @@
 pub mod backend;
 
-pub use backend::FfmpegRenderBackend;
+pub use backend::{FfmpegRenderBackend, RenderBackendOptions};

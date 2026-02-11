@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "lumen-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "lumen-runpod"
+path = "src/bin/lumen_runpod.rs"
+
 [dependencies]
 anyhow = "1.0.101"
 tracing = "0.1.44"
