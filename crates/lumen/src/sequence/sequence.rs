@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{sequence::ColorRGBA, time::{Rational, Time}};
+use crate::{
+    sequence::ColorRGBA,
+    time::{Rational, Time},
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sequence {
@@ -78,6 +81,12 @@ pub struct TrackClip {
     pub opacity: f32,
     #[serde(default)]
     pub blend_mode: BlendMode,
+    #[serde(default)]
+    pub animation: ClipAnimation,
+    #[serde(default)]
+    pub transition_in: Option<ClipTransition>,
+    #[serde(default)]
+    pub transition_out: Option<ClipTransition>,
     pub content: ClipContent,
 }
 
@@ -102,6 +111,55 @@ impl Default for Transform {
             height: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClipAnimation {
+    #[serde(default)]
+    pub x: Vec<ScalarKeyframe>,
+    #[serde(default)]
+    pub y: Vec<ScalarKeyframe>,
+    #[serde(default)]
+    pub width: Vec<ScalarKeyframe>,
+    #[serde(default)]
+    pub height: Vec<ScalarKeyframe>,
+    #[serde(default)]
+    pub opacity: Vec<ScalarKeyframe>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScalarKeyframe {
+    pub time: Time,
+    pub value: f32,
+    #[serde(default)]
+    pub easing: KeyframeEasing,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyframeEasing {
+    #[default]
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipTransition {
+    pub kind: TransitionKind,
+    pub duration: Time,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransitionKind {
+    Fade,
+    SlideLeft,
+    SlideRight,
+    SlideUp,
+    SlideDown,
+    Dissolve,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

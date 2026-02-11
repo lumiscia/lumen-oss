@@ -74,6 +74,15 @@ impl From<StorageError> for ApiError {
                 code: "not_found",
                 message: format!("{resource} not found: {id}"),
             },
+            StorageError::InvalidState {
+                resource,
+                id,
+                reason,
+            } => Self {
+                status: StatusCode::CONFLICT,
+                code: "invalid_state",
+                message: format!("{resource} has invalid state for `{id}`: {reason}"),
+            },
         }
     }
 }

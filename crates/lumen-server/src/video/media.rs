@@ -326,6 +326,10 @@ fn read_asset_bytes(source: &str) -> Result<Vec<u8>, MediaError> {
         .map_err(|err| MediaError::Source(format!("failed to read `{}`: {err}", path.display())))
 }
 
+pub fn resolve_asset_source_path(source: &str) -> Result<PathBuf, MediaError> {
+    resolve_local_path(source)
+}
+
 fn resolve_local_path(source: &str) -> Result<PathBuf, MediaError> {
     let root = media_root()?;
     resolve_local_path_with_root(source, &root)

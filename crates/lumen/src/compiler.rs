@@ -4,10 +4,11 @@ use thiserror::Error;
 
 use crate::{
     plan::{
-        AssetRenderOp, CanvasSpec, RenderOp, RenderOpKind, RenderPlan, ShapeRenderOp,
-        SolidRenderOp, TextRenderOp, VideoRenderOp,
+        AssetRenderOp, CanvasSpec, ClipAnimationPlan, RenderOp, RenderOpKind, RenderPlan,
+        ScalarFrameKeyframe, ShapeRenderOp, SolidRenderOp, TextRenderOp, TransitionSpec,
+        VideoRenderOp,
     },
-    sequence::{Asset, AssetKind, ClipContent, Sequence, Track, TrackKind},
+    sequence::{Asset, AssetKind, ClipContent, ScalarKeyframe, Sequence, Track, TrackKind},
     time::{FrameIndex, Rational, TimeError, frame_at_time, frames_from_time},
 };
 
@@ -29,8 +30,12 @@ pub enum CompileError {
     AssetKindMismatch { asset_id: String },
     #[error("duplicate asset id `{asset_id}`")]
     DuplicateAsset { asset_id: String },
-    #[error("audio graph is not implemented in phase 1")]
-    UnimplementedAudio,
+    #[error("audio graph track `{track_id}` has invalid clip #{clip_index}: {reason}")]
+    InvalidAudioClip {
+        track_id: String,
+        clip_index: usize,
+        reason: String,
+    },
     #[error("time conversion failed: {0}")]
     Time(#[from] TimeError),
 }
@@ -38,10 +43,6 @@ pub enum CompileError {
 pub fn compile_sequence(sequence: &Sequence) -> Result<RenderPlan, CompileError> {
     validate_canvas(sequence.canvas.width, sequence.canvas.height)?;
     validate_timeline(sequence.timeline.fps)?;
-
-    if !sequence.audio.tracks.is_empty() {
-        return Err(CompileError::UnimplementedAudio);
-    }
 
     let assets = index_assets(&sequence.assets)?;
     let total_frames = frames_from_time(sequence.timeline.duration, sequence.timeline.fps)?;
@@ -51,12 +52,17 @@ pub fn compile_sequence(sequence: &Sequence) -> Result<RenderPlan, CompileError>
             "timeline duration resolves to 0 frames".to_string(),
         ));
     }
+    validate_audio_graph(sequence, &assets, total_frames, sequence.timeline.fps)?;
 
     let mut operations = Vec::new();
 
     for (track_index, track) in sequence.tracks.iter().enumerate() {
         if track.kind == TrackKind::Audio && !track.clips.is_empty() {
-            return Err(CompileError::UnimplementedAudio);
+            return Err(CompileError::InvalidClip {
+                track_id: track.id.clone(),
+                clip_id: "<track>".to_string(),
+                reason: "audio clips must be defined in `sequence.audio.tracks`".to_string(),
+            });
         }
 
         compile_track(
@@ -164,6 +170,30 @@ fn compile_track(
             });
         }
 
+        let animation = compile_animation(track, clip, fps, duration).map_err(|reason| {
+            CompileError::InvalidClip {
+                track_id: track.id.clone(),
+                clip_id: clip.id.clone(),
+                reason,
+            }
+        })?;
+        let transition_in =
+            compile_transition(track, clip, fps, duration, true).map_err(|reason| {
+                CompileError::InvalidClip {
+                    track_id: track.id.clone(),
+                    clip_id: clip.id.clone(),
+                    reason,
+                }
+            })?;
+        let transition_out =
+            compile_transition(track, clip, fps, duration, false).map_err(|reason| {
+                CompileError::InvalidClip {
+                    track_id: track.id.clone(),
+                    clip_id: clip.id.clone(),
+                    reason,
+                }
+            })?;
+
         let kind = match (&track.kind, &clip.content) {
             (TrackKind::Text, ClipContent::Text(text)) => RenderOpKind::Text(TextRenderOp {
                 text: text.text.clone(),
@@ -195,7 +225,13 @@ fn compile_track(
             | (TrackKind::Video, ClipContent::Solid { color }) => {
                 RenderOpKind::Solid(SolidRenderOp { color: *color })
             }
-            (TrackKind::Audio, _) => return Err(CompileError::UnimplementedAudio),
+            (TrackKind::Audio, _) => {
+                return Err(CompileError::InvalidClip {
+                    track_id: track.id.clone(),
+                    clip_id: clip.id.clone(),
+                    reason: "audio clips must be defined in `sequence.audio.tracks`".to_string(),
+                });
+            }
             _ => {
                 return Err(CompileError::InvalidClip {
                     track_id: track.id.clone(),
@@ -225,8 +261,186 @@ fn compile_track(
             opacity: clip.opacity.clamp(0.0, 1.0),
             blend_mode: clip.blend_mode,
             transform: clip.transform,
+            animation,
+            transition_in,
+            transition_out,
             kind,
         });
+    }
+
+    Ok(())
+}
+
+fn compile_animation(
+    _track: &Track,
+    clip: &crate::sequence::TrackClip,
+    fps: Rational,
+    clip_duration_frames: u64,
+) -> Result<ClipAnimationPlan, String> {
+    Ok(ClipAnimationPlan {
+        x: compile_property_keyframes("x", &clip.animation.x, fps, clip_duration_frames, false)?,
+        y: compile_property_keyframes("y", &clip.animation.y, fps, clip_duration_frames, false)?,
+        width: compile_property_keyframes(
+            "width",
+            &clip.animation.width,
+            fps,
+            clip_duration_frames,
+            true,
+        )?,
+        height: compile_property_keyframes(
+            "height",
+            &clip.animation.height,
+            fps,
+            clip_duration_frames,
+            true,
+        )?,
+        opacity: compile_property_keyframes(
+            "opacity",
+            &clip.animation.opacity,
+            fps,
+            clip_duration_frames,
+            false,
+        )?,
+    })
+}
+
+fn compile_property_keyframes(
+    property: &str,
+    keyframes: &[ScalarKeyframe],
+    fps: Rational,
+    clip_duration_frames: u64,
+    strictly_positive: bool,
+) -> Result<Vec<ScalarFrameKeyframe>, String> {
+    let mut compiled = Vec::with_capacity(keyframes.len());
+    let mut last_frame: Option<u64> = None;
+
+    for keyframe in keyframes {
+        if !keyframe.value.is_finite() {
+            return Err(format!(
+                "{property} animation keyframe value must be a finite number"
+            ));
+        }
+
+        if strictly_positive && keyframe.value <= 0.0 {
+            return Err(format!("{property} animation keyframe value must be > 0"));
+        }
+
+        let frame_offset = frame_at_time(keyframe.time, fps)
+            .map_err(|err| format!("{property} animation keyframe time is invalid: {err}"))?
+            .0;
+
+        if frame_offset > clip_duration_frames {
+            return Err(format!(
+                "{property} animation keyframe at frame {frame_offset} exceeds clip duration {clip_duration_frames}"
+            ));
+        }
+
+        if let Some(previous) = last_frame {
+            if frame_offset < previous {
+                return Err(format!(
+                    "{property} animation keyframes must be in non-decreasing time order"
+                ));
+            }
+        }
+        last_frame = Some(frame_offset);
+
+        compiled.push(ScalarFrameKeyframe {
+            frame_offset,
+            value: keyframe.value,
+            easing: keyframe.easing,
+        });
+    }
+
+    Ok(compiled)
+}
+
+fn compile_transition(
+    _track: &Track,
+    clip: &crate::sequence::TrackClip,
+    fps: Rational,
+    clip_duration_frames: u64,
+    is_in: bool,
+) -> Result<Option<TransitionSpec>, String> {
+    let transition = if is_in {
+        clip.transition_in
+    } else {
+        clip.transition_out
+    };
+
+    let Some(transition) = transition else {
+        return Ok(None);
+    };
+
+    let duration_frames = frames_from_time(transition.duration, fps).map_err(|err| {
+        let edge = if is_in { "in" } else { "out" };
+        format!("{edge} transition duration is invalid: {err}")
+    })?;
+
+    if duration_frames == 0 {
+        let edge = if is_in { "in" } else { "out" };
+        return Err(format!("{edge} transition duration resolves to 0 frames"));
+    }
+
+    if duration_frames > clip_duration_frames {
+        let edge = if is_in { "in" } else { "out" };
+        return Err(format!(
+            "{edge} transition duration {} exceeds clip duration {}",
+            duration_frames, clip_duration_frames
+        ));
+    }
+
+    Ok(Some(TransitionSpec {
+        kind: transition.kind,
+        duration_frames,
+    }))
+}
+
+fn validate_audio_graph(
+    sequence: &Sequence,
+    assets: &HashMap<&str, &Asset>,
+    total_frames: u64,
+    fps: Rational,
+) -> Result<(), CompileError> {
+    for track in &sequence.audio.tracks {
+        for (clip_index, clip) in track.clips.iter().enumerate() {
+            let _ = validate_asset_kind(&clip.asset_id, AssetKind::Audio, assets)?;
+
+            if !clip.volume.is_finite() || clip.volume < 0.0 {
+                return Err(CompileError::InvalidAudioClip {
+                    track_id: track.id.clone(),
+                    clip_index,
+                    reason: "volume must be a finite number >= 0".to_string(),
+                });
+            }
+
+            let start_frame = frame_at_time(clip.start, fps)?;
+            let duration_frames = frames_from_time(clip.duration, fps)?;
+            let source_in = clip.source_in.unwrap_or(crate::time::Time::ZERO);
+            let _ = frame_at_time(source_in, fps)?;
+
+            if duration_frames == 0 {
+                return Err(CompileError::InvalidAudioClip {
+                    track_id: track.id.clone(),
+                    clip_index,
+                    reason: "duration resolves to 0 frames".to_string(),
+                });
+            }
+
+            let end = start_frame.0.checked_add(duration_frames).ok_or_else(|| {
+                CompileError::InvalidAudioClip {
+                    track_id: track.id.clone(),
+                    clip_index,
+                    reason: "frame range overflowed".to_string(),
+                }
+            })?;
+            if end > total_frames {
+                return Err(CompileError::InvalidAudioClip {
+                    track_id: track.id.clone(),
+                    clip_index,
+                    reason: format!("end frame {} exceeds timeline length {}", end, total_frames),
+                });
+            }
+        }
     }
 
     Ok(())
@@ -301,8 +515,9 @@ mod tests {
     use super::*;
     use crate::{
         sequence::{
-            AudioGraph, BlendMode, Canvas, ClipContent, Sequence, TextAlign, TextContent, Timeline,
-            Track, TrackClip, TrackKind, Transform,
+            Asset, AssetKind, AudioClip, AudioGraph, AudioTrack, BlendMode, Canvas, ClipAnimation,
+            ClipContent, Sequence, TextAlign, TextContent, Timeline, Track, TrackClip, TrackKind,
+            Transform,
         },
         time::Time,
     };
@@ -341,6 +556,56 @@ mod tests {
         assert!(matches!(result, Err(CompileError::InvalidClip { .. })));
     }
 
+    #[test]
+    fn accepts_valid_audio_graph() {
+        let mut sequence = sample_sequence();
+        sequence.assets.push(Asset {
+            id: "audio-1".to_string(),
+            kind: AssetKind::Audio,
+            source: "/tmp/audio-1.mp3".to_string(),
+        });
+        sequence.audio = AudioGraph {
+            tracks: vec![AudioTrack {
+                id: "voiceover".to_string(),
+                clips: vec![AudioClip {
+                    asset_id: "audio-1".to_string(),
+                    start: Time::new(0, 30).expect("time"),
+                    duration: Time::new(30, 30).expect("time"),
+                    source_in: Some(Time::new(0, 30).expect("time")),
+                    volume: 1.0,
+                }],
+            }],
+        };
+
+        let result = compile_sequence(&sequence);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_audio_clip_outside_timeline() {
+        let mut sequence = sample_sequence();
+        sequence.assets.push(Asset {
+            id: "audio-1".to_string(),
+            kind: AssetKind::Audio,
+            source: "/tmp/audio-1.mp3".to_string(),
+        });
+        sequence.audio = AudioGraph {
+            tracks: vec![AudioTrack {
+                id: "voiceover".to_string(),
+                clips: vec![AudioClip {
+                    asset_id: "audio-1".to_string(),
+                    start: Time::new(59, 30).expect("time"),
+                    duration: Time::new(10, 30).expect("time"),
+                    source_in: None,
+                    volume: 1.0,
+                }],
+            }],
+        };
+
+        let result = compile_sequence(&sequence);
+        assert!(matches!(result, Err(CompileError::InvalidAudioClip { .. })));
+    }
+
     fn sample_sequence() -> Sequence {
         Sequence {
             canvas: Canvas {
@@ -366,6 +631,9 @@ mod tests {
                     transform: Transform::default(),
                     opacity: 1.0,
                     blend_mode: BlendMode::Normal,
+                    animation: ClipAnimation::default(),
+                    transition_in: None,
+                    transition_out: None,
                     content: ClipContent::Text(TextContent {
                         text: "hello".to_string(),
                         font_family: None,

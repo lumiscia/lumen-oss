@@ -1,17 +1,21 @@
+use std::sync::Arc;
+
 use axum::{
     Json,
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
     response::Response,
 };
 use lumen::{compiler::compile_sequence, render::Renderer, sequence::Sequence, time::FrameIndex};
+use serde::{Deserialize, Serialize};
 use tokio::task::spawn_blocking;
 
 use crate::{
     api_error::ApiError,
     app_state::AppState,
-    jobs::{ObjectBlob, RenderJobState},
+    jobs::{ObjectBlob, RenderJobState, RenderJobStatus},
+    preview_cache::{CompiledPreview, PreviewCache},
     video::{ServerFontManager, media::AssetMediaProvider},
 };
 
@@ -20,6 +24,48 @@ const MAX_TRACKS: usize = 128;
 const MAX_TOTAL_CLIPS: usize = 4_096;
 const MAX_TOTAL_FRAMES: u64 = 216_000;
 const MAX_CANVAS_DIMENSION: u32 = 7680;
+const DEFAULT_LIST_LIMIT: usize = 50;
+const MAX_LIST_LIMIT: usize = 500;
+
+#[derive(Debug, Deserialize)]
+pub struct ListRendersQuery {
+    pub state: Option<RenderJobState>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListRendersResponse {
+    pub items: Vec<RenderJobStatus>,
+}
+
+pub async fn list_renders(
+    Query(query): Query<ListRendersQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<ListRendersResponse>, ApiError> {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_LIST_LIMIT)
+        .clamp(1, MAX_LIST_LIMIT);
+    let offset = query.offset.unwrap_or(0);
+    let items = if let Some(state_filter) = query.state {
+        let mut items = state
+            .job_store
+            .list_statuses(usize::MAX, 0)
+            .await
+            .map_err(ApiError::from)?;
+        items.retain(|item| item.state == state_filter);
+        items.into_iter().skip(offset).take(limit).collect()
+    } else {
+        state
+            .job_store
+            .list_statuses(limit, offset)
+            .await
+            .map_err(ApiError::from)?
+    };
+
+    Ok(Json(ListRendersResponse { items }))
+}
 
 pub async fn create_render(
     State(state): State<AppState>,
@@ -33,6 +79,36 @@ pub async fn create_render(
     let status = state
         .job_store
         .create(payload)
+        .await
+        .map_err(ApiError::from)?;
+    state
+        .job_queue
+        .enqueue(status.job_id.clone())
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok((StatusCode::ACCEPTED, Json(status)))
+}
+
+pub async fn cancel_render(
+    Path(job_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<crate::jobs::RenderJobStatus>, ApiError> {
+    let status = state
+        .job_store
+        .cancel(&job_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(status))
+}
+
+pub async fn retry_render(
+    Path(job_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<crate::jobs::RenderJobStatus>), ApiError> {
+    let status = state
+        .job_store
+        .retry(&job_id)
         .await
         .map_err(ApiError::from)?;
     state
@@ -111,19 +187,42 @@ pub async fn get_frame(
         return Err(ApiError::bad_request("frame preview is not ready yet"));
     }
 
-    let sequence: Sequence = serde_json::from_value(job.payload).map_err(ApiError::internal)?;
-    let plan = compile_sequence(&sequence).map_err(|err| ApiError::bad_request(err.to_string()))?;
+    let version = job.status.updated_at_ms;
+    let frame_cache_key = PreviewCache::frame_key(&job_id, version, frame_index);
+    if let Some(png) = state.preview_cache.get_frame(&frame_cache_key).await {
+        return png_response(png);
+    }
 
-    if frame_index >= plan.total_frames {
+    let compiled_cache_key = PreviewCache::compiled_key(&job_id, version);
+    let compiled = match state.preview_cache.get_compiled(&compiled_cache_key).await {
+        Some(compiled) => compiled,
+        None => {
+            let sequence: Sequence =
+                serde_json::from_value(job.payload).map_err(ApiError::internal)?;
+            let plan = compile_sequence(&sequence)
+                .map_err(|err| ApiError::bad_request(err.to_string()))?;
+            let compiled = Arc::new(CompiledPreview {
+                plan: Arc::new(plan),
+                assets: sequence.assets,
+            });
+            state
+                .preview_cache
+                .put_compiled(compiled_cache_key, compiled.clone())
+                .await;
+            compiled
+        }
+    };
+
+    if frame_index >= compiled.plan.total_frames {
         return Err(ApiError::bad_request("requested frame is out of range"));
     }
 
+    let plan = compiled.plan.clone();
+    let assets = compiled.assets.clone();
     let png = spawn_blocking(move || -> Result<Vec<u8>, ApiError> {
-        let media = AssetMediaProvider::new(sequence.assets.clone(), plan.fps)
-            .map_err(ApiError::internal)?;
+        let media = AssetMediaProvider::new(assets, plan.fps).map_err(ApiError::internal)?;
         let mut renderer =
-            Renderer::new(std::sync::Arc::new(plan), ServerFontManager::new(), media)
-                .map_err(ApiError::internal)?;
+            Renderer::new(plan, ServerFontManager::new(), media).map_err(ApiError::internal)?;
         renderer
             .draw_frame(FrameIndex(frame_index))
             .map_err(ApiError::internal)?;
@@ -132,6 +231,16 @@ pub async fn get_frame(
     .await
     .map_err(ApiError::internal)??;
 
+    let png = axum::body::Bytes::from(png);
+    state
+        .preview_cache
+        .put_frame(frame_cache_key, png.clone())
+        .await;
+
+    png_response(png)
+}
+
+fn png_response(png: axum::body::Bytes) -> Result<Response, ApiError> {
     let mut response = Response::new(Body::from(png));
     *response.status_mut() = StatusCode::OK;
     response

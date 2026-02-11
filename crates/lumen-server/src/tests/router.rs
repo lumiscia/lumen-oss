@@ -4,8 +4,8 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use serde_json::json;
-use tower::ServiceExt;
 use tokio::time::{Duration, sleep};
+use tower::ServiceExt;
 
 use crate::{app_state::AppState, endpoint, worker};
 
@@ -112,7 +112,10 @@ async fn lifecycle_completes_and_returns_artifact_and_frame() {
     let artifact_response = app.clone().oneshot(artifact_request).await.unwrap();
     assert_eq!(artifact_response.status(), StatusCode::OK);
     assert_eq!(
-        artifact_response.headers().get(header::CONTENT_TYPE).unwrap(),
+        artifact_response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap(),
         "video/mp4"
     );
     let artifact_bytes = artifact_response
@@ -135,8 +138,94 @@ async fn lifecycle_completes_and_returns_artifact_and_frame() {
         frame_response.headers().get(header::CONTENT_TYPE).unwrap(),
         "image/png"
     );
-    let frame_bytes = frame_response.into_body().collect().await.unwrap().to_bytes();
+    let frame_bytes = frame_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     assert!(!frame_bytes.is_empty());
+}
+
+#[tokio::test]
+async fn list_cancel_and_retry_flow() {
+    let app = endpoint::build_router(AppState::with_defaults("secret".to_string()));
+
+    let create_request = Request::builder()
+        .method("POST")
+        .uri("/renders")
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(valid_sequence_json().to_string()))
+        .unwrap();
+    let create_response = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(create_response.status(), StatusCode::ACCEPTED);
+    let create_body = create_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let created: serde_json::Value = serde_json::from_slice(&create_body).unwrap();
+    let job_id = created["job_id"].as_str().unwrap().to_string();
+
+    let list_request = Request::builder()
+        .method("GET")
+        .uri("/renders?state=queued")
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .body(Body::empty())
+        .unwrap();
+    let list_response = app.clone().oneshot(list_request).await.unwrap();
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_body = list_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let listed: serde_json::Value = serde_json::from_slice(&list_body).unwrap();
+    assert!(
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["job_id"] == job_id)
+    );
+
+    let cancel_request = Request::builder()
+        .method("POST")
+        .uri(format!("/renders/{job_id}/cancel"))
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .body(Body::empty())
+        .unwrap();
+    let cancel_response = app.clone().oneshot(cancel_request).await.unwrap();
+    assert_eq!(cancel_response.status(), StatusCode::OK);
+    let cancel_body = cancel_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let canceled: serde_json::Value = serde_json::from_slice(&cancel_body).unwrap();
+    assert_eq!(canceled["state"], "canceled");
+
+    let retry_request = Request::builder()
+        .method("POST")
+        .uri(format!("/renders/{job_id}/retry"))
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .body(Body::empty())
+        .unwrap();
+    let retry_response = app.clone().oneshot(retry_request).await.unwrap();
+    assert_eq!(retry_response.status(), StatusCode::ACCEPTED);
+    let retry_body = retry_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let retried: serde_json::Value = serde_json::from_slice(&retry_body).unwrap();
+    assert_eq!(retried["state"], "queued");
+    assert_eq!(retried["job_id"], job_id);
 }
 
 fn valid_sequence_json() -> serde_json::Value {

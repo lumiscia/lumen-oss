@@ -11,8 +11,13 @@ use thiserror::Error;
 use crate::{
     font::{FONT_ARIAL, FontManager},
     media::{MediaError, MediaProvider, NoopMediaProvider},
-    plan::{RenderOp, RenderOpKind, RenderPlan, ShapeRenderOp, SolidRenderOp, TextRenderOp},
-    sequence::{BlendMode as SequenceBlendMode, ShapeContent, TextAlign},
+    plan::{
+        RenderOp, RenderOpKind, RenderPlan, ScalarFrameKeyframe, ShapeRenderOp, SolidRenderOp,
+        TextRenderOp,
+    },
+    sequence::{
+        BlendMode as SequenceBlendMode, ShapeContent, TextAlign, Transform, TransitionKind,
+    },
     time::FrameIndex,
 };
 
@@ -136,19 +141,20 @@ impl Renderer {
     }
 
     fn draw_op(&mut self, frame: FrameIndex, op: &RenderOp) -> Result<(), RendererError> {
+        let (transform, opacity) = self.resolve_op_state(frame, op);
         match &op.kind {
-            RenderOpKind::Text(text) => self.draw_text(op, text),
+            RenderOpKind::Text(text) => self.draw_text(op.blend_mode, transform, opacity, text),
             RenderOpKind::Shape(shape) => {
-                self.draw_shape(op, shape);
+                self.draw_shape(op.blend_mode, transform, opacity, shape);
                 Ok(())
             }
             RenderOpKind::Solid(solid) => {
-                self.draw_solid(op, solid);
+                self.draw_solid(op.blend_mode, transform, opacity, solid);
                 Ok(())
             }
             RenderOpKind::Image(asset) => {
                 if let Some(image) = self.media.image(&asset.asset_id)? {
-                    self.draw_image(op, &image);
+                    self.draw_image(op.blend_mode, transform, opacity, &image);
                 }
                 Ok(())
             }
@@ -172,14 +178,20 @@ impl Renderer {
                 let source_frame = FrameIndex(op.source_in_frame.0.saturating_add(source_offset));
 
                 if let Some(image) = self.media.video_frame(&asset.asset_id, source_frame)? {
-                    self.draw_image(op, &image);
+                    self.draw_image(op.blend_mode, transform, opacity, &image);
                 }
                 Ok(())
             }
         }
     }
 
-    fn draw_text(&mut self, op: &RenderOp, text: &TextRenderOp) -> Result<(), RendererError> {
+    fn draw_text(
+        &mut self,
+        blend_mode: SequenceBlendMode,
+        transform: Transform,
+        opacity: f32,
+        text: &TextRenderOp,
+    ) -> Result<(), RendererError> {
         let family = text.font_family.as_deref().unwrap_or(FONT_ARIAL);
         let typeface = self
             .context
@@ -189,11 +201,11 @@ impl Renderer {
             .ok_or_else(|| RendererError::FontMissing(family.to_string()))?;
 
         let mut color = text.color.as_color4f();
-        color.a *= op.opacity.clamp(0.0, 1.0);
+        color.a *= opacity.clamp(0.0, 1.0);
 
         let mut paint = Paint::new(color, None);
         paint.set_anti_alias(true);
-        paint.set_blend_mode(to_blend_mode(op.blend_mode));
+        paint.set_blend_mode(to_blend_mode(blend_mode));
 
         let font = Font::new(typeface, text.font_size.max(1.0));
         let align = match text.align {
@@ -204,7 +216,7 @@ impl Renderer {
 
         self.context.surface.canvas().draw_str_align(
             &text.text,
-            (op.transform.x, op.transform.y),
+            (transform.x, transform.y),
             &font,
             &paint,
             align,
@@ -213,17 +225,27 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_shape(&mut self, op: &RenderOp, shape: &ShapeRenderOp) {
+    fn draw_shape(
+        &mut self,
+        blend_mode: SequenceBlendMode,
+        transform: Transform,
+        opacity: f32,
+        shape: &ShapeRenderOp,
+    ) {
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
-        paint.set_blend_mode(to_blend_mode(op.blend_mode));
+        paint.set_blend_mode(to_blend_mode(blend_mode));
 
         match &shape.shape {
             ShapeContent::Rectangle { fill, radius } => {
                 let mut color = fill.as_color4f();
-                color.a *= op.opacity.clamp(0.0, 1.0);
+                color.a *= opacity.clamp(0.0, 1.0);
                 paint.set_color4f(color, None);
-                let rect = op_rect(op, self.context.width as f32, self.context.height as f32);
+                let rect = op_rect(
+                    transform,
+                    self.context.width as f32,
+                    self.context.height as f32,
+                );
                 if *radius > 0.0 {
                     let rrect = RRect::new_rect_xy(rect, *radius, *radius);
                     self.context.surface.canvas().draw_rrect(rrect, &paint);
@@ -233,39 +255,59 @@ impl Renderer {
             }
             ShapeContent::Ellipse { fill } => {
                 let mut color = fill.as_color4f();
-                color.a *= op.opacity.clamp(0.0, 1.0);
+                color.a *= opacity.clamp(0.0, 1.0);
                 paint.set_color4f(color, None);
                 self.context.surface.canvas().draw_oval(
-                    op_rect(op, self.context.width as f32, self.context.height as f32),
+                    op_rect(
+                        transform,
+                        self.context.width as f32,
+                        self.context.height as f32,
+                    ),
                     &paint,
                 );
             }
         }
     }
 
-    fn draw_solid(&mut self, op: &RenderOp, solid: &SolidRenderOp) {
+    fn draw_solid(
+        &mut self,
+        blend_mode: SequenceBlendMode,
+        transform: Transform,
+        opacity: f32,
+        solid: &SolidRenderOp,
+    ) {
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
-        paint.set_blend_mode(to_blend_mode(op.blend_mode));
+        paint.set_blend_mode(to_blend_mode(blend_mode));
 
         let mut color = solid.color.as_color4f();
-        color.a *= op.opacity.clamp(0.0, 1.0);
+        color.a *= opacity.clamp(0.0, 1.0);
         paint.set_color4f(color, None);
 
         self.context.surface.canvas().draw_rect(
-            op_rect(op, self.context.width as f32, self.context.height as f32),
+            op_rect(
+                transform,
+                self.context.width as f32,
+                self.context.height as f32,
+            ),
             &paint,
         );
     }
 
-    fn draw_image(&mut self, op: &RenderOp, image: &Image) {
+    fn draw_image(
+        &mut self,
+        blend_mode: SequenceBlendMode,
+        transform: Transform,
+        opacity: f32,
+        image: &Image,
+    ) {
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
-        paint.set_blend_mode(to_blend_mode(op.blend_mode));
-        paint.set_alpha_f(op.opacity.clamp(0.0, 1.0));
+        paint.set_blend_mode(to_blend_mode(blend_mode));
+        paint.set_alpha_f(opacity.clamp(0.0, 1.0));
 
         let src = Rect::from_xywh(0.0, 0.0, image.width() as f32, image.height() as f32);
-        let dst = op_rect(op, image.width() as f32, image.height() as f32);
+        let dst = op_rect(transform, image.width() as f32, image.height() as f32);
 
         self.context
             .surface
@@ -277,6 +319,55 @@ impl Renderer {
                 skia_safe::SamplingOptions::default(),
                 &paint,
             );
+    }
+
+    fn resolve_op_state(&self, frame: FrameIndex, op: &RenderOp) -> (Transform, f32) {
+        let local_frame = frame.0.saturating_sub(op.start_frame.0);
+        let mut transform = op.transform;
+
+        transform.x = sample_keyframes(op.transform.x, &op.animation.x, local_frame);
+        transform.y = sample_keyframes(op.transform.y, &op.animation.y, local_frame);
+        transform.width =
+            sample_optional_keyframes(op.transform.width, &op.animation.width, local_frame);
+        transform.height =
+            sample_optional_keyframes(op.transform.height, &op.animation.height, local_frame);
+
+        let mut opacity = sample_keyframes(
+            op.opacity.clamp(0.0, 1.0),
+            &op.animation.opacity,
+            local_frame,
+        );
+
+        if let Some(transition) = op.transition_in {
+            apply_transition(
+                &mut transform,
+                &mut opacity,
+                transition.kind,
+                local_frame,
+                transition.duration_frames,
+                self.context.width as f32,
+                self.context.height as f32,
+                true,
+            );
+        }
+
+        if let Some(transition) = op.transition_out {
+            let remaining = op.end_frame.0.saturating_sub(frame.0);
+            if remaining <= transition.duration_frames {
+                apply_transition(
+                    &mut transform,
+                    &mut opacity,
+                    transition.kind,
+                    remaining,
+                    transition.duration_frames,
+                    self.context.width as f32,
+                    self.context.height as f32,
+                    false,
+                );
+            }
+        }
+
+        (transform, opacity.clamp(0.0, 1.0))
     }
 }
 
@@ -292,13 +383,127 @@ fn to_blend_mode(mode: SequenceBlendMode) -> BlendMode {
     }
 }
 
-fn op_rect(op: &RenderOp, default_width: f32, default_height: f32) -> Rect {
+fn op_rect(transform: Transform, default_width: f32, default_height: f32) -> Rect {
     Rect::from_xywh(
-        op.transform.x,
-        op.transform.y,
-        op.transform.width.unwrap_or(default_width),
-        op.transform.height.unwrap_or(default_height),
+        transform.x,
+        transform.y,
+        transform.width.unwrap_or(default_width),
+        transform.height.unwrap_or(default_height),
     )
+}
+
+fn sample_keyframes(base: f32, keyframes: &[ScalarFrameKeyframe], frame: u64) -> f32 {
+    if keyframes.is_empty() {
+        return base;
+    }
+
+    let mut previous_frame = 0u64;
+    let mut previous_value = base;
+
+    for keyframe in keyframes {
+        if frame < keyframe.frame_offset {
+            if keyframe.frame_offset == previous_frame {
+                return keyframe.value;
+            }
+
+            let t = (frame.saturating_sub(previous_frame)) as f32
+                / (keyframe.frame_offset.saturating_sub(previous_frame)) as f32;
+            let eased = apply_easing(t, keyframe.easing);
+            return lerp(previous_value, keyframe.value, eased);
+        }
+
+        previous_frame = keyframe.frame_offset;
+        previous_value = keyframe.value;
+    }
+
+    previous_value
+}
+
+fn sample_optional_keyframes(
+    base: Option<f32>,
+    keyframes: &[ScalarFrameKeyframe],
+    frame: u64,
+) -> Option<f32> {
+    if keyframes.is_empty() {
+        return base;
+    }
+
+    let start = base.unwrap_or(keyframes[0].value);
+    Some(sample_keyframes(start, keyframes, frame))
+}
+
+fn apply_transition(
+    transform: &mut Transform,
+    opacity: &mut f32,
+    kind: TransitionKind,
+    position: u64,
+    duration: u64,
+    canvas_width: f32,
+    canvas_height: f32,
+    entering: bool,
+) {
+    if duration == 0 {
+        return;
+    }
+
+    let progress = (position as f32 / duration as f32).clamp(0.0, 1.0);
+    match kind {
+        TransitionKind::Fade | TransitionKind::Dissolve => {
+            *opacity *= progress;
+        }
+        TransitionKind::SlideLeft => {
+            let offset = (1.0 - progress) * canvas_width;
+            if entering {
+                transform.x += offset;
+            } else {
+                transform.x -= offset;
+            }
+        }
+        TransitionKind::SlideRight => {
+            let offset = (1.0 - progress) * canvas_width;
+            if entering {
+                transform.x -= offset;
+            } else {
+                transform.x += offset;
+            }
+        }
+        TransitionKind::SlideUp => {
+            let offset = (1.0 - progress) * canvas_height;
+            if entering {
+                transform.y += offset;
+            } else {
+                transform.y -= offset;
+            }
+        }
+        TransitionKind::SlideDown => {
+            let offset = (1.0 - progress) * canvas_height;
+            if entering {
+                transform.y -= offset;
+            } else {
+                transform.y += offset;
+            }
+        }
+    }
+}
+
+fn apply_easing(t: f32, easing: crate::sequence::KeyframeEasing) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    match easing {
+        crate::sequence::KeyframeEasing::Linear => t,
+        crate::sequence::KeyframeEasing::EaseIn => t * t,
+        crate::sequence::KeyframeEasing::EaseOut => 1.0 - (1.0 - t) * (1.0 - t),
+        crate::sequence::KeyframeEasing::EaseInOut => {
+            if t < 0.5 {
+                2.0 * t * t
+            } else {
+                1.0 - ((-2.0 * t + 2.0).powi(2) / 2.0)
+            }
+        }
+    }
+}
+
+fn lerp(from: f32, to: f32, t: f32) -> f32 {
+    from + (to - from) * t
 }
 
 #[cfg(test)]
@@ -309,8 +514,11 @@ mod tests {
     use crate::{
         font::FontManager,
         media::MediaProvider,
-        plan::{AssetRenderOp, CanvasSpec, RenderOp, RenderOpKind, RenderPlan, VideoRenderOp},
-        sequence::{BlendMode, ColorRGBA, Transform},
+        plan::{
+            AssetRenderOp, CanvasSpec, ClipAnimationPlan, RenderOp, RenderOpKind, RenderPlan,
+            ScalarFrameKeyframe, TransitionSpec, VideoRenderOp,
+        },
+        sequence::{BlendMode, ColorRGBA, KeyframeEasing, Transform, TransitionKind},
         skia::{AlphaType, ColorType, Data, FontMgr, Image, ImageInfo, Typeface, images},
         time::{FrameIndex, Rational, Time},
     };
@@ -392,6 +600,103 @@ mod tests {
         assert_eq!(rgba, vec![0, 0, 0, 255]);
     }
 
+    #[test]
+    fn keyframed_opacity_changes_over_time() {
+        let plan = RenderPlan::with_operations_index(
+            CanvasSpec {
+                width: 1,
+                height: 1,
+                background: ColorRGBA(0, 0, 0, 255),
+            },
+            Rational { num: 30, den: 1 },
+            Time {
+                value: 2,
+                timescale: 30,
+            },
+            2,
+            vec![RenderOp {
+                id: "clip".to_string(),
+                start_frame: FrameIndex(0),
+                end_frame: FrameIndex(2),
+                source_in_frame: FrameIndex(0),
+                z_index: 0,
+                clip_index: 0,
+                opacity: 1.0,
+                blend_mode: BlendMode::Normal,
+                transform: Transform {
+                    x: 0.0,
+                    y: 0.0,
+                    width: Some(1.0),
+                    height: Some(1.0),
+                },
+                animation: ClipAnimationPlan {
+                    opacity: vec![
+                        ScalarFrameKeyframe {
+                            frame_offset: 0,
+                            value: 0.0,
+                            easing: KeyframeEasing::Linear,
+                        },
+                        ScalarFrameKeyframe {
+                            frame_offset: 1,
+                            value: 1.0,
+                            easing: KeyframeEasing::Linear,
+                        },
+                    ],
+                    ..ClipAnimationPlan::default()
+                },
+                transition_in: None,
+                transition_out: None,
+                kind: RenderOpKind::Image(AssetRenderOp {
+                    asset_id: "asset".to_string(),
+                }),
+            }],
+        );
+
+        let mut renderer = Renderer::new(
+            Arc::new(plan),
+            TestFontManager::new(),
+            TestMedia {
+                image: white_image(),
+            },
+        )
+        .expect("renderer");
+
+        let mut rgba = vec![0u8; 4];
+        renderer.draw_frame(FrameIndex(0)).expect("draw");
+        renderer.read_rgba(&mut rgba).expect("read");
+        assert_eq!(rgba, vec![0, 0, 0, 255]);
+
+        renderer.draw_frame(FrameIndex(1)).expect("draw");
+        renderer.read_rgba(&mut rgba).expect("read");
+        assert_eq!(rgba, vec![255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn fade_in_transition_starts_transparent() {
+        let mut plan = test_plan(RenderOpKind::Image(AssetRenderOp {
+            asset_id: "asset".to_string(),
+        }));
+        plan.operations[0].opacity = 1.0;
+        plan.operations[0].transition_in = Some(TransitionSpec {
+            kind: TransitionKind::Fade,
+            duration_frames: 1,
+        });
+
+        let mut renderer = Renderer::new(
+            Arc::new(plan),
+            TestFontManager::new(),
+            TestMedia {
+                image: white_image(),
+            },
+        )
+        .expect("renderer");
+        renderer.draw_frame(FrameIndex(0)).expect("draw");
+
+        let mut rgba = vec![0u8; 4];
+        renderer.read_rgba(&mut rgba).expect("read");
+        assert_eq!(rgba, vec![0, 0, 0, 255]);
+    }
+
     fn white_image() -> Image {
         let image_info = ImageInfo::new((1, 1), ColorType::RGBA8888, AlphaType::Premul, None);
         let data = Data::new_copy(&[255, 255, 255, 255]);
@@ -426,6 +731,9 @@ mod tests {
                     width: Some(1.0),
                     height: Some(1.0),
                 },
+                animation: ClipAnimationPlan::default(),
+                transition_in: None,
+                transition_out: None,
                 kind,
             }],
         )

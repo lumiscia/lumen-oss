@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::jobs::{JobQueue, JobStore, ObjectStore, default_job_services};
+use crate::preview_cache::PreviewCache;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -13,6 +14,7 @@ pub struct AppState {
     pub job_store: Arc<dyn JobStore>,
     pub job_queue: Arc<dyn JobQueue>,
     pub object_store: Arc<dyn ObjectStore>,
+    pub preview_cache: Arc<PreviewCache>,
 }
 
 impl AppState {
@@ -26,6 +28,7 @@ impl AppState {
             job_store,
             job_queue,
             object_store,
+            preview_cache: Arc::new(PreviewCache::from_env()),
         }
     }
 }

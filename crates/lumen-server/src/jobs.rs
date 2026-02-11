@@ -28,6 +28,7 @@ pub enum RenderJobState {
     Running,
     Completed,
     Failed,
+    Canceled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +45,10 @@ pub struct RenderJobStatus {
     pub updated_at_ms: u64,
     pub artifact_key: Option<String>,
     pub error: Option<JobFailure>,
+    #[serde(default)]
+    pub progress: Option<f32>,
+    #[serde(default)]
+    pub stage: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +73,11 @@ pub enum StorageError {
         resource: &'static str,
         id: String,
     },
+    InvalidState {
+        resource: &'static str,
+        id: String,
+        reason: String,
+    },
 }
 
 impl Display for StorageError {
@@ -77,6 +87,13 @@ impl Display for StorageError {
                 write!(f, "{resource} capacity exceeded (limit: {limit})")
             }
             Self::NotFound { resource, id } => write!(f, "{resource} not found: {id}"),
+            Self::InvalidState {
+                resource,
+                id,
+                reason,
+            } => {
+                write!(f, "{resource} has invalid state for `{id}`: {reason}")
+            }
         }
     }
 }
@@ -88,11 +105,19 @@ pub type StorageResult<T> = Result<T, StorageError>;
 #[async_trait]
 pub trait JobStore: Send + Sync {
     async fn create(&self, payload: Value) -> StorageResult<RenderJobStatus>;
+    async fn list_statuses(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> StorageResult<Vec<RenderJobStatus>>;
     async fn get_status(&self, job_id: &str) -> StorageResult<Option<RenderJobStatus>>;
     async fn get_record(&self, job_id: &str) -> StorageResult<Option<RenderJobRecord>>;
     async fn mark_running(&self, job_id: &str) -> StorageResult<()>;
     async fn mark_completed(&self, job_id: &str, artifact_key: String) -> StorageResult<()>;
     async fn mark_failed(&self, job_id: &str, code: &str, message: String) -> StorageResult<()>;
+    async fn set_progress(&self, job_id: &str, progress: f32, stage: &str) -> StorageResult<()>;
+    async fn cancel(&self, job_id: &str) -> StorageResult<RenderJobStatus>;
+    async fn retry(&self, job_id: &str) -> StorageResult<RenderJobStatus>;
 }
 
 #[async_trait]
@@ -143,6 +168,13 @@ impl InMemoryJobStore {
                 || now.saturating_sub(record.status.updated_at_ms) <= self.terminal_ttl_ms
         });
     }
+
+    fn not_found(job_id: &str) -> StorageError {
+        StorageError::NotFound {
+            resource: "job",
+            id: job_id.to_string(),
+        }
+    }
 }
 
 #[async_trait]
@@ -167,6 +199,8 @@ impl JobStore for InMemoryJobStore {
             updated_at_ms: now,
             artifact_key: None,
             error: None,
+            progress: Some(0.0),
+            stage: Some("queued".to_string()),
         };
 
         jobs.insert(
@@ -178,6 +212,25 @@ impl JobStore for InMemoryJobStore {
         );
 
         Ok(status)
+    }
+
+    async fn list_statuses(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> StorageResult<Vec<RenderJobStatus>> {
+        self.cleanup_terminal_expired().await;
+        let jobs = self.jobs.read().await;
+        let mut items: Vec<RenderJobStatus> =
+            jobs.values().map(|record| record.status.clone()).collect();
+        items.sort_by(|left, right| {
+            right
+                .created_at_ms
+                .cmp(&left.created_at_ms)
+                .then_with(|| right.job_id.cmp(&left.job_id))
+        });
+
+        Ok(items.into_iter().skip(offset).take(limit.max(1)).collect())
     }
 
     async fn get_status(&self, job_id: &str) -> StorageResult<Option<RenderJobStatus>> {
@@ -198,44 +251,150 @@ impl JobStore for InMemoryJobStore {
     async fn mark_running(&self, job_id: &str) -> StorageResult<()> {
         self.cleanup_terminal_expired().await;
         let mut jobs = self.jobs.write().await;
-        let record = jobs.get_mut(job_id).ok_or_else(|| StorageError::NotFound {
-            resource: "job",
-            id: job_id.to_string(),
-        })?;
+        let record = jobs
+            .get_mut(job_id)
+            .ok_or_else(|| Self::not_found(job_id))?;
+
+        if record.status.state != RenderJobState::Queued {
+            return Err(StorageError::InvalidState {
+                resource: "job",
+                id: job_id.to_string(),
+                reason: format!("expected state queued, found {:?}", record.status.state),
+            });
+        }
+
         record.status.state = RenderJobState::Running;
         record.status.updated_at_ms = now_ms();
         record.status.error = None;
+        record.status.progress = Some(0.01);
+        record.status.stage = Some("running".to_string());
         Ok(())
     }
 
     async fn mark_completed(&self, job_id: &str, artifact_key: String) -> StorageResult<()> {
         self.cleanup_terminal_expired().await;
         let mut jobs = self.jobs.write().await;
-        let record = jobs.get_mut(job_id).ok_or_else(|| StorageError::NotFound {
-            resource: "job",
-            id: job_id.to_string(),
-        })?;
+        let record = jobs
+            .get_mut(job_id)
+            .ok_or_else(|| Self::not_found(job_id))?;
+
+        if record.status.state != RenderJobState::Running {
+            return Err(StorageError::InvalidState {
+                resource: "job",
+                id: job_id.to_string(),
+                reason: format!("expected state running, found {:?}", record.status.state),
+            });
+        }
+
         record.status.state = RenderJobState::Completed;
         record.status.updated_at_ms = now_ms();
         record.status.artifact_key = Some(artifact_key);
         record.status.error = None;
+        record.status.progress = Some(1.0);
+        record.status.stage = Some("completed".to_string());
         Ok(())
     }
 
     async fn mark_failed(&self, job_id: &str, code: &str, message: String) -> StorageResult<()> {
         self.cleanup_terminal_expired().await;
         let mut jobs = self.jobs.write().await;
-        let record = jobs.get_mut(job_id).ok_or_else(|| StorageError::NotFound {
-            resource: "job",
-            id: job_id.to_string(),
-        })?;
+        let record = jobs
+            .get_mut(job_id)
+            .ok_or_else(|| Self::not_found(job_id))?;
+
+        if !matches!(
+            record.status.state,
+            RenderJobState::Running | RenderJobState::Queued
+        ) {
+            return Err(StorageError::InvalidState {
+                resource: "job",
+                id: job_id.to_string(),
+                reason: format!(
+                    "expected state running or queued, found {:?}",
+                    record.status.state
+                ),
+            });
+        }
+
         record.status.state = RenderJobState::Failed;
         record.status.updated_at_ms = now_ms();
         record.status.error = Some(JobFailure {
             code: code.to_string(),
             message,
         });
+        record.status.progress = Some(1.0);
+        record.status.stage = Some("failed".to_string());
         Ok(())
+    }
+
+    async fn set_progress(&self, job_id: &str, progress: f32, stage: &str) -> StorageResult<()> {
+        self.cleanup_terminal_expired().await;
+        let mut jobs = self.jobs.write().await;
+        let record = jobs
+            .get_mut(job_id)
+            .ok_or_else(|| Self::not_found(job_id))?;
+
+        if record.status.state != RenderJobState::Running {
+            return Ok(());
+        }
+
+        record.status.updated_at_ms = now_ms();
+        record.status.progress = Some(progress.clamp(0.0, 1.0));
+        record.status.stage = Some(stage.to_string());
+        Ok(())
+    }
+
+    async fn cancel(&self, job_id: &str) -> StorageResult<RenderJobStatus> {
+        self.cleanup_terminal_expired().await;
+        let mut jobs = self.jobs.write().await;
+        let record = jobs
+            .get_mut(job_id)
+            .ok_or_else(|| Self::not_found(job_id))?;
+
+        if record.status.state != RenderJobState::Queued {
+            return Err(StorageError::InvalidState {
+                resource: "job",
+                id: job_id.to_string(),
+                reason: format!(
+                    "only queued jobs can be canceled, found {:?}",
+                    record.status.state
+                ),
+            });
+        }
+
+        record.status.state = RenderJobState::Canceled;
+        record.status.updated_at_ms = now_ms();
+        record.status.error = None;
+        record.status.progress = Some(1.0);
+        record.status.stage = Some("canceled".to_string());
+        Ok(record.status.clone())
+    }
+
+    async fn retry(&self, job_id: &str) -> StorageResult<RenderJobStatus> {
+        self.cleanup_terminal_expired().await;
+        let mut jobs = self.jobs.write().await;
+        let record = jobs
+            .get_mut(job_id)
+            .ok_or_else(|| Self::not_found(job_id))?;
+
+        if !is_terminal(record.status.state) {
+            return Err(StorageError::InvalidState {
+                resource: "job",
+                id: job_id.to_string(),
+                reason: format!(
+                    "only terminal jobs can be retried, found {:?}",
+                    record.status.state
+                ),
+            });
+        }
+
+        record.status.state = RenderJobState::Queued;
+        record.status.updated_at_ms = now_ms();
+        record.status.artifact_key = None;
+        record.status.error = None;
+        record.status.progress = Some(0.0);
+        record.status.stage = Some("queued".to_string());
+        Ok(record.status.clone())
     }
 }
 
@@ -401,7 +560,10 @@ fn env_u64(name: &str, default: u64) -> u64 {
 }
 
 fn is_terminal(state: RenderJobState) -> bool {
-    matches!(state, RenderJobState::Completed | RenderJobState::Failed)
+    matches!(
+        state,
+        RenderJobState::Completed | RenderJobState::Failed | RenderJobState::Canceled
+    )
 }
 
 fn now_ms() -> u64 {

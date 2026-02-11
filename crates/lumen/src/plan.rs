@@ -1,5 +1,5 @@
 use crate::{
-    sequence::{BlendMode, ShapeContent, TextAlign, Transform},
+    sequence::{BlendMode, KeyframeEasing, ShapeContent, TextAlign, Transform, TransitionKind},
     time::{FrameIndex, Rational, Time},
 };
 
@@ -65,7 +65,32 @@ pub struct RenderOp {
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub transform: Transform,
+    pub animation: ClipAnimationPlan,
+    pub transition_in: Option<TransitionSpec>,
+    pub transition_out: Option<TransitionSpec>,
     pub kind: RenderOpKind,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClipAnimationPlan {
+    pub x: Vec<ScalarFrameKeyframe>,
+    pub y: Vec<ScalarFrameKeyframe>,
+    pub width: Vec<ScalarFrameKeyframe>,
+    pub height: Vec<ScalarFrameKeyframe>,
+    pub opacity: Vec<ScalarFrameKeyframe>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScalarFrameKeyframe {
+    pub frame_offset: u64,
+    pub value: f32,
+    pub easing: KeyframeEasing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransitionSpec {
+    pub kind: TransitionKind,
+    pub duration_frames: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
