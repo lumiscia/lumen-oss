@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::{
     plan::{
         AssetRenderOp, CanvasSpec, RenderOp, RenderOpKind, RenderPlan, ShapeRenderOp, SolidRenderOp,
-        TextRenderOp,
+        TextRenderOp, VideoRenderOp,
     },
     sequence::{Asset, AssetKind, ClipContent, Sequence, Track, TrackKind},
     time::{FrameIndex, Rational, TimeError, frame_at_time, frames_from_time},
@@ -111,6 +111,14 @@ fn compile_track(
             });
         }
 
+        if !clip.speed.is_finite() || clip.speed <= 0.0 {
+            return Err(CompileError::InvalidClip {
+                track_id: track.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: "speed must be a finite number greater than 0".to_string(),
+            });
+        }
+
         if end.0 > total_frames {
             return Err(CompileError::InvalidClip {
                 track_id: track.id.clone(),
@@ -139,8 +147,11 @@ fn compile_track(
                 },
             ),
             (TrackKind::Video, ClipContent::AssetRef { asset_id }) => RenderOpKind::Video(
-                AssetRenderOp {
+                VideoRenderOp {
                     asset_id: validate_asset_kind(asset_id, AssetKind::Video, assets)?,
+                    speed: clip.speed,
+                    reverse: clip.reverse,
+                    source_span_frames: source_span(duration, clip.speed),
                 },
             ),
             (TrackKind::Image, ClipContent::Solid { color })
@@ -156,6 +167,14 @@ fn compile_track(
                 });
             }
         };
+
+        if track.kind != TrackKind::Video && (clip.reverse || (clip.speed - 1.0).abs() > f32::EPSILON) {
+            return Err(CompileError::InvalidClip {
+                track_id: track.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: "speed/reverse are only supported for video clips".to_string(),
+            });
+        }
 
         operations.push(RenderOp {
             id: clip.id.clone(),
@@ -234,6 +253,10 @@ fn validate_timeline(fps: Rational) -> Result<(), CompileError> {
     Ok(())
 }
 
+fn source_span(duration_frames: u64, speed: f32) -> u64 {
+    ((duration_frames as f64) * speed as f64).ceil().max(1.0) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +312,8 @@ mod tests {
                     start: Time::new(0, 30).unwrap(),
                     duration: Time::new(30, 30).unwrap(),
                     source_in: None,
+                    speed: 1.0,
+                    reverse: false,
                     transform: Transform::default(),
                     opacity: 1.0,
                     blend_mode: BlendMode::Normal,

@@ -152,7 +152,21 @@ impl Renderer {
             }
             RenderOpKind::Video(asset) => {
                 let local_frame = frame.0.saturating_sub(op.start_frame.0);
-                let source_frame = FrameIndex(op.source_in_frame.0.saturating_add(local_frame));
+                let mut source_offset = ((local_frame as f64) * (asset.speed as f64)).floor() as u64;
+                if asset.source_span_frames > 0 {
+                    source_offset = source_offset.min(asset.source_span_frames.saturating_sub(1));
+                }
+
+                let source_offset = if asset.reverse {
+                    asset
+                        .source_span_frames
+                        .saturating_sub(1)
+                        .saturating_sub(source_offset)
+                } else {
+                    source_offset
+                };
+
+                let source_frame = FrameIndex(op.source_in_frame.0.saturating_add(source_offset));
 
                 if let Some(image) = self.media.video_frame(&asset.asset_id, source_frame)? {
                     self.draw_image(op, &image);

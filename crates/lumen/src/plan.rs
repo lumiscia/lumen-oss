@@ -73,7 +73,7 @@ pub enum RenderOpKind {
     Text(TextRenderOp),
     Shape(ShapeRenderOp),
     Image(AssetRenderOp),
-    Video(AssetRenderOp),
+    Video(VideoRenderOp),
     Solid(SolidRenderOp),
 }
 
@@ -99,4 +99,12 @@ pub struct SolidRenderOp {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShapeRenderOp {
     pub shape: ShapeContent,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoRenderOp {
+    pub asset_id: String,
+    pub speed: f32,
+    pub reverse: bool,
+    pub source_span_frames: u64,
 }

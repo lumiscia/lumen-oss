@@ -68,6 +68,10 @@ pub struct TrackClip {
     pub duration: Time,
     #[serde(default)]
     pub source_in: Option<Time>,
+    #[serde(default = "default_speed")]
+    pub speed: f32,
+    #[serde(default)]
+    pub reverse: bool,
     #[serde(default)]
     pub transform: Transform,
     #[serde(default = "default_opacity")]
@@ -194,5 +198,9 @@ fn default_opacity() -> f32 {
 }
 
 fn default_volume() -> f32 {
+    1.0
+}
+
+fn default_speed() -> f32 {
     1.0
 }
