@@ -2,18 +2,16 @@ use std::{collections::HashMap, sync::Arc};
 
 use js_sys::{Function, Object, Promise, Reflect};
 use lumen::{
-    compiler::compile_sequence,
-    plan::{RenderOpKind, RenderPlan, VideoRenderOp},
-    sequence::{Asset, AssetKind, Sequence, Transform},
+    ClipContent, CompiledOperationKind, CompiledTimeline, Project, Transform, compile_project,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 
 #[wasm_bindgen]
 pub struct LumenWasmRuntime {
-    sequence: Option<Sequence>,
-    plan: Option<Arc<RenderPlan>>,
+    project: Option<Project>,
+    timeline: Option<Arc<CompiledTimeline>>,
     selected_clip_id: Option<String>,
     transform_overrides: HashMap<String, Transform>,
     video_backend: Option<VideoBackend>,
@@ -27,18 +25,18 @@ struct VideoBackend {
 
 #[derive(Debug, Serialize)]
 struct RuntimeState {
-    has_sequence: bool,
+    has_project: bool,
     total_frames: Option<u64>,
     selected_clip_id: Option<String>,
     selected_transform: Option<Transform>,
 }
 
 #[derive(Debug, Serialize)]
-struct LoadSequenceResult {
+struct LoadProjectResult {
     total_frames: u64,
     fps_num: u32,
     fps_den: u32,
-    video_asset_ids: Vec<String>,
+    video_source_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,7 +46,7 @@ struct ClipSelection {
 }
 
 #[derive(Debug, Serialize)]
-struct FrameSummary {
+struct FramePlan {
     frame_index: u64,
     operation_count: usize,
     operations: Vec<OperationSummary>,
@@ -58,14 +56,16 @@ struct FrameSummary {
 #[derive(Debug, Serialize)]
 struct OperationSummary {
     id: String,
+    layer_id: String,
     kind: &'static str,
-    z_index: u32,
+    z_index: i32,
+    start_frame: u64,
+    end_frame: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct VideoDecodeRequest {
-    pub asset_id: String,
-    pub source: String,
+    pub source_id: String,
     pub source_frame: u64,
     pub timeline_frame: u64,
     pub fps_num: u32,
@@ -77,33 +77,36 @@ impl LumenWasmRuntime {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {
-            sequence: None,
-            plan: None,
+            project: None,
+            timeline: None,
             selected_clip_id: None,
             transform_overrides: HashMap::new(),
             video_backend: None,
         }
     }
 
-    #[wasm_bindgen(js_name = loadSequenceJson)]
-    pub fn load_sequence_json(&mut self, sequence_json: &str) -> Result<JsValue, JsValue> {
-        let sequence: Sequence =
-            serde_json::from_str(sequence_json).map_err(|err| js_error(&err.to_string()))?;
-        self.load_sequence_internal(sequence)
+    #[wasm_bindgen(js_name = loadProjectJson)]
+    pub fn load_project_json(&mut self, project_json: &str) -> Result<JsValue, JsValue> {
+        let project: Project =
+            serde_json::from_str(project_json).map_err(|err| js_error(&err.to_string()))?;
+        self.load_project_internal(project)
     }
 
-    #[wasm_bindgen(js_name = loadSequence)]
-    pub fn load_sequence(&mut self, sequence: JsValue) -> Result<JsValue, JsValue> {
-        let sequence =
-            serde_wasm_bindgen::from_value(sequence).map_err(|err| js_error(&err.to_string()))?;
-        self.load_sequence_internal(sequence)
+    #[wasm_bindgen(js_name = loadProject)]
+    pub fn load_project(&mut self, project: JsValue) -> Result<JsValue, JsValue> {
+        let project =
+            serde_wasm_bindgen::from_value(project).map_err(|err| js_error(&err.to_string()))?;
+        self.load_project_internal(project)
     }
 
     #[wasm_bindgen(js_name = getState)]
     pub fn get_state(&self) -> Result<JsValue, JsValue> {
         to_js_value(&RuntimeState {
-            has_sequence: self.sequence.is_some(),
-            total_frames: self.plan.as_ref().map(|plan| plan.total_frames),
+            has_project: self.project.is_some(),
+            total_frames: self
+                .timeline
+                .as_ref()
+                .map(|timeline| timeline.total_frames()),
             selected_clip_id: self.selected_clip_id.clone(),
             selected_transform: self.selected_transform(),
         })
@@ -129,16 +132,17 @@ impl LumenWasmRuntime {
         self.ensure_clip_exists(&clip_id)?;
         let transform: Transform =
             serde_wasm_bindgen::from_value(transform).map_err(|err| js_error(&err.to_string()))?;
+
+        let project = self
+            .project
+            .as_mut()
+            .ok_or_else(|| js_error("no project loaded"))?;
+
+        update_clip_transform(project, &clip_id, transform)?;
         self.transform_overrides.insert(clip_id.clone(), transform);
 
-        let sequence = self
-            .sequence
-            .as_mut()
-            .ok_or_else(|| js_error("no sequence loaded"))?;
-        update_sequence_transform(sequence, &clip_id, transform)?;
-
-        let plan = compile_sequence(sequence).map_err(|err| js_error(&err.to_string()))?;
-        self.plan = Some(Arc::new(plan));
+        let timeline = compile_project(project).map_err(|err| js_error(&err.to_string()))?;
+        self.timeline = Some(Arc::new(timeline));
 
         if self.selected_clip_id.is_none() {
             self.selected_clip_id = Some(clip_id.clone());
@@ -150,38 +154,71 @@ impl LumenWasmRuntime {
         })
     }
 
-    #[wasm_bindgen(js_name = frameSummary)]
-    pub fn frame_summary(&self, frame_index: u64) -> Result<JsValue, JsValue> {
-        let plan = self
-            .plan
+    #[wasm_bindgen(js_name = framePlan)]
+    pub fn frame_plan(&self, frame_index: u64) -> Result<JsValue, JsValue> {
+        let timeline = self
+            .timeline
             .as_ref()
-            .ok_or_else(|| js_error("no sequence loaded"))?;
+            .ok_or_else(|| js_error("no project loaded"))?;
 
-        if frame_index >= plan.total_frames {
+        if frame_index >= timeline.total_frames() {
             return Err(js_error(&format!(
                 "frame {frame_index} is out of range (max {})",
-                plan.total_frames.saturating_sub(1)
+                timeline.total_frames().saturating_sub(1)
             )));
         }
 
-        let frame = lumen::time::FrameIndex(frame_index);
-        let operations: Vec<_> = plan.operations_for_frame(frame).cloned().collect();
-        let operation_summaries = operations
-            .iter()
-            .map(|operation| OperationSummary {
+        let operation_indices = timeline
+            .operation_indices_for_frame(frame_index)
+            .map_err(|err| js_error(&err.to_string()))?;
+
+        let mut operations = Vec::new();
+        let mut decode_requests = Vec::new();
+
+        for operation_index in operation_indices {
+            let operation = timeline
+                .operation(*operation_index)
+                .ok_or_else(|| js_error("operation index was missing"))?;
+
+            operations.push(OperationSummary {
                 id: operation.id.clone(),
+                layer_id: operation.layer_id.clone(),
                 kind: op_kind_label(&operation.kind),
                 z_index: operation.z_index,
-            })
-            .collect();
-        let video_decode_requests = self.video_decode_requests(frame_index, &operations)?;
+                start_frame: operation.start_frame,
+                end_frame: operation.end_frame,
+            });
 
-        to_js_value(&FrameSummary {
+            if let CompiledOperationKind::Video(video) = &operation.kind {
+                if let Some(source_frame) = operation
+                    .resolve_video_source_frame(frame_index)
+                    .map_err(|err| js_error(&err.to_string()))?
+                {
+                    decode_requests.push(VideoDecodeRequest {
+                        source_id: video.source_id.clone(),
+                        source_frame,
+                        timeline_frame: frame_index,
+                        fps_num: timeline.timeline.fps.num,
+                        fps_den: timeline.timeline.fps.den,
+                    });
+                }
+            }
+        }
+
+        to_js_value(&FramePlan {
             frame_index,
             operation_count: operations.len(),
-            operations: operation_summaries,
-            video_decode_requests,
+            operations,
+            video_decode_requests: decode_requests,
         })
+    }
+
+    #[wasm_bindgen(js_name = videoDecodeRequests)]
+    pub fn video_decode_requests_for_frame(&self, frame_index: u64) -> Result<JsValue, JsValue> {
+        let plan = self.frame_plan(frame_index)?;
+        let plan: FramePlanValue = serde_wasm_bindgen::from_value(plan)
+            .map_err(|err| js_error(&format!("failed to read frame plan: {err}")))?;
+        to_js_value(&plan.video_decode_requests)
     }
 
     #[wasm_bindgen(js_name = setVideoBackend)]
@@ -232,44 +269,42 @@ impl LumenWasmRuntime {
             .await
             .map_err(|err| js_error(&format!("video backend decodeFrame rejected: {err:?}")))
     }
+}
 
-    #[wasm_bindgen(js_name = videoDecodeRequests)]
-    pub fn video_decode_requests_for_frame(&self, frame_index: u64) -> Result<JsValue, JsValue> {
-        let plan = self
-            .plan
-            .as_ref()
-            .ok_or_else(|| js_error("no sequence loaded"))?;
-        if frame_index >= plan.total_frames {
-            return Err(js_error(&format!(
-                "frame {frame_index} is out of range (max {})",
-                plan.total_frames.saturating_sub(1)
-            )));
-        }
-
-        let frame = lumen::time::FrameIndex(frame_index);
-        let operations: Vec<_> = plan.operations_for_frame(frame).cloned().collect();
-        let requests = self.video_decode_requests(frame_index, &operations)?;
-        to_js_value(&requests)
-    }
+#[derive(Debug, serde::Deserialize)]
+struct FramePlanValue {
+    video_decode_requests: Vec<VideoDecodeRequest>,
 }
 
 impl LumenWasmRuntime {
-    fn load_sequence_internal(&mut self, sequence: Sequence) -> Result<JsValue, JsValue> {
-        let plan = compile_sequence(&sequence).map_err(|err| js_error(&err.to_string()))?;
-        let result = LoadSequenceResult {
-            total_frames: plan.total_frames,
-            fps_num: plan.fps.num,
-            fps_den: plan.fps.den,
-            video_asset_ids: sequence
-                .assets
+    fn load_project_internal(&mut self, project: Project) -> Result<JsValue, JsValue> {
+        let timeline = compile_project(&project).map_err(|err| js_error(&err.to_string()))?;
+
+        let result = LoadProjectResult {
+            total_frames: timeline.total_frames(),
+            fps_num: timeline.timeline.fps.num,
+            fps_den: timeline.timeline.fps.den,
+            video_source_ids: project
+                .sources
                 .iter()
-                .filter(|asset| asset.kind == AssetKind::Video)
-                .map(|asset| asset.id.clone())
+                .filter(|source| {
+                    matches!(
+                        source.kind,
+                        lumen::SourceKind::File {
+                            media: lumen::SourceMediaType::Video,
+                            ..
+                        } | lumen::SourceKind::Generator {
+                            media: lumen::SourceMediaType::Video,
+                            ..
+                        }
+                    )
+                })
+                .map(|source| source.id.clone())
                 .collect(),
         };
 
-        self.sequence = Some(sequence);
-        self.plan = Some(Arc::new(plan));
+        self.project = Some(project);
+        self.timeline = Some(Arc::new(timeline));
         self.selected_clip_id = None;
         self.transform_overrides.clear();
 
@@ -281,19 +316,19 @@ impl LumenWasmRuntime {
         self.transform_overrides
             .get(clip_id)
             .copied()
-            .or_else(|| lookup_sequence_transform(self.sequence.as_ref()?, clip_id))
+            .or_else(|| lookup_clip_transform(self.project.as_ref()?, clip_id))
     }
 
     fn ensure_clip_exists(&self, clip_id: &str) -> Result<(), JsValue> {
-        let sequence = self
-            .sequence
+        let project = self
+            .project
             .as_ref()
-            .ok_or_else(|| js_error("no sequence loaded"))?;
+            .ok_or_else(|| js_error("no project loaded"))?;
 
-        let exists = sequence
-            .tracks
+        let exists = project
+            .layers
             .iter()
-            .any(|track| track.clips.iter().any(|clip| clip.id == clip_id));
+            .any(|layer| layer.clips.iter().any(|clip| clip.id == clip_id));
 
         if !exists {
             return Err(js_error(&format!("clip `{clip_id}` does not exist")));
@@ -301,126 +336,41 @@ impl LumenWasmRuntime {
 
         Ok(())
     }
-
-    fn video_decode_requests(
-        &self,
-        frame_index: u64,
-        operations: &[lumen::plan::RenderOp],
-    ) -> Result<Vec<VideoDecodeRequest>, JsValue> {
-        let sequence = self
-            .sequence
-            .as_ref()
-            .ok_or_else(|| js_error("no sequence loaded"))?;
-
-        let video_assets = video_asset_sources(&sequence.assets);
-        let fps_num = sequence.timeline.fps.num;
-        let fps_den = sequence.timeline.fps.den;
-
-        operations
-            .iter()
-            .filter_map(|operation| match &operation.kind {
-                RenderOpKind::Video(video) => Some((operation, video)),
-                _ => None,
-            })
-            .map(|(operation, video)| {
-                build_video_decode_request(
-                    frame_index,
-                    operation.start_frame.0,
-                    operation.source_in_frame.0,
-                    video,
-                    fps_num,
-                    fps_den,
-                    &video_assets,
-                )
-            })
-            .collect()
-    }
 }
 
-fn build_video_decode_request(
-    frame_index: u64,
-    op_start_frame: u64,
-    source_in_frame: u64,
-    video: &VideoRenderOp,
-    fps_num: u32,
-    fps_den: u32,
-    video_assets: &HashMap<String, String>,
-) -> Result<VideoDecodeRequest, JsValue> {
-    let local_frame = frame_index.saturating_sub(op_start_frame);
-    let mut source_offset = ((local_frame as f64) * (video.speed as f64)).floor() as u64;
-
-    if video.source_span_frames > 0 {
-        source_offset = source_offset.min(video.source_span_frames.saturating_sub(1));
-    }
-
-    let source_offset = if video.reverse {
-        video
-            .source_span_frames
-            .saturating_sub(1)
-            .saturating_sub(source_offset)
-    } else {
-        source_offset
-    };
-
-    let source_frame = source_in_frame.saturating_add(source_offset);
-    let source = video_assets
-        .get(&video.asset_id)
-        .cloned()
-        .ok_or_else(|| js_error(&format!("missing video asset `{}`", video.asset_id)))?;
-
-    Ok(VideoDecodeRequest {
-        asset_id: video.asset_id.clone(),
-        source,
-        source_frame,
-        timeline_frame: frame_index,
-        fps_num,
-        fps_den,
-    })
-}
-
-fn video_asset_sources(assets: &[Asset]) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    for asset in assets {
-        if asset.kind == AssetKind::Video {
-            out.insert(asset.id.clone(), asset.source.clone());
-        }
-    }
-
-    out
-}
-
-fn update_sequence_transform(
-    sequence: &mut Sequence,
+fn update_clip_transform(
+    project: &mut Project,
     clip_id: &str,
     transform: Transform,
 ) -> Result<(), JsValue> {
-    for track in &mut sequence.tracks {
-        if let Some(clip) = track.clips.iter_mut().find(|clip| clip.id == clip_id) {
+    for layer in &mut project.layers {
+        if let Some(clip) = layer.clips.iter_mut().find(|clip| clip.id == clip_id) {
             clip.transform = transform;
             return Ok(());
         }
     }
 
-    Err(js_error(&format!("clip `{clip_id}` does not exist")))
+    Err(js_error(&format!(
+        "clip `{clip_id}` does not exist in loaded project"
+    )))
 }
 
-fn lookup_sequence_transform(sequence: &Sequence, clip_id: &str) -> Option<Transform> {
-    sequence
-        .tracks
+fn lookup_clip_transform(project: &Project, clip_id: &str) -> Option<Transform> {
+    project
+        .layers
         .iter()
-        .flat_map(|track| track.clips.iter())
+        .flat_map(|layer| layer.clips.iter())
         .find(|clip| clip.id == clip_id)
         .map(|clip| clip.transform)
 }
 
-fn op_kind_label(kind: &RenderOpKind) -> &'static str {
+fn op_kind_label(kind: &CompiledOperationKind) -> &'static str {
     match kind {
-        RenderOpKind::Text(_) => "text",
-        RenderOpKind::Shape(_) => "shape",
-        RenderOpKind::Image(_) => "image",
-        RenderOpKind::Svg(_) => "svg",
-        RenderOpKind::Video(_) => "video",
-        RenderOpKind::Solid(_) => "solid",
+        CompiledOperationKind::Solid { .. } => "solid",
+        CompiledOperationKind::Shape(_) => "shape",
+        CompiledOperationKind::Text(_) => "text",
+        CompiledOperationKind::Image(_) => "image",
+        CompiledOperationKind::Video(_) => "video",
     }
 }
 
@@ -429,5 +379,5 @@ fn to_js_value<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
 }
 
 fn js_error(message: &str) -> JsValue {
-    JsValue::from_str(message)
+    js_sys::Error::new(message).into()
 }
