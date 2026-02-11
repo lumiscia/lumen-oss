@@ -91,8 +91,9 @@ impl AssetMediaProvider {
     fn decode_video_frame(&mut self, asset_id: &str, frame: FrameIndex) -> Result<Option<Image>, MediaError> {
         let fps = self.fps;
         let state = self.video_state(asset_id)?;
-        if let Some(cached) = state.frame_cache.get(&frame.0) {
-            return Ok(Some(cached.clone()));
+        if let Some(image) = resolve_frame(state, frame.0) {
+            state.last_resolved = Some(image.clone());
+            return Ok(Some(image));
         }
 
         let seek_to = if state
@@ -125,8 +126,12 @@ impl AssetMediaProvider {
         }
 
         state.last_requested = Some(frame.0);
+        if let Some(image) = resolve_frame(state, frame.0) {
+            state.last_resolved = Some(image.clone());
+            return Ok(Some(image));
+        }
 
-        Ok(state.frame_cache.get(&frame.0).cloned())
+        Ok(state.last_resolved.clone())
     }
 }
 
@@ -158,6 +163,7 @@ struct VideoState {
     scaler_source: Option<(usize, usize, frame::PixelFormat)>,
     frame_cache: LruCache<u64, Image>,
     last_requested: Option<u64>,
+    last_resolved: Option<Image>,
 }
 
 impl VideoState {
@@ -169,6 +175,7 @@ impl VideoState {
             scaler_source: None,
             frame_cache: LruCache::new(NonZero::new(VIDEO_FRAME_CACHE_SIZE).expect("non-zero")),
             last_requested: None,
+            last_resolved: None,
         }
     }
 }
@@ -243,6 +250,34 @@ fn frame_to_timestamp(frame_idx: u64, fps: Rational) -> Result<Timestamp, MediaE
         / fps.num as u128;
 
     Ok(Timestamp::from_micros(micros.min(i64::MAX as u128) as i64))
+}
+
+fn resolve_frame(state: &mut VideoState, requested: u64) -> Option<Image> {
+    if let Some(image) = state.frame_cache.get(&requested).cloned() {
+        return Some(image);
+    }
+
+    let mut best_prev: Option<(u64, Image)> = None;
+    let mut best_next: Option<(u64, Image)> = None;
+
+    for (key, image) in state.frame_cache.iter() {
+        let idx = *key;
+        if idx <= requested {
+            if best_prev.as_ref().map(|(best, _)| idx > *best).unwrap_or(true) {
+                best_prev = Some((idx, image.clone()));
+            }
+        } else if best_next
+            .as_ref()
+            .map(|(best, _)| idx < *best)
+            .unwrap_or(true)
+        {
+            best_next = Some((idx, image.clone()));
+        }
+    }
+
+    best_prev
+        .map(|(_, image)| image)
+        .or_else(|| best_next.map(|(_, image)| image))
 }
 
 fn timestamp_to_frame(timestamp: Timestamp, fps: Rational) -> u64 {

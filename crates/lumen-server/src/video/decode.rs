@@ -70,7 +70,10 @@ impl<T: Read> VideoDecoder<T> {
                 return Err(anyhow::anyhow!("seek_to was null"));
             }
 
-            self.demuxer.seek_to_timestamp(seek_to, SeekTarget::UpTo)?;
+            let seek_to_stream = seek_to.with_time_base(self.time_base);
+            let seek_to_micros = seek_to.as_micros().unwrap_or(0);
+
+            self.demuxer.seek_to_timestamp(seek_to_stream, SeekTarget::UpTo)?;
 
             while let Some(packet) = self.demuxer.take()? {
                 if packet.stream_index() != self.stream_index {
@@ -85,7 +88,7 @@ impl<T: Read> VideoDecoder<T> {
                     frames.push(frame);
                 }
 
-                if pts > seek_to {
+                if pts.as_micros().unwrap_or(0) > seek_to_micros {
                     break;
                 }
             }
