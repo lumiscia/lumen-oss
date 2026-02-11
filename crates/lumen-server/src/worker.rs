@@ -1,33 +1,22 @@
 use std::{
-    collections::HashMap, env, io::Cursor, path::PathBuf, process::Command, sync::Arc,
-    time::Duration,
+    env,
+    time::{Duration, Instant},
 };
 
-use ac_ffmpeg::{format::io::IO, time::TimeBase};
 use anyhow::anyhow;
 use axum::body::Bytes;
-use lumen::{
-    compiler::compile_sequence,
-    plan::RenderPlan,
-    sequence::{Asset, AssetKind, Sequence},
-    time::Time,
-};
+use lumen::{Project, compile_project};
 use serde::Serialize;
-use tempfile::tempdir;
-use tokio::{task::spawn_blocking, time::timeout};
+use tokio::{sync::mpsc, task::spawn_blocking, time::timeout};
 use tracing::{error, info, instrument, warn};
 
 use crate::{
     app_state::AppState,
     jobs::{ObjectBlob, RenderJobState, StorageError},
-    video::{
-        encode::H264Encoder,
-        media::{AssetMediaProvider, resolve_asset_source_path},
-        render::FFmpegRenderer,
-    },
+    video::FfmpegRenderBackend,
 };
 
-const DEFAULT_RENDER_TIMEOUT_SECS: u64 = 600;
+const DEFAULT_RENDER_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_WORKER_CONCURRENCY: usize = 1;
 
 pub fn spawn_render_worker(state: AppState) {
@@ -60,6 +49,9 @@ pub fn spawn_render_worker(state: AppState) {
 
 #[instrument(skip(state))]
 async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
+    let job_started = Instant::now();
+    info!(job_id, "render job started");
+
     if let Err(err) = state.job_store.mark_running(&job_id).await {
         match err {
             StorageError::InvalidState { .. } => {
@@ -97,43 +89,99 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
             .unwrap_or(DEFAULT_RENDER_TIMEOUT_SECS),
     );
 
-    let _ = state
-        .job_store
-        .set_progress(&job_id, 0.10, "rendering")
-        .await;
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<ProgressUpdate>();
+    let progress_store = state.job_store.clone();
+    let progress_job_id = job_id.clone();
+    let progress_task = tokio::spawn(async move {
+        while let Some(update) = progress_rx.recv().await {
+            let _ = progress_store
+                .set_progress(&progress_job_id, update.progress, &update.stage)
+                .await;
+        }
+    });
 
     let result = timeout(
         render_timeout,
-        spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-            let sequence: Sequence = serde_json::from_value(record.payload)?;
-            render_sequence_to_mp4(sequence)
+        spawn_blocking(move || -> anyhow::Result<RenderOutput> {
+            let project: Project = serde_json::from_value(record.payload)
+                .map_err(|err| anyhow!("failed to deserialize project payload: {err}"))?;
+
+            let emit = |progress: f32, stage: &str| {
+                let _ = progress_tx.send(ProgressUpdate {
+                    progress,
+                    stage: stage.to_string(),
+                });
+            };
+
+            emit(0.10, "compiling");
+            let compile_started = Instant::now();
+            let timeline = std::sync::Arc::new(compile_project(&project)?);
+            let compile_ms = compile_started.elapsed().as_millis();
+
+            emit(0.16, "rendering");
+            let render_started = Instant::now();
+            let backend = FfmpegRenderBackend::new(timeline.clone());
+            let bytes = backend.render_to_mp4(&mut |frame, total| {
+                if total == 0 {
+                    return;
+                }
+                let ratio = (frame as f32 / total as f32).clamp(0.0, 1.0);
+                let progress = 0.16 + (0.78 * ratio);
+                emit(progress, "rendering");
+            })?;
+            let render_ms = render_started.elapsed().as_millis();
+
+            emit(0.95, "storing_artifact");
+            Ok(RenderOutput {
+                bytes,
+                metrics: RenderMetrics {
+                    compile_ms,
+                    render_ms,
+                    pipeline_ms: compile_started.elapsed().as_millis(),
+                    total_frames: timeline.total_frames(),
+                },
+            })
         }),
     )
     .await;
 
+    let _ = tokio::time::timeout(Duration::from_secs(2), progress_task).await;
+
     match result {
-        Ok(Ok(Ok(bytes))) => {
+        Ok(Ok(Ok(output))) => {
             let _ = state
                 .job_store
                 .set_progress(&job_id, 0.95, "storing_artifact")
                 .await;
 
             let artifact_key = format!("jobs/{job_id}/artifact.mp4");
+            let store_started = Instant::now();
             state
                 .object_store
                 .put(
                     artifact_key.clone(),
                     ObjectBlob {
                         content_type: "video/mp4".to_string(),
-                        bytes: Bytes::from(bytes),
+                        bytes: Bytes::from(output.bytes),
                     },
                 )
                 .await?;
+            let store_ms = store_started.elapsed().as_millis();
 
             state
                 .job_store
                 .mark_completed(&job_id, artifact_key)
                 .await?;
+            info!(
+                job_id,
+                compile_ms = output.metrics.compile_ms,
+                render_ms = output.metrics.render_ms,
+                total_frames = output.metrics.total_frames,
+                store_ms,
+                pipeline_ms = output.metrics.pipeline_ms,
+                total_job_ms = job_started.elapsed().as_millis(),
+                "render job completed"
+            );
             notify_webhook(&state, &job_id).await;
         }
         Ok(Ok(Err(err))) => {
@@ -141,6 +189,11 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
                 .job_store
                 .mark_failed(&job_id, "render_failed", err.to_string())
                 .await?;
+            error!(
+                job_id,
+                elapsed_ms = job_started.elapsed().as_millis(),
+                "render job failed"
+            );
             notify_webhook(&state, &job_id).await;
         }
         Ok(Err(err)) => {
@@ -148,6 +201,11 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
                 .job_store
                 .mark_failed(&job_id, "worker_join_failed", err.to_string())
                 .await?;
+            error!(
+                job_id,
+                elapsed_ms = job_started.elapsed().as_millis(),
+                "render worker join failed"
+            );
             notify_webhook(&state, &job_id).await;
         }
         Err(_) => {
@@ -159,6 +217,11 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
                     format!("render exceeded {}s timeout", render_timeout.as_secs()),
                 )
                 .await?;
+            error!(
+                job_id,
+                elapsed_ms = job_started.elapsed().as_millis(),
+                "render job timeout"
+            );
             notify_webhook(&state, &job_id).await;
         }
     }
@@ -166,178 +229,21 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn render_sequence_to_mp4(sequence: Sequence) -> anyhow::Result<Vec<u8>> {
-    let plan = Arc::new(compile_sequence(&sequence)?);
-    let video_bytes = render_mp4(plan, sequence.assets.clone())?;
-    mux_audio_if_needed(video_bytes, &sequence)
+struct ProgressUpdate {
+    progress: f32,
+    stage: String,
 }
 
-fn render_mp4(plan: Arc<RenderPlan>, assets: Vec<Asset>) -> anyhow::Result<Vec<u8>> {
-    let time_base = TimeBase::new(plan.fps.den as i32, plan.fps.num as i32);
-    let media = AssetMediaProvider::new(assets, plan.fps)?;
-    let mut renderer = FFmpegRenderer::new(plan.clone(), media, time_base)?;
-
-    let output = Cursor::new(Vec::new());
-    let mut encoder = H264Encoder::new(
-        plan.canvas.width as usize,
-        plan.canvas.height as usize,
-        time_base,
-        IO::from_seekable_write_stream(output),
-    )?;
-
-    for frame in 0..plan.total_frames {
-        let frame = renderer.draw_frame(frame as usize)?;
-        encoder.encode_frame(frame)?;
-    }
-
-    encoder.finish()?;
-
-    let io = encoder.close()?;
-    let output = io.into_stream();
-
-    Ok(output.into_inner())
+struct RenderOutput {
+    bytes: Vec<u8>,
+    metrics: RenderMetrics,
 }
 
-fn mux_audio_if_needed(video_bytes: Vec<u8>, sequence: &Sequence) -> anyhow::Result<Vec<u8>> {
-    let clips = resolve_audio_clips(sequence)?;
-    if clips.is_empty() {
-        return Ok(video_bytes);
-    }
-
-    let tmp = tempdir()?;
-    let video_path = tmp.path().join("video.mp4");
-    let output_path = tmp.path().join("output.mp4");
-    std::fs::write(&video_path, video_bytes)?;
-
-    let mut command = Command::new("ffmpeg");
-    command
-        .arg("-y")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-nostdin")
-        .arg("-i")
-        .arg(&video_path);
-
-    for clip in &clips {
-        command.arg("-i").arg(&clip.path);
-    }
-
-    let filter_graph = build_audio_filter_graph(&clips);
-    command
-        .arg("-filter_complex")
-        .arg(filter_graph)
-        .arg("-map")
-        .arg("0:v:0")
-        .arg("-map")
-        .arg("[aout]")
-        .arg("-c:v")
-        .arg("copy")
-        .arg("-c:a")
-        .arg("aac")
-        .arg("-shortest")
-        .arg(&output_path);
-
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "ffmpeg audio mux failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    std::fs::read(&output_path).map_err(|err| anyhow!("failed to read muxed output: {err}"))
-}
-
-#[derive(Debug)]
-struct ResolvedAudioClip {
-    path: PathBuf,
-    start_ms: u64,
-    source_in_secs: f64,
-    duration_secs: f64,
-    volume: f32,
-}
-
-fn resolve_audio_clips(sequence: &Sequence) -> anyhow::Result<Vec<ResolvedAudioClip>> {
-    let assets: HashMap<&str, &Asset> = sequence
-        .assets
-        .iter()
-        .map(|asset| (asset.id.as_str(), asset))
-        .collect();
-
-    let mut resolved = Vec::new();
-    for track in &sequence.audio.tracks {
-        for clip in &track.clips {
-            let asset = assets.get(clip.asset_id.as_str()).ok_or_else(|| {
-                anyhow!(
-                    "missing audio asset `{}` for audio graph clip",
-                    clip.asset_id
-                )
-            })?;
-
-            if asset.kind != AssetKind::Audio {
-                return Err(anyhow!(
-                    "audio graph clip references non-audio asset `{}`",
-                    clip.asset_id
-                ));
-            }
-
-            let source_in = clip.source_in.unwrap_or(Time::ZERO);
-            resolved.push(ResolvedAudioClip {
-                path: resolve_asset_source_path(&asset.source)
-                    .map_err(|err| anyhow!(err.to_string()))?,
-                start_ms: millis(clip.start),
-                source_in_secs: seconds(source_in),
-                duration_secs: seconds(clip.duration),
-                volume: clip.volume.max(0.0),
-            });
-        }
-    }
-
-    resolved.sort_by_key(|clip| clip.start_ms);
-    Ok(resolved)
-}
-
-fn build_audio_filter_graph(clips: &[ResolvedAudioClip]) -> String {
-    let mut stages = Vec::new();
-    let mut labels = Vec::new();
-
-    for (index, clip) in clips.iter().enumerate() {
-        let input_index = index + 1;
-        let label = format!("a{index}");
-        stages.push(format!(
-            "[{input_index}:a]atrim=start={:.6}:duration={:.6},asetpts=PTS-STARTPTS,volume={:.6},adelay={}|{}[{label}]",
-            clip.source_in_secs,
-            clip.duration_secs,
-            clip.volume,
-            clip.start_ms,
-            clip.start_ms
-        ));
-        labels.push(format!("[{label}]"));
-    }
-
-    if labels.len() == 1 {
-        stages.push(format!("{}anull[aout]", labels[0]));
-    } else {
-        stages.push(format!(
-            "{}amix=inputs={}:duration=longest:dropout_transition=0[aout]",
-            labels.join(""),
-            labels.len()
-        ));
-    }
-
-    stages.join(";")
-}
-
-fn seconds(time: Time) -> f64 {
-    if time.timescale == 0 {
-        return 0.0;
-    }
-
-    (time.value.max(0) as f64) / (time.timescale as f64)
-}
-
-fn millis(time: Time) -> u64 {
-    (seconds(time) * 1_000.0).round() as u64
+struct RenderMetrics {
+    compile_ms: u128,
+    render_ms: u128,
+    pipeline_ms: u128,
+    total_frames: u64,
 }
 
 #[derive(Serialize)]

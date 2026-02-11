@@ -7,7 +7,7 @@ use std::{
 
 use axum::body::Bytes;
 use lru::LruCache;
-use lumen::{plan::RenderPlan, sequence::Asset};
+use lumen::CompiledTimeline;
 use tokio::sync::Mutex;
 
 const DEFAULT_PLAN_CACHE_ITEMS: usize = 128;
@@ -15,8 +15,7 @@ const DEFAULT_FRAME_CACHE_ITEMS: usize = 1_024;
 const DEFAULT_CACHE_TTL_MS: u64 = 5 * 60 * 1_000;
 
 pub struct CompiledPreview {
-    pub plan: Arc<RenderPlan>,
-    pub assets: Vec<Asset>,
+    pub timeline: Arc<CompiledTimeline>,
 }
 
 struct CachedFrame {

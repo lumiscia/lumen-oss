@@ -1,13 +1,17 @@
 use std::sync::Arc;
+use std::{convert::Infallible, time::Duration};
 
 use axum::{
     Json,
     body::Body,
     extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
-    response::Response,
+    response::{
+        Response,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
-use lumen::{compiler::compile_sequence, render::Renderer, sequence::Sequence, time::FrameIndex};
+use lumen::{Project, compile_project};
 use serde::{Deserialize, Serialize};
 use tokio::task::spawn_blocking;
 
@@ -16,16 +20,19 @@ use crate::{
     app_state::AppState,
     jobs::{ObjectBlob, RenderJobState, RenderJobStatus},
     preview_cache::{CompiledPreview, PreviewCache},
-    video::{ServerFontManager, media::AssetMediaProvider},
+    video::FfmpegRenderBackend,
 };
 
-const MAX_ASSETS: usize = 512;
-const MAX_TRACKS: usize = 128;
-const MAX_TOTAL_CLIPS: usize = 4_096;
+const MAX_SOURCES: usize = 512;
+const MAX_LAYERS: usize = 256;
+const MAX_TOTAL_CLIPS: usize = 8_192;
 const MAX_TOTAL_FRAMES: u64 = 216_000;
-const MAX_CANVAS_DIMENSION: u32 = 7680;
+const MAX_CANVAS_DIMENSION: u32 = 7_680;
 const DEFAULT_LIST_LIMIT: usize = 50;
 const MAX_LIST_LIMIT: usize = 500;
+const DEFAULT_EVENTS_INTERVAL_MS: u64 = 250;
+const MIN_EVENTS_INTERVAL_MS: u64 = 100;
+const MAX_EVENTS_INTERVAL_MS: u64 = 2_000;
 
 #[derive(Debug, Deserialize)]
 pub struct ListRendersQuery {
@@ -37,6 +44,21 @@ pub struct ListRendersQuery {
 #[derive(Debug, Serialize)]
 pub struct ListRendersResponse {
     pub items: Vec<RenderJobStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RenderEventsQuery {
+    pub interval_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RenderProgressEvent {
+    pub job_id: String,
+    pub state: RenderJobState,
+    pub progress: f32,
+    pub percentage: u8,
+    pub stage: Option<String>,
+    pub updated_at_ms: u64,
 }
 
 pub async fn list_renders(
@@ -69,12 +91,13 @@ pub async fn list_renders(
 
 pub async fn create_render(
     State(state): State<AppState>,
-    Json(sequence): Json<Sequence>,
+    Json(project): Json<Project>,
 ) -> Result<(StatusCode, Json<crate::jobs::RenderJobStatus>), ApiError> {
-    let plan = compile_sequence(&sequence).map_err(|err| ApiError::bad_request(err.to_string()))?;
-    validate_sequence_limits(&sequence, plan.total_frames)?;
+    let timeline =
+        compile_project(&project).map_err(|err| ApiError::bad_request(err.to_string()))?;
+    validate_project_limits(&project, timeline.total_frames())?;
 
-    let payload = serde_json::to_value(sequence).map_err(ApiError::internal)?;
+    let payload = serde_json::to_value(project).map_err(ApiError::internal)?;
 
     let status = state
         .job_store
@@ -131,6 +154,72 @@ pub async fn get_render(
         .map_err(ApiError::from)?
         .map(Json)
         .ok_or_else(|| ApiError::not_found("render job not found"))
+}
+
+pub async fn stream_render_events(
+    Path(job_id): Path<String>,
+    Query(query): Query<RenderEventsQuery>,
+    State(state): State<AppState>,
+) -> Result<Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    if state
+        .job_store
+        .get_status(&job_id)
+        .await
+        .map_err(ApiError::from)?
+        .is_none()
+    {
+        return Err(ApiError::not_found("render job not found"));
+    }
+
+    let interval_ms = query
+        .interval_ms
+        .unwrap_or(DEFAULT_EVENTS_INTERVAL_MS)
+        .clamp(MIN_EVENTS_INTERVAL_MS, MAX_EVENTS_INTERVAL_MS);
+
+    let stream_state = state.clone();
+    let stream_job_id = job_id.clone();
+    let stream = async_stream::stream! {
+        let mut interval = tokio::time::interval(Duration::from_millis(interval_ms));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_updated_at: Option<u64> = None;
+
+        loop {
+            interval.tick().await;
+
+            let status = match stream_state.job_store.get_status(&stream_job_id).await {
+                Ok(Some(status)) => status,
+                Ok(None) => break,
+                Err(_) => break,
+            };
+
+            let should_emit = last_updated_at
+                .map(|updated_at| updated_at != status.updated_at_ms)
+                .unwrap_or(true);
+            if should_emit {
+                let payload = to_progress_event(&status);
+                let data = match serde_json::to_string(&payload) {
+                    Ok(data) => data,
+                    Err(_) => break,
+                };
+                last_updated_at = Some(status.updated_at_ms);
+
+                yield Ok(Event::default()
+                    .event("progress")
+                    .id(status.updated_at_ms.to_string())
+                    .data(data));
+            }
+
+            if is_terminal(status.state) {
+                break;
+            }
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(10))
+            .text("keep-alive"),
+    ))
 }
 
 pub async fn get_artifact(
@@ -197,13 +286,12 @@ pub async fn get_frame(
     let compiled = match state.preview_cache.get_compiled(&compiled_cache_key).await {
         Some(compiled) => compiled,
         None => {
-            let sequence: Sequence =
+            let project: Project =
                 serde_json::from_value(job.payload).map_err(ApiError::internal)?;
-            let plan = compile_sequence(&sequence)
-                .map_err(|err| ApiError::bad_request(err.to_string()))?;
+            let timeline =
+                compile_project(&project).map_err(|err| ApiError::bad_request(err.to_string()))?;
             let compiled = Arc::new(CompiledPreview {
-                plan: Arc::new(plan),
-                assets: sequence.assets,
+                timeline: Arc::new(timeline),
             });
             state
                 .preview_cache
@@ -213,83 +301,94 @@ pub async fn get_frame(
         }
     };
 
-    if frame_index >= compiled.plan.total_frames {
+    if frame_index >= compiled.timeline.total_frames() {
         return Err(ApiError::bad_request("requested frame is out of range"));
     }
 
-    let plan = compiled.plan.clone();
-    let assets = compiled.assets.clone();
+    let timeline = compiled.timeline.clone();
     let png = spawn_blocking(move || -> Result<Vec<u8>, ApiError> {
-        let media = AssetMediaProvider::new(assets, plan.fps).map_err(ApiError::internal)?;
-        let mut renderer =
-            Renderer::new(plan, ServerFontManager::new(), media).map_err(ApiError::internal)?;
-        renderer
-            .draw_frame(FrameIndex(frame_index))
-            .map_err(ApiError::internal)?;
-        renderer.encode_png().map_err(ApiError::internal)
+        let backend = FfmpegRenderBackend::new(timeline);
+        backend
+            .render_frame_png(frame_index)
+            .map_err(ApiError::internal)
     })
     .await
     .map_err(ApiError::internal)??;
 
-    let png = axum::body::Bytes::from(png);
+    let png_bytes = axum::body::Bytes::from(png);
     state
         .preview_cache
-        .put_frame(frame_cache_key, png.clone())
+        .put_frame(frame_cache_key, png_bytes.clone())
         .await;
 
-    png_response(png)
+    png_response(png_bytes)
 }
 
-fn png_response(png: axum::body::Bytes) -> Result<Response, ApiError> {
-    let mut response = Response::new(Body::from(png));
-    *response.status_mut() = StatusCode::OK;
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
-    Ok(response)
-}
-
-fn validate_sequence_limits(sequence: &Sequence, total_frames: u64) -> Result<(), ApiError> {
-    if sequence.canvas.width > MAX_CANVAS_DIMENSION || sequence.canvas.height > MAX_CANVAS_DIMENSION
-    {
+fn validate_project_limits(project: &Project, total_frames: u64) -> Result<(), ApiError> {
+    if project.sources.len() > MAX_SOURCES {
         return Err(ApiError::bad_request(format!(
-            "canvas dimensions exceed maximum {}",
-            MAX_CANVAS_DIMENSION
+            "project has {} sources, limit is {MAX_SOURCES}",
+            project.sources.len()
         )));
     }
 
-    if sequence.assets.len() > MAX_ASSETS {
+    if project.layers.len() > MAX_LAYERS {
         return Err(ApiError::bad_request(format!(
-            "asset count exceeds maximum {}",
-            MAX_ASSETS
+            "project has {} layers, limit is {MAX_LAYERS}",
+            project.layers.len()
         )));
     }
 
-    if sequence.tracks.len() > MAX_TRACKS {
+    let total_clips: usize = project.layers.iter().map(|layer| layer.clips.len()).sum();
+    if total_clips > MAX_TOTAL_CLIPS {
         return Err(ApiError::bad_request(format!(
-            "track count exceeds maximum {}",
-            MAX_TRACKS
-        )));
-    }
-
-    let clip_count = sequence
-        .tracks
-        .iter()
-        .map(|track| track.clips.len())
-        .sum::<usize>();
-    if clip_count > MAX_TOTAL_CLIPS {
-        return Err(ApiError::bad_request(format!(
-            "clip count exceeds maximum {}",
-            MAX_TOTAL_CLIPS
+            "project has {total_clips} clips, limit is {MAX_TOTAL_CLIPS}"
         )));
     }
 
     if total_frames > MAX_TOTAL_FRAMES {
         return Err(ApiError::bad_request(format!(
-            "timeline frame count exceeds maximum {}",
-            MAX_TOTAL_FRAMES
+            "timeline resolves to {total_frames} frames, limit is {MAX_TOTAL_FRAMES}"
+        )));
+    }
+
+    if project.canvas.width > MAX_CANVAS_DIMENSION || project.canvas.height > MAX_CANVAS_DIMENSION {
+        return Err(ApiError::bad_request(format!(
+            "canvas dimensions {}x{} exceed limit {MAX_CANVAS_DIMENSION}",
+            project.canvas.width, project.canvas.height
         )));
     }
 
     Ok(())
+}
+
+fn to_progress_event(status: &RenderJobStatus) -> RenderProgressEvent {
+    let progress = status.progress.unwrap_or(0.0).clamp(0.0, 1.0);
+    let percentage = (progress * 100.0).round() as u8;
+
+    RenderProgressEvent {
+        job_id: status.job_id.clone(),
+        state: status.state,
+        progress,
+        percentage,
+        stage: status.stage.clone(),
+        updated_at_ms: status.updated_at_ms,
+    }
+}
+
+fn is_terminal(state: RenderJobState) -> bool {
+    matches!(
+        state,
+        RenderJobState::Completed | RenderJobState::Failed | RenderJobState::Canceled
+    )
+}
+
+fn png_response(bytes: axum::body::Bytes) -> Result<Response, ApiError> {
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = StatusCode::OK;
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+
+    Ok(response)
 }

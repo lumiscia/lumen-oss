@@ -67,11 +67,11 @@ fn valid_render_request(auth_header: Option<&str>) -> Request<Body> {
     }
 
     builder
-        .body(Body::from(valid_sequence_json().to_string()))
+        .body(Body::from(valid_project_json().to_string()))
         .expect("request")
 }
 
-fn valid_sequence_json() -> serde_json::Value {
+fn valid_project_json() -> serde_json::Value {
     json!({
         "canvas": {
             "width": 320,
@@ -80,19 +80,18 @@ fn valid_sequence_json() -> serde_json::Value {
         },
         "timeline": {
             "fps": { "num": 30, "den": 1 },
-            "duration": { "value": 1, "timescale": 30 }
+            "total_frames": 2
         },
-        "assets": [],
-        "tracks": [{
-            "id": "track_text",
-            "kind": "text",
+        "sources": [],
+        "layers": [{
+            "id": "layer_text",
+            "z_index": 0,
             "clips": [{
                 "id": "clip_text_1",
-                "start": { "value": 0, "timescale": 30 },
-                "duration": { "value": 1, "timescale": 30 },
+                "start_frame": 0,
+                "duration_frames": 2,
                 "opacity": 1.0,
-                "blend_mode": "normal",
-                "transform": { "x": 0.0, "y": 0.0, "width": null, "height": null },
+                "transform": { "x": 20.0, "y": 20.0, "width": 280.0, "height": 80.0, "rotation_degrees": 0.0 },
                 "content": {
                     "type": "text",
                     "text": "Hello",

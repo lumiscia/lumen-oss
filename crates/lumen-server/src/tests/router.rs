@@ -17,10 +17,10 @@ async fn unauthorized_request_is_rejected() {
         .method("POST")
         .uri("/renders")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(valid_sequence_json().to_string()))
-        .unwrap();
+        .body(Body::from(valid_project_json().to_string()))
+        .expect("request");
 
-    let response = app.oneshot(request).await.unwrap();
+    let response = app.oneshot(request).await.expect("response");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
@@ -34,13 +34,18 @@ async fn authorized_post_creates_queued_job() {
         .uri("/renders")
         .header(header::AUTHORIZATION, "Bearer secret")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(valid_sequence_json().to_string()))
-        .unwrap();
+        .body(Body::from(valid_project_json().to_string()))
+        .expect("request");
 
-    let response = app.oneshot(request).await.unwrap();
+    let response = app.oneshot(request).await.expect("response");
 
     let status = response.status();
-    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
     assert_eq!(
         status,
         StatusCode::ACCEPTED,
@@ -48,10 +53,15 @@ async fn authorized_post_creates_queued_job() {
         String::from_utf8_lossy(&body)
     );
 
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
 
     assert_eq!(json["state"], "queued");
-    assert!(json["job_id"].as_str().unwrap().starts_with("render_"));
+    assert!(
+        json["job_id"]
+            .as_str()
+            .expect("job id")
+            .starts_with("render_")
+    );
 }
 
 #[tokio::test]
@@ -65,33 +75,43 @@ async fn lifecycle_completes_and_returns_artifact_and_frame() {
         .uri("/renders")
         .header(header::AUTHORIZATION, "Bearer secret")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(valid_sequence_json().to_string()))
-        .unwrap();
+        .body(Body::from(valid_project_json().to_string()))
+        .expect("request");
 
-    let response = app.clone().oneshot(request).await.unwrap();
+    let response = app.clone().oneshot(request).await.expect("response");
     let status = response.status();
-    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
     assert_eq!(
         status,
         StatusCode::ACCEPTED,
         "unexpected response body: {}",
         String::from_utf8_lossy(&body)
     );
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let job_id = json["job_id"].as_str().unwrap().to_string();
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    let job_id = json["job_id"].as_str().expect("job id").to_string();
 
     let mut completed = false;
-    for _ in 0..40 {
+    for _ in 0..80 {
         let request = Request::builder()
             .method("GET")
             .uri(format!("/renders/{job_id}"))
             .header(header::AUTHORIZATION, "Bearer secret")
             .body(Body::empty())
-            .unwrap();
-        let response = app.clone().oneshot(request).await.unwrap();
+            .expect("request");
+        let response = app.clone().oneshot(request).await.expect("response");
         assert_eq!(response.status(), StatusCode::OK);
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
 
         if json["state"] == "completed" {
             completed = true;
@@ -108,21 +128,25 @@ async fn lifecycle_completes_and_returns_artifact_and_frame() {
         .uri(format!("/renders/{job_id}/artifact"))
         .header(header::AUTHORIZATION, "Bearer secret")
         .body(Body::empty())
-        .unwrap();
-    let artifact_response = app.clone().oneshot(artifact_request).await.unwrap();
+        .expect("request");
+    let artifact_response = app
+        .clone()
+        .oneshot(artifact_request)
+        .await
+        .expect("response");
     assert_eq!(artifact_response.status(), StatusCode::OK);
     assert_eq!(
         artifact_response
             .headers()
             .get(header::CONTENT_TYPE)
-            .unwrap(),
+            .expect("content type"),
         "video/mp4"
     );
     let artifact_bytes = artifact_response
         .into_body()
         .collect()
         .await
-        .unwrap()
+        .expect("body")
         .to_bytes();
     assert!(!artifact_bytes.is_empty());
 
@@ -131,18 +155,21 @@ async fn lifecycle_completes_and_returns_artifact_and_frame() {
         .uri(format!("/renders/{job_id}/frames/0"))
         .header(header::AUTHORIZATION, "Bearer secret")
         .body(Body::empty())
-        .unwrap();
-    let frame_response = app.clone().oneshot(frame_request).await.unwrap();
+        .expect("request");
+    let frame_response = app.clone().oneshot(frame_request).await.expect("response");
     assert_eq!(frame_response.status(), StatusCode::OK);
     assert_eq!(
-        frame_response.headers().get(header::CONTENT_TYPE).unwrap(),
+        frame_response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .expect("content type"),
         "image/png"
     );
     let frame_bytes = frame_response
         .into_body()
         .collect()
         .await
-        .unwrap()
+        .expect("body")
         .to_bytes();
     assert!(!frame_bytes.is_empty());
 }
@@ -156,38 +183,38 @@ async fn list_cancel_and_retry_flow() {
         .uri("/renders")
         .header(header::AUTHORIZATION, "Bearer secret")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(valid_sequence_json().to_string()))
-        .unwrap();
-    let create_response = app.clone().oneshot(create_request).await.unwrap();
+        .body(Body::from(valid_project_json().to_string()))
+        .expect("request");
+    let create_response = app.clone().oneshot(create_request).await.expect("response");
     assert_eq!(create_response.status(), StatusCode::ACCEPTED);
     let create_body = create_response
         .into_body()
         .collect()
         .await
-        .unwrap()
+        .expect("body")
         .to_bytes();
-    let created: serde_json::Value = serde_json::from_slice(&create_body).unwrap();
-    let job_id = created["job_id"].as_str().unwrap().to_string();
+    let created: serde_json::Value = serde_json::from_slice(&create_body).expect("json");
+    let job_id = created["job_id"].as_str().expect("job id").to_string();
 
     let list_request = Request::builder()
         .method("GET")
         .uri("/renders?state=queued")
         .header(header::AUTHORIZATION, "Bearer secret")
         .body(Body::empty())
-        .unwrap();
-    let list_response = app.clone().oneshot(list_request).await.unwrap();
+        .expect("request");
+    let list_response = app.clone().oneshot(list_request).await.expect("response");
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_body = list_response
         .into_body()
         .collect()
         .await
-        .unwrap()
+        .expect("body")
         .to_bytes();
-    let listed: serde_json::Value = serde_json::from_slice(&list_body).unwrap();
+    let listed: serde_json::Value = serde_json::from_slice(&list_body).expect("json");
     assert!(
         listed["items"]
             .as_array()
-            .unwrap()
+            .expect("array")
             .iter()
             .any(|item| item["job_id"] == job_id)
     );
@@ -197,16 +224,16 @@ async fn list_cancel_and_retry_flow() {
         .uri(format!("/renders/{job_id}/cancel"))
         .header(header::AUTHORIZATION, "Bearer secret")
         .body(Body::empty())
-        .unwrap();
-    let cancel_response = app.clone().oneshot(cancel_request).await.unwrap();
+        .expect("request");
+    let cancel_response = app.clone().oneshot(cancel_request).await.expect("response");
     assert_eq!(cancel_response.status(), StatusCode::OK);
     let cancel_body = cancel_response
         .into_body()
         .collect()
         .await
-        .unwrap()
+        .expect("body")
         .to_bytes();
-    let canceled: serde_json::Value = serde_json::from_slice(&cancel_body).unwrap();
+    let canceled: serde_json::Value = serde_json::from_slice(&cancel_body).expect("json");
     assert_eq!(canceled["state"], "canceled");
 
     let retry_request = Request::builder()
@@ -214,21 +241,62 @@ async fn list_cancel_and_retry_flow() {
         .uri(format!("/renders/{job_id}/retry"))
         .header(header::AUTHORIZATION, "Bearer secret")
         .body(Body::empty())
-        .unwrap();
-    let retry_response = app.clone().oneshot(retry_request).await.unwrap();
+        .expect("request");
+    let retry_response = app.clone().oneshot(retry_request).await.expect("response");
     assert_eq!(retry_response.status(), StatusCode::ACCEPTED);
     let retry_body = retry_response
         .into_body()
         .collect()
         .await
-        .unwrap()
+        .expect("body")
         .to_bytes();
-    let retried: serde_json::Value = serde_json::from_slice(&retry_body).unwrap();
+    let retried: serde_json::Value = serde_json::from_slice(&retry_body).expect("json");
     assert_eq!(retried["state"], "queued");
     assert_eq!(retried["job_id"], job_id);
 }
 
-fn valid_sequence_json() -> serde_json::Value {
+#[tokio::test]
+async fn render_events_endpoint_returns_sse_stream() {
+    let app = endpoint::build_router(AppState::with_defaults("secret".to_string()));
+
+    let create_request = Request::builder()
+        .method("POST")
+        .uri("/renders")
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(valid_project_json().to_string()))
+        .expect("request");
+    let create_response = app.clone().oneshot(create_request).await.expect("response");
+    assert_eq!(create_response.status(), StatusCode::ACCEPTED);
+    let create_body = create_response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let created: serde_json::Value = serde_json::from_slice(&create_body).expect("json");
+    let job_id = created["job_id"].as_str().expect("job id").to_string();
+
+    let events_request = Request::builder()
+        .method("GET")
+        .uri(format!("/renders/{job_id}/events"))
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .body(Body::empty())
+        .expect("request");
+    let events_response = app.clone().oneshot(events_request).await.expect("response");
+    assert_eq!(events_response.status(), StatusCode::OK);
+    let content_type = events_response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "unexpected content type: {content_type}"
+    );
+}
+
+fn valid_project_json() -> serde_json::Value {
     json!({
         "canvas": {
             "width": 320,
@@ -237,19 +305,18 @@ fn valid_sequence_json() -> serde_json::Value {
         },
         "timeline": {
             "fps": { "num": 30, "den": 1 },
-            "duration": { "value": 1, "timescale": 30 }
+            "total_frames": 2
         },
-        "assets": [],
-        "tracks": [{
-            "id": "track_text",
-            "kind": "text",
+        "sources": [],
+        "layers": [{
+            "id": "layer_text",
+            "z_index": 0,
             "clips": [{
                 "id": "clip_text_1",
-                "start": { "value": 0, "timescale": 30 },
-                "duration": { "value": 1, "timescale": 30 },
+                "start_frame": 0,
+                "duration_frames": 2,
                 "opacity": 1.0,
-                "blend_mode": "normal",
-                "transform": { "x": 0.0, "y": 0.0, "width": null, "height": null },
+                "transform": { "x": 20.0, "y": 20.0, "width": 280.0, "height": 80.0, "rotation_degrees": 0.0 },
                 "content": {
                     "type": "text",
                     "text": "Hello",

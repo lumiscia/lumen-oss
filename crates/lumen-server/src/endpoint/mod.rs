@@ -14,6 +14,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/renders/{job_id}/cancel", post(renders::cancel_render))
         .route("/renders/{job_id}/retry", post(renders::retry_render))
         .route("/renders/{job_id}", get(renders::get_render))
+        .route(
+            "/renders/{job_id}/events",
+            get(renders::stream_render_events),
+        )
         .route("/renders/{job_id}/artifact", get(renders::get_artifact))
         .route(
             "/renders/{job_id}/frames/{frame_index}",
