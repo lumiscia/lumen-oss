@@ -1,0 +1,13 @@
+{
+	"name": "@webapp/lumen",
+	"private": true,
+	"version": "0.0.0",
+	"scripts": {
+		"build": "cargo build --workspace",
+		"dev": "cargo run -p lumen-server",
+		"lint": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
+		"typecheck": "cargo check --workspace",
+		"test": "cargo test --workspace",
+		"clean": "cargo clean"
+	}
+}
