@@ -3,7 +3,6 @@ use lumen::{
     skia::{FontMgr, FontStyle, Typeface},
 };
 
-pub mod clip;
 pub mod decode;
 pub mod encode;
 pub mod media;

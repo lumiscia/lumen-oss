@@ -7,6 +7,5 @@ pub mod server;
 pub mod video;
 pub mod worker;
 
-mod codecs;
 #[cfg(test)]
 mod tests;
