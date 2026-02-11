@@ -26,11 +26,23 @@ impl<T: Write> H264Encoder<T> {
         time_base: TimeBase,
         io: IO<T>,
     ) -> anyhow::Result<Self> {
+        let default_preset = if cfg!(debug_assertions) {
+            "ultrafast"
+        } else {
+            "medium"
+        };
+        let preset = std::env::var("LUMEN_X264_PRESET")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| default_preset.to_string());
+
         let encoder = VideoEncoder::builder("libx264")?
             .pixel_format(ac_ffmpeg::codec::video::frame::get_pixel_format("yuv420p"))
             .width(width)
             .height(height)
             .time_base(time_base)
+            .set_option("preset", &preset)
             .set_option("tune", "zerolatency")
             .build()?;
 

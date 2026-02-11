@@ -18,6 +18,13 @@ async fn main() {
 
     tracing_subscriber::fmt().with_env_filter(filter).init(); // Initialize the global tracing subscriber
 
+    if cfg!(debug_assertions) {
+        warn!(
+            "running debug build; render throughput is significantly slower. \
+             use `cargo run --release -p lumen-server` for realistic performance"
+        );
+    }
+
     ac_ffmpeg::set_log_callback(log_callback);
 
     if let Err(err) = serve().await {
