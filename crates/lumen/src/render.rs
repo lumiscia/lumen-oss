@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use skia_safe::{
-    BlendMode, Color, EncodedImageFormat, Font, Paint, Rect, Surface,
+    BlendMode, Color, EncodedImageFormat, Font, Paint, RRect, Rect, Surface,
     image::{CachingHint, Image},
     surfaces,
     utils::text_utils::Align,
@@ -55,8 +55,10 @@ impl Renderer {
     ) -> Result<Self, RendererError> {
         let width = plan.canvas.width as usize;
         let height = plan.canvas.height as usize;
-        let surface = surfaces::raster_n32_premul((width as i32, height as i32))
-            .ok_or_else(|| RendererError::SkiaError("failed to create raster surface".to_string()))?;
+        let surface =
+            surfaces::raster_n32_premul((width as i32, height as i32)).ok_or_else(|| {
+                RendererError::SkiaError("failed to create raster surface".to_string())
+            })?;
 
         Ok(Self {
             image: skia_safe::ImageInfo::new_n32_premul((width as i32, height as i32), None),
@@ -152,7 +154,8 @@ impl Renderer {
             }
             RenderOpKind::Video(asset) => {
                 let local_frame = frame.0.saturating_sub(op.start_frame.0);
-                let mut source_offset = ((local_frame as f64) * (asset.speed as f64)).floor() as u64;
+                let mut source_offset =
+                    ((local_frame as f64) * (asset.speed as f64)).floor() as u64;
                 if asset.source_span_frames > 0 {
                     source_offset = source_offset.min(asset.source_span_frames.saturating_sub(1));
                 }
@@ -199,10 +202,13 @@ impl Renderer {
             TextAlign::Right => Align::Right,
         };
 
-        self.context
-            .surface
-            .canvas()
-            .draw_str_align(&text.text, (op.transform.x, op.transform.y), &font, &paint, align);
+        self.context.surface.canvas().draw_str_align(
+            &text.text,
+            (op.transform.x, op.transform.y),
+            &font,
+            &paint,
+            align,
+        );
 
         Ok(())
     }
@@ -213,23 +219,26 @@ impl Renderer {
         paint.set_blend_mode(to_blend_mode(op.blend_mode));
 
         match &shape.shape {
-            ShapeContent::Rectangle { fill, radius: _ } => {
+            ShapeContent::Rectangle { fill, radius } => {
                 let mut color = fill.as_color4f();
                 color.a *= op.opacity.clamp(0.0, 1.0);
                 paint.set_color4f(color, None);
-                self.context
-                    .surface
-                    .canvas()
-                    .draw_rect(op_rect(op, self.context.width as f32, self.context.height as f32), &paint);
+                let rect = op_rect(op, self.context.width as f32, self.context.height as f32);
+                if *radius > 0.0 {
+                    let rrect = RRect::new_rect_xy(rect, *radius, *radius);
+                    self.context.surface.canvas().draw_rrect(rrect, &paint);
+                    return;
+                }
+                self.context.surface.canvas().draw_rect(rect, &paint);
             }
             ShapeContent::Ellipse { fill } => {
                 let mut color = fill.as_color4f();
                 color.a *= op.opacity.clamp(0.0, 1.0);
                 paint.set_color4f(color, None);
-                self.context
-                    .surface
-                    .canvas()
-                    .draw_oval(op_rect(op, self.context.width as f32, self.context.height as f32), &paint);
+                self.context.surface.canvas().draw_oval(
+                    op_rect(op, self.context.width as f32, self.context.height as f32),
+                    &paint,
+                );
             }
         }
     }
@@ -243,16 +252,17 @@ impl Renderer {
         color.a *= op.opacity.clamp(0.0, 1.0);
         paint.set_color4f(color, None);
 
-        self.context
-            .surface
-            .canvas()
-            .draw_rect(op_rect(op, self.context.width as f32, self.context.height as f32), &paint);
+        self.context.surface.canvas().draw_rect(
+            op_rect(op, self.context.width as f32, self.context.height as f32),
+            &paint,
+        );
     }
 
     fn draw_image(&mut self, op: &RenderOp, image: &Image) {
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
         paint.set_blend_mode(to_blend_mode(op.blend_mode));
+        paint.set_alpha_f(op.opacity.clamp(0.0, 1.0));
 
         let src = Rect::from_xywh(0.0, 0.0, image.width() as f32, image.height() as f32);
         let dst = op_rect(op, image.width() as f32, image.height() as f32);
@@ -289,4 +299,135 @@ fn op_rect(op: &RenderOp, default_width: f32, default_height: f32) -> Rect {
         op.transform.width.unwrap_or(default_width),
         op.transform.height.unwrap_or(default_height),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::Renderer;
+    use crate::{
+        font::FontManager,
+        media::MediaProvider,
+        plan::{AssetRenderOp, CanvasSpec, RenderOp, RenderOpKind, RenderPlan, VideoRenderOp},
+        sequence::{BlendMode, ColorRGBA, Transform},
+        skia::{AlphaType, ColorType, Data, FontMgr, Image, ImageInfo, Typeface, images},
+        time::{FrameIndex, Rational, Time},
+    };
+
+    struct TestFontManager(FontMgr);
+
+    impl TestFontManager {
+        fn new() -> Self {
+            Self(FontMgr::new())
+        }
+    }
+
+    impl FontManager for TestFontManager {
+        fn skia(&self) -> &FontMgr {
+            &self.0
+        }
+
+        fn named(&self, _name: &str) -> Option<Typeface> {
+            None
+        }
+    }
+
+    struct TestMedia {
+        image: Image,
+    }
+
+    impl MediaProvider for TestMedia {
+        fn image(&mut self, _asset_id: &str) -> Result<Option<Image>, crate::media::MediaError> {
+            Ok(Some(self.image.clone()))
+        }
+
+        fn video_frame(
+            &mut self,
+            _asset_id: &str,
+            _frame: FrameIndex,
+        ) -> Result<Option<Image>, crate::media::MediaError> {
+            Ok(Some(self.image.clone()))
+        }
+    }
+
+    #[test]
+    fn image_clip_opacity_is_applied() {
+        let mut renderer = Renderer::new(
+            Arc::new(test_plan(RenderOpKind::Image(AssetRenderOp {
+                asset_id: "asset".to_string(),
+            }))),
+            TestFontManager::new(),
+            TestMedia {
+                image: white_image(),
+            },
+        )
+        .expect("renderer");
+        renderer.draw_frame(FrameIndex(0)).expect("draw");
+
+        let mut rgba = vec![0u8; 4];
+        renderer.read_rgba(&mut rgba).expect("read");
+        assert_eq!(rgba, vec![0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn video_clip_opacity_is_applied() {
+        let mut renderer = Renderer::new(
+            Arc::new(test_plan(RenderOpKind::Video(VideoRenderOp {
+                asset_id: "asset".to_string(),
+                speed: 1.0,
+                reverse: false,
+                source_span_frames: 1,
+            }))),
+            TestFontManager::new(),
+            TestMedia {
+                image: white_image(),
+            },
+        )
+        .expect("renderer");
+        renderer.draw_frame(FrameIndex(0)).expect("draw");
+
+        let mut rgba = vec![0u8; 4];
+        renderer.read_rgba(&mut rgba).expect("read");
+        assert_eq!(rgba, vec![0, 0, 0, 255]);
+    }
+
+    fn white_image() -> Image {
+        let image_info = ImageInfo::new((1, 1), ColorType::RGBA8888, AlphaType::Premul, None);
+        let data = Data::new_copy(&[255, 255, 255, 255]);
+        images::raster_from_data(&image_info, data, 4).expect("image")
+    }
+
+    fn test_plan(kind: RenderOpKind) -> RenderPlan {
+        RenderPlan::with_operations_index(
+            CanvasSpec {
+                width: 1,
+                height: 1,
+                background: ColorRGBA(0, 0, 0, 255),
+            },
+            Rational { num: 30, den: 1 },
+            Time {
+                value: 1,
+                timescale: 30,
+            },
+            1,
+            vec![RenderOp {
+                id: "clip".to_string(),
+                start_frame: FrameIndex(0),
+                end_frame: FrameIndex(1),
+                source_in_frame: FrameIndex(0),
+                z_index: 0,
+                clip_index: 0,
+                opacity: 0.0,
+                blend_mode: BlendMode::Normal,
+                transform: Transform {
+                    x: 0.0,
+                    y: 0.0,
+                    width: Some(1.0),
+                    height: Some(1.0),
+                },
+                kind,
+            }],
+        )
+    }
 }

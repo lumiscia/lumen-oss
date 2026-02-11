@@ -15,7 +15,11 @@ impl Clip for TextElement {
 
         let canvas = context.surface.canvas();
 
-        let font = Font::new(context.font_manager.arial().unwrap(), 120.0);
+        let typeface = context
+            .font_manager
+            .arial()
+            .ok_or_else(|| ClipError::Message("required font `Arial` is unavailable".to_string()))?;
+        let font = Font::new(typeface, 120.0);
 
         let paint = Paint::new(self.color.as_color4f(), None);
 

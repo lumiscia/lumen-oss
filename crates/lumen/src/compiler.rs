@@ -4,8 +4,8 @@ use thiserror::Error;
 
 use crate::{
     plan::{
-        AssetRenderOp, CanvasSpec, RenderOp, RenderOpKind, RenderPlan, ShapeRenderOp, SolidRenderOp,
-        TextRenderOp, VideoRenderOp,
+        AssetRenderOp, CanvasSpec, RenderOp, RenderOpKind, RenderPlan, ShapeRenderOp,
+        SolidRenderOp, TextRenderOp, VideoRenderOp,
     },
     sequence::{Asset, AssetKind, ClipContent, Sequence, Track, TrackKind},
     time::{FrameIndex, Rational, TimeError, frame_at_time, frames_from_time},
@@ -59,7 +59,14 @@ pub fn compile_sequence(sequence: &Sequence) -> Result<RenderPlan, CompileError>
             return Err(CompileError::UnimplementedAudio);
         }
 
-        compile_track(track, track_index, total_frames, &assets, sequence.timeline.fps, &mut operations)?;
+        compile_track(
+            track,
+            track_index,
+            total_frames,
+            &assets,
+            sequence.timeline.fps,
+            &mut operations,
+        )?;
     }
 
     operations.sort_by_key(|op| (op.start_frame, op.z_index, op.clip_index));
@@ -88,20 +95,19 @@ fn compile_track(
     for (clip_index, clip) in track.clips.iter().enumerate() {
         let start = frame_at_time(clip.start, fps)?;
         let duration = frames_from_time(clip.duration, fps)?;
-        let end = FrameIndex(
-            start
-                .0
-                .checked_add(duration)
-                .ok_or_else(|| CompileError::InvalidClip {
-                    track_id: track.id.clone(),
-                    clip_id: clip.id.clone(),
-                    reason: "frame range overflowed".to_string(),
-                })?,
-        );
-        let source_in_frame = frame_at_time(
-            clip.source_in.unwrap_or(crate::time::Time::ZERO),
-            fps,
-        )?;
+        let end =
+            FrameIndex(
+                start
+                    .0
+                    .checked_add(duration)
+                    .ok_or_else(|| CompileError::InvalidClip {
+                        track_id: track.id.clone(),
+                        clip_id: clip.id.clone(),
+                        reason: "frame range overflowed".to_string(),
+                    })?,
+            );
+        let source_in_frame =
+            frame_at_time(clip.source_in.unwrap_or(crate::time::Time::ZERO), fps)?;
 
         if duration == 0 {
             return Err(CompileError::InvalidClip {
@@ -119,11 +125,42 @@ fn compile_track(
             });
         }
 
+        if !clip.transform.x.is_finite() || !clip.transform.y.is_finite() {
+            return Err(CompileError::InvalidClip {
+                track_id: track.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: "transform coordinates must be finite numbers".to_string(),
+            });
+        }
+
+        if let Some(width) = clip.transform.width {
+            if !width.is_finite() || width <= 0.0 {
+                return Err(CompileError::InvalidClip {
+                    track_id: track.id.clone(),
+                    clip_id: clip.id.clone(),
+                    reason: "transform width must be a finite number greater than 0".to_string(),
+                });
+            }
+        }
+
+        if let Some(height) = clip.transform.height {
+            if !height.is_finite() || height <= 0.0 {
+                return Err(CompileError::InvalidClip {
+                    track_id: track.id.clone(),
+                    clip_id: clip.id.clone(),
+                    reason: "transform height must be a finite number greater than 0".to_string(),
+                });
+            }
+        }
+
         if end.0 > total_frames {
             return Err(CompileError::InvalidClip {
                 track_id: track.id.clone(),
                 clip_id: clip.id.clone(),
-                reason: format!("end frame {} exceeds timeline length {}", end.0, total_frames),
+                reason: format!(
+                    "end frame {} exceeds timeline length {}",
+                    end.0, total_frames
+                ),
             });
         }
 
@@ -135,25 +172,25 @@ fn compile_track(
                 color: text.color,
                 align: text.align,
             }),
-            (TrackKind::Shape, ClipContent::Shape(shape)) => {
-                RenderOpKind::Shape(ShapeRenderOp { shape: shape.clone() })
-            }
+            (TrackKind::Shape, ClipContent::Shape(shape)) => RenderOpKind::Shape(ShapeRenderOp {
+                shape: shape.clone(),
+            }),
             (TrackKind::Text, ClipContent::Solid { color }) => {
                 RenderOpKind::Solid(SolidRenderOp { color: *color })
             }
-            (TrackKind::Image, ClipContent::AssetRef { asset_id }) => RenderOpKind::Image(
-                AssetRenderOp {
+            (TrackKind::Image, ClipContent::AssetRef { asset_id }) => {
+                RenderOpKind::Image(AssetRenderOp {
                     asset_id: validate_asset_kind(asset_id, AssetKind::Image, assets)?,
-                },
-            ),
-            (TrackKind::Video, ClipContent::AssetRef { asset_id }) => RenderOpKind::Video(
-                VideoRenderOp {
+                })
+            }
+            (TrackKind::Video, ClipContent::AssetRef { asset_id }) => {
+                RenderOpKind::Video(VideoRenderOp {
                     asset_id: validate_asset_kind(asset_id, AssetKind::Video, assets)?,
                     speed: clip.speed,
                     reverse: clip.reverse,
                     source_span_frames: source_span(duration, clip.speed),
-                },
-            ),
+                })
+            }
             (TrackKind::Image, ClipContent::Solid { color })
             | (TrackKind::Video, ClipContent::Solid { color }) => {
                 RenderOpKind::Solid(SolidRenderOp { color: *color })
@@ -168,7 +205,9 @@ fn compile_track(
             }
         };
 
-        if track.kind != TrackKind::Video && (clip.reverse || (clip.speed - 1.0).abs() > f32::EPSILON) {
+        if track.kind != TrackKind::Video
+            && (clip.reverse || (clip.speed - 1.0).abs() > f32::EPSILON)
+        {
             return Err(CompileError::InvalidClip {
                 track_id: track.id.clone(),
                 clip_id: clip.id.clone(),
@@ -286,6 +325,16 @@ mod tests {
     fn rejects_clip_outside_timeline() {
         let mut sequence = sample_sequence();
         sequence.tracks[0].clips[0].duration = Time::new(90, 30).unwrap();
+
+        let result = compile_sequence(&sequence);
+
+        assert!(matches!(result, Err(CompileError::InvalidClip { .. })));
+    }
+
+    #[test]
+    fn rejects_non_finite_transform() {
+        let mut sequence = sample_sequence();
+        sequence.tracks[0].clips[0].transform.x = f32::NAN;
 
         let result = compile_sequence(&sequence);
 
