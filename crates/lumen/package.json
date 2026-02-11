@@ -3,11 +3,11 @@
 	"private": true,
 	"version": "0.0.0",
 	"scripts": {
-		"build": "cargo build --workspace",
-		"dev": "cargo run -p lumen-server",
-		"lint": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
-		"typecheck": "cargo check --workspace",
-		"test": "cargo test --workspace",
-		"clean": "cargo clean"
+		"build": "cargo build --manifest-path ../../Cargo.toml --workspace",
+		"dev": "cargo run --manifest-path ../../Cargo.toml -p lumen-server",
+		"lint": "cargo fmt --manifest-path ../../Cargo.toml --all -- --check && cargo clippy --manifest-path ../../Cargo.toml --workspace --all-targets -- -D warnings",
+		"typecheck": "cargo check --manifest-path ../../Cargo.toml --workspace",
+		"test": "cargo test --manifest-path ../../Cargo.toml --workspace",
+		"clean": "cargo clean --manifest-path ../../Cargo.toml"
 	}
 }

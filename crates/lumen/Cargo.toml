@@ -1,9 +1,19 @@
-[workspace]
-members = [
-    "crates/lumen",        # Path to your core library crate
-    "crates/lumen-wasm",   # Path to your wasm/editor crate
-    "crates/lumen-server", # Path to your server crate
-    "crates/lumen-example",
-]
+[package]
+name = "lumen"
+version = "0.1.0"
+edition = "2024"
 
-resolver = "3"
+[lib]
+name = "lumen"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
+skrifa = "0.40.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+vello = "0.7.0"
+pollster = "0.4.0"
+futures-intrusive = "0.5.0"
