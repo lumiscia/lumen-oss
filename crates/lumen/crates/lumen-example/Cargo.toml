@@ -1,0 +1,13 @@
+[package]
+name = "lumen-example"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "lumen-example"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.101"
+lumen = { path = "../lumen" }
+lumen-server = { path = "../lumen-server" }
