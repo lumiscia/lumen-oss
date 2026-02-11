@@ -30,7 +30,7 @@ impl<T: Write> H264Encoder<T> {
             .pixel_format(ac_ffmpeg::codec::video::frame::get_pixel_format("yuv420p"))
             .width(width)
             .height(height)
-            .time_base(time_base.clone())
+            .time_base(time_base)
             .set_option("tune", "zerolatency")
             .build()?;
 
@@ -53,13 +53,7 @@ impl<T: Write> H264Encoder<T> {
         self.encoder.push(video_frame)?;
 
         while let Some(packet) = self.encoder.take()? {
-            self.muxer.push(
-                packet
-                    .with_duration(Duration::from_micros(
-                        ((self.time_base.num() * 1_000_000) / self.time_base.den()) as u64,
-                    ))
-                    .with_stream_index(0),
-            )?;
+            self.push_packet(packet)?;
         }
 
         Ok(())
@@ -68,13 +62,8 @@ impl<T: Write> H264Encoder<T> {
     pub fn finish(&mut self) -> anyhow::Result<()> {
         self.encoder.flush()?;
 
-        loop {
-            match self.encoder.take()? {
-                Some(packet) => {
-                    self.muxer.push(packet)?;
-                }
-                None => break,
-            }
+        while let Some(packet) = self.encoder.take()? {
+            self.push_packet(packet)?;
         }
 
         self.muxer.flush()?;
@@ -84,5 +73,16 @@ impl<T: Write> H264Encoder<T> {
 
     pub fn close(self) -> anyhow::Result<IO<T>> {
         self.muxer.close().map_err(|err| err.into())
+    }
+
+    fn push_packet(&mut self, packet: ac_ffmpeg::packet::Packet) -> anyhow::Result<()> {
+        self.muxer.push(
+            packet
+                .with_duration(Duration::from_micros(
+                    ((self.time_base.num() * 1_000_000) / self.time_base.den()) as u64,
+                ))
+                .with_stream_index(0),
+        )?;
+        Ok(())
     }
 }

@@ -1,8 +1,9 @@
 use std::{
     collections::HashMap,
+    env,
     fs::File,
     num::NonZero,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use ac_ffmpeg::{
@@ -23,6 +24,7 @@ use crate::video::decode::VideoDecoder;
 const IMAGE_CACHE_SIZE: usize = 32;
 const VIDEO_FRAME_CACHE_SIZE: usize = 96;
 const VIDEO_DECODE_WINDOW_FRAMES: u64 = 6;
+const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
 
 pub struct AssetMediaProvider {
     assets: HashMap<String, Asset>,
@@ -32,13 +34,19 @@ pub struct AssetMediaProvider {
 }
 
 impl AssetMediaProvider {
-    pub fn new(assets: Vec<Asset>, fps: Rational) -> Self {
-        Self {
-            assets: assets.into_iter().map(|asset| (asset.id.clone(), asset)).collect(),
+    pub fn new(assets: Vec<Asset>, fps: Rational) -> Result<Self, MediaError> {
+        let image_capacity = NonZero::new(IMAGE_CACHE_SIZE)
+            .ok_or_else(|| MediaError::Decode("image cache size must be non-zero".to_string()))?;
+
+        Ok(Self {
+            assets: assets
+                .into_iter()
+                .map(|asset| (asset.id.clone(), asset))
+                .collect(),
             fps,
-            image_cache: LruCache::new(NonZero::new(IMAGE_CACHE_SIZE).expect("non-zero")),
+            image_cache: LruCache::new(image_capacity),
             video_states: HashMap::new(),
-        }
+        })
     }
 
     fn asset(&self, asset_id: &str) -> Result<&Asset, MediaError> {
@@ -57,15 +65,21 @@ impl AssetMediaProvider {
 
         let bytes = read_asset_bytes(&asset.source)?;
         let data = Data::new_copy(&bytes);
-        let image = Image::from_encoded(data)
-            .ok_or_else(|| MediaError::Decode(format!("failed to decode image asset `{asset_id}`")))?;
+        let image = Image::from_encoded(data).ok_or_else(|| {
+            MediaError::Decode(format!("failed to decode image asset `{asset_id}`"))
+        })?;
 
         Ok(Some(image))
     }
 
     fn video_state(&mut self, asset_id: &str) -> Result<&mut VideoState, MediaError> {
         if self.video_states.contains_key(asset_id) {
-            return Ok(self.video_states.get_mut(asset_id).expect("state exists"));
+            if let Some(state) = self.video_states.get_mut(asset_id) {
+                return Ok(state);
+            }
+            return Err(MediaError::Decode(format!(
+                "video state map became inconsistent for `{asset_id}`"
+            )));
         }
 
         let asset = self.asset(asset_id)?;
@@ -76,19 +90,25 @@ impl AssetMediaProvider {
         }
 
         let path = resolve_local_path(&asset.source)?;
-        let file = File::open(&path)
-            .map_err(|err| MediaError::Source(format!("failed to open `{}`: {err}", path.display())))?;
+        let file = File::open(&path).map_err(|err| {
+            MediaError::Source(format!("failed to open `{}`: {err}", path.display()))
+        })?;
 
         let decoder = VideoDecoder::new(IO::from_seekable_read_stream(file))
             .map_err(|err| MediaError::Decode(err.to_string()))?;
+        let state = VideoState::new(path, decoder)?;
+        self.video_states.insert(asset_id.to_string(), state);
 
         self.video_states
-            .insert(asset_id.to_string(), VideoState::new(path, decoder));
-
-        Ok(self.video_states.get_mut(asset_id).expect("video state inserted"))
+            .get_mut(asset_id)
+            .ok_or_else(|| MediaError::Decode(format!("failed to cache video state `{asset_id}`")))
     }
 
-    fn decode_video_frame(&mut self, asset_id: &str, frame: FrameIndex) -> Result<Option<Image>, MediaError> {
+    fn decode_video_frame(
+        &mut self,
+        asset_id: &str,
+        frame: FrameIndex,
+    ) -> Result<Option<Image>, MediaError> {
         let fps = self.fps;
         let state = self.video_state(asset_id)?;
         if let Some(image) = resolve_frame(state, frame.0) {
@@ -115,7 +135,10 @@ impl AssetMediaProvider {
         if decoded.is_empty() && seek_to.is_some() {
             decoded = state
                 .decoder
-                .decode(Some(frame_to_timestamp(frame.0, fps)?), frame_to_timestamp(1, fps)?)
+                .decode(
+                    Some(frame_to_timestamp(frame.0, fps)?),
+                    frame_to_timestamp(1, fps)?,
+                )
                 .map_err(|err| MediaError::Decode(err.to_string()))?;
         }
 
@@ -150,14 +173,16 @@ impl MediaProvider for AssetMediaProvider {
         }
     }
 
-    fn video_frame(&mut self, asset_id: &str, frame: FrameIndex) -> Result<Option<Image>, MediaError> {
+    fn video_frame(
+        &mut self,
+        asset_id: &str,
+        frame: FrameIndex,
+    ) -> Result<Option<Image>, MediaError> {
         self.decode_video_frame(asset_id, frame)
     }
 }
 
 struct VideoState {
-    #[allow(dead_code)]
-    path: PathBuf,
     decoder: VideoDecoder<File>,
     scaler: Option<VideoFrameScaler>,
     scaler_source: Option<(usize, usize, frame::PixelFormat)>,
@@ -167,16 +192,18 @@ struct VideoState {
 }
 
 impl VideoState {
-    fn new(path: PathBuf, decoder: VideoDecoder<File>) -> Self {
-        Self {
-            path,
+    fn new(_path: PathBuf, decoder: VideoDecoder<File>) -> Result<Self, MediaError> {
+        let frame_capacity = NonZero::new(VIDEO_FRAME_CACHE_SIZE).ok_or_else(|| {
+            MediaError::Decode("video frame cache size must be non-zero".to_string())
+        })?;
+        Ok(Self {
             decoder,
             scaler: None,
             scaler_source: None,
-            frame_cache: LruCache::new(NonZero::new(VIDEO_FRAME_CACHE_SIZE).expect("non-zero")),
+            frame_cache: LruCache::new(frame_capacity),
             last_requested: None,
             last_resolved: None,
-        }
+        })
     }
 }
 
@@ -214,9 +241,9 @@ fn frame_to_image(state: &mut VideoState, frame: &VideoFrame) -> Result<Image, M
     let width = rgba_frame.width();
     let height = rgba_frame.height();
     let planes = rgba_frame.planes();
-    let plane = planes.first().ok_or_else(|| {
-        MediaError::Decode("scaled frame did not contain rgba plane".to_string())
-    })?;
+    let plane = planes
+        .first()
+        .ok_or_else(|| MediaError::Decode("scaled frame did not contain rgba plane".to_string()))?;
 
     let mut rgba = vec![0u8; width * height * 4];
     let line_size = plane.line_size();
@@ -263,7 +290,11 @@ fn resolve_frame(state: &mut VideoState, requested: u64) -> Option<Image> {
     for (key, image) in state.frame_cache.iter() {
         let idx = *key;
         if idx <= requested {
-            if best_prev.as_ref().map(|(best, _)| idx > *best).unwrap_or(true) {
+            if best_prev
+                .as_ref()
+                .map(|(best, _)| idx > *best)
+                .unwrap_or(true)
+            {
                 best_prev = Some((idx, image.clone()));
             }
         } else if best_next
@@ -296,16 +327,101 @@ fn read_asset_bytes(source: &str) -> Result<Vec<u8>, MediaError> {
 }
 
 fn resolve_local_path(source: &str) -> Result<PathBuf, MediaError> {
-    if let Some(path) = source.strip_prefix("file://") {
-        return Ok(PathBuf::from(path));
+    let root = media_root()?;
+    resolve_local_path_with_root(source, &root)
+}
+
+fn resolve_local_path_with_root(source: &str, root: &Path) -> Result<PathBuf, MediaError> {
+    let root = root.canonicalize().map_err(|err| {
+        MediaError::Source(format!(
+            "failed to canonicalize media root `{}`: {err}",
+            root.display()
+        ))
+    })?;
+
+    if source.contains("://") && !source.starts_with("file://") {
+        return Err(MediaError::Source(format!(
+            "unsupported asset URI scheme for `{source}`"
+        )));
     }
 
-    let path = Path::new(source);
-    if path.is_absolute() || path.exists() {
-        return Ok(path.to_path_buf());
+    let raw_path = source.strip_prefix("file://").unwrap_or(source);
+    let path = Path::new(raw_path);
+    if path.as_os_str().is_empty() {
+        return Err(MediaError::Source(
+            "asset path must not be empty".to_string(),
+        ));
     }
 
-    Err(MediaError::Source(format!(
-        "only local file paths are currently supported: `{source}`"
-    )))
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(MediaError::Source(format!(
+            "parent traversal is not allowed in asset paths: `{source}`"
+        )));
+    }
+
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+
+    let candidate = candidate.canonicalize().map_err(|err| {
+        MediaError::Source(format!(
+            "failed to canonicalize asset path `{}`: {err}",
+            candidate.display()
+        ))
+    })?;
+
+    if !candidate.starts_with(&root) {
+        return Err(MediaError::Source(format!(
+            "asset path escapes allowed media root: `{}`",
+            candidate.display()
+        )));
+    }
+
+    Ok(candidate)
+}
+
+fn media_root() -> Result<PathBuf, MediaError> {
+    let raw = env::var(MEDIA_ROOT_ENV).unwrap_or_else(|_| ".".to_string());
+    let path = PathBuf::from(raw);
+    path.canonicalize().map_err(|err| {
+        MediaError::Source(format!(
+            "failed to resolve media root from {MEDIA_ROOT_ENV}: {err}"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    #[test]
+    fn rejects_traversal_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let result = super::resolve_local_path_with_root("../secret.txt", tmp.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_non_file_uri_scheme() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let result =
+            super::resolve_local_path_with_root("https://example.com/video.mp4", tmp.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolves_under_media_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file_path = tmp.path().join("clip.png");
+        fs::write(&file_path, b"x").expect("write");
+
+        let resolved =
+            super::resolve_local_path_with_root("clip.png", tmp.path()).expect("resolve");
+        assert_eq!(resolved, file_path.canonicalize().expect("canonicalize"));
+    }
 }
