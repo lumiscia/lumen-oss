@@ -41,6 +41,15 @@ pub enum RendererError {
     SvgDecode { asset_id: String },
 }
 
+const SVG_RASTER_CACHE_CAPACITY: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SvgRasterCacheKey {
+    asset_id: String,
+    width: i32,
+    height: i32,
+}
+
 pub struct RenderContext {
     pub width: usize,
     pub height: usize,
@@ -54,6 +63,7 @@ pub struct Renderer {
     image: skia_safe::ImageInfo,
     media: Box<dyn MediaProvider>,
     svg_dom_cache: HashMap<String, Dom>,
+    svg_raster_cache: HashMap<SvgRasterCacheKey, Image>,
     pub context: RenderContext,
 }
 
@@ -74,6 +84,7 @@ impl Renderer {
             image: skia_safe::ImageInfo::new_n32_premul((width as i32, height as i32), None),
             media: Box::new(media_provider),
             svg_dom_cache: HashMap::new(),
+            svg_raster_cache: HashMap::new(),
             context: RenderContext {
                 width,
                 height,
@@ -165,11 +176,7 @@ impl Renderer {
                 Ok(())
             }
             RenderOpKind::Svg(asset) => {
-                if let Some(bytes) = self.media.svg_bytes(&asset.asset_id)? {
-                    let mut svg = self.svg_dom_for_asset(&asset.asset_id, &bytes)?;
-                    self.draw_svg(op.blend_mode, transform, opacity, &mut svg);
-                }
-                Ok(())
+                self.draw_svg(op.blend_mode, transform, opacity, &asset.asset_id)
             }
             RenderOpKind::Video(asset) => {
                 let local_frame = frame.0.saturating_sub(op.start_frame.0);
@@ -339,11 +346,11 @@ impl Renderer {
         blend_mode: SequenceBlendMode,
         transform: Transform,
         opacity: f32,
-        svg: &mut Dom,
-    ) {
+        asset_id: &str,
+    ) -> Result<(), RendererError> {
         let opacity = opacity.clamp(0.0, 1.0);
         if opacity <= 0.0 {
-            return;
+            return Ok(());
         }
 
         let dst = op_rect(
@@ -352,26 +359,68 @@ impl Renderer {
             self.context.height as f32,
         );
         if dst.width() <= 0.0 || dst.height() <= 0.0 {
-            return;
+            return Ok(());
         }
 
-        svg.set_container_size((dst.width(), dst.height()));
+        let width = dst.width().ceil().max(1.0) as i32;
+        let height = dst.height().ceil().max(1.0) as i32;
+        let key = SvgRasterCacheKey {
+            asset_id: asset_id.to_string(),
+            width,
+            height,
+        };
 
-        let mut paint = Paint::default();
-        paint.set_anti_alias(true);
-        paint.set_blend_mode(to_blend_mode(blend_mode));
-        paint.set_alpha_f(opacity);
+        let image = if let Some(image) = self.svg_raster_cache.get(&key) {
+            image.clone()
+        } else {
+            let Some(bytes) = self.media.svg_bytes(asset_id)? else {
+                return Ok(());
+            };
+            let image = self.rasterize_svg(asset_id, &bytes, width, height)?;
+            self.insert_svg_raster_cache(key, image.clone());
+            image
+        };
 
-        let layer = SaveLayerRec::default().bounds(&dst).paint(&paint);
-        let canvas = self.context.surface.canvas();
+        self.draw_image(blend_mode, transform, opacity, &image);
+        Ok(())
+    }
 
+    fn insert_svg_raster_cache(&mut self, key: SvgRasterCacheKey, image: Image) {
+        if self.svg_raster_cache.len() >= SVG_RASTER_CACHE_CAPACITY {
+            if let Some(evicted) = self.svg_raster_cache.keys().next().cloned() {
+                self.svg_raster_cache.remove(&evicted);
+            }
+        }
+
+        self.svg_raster_cache.insert(key, image);
+    }
+
+    fn rasterize_svg(
+        &mut self,
+        asset_id: &str,
+        bytes: &[u8],
+        width: i32,
+        height: i32,
+    ) -> Result<Image, RendererError> {
+        let mut svg = self.svg_dom_for_asset(asset_id, bytes)?;
+        svg.set_container_size((width as f32, height as f32));
+
+        let mut surface = surfaces::raster_n32_premul((width, height))
+            .ok_or_else(|| RendererError::SkiaError("failed to create svg raster".to_string()))?;
+        let canvas = surface.canvas();
+        canvas.clear(Color::from_argb(0, 0, 0, 0));
         canvas.save();
-        canvas.clip_rect(dst, None, Some(true));
-        canvas.save_layer(&layer);
-        canvas.translate((dst.x(), dst.y()));
+        canvas.clip_rect(
+            Rect::from_xywh(0.0, 0.0, width as f32, height as f32),
+            None,
+            Some(true),
+        );
+        canvas.save_layer(&SaveLayerRec::default());
         svg.render(canvas);
         canvas.restore();
         canvas.restore();
+
+        Ok(surface.image_snapshot())
     }
 
     fn svg_dom_for_asset(&mut self, asset_id: &str, bytes: &[u8]) -> Result<Dom, RendererError> {
@@ -580,7 +629,10 @@ fn lerp(from: f32, to: f32, t: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use super::Renderer;
     use crate::{
@@ -635,6 +687,21 @@ mod tests {
             &mut self,
             _asset_id: &str,
         ) -> Result<Option<Vec<u8>>, crate::media::MediaError> {
+            Ok(Some(self.svg.clone()))
+        }
+    }
+
+    struct CountingSvgMedia {
+        svg: Vec<u8>,
+        requests: Arc<AtomicUsize>,
+    }
+
+    impl MediaProvider for CountingSvgMedia {
+        fn svg_bytes(
+            &mut self,
+            _asset_id: &str,
+        ) -> Result<Option<Vec<u8>>, crate::media::MediaError> {
+            self.requests.fetch_add(1, Ordering::Relaxed);
             Ok(Some(self.svg.clone()))
         }
     }
@@ -700,6 +767,25 @@ mod tests {
         let mut rgba = vec![0u8; 4];
         renderer.read_rgba(&mut rgba).expect("read");
         assert_eq!(rgba, vec![0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn svg_raster_cache_reuses_asset_bytes_for_same_size() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let mut renderer = Renderer::new(
+            Arc::new(svg_cache_test_plan()),
+            TestFontManager::new(),
+            CountingSvgMedia {
+                svg: white_svg(),
+                requests: Arc::clone(&requests),
+            },
+        )
+        .expect("renderer");
+
+        renderer.draw_frame(FrameIndex(0)).expect("draw");
+        renderer.draw_frame(FrameIndex(1)).expect("draw");
+
+        assert_eq!(requests.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -844,6 +930,44 @@ mod tests {
                 transition_in: None,
                 transition_out: None,
                 kind,
+            }],
+        )
+    }
+
+    fn svg_cache_test_plan() -> RenderPlan {
+        RenderPlan::with_operations_index(
+            CanvasSpec {
+                width: 1,
+                height: 1,
+                background: ColorRGBA(0, 0, 0, 255),
+            },
+            Rational { num: 30, den: 1 },
+            Time {
+                value: 2,
+                timescale: 30,
+            },
+            2,
+            vec![RenderOp {
+                id: "svg".to_string(),
+                start_frame: FrameIndex(0),
+                end_frame: FrameIndex(2),
+                source_in_frame: FrameIndex(0),
+                z_index: 0,
+                clip_index: 0,
+                opacity: 1.0,
+                blend_mode: BlendMode::Normal,
+                transform: Transform {
+                    x: 0.0,
+                    y: 0.0,
+                    width: Some(1.0),
+                    height: Some(1.0),
+                },
+                animation: ClipAnimationPlan::default(),
+                transition_in: None,
+                transition_out: None,
+                kind: RenderOpKind::Svg(AssetRenderOp {
+                    asset_id: "asset".to_string(),
+                }),
             }],
         )
     }
