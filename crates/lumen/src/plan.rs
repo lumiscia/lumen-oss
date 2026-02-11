@@ -98,6 +98,7 @@ pub enum RenderOpKind {
     Text(TextRenderOp),
     Shape(ShapeRenderOp),
     Image(AssetRenderOp),
+    Svg(AssetRenderOp),
     Video(VideoRenderOp),
     Solid(SolidRenderOp),
 }

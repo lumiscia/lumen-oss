@@ -22,6 +22,7 @@ use lumen::{
 use crate::video::decode::VideoDecoder;
 
 const IMAGE_CACHE_SIZE: usize = 32;
+const SVG_CACHE_SIZE: usize = 32;
 const VIDEO_FRAME_CACHE_SIZE: usize = 96;
 const VIDEO_DECODE_WINDOW_FRAMES: u64 = 6;
 const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
@@ -30,6 +31,7 @@ pub struct AssetMediaProvider {
     assets: HashMap<String, Asset>,
     fps: Rational,
     image_cache: LruCache<String, Image>,
+    svg_cache: LruCache<String, Vec<u8>>,
     video_states: HashMap<String, VideoState>,
 }
 
@@ -37,6 +39,8 @@ impl AssetMediaProvider {
     pub fn new(assets: Vec<Asset>, fps: Rational) -> Result<Self, MediaError> {
         let image_capacity = NonZero::new(IMAGE_CACHE_SIZE)
             .ok_or_else(|| MediaError::Decode("image cache size must be non-zero".to_string()))?;
+        let svg_capacity = NonZero::new(SVG_CACHE_SIZE)
+            .ok_or_else(|| MediaError::Decode("svg cache size must be non-zero".to_string()))?;
 
         Ok(Self {
             assets: assets
@@ -45,6 +49,7 @@ impl AssetMediaProvider {
                 .collect(),
             fps,
             image_cache: LruCache::new(image_capacity),
+            svg_cache: LruCache::new(svg_capacity),
             video_states: HashMap::new(),
         })
     }
@@ -102,6 +107,18 @@ impl AssetMediaProvider {
         self.video_states
             .get_mut(asset_id)
             .ok_or_else(|| MediaError::Decode(format!("failed to cache video state `{asset_id}`")))
+    }
+
+    fn load_svg_bytes(&mut self, asset_id: &str) -> Result<Option<Vec<u8>>, MediaError> {
+        let asset = self.asset(asset_id)?;
+        if asset.kind != AssetKind::Svg {
+            return Err(MediaError::Decode(format!(
+                "asset `{asset_id}` is not an svg asset"
+            )));
+        }
+
+        let bytes = read_asset_bytes(&asset.source)?;
+        Ok(Some(bytes))
     }
 
     fn decode_video_frame(
@@ -179,6 +196,20 @@ impl MediaProvider for AssetMediaProvider {
         frame: FrameIndex,
     ) -> Result<Option<Image>, MediaError> {
         self.decode_video_frame(asset_id, frame)
+    }
+
+    fn svg_bytes(&mut self, asset_id: &str) -> Result<Option<Vec<u8>>, MediaError> {
+        if let Some(svg) = self.svg_cache.get(asset_id) {
+            return Ok(Some(svg.clone()));
+        }
+
+        let svg = self.load_svg_bytes(asset_id)?;
+        if let Some(svg) = svg {
+            self.svg_cache.put(asset_id.to_string(), svg.clone());
+            Ok(Some(svg))
+        } else {
+            Ok(None)
+        }
     }
 }
 

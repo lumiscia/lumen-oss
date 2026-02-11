@@ -213,6 +213,11 @@ fn compile_track(
                     asset_id: validate_asset_kind(asset_id, AssetKind::Image, assets)?,
                 })
             }
+            (TrackKind::Svg, ClipContent::AssetRef { asset_id }) => {
+                RenderOpKind::Svg(AssetRenderOp {
+                    asset_id: validate_asset_kind(asset_id, AssetKind::Svg, assets)?,
+                })
+            }
             (TrackKind::Video, ClipContent::AssetRef { asset_id }) => {
                 RenderOpKind::Video(VideoRenderOp {
                     asset_id: validate_asset_kind(asset_id, AssetKind::Video, assets)?,
@@ -222,6 +227,7 @@ fn compile_track(
                 })
             }
             (TrackKind::Image, ClipContent::Solid { color })
+            | (TrackKind::Svg, ClipContent::Solid { color })
             | (TrackKind::Video, ClipContent::Solid { color }) => {
                 RenderOpKind::Solid(SolidRenderOp { color: *color })
             }
@@ -554,6 +560,77 @@ mod tests {
         let result = compile_sequence(&sequence);
 
         assert!(matches!(result, Err(CompileError::InvalidClip { .. })));
+    }
+
+    #[test]
+    fn accepts_svg_track_with_svg_asset() {
+        let mut sequence = sample_sequence();
+        sequence.assets.push(Asset {
+            id: "svg-1".to_string(),
+            kind: AssetKind::Svg,
+            source: "/tmp/sample.svg".to_string(),
+        });
+        sequence.tracks = vec![Track {
+            id: "svg-track".to_string(),
+            kind: TrackKind::Svg,
+            clips: vec![TrackClip {
+                id: "svg-clip".to_string(),
+                start: Time::new(0, 30).expect("time"),
+                duration: Time::new(30, 30).expect("time"),
+                source_in: None,
+                speed: 1.0,
+                reverse: false,
+                transform: Transform::default(),
+                opacity: 1.0,
+                blend_mode: BlendMode::Normal,
+                animation: ClipAnimation::default(),
+                transition_in: None,
+                transition_out: None,
+                content: ClipContent::AssetRef {
+                    asset_id: "svg-1".to_string(),
+                },
+            }],
+        }];
+
+        let result = compile_sequence(&sequence);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_svg_track_with_non_svg_asset() {
+        let mut sequence = sample_sequence();
+        sequence.assets.push(Asset {
+            id: "image-1".to_string(),
+            kind: AssetKind::Image,
+            source: "/tmp/sample.png".to_string(),
+        });
+        sequence.tracks = vec![Track {
+            id: "svg-track".to_string(),
+            kind: TrackKind::Svg,
+            clips: vec![TrackClip {
+                id: "svg-clip".to_string(),
+                start: Time::new(0, 30).expect("time"),
+                duration: Time::new(30, 30).expect("time"),
+                source_in: None,
+                speed: 1.0,
+                reverse: false,
+                transform: Transform::default(),
+                opacity: 1.0,
+                blend_mode: BlendMode::Normal,
+                animation: ClipAnimation::default(),
+                transition_in: None,
+                transition_out: None,
+                content: ClipContent::AssetRef {
+                    asset_id: "image-1".to_string(),
+                },
+            }],
+        }];
+
+        let result = compile_sequence(&sequence);
+        assert!(matches!(
+            result,
+            Err(CompileError::AssetKindMismatch { .. })
+        ));
     }
 
     #[test]

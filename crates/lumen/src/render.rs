@@ -1,9 +1,11 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use skia_safe::{
     BlendMode, Color, EncodedImageFormat, Font, Paint, RRect, Rect, Surface,
+    canvas::SaveLayerRec,
     image::{CachingHint, Image},
     surfaces,
+    svg::Dom,
     utils::text_utils::Align,
 };
 use thiserror::Error;
@@ -35,6 +37,8 @@ pub enum RendererError {
     MismatchedBufferLength { provided: usize, expected: usize },
     #[error("failed to encode frame as png")]
     PngEncodeFailed,
+    #[error("failed to decode svg asset `{asset_id}`")]
+    SvgDecode { asset_id: String },
 }
 
 pub struct RenderContext {
@@ -49,6 +53,7 @@ pub struct Renderer {
     plan: Arc<RenderPlan>,
     image: skia_safe::ImageInfo,
     media: Box<dyn MediaProvider>,
+    svg_dom_cache: HashMap<String, Dom>,
     pub context: RenderContext,
 }
 
@@ -68,6 +73,7 @@ impl Renderer {
         Ok(Self {
             image: skia_safe::ImageInfo::new_n32_premul((width as i32, height as i32), None),
             media: Box::new(media_provider),
+            svg_dom_cache: HashMap::new(),
             context: RenderContext {
                 width,
                 height,
@@ -155,6 +161,13 @@ impl Renderer {
             RenderOpKind::Image(asset) => {
                 if let Some(image) = self.media.image(&asset.asset_id)? {
                     self.draw_image(op.blend_mode, transform, opacity, &image);
+                }
+                Ok(())
+            }
+            RenderOpKind::Svg(asset) => {
+                if let Some(bytes) = self.media.svg_bytes(&asset.asset_id)? {
+                    let mut svg = self.svg_dom_for_asset(&asset.asset_id, &bytes)?;
+                    self.draw_svg(op.blend_mode, transform, opacity, &mut svg);
                 }
                 Ok(())
             }
@@ -319,6 +332,65 @@ impl Renderer {
                 skia_safe::SamplingOptions::default(),
                 &paint,
             );
+    }
+
+    fn draw_svg(
+        &mut self,
+        blend_mode: SequenceBlendMode,
+        transform: Transform,
+        opacity: f32,
+        svg: &mut Dom,
+    ) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        if opacity <= 0.0 {
+            return;
+        }
+
+        let dst = op_rect(
+            transform,
+            self.context.width as f32,
+            self.context.height as f32,
+        );
+        if dst.width() <= 0.0 || dst.height() <= 0.0 {
+            return;
+        }
+
+        svg.set_container_size((dst.width(), dst.height()));
+
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_blend_mode(to_blend_mode(blend_mode));
+        paint.set_alpha_f(opacity);
+
+        let layer = SaveLayerRec::default().bounds(&dst).paint(&paint);
+        let canvas = self.context.surface.canvas();
+
+        canvas.save();
+        canvas.clip_rect(dst, None, Some(true));
+        canvas.save_layer(&layer);
+        canvas.translate((dst.x(), dst.y()));
+        svg.render(canvas);
+        canvas.restore();
+        canvas.restore();
+    }
+
+    fn svg_dom_for_asset(&mut self, asset_id: &str, bytes: &[u8]) -> Result<Dom, RendererError> {
+        if !self.svg_dom_cache.contains_key(asset_id) {
+            let dom =
+                Dom::from_bytes(bytes, self.context.font_manager.skia().clone()).map_err(|_| {
+                    RendererError::SvgDecode {
+                        asset_id: asset_id.to_string(),
+                    }
+                })?;
+            self.svg_dom_cache.insert(asset_id.to_string(), dom);
+        }
+
+        self.svg_dom_cache
+            .get(asset_id)
+            .cloned()
+            .ok_or_else(|| RendererError::SvgDecode {
+                asset_id: asset_id.to_string(),
+            })
     }
 
     fn resolve_op_state(&self, frame: FrameIndex, op: &RenderOp) -> (Transform, f32) {
@@ -543,6 +615,7 @@ mod tests {
 
     struct TestMedia {
         image: Image,
+        svg: Vec<u8>,
     }
 
     impl MediaProvider for TestMedia {
@@ -557,6 +630,13 @@ mod tests {
         ) -> Result<Option<Image>, crate::media::MediaError> {
             Ok(Some(self.image.clone()))
         }
+
+        fn svg_bytes(
+            &mut self,
+            _asset_id: &str,
+        ) -> Result<Option<Vec<u8>>, crate::media::MediaError> {
+            Ok(Some(self.svg.clone()))
+        }
     }
 
     #[test]
@@ -568,6 +648,7 @@ mod tests {
             TestFontManager::new(),
             TestMedia {
                 image: white_image(),
+                svg: white_svg(),
             },
         )
         .expect("renderer");
@@ -590,6 +671,27 @@ mod tests {
             TestFontManager::new(),
             TestMedia {
                 image: white_image(),
+                svg: white_svg(),
+            },
+        )
+        .expect("renderer");
+        renderer.draw_frame(FrameIndex(0)).expect("draw");
+
+        let mut rgba = vec![0u8; 4];
+        renderer.read_rgba(&mut rgba).expect("read");
+        assert_eq!(rgba, vec![0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn svg_clip_opacity_is_applied() {
+        let mut renderer = Renderer::new(
+            Arc::new(test_plan(RenderOpKind::Svg(AssetRenderOp {
+                asset_id: "asset".to_string(),
+            }))),
+            TestFontManager::new(),
+            TestMedia {
+                image: white_image(),
+                svg: white_svg(),
             },
         )
         .expect("renderer");
@@ -657,6 +759,7 @@ mod tests {
             TestFontManager::new(),
             TestMedia {
                 image: white_image(),
+                svg: white_svg(),
             },
         )
         .expect("renderer");
@@ -687,6 +790,7 @@ mod tests {
             TestFontManager::new(),
             TestMedia {
                 image: white_image(),
+                svg: white_svg(),
             },
         )
         .expect("renderer");
@@ -701,6 +805,11 @@ mod tests {
         let image_info = ImageInfo::new((1, 1), ColorType::RGBA8888, AlphaType::Premul, None);
         let data = Data::new_copy(&[255, 255, 255, 255]);
         images::raster_from_data(&image_info, data, 4).expect("image")
+    }
+
+    fn white_svg() -> Vec<u8> {
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"><rect width="1" height="1" fill="#ffffff"/></svg>"##
+            .to_vec()
     }
 
     fn test_plan(kind: RenderOpKind) -> RenderPlan {

@@ -42,6 +42,7 @@ pub struct Asset {
 #[serde(rename_all = "snake_case")]
 pub enum AssetKind {
     Image,
+    Svg,
     Video,
     Audio,
 }
@@ -60,6 +61,7 @@ pub enum TrackKind {
     Text,
     Shape,
     Image,
+    Svg,
     Video,
     Audio,
 }

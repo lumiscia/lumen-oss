@@ -16,7 +16,15 @@ pub trait MediaProvider: Send {
         Ok(None)
     }
 
-    fn video_frame(&mut self, _asset_id: &str, _frame: FrameIndex) -> Result<Option<Image>, MediaError> {
+    fn video_frame(
+        &mut self,
+        _asset_id: &str,
+        _frame: FrameIndex,
+    ) -> Result<Option<Image>, MediaError> {
+        Ok(None)
+    }
+
+    fn svg_bytes(&mut self, _asset_id: &str) -> Result<Option<Vec<u8>>, MediaError> {
         Ok(None)
     }
 }
