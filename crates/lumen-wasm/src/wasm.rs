@@ -51,7 +51,15 @@ struct ClipSelection {
 struct FrameSummary {
     frame_index: u64,
     operation_count: usize,
+    operations: Vec<OperationSummary>,
     video_decode_requests: Vec<VideoDecodeRequest>,
+}
+
+#[derive(Debug, Serialize)]
+struct OperationSummary {
+    id: String,
+    kind: &'static str,
+    z_index: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,11 +166,20 @@ impl LumenWasmRuntime {
 
         let frame = lumen::time::FrameIndex(frame_index);
         let operations: Vec<_> = plan.operations_for_frame(frame).cloned().collect();
+        let operation_summaries = operations
+            .iter()
+            .map(|operation| OperationSummary {
+                id: operation.id.clone(),
+                kind: op_kind_label(&operation.kind),
+                z_index: operation.z_index,
+            })
+            .collect();
         let video_decode_requests = self.video_decode_requests(frame_index, &operations)?;
 
         to_js_value(&FrameSummary {
             frame_index,
             operation_count: operations.len(),
+            operations: operation_summaries,
             video_decode_requests,
         })
     }
@@ -394,6 +411,17 @@ fn lookup_sequence_transform(sequence: &Sequence, clip_id: &str) -> Option<Trans
         .flat_map(|track| track.clips.iter())
         .find(|clip| clip.id == clip_id)
         .map(|clip| clip.transform)
+}
+
+fn op_kind_label(kind: &RenderOpKind) -> &'static str {
+    match kind {
+        RenderOpKind::Text(_) => "text",
+        RenderOpKind::Shape(_) => "shape",
+        RenderOpKind::Image(_) => "image",
+        RenderOpKind::Svg(_) => "svg",
+        RenderOpKind::Video(_) => "video",
+        RenderOpKind::Solid(_) => "solid",
+    }
 }
 
 fn to_js_value<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
