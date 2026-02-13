@@ -659,7 +659,7 @@ fn build_chat_layer(
                             rotation_degrees: 0.0,
                         },
                         source_id.clone(),
-                        FitMode::Cover,
+                        FitMode::Contain,
                         (layout.bubble_radius - layout.image_inset).max(0.0),
                     ));
                 }
