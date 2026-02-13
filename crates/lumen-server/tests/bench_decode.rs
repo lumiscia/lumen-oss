@@ -508,20 +508,38 @@ fn full_render_pipeline() {
     }
 
     let mut backend = FfmpegRenderBackend::new(Arc::clone(&timeline));
-    let mut frame_times = Vec::with_capacity(90);
+    let mut progress_samples = Vec::with_capacity(90);
     let start = Instant::now();
     let _mp4 = backend
-        .render_to_mp4(&mut |_done, _total| {
-            frame_times.push(Instant::now());
+        .render_to_mp4(&mut |done, _total| {
+            progress_samples.push((done, Instant::now()));
         })
         .expect("render_to_mp4");
     let total = start.elapsed();
 
-    // Convert absolute timestamps to per-frame durations
-    let mut durations: Vec<Duration> = Vec::with_capacity(frame_times.len());
-    for i in 0..frame_times.len() {
-        let prev = if i == 0 { start } else { frame_times[i - 1] };
-        durations.push(frame_times[i].duration_since(prev));
+    // Convert progress updates to per-frame durations. This remains accurate
+    // even when a backend reports progress in large batches (e.g. fast-path).
+    let mut durations: Vec<Duration> = Vec::with_capacity(90);
+    let mut previous_done = 0u64;
+    let mut previous_time = start;
+    for (done, timestamp) in progress_samples {
+        let step_frames = done.saturating_sub(previous_done);
+        if step_frames == 0 {
+            continue;
+        }
+
+        let step_duration = timestamp.duration_since(previous_time);
+        let per_frame = step_duration / step_frames as u32;
+        for _ in 0..step_frames {
+            durations.push(per_frame);
+        }
+
+        previous_done = done;
+        previous_time = timestamp;
+    }
+
+    if durations.is_empty() {
+        durations.push(total);
     }
 
     print_stats("render_to_mp4 (per frame)", total, &mut durations);
