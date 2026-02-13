@@ -12,48 +12,137 @@ use crate::{
 
 const EMBEDDED_FONT: &[u8] = include_bytes!("../assets/roboto/Roboto-Regular.ttf");
 
+// -- GPU backend state (only compiled with a GPU feature) ---------------------
+
+#[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
+mod gpu_state {
+    use skia_safe::gpu;
+
+    #[allow(dead_code)]
+    pub(super) enum GpuBackend {
+        #[cfg(all(feature = "skia-metal", target_os = "macos"))]
+        Metal {
+            _device: objc2::rc::Retained<
+                objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>,
+            >,
+            _queue: objc2::rc::Retained<
+                objc2::runtime::ProtocolObject<dyn objc2_metal::MTLCommandQueue>,
+            >,
+        },
+        #[cfg(feature = "skia-vulkan")]
+        Vulkan(super::VulkanState),
+    }
+
+    pub(super) struct GpuState {
+        pub context: gpu::DirectContext,
+        pub _backend: GpuBackend,
+    }
+}
+
+#[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
+use gpu_state::{GpuBackend, GpuState};
+
+#[cfg(feature = "skia-vulkan")]
+struct VulkanState {
+    _entry: ash::Entry,
+    _instance: ash::Instance,
+    _device: ash::Device,
+}
+
+#[cfg(feature = "skia-vulkan")]
+impl Drop for VulkanState {
+    fn drop(&mut self) {
+        unsafe {
+            self._device.destroy_device(None);
+            self._instance.destroy_instance(None);
+        }
+    }
+}
+
+// -- SkiaRenderer -------------------------------------------------------------
+
 pub struct SkiaRenderer {
-    // Safety: SkiaRenderer is used single-threaded; the owner controls access.
-    // skia_safe::Surface (raster backend) doesn't implement Send but is safe
-    // for single-threaded use across thread boundaries.
     surface: skia_safe::Surface,
+    #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
+    gpu: Option<GpuState>,
     typeface: Typeface,
     width: u32,
     height: u32,
 }
 
-// Safety: SkiaRenderer wraps a CPU raster surface that is used single-threaded.
-// The owner is responsible for not sharing it across threads concurrently.
+// Safety: SkiaRenderer is used single-threaded; the owner controls access.
+// The GPU context and surface are not shared across threads concurrently.
 unsafe impl Send for SkiaRenderer {}
 
 impl SkiaRenderer {
     pub fn new(width: u32, height: u32) -> Result<Self, RenderError> {
-        let surface = surfaces::raster_n32_premul((width as i32, height as i32))
-            .ok_or_else(|| RenderError::SurfaceCreation("failed to create raster surface".into()))?;
+        let typeface = load_typeface()?;
 
-        let font_mgr = FontMgr::new();
-        let font_data = Data::new_copy(EMBEDDED_FONT);
-        let typeface = font_mgr
-            .new_from_data(&font_data, None)
-            .ok_or_else(|| RenderError::Text("failed to load embedded Roboto font".into()))?;
+        // Try GPU backends (Metal on macOS, Vulkan on Linux), fall back to CPU raster.
+        #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
+        {
+            if let Some((surface, gpu_state)) = try_create_gpu(width, height) {
+                return Ok(Self {
+                    surface,
+                    gpu: Some(gpu_state),
+                    typeface,
+                    width,
+                    height,
+                });
+            }
+        }
+
+        let surface = surfaces::raster_n32_premul((width as i32, height as i32))
+            .ok_or_else(|| {
+                RenderError::SurfaceCreation("failed to create raster surface".into())
+            })?;
 
         Ok(Self {
             surface,
+            #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
+            gpu: None,
             typeface,
             width,
             height,
         })
     }
 
+    pub fn is_gpu_accelerated(&self) -> bool {
+        #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
+        {
+            return self.gpu.is_some();
+        }
+        #[cfg(not(any(feature = "skia-metal", feature = "skia-vulkan")))]
+        {
+            false
+        }
+    }
+
     fn resize(&mut self, width: u32, height: u32) -> Result<(), RenderError> {
-        self.surface = surfaces::raster_n32_premul((width as i32, height as i32))
-            .ok_or_else(|| RenderError::SurfaceCreation("failed to resize raster surface".into()))?;
+        #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
+        if let Some(ref mut gpu) = self.gpu {
+            self.surface = create_gpu_surface(&mut gpu.context, width, height)?;
+            self.width = width;
+            self.height = height;
+            return Ok(());
+        }
+
+        self.surface =
+            surfaces::raster_n32_premul((width as i32, height as i32)).ok_or_else(|| {
+                RenderError::SurfaceCreation("failed to resize raster surface".into())
+            })?;
         self.width = width;
         self.height = height;
         Ok(())
     }
 
     fn readback_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
+        // Flush GPU work before readback
+        #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
+        if let Some(ref mut gpu) = self.gpu {
+            gpu.context.flush_and_submit();
+        }
+
         let info = ImageInfo::new(
             (self.width as i32, self.height as i32),
             ColorType::RGBA8888,
@@ -63,12 +152,9 @@ impl SkiaRenderer {
         let row_bytes = self.width as usize * 4;
         let mut pixels = vec![0u8; pixel_len(self.width, self.height)?];
 
-        let success = self.surface.read_pixels(
-            &info,
-            &mut pixels,
-            row_bytes,
-            IPoint::new(0, 0),
-        );
+        let success =
+            self.surface
+                .read_pixels(&info, &mut pixels, row_bytes, IPoint::new(0, 0));
         if !success {
             return Err(RenderError::SurfaceCreation("readPixels failed".into()));
         }
@@ -162,6 +248,183 @@ impl RenderBackend for SkiaRenderer {
 
         self.readback_rgba()
     }
+}
+
+// -- GPU context creation (only with GPU features) ----------------------------
+
+#[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
+fn try_create_gpu(width: u32, height: u32) -> Option<(skia_safe::Surface, GpuState)> {
+    #[cfg(all(feature = "skia-metal", target_os = "macos"))]
+    {
+        if let Some(result) = try_create_metal(width, height) {
+            return Some(result);
+        }
+    }
+
+    #[cfg(feature = "skia-vulkan")]
+    {
+        if let Some(result) = try_create_vulkan(width, height) {
+            return Some(result);
+        }
+    }
+
+    None
+}
+
+#[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
+fn create_gpu_surface(
+    context: &mut skia_safe::gpu::DirectContext,
+    width: u32,
+    height: u32,
+) -> Result<skia_safe::Surface, RenderError> {
+    use skia_safe::gpu;
+    let info = ImageInfo::new_n32_premul((width as i32, height as i32), None);
+    gpu::surfaces::render_target(
+        context,
+        gpu::Budgeted::Yes,
+        &info,
+        None,
+        gpu::SurfaceOrigin::TopLeft,
+        None,
+        false,
+        None,
+    )
+    .ok_or_else(|| RenderError::SurfaceCreation("failed to create GPU render target".into()))
+}
+
+// -- Metal backend (macOS) ----------------------------------------------------
+
+#[cfg(all(feature = "skia-metal", target_os = "macos"))]
+fn try_create_metal(width: u32, height: u32) -> Option<(skia_safe::Surface, GpuState)> {
+    use objc2::rc::Retained;
+    use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice};
+    use skia_safe::gpu;
+
+    let device = MTLCreateSystemDefaultDevice()?;
+    let queue = device.newCommandQueue()?;
+
+    let backend = unsafe {
+        gpu::mtl::BackendContext::new(
+            Retained::as_ptr(&device) as gpu::mtl::Handle,
+            Retained::as_ptr(&queue) as gpu::mtl::Handle,
+        )
+    };
+
+    let mut context = gpu::direct_contexts::make_metal(&backend, None)?;
+    let surface = create_gpu_surface(&mut context, width, height).ok()?;
+
+    Some((
+        surface,
+        GpuState {
+            context,
+            _backend: GpuBackend::Metal {
+                _device: device,
+                _queue: queue,
+            },
+        },
+    ))
+}
+
+// -- Vulkan backend (Linux headless) ------------------------------------------
+
+#[cfg(feature = "skia-vulkan")]
+fn try_create_vulkan(width: u32, height: u32) -> Option<(skia_safe::Surface, GpuState)> {
+    use ash::vk;
+    use skia_safe::gpu;
+
+    let entry = unsafe { ash::Entry::load() }.ok()?;
+
+    let app_info = vk::ApplicationInfo::default()
+        .application_name(c"lumen")
+        .application_version(vk::make_api_version(0, 0, 1, 0))
+        .engine_name(c"lumen")
+        .engine_version(vk::make_api_version(0, 0, 1, 0))
+        .api_version(vk::make_api_version(0, 1, 1, 0));
+
+    let create_info = vk::InstanceCreateInfo::default().application_info(&app_info);
+
+    let instance = unsafe { entry.create_instance(&create_info, None) }.ok()?;
+
+    let physical_devices = unsafe { instance.enumerate_physical_devices() }.ok()?;
+    let (physical_device, queue_family_index) = physical_devices.iter().find_map(|&pd| {
+        let queue_families =
+            unsafe { instance.get_physical_device_queue_family_properties(pd) };
+        queue_families.iter().enumerate().find_map(|(i, qf)| {
+            if qf.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                Some((pd, i as u32))
+            } else {
+                None
+            }
+        })
+    })?;
+
+    let priorities = [1.0f32];
+    let queue_create_info = vk::DeviceQueueCreateInfo::default()
+        .queue_family_index(queue_family_index)
+        .queue_priorities(&priorities);
+
+    let device_create_info = vk::DeviceCreateInfo::default()
+        .queue_create_infos(std::slice::from_ref(&queue_create_info));
+
+    let device =
+        unsafe { instance.create_device(physical_device, &device_create_info, None) }.ok()?;
+    let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+
+    // Create DirectContext inside a scope so the get_proc closure (which borrows
+    // entry/instance) is dropped before we move them into VulkanState.
+    let mut context = {
+        let get_proc = |of: gpu::vk::GetProcOf| -> Option<unsafe extern "system" fn()> {
+            unsafe {
+                match of {
+                    gpu::vk::GetProcOf::Instance(inst, name) => entry
+                        .get_instance_proc_addr(
+                            vk::Instance::from_raw(inst as u64),
+                            name.as_ptr(),
+                        ),
+                    gpu::vk::GetProcOf::Device(dev, name) => instance.get_device_proc_addr(
+                        vk::Device::from_raw(dev as u64),
+                        name.as_ptr(),
+                    ),
+                }
+            }
+        };
+
+        let backend = unsafe {
+            gpu::vk::BackendContext::new(
+                instance.handle().as_raw() as _,
+                physical_device.as_raw() as _,
+                device.handle().as_raw() as _,
+                (queue.as_raw() as _, queue_family_index as usize),
+                &get_proc,
+            )
+        };
+
+        gpu::direct_contexts::make_vulkan(&backend, None)?
+    };
+
+    let surface = create_gpu_surface(&mut context, width, height).ok()?;
+
+    Some((
+        surface,
+        GpuState {
+            context,
+            _backend: GpuBackend::Vulkan(VulkanState {
+                _entry: entry,
+                _instance: instance,
+                _device: device,
+            }),
+        },
+    ))
+}
+
+// -- Helpers ------------------------------------------------------------------
+
+fn load_typeface() -> Result<Typeface, RenderError> {
+    let font_mgr = FontMgr::new();
+    let font_data = Data::new_copy(EMBEDDED_FONT);
+    font_mgr
+        .new_from_data(&font_data, None)
+        .ok_or_else(|| RenderError::Text("failed to load embedded Roboto font".into()))
 }
 
 fn resolve_video_frame(
@@ -355,12 +618,7 @@ fn draw_image(
         None => return,
     };
 
-    let rect = layout_rect(
-        transform,
-        image.width as f64,
-        image.height as f64,
-        fit,
-    );
+    let rect = layout_rect(transform, image.width as f64, image.height as f64, fit);
 
     let scale_x = rect.width as f32 / image.width as f32;
     let scale_y = rect.height as f32 / image.height as f32;
