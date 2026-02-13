@@ -234,30 +234,18 @@ impl LibavStreamDecoder {
     /// Convert a source_frame index (at timeline_fps) to PTS in the source
     /// stream's time_base.
     fn source_frame_to_pts(&self, source_frame: u64) -> i64 {
-        unsafe {
-            ffmpeg_next::ffi::av_rescale_q(
-                source_frame as i64,
-                self.timeline_time_base.into(),
-                self.time_base.into(),
-            )
-        }
+        let timestamp_secs = source_frame as f64 * self.timeline_time_base.0 as f64
+            / self.timeline_time_base.1 as f64;
+        let pts = timestamp_secs * self.time_base.1 as f64 / self.time_base.0 as f64;
+        pts.round() as i64
     }
 
     /// Convert a decoded frame's PTS to a source_frame index at timeline_fps.
     fn pts_to_source_frame(&self, pts: i64) -> u64 {
-        let source_frame = unsafe {
-            ffmpeg_next::ffi::av_rescale_q(
-                pts,
-                self.time_base.into(),
-                self.timeline_time_base.into(),
-            )
-        };
-
-        if source_frame <= 0 {
-            return 0;
-        }
-
-        u64::try_from(source_frame).unwrap_or(u64::MAX)
+        let timestamp_secs = pts as f64 * self.time_base.0 as f64 / self.time_base.1 as f64;
+        let source_frame =
+            timestamp_secs * self.timeline_time_base.1 as f64 / self.timeline_time_base.0 as f64;
+        source_frame.round().max(0.0) as u64
     }
 
     // -- Core decode --------------------------------------------------------
