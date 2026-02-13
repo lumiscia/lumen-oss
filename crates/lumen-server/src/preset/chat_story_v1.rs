@@ -2,9 +2,9 @@ use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{Context, anyhow};
 use lumen::{
-    AudioMix, Clip, ClipContent, ColorRgba, FitMode, ImageClip, Layer, Project, Shape, ShapeClip,
-    Source, SourceKind, SourceMediaType, SourcePipeline, TextAlign, TextClip, Timeline, Transform,
-    VideoClip, time::Rational,
+    AudioMix, Clip, ClipAnimation, ClipContent, ColorRgba, Easing, FitMode, ImageClip, Layer,
+    Project, ScalarKeyframe, Shape, ShapeClip, Source, SourceKind, SourceMediaType, SourcePipeline,
+    TextAlign, TextClip, Timeline, Transform, VideoClip, time::Rational,
 };
 use serde::Deserialize;
 use skrifa::{
@@ -130,6 +130,11 @@ struct LayoutConstants {
     bubble_padding_x: f32,
     bubble_padding_y: f32,
     image_inset: f32,
+    panel_expand_duration_frames: u64,
+    message_intro_duration_frames: u64,
+    message_reflow_duration_frames: u64,
+    message_entry_offset_x: f32,
+    message_entry_offset_y: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +167,14 @@ struct PlacedMessage {
     y: f32,
 }
 
+#[derive(Debug, Clone)]
+struct PlacementMotion {
+    start_x: f32,
+    start_y: f32,
+    start_opacity: f32,
+    animation: ClipAnimation,
+}
+
 pub fn compile_chat_story_project(preset: &ChatStoryPresetV1) -> anyhow::Result<Project> {
     validate_preset(preset)?;
 
@@ -171,7 +184,7 @@ pub fn compile_chat_story_project(preset: &ChatStoryPresetV1) -> anyhow::Result<
     let expand_at_frame =
         seconds_to_frame_floor(preset.presentation.expand_at_seconds, preset.fps)?
             .min(total_frames);
-    let layout = LayoutConstants::new(preset.canvas.width);
+    let layout = LayoutConstants::new(preset.canvas.width, preset.fps);
     let text_measurer = TextMeasurer::new()?;
 
     let mut source_builder = SourceBuilder::default();
@@ -377,6 +390,7 @@ fn build_background_layer(
                 height: Some(canvas_height as f32),
                 rotation_degrees: 0.0,
             },
+            animation: ClipAnimation::default(),
             content: ClipContent::Video(VideoClip {
                 source: source_id,
                 pipeline: SourcePipeline::default(),
@@ -400,6 +414,7 @@ fn build_chat_layer(
     let mut clips = Vec::new();
     let _ = preset.overlays.len();
     let panel_x = ((preset.canvas.width as f32) - layout.panel_width) * 0.5;
+    let mut previous_placements: HashMap<usize, PlacedMessage> = HashMap::new();
 
     for (interval_index, window) in event_frames.windows(2).enumerate() {
         let start_frame = window[0];
@@ -417,7 +432,7 @@ fn build_chat_layer(
         };
 
         let panel_id = format!("chat_panel_i{interval_index}");
-        clips.push(shape_clip(
+        let mut panel_clip = shape_clip(
             panel_id,
             start_frame,
             duration_frames,
@@ -430,7 +445,21 @@ fn build_chat_layer(
             },
             ColorRgba(10, 10, 12, 228),
             layout.scale * 2.0,
-        ));
+        );
+        let is_expand_transition = expanded && start_frame == expand_at_frame;
+        if is_expand_transition {
+            let expand_frames = layout.panel_expand_duration_frames.min(duration_frames);
+            if expand_frames > 0 {
+                panel_clip.transform.height = Some(layout.compact_height);
+                panel_clip.animation.height.push(ScalarKeyframe {
+                    frame: 0,
+                    value: panel_height,
+                    duration_frames: expand_frames,
+                    easing: Easing::EaseInOut,
+                });
+            }
+        }
+        clips.push(panel_clip);
 
         let header_id = format!("chat_header_i{interval_index}");
         clips.push(shape_clip(
@@ -591,30 +620,39 @@ fn build_chat_layer(
             layout,
         );
 
-        for placed in placed_messages {
+        for placed in placed_messages.iter().cloned() {
+            let motion = compute_message_motion(
+                &placed,
+                previous_placements.get(&placed.measured.index),
+                duration_frames,
+                layout,
+            );
             let bubble_clip_id = format!(
                 "chat_msg_bubble_i{interval_index}_m{}",
                 placed.measured.index
             );
-            clips.push(shape_clip(
+            let mut bubble_clip = shape_clip(
                 bubble_clip_id,
                 start_frame,
                 duration_frames,
                 Transform {
-                    x: placed.x,
-                    y: placed.y,
+                    x: motion.start_x,
+                    y: motion.start_y,
                     width: Some(placed.measured.bubble_width),
                     height: Some(placed.measured.bubble_height),
                     rotation_degrees: 0.0,
                 },
                 placed.measured.bubble_color,
                 layout.bubble_radius,
-            ));
+            );
+            bubble_clip.opacity = motion.start_opacity;
+            bubble_clip.animation = motion.animation.clone();
+            clips.push(bubble_clip);
 
             match &placed.measured.content {
                 MeasuredMessageContent::Text { lines } => {
                     for (line_index, line) in lines.iter().enumerate() {
-                        clips.push(text_clip(
+                        let mut text = text_clip(
                             format!(
                                 "chat_msg_text_i{interval_index}_m{}_l{line_index}",
                                 placed.measured.index
@@ -622,8 +660,8 @@ fn build_chat_layer(
                             start_frame,
                             duration_frames,
                             Transform {
-                                x: placed.x + layout.bubble_padding_x,
-                                y: placed.y
+                                x: motion.start_x + layout.bubble_padding_x,
+                                y: motion.start_y
                                     + layout.bubble_padding_y
                                     + (line_index as f32 * layout.line_height),
                                 width: Some(
@@ -636,7 +674,14 @@ fn build_chat_layer(
                             layout.text_size,
                             placed.measured.text_color,
                             TextAlign::Left,
-                        ));
+                        );
+                        text.opacity = motion.start_opacity;
+                        text.animation = offset_animation(
+                            &motion.animation,
+                            layout.bubble_padding_x,
+                            layout.bubble_padding_y + (line_index as f32 * layout.line_height),
+                        );
+                        clips.push(text);
                     }
                 }
                 MeasuredMessageContent::Image {
@@ -644,7 +689,7 @@ fn build_chat_layer(
                     draw_width,
                     draw_height,
                 } => {
-                    clips.push(image_clip(
+                    let mut image = image_clip(
                         format!(
                             "chat_msg_image_i{interval_index}_m{}",
                             placed.measured.index
@@ -652,8 +697,8 @@ fn build_chat_layer(
                         start_frame,
                         duration_frames,
                         Transform {
-                            x: placed.x + layout.image_inset,
-                            y: placed.y + layout.image_inset,
+                            x: motion.start_x + layout.image_inset,
+                            y: motion.start_y + layout.image_inset,
                             width: Some(*draw_width),
                             height: Some(*draw_height),
                             rotation_degrees: 0.0,
@@ -661,10 +706,19 @@ fn build_chat_layer(
                         source_id.clone(),
                         FitMode::Contain,
                         (layout.bubble_radius - layout.image_inset).max(0.0),
-                    ));
+                    );
+                    image.opacity = motion.start_opacity;
+                    image.animation =
+                        offset_animation(&motion.animation, layout.image_inset, layout.image_inset);
+                    clips.push(image);
                 }
             }
         }
+
+        previous_placements = placed_messages
+            .into_iter()
+            .map(|placed| (placed.measured.index, placed))
+            .collect();
     }
 
     Ok(Layer {
@@ -672,6 +726,83 @@ fn build_chat_layer(
         z_index: 100,
         clips,
     })
+}
+
+fn compute_message_motion(
+    placed: &PlacedMessage,
+    previous: Option<&PlacedMessage>,
+    interval_duration: u64,
+    layout: &LayoutConstants,
+) -> PlacementMotion {
+    let mut motion = PlacementMotion {
+        start_x: placed.x,
+        start_y: placed.y,
+        start_opacity: 1.0,
+        animation: ClipAnimation::default(),
+    };
+
+    if let Some(previous) = previous {
+        let move_duration = layout.message_reflow_duration_frames.min(interval_duration);
+        if (previous.x - placed.x).abs() > 0.01 {
+            motion.start_x = previous.x;
+            motion.animation.x.push(ScalarKeyframe {
+                frame: 0,
+                value: placed.x,
+                duration_frames: move_duration,
+                easing: Easing::EaseInOut,
+            });
+        }
+        if (previous.y - placed.y).abs() > 0.01 {
+            motion.start_y = previous.y;
+            motion.animation.y.push(ScalarKeyframe {
+                frame: 0,
+                value: placed.y,
+                duration_frames: move_duration,
+                easing: Easing::EaseInOut,
+            });
+        }
+        return motion;
+    }
+
+    let intro_duration = layout.message_intro_duration_frames.min(interval_duration);
+    let x_offset = match placed.measured.side {
+        ChatStorySide::Left => -layout.message_entry_offset_x,
+        ChatStorySide::Right => layout.message_entry_offset_x,
+    };
+    motion.start_x = placed.x + x_offset;
+    motion.start_y = placed.y + layout.message_entry_offset_y;
+    motion.start_opacity = 0.0;
+    motion.animation.x.push(ScalarKeyframe {
+        frame: 0,
+        value: placed.x,
+        duration_frames: intro_duration,
+        easing: Easing::EaseOut,
+    });
+    motion.animation.y.push(ScalarKeyframe {
+        frame: 0,
+        value: placed.y,
+        duration_frames: intro_duration,
+        easing: Easing::EaseOut,
+    });
+    motion.animation.opacity.push(ScalarKeyframe {
+        frame: 0,
+        value: 1.0,
+        duration_frames: intro_duration,
+        easing: Easing::EaseOut,
+    });
+
+    motion
+}
+
+fn offset_animation(animation: &ClipAnimation, offset_x: f32, offset_y: f32) -> ClipAnimation {
+    let mut adjusted = animation.clone();
+    for keyframe in &mut adjusted.x {
+        keyframe.value += offset_x;
+    }
+    for keyframe in &mut adjusted.y {
+        keyframe.value += offset_y;
+    }
+    adjusted
 }
 
 fn place_messages(
@@ -920,6 +1051,7 @@ fn shape_clip(
         duration_frames,
         opacity: 1.0,
         transform,
+        animation: ClipAnimation::default(),
         content: ClipContent::Shape(ShapeClip {
             shape: Shape::Rectangle { fill, radius },
         }),
@@ -942,6 +1074,7 @@ fn text_clip(
         duration_frames,
         opacity: 1.0,
         transform,
+        animation: ClipAnimation::default(),
         content: ClipContent::Text(TextClip {
             text,
             font_size,
@@ -966,6 +1099,7 @@ fn image_clip(
         duration_frames,
         opacity: 1.0,
         transform,
+        animation: ClipAnimation::default(),
         content: ClipContent::Image(ImageClip {
             source,
             fit,
@@ -1000,6 +1134,14 @@ fn seconds_to_frame_floor(seconds: f64, fps: u32) -> anyhow::Result<u64> {
     Ok(raw as u64)
 }
 
+fn seconds_to_frames(seconds: f64, fps: u32) -> u64 {
+    if !seconds.is_finite() || seconds <= 0.0 || fps == 0 {
+        return 0;
+    }
+    let raw = (seconds * fps as f64).round().max(0.0);
+    raw.min(u64::MAX as f64) as u64
+}
+
 fn default_canvas_width() -> u32 {
     1080
 }
@@ -1017,9 +1159,12 @@ fn default_true() -> bool {
 }
 
 impl LayoutConstants {
-    fn new(canvas_width: u32) -> Self {
+    fn new(canvas_width: u32, fps: u32) -> Self {
         let scale = (canvas_width as f32) / 360.0;
         let text_size = 12.0 * scale;
+        let panel_expand_duration_frames = seconds_to_frames(0.24, fps).max(1);
+        let message_intro_duration_frames = seconds_to_frames(0.18, fps).max(1);
+        let message_reflow_duration_frames = seconds_to_frames(0.22, fps).max(1);
         Self {
             scale,
             panel_width: 248.0 * scale,
@@ -1038,6 +1183,11 @@ impl LayoutConstants {
             bubble_padding_x: 8.0 * scale,
             bubble_padding_y: 5.0 * scale,
             image_inset: 2.0 * scale,
+            panel_expand_duration_frames,
+            message_intro_duration_frames,
+            message_reflow_duration_frames,
+            message_entry_offset_x: 12.0 * scale,
+            message_entry_offset_y: 10.0 * scale,
         }
     }
 }
@@ -1222,7 +1372,12 @@ mod tests {
             .iter()
             .filter(|clip| clip.id.starts_with("chat_msg_bubble_"))
         {
-            let x = bubble.transform.x;
+            let x = bubble
+                .animation
+                .x
+                .last()
+                .map(|keyframe| keyframe.value)
+                .unwrap_or(bubble.transform.x);
             let width = bubble.transform.width.unwrap_or_default();
             assert!(x >= panel_x - 0.1);
             assert!(x + width <= panel_x + panel_w + 0.1);
