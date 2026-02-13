@@ -617,7 +617,7 @@ impl Default for TextPainter {
     }
 }
 
-const EMBEDDED_FONT: &[u8] = include_bytes!("../assets/roboto/Roboto-Regular.ttf");
+const EMBEDDED_FONT: &[u8] = include_bytes!("../../../assets/roboto/Roboto-Regular.ttf");
 
 fn to_font_ref(font: &FontData) -> Option<FontRef<'_>> {
     let file_ref = FileRef::new(font.data.as_ref()).ok()?;
@@ -629,10 +629,8 @@ fn to_font_ref(font: &FontData) -> Option<FontRef<'_>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        gpu::layout_rect,
-        model::{FitMode, Transform},
-    };
+    use super::layout_rect;
+    use crate::model::{FitMode, Transform};
 
     #[test]
     fn contain_fit_keeps_aspect_ratio() {

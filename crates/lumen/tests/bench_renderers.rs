@@ -42,7 +42,7 @@ fn load_fixture(name: &str) -> Project {
 fn bench_vello(project: &Project, warmup: u32, frames: u32) -> (Duration, Vec<Duration>) {
     let timeline = compile_project(project).expect("compile");
     let mut renderer =
-        lumen::gpu::GpuRenderer::new(timeline.canvas.width, timeline.canvas.height)
+        lumen::backend::vello::GpuRenderer::new(timeline.canvas.width, timeline.canvas.height)
             .expect("vello init");
     let mut provider = NoopFrameProvider;
 
@@ -69,7 +69,7 @@ fn bench_vello(project: &Project, warmup: u32, frames: u32) -> (Duration, Vec<Du
 fn bench_skia(project: &Project, warmup: u32, frames: u32) -> (Duration, Vec<Duration>) {
     let timeline = compile_project(project).expect("compile");
     let mut renderer =
-        lumen::skia::SkiaRenderer::new(timeline.canvas.width, timeline.canvas.height)
+        lumen::backend::skia::SkiaRenderer::new(timeline.canvas.width, timeline.canvas.height)
             .expect("skia init");
     let mut provider = NoopFrameProvider;
 

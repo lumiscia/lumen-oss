@@ -84,7 +84,7 @@ fn compute_rmse(a: &[u8], b: &[u8]) -> f64 {
 fn render_frame_vello(project: &Project) -> Vec<u8> {
     let timeline = compile_project(project).expect("compile");
     let mut renderer =
-        lumen::gpu::GpuRenderer::new(timeline.canvas.width, timeline.canvas.height)
+        lumen::backend::vello::GpuRenderer::new(timeline.canvas.width, timeline.canvas.height)
             .expect("vello init");
     let mut provider = NoopFrameProvider;
     renderer
@@ -95,7 +95,7 @@ fn render_frame_vello(project: &Project) -> Vec<u8> {
 fn render_frame_skia(project: &Project) -> Vec<u8> {
     let timeline = compile_project(project).expect("compile");
     let mut renderer =
-        lumen::skia::SkiaRenderer::new(timeline.canvas.width, timeline.canvas.height)
+        lumen::backend::skia::SkiaRenderer::new(timeline.canvas.width, timeline.canvas.height)
             .expect("skia init");
     let mut provider = NoopFrameProvider;
     renderer

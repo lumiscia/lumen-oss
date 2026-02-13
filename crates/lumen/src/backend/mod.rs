@@ -4,6 +4,12 @@ use thiserror::Error;
 
 use crate::compile::{CompileError, CompiledTimeline};
 
+#[cfg(feature = "renderer-skia")]
+pub mod skia;
+
+#[cfg(feature = "renderer-vello")]
+pub mod vello;
+
 #[derive(Debug, Error)]
 pub enum RenderError {
     #[error("failed to acquire a compatible GPU device")]
