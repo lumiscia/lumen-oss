@@ -448,9 +448,9 @@ fn build_chat_layer(
             layout.scale * 2.0,
         ));
 
-        let avatar_size = 18.0 * layout.scale;
+        let avatar_size = 16.0 * layout.scale;
         let avatar_x = panel_x + (layout.panel_width * 0.5) - (avatar_size * 0.5);
-        let avatar_y = layout.panel_y + (3.0 * layout.scale);
+        let avatar_y = layout.panel_y + (2.0 * layout.scale);
         if let Some(source_id) = avatar_source_id.as_deref() {
             clips.push(image_clip(
                 format!("chat_avatar_i{interval_index}"),
@@ -491,34 +491,56 @@ fn build_chat_layer(
                 duration_frames,
                 Transform {
                     x: panel_x + (7.0 * layout.scale),
-                    y: layout.panel_y + (9.0 * layout.scale),
-                    width: Some(18.0 * layout.scale),
+                    y: layout.panel_y + (8.0 * layout.scale),
+                    width: Some(22.0 * layout.scale),
                     height: Some(layout.header_height),
                     rotation_degrees: 0.0,
                 },
                 "<".to_string(),
-                12.0 * layout.scale,
+                9.0 * layout.scale,
                 ColorRgba(72, 162, 255, 255),
                 TextAlign::Left,
             ));
         }
 
         if preset.header.show_video_icon {
-            clips.push(text_clip(
-                format!("chat_video_icon_i{interval_index}"),
+            let icon_body_x = panel_x + layout.panel_width - (15.5 * layout.scale);
+            let icon_body_y = layout.panel_y + (10.5 * layout.scale);
+            let icon_body_w = 8.0 * layout.scale;
+            let icon_body_h = 5.0 * layout.scale;
+            let icon_lens_w = 2.4 * layout.scale;
+            let icon_lens_h = 2.4 * layout.scale;
+            let icon_lens_x = icon_body_x + icon_body_w + (0.7 * layout.scale);
+            let icon_lens_y = icon_body_y + ((icon_body_h - icon_lens_h) * 0.5);
+
+            clips.push(shape_clip(
+                format!("chat_video_icon_body_i{interval_index}"),
                 start_frame,
                 duration_frames,
                 Transform {
-                    x: panel_x + layout.panel_width - (28.0 * layout.scale),
-                    y: layout.panel_y + (9.0 * layout.scale),
-                    width: Some(21.0 * layout.scale),
-                    height: Some(layout.header_height),
+                    x: icon_body_x,
+                    y: icon_body_y,
+                    width: Some(icon_body_w),
+                    height: Some(icon_body_h),
                     rotation_degrees: 0.0,
                 },
-                "[]".to_string(),
-                10.0 * layout.scale,
                 ColorRgba(72, 162, 255, 255),
-                TextAlign::Right,
+                1.2 * layout.scale,
+            ));
+
+            clips.push(shape_clip(
+                format!("chat_video_icon_lens_i{interval_index}"),
+                start_frame,
+                duration_frames,
+                Transform {
+                    x: icon_lens_x,
+                    y: icon_lens_y,
+                    width: Some(icon_lens_w),
+                    height: Some(icon_lens_h),
+                    rotation_degrees: 0.0,
+                },
+                ColorRgba(72, 162, 255, 255),
+                0.5 * layout.scale,
             ));
         }
 
@@ -527,14 +549,14 @@ fn build_chat_layer(
             start_frame,
             duration_frames,
             Transform {
-                x: panel_x + (30.0 * layout.scale),
-                y: layout.panel_y + (9.5 * layout.scale),
-                width: Some(layout.panel_width - (60.0 * layout.scale)),
+                x: panel_x + (44.0 * layout.scale),
+                y: layout.panel_y + (17.0 * layout.scale),
+                width: Some(layout.panel_width - (88.0 * layout.scale)),
                 height: Some(layout.header_height),
                 rotation_degrees: 0.0,
             },
             preset.header.title.clone(),
-            10.0 * layout.scale,
+            8.0 * layout.scale,
             ColorRgba(248, 248, 248, 255),
             TextAlign::Center,
         ));
