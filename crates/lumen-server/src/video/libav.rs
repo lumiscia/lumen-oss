@@ -139,6 +139,8 @@ struct LibavStreamDecoder {
     packet: ffmpeg::Packet,
     eof: bool,
     draining: bool,
+    last_decoded_source_frame: Option<u64>,
+    last_decoded_image: Option<FrameImage>,
     source: Source,
     media_root: std::path::PathBuf,
 }
@@ -210,6 +212,8 @@ impl LibavStreamDecoder {
             packet,
             eof: false,
             draining: false,
+            last_decoded_source_frame: None,
+            last_decoded_image: None,
             source: source.clone(),
             media_root: media_root.to_path_buf(),
         };
@@ -256,7 +260,7 @@ impl LibavStreamDecoder {
         while self.next_source_frame <= source_frame && !self.eof {
             match self.decode_next_frame()? {
                 Some((frame_idx, image)) => {
-                    self.cache.put(frame_idx, image);
+                    self.cache_decoded_frame(frame_idx, image);
                     if frame_idx >= source_frame {
                         break;
                     }
@@ -265,7 +269,56 @@ impl LibavStreamDecoder {
             }
         }
 
-        Ok(self.cache.get(&source_frame).cloned())
+        if let Some(frame) = self.cache.get(&source_frame) {
+            return Ok(Some(frame.clone()));
+        }
+
+        Ok(self.nearest_cached_frame(source_frame))
+    }
+
+    fn cache_decoded_frame(&mut self, frame_idx: u64, image: FrameImage) {
+        if let (Some(prev_idx), Some(prev_image)) = (
+            self.last_decoded_source_frame,
+            self.last_decoded_image.as_ref(),
+        ) {
+            if frame_idx > prev_idx.saturating_add(1) {
+                // Fill gaps caused by source fps < timeline fps by holding the
+                // previous frame. This avoids cache misses and fallback seeks.
+                for gap_idx in prev_idx.saturating_add(1)..frame_idx {
+                    self.cache.put(gap_idx, prev_image.clone());
+                }
+            }
+        }
+
+        self.cache.put(frame_idx, image.clone());
+        self.last_decoded_source_frame = Some(frame_idx);
+        self.last_decoded_image = Some(image);
+    }
+
+    fn nearest_cached_frame(&self, source_frame: u64) -> Option<FrameImage> {
+        let mut prev: Option<(u64, FrameImage)> = None;
+        let mut next: Option<(u64, FrameImage)> = None;
+
+        for (frame_idx, frame) in self.cache.iter() {
+            let frame_idx = *frame_idx;
+
+            if frame_idx <= source_frame {
+                if prev
+                    .as_ref()
+                    .is_none_or(|(best_idx, _)| frame_idx > *best_idx)
+                {
+                    prev = Some((frame_idx, frame.clone()));
+                }
+            } else if next
+                .as_ref()
+                .is_none_or(|(best_idx, _)| frame_idx < *best_idx)
+            {
+                next = Some((frame_idx, frame.clone()));
+            }
+        }
+
+        prev.map(|(_, frame)| frame)
+            .or_else(|| next.map(|(_, frame)| frame))
     }
 
     fn seek_to_frame(&mut self, target_frame: u64) -> anyhow::Result<()> {
@@ -280,12 +333,14 @@ impl LibavStreamDecoder {
             self.eof = false;
             self.draining = false;
             self.next_source_frame = 0;
+            self.last_decoded_source_frame = None;
+            self.last_decoded_image = None;
 
             // Decode forward past any pre-target frames from the keyframe.
             loop {
                 match self.decode_next_raw()? {
                     Some((idx, image)) => {
-                        self.cache.put(idx, image);
+                        self.cache_decoded_frame(idx, image);
                         self.next_source_frame = idx.saturating_add(1);
                         if idx >= target_frame {
                             break;
@@ -326,6 +381,8 @@ impl LibavStreamDecoder {
         self.eof = false;
         self.draining = false;
         self.next_source_frame = 0;
+        self.last_decoded_source_frame = None;
+        self.last_decoded_image = None;
 
         // Decode forward to target, caching along the way.
         self.skip_to_frame(target_frame)?;
@@ -337,7 +394,7 @@ impl LibavStreamDecoder {
         while self.next_source_frame <= target_frame && !self.eof {
             match self.decode_next_frame()? {
                 Some((idx, image)) => {
-                    self.cache.put(idx, image);
+                    self.cache_decoded_frame(idx, image);
                     if idx >= target_frame {
                         break;
                     }
