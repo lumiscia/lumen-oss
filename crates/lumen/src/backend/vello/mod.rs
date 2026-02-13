@@ -493,29 +493,34 @@ fn readback_rgba(
     receive.map_err(|_| RenderError::BufferMap)?;
 
     let mapped = slice.get_mapped_range();
-    let mut rgba = vec![0u8; pixel_len(width, height)?];
     let row_len = (width as usize)
         .checked_mul(4)
         .ok_or(RenderError::SizeOverflow)?;
+    let total_len = pixel_len(width, height)?;
+    let padded = padded_bytes_per_row as usize;
+    let height_usize = height as usize;
 
-    for row in 0..(height as usize) {
-        let src_start = row
-            .checked_mul(padded_bytes_per_row as usize)
-            .ok_or(RenderError::BufferRead)?;
-        let src_end = src_start
-            .checked_add(row_len)
-            .ok_or(RenderError::BufferRead)?;
-        let dst_start = row.checked_mul(row_len).ok_or(RenderError::BufferRead)?;
-        let dst_end = dst_start
-            .checked_add(row_len)
-            .ok_or(RenderError::BufferRead)?;
-
-        if src_end > mapped.len() || dst_end > rgba.len() {
-            return Err(RenderError::BufferRead);
-        }
-
-        rgba[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
+    // Validate bounds once upfront.
+    let src_required = height_usize
+        .saturating_sub(1)
+        .checked_mul(padded)
+        .and_then(|v| v.checked_add(row_len))
+        .ok_or(RenderError::BufferRead)?;
+    if src_required > mapped.len() {
+        return Err(RenderError::BufferRead);
     }
+
+    let mut rgba = if row_len == padded {
+        // Fast path: no padding, single copy.
+        mapped[..total_len].to_vec()
+    } else {
+        let mut buf = Vec::with_capacity(total_len);
+        for row in 0..height_usize {
+            let src_start = row * padded;
+            buf.extend_from_slice(&mapped[src_start..src_start + row_len]);
+        }
+        buf
+    };
 
     drop(mapped);
     readback_buffer.unmap();
