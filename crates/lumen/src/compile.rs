@@ -117,6 +117,7 @@ pub enum CompiledOperationKind {
 pub struct ImageSourceRef {
     pub source_id: String,
     pub fit: FitMode,
+    pub corner_radius: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +125,7 @@ pub struct VideoSourceRef {
     pub source_id: String,
     pub pipeline: SourcePipeline,
     pub fit: FitMode,
+    pub corner_radius: f32,
 }
 
 pub fn compile_project(project: &Project) -> Result<CompiledTimeline, CompileError> {
@@ -309,13 +311,28 @@ fn compile_clip_content(
         ClipContent::Text(text) => Ok(CompiledOperationKind::Text(text.clone())),
         ClipContent::Image(image) => {
             validate_source_type(layer, clip, sources, &image.source, SourceMediaType::Image)?;
+            if !image.corner_radius.is_finite() || image.corner_radius < 0.0 {
+                return Err(CompileError::InvalidClip {
+                    layer_id: layer.id.clone(),
+                    clip_id: clip.id.clone(),
+                    reason: "image corner_radius must be finite and >= 0".to_string(),
+                });
+            }
             Ok(CompiledOperationKind::Image(ImageSourceRef {
                 source_id: image.source.clone(),
                 fit: image.fit,
+                corner_radius: image.corner_radius,
             }))
         }
         ClipContent::Video(video) => {
             validate_source_type(layer, clip, sources, &video.source, SourceMediaType::Video)?;
+            if !video.corner_radius.is_finite() || video.corner_radius < 0.0 {
+                return Err(CompileError::InvalidClip {
+                    layer_id: layer.id.clone(),
+                    clip_id: clip.id.clone(),
+                    reason: "video corner_radius must be finite and >= 0".to_string(),
+                });
+            }
             let _ =
                 map_source_frame(&video.pipeline, 0).map_err(|err| CompileError::InvalidClip {
                     layer_id: layer.id.clone(),
@@ -327,6 +344,7 @@ fn compile_clip_content(
                 source_id: video.source.clone(),
                 pipeline: video.pipeline.clone(),
                 fit: video.fit,
+                corner_radius: video.corner_radius,
             }))
         }
     }
@@ -409,6 +427,7 @@ mod tests {
                         source: "video_1".to_string(),
                         pipeline: Default::default(),
                         fit: Default::default(),
+                        corner_radius: 0.0,
                     }),
                 }],
             }],
@@ -456,6 +475,7 @@ mod tests {
                         source: "image_1".to_string(),
                         pipeline: Default::default(),
                         fit: Default::default(),
+                        corner_radius: 0.0,
                     }),
                 }],
             }],

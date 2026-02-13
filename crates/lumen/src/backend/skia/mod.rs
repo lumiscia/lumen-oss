@@ -7,9 +7,8 @@ pub mod vulkan;
 use std::collections::HashMap;
 
 use skia_safe::{
-    images, Canvas, Color, ColorType, Data, Font, FontMgr, IPoint, ImageInfo, Paint, Point, RRect,
-    Rect, Typeface,
-    paint::Style as PaintStyle,
+    Canvas, Color, ColorType, Data, Font, FontMgr, IPoint, ImageInfo, Paint, Point, RRect, Rect,
+    Typeface, images, paint::Style as PaintStyle,
 };
 
 use crate::{
@@ -127,9 +126,9 @@ impl SkiaRenderer {
         let row_bytes = self.width as usize * 4;
         let mut pixels = vec![0u8; pixel_len(self.width, self.height)?];
 
-        let success =
-            self.surface
-                .read_pixels(&info, &mut pixels, row_bytes, IPoint::new(0, 0));
+        let success = self
+            .surface
+            .read_pixels(&info, &mut pixels, row_bytes, IPoint::new(0, 0));
         if !success {
             return Err(RenderError::SurfaceCreation("readPixels failed".into()));
         }
@@ -196,6 +195,7 @@ impl RenderBackend for SkiaRenderer {
                             operation.transform,
                             opacity,
                             image.fit,
+                            image.corner_radius,
                             &frame_image,
                         );
                     }
@@ -210,6 +210,7 @@ impl RenderBackend for SkiaRenderer {
                                 operation.transform,
                                 opacity,
                                 video.fit,
+                                video.corner_radius,
                                 &frame_image,
                             );
                         }
@@ -351,15 +352,24 @@ fn draw_solid(canvas: &Canvas, transform: Transform, opacity: f32, color: ColorR
     paint.set_style(PaintStyle::Fill);
 
     canvas.draw_rect(
-        Rect::from_xywh(rect.x as f32, rect.y as f32, rect.width as f32, rect.height as f32),
+        Rect::from_xywh(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+        ),
         &paint,
     );
 }
 
 fn draw_shape(canvas: &Canvas, transform: Transform, opacity: f32, shape: &ShapeClip) {
     let rect = layout_rect(transform, 1.0, 1.0, FitMode::Fill);
-    let sk_rect =
-        Rect::from_xywh(rect.x as f32, rect.y as f32, rect.width as f32, rect.height as f32);
+    let sk_rect = Rect::from_xywh(
+        rect.x as f32,
+        rect.y as f32,
+        rect.width as f32,
+        rect.height as f32,
+    );
 
     match shape.shape {
         Shape::Rectangle { fill, radius } => {
@@ -453,6 +463,7 @@ fn draw_image(
     transform: Transform,
     opacity: f32,
     fit: FitMode,
+    corner_radius: f32,
     image: &FrameImage,
 ) {
     let info = ImageInfo::new(
@@ -489,6 +500,18 @@ fn draw_image(
 
     canvas.translate(Point::new(rect.x as f32, rect.y as f32));
     canvas.scale((scale_x, scale_y));
+
+    if corner_radius > 0.0 {
+        let min_scale = scale_x.abs().min(scale_y.abs()).max(f32::EPSILON);
+        let source_radius =
+            (corner_radius / min_scale).min((image.width.min(image.height) as f32) * 0.5);
+        let clip = RRect::new_rect_xy(
+            Rect::from_xywh(0.0, 0.0, image.width as f32, image.height as f32),
+            source_radius,
+            source_radius,
+        );
+        canvas.clip_rrect(clip, None, Some(true));
+    }
 
     let mut paint = Paint::default();
     paint.set_alpha_f(opacity);

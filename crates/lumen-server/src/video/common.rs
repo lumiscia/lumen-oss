@@ -10,7 +10,7 @@ use std::{
     sync::mpsc,
 };
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use lumen::{
     backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
     compile::{CompiledOperationKind, CompiledTimeline},
@@ -316,6 +316,9 @@ fn analyze_fast_path_timeline(timeline: &CompiledTimeline) -> anyhow::Result<Opt
     let CompiledOperationKind::Video(video) = &operation.kind else {
         return Ok(None);
     };
+    if !approx_eq(video.corner_radius, 0.0) {
+        return Ok(None);
+    }
     if video.pipeline.looping != LoopMode::None {
         return Ok(None);
     }

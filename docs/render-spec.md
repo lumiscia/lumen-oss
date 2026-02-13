@@ -20,6 +20,8 @@ Transform fields:
 - `width`, `height` define the target bounds for image/video fit; if unset, source dimensions are
   used.
 - `rotation_degrees` rotates around the resolved draw rect center.
+- `corner_radius` (image/video clips only) clips rendered media to rounded corners. `0` disables
+  clipping.
 
 Fit modes for image/video:
 

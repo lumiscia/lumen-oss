@@ -142,11 +142,13 @@ pub enum ClipContent {
     Video(VideoClip),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImageClip {
     pub source: String,
     #[serde(default)]
     pub fit: FitMode,
+    #[serde(default = "default_corner_radius")]
+    pub corner_radius: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -156,6 +158,8 @@ pub struct VideoClip {
     pub pipeline: SourcePipeline,
     #[serde(default)]
     pub fit: FitMode,
+    #[serde(default = "default_corner_radius")]
+    pub corner_radius: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -302,6 +306,10 @@ fn default_opacity() -> f32 {
 
 fn default_speed() -> f32 {
     1.0
+}
+
+fn default_corner_radius() -> f32 {
+    0.0
 }
 
 fn default_volume() -> f32 {
