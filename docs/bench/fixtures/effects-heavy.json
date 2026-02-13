@@ -1,0 +1,993 @@
+{
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "background": [
+      5,
+      5,
+      6,
+      255
+    ]
+  },
+  "timeline": {
+    "fps": {
+      "num": 30,
+      "den": 1
+    },
+    "total_frames": 300
+  },
+  "sources": [
+    {
+      "id": "fx_background",
+      "kind": "generator",
+      "media": "video",
+      "filter": "testsrc2=size=1920x1080:rate=30,boxblur=18:8,eq=saturation=1.2:contrast=1.05"
+    },
+    {
+      "id": "fx_overlay",
+      "kind": "generator",
+      "media": "video",
+      "filter": "mandelbrot=size=960x540:rate=30,scale=1920:1080:flags=lanczos,boxblur=10:6"
+    }
+  ],
+  "layers": [
+    {
+      "id": "fx_bg_layer",
+      "z_index": 0,
+      "clips": [
+        {
+          "id": "fx_bg_clip",
+          "start_frame": 0,
+          "duration_frames": 300,
+          "opacity": 1,
+          "transform": {
+            "x": 0,
+            "y": 0,
+            "width": 1920,
+            "height": 1080,
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "video",
+            "source": "fx_background",
+            "fit": "cover",
+            "pipeline": {
+              "speed": 1,
+              "reverse": false,
+              "looping": {
+                "mode": "none"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "fx_overlay_layer",
+      "z_index": 1,
+      "clips": [
+        {
+          "id": "fx_overlay_clip",
+          "start_frame": 30,
+          "duration_frames": 240,
+          "opacity": 0.5,
+          "transform": {
+            "x": 140,
+            "y": 80,
+            "width": 1640,
+            "height": 920,
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "video",
+            "source": "fx_overlay",
+            "fit": "cover",
+            "pipeline": {
+              "speed": 1,
+              "reverse": false,
+              "trim": {
+                "start_frame": 10,
+                "end_frame": 250
+              },
+              "looping": {
+                "mode": "infinite"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "fx_shape_layer",
+      "z_index": 2,
+      "clips": [
+        {
+          "id": "fx_shape_0",
+          "start_frame": 0,
+          "duration_frames": 300,
+          "opacity": 0.2,
+          "transform": {
+            "x": 0,
+            "y": 0,
+            "width": 180,
+            "height": 120,
+            "rotation_degrees": -40
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              16,
+              240,
+              240,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_1",
+          "start_frame": 8,
+          "duration_frames": 292,
+          "opacity": 0.32,
+          "transform": {
+            "x": 131,
+            "y": 97,
+            "width": 199,
+            "height": 143,
+            "rotation_degrees": -29
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              89,
+              135,
+              183,
+              150
+            ],
+            "radius": 5
+          }
+        },
+        {
+          "id": "fx_shape_2",
+          "start_frame": 16,
+          "duration_frames": 284,
+          "opacity": 0.44,
+          "transform": {
+            "x": 262,
+            "y": 194,
+            "width": 218,
+            "height": 166,
+            "rotation_degrees": -18
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              162,
+              30,
+              126,
+              150
+            ],
+            "radius": 10
+          }
+        },
+        {
+          "id": "fx_shape_3",
+          "start_frame": 24,
+          "duration_frames": 276,
+          "opacity": 0.56,
+          "transform": {
+            "x": 393,
+            "y": 291,
+            "width": 237,
+            "height": 189,
+            "rotation_degrees": -7
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              235,
+              181,
+              69,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_4",
+          "start_frame": 32,
+          "duration_frames": 268,
+          "opacity": 0.6799999999999999,
+          "transform": {
+            "x": 524,
+            "y": 388,
+            "width": 256,
+            "height": 212,
+            "rotation_degrees": 4
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              52,
+              76,
+              12,
+              150
+            ],
+            "radius": 20
+          }
+        },
+        {
+          "id": "fx_shape_5",
+          "start_frame": 40,
+          "duration_frames": 260,
+          "opacity": 0.2,
+          "transform": {
+            "x": 655,
+            "y": 485,
+            "width": 275,
+            "height": 235,
+            "rotation_degrees": 15
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              125,
+              227,
+              211,
+              150
+            ],
+            "radius": 25
+          }
+        },
+        {
+          "id": "fx_shape_6",
+          "start_frame": 48,
+          "duration_frames": 252,
+          "opacity": 0.32,
+          "transform": {
+            "x": 786,
+            "y": 582,
+            "width": 294,
+            "height": 258,
+            "rotation_degrees": 26
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              198,
+              122,
+              154,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_7",
+          "start_frame": 56,
+          "duration_frames": 244,
+          "opacity": 0.44,
+          "transform": {
+            "x": 917,
+            "y": 679,
+            "width": 313,
+            "height": 281,
+            "rotation_degrees": 37
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              15,
+              17,
+              97,
+              150
+            ],
+            "radius": 35
+          }
+        },
+        {
+          "id": "fx_shape_8",
+          "start_frame": 64,
+          "duration_frames": 236,
+          "opacity": 0.56,
+          "transform": {
+            "x": 1048,
+            "y": 776,
+            "width": 332,
+            "height": 304,
+            "rotation_degrees": -32
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              88,
+              168,
+              40,
+              150
+            ],
+            "radius": 40
+          }
+        },
+        {
+          "id": "fx_shape_9",
+          "start_frame": 72,
+          "duration_frames": 228,
+          "opacity": 0.6799999999999999,
+          "transform": {
+            "x": 1179,
+            "y": 873,
+            "width": 351,
+            "height": 127,
+            "rotation_degrees": -21
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              161,
+              63,
+              239,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_10",
+          "start_frame": 80,
+          "duration_frames": 220,
+          "opacity": 0.2,
+          "transform": {
+            "x": 1310,
+            "y": 50,
+            "width": 370,
+            "height": 150,
+            "rotation_degrees": -10
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              234,
+              214,
+              182,
+              150
+            ],
+            "radius": 5
+          }
+        },
+        {
+          "id": "fx_shape_11",
+          "start_frame": 88,
+          "duration_frames": 212,
+          "opacity": 0.32,
+          "transform": {
+            "x": 1441,
+            "y": 147,
+            "width": 389,
+            "height": 173,
+            "rotation_degrees": 1
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              51,
+              109,
+              125,
+              150
+            ],
+            "radius": 10
+          }
+        },
+        {
+          "id": "fx_shape_12",
+          "start_frame": 0,
+          "duration_frames": 300,
+          "opacity": 0.44,
+          "transform": {
+            "x": 1572,
+            "y": 244,
+            "width": 408,
+            "height": 196,
+            "rotation_degrees": 12
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              124,
+              4,
+              68,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_13",
+          "start_frame": 8,
+          "duration_frames": 292,
+          "opacity": 0.56,
+          "transform": {
+            "x": 1703,
+            "y": 341,
+            "width": 427,
+            "height": 219,
+            "rotation_degrees": 23
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              197,
+              155,
+              11,
+              150
+            ],
+            "radius": 20
+          }
+        },
+        {
+          "id": "fx_shape_14",
+          "start_frame": 16,
+          "duration_frames": 284,
+          "opacity": 0.6799999999999999,
+          "transform": {
+            "x": 74,
+            "y": 438,
+            "width": 186,
+            "height": 242,
+            "rotation_degrees": 34
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              14,
+              50,
+              210,
+              150
+            ],
+            "radius": 25
+          }
+        },
+        {
+          "id": "fx_shape_15",
+          "start_frame": 24,
+          "duration_frames": 276,
+          "opacity": 0.2,
+          "transform": {
+            "x": 205,
+            "y": 535,
+            "width": 205,
+            "height": 265,
+            "rotation_degrees": -35
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              87,
+              201,
+              153,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_16",
+          "start_frame": 32,
+          "duration_frames": 268,
+          "opacity": 0.32,
+          "transform": {
+            "x": 336,
+            "y": 632,
+            "width": 224,
+            "height": 288,
+            "rotation_degrees": -24
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              160,
+              96,
+              96,
+              150
+            ],
+            "radius": 35
+          }
+        },
+        {
+          "id": "fx_shape_17",
+          "start_frame": 40,
+          "duration_frames": 260,
+          "opacity": 0.44,
+          "transform": {
+            "x": 467,
+            "y": 729,
+            "width": 243,
+            "height": 311,
+            "rotation_degrees": -13
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              233,
+              247,
+              39,
+              150
+            ],
+            "radius": 40
+          }
+        },
+        {
+          "id": "fx_shape_18",
+          "start_frame": 48,
+          "duration_frames": 252,
+          "opacity": 0.56,
+          "transform": {
+            "x": 598,
+            "y": 826,
+            "width": 262,
+            "height": 134,
+            "rotation_degrees": -2
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              50,
+              142,
+              238,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_19",
+          "start_frame": 56,
+          "duration_frames": 244,
+          "opacity": 0.6799999999999999,
+          "transform": {
+            "x": 729,
+            "y": 3,
+            "width": 281,
+            "height": 157,
+            "rotation_degrees": 9
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              123,
+              37,
+              181,
+              150
+            ],
+            "radius": 5
+          }
+        },
+        {
+          "id": "fx_shape_20",
+          "start_frame": 64,
+          "duration_frames": 236,
+          "opacity": 0.2,
+          "transform": {
+            "x": 860,
+            "y": 100,
+            "width": 300,
+            "height": 180,
+            "rotation_degrees": 20
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              196,
+              188,
+              124,
+              150
+            ],
+            "radius": 10
+          }
+        },
+        {
+          "id": "fx_shape_21",
+          "start_frame": 72,
+          "duration_frames": 228,
+          "opacity": 0.32,
+          "transform": {
+            "x": 991,
+            "y": 197,
+            "width": 319,
+            "height": 203,
+            "rotation_degrees": 31
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              13,
+              83,
+              67,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_22",
+          "start_frame": 80,
+          "duration_frames": 220,
+          "opacity": 0.44,
+          "transform": {
+            "x": 1122,
+            "y": 294,
+            "width": 338,
+            "height": 226,
+            "rotation_degrees": -38
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              86,
+              234,
+              10,
+              150
+            ],
+            "radius": 20
+          }
+        },
+        {
+          "id": "fx_shape_23",
+          "start_frame": 88,
+          "duration_frames": 212,
+          "opacity": 0.56,
+          "transform": {
+            "x": 1253,
+            "y": 391,
+            "width": 357,
+            "height": 249,
+            "rotation_degrees": -27
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              159,
+              129,
+              209,
+              150
+            ],
+            "radius": 25
+          }
+        },
+        {
+          "id": "fx_shape_24",
+          "start_frame": 0,
+          "duration_frames": 300,
+          "opacity": 0.6799999999999999,
+          "transform": {
+            "x": 1384,
+            "y": 488,
+            "width": 376,
+            "height": 272,
+            "rotation_degrees": -16
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              232,
+              24,
+              152,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_25",
+          "start_frame": 8,
+          "duration_frames": 292,
+          "opacity": 0.2,
+          "transform": {
+            "x": 1515,
+            "y": 585,
+            "width": 395,
+            "height": 295,
+            "rotation_degrees": -5
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              49,
+              175,
+              95,
+              150
+            ],
+            "radius": 35
+          }
+        },
+        {
+          "id": "fx_shape_26",
+          "start_frame": 16,
+          "duration_frames": 284,
+          "opacity": 0.32,
+          "transform": {
+            "x": 1646,
+            "y": 682,
+            "width": 414,
+            "height": 318,
+            "rotation_degrees": 6
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              122,
+              70,
+              38,
+              150
+            ],
+            "radius": 40
+          }
+        },
+        {
+          "id": "fx_shape_27",
+          "start_frame": 24,
+          "duration_frames": 276,
+          "opacity": 0.44,
+          "transform": {
+            "x": 17,
+            "y": 779,
+            "width": 433,
+            "height": 141,
+            "rotation_degrees": 17
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              195,
+              221,
+              237,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_28",
+          "start_frame": 32,
+          "duration_frames": 268,
+          "opacity": 0.56,
+          "transform": {
+            "x": 148,
+            "y": 876,
+            "width": 192,
+            "height": 164,
+            "rotation_degrees": 28
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              12,
+              116,
+              180,
+              150
+            ],
+            "radius": 5
+          }
+        },
+        {
+          "id": "fx_shape_29",
+          "start_frame": 40,
+          "duration_frames": 260,
+          "opacity": 0.6799999999999999,
+          "transform": {
+            "x": 279,
+            "y": 53,
+            "width": 211,
+            "height": 187,
+            "rotation_degrees": 39
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              85,
+              11,
+              123,
+              150
+            ],
+            "radius": 10
+          }
+        },
+        {
+          "id": "fx_shape_30",
+          "start_frame": 48,
+          "duration_frames": 252,
+          "opacity": 0.2,
+          "transform": {
+            "x": 410,
+            "y": 150,
+            "width": 230,
+            "height": 210,
+            "rotation_degrees": -30
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              158,
+              162,
+              66,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_31",
+          "start_frame": 56,
+          "duration_frames": 244,
+          "opacity": 0.32,
+          "transform": {
+            "x": 541,
+            "y": 247,
+            "width": 249,
+            "height": 233,
+            "rotation_degrees": -19
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              231,
+              57,
+              9,
+              150
+            ],
+            "radius": 20
+          }
+        },
+        {
+          "id": "fx_shape_32",
+          "start_frame": 64,
+          "duration_frames": 236,
+          "opacity": 0.44,
+          "transform": {
+            "x": 672,
+            "y": 344,
+            "width": 268,
+            "height": 256,
+            "rotation_degrees": -8
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              48,
+              208,
+              208,
+              150
+            ],
+            "radius": 25
+          }
+        },
+        {
+          "id": "fx_shape_33",
+          "start_frame": 72,
+          "duration_frames": 228,
+          "opacity": 0.56,
+          "transform": {
+            "x": 803,
+            "y": 441,
+            "width": 287,
+            "height": 279,
+            "rotation_degrees": 3
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [
+              121,
+              103,
+              151,
+              170
+            ]
+          }
+        },
+        {
+          "id": "fx_shape_34",
+          "start_frame": 80,
+          "duration_frames": 220,
+          "opacity": 0.6799999999999999,
+          "transform": {
+            "x": 934,
+            "y": 538,
+            "width": 306,
+            "height": 302,
+            "rotation_degrees": 14
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              194,
+              254,
+              94,
+              150
+            ],
+            "radius": 35
+          }
+        },
+        {
+          "id": "fx_shape_35",
+          "start_frame": 88,
+          "duration_frames": 212,
+          "opacity": 0.2,
+          "transform": {
+            "x": 1065,
+            "y": 635,
+            "width": 325,
+            "height": 125,
+            "rotation_degrees": 25
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [
+              11,
+              149,
+              37,
+              150
+            ],
+            "radius": 40
+          }
+        }
+      ]
+    },
+    {
+      "id": "fx_text_layer",
+      "z_index": 3,
+      "clips": [
+        {
+          "id": "fx_title",
+          "start_frame": 24,
+          "duration_frames": 260,
+          "opacity": 0.9,
+          "transform": {
+            "x": 140,
+            "y": 120,
+            "width": 1640,
+            "height": 180,
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "text",
+            "text": "Effects-heavy fixture\\nblur and layered compositing stress",
+            "align": "center",
+            "font_size": 72,
+            "color": [
+              245,
+              248,
+              252,
+              255
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "audio": {
+    "tracks": []
+  }
+}
