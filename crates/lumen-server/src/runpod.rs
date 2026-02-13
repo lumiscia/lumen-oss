@@ -96,6 +96,7 @@ async fn execute_request(
             .and_then(|profile| profile.encoder.clone()),
         encode_queue: None,
         max_decoded_source_frames: None,
+        stream_cache_frames: None,
     };
 
     let mut progress = |event: crate::executor::RenderExecutionProgress| {

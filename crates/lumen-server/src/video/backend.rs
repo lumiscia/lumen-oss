@@ -1,25 +1,28 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     env,
-    io::{self, Read, Write},
+    io::{self, BufReader, Read, Write},
+    num::NonZeroUsize,
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, ChildStdout, Command, Stdio},
     sync::{Arc, mpsc},
     thread,
 };
 
 use anyhow::{Context, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
+use lru::LruCache;
 use lumen::{
     backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
     compile::{CompiledOperationKind, CompiledTimeline},
-    model::{Source, SourceKind},
+    model::{Source, SourceKind, SourceMediaType},
     time::Rational,
 };
 
 const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
 const DEFAULT_ENCODE_QUEUE: usize = 8;
 const DEFAULT_MAX_DECODED_FRAMES: usize = 120_000;
+const DEFAULT_STREAM_CACHE_FRAMES: usize = 256;
 
 fn create_renderer(width: u32, height: u32) -> anyhow::Result<Box<dyn RenderBackend>> {
     #[cfg(feature = "renderer-skia")]
@@ -42,6 +45,7 @@ pub struct RenderBackendOptions {
     pub video_encoder: Option<String>,
     pub encode_queue: Option<usize>,
     pub max_decoded_source_frames: Option<usize>,
+    pub stream_cache_frames: Option<usize>,
 }
 
 pub struct FfmpegRenderBackend {
@@ -66,24 +70,18 @@ impl FfmpegRenderBackend {
 
     pub fn render_to_mp4(&self, on_progress: &mut dyn FnMut(u64, u64)) -> anyhow::Result<Vec<u8>> {
         let media_root = media_root(self.options.media_root.as_deref())?;
-        let max_decoded_source_frames = self
+        let stream_cache_capacity = self
             .options
-            .max_decoded_source_frames
+            .stream_cache_frames
             .or_else(|| {
-                env::var("LUMEN_MAX_DECODED_SOURCE_FRAMES")
+                env::var("LUMEN_STREAM_CACHE_FRAMES")
                     .ok()
                     .and_then(|value| value.parse::<usize>().ok())
             })
             .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_MAX_DECODED_FRAMES);
-        let requirements =
-            collect_requirements(self.timeline.as_ref(), 0..self.timeline.total_frames())?;
-        let mut assets = prepare_assets(
-            self.timeline.as_ref(),
-            &requirements,
-            &media_root,
-            max_decoded_source_frames,
-        )?;
+            .unwrap_or(DEFAULT_STREAM_CACHE_FRAMES);
+        let mut assets =
+            prepare_streaming_assets(&self.timeline, &media_root, stream_cache_capacity)?;
 
         let width = self.timeline.canvas.width;
         let height = self.timeline.canvas.height;
@@ -246,6 +244,224 @@ impl FrameProvider for PreparedAssets {
             .map(|(_, frame)| frame.clone())
             .or_else(|| next.map(|(_, frame)| frame.clone())))
     }
+}
+
+// -- Streaming video decode ----------------------------------------------------
+
+struct VideoStreamDecoder {
+    child: Child,
+    stdout: BufReader<ChildStdout>,
+    next_source_frame: u64,
+    width: u32,
+    height: u32,
+    frame_byte_size: usize,
+    cache: LruCache<u64, FrameImage>,
+    source: Source,
+    fps: Rational,
+    media_root: PathBuf,
+}
+
+impl VideoStreamDecoder {
+    fn new(
+        source: Source,
+        fps: Rational,
+        width: u32,
+        height: u32,
+        start_frame: u64,
+        media_root: &Path,
+        cache_capacity: usize,
+    ) -> anyhow::Result<Self> {
+        let frame_byte_size = frame_size(width, height)?;
+        let cap = NonZeroUsize::new(cache_capacity.max(1))
+            .ok_or_else(|| anyhow!("invalid cache capacity"))?;
+        let (child, stdout) = Self::spawn_ffmpeg(&source, fps, width, height, start_frame, media_root)?;
+        Ok(Self {
+            child,
+            stdout,
+            next_source_frame: start_frame,
+            width,
+            height,
+            frame_byte_size,
+            cache: LruCache::new(cap),
+            source,
+            fps,
+            media_root: media_root.to_path_buf(),
+        })
+    }
+
+    fn spawn_ffmpeg(
+        source: &Source,
+        fps: Rational,
+        _width: u32,
+        _height: u32,
+        start_frame: u64,
+        media_root: &Path,
+    ) -> anyhow::Result<(Child, BufReader<ChildStdout>)> {
+        let mut command = Command::new("ffmpeg");
+        command
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-nostdin");
+
+        match &source.kind {
+            SourceKind::File { path, .. } => {
+                let resolved = resolve_source_file_path(path, media_root)?;
+                command.arg("-hwaccel").arg("auto").arg("-i").arg(resolved);
+            }
+            SourceKind::Generator { filter, .. } => {
+                command.arg("-f").arg("lavfi").arg("-i").arg(filter);
+            }
+        }
+
+        // Stream decode: use trim to start at start_frame, no end limit.
+        command
+            .arg("-an")
+            .arg("-vf")
+            .arg(format!(
+                "fps={}/{},trim=start_frame={},setpts=PTS-STARTPTS",
+                fps.num, fps.den, start_frame,
+            ))
+            .arg("-f")
+            .arg("rawvideo")
+            .arg("-pix_fmt")
+            .arg("rgba")
+            .arg("pipe:1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = command
+            .spawn()
+            .context("failed to spawn ffmpeg streaming decode process")?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("ffmpeg streaming decode stdout was unavailable"))?;
+
+        Ok((child, BufReader::new(stdout)))
+    }
+
+    fn get_frame(&mut self, source_frame: u64) -> anyhow::Result<Option<FrameImage>> {
+        // Check LRU cache first.
+        if let Some(frame) = self.cache.get(&source_frame) {
+            return Ok(Some(frame.clone()));
+        }
+
+        // If we need to go backwards, restart ffmpeg from the target frame.
+        if source_frame < self.next_source_frame {
+            self.restart_from(source_frame)?;
+        }
+
+        // Read forward from ffmpeg, caching each intermediate frame.
+        while self.next_source_frame <= source_frame {
+            let mut buffer = vec![0u8; self.frame_byte_size];
+            match self.stdout.read_exact(&mut buffer) {
+                Ok(()) => {
+                    let current = self.next_source_frame;
+                    let frame = FrameImage::new(self.width, self.height, buffer)
+                        .map_err(|err| anyhow!("decoded streaming frame was invalid: {err}"))?;
+                    self.cache.put(current, frame);
+                    self.next_source_frame = current.saturating_add(1);
+                }
+                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                    return Ok(None);
+                }
+                Err(err) => {
+                    return Err(anyhow!("failed reading streaming video frame: {err}"));
+                }
+            }
+        }
+
+        Ok(self.cache.get(&source_frame).cloned())
+    }
+
+    fn restart_from(&mut self, start_frame: u64) -> anyhow::Result<()> {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let (child, stdout) = Self::spawn_ffmpeg(
+            &self.source,
+            self.fps,
+            self.width,
+            self.height,
+            start_frame,
+            &self.media_root,
+        )?;
+        self.child = child;
+        self.stdout = stdout;
+        self.next_source_frame = start_frame;
+        Ok(())
+    }
+}
+
+impl Drop for VideoStreamDecoder {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+struct StreamingAssets {
+    images: HashMap<String, FrameImage>,
+    video_decoders: HashMap<String, VideoStreamDecoder>,
+}
+
+impl FrameProvider for StreamingAssets {
+    fn image(&mut self, source_id: &str) -> Result<Option<FrameImage>, ProviderError> {
+        Ok(self.images.get(source_id).cloned())
+    }
+
+    fn video_frame(
+        &mut self,
+        source_id: &str,
+        source_frame: u64,
+    ) -> Result<Option<FrameImage>, ProviderError> {
+        let decoder = self
+            .video_decoders
+            .get_mut(source_id)
+            .ok_or_else(|| ProviderError::MissingSource(source_id.to_string()))?;
+        decoder
+            .get_frame(source_frame)
+            .map_err(|err| ProviderError::Decode(err.to_string()))
+    }
+}
+
+fn prepare_streaming_assets(
+    timeline: &CompiledTimeline,
+    media_root: &Path,
+    cache_capacity: usize,
+) -> anyhow::Result<StreamingAssets> {
+    let fps = timeline.timeline.fps;
+    let mut images = HashMap::new();
+    let mut video_decoders = HashMap::new();
+
+    for source in timeline.sources() {
+        match source.media_type() {
+            SourceMediaType::Image => {
+                let image = decode_image_source(source, media_root)?;
+                images.insert(source.id.clone(), image);
+            }
+            SourceMediaType::Video => {
+                let (width, height) = probe_video_dimensions(source, media_root)?;
+                let decoder = VideoStreamDecoder::new(
+                    source.clone(),
+                    fps,
+                    width,
+                    height,
+                    0,
+                    media_root,
+                    cache_capacity,
+                )?;
+                video_decoders.insert(source.id.clone(), decoder);
+            }
+            SourceMediaType::Audio => {}
+        }
+    }
+
+    Ok(StreamingAssets {
+        images,
+        video_decoders,
+    })
 }
 
 fn prepare_assets(

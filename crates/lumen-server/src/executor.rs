@@ -10,6 +10,7 @@ pub struct RenderExecutionOptions {
     pub video_encoder: Option<String>,
     pub encode_queue: Option<usize>,
     pub max_decoded_source_frames: Option<usize>,
+    pub stream_cache_frames: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +75,7 @@ pub fn execute_render(
         video_encoder: options.video_encoder.clone(),
         encode_queue: options.encode_queue,
         max_decoded_source_frames: options.max_decoded_source_frames,
+        stream_cache_frames: options.stream_cache_frames,
     };
 
     let render_started = Instant::now();

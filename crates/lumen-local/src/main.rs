@@ -95,6 +95,7 @@ fn run() -> Result<()> {
         video_encoder: args.encoder,
         encode_queue: None,
         max_decoded_source_frames: None,
+        stream_cache_frames: None,
     };
 
     let mut progress = |event: lumen_server::executor::RenderExecutionProgress| {
