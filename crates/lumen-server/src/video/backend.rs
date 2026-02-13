@@ -11,15 +11,33 @@ use std::{
 use anyhow::{Context, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen::{
+    backend::RenderBackend,
     compile::{CompiledOperationKind, CompiledTimeline},
-    gpu::{FrameImage, FrameProvider, GpuRenderer, ProviderError},
+    gpu::{FrameImage, FrameProvider, ProviderError},
     model::{Source, SourceKind},
     time::Rational,
 };
+#[cfg(not(feature = "renderer-skia"))]
+use lumen::gpu::GpuRenderer;
 
 const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
 const DEFAULT_ENCODE_QUEUE: usize = 8;
 const DEFAULT_MAX_DECODED_FRAMES: usize = 120_000;
+
+fn create_renderer(width: u32, height: u32) -> anyhow::Result<Box<dyn RenderBackend>> {
+    #[cfg(feature = "renderer-skia")]
+    {
+        let renderer = lumen_skia::SkiaRenderer::new(width, height)
+            .map_err(|err| anyhow!("failed to initialize Skia renderer: {err}"))?;
+        return Ok(Box::new(renderer));
+    }
+    #[cfg(not(feature = "renderer-skia"))]
+    {
+        let renderer = GpuRenderer::new(width, height)
+            .map_err(|err| anyhow!("failed to initialize GPU renderer: {err}"))?;
+        Ok(Box::new(renderer))
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct RenderBackendOptions {
@@ -92,8 +110,7 @@ impl FfmpegRenderBackend {
         let encode_handle =
             thread::spawn(move || encode_rgba_stream(width, height, fps, encoder, rx));
 
-        let mut renderer = GpuRenderer::new(width, height)
-            .map_err(|err| anyhow!("failed to initialize GPU renderer: {err}"))?;
+        let mut renderer = create_renderer(width, height)?;
 
         for frame in 0..total_frames {
             let rgba = renderer
@@ -134,8 +151,7 @@ impl FfmpegRenderBackend {
         )?;
 
         let mut renderer =
-            GpuRenderer::new(self.timeline.canvas.width, self.timeline.canvas.height)
-                .map_err(|err| anyhow!("failed to initialize GPU renderer: {err}"))?;
+            create_renderer(self.timeline.canvas.width, self.timeline.canvas.height)?;
         let rgba = renderer
             .render_frame(self.timeline.as_ref(), frame, &mut assets)
             .map_err(|err| anyhow!("failed to render preview frame {frame}: {err}"))?;

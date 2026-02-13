@@ -21,6 +21,7 @@ use vello::{
 };
 
 use crate::{
+    backend::RenderBackend,
     compile::{CompileError, CompiledOperationKind, CompiledTimeline, VideoSourceRef},
     model::{ColorRgba, FitMode, Shape, ShapeClip, TextAlign, TextClip, Transform},
 };
@@ -278,6 +279,17 @@ impl GpuRenderer {
         }
 
         Ok(())
+    }
+}
+
+impl RenderBackend for GpuRenderer {
+    fn render_frame(
+        &mut self,
+        timeline: &CompiledTimeline,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+    ) -> Result<Vec<u8>, GpuRenderError> {
+        self.render_frame(timeline, frame, provider)
     }
 }
 
