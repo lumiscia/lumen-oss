@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::executor::{RenderExecutionError, RenderExecutionOptions, execute_render};
+use crate::preset::project_from_payload;
 
 #[derive(Debug, Deserialize)]
 pub struct RunpodJobRequest {
@@ -12,7 +14,7 @@ pub struct RunpodJobRequest {
 #[derive(Debug, Deserialize)]
 pub struct RunpodRenderInput {
     pub job_id: String,
-    pub project: lumen::Project,
+    pub project: Value,
     #[serde(default)]
     pub render_profile: Option<RunpodRenderProfile>,
     #[serde(default)]
@@ -82,6 +84,13 @@ pub async fn handle_runpod_request(request: RunpodJobRequest) -> RunpodJobRespon
 async fn execute_request(
     request: RunpodJobRequest,
 ) -> Result<RunpodJobResponse, RunpodRenderError> {
+    let project =
+        project_from_payload(&request.input.project).map_err(|err| RunpodRenderError {
+            code: "invalid_project_payload".to_string(),
+            message: sanitize_error_message(&err.to_string()),
+            retryable: false,
+        })?;
+
     let options = RenderExecutionOptions {
         media_root: request
             .input
@@ -110,8 +119,8 @@ async fn execute_request(
         );
     };
 
-    let rendered = execute_render(&request.input.project, &options, &mut progress)
-        .map_err(map_execution_error)?;
+    let rendered =
+        execute_render(&project, &options, &mut progress).map_err(map_execution_error)?;
 
     let artifact = upload_artifact(&request.input.artifact_staging, &rendered.bytes).await?;
 
