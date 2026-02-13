@@ -3,16 +3,16 @@ use std::{
     env,
     num::NonZeroUsize,
     path::Path,
-    sync::{Arc, Once, mpsc},
+    sync::{mpsc, Arc, OnceLock},
     thread,
 };
 
 use std::ffi::CString;
 use std::ptr;
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use ffmpeg_next::{self as ffmpeg, format, media, software::scaling};
-use image::{ImageEncoder, codecs::png::PngEncoder};
+use image::{codecs::png::PngEncoder, ImageEncoder};
 use lru::LruCache;
 use lumen::{
     backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
@@ -22,8 +22,8 @@ use lumen::{
 };
 
 use super::common::{
-    DEFAULT_ENCODE_QUEUE, choose_video_encoder, create_renderer, decode_image_source,
-    encode_rgba_stream, media_root, resolve_source_file_path,
+    choose_video_encoder, create_renderer, decode_image_source, encode_rgba_stream, media_root,
+    resolve_source_file_path, DEFAULT_ENCODE_QUEUE,
 };
 
 pub use super::common::RenderBackendOptions;
@@ -34,13 +34,21 @@ const DEFAULT_LIBAV_CACHE_FRAMES: usize = 64;
 // ffmpeg global init
 // ---------------------------------------------------------------------------
 
-static FFMPEG_INIT: Once = Once::new();
+static FFMPEG_INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
-fn ensure_ffmpeg_init() {
-    FFMPEG_INIT.call_once(|| {
-        ffmpeg::init().expect("failed to initialize ffmpeg");
-        ffmpeg::log::set_level(ffmpeg::log::Level::Error);
+fn ensure_ffmpeg_init() -> anyhow::Result<()> {
+    let init = FFMPEG_INIT.get_or_init(|| {
+        ffmpeg::init()
+            .map_err(|err| format!("failed to initialize ffmpeg: {err}"))
+            .map(|_| {
+                ffmpeg::log::set_level(ffmpeg::log::Level::Error);
+            })
     });
+
+    match init {
+        Ok(()) => Ok(()),
+        Err(err) => Err(anyhow!("{err}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -54,11 +62,27 @@ fn open_source_input(source: &Source, media_root: &Path) -> anyhow::Result<forma
             format::input(&resolved)
                 .with_context(|| format!("failed to open video file `{}`", resolved.display()))
         }
-        SourceKind::Generator { filter, .. } => {
-            open_lavfi_input(filter)
-                .with_context(|| format!("failed to open lavfi source `{filter}`"))
-        }
+        SourceKind::Generator { filter, .. } => open_lavfi_input(filter)
+            .with_context(|| format!("failed to open lavfi source `{filter}`")),
     }
+}
+
+fn open_video_decoder(
+    codec_params: ffmpeg::codec::Parameters,
+) -> anyhow::Result<ffmpeg::codec::decoder::Video> {
+    let mut decoder_ctx = ffmpeg::codec::context::Context::from_parameters(codec_params)
+        .context("failed to create codec context")?;
+
+    // Leave count at 0 so ffmpeg selects a suitable thread count.
+    let mut threading = ffmpeg::codec::threading::Config::default();
+    threading.kind = ffmpeg::codec::threading::Type::Frame;
+    threading.count = 0;
+    decoder_ctx.set_threading(threading);
+
+    decoder_ctx
+        .decoder()
+        .video()
+        .context("failed to open video decoder")
 }
 
 /// Open a lavfi virtual input by explicitly specifying the lavfi demuxer.
@@ -112,7 +136,9 @@ struct LibavStreamDecoder {
     cache: LruCache<u64, FrameImage>,
     decoded_frame: ffmpeg::frame::Video,
     scratch_frame: ffmpeg::frame::Video,
+    packet: ffmpeg::Packet,
     eof: bool,
+    draining: bool,
     source: Source,
     media_root: std::path::PathBuf,
 }
@@ -131,7 +157,7 @@ impl LibavStreamDecoder {
         media_root: &Path,
         cache_capacity: usize,
     ) -> anyhow::Result<Self> {
-        ensure_ffmpeg_init();
+        ensure_ffmpeg_init()?;
 
         let input_ctx = open_source_input(source, media_root)?;
         let stream = input_ctx
@@ -142,19 +168,7 @@ impl LibavStreamDecoder {
         let video_stream_index = stream.index();
         let time_base = stream.time_base();
 
-        let codec_params = stream.parameters();
-        let mut decoder_ctx = ffmpeg::codec::context::Context::from_parameters(codec_params)
-            .context("failed to create codec context")?;
-
-        // Enable multi-threaded decoding when available.
-        unsafe {
-            (*decoder_ctx.as_mut_ptr()).thread_count = 0;
-        }
-
-        let decoder = decoder_ctx
-            .decoder()
-            .video()
-            .context("failed to open video decoder")?;
+        let decoder = open_video_decoder(stream.parameters())?;
 
         let width = decoder.width();
         let height = decoder.height();
@@ -175,6 +189,7 @@ impl LibavStreamDecoder {
 
         let decoded_frame = ffmpeg::frame::Video::empty();
         let scratch_frame = ffmpeg::frame::Video::empty();
+        let packet = ffmpeg::Packet::empty();
 
         let cap = NonZeroUsize::new(cache_capacity.max(1))
             .ok_or_else(|| anyhow!("invalid cache capacity"))?;
@@ -192,7 +207,9 @@ impl LibavStreamDecoder {
             cache: LruCache::new(cap),
             decoded_frame,
             scratch_frame,
+            packet,
             eof: false,
+            draining: false,
             source: source.clone(),
             media_root: media_root.to_path_buf(),
         };
@@ -256,14 +273,12 @@ impl LibavStreamDecoder {
 
         // Try a keyframe seek. This fails for non-seekable sources (e.g. lavfi
         // generators), in which case we reopen and decode forward.
-        let seeked = self
-            .input_ctx
-            .seek(target_pts, ..target_pts)
-            .is_ok();
+        let seeked = self.input_ctx.seek(target_pts, ..target_pts).is_ok();
 
         if seeked {
             self.decoder.flush();
             self.eof = false;
+            self.draining = false;
             self.next_source_frame = 0;
 
             // Decode forward past any pre-target frames from the keyframe.
@@ -291,25 +306,25 @@ impl LibavStreamDecoder {
     /// Used when the demuxer doesn't support seeking (e.g. lavfi generators).
     fn reopen_and_skip(&mut self, target_frame: u64) -> anyhow::Result<()> {
         let input_ctx = open_source_input(&self.source, &self.media_root)?;
-        let stream = input_ctx
-            .streams()
-            .best(media::Type::Video)
-            .ok_or_else(|| anyhow!("no video stream found on reopen"))?;
+        let (video_stream_index, time_base, decoder) = {
+            let stream = input_ctx
+                .streams()
+                .best(media::Type::Video)
+                .ok_or_else(|| anyhow!("no video stream found on reopen"))?;
 
-        let codec_params = stream.parameters();
-        let mut decoder_ctx = ffmpeg::codec::context::Context::from_parameters(codec_params)
-            .context("failed to create codec context on reopen")?;
-        unsafe {
-            (*decoder_ctx.as_mut_ptr()).thread_count = 0;
-        }
-        let decoder = decoder_ctx
-            .decoder()
-            .video()
-            .context("failed to open video decoder on reopen")?;
+            (
+                stream.index(),
+                stream.time_base(),
+                open_video_decoder(stream.parameters())?,
+            )
+        };
 
         self.input_ctx = input_ctx;
+        self.video_stream_index = video_stream_index;
+        self.time_base = time_base;
         self.decoder = decoder;
         self.eof = false;
+        self.draining = false;
         self.next_source_frame = 0;
 
         // Decode forward to target, caching along the way.
@@ -346,20 +361,26 @@ impl LibavStreamDecoder {
             // Try to receive a decoded frame (reusing self.decoded_frame).
             match self.decoder.receive_frame(&mut self.decoded_frame) {
                 Ok(()) => {
-                    return self.convert_decoded();
+                    if let Some(decoded) = self.convert_decoded()? {
+                        return Ok(Some(decoded));
+                    }
+                    // Some streams omit PTS on a subset of frames. Skip those.
+                    continue;
                 }
                 Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::error::EAGAIN => {
+                    if self.draining {
+                        self.eof = true;
+                        return Ok(None);
+                    }
+
                     // Need more data -- feed the next video packet.
                     if !self.feed_next_packet()? {
-                        // No more packets. Signal EOF to drain.
-                        self.decoder.send_eof().ok();
-                        self.eof = true;
-
-                        // Drain remaining frames.
-                        match self.decoder.receive_frame(&mut self.decoded_frame) {
-                            Ok(()) => return self.convert_decoded(),
-                            Err(_) => return Ok(None),
-                        }
+                        // No more packets. Signal EOF once and keep draining
+                        // receive_frame() until it reports EOF.
+                        self.decoder
+                            .send_eof()
+                            .context("failed to send decoder EOF")?;
+                        self.draining = true;
                     }
                 }
                 Err(ffmpeg::Error::Eof) => {
@@ -373,17 +394,19 @@ impl LibavStreamDecoder {
 
     fn feed_next_packet(&mut self) -> anyhow::Result<bool> {
         loop {
-            match self.input_ctx.packets().next() {
-                Some((stream, packet)) => {
-                    if stream.index() == self.video_stream_index {
-                        self.decoder
-                            .send_packet(&packet)
-                            .context("failed to send packet to decoder")?;
-                        return Ok(true);
+            match self.packet.read(&mut self.input_ctx) {
+                Ok(()) => {
+                    if self.packet.stream() != self.video_stream_index {
+                        continue;
                     }
-                    // Skip non-video packets.
+
+                    self.decoder
+                        .send_packet(&self.packet)
+                        .context("failed to send packet to decoder")?;
+                    return Ok(true);
                 }
-                None => return Ok(false),
+                Err(ffmpeg::Error::Eof) => return Ok(false),
+                Err(err) => return Err(anyhow!("failed to read input packet: {err}")),
             }
         }
     }
@@ -460,7 +483,7 @@ fn prepare_streaming_assets(
     media_root: &Path,
     cache_capacity: usize,
 ) -> anyhow::Result<StreamingAssets> {
-    ensure_ffmpeg_init();
+    ensure_ffmpeg_init()?;
     let fps = timeline.timeline.fps;
     let mut images = HashMap::new();
     let mut video_decoders = HashMap::new();
@@ -472,13 +495,7 @@ fn prepare_streaming_assets(
                 images.insert(source.id.clone(), image);
             }
             SourceMediaType::Video => {
-                let decoder = LibavStreamDecoder::new(
-                    source,
-                    fps,
-                    0,
-                    media_root,
-                    cache_capacity,
-                )?;
+                let decoder = LibavStreamDecoder::new(source, fps, 0, media_root, cache_capacity)?;
                 video_decoders.insert(source.id.clone(), decoder);
             }
             SourceMediaType::Audio => {}
@@ -548,7 +565,10 @@ impl FfmpegRenderBackend {
         Ok(())
     }
 
-    pub fn render_to_mp4(&mut self, on_progress: &mut dyn FnMut(u64, u64)) -> anyhow::Result<Vec<u8>> {
+    pub fn render_to_mp4(
+        &mut self,
+        on_progress: &mut dyn FnMut(u64, u64),
+    ) -> anyhow::Result<Vec<u8>> {
         self.init_if_needed()?;
 
         let width = self.timeline.canvas.width;
@@ -573,8 +593,14 @@ impl FfmpegRenderBackend {
         let encode_handle =
             thread::spawn(move || encode_rgba_stream(width, height, fps, encoder, rx));
 
-        let renderer = self.renderer.as_mut().unwrap();
-        let assets = self.assets.as_mut().unwrap();
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| anyhow!("renderer was not initialized"))?;
+        let assets = self
+            .assets
+            .as_mut()
+            .ok_or_else(|| anyhow!("streaming assets were not initialized"))?;
 
         for frame in 0..total_frames {
             let rgba = renderer
@@ -597,8 +623,14 @@ impl FfmpegRenderBackend {
     pub fn render_frame_png(&mut self, frame: u64) -> anyhow::Result<Vec<u8>> {
         self.init_if_needed()?;
 
-        let renderer = self.renderer.as_mut().unwrap();
-        let assets = self.assets.as_mut().unwrap();
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| anyhow!("renderer was not initialized"))?;
+        let assets = self
+            .assets
+            .as_mut()
+            .ok_or_else(|| anyhow!("streaming assets were not initialized"))?;
 
         let rgba = renderer
             .render_frame(self.timeline.as_ref(), frame, assets)
