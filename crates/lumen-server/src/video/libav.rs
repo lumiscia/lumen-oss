@@ -23,7 +23,7 @@ use lumen::{
 
 use super::common::{
     choose_video_encoder, create_renderer, decode_image_source, encode_rgba_stream, media_root,
-    resolve_source_file_path, DEFAULT_ENCODE_QUEUE,
+    resolve_source_file_path, try_render_ffmpeg_fast_path, DEFAULT_ENCODE_QUEUE,
 };
 
 pub use super::common::RenderBackendOptions;
@@ -80,11 +80,116 @@ fn open_video_decoder(
     threading.kind = ffmpeg::codec::threading::Type::Frame;
     threading.count = 0;
     decoder_ctx.set_threading(threading);
+    configure_hw_decode_if_requested(&mut decoder_ctx);
 
     decoder_ctx
         .decoder()
         .video()
         .context("failed to open video decoder")
+}
+
+#[cfg(target_os = "macos")]
+const AUTO_HW_DEVICE_CANDIDATES: &[&str] = &["videotoolbox"];
+#[cfg(target_os = "linux")]
+const AUTO_HW_DEVICE_CANDIDATES: &[&str] = &["vaapi", "cuda", "qsv", "vulkan"];
+#[cfg(target_os = "windows")]
+const AUTO_HW_DEVICE_CANDIDATES: &[&str] = &["d3d11va", "dxva2", "qsv"];
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+const AUTO_HW_DEVICE_CANDIDATES: &[&str] = &[];
+
+fn preferred_hw_device_names() -> Option<Vec<String>> {
+    let raw = env::var("LUMEN_LIBAV_HW_DEVICE").ok()?;
+    let value = raw.trim();
+    if value.is_empty()
+        || value.eq_ignore_ascii_case("none")
+        || value.eq_ignore_ascii_case("off")
+        || value.eq_ignore_ascii_case("disabled")
+    {
+        return None;
+    }
+
+    if value.eq_ignore_ascii_case("auto") {
+        if AUTO_HW_DEVICE_CANDIDATES.is_empty() {
+            return None;
+        }
+
+        return Some(
+            AUTO_HW_DEVICE_CANDIDATES
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+        );
+    }
+
+    let explicit: Vec<String> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+        .collect();
+
+    if explicit.is_empty() {
+        None
+    } else {
+        Some(explicit)
+    }
+}
+
+fn configure_hw_decode_if_requested(decoder_ctx: &mut ffmpeg::codec::context::Context) {
+    let Some(device_names) = preferred_hw_device_names() else {
+        return;
+    };
+
+    let mut failures = Vec::new();
+    for device_name in device_names {
+        match try_attach_hw_device(decoder_ctx, device_name.as_str()) {
+            Ok(()) => return,
+            Err(err) => failures.push(format!("{device_name}: {err}")),
+        }
+    }
+
+    eprintln!(
+        "libav hardware decode unavailable, continuing with software decode ({})",
+        failures.join("; ")
+    );
+}
+
+fn try_attach_hw_device(
+    decoder_ctx: &mut ffmpeg::codec::context::Context,
+    device_name: &str,
+) -> anyhow::Result<()> {
+    unsafe {
+        let cname = CString::new(device_name)
+            .map_err(|_| anyhow!("hardware device name contains null bytes"))?;
+        let device_type = ffmpeg_next::ffi::av_hwdevice_find_type_by_name(cname.as_ptr());
+        if device_type == ffmpeg_next::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
+            return Err(anyhow!("unknown hardware device type"));
+        }
+
+        let mut device_ctx: *mut ffmpeg_next::ffi::AVBufferRef = ptr::null_mut();
+        let result = ffmpeg_next::ffi::av_hwdevice_ctx_create(
+            &mut device_ctx,
+            device_type,
+            ptr::null(),
+            ptr::null_mut(),
+            0,
+        );
+        if result < 0 || device_ctx.is_null() {
+            return Err(anyhow!(
+                "device init failed: {}",
+                ffmpeg::Error::from(result)
+            ));
+        }
+
+        let codec_ptr = decoder_ctx.as_mut_ptr();
+        if !(*codec_ptr).hw_device_ctx.is_null() {
+            ffmpeg_next::ffi::av_buffer_unref(&mut (*codec_ptr).hw_device_ctx);
+        }
+        (*codec_ptr).hw_device_ctx = device_ctx;
+        (*codec_ptr).extra_hw_frames = 8;
+    }
+
+    Ok(())
 }
 
 /// Open a lavfi virtual input by explicitly specifying the lavfi demuxer.
@@ -861,6 +966,12 @@ impl FfmpegRenderBackend {
         &mut self,
         on_progress: &mut dyn FnMut(u64, u64),
     ) -> anyhow::Result<Vec<u8>> {
+        if let Some(bytes) =
+            try_render_ffmpeg_fast_path(self.timeline.as_ref(), &self.options, on_progress)?
+        {
+            return Ok(bytes);
+        }
+
         self.init_if_needed()?;
 
         let width = self.timeline.canvas.width;

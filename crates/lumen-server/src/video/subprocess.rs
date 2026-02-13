@@ -5,12 +5,12 @@ use std::{
     num::NonZeroUsize,
     path::Path,
     process::{Child, ChildStdout, Command, Stdio},
-    sync::{Arc, mpsc},
+    sync::{mpsc, Arc},
     thread,
 };
 
-use anyhow::{Context, anyhow};
-use image::{ImageEncoder, codecs::png::PngEncoder};
+use anyhow::{anyhow, Context};
+use image::{codecs::png::PngEncoder, ImageEncoder};
 use lru::LruCache;
 use lumen::{
     backend::{FrameImage, FrameProvider, ProviderError},
@@ -20,9 +20,10 @@ use lumen::{
 };
 
 use super::common::{
-    DEFAULT_ENCODE_QUEUE, DEFAULT_MAX_DECODED_FRAMES, DEFAULT_STREAM_CACHE_FRAMES,
-    FrameRequirements, PreparedAssets, choose_video_encoder, collect_requirements, create_renderer,
-    decode_image_source, encode_rgba_stream, frame_size, media_root, resolve_source_file_path,
+    choose_video_encoder, collect_requirements, create_renderer, decode_image_source,
+    encode_rgba_stream, frame_size, media_root, resolve_source_file_path,
+    try_render_ffmpeg_fast_path, FrameRequirements, PreparedAssets, DEFAULT_ENCODE_QUEUE,
+    DEFAULT_MAX_DECODED_FRAMES, DEFAULT_STREAM_CACHE_FRAMES,
 };
 
 pub use super::common::RenderBackendOptions;
@@ -51,6 +52,12 @@ impl FfmpegRenderBackend {
         &mut self,
         on_progress: &mut dyn FnMut(u64, u64),
     ) -> anyhow::Result<Vec<u8>> {
+        if let Some(bytes) =
+            try_render_ffmpeg_fast_path(self.timeline.as_ref(), &self.options, on_progress)?
+        {
+            return Ok(bytes);
+        }
+
         let media_root = media_root(self.options.media_root.as_deref())?;
         let stream_cache_capacity = self
             .options
