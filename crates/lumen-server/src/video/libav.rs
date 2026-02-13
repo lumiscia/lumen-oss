@@ -3,16 +3,16 @@ use std::{
     env,
     num::NonZeroUsize,
     path::Path,
-    sync::{Arc, OnceLock, mpsc},
+    sync::{mpsc, Arc, OnceLock},
     thread,
 };
 
 use std::ffi::CString;
 use std::ptr;
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use ffmpeg_next::{self as ffmpeg, format, media, software::scaling};
-use image::{ImageEncoder, codecs::png::PngEncoder};
+use image::{codecs::png::PngEncoder, ImageEncoder};
 use lru::LruCache;
 use lumen::{
     backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
@@ -22,8 +22,8 @@ use lumen::{
 };
 
 use super::common::{
-    DEFAULT_ENCODE_QUEUE, choose_video_encoder, create_renderer, decode_image_source,
-    encode_rgba_stream, media_root, resolve_source_file_path,
+    choose_video_encoder, create_renderer, decode_image_source, encode_rgba_stream, media_root,
+    resolve_source_file_path, DEFAULT_ENCODE_QUEUE,
 };
 
 pub use super::common::RenderBackendOptions;
@@ -130,10 +130,12 @@ struct LibavStreamDecoder {
     scaler: scaling::Context,
     width: u32,
     height: u32,
+    frame_byte_size: usize,
     time_base: ffmpeg::Rational,
     timeline_time_base: ffmpeg::Rational,
     next_source_frame: u64,
     cache: LruCache<u64, FrameImage>,
+    buffer_pool: Vec<Vec<u8>>,
     decoded_frame: ffmpeg::frame::Video,
     scratch_frame: ffmpeg::frame::Video,
     packet: ffmpeg::Packet,
@@ -181,6 +183,10 @@ impl LibavStreamDecoder {
         if width == 0 || height == 0 {
             return Err(anyhow!("video source has zero dimensions"));
         }
+        let frame_byte_size = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| anyhow!("video frame byte size overflow"))?;
 
         let scaler = scaling::Context::get(
             decoder.format(),
@@ -207,10 +213,12 @@ impl LibavStreamDecoder {
             scaler,
             width,
             height,
+            frame_byte_size,
             time_base,
             timeline_time_base,
             next_source_frame: 0,
             cache: LruCache::new(cap),
+            buffer_pool: Vec::new(),
             decoded_frame,
             scratch_frame,
             packet,
@@ -289,15 +297,44 @@ impl LibavStreamDecoder {
             if frame_idx > prev_idx.saturating_add(1) {
                 // Fill gaps caused by source fps < timeline fps by holding the
                 // previous frame. This avoids cache misses and fallback seeks.
+                let held_frame = prev_image.clone();
                 for gap_idx in prev_idx.saturating_add(1)..frame_idx {
-                    self.cache.put(gap_idx, prev_image.clone());
+                    self.cache_frame(gap_idx, held_frame.clone());
                 }
             }
         }
 
-        self.cache.put(frame_idx, image.clone());
+        self.cache_frame(frame_idx, image.clone());
         self.last_decoded_source_frame = Some(frame_idx);
-        self.last_decoded_image = Some(image);
+        if let Some(previous) = self.last_decoded_image.replace(image) {
+            self.try_recycle_frame_buffer(previous);
+        }
+    }
+
+    fn cache_frame(&mut self, frame_idx: u64, image: FrameImage) {
+        if let Some(evicted) = self.cache.put(frame_idx, image) {
+            self.try_recycle_frame_buffer(evicted);
+        }
+    }
+
+    fn try_recycle_frame_buffer(&mut self, frame: FrameImage) {
+        let Ok(mut rgba) = Arc::try_unwrap(frame.rgba) else {
+            return;
+        };
+        if rgba.capacity() < self.frame_byte_size {
+            return;
+        }
+        rgba.clear();
+        self.buffer_pool.push(rgba);
+    }
+
+    fn take_reusable_buffer(&mut self) -> Vec<u8> {
+        if let Some(mut buffer) = self.buffer_pool.pop() {
+            buffer.clear();
+            buffer
+        } else {
+            Vec::with_capacity(self.frame_byte_size)
+        }
     }
 
     fn nearest_cached_frame(&self, source_frame: u64) -> Option<FrameImage> {
@@ -339,7 +376,9 @@ impl LibavStreamDecoder {
             self.draining = false;
             self.next_source_frame = 0;
             self.last_decoded_source_frame = None;
-            self.last_decoded_image = None;
+            if let Some(previous) = self.last_decoded_image.take() {
+                self.try_recycle_frame_buffer(previous);
+            }
 
             // Decode forward past any pre-target frames from the keyframe.
             loop {
@@ -387,7 +426,9 @@ impl LibavStreamDecoder {
         self.draining = false;
         self.next_source_frame = 0;
         self.last_decoded_source_frame = None;
-        self.last_decoded_image = None;
+        if let Some(previous) = self.last_decoded_image.take() {
+            self.try_recycle_frame_buffer(previous);
+        }
 
         // Decode forward to target, caching along the way.
         self.skip_to_frame(target_frame)?;
@@ -493,16 +534,15 @@ impl LibavStreamDecoder {
         let stride = self.scratch_frame.stride(0);
         let expected_row = width * 4;
 
-        let rgba = if stride == expected_row {
-            self.scratch_frame.data(0)[..expected_row * height].to_vec()
+        let mut rgba = self.take_reusable_buffer();
+        if stride == expected_row {
+            rgba.extend_from_slice(&self.scratch_frame.data(0)[..expected_row * height]);
         } else {
-            let mut buf = Vec::with_capacity(expected_row * height);
             for row in 0..height {
                 let start = row * stride;
-                buf.extend_from_slice(&self.scratch_frame.data(0)[start..start + expected_row]);
+                rgba.extend_from_slice(&self.scratch_frame.data(0)[start..start + expected_row]);
             }
-            buf
-        };
+        }
 
         let image = FrameImage::new(self.width, self.height, rgba)
             .map_err(|err| anyhow!("decoded frame was invalid: {err}"))?;
