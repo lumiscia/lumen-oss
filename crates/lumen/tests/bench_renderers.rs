@@ -20,6 +20,21 @@ use lumen::{
 const WARMUP_FRAMES: u32 = 3;
 const BENCH_FRAMES: u32 = 30;
 
+fn require_release_profile() -> bool {
+    if cfg!(debug_assertions) {
+        eprintln!();
+        eprintln!("skipping bench_renderers in debug profile");
+        eprintln!("run with --release for meaningful renderer throughput numbers:");
+        eprintln!(
+            "  cargo test -p lumen --features \"renderer-vello renderer-skia\" --test bench_renderers --release -- --nocapture",
+        );
+        eprintln!();
+        return false;
+    }
+
+    true
+}
+
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -113,10 +128,16 @@ fn print_stats(_name: &str, backend: &str, total: Duration, frame_times: &mut Ve
 
 #[test]
 fn renderer_throughput_comparison() {
+    if !require_release_profile() {
+        return;
+    }
+
     let fixtures = ["vector-heavy.json", "text-heavy.json", "mixed-media.json"];
 
     eprintln!();
-    eprintln!("=== Renderer Throughput Comparison ({BENCH_FRAMES} frames, {WARMUP_FRAMES} warmup) ===");
+    eprintln!(
+        "=== Renderer Throughput Comparison ({BENCH_FRAMES} frames, {WARMUP_FRAMES} warmup) ==="
+    );
     eprintln!();
 
     for fixture_name in &fixtures {
@@ -127,7 +148,10 @@ fn renderer_throughput_comparison() {
         }
 
         let project = load_fixture(fixture_name);
-        eprintln!("{fixture_name} ({}x{}):", project.canvas.width, project.canvas.height);
+        eprintln!(
+            "{fixture_name} ({}x{}):",
+            project.canvas.width, project.canvas.height
+        );
 
         let (vello_total, mut vello_times) = bench_vello(&project, WARMUP_FRAMES, BENCH_FRAMES);
         print_stats(fixture_name, "vello", vello_total, &mut vello_times);

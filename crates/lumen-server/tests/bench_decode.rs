@@ -18,6 +18,19 @@ use lumen_server::video::FfmpegRenderBackend;
 
 const WARMUP_FRAMES: usize = 2;
 
+fn require_release_profile() -> bool {
+    if cfg!(debug_assertions) {
+        eprintln!();
+        eprintln!("skipping bench_decode in debug profile");
+        eprintln!("run with --release for meaningful throughput numbers:");
+        eprintln!("  cargo test -p lumen-server --release --test bench_decode -- --nocapture");
+        eprintln!();
+        return false;
+    }
+
+    true
+}
+
 fn backend_label() -> &'static str {
     if cfg!(feature = "decode-libav") {
         "libav"
@@ -98,6 +111,10 @@ fn print_stats(label: &str, total: Duration, times: &mut Vec<Duration>) {
 /// Each call decodes a single frame from the generator source.
 #[test]
 fn sequential_frame_decode() {
+    if !require_release_profile() {
+        return;
+    }
+
     let project = generator_project(1280, 720, 30, 60);
     let timeline = Arc::new(compile_project(&project).expect("compile"));
     let mut backend = FfmpegRenderBackend::new(Arc::clone(&timeline));
@@ -118,7 +135,10 @@ fn sequential_frame_decode() {
     let total = start.elapsed();
 
     eprintln!();
-    eprintln!("=== Sequential Frame Decode — {backend} (1280x720 @ 30fps) ===", backend = backend_label());
+    eprintln!(
+        "=== Sequential Frame Decode — {backend} (1280x720 @ 30fps) ===",
+        backend = backend_label()
+    );
     print_stats("render_frame_png (sequential)", total, &mut times);
     eprintln!("  total: {total:.2?} for {frames} frames");
     eprintln!();
@@ -128,6 +148,10 @@ fn sequential_frame_decode() {
 /// non-sequential pattern (forward jumps and backward seeks).
 #[test]
 fn random_access_decode() {
+    if !require_release_profile() {
+        return;
+    }
+
     let project = generator_project(1280, 720, 30, 120);
     let timeline = Arc::new(compile_project(&project).expect("compile"));
     let mut backend = FfmpegRenderBackend::new(Arc::clone(&timeline));
@@ -137,11 +161,11 @@ fn random_access_decode() {
 
     // Access pattern: forward skip, backward seek, random jumps
     let access_pattern: Vec<u64> = vec![
-        0, 5, 10, 15, 20,   // forward sequential with gaps
-        18, 12, 6,           // backward seeks
-        50, 80, 110,         // large forward jumps
-        30, 60, 90,          // backwards then forward
-        119, 0, 60,          // extremes
+        0, 5, 10, 15, 20, // forward sequential with gaps
+        18, 12, 6, // backward seeks
+        50, 80, 110, // large forward jumps
+        30, 60, 90, // backwards then forward
+        119, 0, 60, // extremes
     ];
 
     let mut times = Vec::with_capacity(access_pattern.len());
@@ -154,7 +178,10 @@ fn random_access_decode() {
     let total = start.elapsed();
 
     eprintln!();
-    eprintln!("=== Random Access Decode — {backend} (1280x720 @ 30fps) ===", backend = backend_label());
+    eprintln!(
+        "=== Random Access Decode — {backend} (1280x720 @ 30fps) ===",
+        backend = backend_label()
+    );
     print_stats("render_frame_png (random)", total, &mut times);
     eprintln!("  total: {total:.2?} for {} frames", access_pattern.len());
     eprintln!();
@@ -163,18 +190,27 @@ fn random_access_decode() {
 /// Full render_to_mp4 pipeline benchmark — streaming decode + render + encode.
 #[test]
 fn full_render_pipeline() {
+    if !require_release_profile() {
+        return;
+    }
+
     let project = generator_project(1280, 720, 30, 90);
     let timeline = Arc::new(compile_project(&project).expect("compile"));
 
     eprintln!();
-    eprintln!("=== Full Render Pipeline — {backend} (1280x720, 90 frames @ 30fps) ===", backend = backend_label());
+    eprintln!(
+        "=== Full Render Pipeline — {backend} (1280x720, 90 frames @ 30fps) ===",
+        backend = backend_label()
+    );
 
     // Warmup run
     {
         let warmup_project = generator_project(640, 360, 30, 5);
         let warmup_tl = Arc::new(compile_project(&warmup_project).expect("compile"));
         let mut warmup_backend = FfmpegRenderBackend::new(warmup_tl);
-        warmup_backend.render_to_mp4(&mut |_, _| {}).expect("warmup render");
+        warmup_backend
+            .render_to_mp4(&mut |_, _| {})
+            .expect("warmup render");
     }
 
     let mut backend = FfmpegRenderBackend::new(Arc::clone(&timeline));
@@ -202,6 +238,10 @@ fn full_render_pipeline() {
 /// 1080p sequential decode — measures scaling behavior at higher resolution.
 #[test]
 fn sequential_1080p() {
+    if !require_release_profile() {
+        return;
+    }
+
     let project = generator_project(1920, 1080, 30, 30);
     let timeline = Arc::new(compile_project(&project).expect("compile"));
     let mut backend = FfmpegRenderBackend::new(Arc::clone(&timeline));
@@ -220,7 +260,10 @@ fn sequential_1080p() {
     let total = start.elapsed();
 
     eprintln!();
-    eprintln!("=== 1080p Sequential Decode — {backend} (1920x1080 @ 30fps) ===", backend = backend_label());
+    eprintln!(
+        "=== 1080p Sequential Decode — {backend} (1920x1080 @ 30fps) ===",
+        backend = backend_label()
+    );
     print_stats("render_frame_png (1080p)", total, &mut times);
     eprintln!("  total: {total:.2?} for {frames} frames");
     eprintln!();
