@@ -553,54 +553,57 @@ impl TextPainter {
             font_ref.glyph_metrics(skrifa::instance::Size::new(font_size), &location);
         let line_height = (metrics.ascent - metrics.descent + metrics.leading).max(font_size);
 
-        let mut lines = Vec::new();
+        let charmap = font_ref.charmap();
+        let rotation_radians = (transform.rotation_degrees as f64).to_radians();
+
+        // Single pass: build glyphs and measure width simultaneously per line.
+        let mut line_data: Vec<(Vec<Glyph>, f32)> = Vec::new();
         let mut width_max = 0.0f32;
         for line in text.text.lines() {
-            let width = line.chars().fold(0.0f32, |acc, ch| {
-                let gid = font_ref.charmap().map(ch).unwrap_or_default();
-                let advance = glyph_metrics.advance_width(gid).unwrap_or_default();
-                acc + advance
-            });
-            width_max = width_max.max(width);
-            lines.push((line.to_string(), width));
+            let mut pen_x = 0.0f32;
+            let glyphs: Vec<Glyph> = line
+                .chars()
+                .map(|ch| {
+                    let gid = charmap.map(ch).unwrap_or_default();
+                    let advance = glyph_metrics.advance_width(gid).unwrap_or_default();
+                    let glyph = Glyph {
+                        id: gid.to_u32(),
+                        x: pen_x,
+                        y: 0.0,
+                    };
+                    pen_x += advance;
+                    glyph
+                })
+                .collect();
+            width_max = width_max.max(pen_x);
+            line_data.push((glyphs, pen_x));
         }
 
-        if lines.is_empty() {
-            lines.push((String::new(), 0.0));
+        if line_data.is_empty() {
+            line_data.push((Vec::new(), 0.0));
         }
 
         let target_width = transform.width.unwrap_or(width_max.max(1.0));
         let mut y_cursor = transform.y;
 
-        for (line, width) in lines {
+        for (glyphs, width) in &line_data {
             let x = match text.align {
                 TextAlign::Left => transform.x,
                 TextAlign::Center => transform.x + ((target_width - width) / 2.0),
                 TextAlign::Right => transform.x + (target_width - width),
             };
 
-            let mut pen_x = 0.0f32;
             scene
                 .draw_glyphs(&self.font)
                 .font_size(font_size)
                 .transform(
                     Affine::translate((x as f64, (y_cursor + font_size) as f64))
-                        * Affine::rotate((transform.rotation_degrees as f64).to_radians()),
+                        * Affine::rotate(rotation_radians),
                 )
                 .brush(&brush)
                 .draw(
                     StyleRef::Fill(Fill::NonZero),
-                    line.chars().filter_map(|ch| {
-                        let gid = font_ref.charmap().map(ch).unwrap_or_default();
-                        let advance = glyph_metrics.advance_width(gid).unwrap_or_default();
-                        let glyph = Glyph {
-                            id: gid.to_u32(),
-                            x: pen_x,
-                            y: 0.0,
-                        };
-                        pen_x += advance;
-                        Some(glyph)
-                    }),
+                    glyphs.iter().copied(),
                 );
 
             y_cursor += line_height;
