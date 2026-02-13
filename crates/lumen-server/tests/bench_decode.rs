@@ -179,6 +179,72 @@ fn ffmpeg_encode_command(
     command
 }
 
+fn ffmpeg_decode_filtered_command(
+    width: u32,
+    height: u32,
+    fps_num: u32,
+    filter_graph: &str,
+    frames: u64,
+) -> Command {
+    let mut command = Command::new("ffmpeg");
+    command
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-nostdin")
+        .arg("-f")
+        .arg("lavfi")
+        .arg("-i")
+        .arg(format!("testsrc=size={width}x{height}:rate={fps_num}"))
+        .arg("-an")
+        .arg("-vf")
+        .arg(filter_graph)
+        .arg("-frames:v")
+        .arg(frames.to_string())
+        .arg("-f")
+        .arg("null")
+        .arg("-")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn ffmpeg_encode_filtered_command(
+    width: u32,
+    height: u32,
+    fps_num: u32,
+    filter_graph: &str,
+    frames: u64,
+    output: &str,
+) -> Command {
+    let mut command = Command::new("ffmpeg");
+    command
+        .arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-nostdin")
+        .arg("-f")
+        .arg("lavfi")
+        .arg("-i")
+        .arg(format!("testsrc=size={width}x{height}:rate={fps_num}"))
+        .arg("-an")
+        .arg("-vf")
+        .arg(filter_graph)
+        .arg("-frames:v")
+        .arg(frames.to_string())
+        .arg("-c:v")
+        .arg("libx264")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(output)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    command
+}
+
 fn run_command(mut command: Command) -> Result<(Duration, Output), String> {
     let start = Instant::now();
     let output = command
@@ -252,6 +318,51 @@ fn bench_ffmpeg_encode_baseline(
     let command = ffmpeg_encode_command(width, height, fps_num, frames, output_path_str);
     let (elapsed, output) = run_command(command)?;
     ensure_success(&output, "ffmpeg encode baseline")?;
+
+    let size = fs::metadata(&output_path)
+        .map_err(|err| format!("failed to stat ffmpeg output: {err}"))?
+        .len();
+    Ok((elapsed, size))
+}
+
+fn bench_ffmpeg_filtered_decode(
+    width: u32,
+    height: u32,
+    fps_num: u32,
+    filter_graph: &str,
+    frames: u64,
+    context: &str,
+) -> Result<Duration, String> {
+    let command = ffmpeg_decode_filtered_command(width, height, fps_num, filter_graph, frames);
+    let (elapsed, output) = run_command(command)?;
+    ensure_success(&output, context)?;
+    Ok(elapsed)
+}
+
+fn bench_ffmpeg_filtered_encode(
+    width: u32,
+    height: u32,
+    fps_num: u32,
+    filter_graph: &str,
+    frames: u64,
+    context: &str,
+) -> Result<(Duration, u64), String> {
+    let tempdir = tempfile::tempdir().map_err(|err| format!("failed to create tempdir: {err}"))?;
+    let output_path = tempdir.path().join("ffmpeg-cli-filtered.mp4");
+    let output_path_str = output_path
+        .to_str()
+        .ok_or_else(|| "failed to convert output path to UTF-8".to_string())?;
+
+    let command = ffmpeg_encode_filtered_command(
+        width,
+        height,
+        fps_num,
+        filter_graph,
+        frames,
+        output_path_str,
+    );
+    let (elapsed, output) = run_command(command)?;
+    ensure_success(&output, context)?;
 
     let size = fs::metadata(&output_path)
         .map_err(|err| format!("failed to stat ffmpeg output: {err}"))?
@@ -473,5 +584,126 @@ fn sequential_1080p() {
         }
     }
     eprintln!("  total: {total:.2?} for {frames} frames");
+    eprintln!();
+}
+
+/// Direct ffmpeg CLI reverse/retime throughput baseline.
+#[test]
+fn ffmpeg_cli_retime_and_reverse() {
+    if !require_release_profile() {
+        return;
+    }
+    let _bench_guard = bench_guard();
+
+    let width = 1280;
+    let height = 720;
+    let fps = 30;
+    let output_frames = 90u64;
+
+    // Use an input window larger than output to make retime/reverse realistic.
+    let input_frames = 180u64;
+    let retime_filter = format!(
+        "fps={fps}/1,trim=start_frame=0:end_frame={input_frames},setpts=0.5*PTS,format=rgba"
+    );
+    let reverse_filter =
+        format!("fps={fps}/1,trim=start_frame=0:end_frame={input_frames},reverse,format=rgba");
+    let reverse_retime_filter = format!(
+        "fps={fps}/1,trim=start_frame=0:end_frame={input_frames},reverse,setpts=0.5*PTS,format=rgba"
+    );
+
+    eprintln!();
+    eprintln!("=== ffmpeg CLI Retiming/Reverse (1280x720 @ 30fps, 90 output frames) ===");
+
+    match bench_ffmpeg_filtered_decode(
+        width,
+        height,
+        fps,
+        &retime_filter,
+        output_frames,
+        "ffmpeg decode retime 2x",
+    ) {
+        Ok(total) => print_total_rate(
+            "ffmpeg CLI decode (retime 2x)",
+            total,
+            output_frames as usize,
+            "frames",
+        ),
+        Err(err) => eprintln!("  ffmpeg CLI decode (retime 2x) skipped: {err}"),
+    }
+
+    match bench_ffmpeg_filtered_decode(
+        width,
+        height,
+        fps,
+        &reverse_filter,
+        output_frames,
+        "ffmpeg decode reverse",
+    ) {
+        Ok(total) => print_total_rate(
+            "ffmpeg CLI decode (reverse)",
+            total,
+            output_frames as usize,
+            "frames",
+        ),
+        Err(err) => eprintln!("  ffmpeg CLI decode (reverse) skipped: {err}"),
+    }
+
+    match bench_ffmpeg_filtered_decode(
+        width,
+        height,
+        fps,
+        &reverse_retime_filter,
+        output_frames,
+        "ffmpeg decode reverse+retime",
+    ) {
+        Ok(total) => print_total_rate(
+            "ffmpeg CLI decode (reverse+2x)",
+            total,
+            output_frames as usize,
+            "frames",
+        ),
+        Err(err) => eprintln!("  ffmpeg CLI decode (reverse+2x) skipped: {err}"),
+    }
+
+    match bench_ffmpeg_filtered_encode(
+        width,
+        height,
+        fps,
+        &retime_filter,
+        output_frames,
+        "ffmpeg encode retime 2x",
+    ) {
+        Ok((total, bytes)) => {
+            print_total_rate(
+                "ffmpeg CLI encode (retime 2x)",
+                total,
+                output_frames as usize,
+                "frames",
+            );
+            eprintln!("  ffmpeg CLI encode (retime 2x) output: {bytes} bytes");
+        }
+        Err(err) => eprintln!("  ffmpeg CLI encode (retime 2x) skipped: {err}"),
+    }
+
+    match bench_ffmpeg_filtered_encode(
+        width,
+        height,
+        fps,
+        &reverse_filter,
+        output_frames,
+        "ffmpeg encode reverse",
+    ) {
+        Ok((total, bytes)) => {
+            print_total_rate(
+                "ffmpeg CLI encode (reverse)",
+                total,
+                output_frames as usize,
+                "frames",
+            );
+            eprintln!("  ffmpeg CLI encode (reverse) output: {bytes} bytes");
+        }
+        Err(err) => eprintln!("  ffmpeg CLI encode (reverse) skipped: {err}"),
+    }
+
     eprintln!();
 }
