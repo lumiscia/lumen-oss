@@ -41,6 +41,7 @@ pub struct GpuRenderer {
     height: u32,
     padded_bytes_per_row: u32,
     text: TextPainter,
+    scene: Scene,
 }
 
 impl GpuRenderer {
@@ -76,6 +77,7 @@ impl GpuRenderer {
             height,
             padded_bytes_per_row,
             text: TextPainter::default(),
+            scene: Scene::new(),
         })
     }
 
@@ -96,7 +98,8 @@ impl GpuRenderer {
             self.resize(timeline.canvas.width, timeline.canvas.height)?;
         }
 
-        let mut scene = Scene::new();
+        let mut scene = std::mem::take(&mut self.scene);
+        scene.reset();
         self.build_scene(timeline, frame, provider, &mut scene)?;
 
         let params = RenderParams {
@@ -112,6 +115,8 @@ impl GpuRenderer {
         self.renderer
             .render_to_texture(device, queue, &scene, &self.target_view, &params)
             .map_err(|err| RenderError::RendererInit(err.to_string()))?;
+
+        self.scene = scene;
 
         copy_to_readback(
             device,
