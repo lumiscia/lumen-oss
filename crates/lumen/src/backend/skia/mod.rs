@@ -166,24 +166,25 @@ impl RenderBackend for SkiaRenderer {
                 .operation(*operation_index)
                 .ok_or(RenderError::MissingOperation(*operation_index))?;
 
-            let opacity = operation.opacity;
+            let opacity = operation.resolved_opacity(frame);
             if opacity <= 0.0 {
                 continue;
             }
+            let transform = operation.resolved_transform(frame);
 
             match &operation.kind {
                 CompiledOperationKind::Solid { color } => {
-                    draw_solid(self.surface.canvas(), operation.transform, opacity, *color);
+                    draw_solid(self.surface.canvas(), transform, opacity, *color);
                 }
                 CompiledOperationKind::Shape(shape) => {
-                    draw_shape(self.surface.canvas(), operation.transform, opacity, shape);
+                    draw_shape(self.surface.canvas(), transform, opacity, shape);
                 }
                 CompiledOperationKind::Text(text) => {
                     draw_text(
                         self.surface.canvas(),
                         &self.typeface,
                         &mut self.font_cache,
-                        operation.transform,
+                        transform,
                         opacity,
                         text,
                     );
@@ -192,7 +193,7 @@ impl RenderBackend for SkiaRenderer {
                     if let Some(frame_image) = provider.image(image.source_id.as_str())? {
                         draw_image(
                             self.surface.canvas(),
-                            operation.transform,
+                            transform,
                             opacity,
                             image.fit,
                             image.corner_radius,
@@ -207,7 +208,7 @@ impl RenderBackend for SkiaRenderer {
                         {
                             draw_image(
                                 self.surface.canvas(),
-                                operation.transform,
+                                transform,
                                 opacity,
                                 video.fit,
                                 video.corner_radius,

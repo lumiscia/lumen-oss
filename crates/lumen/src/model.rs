@@ -103,7 +103,45 @@ pub struct Clip {
     pub opacity: f32,
     #[serde(default)]
     pub transform: Transform,
+    #[serde(default)]
+    pub animation: ClipAnimation,
     pub content: ClipContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ClipAnimation {
+    #[serde(default)]
+    pub opacity: Vec<ScalarKeyframe>,
+    #[serde(default)]
+    pub x: Vec<ScalarKeyframe>,
+    #[serde(default)]
+    pub y: Vec<ScalarKeyframe>,
+    #[serde(default)]
+    pub width: Vec<ScalarKeyframe>,
+    #[serde(default)]
+    pub height: Vec<ScalarKeyframe>,
+    #[serde(default)]
+    pub rotation_degrees: Vec<ScalarKeyframe>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScalarKeyframe {
+    pub frame: u64,
+    pub value: f32,
+    #[serde(default)]
+    pub duration_frames: u64,
+    #[serde(default)]
+    pub easing: Easing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Easing {
+    #[default]
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

@@ -164,28 +164,29 @@ impl GpuRenderer {
                 .operation(*operation_index)
                 .ok_or(RenderError::MissingOperation(*operation_index))?;
 
-            let opacity = operation.opacity;
+            let opacity = operation.resolved_opacity(frame);
             if opacity <= 0.0 {
                 continue;
             }
+            let transform = operation.resolved_transform(frame);
 
             match &operation.kind {
                 CompiledOperationKind::Solid { color } => {
-                    draw_solid(scene, operation.transform, opacity, *color);
+                    draw_solid(scene, transform, opacity, *color);
                 }
                 CompiledOperationKind::Shape(shape) => {
-                    draw_shape(scene, operation.transform, opacity, shape);
+                    draw_shape(scene, transform, opacity, shape);
                 }
                 CompiledOperationKind::Text(text) => {
                     self.text
-                        .draw(scene, operation.transform, opacity, text)
+                        .draw(scene, transform, opacity, text)
                         .map_err(|err| RenderError::Text(err.to_string()))?;
                 }
                 CompiledOperationKind::Image(image) => {
                     if let Some(frame_image) = provider.image(image.source_id.as_str())? {
                         draw_image(
                             scene,
-                            operation.transform,
+                            transform,
                             opacity,
                             image.fit,
                             image.corner_radius,
@@ -200,7 +201,7 @@ impl GpuRenderer {
                         {
                             draw_image(
                                 scene,
-                                operation.transform,
+                                transform,
                                 opacity,
                                 video.fit,
                                 video.corner_radius,

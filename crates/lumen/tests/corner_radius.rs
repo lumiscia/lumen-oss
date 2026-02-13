@@ -53,6 +53,7 @@ fn test_project() -> Project {
                     height: Some(20.0),
                     rotation_degrees: 0.0,
                 },
+                animation: Default::default(),
                 content: ClipContent::Image(ImageClip {
                     source: "img".to_string(),
                     fit: FitMode::Fill,
