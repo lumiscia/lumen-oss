@@ -29,6 +29,8 @@ use super::common::{
 pub use super::common::RenderBackendOptions;
 
 const DEFAULT_LIBAV_CACHE_FRAMES: usize = 64;
+const DEFAULT_LIBAV_PREFETCH_QUEUE: usize = 8;
+const DEFAULT_LIBAV_PREFETCH_FRAMES: u64 = 4;
 
 // ---------------------------------------------------------------------------
 // ffmpeg global init
@@ -557,7 +559,101 @@ impl LibavStreamDecoder {
 
 struct StreamingAssets {
     images: HashMap<String, FrameImage>,
-    video_decoders: HashMap<String, LibavStreamDecoder>,
+    video_workers: HashMap<String, VideoDecodeWorker>,
+}
+
+struct DecodeRequest {
+    source_frame: u64,
+    reply: mpsc::SyncSender<anyhow::Result<Option<FrameImage>>>,
+}
+
+struct VideoDecodeWorker {
+    source_id: String,
+    tx: Option<mpsc::SyncSender<DecodeRequest>>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl VideoDecodeWorker {
+    fn spawn(
+        source_id: &str,
+        decoder: LibavStreamDecoder,
+        request_queue_capacity: usize,
+        prefetch_frames: u64,
+    ) -> Self {
+        let capacity = request_queue_capacity.max(1);
+        let (tx, rx) = mpsc::sync_channel::<DecodeRequest>(capacity);
+        let source_id_owned = source_id.to_string();
+        let worker_source_id = source_id_owned.clone();
+        let handle = thread::spawn(move || {
+            run_decode_worker(worker_source_id, decoder, rx, prefetch_frames)
+        });
+
+        Self {
+            source_id: source_id_owned,
+            tx: Some(tx),
+            handle: Some(handle),
+        }
+    }
+
+    fn get_frame(&self, source_frame: u64) -> anyhow::Result<Option<FrameImage>> {
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or_else(|| anyhow!("decode worker for `{}` was shut down", self.source_id))?;
+        let (reply_tx, reply_rx) = mpsc::sync_channel::<anyhow::Result<Option<FrameImage>>>(1);
+        tx.send(DecodeRequest {
+            source_frame,
+            reply: reply_tx,
+        })
+        .map_err(|_| anyhow!("decode worker for `{}` is unavailable", self.source_id))?;
+        reply_rx
+            .recv()
+            .map_err(|_| anyhow!("decode worker for `{}` dropped response", self.source_id))?
+    }
+}
+
+impl Drop for VideoDecodeWorker {
+    fn drop(&mut self) {
+        self.tx.take();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn run_decode_worker(
+    source_id: String,
+    mut decoder: LibavStreamDecoder,
+    rx: mpsc::Receiver<DecodeRequest>,
+    prefetch_frames: u64,
+) {
+    let mut last_requested: Option<u64> = None;
+
+    while let Ok(request) = rx.recv() {
+        let frame = request.source_frame;
+        let result = decoder
+            .get_frame(frame)
+            .map_err(|err| anyhow!("failed to decode source `{source_id}` frame {frame}: {err}"));
+
+        let should_prefetch = prefetch_frames > 0
+            && matches!(result, Ok(Some(_)))
+            && last_requested.is_some_and(|last| frame == last.saturating_add(1));
+
+        let _ = request.reply.send(result);
+
+        if should_prefetch {
+            for step in 1..=prefetch_frames {
+                let next = frame.saturating_add(step);
+                match decoder.get_frame(next) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+        }
+
+        last_requested = Some(frame);
+    }
 }
 
 impl FrameProvider for StreamingAssets {
@@ -570,11 +666,11 @@ impl FrameProvider for StreamingAssets {
         source_id: &str,
         source_frame: u64,
     ) -> Result<Option<FrameImage>, ProviderError> {
-        let decoder = self
-            .video_decoders
+        let worker = self
+            .video_workers
             .get_mut(source_id)
             .ok_or_else(|| ProviderError::MissingSource(source_id.to_string()))?;
-        decoder
+        worker
             .get_frame(source_frame)
             .map_err(|err| ProviderError::Decode(err.to_string()))
     }
@@ -584,11 +680,13 @@ fn prepare_streaming_assets(
     timeline: &CompiledTimeline,
     media_root: &Path,
     cache_capacity: usize,
+    request_queue_capacity: usize,
+    prefetch_frames: u64,
 ) -> anyhow::Result<StreamingAssets> {
     ensure_ffmpeg_init()?;
     let fps = timeline.timeline.fps;
     let mut images = HashMap::new();
-    let mut video_decoders = HashMap::new();
+    let mut video_workers = HashMap::new();
 
     for source in timeline.sources() {
         match source.media_type() {
@@ -598,7 +696,13 @@ fn prepare_streaming_assets(
             }
             SourceMediaType::Video => {
                 let decoder = LibavStreamDecoder::new(source, fps, 0, media_root, cache_capacity)?;
-                video_decoders.insert(source.id.clone(), decoder);
+                let worker = VideoDecodeWorker::spawn(
+                    source.id.as_str(),
+                    decoder,
+                    request_queue_capacity,
+                    prefetch_frames,
+                );
+                video_workers.insert(source.id.clone(), worker);
             }
             SourceMediaType::Audio => {}
         }
@@ -606,7 +710,7 @@ fn prepare_streaming_assets(
 
     Ok(StreamingAssets {
         images,
-        video_decoders,
+        video_workers,
     })
 }
 
@@ -661,7 +765,23 @@ impl FfmpegRenderBackend {
                 })
                 .filter(|value| *value > 0)
                 .unwrap_or(DEFAULT_LIBAV_CACHE_FRAMES);
-            let assets = prepare_streaming_assets(&self.timeline, &root, cache_capacity)?;
+            let request_queue_capacity = env::var("LUMEN_LIBAV_PREFETCH_QUEUE")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(DEFAULT_LIBAV_PREFETCH_QUEUE);
+            let prefetch_frames = env::var("LUMEN_LIBAV_PREFETCH_FRAMES")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(DEFAULT_LIBAV_PREFETCH_FRAMES);
+
+            let assets = prepare_streaming_assets(
+                &self.timeline,
+                &root,
+                cache_capacity,
+                request_queue_capacity,
+                prefetch_frames,
+            )?;
             self.assets = Some(assets);
         }
         Ok(())
