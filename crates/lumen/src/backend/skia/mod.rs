@@ -4,6 +4,8 @@ pub mod software;
 #[cfg(feature = "skia-vulkan")]
 pub mod vulkan;
 
+use std::collections::HashMap;
+
 use skia_safe::{
     images, Canvas, Color, ColorType, Data, Font, FontMgr, IPoint, ImageInfo, Paint, Point, RRect,
     Rect, Typeface,
@@ -42,6 +44,7 @@ pub struct SkiaRenderer {
     #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
     gpu: Option<GpuState>,
     typeface: Typeface,
+    font_cache: HashMap<u32, Font>,
     width: u32,
     height: u32,
 }
@@ -62,6 +65,7 @@ impl SkiaRenderer {
                     surface,
                     gpu: Some(gpu_state),
                     typeface,
+                    font_cache: HashMap::new(),
                     width,
                     height,
                 });
@@ -75,6 +79,7 @@ impl SkiaRenderer {
             #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
             gpu: None,
             typeface,
+            font_cache: HashMap::new(),
             width,
             height,
         })
@@ -178,6 +183,7 @@ impl RenderBackend for SkiaRenderer {
                     draw_text(
                         self.surface.canvas(),
                         &self.typeface,
+                        &mut self.font_cache,
                         operation.transform,
                         opacity,
                         text,
@@ -383,12 +389,15 @@ fn draw_shape(canvas: &Canvas, transform: Transform, opacity: f32, shape: &Shape
 fn draw_text(
     canvas: &Canvas,
     typeface: &Typeface,
+    font_cache: &mut HashMap<u32, Font>,
     transform: Transform,
     opacity: f32,
     text: &TextClip,
 ) {
     let font_size = text.font_size.max(1.0);
-    let font = Font::from_typeface(typeface, font_size);
+    let font = font_cache
+        .entry(font_size.to_bits())
+        .or_insert_with(|| Font::from_typeface(typeface, font_size));
 
     let mut paint = Paint::default();
     paint.set_color(to_sk_color(text.color, opacity));
@@ -397,7 +406,6 @@ fn draw_text(
     let (_, metrics) = font.metrics();
     let line_height = (metrics.descent - metrics.ascent + metrics.leading).max(font_size);
 
-    // Split text and measure lines
     let lines: Vec<&str> = text.text.lines().collect();
     let lines = if lines.is_empty() { vec![""] } else { lines };
 
@@ -413,10 +421,10 @@ fn draw_text(
     let target_width = transform.width.unwrap_or(width_max.max(1.0));
 
     let mut y_cursor = transform.y;
+    let has_rotation = transform.rotation_degrees != 0.0;
 
-    canvas.save();
-
-    if transform.rotation_degrees != 0.0 {
+    if has_rotation {
+        canvas.save();
         let cx = transform.x + target_width / 2.0;
         let cy = transform.y;
         canvas.translate(Point::new(cx, cy));
@@ -431,11 +439,13 @@ fn draw_text(
             TextAlign::Right => transform.x + (target_width - line_widths[i]),
         };
 
-        canvas.draw_str(line, Point::new(x, y_cursor + font_size), &font, &paint);
+        canvas.draw_str(line, Point::new(x, y_cursor + font_size), font, &paint);
         y_cursor += line_height;
     }
 
-    canvas.restore();
+    if has_rotation {
+        canvas.restore();
+    }
 }
 
 fn draw_image(
