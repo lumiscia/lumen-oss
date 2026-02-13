@@ -5,7 +5,6 @@ use skrifa::{
     MetadataProvider,
     raw::{FileRef, FontRef},
 };
-use thiserror::Error;
 use vello::{
     AaConfig, AaSupport, Glyph, RenderParams, Renderer, RendererOptions, Scene,
     kurbo::{Affine, Ellipse, Rect, RoundedRect},
@@ -21,87 +20,15 @@ use vello::{
 };
 
 use crate::{
-    backend::RenderBackend,
-    compile::{CompileError, CompiledOperationKind, CompiledTimeline, VideoSourceRef},
+    backend::{
+        FrameImage, FrameProvider, RenderBackend, RenderError, pixel_len,
+    },
+    compile::{CompiledOperationKind, CompiledTimeline, VideoSourceRef},
     model::{ColorRgba, FitMode, Shape, ShapeClip, TextAlign, TextClip, Transform},
 };
 
-#[derive(Debug, Error)]
-pub enum GpuRenderError {
-    #[error("failed to acquire a compatible GPU device")]
-    MissingDevice,
-    #[error("failed to initialize GPU renderer: {0}")]
-    RendererInit(String),
-    #[error("frame {frame} is out of range for total frames {total_frames}")]
-    FrameOutOfRange { frame: u64, total_frames: u64 },
-    #[error("missing operation index {0}")]
-    MissingOperation(usize),
-    #[error("scene compile error: {0}")]
-    Compile(#[from] CompileError),
-    #[error("media provider error: {0}")]
-    Provider(#[from] ProviderError),
-    #[error("failed to map GPU buffer")]
-    BufferMap,
-    #[error("failed to read GPU buffer")]
-    BufferRead,
-    #[error("texture dimensions overflowed")]
-    SizeOverflow,
-    #[error("image payload length did not match dimensions")]
-    InvalidImagePayload,
-    #[error("text render error: {0}")]
-    Text(String),
-}
-
-#[derive(Debug, Error)]
-pub enum ProviderError {
-    #[error("missing source `{0}`")]
-    MissingSource(String),
-    #[error("decode failed: {0}")]
-    Decode(String),
-    #[error("source failed: {0}")]
-    Source(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct FrameImage {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Arc<Vec<u8>>,
-}
-
-impl FrameImage {
-    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, GpuRenderError> {
-        let expected = pixel_len(width, height)?;
-        if rgba.len() != expected {
-            return Err(GpuRenderError::InvalidImagePayload);
-        }
-
-        Ok(Self {
-            width,
-            height,
-            rgba: Arc::new(rgba),
-        })
-    }
-}
-
-pub trait FrameProvider: Send {
-    fn image(&mut self, _source_id: &str) -> Result<Option<FrameImage>, ProviderError> {
-        Ok(None)
-    }
-
-    fn video_frame(
-        &mut self,
-        _source_id: &str,
-        _source_frame: u64,
-    ) -> Result<Option<FrameImage>, ProviderError> {
-        Ok(None)
-    }
-}
-
-#[derive(Default)]
-pub struct NoopFrameProvider;
-
-impl FrameProvider for NoopFrameProvider {}
+// Re-export shared types for backward compatibility.
+pub use crate::backend::{NoopFrameProvider, RenderError as GpuRenderError};
 
 pub struct GpuRenderer {
     context: RenderContext,
@@ -117,10 +44,10 @@ pub struct GpuRenderer {
 }
 
 impl GpuRenderer {
-    pub fn new(width: u32, height: u32) -> Result<Self, GpuRenderError> {
+    pub fn new(width: u32, height: u32) -> Result<Self, RenderError> {
         let mut context = RenderContext::new();
         let device_id =
-            pollster::block_on(context.device(None)).ok_or(GpuRenderError::MissingDevice)?;
+            pollster::block_on(context.device(None)).ok_or(RenderError::MissingDevice)?;
 
         let device = &context.devices[device_id].device;
 
@@ -133,7 +60,7 @@ impl GpuRenderer {
                 pipeline_cache: None,
             },
         )
-        .map_err(|err| GpuRenderError::RendererInit(err.to_string()))?;
+        .map_err(|err| RenderError::RendererInit(err.to_string()))?;
 
         let (target_texture, target_view, readback_buffer, padded_bytes_per_row) =
             allocate_targets(device, width, height)?;
@@ -157,9 +84,9 @@ impl GpuRenderer {
         timeline: &CompiledTimeline,
         frame: u64,
         provider: &mut dyn FrameProvider,
-    ) -> Result<Vec<u8>, GpuRenderError> {
+    ) -> Result<Vec<u8>, RenderError> {
         if frame >= timeline.total_frames() {
-            return Err(GpuRenderError::FrameOutOfRange {
+            return Err(RenderError::FrameOutOfRange {
                 frame,
                 total_frames: timeline.total_frames(),
             });
@@ -184,7 +111,7 @@ impl GpuRenderer {
 
         self.renderer
             .render_to_texture(device, queue, &scene, &self.target_view, &params)
-            .map_err(|err| GpuRenderError::RendererInit(err.to_string()))?;
+            .map_err(|err| RenderError::RendererInit(err.to_string()))?;
 
         copy_to_readback(
             device,
@@ -205,7 +132,7 @@ impl GpuRenderer {
         )
     }
 
-    fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuRenderError> {
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), RenderError> {
         let device = &self.context.devices[self.device_id].device;
         let (target_texture, target_view, readback_buffer, padded_bytes_per_row) =
             allocate_targets(device, width, height)?;
@@ -226,13 +153,13 @@ impl GpuRenderer {
         frame: u64,
         provider: &mut dyn FrameProvider,
         scene: &mut Scene,
-    ) -> Result<(), GpuRenderError> {
+    ) -> Result<(), RenderError> {
         let operation_indices = timeline.operation_indices_for_frame(frame)?;
 
         for operation_index in operation_indices {
             let operation = timeline
                 .operation(*operation_index)
-                .ok_or(GpuRenderError::MissingOperation(*operation_index))?;
+                .ok_or(RenderError::MissingOperation(*operation_index))?;
 
             if !operation.contains_frame(frame) {
                 continue;
@@ -253,7 +180,7 @@ impl GpuRenderer {
                 CompiledOperationKind::Text(text) => {
                     self.text
                         .draw(scene, operation.transform, opacity, text)
-                        .map_err(|err| GpuRenderError::Text(err.to_string()))?;
+                        .map_err(|err| RenderError::Text(err.to_string()))?;
                 }
                 CompiledOperationKind::Image(image) => {
                     if let Some(frame_image) = provider.image(image.source_id.as_str())? {
@@ -288,7 +215,7 @@ impl RenderBackend for GpuRenderer {
         timeline: &CompiledTimeline,
         frame: u64,
         provider: &mut dyn FrameProvider,
-    ) -> Result<Vec<u8>, GpuRenderError> {
+    ) -> Result<Vec<u8>, RenderError> {
         self.render_frame(timeline, frame, provider)
     }
 }
@@ -297,7 +224,7 @@ fn resolve_video_frame(
     operation: &crate::compile::CompiledOperation,
     _video: &VideoSourceRef,
     frame: u64,
-) -> Result<Option<u64>, GpuRenderError> {
+) -> Result<Option<u64>, RenderError> {
     operation
         .resolve_video_source_frame(frame)
         .map_err(Into::into)
@@ -379,7 +306,7 @@ fn draw_image(
     opacity: f32,
     fit: FitMode,
     image: &FrameImage,
-) -> Result<(), GpuRenderError> {
+) -> Result<(), RenderError> {
     let image_data = ImageData {
         data: Blob::new(image.rgba.clone()),
         format: ImageFormat::Rgba8,
@@ -473,20 +400,11 @@ fn to_peniko_color(color: ColorRgba) -> Color {
     Color::from_rgba8(color.r(), color.g(), color.b(), color.a())
 }
 
-fn pixel_len(width: u32, height: u32) -> Result<usize, GpuRenderError> {
-    let pixel_count = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or(GpuRenderError::SizeOverflow)?;
-    pixel_count
-        .checked_mul(4)
-        .ok_or(GpuRenderError::SizeOverflow)
-}
-
 fn allocate_targets(
     device: &wgpu::Device,
     width: u32,
     height: u32,
-) -> Result<(wgpu::Texture, wgpu::TextureView, wgpu::Buffer, u32), GpuRenderError> {
+) -> Result<(wgpu::Texture, wgpu::TextureView, wgpu::Buffer, u32), RenderError> {
     let target_texture = device.create_texture(&TextureDescriptor {
         label: Some("lumen_target_texture"),
         size: Extent3d {
@@ -507,7 +425,7 @@ fn allocate_targets(
     let padded_bytes_per_row = width.saturating_mul(4).next_multiple_of(256);
     let buffer_size = (padded_bytes_per_row as u64)
         .checked_mul(height as u64)
-        .ok_or(GpuRenderError::SizeOverflow)?;
+        .ok_or(RenderError::SizeOverflow)?;
 
     let readback_buffer = device.create_buffer(&BufferDescriptor {
         label: Some("lumen_readback_buffer"),
@@ -563,36 +481,36 @@ fn readback_rgba(
     width: u32,
     height: u32,
     padded_bytes_per_row: u32,
-) -> Result<Vec<u8>, GpuRenderError> {
+) -> Result<Vec<u8>, RenderError> {
     let slice = readback_buffer.slice(..);
     let (sender, receiver) = oneshot_channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
     });
 
-    let receive = block_on_wgpu(device, receiver.receive()).ok_or(GpuRenderError::BufferMap)?;
-    receive.map_err(|_| GpuRenderError::BufferMap)?;
+    let receive = block_on_wgpu(device, receiver.receive()).ok_or(RenderError::BufferMap)?;
+    receive.map_err(|_| RenderError::BufferMap)?;
 
     let mapped = slice.get_mapped_range();
     let mut rgba = vec![0u8; pixel_len(width, height)?];
     let row_len = (width as usize)
         .checked_mul(4)
-        .ok_or(GpuRenderError::SizeOverflow)?;
+        .ok_or(RenderError::SizeOverflow)?;
 
     for row in 0..(height as usize) {
         let src_start = row
             .checked_mul(padded_bytes_per_row as usize)
-            .ok_or(GpuRenderError::BufferRead)?;
+            .ok_or(RenderError::BufferRead)?;
         let src_end = src_start
             .checked_add(row_len)
-            .ok_or(GpuRenderError::BufferRead)?;
-        let dst_start = row.checked_mul(row_len).ok_or(GpuRenderError::BufferRead)?;
+            .ok_or(RenderError::BufferRead)?;
+        let dst_start = row.checked_mul(row_len).ok_or(RenderError::BufferRead)?;
         let dst_end = dst_start
             .checked_add(row_len)
-            .ok_or(GpuRenderError::BufferRead)?;
+            .ok_or(RenderError::BufferRead)?;
 
         if src_end > mapped.len() || dst_end > rgba.len() {
-            return Err(GpuRenderError::BufferRead);
+            return Err(RenderError::BufferRead);
         }
 
         rgba[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
@@ -615,9 +533,9 @@ impl TextPainter {
         transform: Transform,
         opacity: f32,
         text: &TextClip,
-    ) -> Result<(), GpuRenderError> {
+    ) -> Result<(), RenderError> {
         let font_ref = to_font_ref(&self.font)
-            .ok_or_else(|| GpuRenderError::Text("failed to parse embedded font".to_string()))?;
+            .ok_or_else(|| RenderError::Text("failed to parse embedded font".to_string()))?;
 
         let brush = Brush::Solid(Color::from_rgba8(
             text.color.r(),

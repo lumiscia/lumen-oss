@@ -11,14 +11,11 @@ use std::{
 use anyhow::{Context, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen::{
-    backend::RenderBackend,
+    backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
     compile::{CompiledOperationKind, CompiledTimeline},
-    gpu::{FrameImage, FrameProvider, ProviderError},
     model::{Source, SourceKind},
     time::Rational,
 };
-#[cfg(not(feature = "renderer-skia"))]
-use lumen::gpu::GpuRenderer;
 
 const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
 const DEFAULT_ENCODE_QUEUE: usize = 8;
@@ -27,13 +24,13 @@ const DEFAULT_MAX_DECODED_FRAMES: usize = 120_000;
 fn create_renderer(width: u32, height: u32) -> anyhow::Result<Box<dyn RenderBackend>> {
     #[cfg(feature = "renderer-skia")]
     {
-        let renderer = lumen_skia::SkiaRenderer::new(width, height)
+        let renderer = lumen::skia::SkiaRenderer::new(width, height)
             .map_err(|err| anyhow!("failed to initialize Skia renderer: {err}"))?;
         return Ok(Box::new(renderer));
     }
     #[cfg(not(feature = "renderer-skia"))]
     {
-        let renderer = GpuRenderer::new(width, height)
+        let renderer = lumen::gpu::GpuRenderer::new(width, height)
             .map_err(|err| anyhow!("failed to initialize GPU renderer: {err}"))?;
         Ok(Box::new(renderer))
     }

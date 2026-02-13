@@ -17,8 +17,8 @@ path = "src/bin/lumen_runpod.rs"
 
 [features]
 default = ["renderer-vello"]
-renderer-vello = []
-renderer-skia = ["lumen-skia"]
+renderer-vello = ["lumen/renderer-vello"]
+renderer-skia = ["lumen/renderer-skia"]
 
 [dependencies]
 anyhow = "1.0.101"
@@ -31,8 +31,7 @@ async-trait = "0.1.89"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 parking_lot = "0.12.5"
-lumen = { path = "../lumen" }
-lumen-skia = { path = "../lumen-skia", optional = true }
+lumen = { path = "../lumen", default-features = false }
 lru = "0.16.3"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
 tempfile = "3.25.0"
