@@ -3,27 +3,27 @@ use std::{
     env,
     num::NonZeroUsize,
     path::Path,
-    sync::{mpsc, Arc, OnceLock},
+    sync::{Arc, OnceLock, mpsc},
     thread,
 };
 
 use std::ffi::CString;
 use std::ptr;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use ffmpeg_next::{self as ffmpeg, format, media, software::scaling};
-use image::{codecs::png::PngEncoder, ImageEncoder};
+use image::{ImageEncoder, codecs::png::PngEncoder};
 use lru::LruCache;
 use lumen::{
     backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
-    compile::CompiledTimeline,
+    compile::{CompiledOperationKind, CompiledTimeline},
     model::{Source, SourceKind, SourceMediaType},
     time::Rational,
 };
 
 use super::common::{
-    choose_video_encoder, create_renderer, decode_image_source, encode_rgba_stream, media_root,
-    resolve_source_file_path, DEFAULT_ENCODE_QUEUE,
+    DEFAULT_ENCODE_QUEUE, choose_video_encoder, create_renderer, decode_image_source,
+    encode_rgba_stream, media_root, resolve_source_file_path,
 };
 
 pub use super::common::RenderBackendOptions;
@@ -623,6 +623,76 @@ impl FfmpegRenderBackend {
                 .unwrap_or(DEFAULT_LIBAV_CACHE_FRAMES);
             let assets = prepare_streaming_assets(&self.timeline, &root, cache_capacity)?;
             self.assets = Some(assets);
+        }
+        Ok(())
+    }
+
+    fn decode_video_dependencies_for_frame(&mut self, frame: u64) -> anyhow::Result<()> {
+        self.init_if_needed()?;
+
+        let total_frames = self.timeline.total_frames();
+        if frame >= total_frames {
+            return Err(anyhow!(
+                "decode benchmark frame {frame} out of range (total={total_frames})"
+            ));
+        }
+
+        let operation_indices = self
+            .timeline
+            .operation_indices_for_frame(frame)
+            .map_err(|err| anyhow!(err.to_string()))?;
+
+        let assets = self
+            .assets
+            .as_mut()
+            .ok_or_else(|| anyhow!("streaming assets were not initialized"))?;
+
+        for operation_index in operation_indices {
+            let operation = self
+                .timeline
+                .operation(*operation_index)
+                .ok_or_else(|| anyhow!("missing operation index {}", operation_index))?;
+
+            if let CompiledOperationKind::Video(video) = &operation.kind {
+                let source_frame = operation
+                    .resolve_video_source_frame(frame)
+                    .map_err(|err| anyhow!(err.to_string()))?;
+                if let Some(source_frame) = source_frame {
+                    let _ = assets
+                        .video_frame(video.source_id.as_str(), source_frame)
+                        .map_err(|err| {
+                            anyhow!(
+                                "failed to decode source `{}` frame {}: {err}",
+                                video.source_id,
+                                source_frame
+                            )
+                        })?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Decode-only benchmark hook: decode all video dependencies for one frame
+    /// without rendering/compositing or PNG encoding.
+    pub fn benchmark_decode_only_frame(&mut self, frame: u64) -> anyhow::Result<()> {
+        self.decode_video_dependencies_for_frame(frame)
+    }
+
+    /// Decode-only benchmark hook for sequential timeline frames.
+    pub fn benchmark_decode_only_sequential(&mut self, frames: u64) -> anyhow::Result<()> {
+        let count = frames.min(self.timeline.total_frames());
+        for frame in 0..count {
+            self.decode_video_dependencies_for_frame(frame)?;
+        }
+        Ok(())
+    }
+
+    /// Decode-only benchmark hook for arbitrary frame access patterns.
+    pub fn benchmark_decode_only_random(&mut self, frames: &[u64]) -> anyhow::Result<()> {
+        for frame in frames {
+            self.decode_video_dependencies_for_frame(*frame)?;
         }
         Ok(())
     }

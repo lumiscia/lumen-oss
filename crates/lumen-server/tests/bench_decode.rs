@@ -374,8 +374,7 @@ fn bench_ffmpeg_filtered_encode(
 // Benchmarks
 // ---------------------------------------------------------------------------
 
-/// Sequential frame decode via render_frame_png (batch decode path).
-/// Each call decodes a single frame from the generator source.
+/// Sequential decode-only benchmark.
 #[test]
 fn sequential_frame_decode() {
     if !require_release_profile() {
@@ -389,7 +388,7 @@ fn sequential_frame_decode() {
 
     // Warmup
     for i in 0..WARMUP_FRAMES as u64 {
-        backend.render_frame_png(i).expect("warmup");
+        backend.benchmark_decode_only_frame(i).expect("warmup");
     }
 
     let frames = 30u64;
@@ -397,7 +396,7 @@ fn sequential_frame_decode() {
     let start = Instant::now();
     for frame in 0..frames {
         let t = Instant::now();
-        backend.render_frame_png(frame).expect("render");
+        backend.benchmark_decode_only_frame(frame).expect("decode");
         times.push(t.elapsed());
     }
     let total = start.elapsed();
@@ -407,7 +406,7 @@ fn sequential_frame_decode() {
         "=== Sequential Frame Decode — {backend} (1280x720 @ 30fps) ===",
         backend = backend_label()
     );
-    print_stats("render_frame_png (sequential)", total, &mut times);
+    print_stats("backend decode-only (sequential)", total, &mut times);
     match bench_ffmpeg_sequential_decode(1280, 720, 30, frames) {
         Ok(cli_total) => {
             print_total_rate(
@@ -425,8 +424,8 @@ fn sequential_frame_decode() {
     eprintln!();
 }
 
-/// Random-access frame decode — simulates seeking by requesting frames in a
-/// non-sequential pattern (forward jumps and backward seeks).
+/// Random-access decode-only benchmark — simulates seeking by requesting frames
+/// in a non-sequential pattern (forward jumps and backward seeks).
 #[test]
 fn random_access_decode() {
     if !require_release_profile() {
@@ -439,7 +438,7 @@ fn random_access_decode() {
     let mut backend = FfmpegRenderBackend::new(Arc::clone(&timeline));
 
     // Warmup
-    backend.render_frame_png(0).expect("warmup");
+    backend.benchmark_decode_only_frame(0).expect("warmup");
 
     // Access pattern: forward skip, backward seek, random jumps
     let access_pattern: Vec<u64> = vec![
@@ -454,7 +453,7 @@ fn random_access_decode() {
     let start = Instant::now();
     for &frame in &access_pattern {
         let t = Instant::now();
-        backend.render_frame_png(frame).expect("render");
+        backend.benchmark_decode_only_frame(frame).expect("decode");
         times.push(t.elapsed());
     }
     let total = start.elapsed();
@@ -464,7 +463,7 @@ fn random_access_decode() {
         "=== Random Access Decode — {backend} (1280x720 @ 30fps) ===",
         backend = backend_label()
     );
-    print_stats("render_frame_png (random)", total, &mut times);
+    print_stats("backend decode-only (random)", total, &mut times);
     match bench_ffmpeg_random_access_decode(1280, 720, 30, &access_pattern) {
         Ok((cli_total, mut cli_times)) => {
             print_stats("ffmpeg CLI decode (random)", cli_total, &mut cli_times);
@@ -539,7 +538,7 @@ fn full_render_pipeline() {
     eprintln!();
 }
 
-/// 1080p sequential decode — measures scaling behavior at higher resolution.
+/// 1080p sequential decode-only benchmark.
 #[test]
 fn sequential_1080p() {
     if !require_release_profile() {
@@ -552,14 +551,14 @@ fn sequential_1080p() {
     let mut backend = FfmpegRenderBackend::new(Arc::clone(&timeline));
 
     // Warmup
-    backend.render_frame_png(0).expect("warmup");
+    backend.benchmark_decode_only_frame(0).expect("warmup");
 
     let frames = 15u64;
     let mut times = Vec::with_capacity(frames as usize);
     let start = Instant::now();
     for frame in 0..frames {
         let t = Instant::now();
-        backend.render_frame_png(frame).expect("render");
+        backend.benchmark_decode_only_frame(frame).expect("decode");
         times.push(t.elapsed());
     }
     let total = start.elapsed();
@@ -569,7 +568,7 @@ fn sequential_1080p() {
         "=== 1080p Sequential Decode — {backend} (1920x1080 @ 30fps) ===",
         backend = backend_label()
     );
-    print_stats("render_frame_png (1080p)", total, &mut times);
+    print_stats("backend decode-only (1080p)", total, &mut times);
     match bench_ffmpeg_sequential_decode(1920, 1080, 30, frames) {
         Ok(cli_total) => {
             print_total_rate(

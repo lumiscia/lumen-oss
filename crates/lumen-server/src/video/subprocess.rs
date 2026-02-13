@@ -14,16 +14,15 @@ use image::{ImageEncoder, codecs::png::PngEncoder};
 use lru::LruCache;
 use lumen::{
     backend::{FrameImage, FrameProvider, ProviderError},
-    compile::CompiledTimeline,
+    compile::{CompiledOperationKind, CompiledTimeline},
     model::{Source, SourceKind, SourceMediaType},
     time::Rational,
 };
 
 use super::common::{
     DEFAULT_ENCODE_QUEUE, DEFAULT_MAX_DECODED_FRAMES, DEFAULT_STREAM_CACHE_FRAMES,
-    collect_requirements, choose_video_encoder, create_renderer, decode_image_source,
-    encode_rgba_stream, frame_size, media_root, resolve_source_file_path, FrameRequirements,
-    PreparedAssets,
+    FrameRequirements, PreparedAssets, choose_video_encoder, collect_requirements, create_renderer,
+    decode_image_source, encode_rgba_stream, frame_size, media_root, resolve_source_file_path,
 };
 
 pub use super::common::RenderBackendOptions;
@@ -48,7 +47,10 @@ impl FfmpegRenderBackend {
         Self { timeline, options }
     }
 
-    pub fn render_to_mp4(&mut self, on_progress: &mut dyn FnMut(u64, u64)) -> anyhow::Result<Vec<u8>> {
+    pub fn render_to_mp4(
+        &mut self,
+        on_progress: &mut dyn FnMut(u64, u64),
+    ) -> anyhow::Result<Vec<u8>> {
         let media_root = media_root(self.options.media_root.as_deref())?;
         let stream_cache_capacity = self
             .options
@@ -103,6 +105,116 @@ impl FfmpegRenderBackend {
             Ok(result) => result,
             Err(_) => Err(anyhow!("encoder thread panicked")),
         }
+    }
+
+    fn decode_video_dependencies_for_frame(
+        &self,
+        frame: u64,
+        assets: &mut StreamingAssets,
+    ) -> anyhow::Result<()> {
+        let total_frames = self.timeline.total_frames();
+        if frame >= total_frames {
+            return Err(anyhow!(
+                "decode benchmark frame {frame} out of range (total={total_frames})"
+            ));
+        }
+
+        let operation_indices = self
+            .timeline
+            .operation_indices_for_frame(frame)
+            .map_err(|err| anyhow!(err.to_string()))?;
+
+        for operation_index in operation_indices {
+            let operation = self
+                .timeline
+                .operation(*operation_index)
+                .ok_or_else(|| anyhow!("missing operation index {}", operation_index))?;
+
+            if let CompiledOperationKind::Video(video) = &operation.kind {
+                let source_frame = operation
+                    .resolve_video_source_frame(frame)
+                    .map_err(|err| anyhow!(err.to_string()))?;
+                if let Some(source_frame) = source_frame {
+                    let _ = assets
+                        .video_frame(video.source_id.as_str(), source_frame)
+                        .map_err(|err| {
+                            anyhow!(
+                                "failed to decode source `{}` frame {}: {err}",
+                                video.source_id,
+                                source_frame
+                            )
+                        })?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Decode-only benchmark hook: decode all video dependencies for one frame
+    /// without rendering/compositing or PNG encoding.
+    pub fn benchmark_decode_only_frame(&mut self, frame: u64) -> anyhow::Result<()> {
+        let media_root = media_root(self.options.media_root.as_deref())?;
+        let stream_cache_capacity = self
+            .options
+            .stream_cache_frames
+            .or_else(|| {
+                env::var("LUMEN_STREAM_CACHE_FRAMES")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_STREAM_CACHE_FRAMES);
+        let mut assets =
+            prepare_streaming_assets(&self.timeline, &media_root, stream_cache_capacity)?;
+        self.decode_video_dependencies_for_frame(frame, &mut assets)
+    }
+
+    /// Decode-only benchmark hook for sequential timeline frames.
+    pub fn benchmark_decode_only_sequential(&mut self, frames: u64) -> anyhow::Result<()> {
+        let media_root = media_root(self.options.media_root.as_deref())?;
+        let stream_cache_capacity = self
+            .options
+            .stream_cache_frames
+            .or_else(|| {
+                env::var("LUMEN_STREAM_CACHE_FRAMES")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_STREAM_CACHE_FRAMES);
+        let mut assets =
+            prepare_streaming_assets(&self.timeline, &media_root, stream_cache_capacity)?;
+
+        let count = frames.min(self.timeline.total_frames());
+        for frame in 0..count {
+            self.decode_video_dependencies_for_frame(frame, &mut assets)?;
+        }
+
+        Ok(())
+    }
+
+    /// Decode-only benchmark hook for arbitrary frame access patterns.
+    pub fn benchmark_decode_only_random(&mut self, frames: &[u64]) -> anyhow::Result<()> {
+        let media_root = media_root(self.options.media_root.as_deref())?;
+        let stream_cache_capacity = self
+            .options
+            .stream_cache_frames
+            .or_else(|| {
+                env::var("LUMEN_STREAM_CACHE_FRAMES")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_STREAM_CACHE_FRAMES);
+        let mut assets =
+            prepare_streaming_assets(&self.timeline, &media_root, stream_cache_capacity)?;
+
+        for frame in frames {
+            self.decode_video_dependencies_for_frame(*frame, &mut assets)?;
+        }
+
+        Ok(())
     }
 
     pub fn render_frame_png(&mut self, frame: u64) -> anyhow::Result<Vec<u8>> {
@@ -173,7 +285,8 @@ impl VideoStreamDecoder {
         let frame_byte_size = frame_size(width, height)?;
         let cap = NonZeroUsize::new(cache_capacity.max(1))
             .ok_or_else(|| anyhow!("invalid cache capacity"))?;
-        let (child, stdout) = Self::spawn_ffmpeg(&source, fps, width, height, start_frame, media_root)?;
+        let (child, stdout) =
+            Self::spawn_ffmpeg(&source, fps, width, height, start_frame, media_root)?;
         Ok(Self {
             child,
             stdout,
