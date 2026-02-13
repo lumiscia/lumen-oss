@@ -34,8 +34,7 @@ pub(super) fn try_create(width: u32, height: u32) -> Option<(skia_safe::Surface,
 
     let physical_devices = unsafe { instance.enumerate_physical_devices() }.ok()?;
     let (physical_device, queue_family_index) = physical_devices.iter().find_map(|&pd| {
-        let queue_families =
-            unsafe { instance.get_physical_device_queue_family_properties(pd) };
+        let queue_families = unsafe { instance.get_physical_device_queue_family_properties(pd) };
         queue_families.iter().enumerate().find_map(|(i, qf)| {
             if qf.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
                 Some((pd, i as u32))
@@ -64,14 +63,9 @@ pub(super) fn try_create(width: u32, height: u32) -> Option<(skia_safe::Surface,
             unsafe {
                 match of {
                     gpu::vk::GetProcOf::Instance(inst, name) => entry
-                        .get_instance_proc_addr(
-                            vk::Instance::from_raw(inst as u64),
-                            name.as_ptr(),
-                        ),
-                    gpu::vk::GetProcOf::Device(dev, name) => instance.get_device_proc_addr(
-                        vk::Device::from_raw(dev as u64),
-                        name.as_ptr(),
-                    ),
+                        .get_instance_proc_addr(vk::Instance::from_raw(inst as u64), name.as_ptr()),
+                    gpu::vk::GetProcOf::Device(dev, name) => instance
+                        .get_device_proc_addr(vk::Device::from_raw(dev as u64), name.as_ptr()),
                 }
             }
         };

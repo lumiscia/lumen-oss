@@ -4,8 +4,8 @@ use thiserror::Error;
 
 use crate::{
     model::{
-        Canvas, ClipContent, FitMode, Layer, Project, ShapeClip, Source, SourceMediaType,
-        SourcePipeline, TextClip, Timeline, Transform,
+        Canvas, ClipContent, Easing, FitMode, Layer, Project, ScalarKeyframe, ShapeClip, Source,
+        SourceMediaType, SourcePipeline, TextClip, Timeline, Transform,
     },
     source_pipeline::{PipelineError, map_source_frame},
 };
@@ -81,6 +81,7 @@ pub struct CompiledOperation {
     pub z_index: i32,
     pub opacity: f32,
     pub transform: Transform,
+    pub animation: CompiledClipAnimation,
     pub kind: CompiledOperationKind,
 }
 
@@ -91,6 +92,30 @@ impl CompiledOperation {
 
     pub fn local_frame(&self, frame: u64) -> u64 {
         frame.saturating_sub(self.start_frame)
+    }
+
+    pub fn resolved_opacity(&self, frame: u64) -> f32 {
+        let local = self.local_frame(frame);
+        evaluate_scalar_track(self.opacity, &self.animation.opacity, local).clamp(0.0, 1.0)
+    }
+
+    pub fn resolved_transform(&self, frame: u64) -> Transform {
+        let local = self.local_frame(frame);
+        let mut transform = self.transform;
+        transform.x = evaluate_scalar_track(transform.x, &self.animation.x, local);
+        transform.y = evaluate_scalar_track(transform.y, &self.animation.y, local);
+        transform.rotation_degrees = evaluate_scalar_track(
+            transform.rotation_degrees,
+            &self.animation.rotation_degrees,
+            local,
+        );
+        if let Some(width) = transform.width {
+            transform.width = Some(evaluate_scalar_track(width, &self.animation.width, local));
+        }
+        if let Some(height) = transform.height {
+            transform.height = Some(evaluate_scalar_track(height, &self.animation.height, local));
+        }
+        transform
     }
 
     pub fn resolve_video_source_frame(&self, frame: u64) -> Result<Option<u64>, CompileError> {
@@ -117,6 +142,7 @@ pub enum CompiledOperationKind {
 pub struct ImageSourceRef {
     pub source_id: String,
     pub fit: FitMode,
+    pub corner_radius: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +150,64 @@ pub struct VideoSourceRef {
     pub source_id: String,
     pub pipeline: SourcePipeline,
     pub fit: FitMode,
+    pub corner_radius: f32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CompiledClipAnimation {
+    pub opacity: Vec<CompiledScalarKeyframe>,
+    pub x: Vec<CompiledScalarKeyframe>,
+    pub y: Vec<CompiledScalarKeyframe>,
+    pub width: Vec<CompiledScalarKeyframe>,
+    pub height: Vec<CompiledScalarKeyframe>,
+    pub rotation_degrees: Vec<CompiledScalarKeyframe>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CompiledScalarKeyframe {
+    pub frame: u64,
+    pub value: f32,
+    pub duration_frames: u64,
+    pub easing: Easing,
+}
+
+fn evaluate_scalar_track(base: f32, track: &[CompiledScalarKeyframe], local_frame: u64) -> f32 {
+    let mut current = base;
+
+    for keyframe in track {
+        if local_frame < keyframe.frame {
+            break;
+        }
+
+        let from = current;
+        if keyframe.duration_frames == 0 {
+            current = keyframe.value;
+            continue;
+        }
+
+        let end = keyframe.frame.saturating_add(keyframe.duration_frames);
+        if local_frame >= end {
+            current = keyframe.value;
+            continue;
+        }
+
+        let progress =
+            (local_frame.saturating_sub(keyframe.frame)) as f32 / (keyframe.duration_frames as f32);
+        let eased = apply_easing(progress, keyframe.easing);
+        return from + (keyframe.value - from) * eased;
+    }
+
+    current
+}
+
+fn apply_easing(progress: f32, easing: Easing) -> f32 {
+    let t = progress.clamp(0.0, 1.0);
+    match easing {
+        Easing::Linear => t,
+        Easing::EaseIn => t * t,
+        Easing::EaseOut => 1.0 - (1.0 - t) * (1.0 - t),
+        Easing::EaseInOut => t * t * (3.0 - 2.0 * t),
+    }
 }
 
 pub fn compile_project(project: &Project) -> Result<CompiledTimeline, CompileError> {
@@ -278,6 +362,7 @@ fn compile_layer(
             });
         }
 
+        let animation = compile_clip_animation(layer, clip)?;
         let kind = compile_clip_content(layer, clip, sources)?;
 
         let operation = CompiledOperation {
@@ -288,6 +373,7 @@ fn compile_layer(
             z_index: layer.z_index,
             opacity: clip.opacity.clamp(0.0, 1.0),
             transform: clip.transform,
+            animation,
             kind,
         };
 
@@ -296,6 +382,159 @@ fn compile_layer(
     }
 
     Ok(())
+}
+
+fn compile_clip_animation(
+    layer: &Layer,
+    clip: &crate::model::Clip,
+) -> Result<CompiledClipAnimation, CompileError> {
+    if clip.transform.width.is_none() && !clip.animation.width.is_empty() {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer.id.clone(),
+            clip_id: clip.id.clone(),
+            reason: "animation.width requires transform.width".to_string(),
+        });
+    }
+    if clip.transform.height.is_none() && !clip.animation.height.is_empty() {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer.id.clone(),
+            clip_id: clip.id.clone(),
+            reason: "animation.height requires transform.height".to_string(),
+        });
+    }
+
+    if clip.transform.width.is_some() {
+        validate_dimension_keyframes(
+            layer,
+            clip,
+            "animation.width",
+            clip.animation.width.as_slice(),
+        )?;
+    }
+    if clip.transform.height.is_some() {
+        validate_dimension_keyframes(
+            layer,
+            clip,
+            "animation.height",
+            clip.animation.height.as_slice(),
+        )?;
+    }
+
+    Ok(CompiledClipAnimation {
+        opacity: compile_scalar_track(
+            layer,
+            clip,
+            "animation.opacity",
+            clip.animation.opacity.as_slice(),
+        )?,
+        x: compile_scalar_track(layer, clip, "animation.x", clip.animation.x.as_slice())?,
+        y: compile_scalar_track(layer, clip, "animation.y", clip.animation.y.as_slice())?,
+        width: compile_scalar_track(
+            layer,
+            clip,
+            "animation.width",
+            clip.animation.width.as_slice(),
+        )?,
+        height: compile_scalar_track(
+            layer,
+            clip,
+            "animation.height",
+            clip.animation.height.as_slice(),
+        )?,
+        rotation_degrees: compile_scalar_track(
+            layer,
+            clip,
+            "animation.rotation_degrees",
+            clip.animation.rotation_degrees.as_slice(),
+        )?,
+    })
+}
+
+fn validate_dimension_keyframes(
+    layer: &Layer,
+    clip: &crate::model::Clip,
+    field: &str,
+    keyframes: &[ScalarKeyframe],
+) -> Result<(), CompileError> {
+    for keyframe in keyframes {
+        if !keyframe.value.is_finite() || keyframe.value <= 0.0 {
+            return Err(CompileError::InvalidClip {
+                layer_id: layer.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: format!("{field} values must be finite and > 0"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn compile_scalar_track(
+    layer: &Layer,
+    clip: &crate::model::Clip,
+    field: &str,
+    keyframes: &[ScalarKeyframe],
+) -> Result<Vec<CompiledScalarKeyframe>, CompileError> {
+    let mut sorted = keyframes.to_vec();
+    sorted.sort_by_key(|keyframe| keyframe.frame);
+
+    let mut compiled = Vec::with_capacity(sorted.len());
+    let mut previous_end = 0u64;
+
+    for (index, keyframe) in sorted.into_iter().enumerate() {
+        if !keyframe.value.is_finite() {
+            return Err(CompileError::InvalidClip {
+                layer_id: layer.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: format!("{field}[{index}] value must be finite"),
+            });
+        }
+        if keyframe.frame >= clip.duration_frames {
+            return Err(CompileError::InvalidClip {
+                layer_id: layer.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: format!(
+                    "{field}[{index}] frame {} is out of clip range {}",
+                    keyframe.frame, clip.duration_frames
+                ),
+            });
+        }
+
+        let end = keyframe
+            .frame
+            .checked_add(keyframe.duration_frames)
+            .ok_or_else(|| CompileError::InvalidClip {
+                layer_id: layer.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: format!("{field}[{index}] frame range overflow"),
+            })?;
+        if end > clip.duration_frames {
+            return Err(CompileError::InvalidClip {
+                layer_id: layer.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: format!(
+                    "{field}[{index}] ends at {} beyond clip duration {}",
+                    end, clip.duration_frames
+                ),
+            });
+        }
+        if index > 0 && keyframe.frame < previous_end {
+            return Err(CompileError::InvalidClip {
+                layer_id: layer.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: format!("{field} keyframes overlap"),
+            });
+        }
+
+        previous_end = end.max(keyframe.frame);
+        compiled.push(CompiledScalarKeyframe {
+            frame: keyframe.frame,
+            value: keyframe.value,
+            duration_frames: keyframe.duration_frames,
+            easing: keyframe.easing,
+        });
+    }
+
+    Ok(compiled)
 }
 
 fn compile_clip_content(
@@ -309,13 +548,28 @@ fn compile_clip_content(
         ClipContent::Text(text) => Ok(CompiledOperationKind::Text(text.clone())),
         ClipContent::Image(image) => {
             validate_source_type(layer, clip, sources, &image.source, SourceMediaType::Image)?;
+            if !image.corner_radius.is_finite() || image.corner_radius < 0.0 {
+                return Err(CompileError::InvalidClip {
+                    layer_id: layer.id.clone(),
+                    clip_id: clip.id.clone(),
+                    reason: "image corner_radius must be finite and >= 0".to_string(),
+                });
+            }
             Ok(CompiledOperationKind::Image(ImageSourceRef {
                 source_id: image.source.clone(),
                 fit: image.fit,
+                corner_radius: image.corner_radius,
             }))
         }
         ClipContent::Video(video) => {
             validate_source_type(layer, clip, sources, &video.source, SourceMediaType::Video)?;
+            if !video.corner_radius.is_finite() || video.corner_radius < 0.0 {
+                return Err(CompileError::InvalidClip {
+                    layer_id: layer.id.clone(),
+                    clip_id: clip.id.clone(),
+                    reason: "video corner_radius must be finite and >= 0".to_string(),
+                });
+            }
             let _ =
                 map_source_frame(&video.pipeline, 0).map_err(|err| CompileError::InvalidClip {
                     layer_id: layer.id.clone(),
@@ -327,6 +581,7 @@ fn compile_clip_content(
                 source_id: video.source.clone(),
                 pipeline: video.pipeline.clone(),
                 fit: video.fit,
+                corner_radius: video.corner_radius,
             }))
         }
     }
@@ -371,8 +626,8 @@ mod tests {
     use crate::{
         compile::{CompiledOperationKind, compile_project},
         model::{
-            Canvas, Clip, ClipContent, ColorRgba, Layer, Project, Source, SourceKind,
-            SourceMediaType, TextClip, Timeline, VideoClip,
+            Canvas, Clip, ClipAnimation, ClipContent, ColorRgba, Easing, Layer, Project,
+            ScalarKeyframe, Source, SourceKind, SourceMediaType, TextClip, Timeline, VideoClip,
         },
         time::Rational,
     };
@@ -405,10 +660,12 @@ mod tests {
                     duration_frames: 30,
                     opacity: 1.0,
                     transform: Default::default(),
+                    animation: Default::default(),
                     content: ClipContent::Video(VideoClip {
                         source: "video_1".to_string(),
                         pipeline: Default::default(),
                         fit: Default::default(),
+                        corner_radius: 0.0,
                     }),
                 }],
             }],
@@ -452,10 +709,12 @@ mod tests {
                     duration_frames: 10,
                     opacity: 1.0,
                     transform: Default::default(),
+                    animation: Default::default(),
                     content: ClipContent::Video(VideoClip {
                         source: "image_1".to_string(),
                         pipeline: Default::default(),
                         fit: Default::default(),
+                        corner_radius: 0.0,
                     }),
                 }],
             }],
@@ -488,6 +747,7 @@ mod tests {
                     duration_frames: 4,
                     opacity: 1.0,
                     transform: Default::default(),
+                    animation: Default::default(),
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
                         font_size: 20.0,
@@ -501,5 +761,109 @@ mod tests {
 
         let err = compile_project(&project).expect_err("must fail");
         assert!(err.to_string().contains("beyond timeline"));
+    }
+
+    #[test]
+    fn resolves_clip_animation_with_easing_and_duration() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                clips: vec![Clip {
+                    id: "clip_a".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 0.0,
+                    transform: Default::default(),
+                    animation: ClipAnimation {
+                        opacity: vec![ScalarKeyframe {
+                            frame: 0,
+                            value: 1.0,
+                            duration_frames: 10,
+                            easing: Easing::EaseOut,
+                        }],
+                        ..Default::default()
+                    },
+                    content: ClipContent::Text(TextClip {
+                        text: "hello".to_string(),
+                        font_size: 20.0,
+                        color: ColorRgba(255, 255, 255, 255),
+                        align: Default::default(),
+                    }),
+                }],
+            }],
+            audio: Default::default(),
+        };
+
+        let compiled = compile_project(&project).expect("compile");
+        let frame_ops = compiled.operation_indices_for_frame(5).expect("frame ops");
+        let op = compiled.operation(frame_ops[0]).expect("op");
+        let midpoint = op.resolved_opacity(5);
+        assert!(midpoint > 0.0 && midpoint < 1.0);
+        assert_eq!(op.resolved_opacity(10), 1.0);
+    }
+
+    #[test]
+    fn rejects_overlapping_animation_keyframes() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                clips: vec![Clip {
+                    id: "clip_a".to_string(),
+                    start_frame: 0,
+                    duration_frames: 20,
+                    opacity: 1.0,
+                    transform: Default::default(),
+                    animation: ClipAnimation {
+                        y: vec![
+                            ScalarKeyframe {
+                                frame: 2,
+                                value: 10.0,
+                                duration_frames: 8,
+                                easing: Easing::EaseOut,
+                            },
+                            ScalarKeyframe {
+                                frame: 6,
+                                value: 20.0,
+                                duration_frames: 8,
+                                easing: Easing::EaseIn,
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    content: ClipContent::Text(TextClip {
+                        text: "hello".to_string(),
+                        font_size: 20.0,
+                        color: ColorRgba(255, 255, 255, 255),
+                        align: Default::default(),
+                    }),
+                }],
+            }],
+            audio: Default::default(),
+        };
+
+        let err = compile_project(&project).expect_err("must fail");
+        assert!(err.to_string().contains("keyframes overlap"));
     }
 }

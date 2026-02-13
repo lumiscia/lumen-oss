@@ -43,6 +43,7 @@ async-stream = "0.3.6"
 futures-core = "0.3.31"
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 ffmpeg-next = { version = "8.0", optional = true }
+skrifa = "0.40.0"
 
 [dev-dependencies]
 http-body-util = "0.1.3"

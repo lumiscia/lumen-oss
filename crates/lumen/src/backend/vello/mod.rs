@@ -20,9 +20,7 @@ use vello::{
 };
 
 use crate::{
-    backend::{
-        FrameImage, FrameProvider, RenderBackend, RenderError, pixel_len,
-    },
+    backend::{FrameImage, FrameProvider, RenderBackend, RenderError, pixel_len},
     compile::{CompiledOperationKind, CompiledTimeline, VideoSourceRef},
     model::{ColorRgba, FitMode, Shape, ShapeClip, TextAlign, TextClip, Transform},
 };
@@ -166,26 +164,34 @@ impl GpuRenderer {
                 .operation(*operation_index)
                 .ok_or(RenderError::MissingOperation(*operation_index))?;
 
-            let opacity = operation.opacity;
+            let opacity = operation.resolved_opacity(frame);
             if opacity <= 0.0 {
                 continue;
             }
+            let transform = operation.resolved_transform(frame);
 
             match &operation.kind {
                 CompiledOperationKind::Solid { color } => {
-                    draw_solid(scene, operation.transform, opacity, *color);
+                    draw_solid(scene, transform, opacity, *color);
                 }
                 CompiledOperationKind::Shape(shape) => {
-                    draw_shape(scene, operation.transform, opacity, shape);
+                    draw_shape(scene, transform, opacity, shape);
                 }
                 CompiledOperationKind::Text(text) => {
                     self.text
-                        .draw(scene, operation.transform, opacity, text)
+                        .draw(scene, transform, opacity, text)
                         .map_err(|err| RenderError::Text(err.to_string()))?;
                 }
                 CompiledOperationKind::Image(image) => {
                     if let Some(frame_image) = provider.image(image.source_id.as_str())? {
-                        draw_image(scene, operation.transform, opacity, image.fit, &frame_image)?;
+                        draw_image(
+                            scene,
+                            transform,
+                            opacity,
+                            image.fit,
+                            image.corner_radius,
+                            &frame_image,
+                        )?;
                     }
                 }
                 CompiledOperationKind::Video(video) => {
@@ -195,9 +201,10 @@ impl GpuRenderer {
                         {
                             draw_image(
                                 scene,
-                                operation.transform,
+                                transform,
                                 opacity,
                                 video.fit,
+                                video.corner_radius,
                                 &frame_image,
                             )?;
                         }
@@ -306,6 +313,7 @@ fn draw_image(
     transform: Transform,
     opacity: f32,
     fit: FitMode,
+    corner_radius: f32,
     image: &FrameImage,
 ) -> Result<(), RenderError> {
     let image_data = ImageData {
@@ -333,6 +341,23 @@ fn draw_image(
     }
 
     let brush = ImageBrush::new(image_data).multiply_alpha(opacity);
+    if corner_radius > 0.0 {
+        let min_scale = scale_x.abs().min(scale_y.abs()).max(f64::EPSILON);
+        let source_radius =
+            (corner_radius as f64 / min_scale).min((image.width.min(image.height) as f64) * 0.5);
+        scene.push_clip_layer(
+            Fill::NonZero,
+            affine,
+            &RoundedRect::new(
+                0.0,
+                0.0,
+                image.width as f64,
+                image.height as f64,
+                source_radius,
+            ),
+        );
+    }
+
     scene.fill(
         Fill::NonZero,
         affine,
@@ -340,6 +365,10 @@ fn draw_image(
         None,
         &Rect::new(0.0, 0.0, image.width as f64, image.height as f64),
     );
+
+    if corner_radius > 0.0 {
+        scene.pop_layer();
+    }
 
     Ok(())
 }
@@ -606,10 +635,7 @@ impl TextPainter {
                         * Affine::rotate(rotation_radians),
                 )
                 .brush(&brush)
-                .draw(
-                    StyleRef::Fill(Fill::NonZero),
-                    glyphs.iter().copied(),
-                );
+                .draw(StyleRef::Fill(Fill::NonZero), glyphs.iter().copied());
 
             y_cursor += line_height;
         }

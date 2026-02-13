@@ -20,6 +20,8 @@ Transform fields:
 - `width`, `height` define the target bounds for image/video fit; if unset, source dimensions are
   used.
 - `rotation_degrees` rotates around the resolved draw rect center.
+- `corner_radius` (image/video clips only) clips rendered media to rounded corners. `0` disables
+  clipping.
 
 Fit modes for image/video:
 
@@ -28,6 +30,28 @@ Fit modes for image/video:
 - `cover`: preserve aspect ratio; crop overflow outside target bounds.
 
 All transform numeric values must be finite.
+
+## 2.1) Clip Animation Semantics
+
+Each clip may optionally animate scalar properties with `animation` tracks:
+
+- `opacity`, `x`, `y`, `width`, `height`, `rotation_degrees`
+- Each track is an ordered list of keyframes: `frame`, `value`, `duration_frames`, `easing`
+
+Semantics:
+
+1. Animation frames are local to the clip (`0` is clip start).
+2. A keyframe means "transition from the current property value to `value` starting at `frame`".
+3. Transition duration is `duration_frames`; `0` means an immediate step at that frame.
+4. Easing curves:
+   - `linear`
+   - `ease_in`
+   - `ease_out`
+   - `ease_in_out`
+5. Tracks must not overlap in time for the same property.
+6. `width`/`height` tracks require base `transform.width`/`transform.height` to be set and all
+   animated values > 0.
+7. Resolved opacity is clamped to `[0.0, 1.0]` before compositing.
 
 ## 3) Opacity and Alpha Composition
 

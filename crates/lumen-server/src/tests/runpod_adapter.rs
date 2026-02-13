@@ -54,3 +54,23 @@ async fn runpod_adapter_returns_non_retryable_error_without_staging() {
     assert_eq!(error.code, "artifact_staging_missing");
     assert!(!error.retryable);
 }
+
+#[tokio::test]
+async fn runpod_adapter_rejects_unknown_preset_kind() {
+    let request: RunpodJobRequest = serde_json::from_value(json!({
+        "input": {
+            "job_id": "job_bad_preset",
+            "project": {
+                "kind": "chat_story_v2",
+                "version": 1
+            }
+        }
+    }))
+    .expect("request json");
+
+    let result = handle_runpod_request(request).await;
+    assert!(!result.ok);
+    let error = result.error.expect("error payload");
+    assert_eq!(error.code, "invalid_project_payload");
+    assert!(!error.retryable);
+}

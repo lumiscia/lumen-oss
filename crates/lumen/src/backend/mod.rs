@@ -102,7 +102,5 @@ pub fn pixel_len(width: u32, height: u32) -> Result<usize, RenderError> {
     let pixel_count = (width as usize)
         .checked_mul(height as usize)
         .ok_or(RenderError::SizeOverflow)?;
-    pixel_count
-        .checked_mul(4)
-        .ok_or(RenderError::SizeOverflow)
+    pixel_count.checked_mul(4).ok_or(RenderError::SizeOverflow)
 }
