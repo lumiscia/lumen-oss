@@ -510,7 +510,7 @@ fn readback_rgba(
         return Err(RenderError::BufferRead);
     }
 
-    let mut rgba = if row_len == padded {
+    let rgba = if row_len == padded {
         // Fast path: no padding, single copy.
         mapped[..total_len].to_vec()
     } else {
