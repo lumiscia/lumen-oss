@@ -1,7 +1,8 @@
 # ADR: Render Backend Strategy (Rust Orchestration + Vello/Skia)
 
-- Status: Proposed (execution contract once approved)
+- Status: Amended
 - Date: 2026-02-13
+- Amended: 2026-02-12
 - Owners: Rendering platform team
 
 ## Context
@@ -16,21 +17,32 @@ and a deterministic migration path.
    mapping, decode/render/encode coordination, and FFmpeg process management.
 2. A C++ Skia GPU backend is introduced behind an incremental backend boundary.
 3. Vello stays as an existing backend for comparison, fallback, and production rollback.
-4. Skia Ganesh is the first production GPU target path.
-5. Skia Graphite is explicitly deferred and remains experimental until a separate benchmark gate
-   is passed.
+4. Skia Graphite is the first production GPU target (Ganesh skipped; Graphite is production-ready
+   as of Skia m138+).
+5. Feature flags (`renderer-vello` / `renderer-skia`) in `lumen-server` control backend selection.
 
 ## Platform GPU Targets
 
 - Linux production target order:
-  - Primary: Skia Ganesh on Vulkan
+  - Primary: Skia Graphite on Vulkan
   - Fallback: Vello backend
 - macOS production target order:
-  - Primary: Skia Ganesh on Metal
+  - Primary: Skia Graphite on Metal
   - Fallback: Vello backend
 
 If primary initialization fails or runtime error-rate thresholds are exceeded, rendering must
 fallback to the configured Vello path without changing timeline semantics.
+
+## Web Preview Backend
+
+A TypeScript CanvasKit renderer (`@lumiscia/canvas-renderer`) provides feature-equivalent browser
+preview rendering. It consumes the same `DrawOperation` structures and applies identical
+layout/fit/compositing logic, with known approximations:
+
+- Text rendering is marked "approximate" (browser font stack differs from server Roboto).
+- Dropped video frames fall back to last-good-frame with an "approximate" badge.
+
+The CanvasKit renderer replaces the previous `lumen-wasm` WASM runtime approach.
 
 ## Success Criteria
 
@@ -78,3 +90,13 @@ This ADR is complete when:
 1. It is approved by rendering owners.
 2. Subsequent implementation phases reference this ADR.
 3. Any deviation is documented via ADR amendment before code changes.
+
+## Amendment Log
+
+### 2026-02-12: Graphite-first, CanvasKit web preview
+
+- Point 4 changed: "Skia Graphite is the first production GPU target" (Ganesh skipped).
+- Point 5 removed: Graphite is no longer deferred.
+- Platform targets updated: Graphite on Vulkan (Linux) / Metal (macOS).
+- New section: "Web Preview Backend" documenting CanvasKit + MediaProvider role.
+- `lumen-wasm` removed from workspace; replaced by `@lumiscia/canvas-renderer`.
