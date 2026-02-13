@@ -1,5 +1,5 @@
 use objc2::rc::Retained;
-use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLCommandQueue};
+use objc2_metal::{MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice};
 use skia_safe::gpu;
 
 use super::{GpuBackend, GpuState, create_gpu_surface};

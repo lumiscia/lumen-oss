@@ -3,16 +3,16 @@ use std::{
     env,
     num::NonZeroUsize,
     path::Path,
-    sync::{mpsc, Arc, OnceLock},
+    sync::{Arc, OnceLock, mpsc},
     thread,
 };
 
 use std::ffi::CString;
 use std::ptr;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use ffmpeg_next::{self as ffmpeg, format, media, software::scaling};
-use image::{codecs::png::PngEncoder, ImageEncoder};
+use image::{ImageEncoder, codecs::png::PngEncoder};
 use lru::LruCache;
 use lumen::{
     backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
@@ -22,8 +22,8 @@ use lumen::{
 };
 
 use super::common::{
-    choose_video_encoder, create_renderer, decode_image_source, encode_rgba_stream, media_root,
-    resolve_source_file_path, try_render_ffmpeg_fast_path, DEFAULT_ENCODE_QUEUE,
+    DEFAULT_ENCODE_QUEUE, choose_video_encoder, create_renderer, decode_image_source,
+    encode_rgba_stream, media_root, resolve_source_file_path, try_render_ffmpeg_fast_path,
 };
 
 pub use super::common::RenderBackendOptions;
