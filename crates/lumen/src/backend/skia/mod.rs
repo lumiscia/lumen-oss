@@ -162,11 +162,7 @@ impl RenderBackend for SkiaRenderer {
                 .operation(*operation_index)
                 .ok_or(RenderError::MissingOperation(*operation_index))?;
 
-            if !operation.contains_frame(frame) {
-                continue;
-            }
-
-            let opacity = operation.opacity.clamp(0.0, 1.0);
+            let opacity = operation.opacity;
             if opacity <= 0.0 {
                 continue;
             }
@@ -333,7 +329,7 @@ fn layout_rect(
 }
 
 fn alpha_scaled(alpha: u8, opacity: f32) -> u8 {
-    ((alpha as f32) * opacity.clamp(0.0, 1.0)).round() as u8
+    ((alpha as f32) * opacity).round() as u8
 }
 
 fn to_sk_color(c: ColorRgba, opacity: f32) -> Color {
@@ -457,7 +453,10 @@ fn draw_image(
     );
 
     let row_bytes = image.width as usize * 4;
-    let data = Data::new_copy(&image.rgba);
+    // SAFETY: `image.rgba` is borrowed from the FrameProvider and outlives
+    // both the `Data` and the `sk_image` created from it – they are local
+    // to this function and dropped before it returns.
+    let data = unsafe { Data::new_bytes(&image.rgba) };
     let sk_image = match images::raster_from_data(&info, data, row_bytes) {
         Some(img) => img,
         None => return,
@@ -482,7 +481,7 @@ fn draw_image(
     canvas.scale((scale_x, scale_y));
 
     let mut paint = Paint::default();
-    paint.set_alpha_f(opacity.clamp(0.0, 1.0));
+    paint.set_alpha_f(opacity);
 
     canvas.draw_image(&sk_image, Point::new(0.0, 0.0), Some(&paint));
     canvas.restore();

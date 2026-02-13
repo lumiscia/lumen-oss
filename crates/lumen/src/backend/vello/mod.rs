@@ -161,11 +161,7 @@ impl GpuRenderer {
                 .operation(*operation_index)
                 .ok_or(RenderError::MissingOperation(*operation_index))?;
 
-            if !operation.contains_frame(frame) {
-                continue;
-            }
-
-            let opacity = operation.opacity.clamp(0.0, 1.0);
+            let opacity = operation.opacity;
             if opacity <= 0.0 {
                 continue;
             }
@@ -331,7 +327,7 @@ fn draw_image(
             * affine;
     }
 
-    let brush = ImageBrush::new(image_data).multiply_alpha(opacity.clamp(0.0, 1.0));
+    let brush = ImageBrush::new(image_data).multiply_alpha(opacity);
     scene.fill(
         Fill::NonZero,
         affine,
@@ -393,7 +389,7 @@ fn layout_rect(
 }
 
 fn alpha_scaled(alpha: u8, opacity: f32) -> u8 {
-    ((alpha as f32) * opacity.clamp(0.0, 1.0)).round() as u8
+    ((alpha as f32) * opacity).round() as u8
 }
 
 fn to_peniko_color(color: ColorRgba) -> Color {
