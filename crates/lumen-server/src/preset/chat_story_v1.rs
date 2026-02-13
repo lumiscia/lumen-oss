@@ -140,6 +140,7 @@ struct LayoutConstants {
 #[derive(Debug, Clone)]
 struct MeasuredMessage {
     index: usize,
+    reveal_frame: u64,
     side: ChatStorySide,
     bubble_color: ColorRgba,
     text_color: ColorRgba,
@@ -624,6 +625,8 @@ fn build_chat_layer(
             let motion = compute_message_motion(
                 &placed,
                 previous_placements.get(&placed.measured.index),
+                start_frame,
+                is_expand_transition,
                 duration_frames,
                 layout,
             );
@@ -731,6 +734,8 @@ fn build_chat_layer(
 fn compute_message_motion(
     placed: &PlacedMessage,
     previous: Option<&PlacedMessage>,
+    start_frame: u64,
+    is_expand_transition: bool,
     interval_duration: u64,
     layout: &LayoutConstants,
 ) -> PlacementMotion {
@@ -765,13 +770,34 @@ fn compute_message_motion(
     }
 
     let intro_duration = layout.message_intro_duration_frames.min(interval_duration);
+    let is_hidden_history_message = placed.measured.reveal_frame < start_frame;
+    if is_hidden_history_message {
+        motion.start_opacity = 0.0;
+        let delay = if is_expand_transition {
+            layout
+                .panel_expand_duration_frames
+                .min(interval_duration.saturating_sub(1))
+        } else {
+            0
+        };
+        let fade_duration = layout
+            .message_intro_duration_frames
+            .min(interval_duration.saturating_sub(delay));
+        motion.animation.opacity.push(ScalarKeyframe {
+            frame: delay,
+            value: 1.0,
+            duration_frames: fade_duration,
+            easing: Easing::EaseOut,
+        });
+        return motion;
+    }
+
     let x_offset = match placed.measured.side {
         ChatStorySide::Left => -layout.message_entry_offset_x,
         ChatStorySide::Right => layout.message_entry_offset_x,
     };
     motion.start_x = placed.x + x_offset;
     motion.start_y = placed.y + layout.message_entry_offset_y;
-    motion.start_opacity = 0.0;
     motion.animation.x.push(ScalarKeyframe {
         frame: 0,
         value: placed.x,
@@ -781,12 +807,6 @@ fn compute_message_motion(
     motion.animation.y.push(ScalarKeyframe {
         frame: 0,
         value: placed.y,
-        duration_frames: intro_duration,
-        easing: Easing::EaseOut,
-    });
-    motion.animation.opacity.push(ScalarKeyframe {
-        frame: 0,
-        value: 1.0,
         duration_frames: intro_duration,
         easing: Easing::EaseOut,
     });
@@ -900,6 +920,7 @@ fn measure_message(
 
     Ok(MeasuredMessage {
         index: message.index,
+        reveal_frame: message.reveal_frame,
         side: message.side,
         bubble_color,
         text_color,
@@ -1187,7 +1208,7 @@ impl LayoutConstants {
             message_intro_duration_frames,
             message_reflow_duration_frames,
             message_entry_offset_x: 12.0 * scale,
-            message_entry_offset_y: 10.0 * scale,
+            message_entry_offset_y: 0.0,
         }
     }
 }
