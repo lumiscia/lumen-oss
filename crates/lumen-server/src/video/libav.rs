@@ -131,7 +131,7 @@ struct LibavStreamDecoder {
     width: u32,
     height: u32,
     time_base: ffmpeg::Rational,
-    timeline_fps: Rational,
+    timeline_time_base: ffmpeg::Rational,
     next_source_frame: u64,
     cache: LruCache<u64, FrameImage>,
     decoded_frame: ffmpeg::frame::Video,
@@ -169,6 +169,10 @@ impl LibavStreamDecoder {
 
         let video_stream_index = stream.index();
         let time_base = stream.time_base();
+        let timeline_time_base = ffmpeg::Rational::new(
+            i32::try_from(timeline_fps.den).context("timeline fps denominator exceeded i32")?,
+            i32::try_from(timeline_fps.num).context("timeline fps numerator exceeded i32")?,
+        );
 
         let decoder = open_video_decoder(stream.parameters())?;
 
@@ -204,7 +208,7 @@ impl LibavStreamDecoder {
             width,
             height,
             time_base,
-            timeline_fps,
+            timeline_time_base,
             next_source_frame: 0,
             cache: LruCache::new(cap),
             decoded_frame,
@@ -230,17 +234,30 @@ impl LibavStreamDecoder {
     /// Convert a source_frame index (at timeline_fps) to PTS in the source
     /// stream's time_base.
     fn source_frame_to_pts(&self, source_frame: u64) -> i64 {
-        let timestamp_secs = source_frame as f64 / self.timeline_fps.as_f64();
-        let pts = timestamp_secs * self.time_base.1 as f64 / self.time_base.0 as f64;
-        pts.round() as i64
+        unsafe {
+            ffmpeg_next::ffi::av_rescale_q(
+                source_frame as i64,
+                self.timeline_time_base.into(),
+                self.time_base.into(),
+            )
+        }
     }
 
     /// Convert a decoded frame's PTS to a source_frame index at timeline_fps.
     fn pts_to_source_frame(&self, pts: i64) -> u64 {
-        let timestamp_secs = pts as f64 * self.time_base.0 as f64 / self.time_base.1 as f64;
-        (timestamp_secs * self.timeline_fps.as_f64())
-            .round()
-            .max(0.0) as u64
+        let source_frame = unsafe {
+            ffmpeg_next::ffi::av_rescale_q(
+                pts,
+                self.time_base.into(),
+                self.timeline_time_base.into(),
+            )
+        };
+
+        if source_frame <= 0 {
+            return 0;
+        }
+
+        u64::try_from(source_frame).unwrap_or(u64::MAX)
     }
 
     // -- Core decode --------------------------------------------------------
@@ -296,8 +313,8 @@ impl LibavStreamDecoder {
     }
 
     fn nearest_cached_frame(&self, source_frame: u64) -> Option<FrameImage> {
-        let mut prev: Option<(u64, FrameImage)> = None;
-        let mut next: Option<(u64, FrameImage)> = None;
+        let mut prev: Option<(u64, &FrameImage)> = None;
+        let mut next: Option<(u64, &FrameImage)> = None;
 
         for (frame_idx, frame) in self.cache.iter() {
             let frame_idx = *frame_idx;
@@ -307,18 +324,18 @@ impl LibavStreamDecoder {
                     .as_ref()
                     .is_none_or(|(best_idx, _)| frame_idx > *best_idx)
                 {
-                    prev = Some((frame_idx, frame.clone()));
+                    prev = Some((frame_idx, frame));
                 }
             } else if next
                 .as_ref()
                 .is_none_or(|(best_idx, _)| frame_idx < *best_idx)
             {
-                next = Some((frame_idx, frame.clone()));
+                next = Some((frame_idx, frame));
             }
         }
 
-        prev.map(|(_, frame)| frame)
-            .or_else(|| next.map(|(_, frame)| frame))
+        prev.map(|(_, frame)| frame.clone())
+            .or_else(|| next.map(|(_, frame)| frame.clone()))
     }
 
     fn seek_to_frame(&mut self, target_frame: u64) -> anyhow::Result<()> {
