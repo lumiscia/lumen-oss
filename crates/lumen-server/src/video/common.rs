@@ -1,3 +1,6 @@
+// Items here are used conditionally by feature-gated backends (libav / subprocess).
+#![allow(dead_code)]
+
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     env,

@@ -120,7 +120,7 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
 
             emit(0.16, "rendering");
             let render_started = Instant::now();
-            let backend = FfmpegRenderBackend::new(timeline.clone());
+            let mut backend = FfmpegRenderBackend::new(timeline.clone());
             let bytes = backend.render_to_mp4(&mut |frame, total| {
                 if total == 0 {
                     return;

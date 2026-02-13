@@ -307,7 +307,7 @@ pub async fn get_frame(
 
     let timeline = compiled.timeline.clone();
     let png = spawn_blocking(move || -> Result<Vec<u8>, ApiError> {
-        let backend = FfmpegRenderBackend::new(timeline);
+        let mut backend = FfmpegRenderBackend::new(timeline);
         backend
             .render_frame_png(frame_index)
             .map_err(ApiError::internal)

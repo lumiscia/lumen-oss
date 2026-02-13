@@ -48,7 +48,7 @@ impl FfmpegRenderBackend {
         Self { timeline, options }
     }
 
-    pub fn render_to_mp4(&self, on_progress: &mut dyn FnMut(u64, u64)) -> anyhow::Result<Vec<u8>> {
+    pub fn render_to_mp4(&mut self, on_progress: &mut dyn FnMut(u64, u64)) -> anyhow::Result<Vec<u8>> {
         let media_root = media_root(self.options.media_root.as_deref())?;
         let stream_cache_capacity = self
             .options
@@ -105,7 +105,7 @@ impl FfmpegRenderBackend {
         }
     }
 
-    pub fn render_frame_png(&self, frame: u64) -> anyhow::Result<Vec<u8>> {
+    pub fn render_frame_png(&mut self, frame: u64) -> anyhow::Result<Vec<u8>> {
         let media_root = media_root(self.options.media_root.as_deref())?;
         let max_decoded_source_frames = self
             .options

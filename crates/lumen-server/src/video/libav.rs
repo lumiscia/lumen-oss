@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::HashMap,
     env,
     num::NonZeroUsize,
     path::Path,
@@ -7,22 +7,23 @@ use std::{
     thread,
 };
 
+use std::ffi::CString;
+use std::ptr;
+
 use anyhow::{Context, anyhow};
 use ffmpeg_next::{self as ffmpeg, format, media, software::scaling};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lru::LruCache;
 use lumen::{
-    backend::{FrameImage, FrameProvider, ProviderError},
+    backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
     compile::CompiledTimeline,
     model::{Source, SourceKind, SourceMediaType},
     time::Rational,
 };
 
 use super::common::{
-    DEFAULT_ENCODE_QUEUE, DEFAULT_MAX_DECODED_FRAMES,
-    collect_requirements, choose_video_encoder, create_renderer, decode_image_source,
-    encode_rgba_stream, media_root, resolve_source_file_path, FrameRequirements,
-    PreparedAssets,
+    DEFAULT_ENCODE_QUEUE, choose_video_encoder, create_renderer, decode_image_source,
+    encode_rgba_stream, media_root, resolve_source_file_path,
 };
 
 pub use super::common::RenderBackendOptions;
@@ -54,9 +55,42 @@ fn open_source_input(source: &Source, media_root: &Path) -> anyhow::Result<forma
                 .with_context(|| format!("failed to open video file `{}`", resolved.display()))
         }
         SourceKind::Generator { filter, .. } => {
-            let uri = format!("lavfi:{filter}");
-            format::input(&uri)
+            open_lavfi_input(filter)
                 .with_context(|| format!("failed to open lavfi source `{filter}`"))
+        }
+    }
+}
+
+/// Open a lavfi virtual input by explicitly specifying the lavfi demuxer.
+///
+/// `format::input("lavfi:<filter>")` only works when ffmpeg is built with the
+/// lavfi protocol. When it isn't available (common on Homebrew builds), we
+/// fall back to the raw `avformat_open_input` with `iformat` set to the lavfi
+/// demuxer, which is always present if libavfilter is linked.
+fn open_lavfi_input(filter: &str) -> Result<format::context::Input, ffmpeg::Error> {
+    unsafe {
+        let iformat = ffmpeg_next::ffi::av_find_input_format(b"lavfi\0".as_ptr() as *const _);
+        if iformat.is_null() {
+            return Err(ffmpeg::Error::DemuxerNotFound);
+        }
+
+        let path = CString::new(filter).map_err(|_| ffmpeg::Error::InvalidData)?;
+        let mut ps = ptr::null_mut();
+
+        match ffmpeg_next::ffi::avformat_open_input(
+            &mut ps,
+            path.as_ptr(),
+            iformat,
+            ptr::null_mut(),
+        ) {
+            0 => match ffmpeg_next::ffi::avformat_find_stream_info(ps, ptr::null_mut()) {
+                r if r >= 0 => Ok(format::context::Input::wrap(ps)),
+                e => {
+                    ffmpeg_next::ffi::avformat_close_input(&mut ps);
+                    Err(ffmpeg::Error::from(e))
+                }
+            },
+            e => Err(ffmpeg::Error::from(e)),
         }
     }
 }
@@ -76,8 +110,11 @@ struct LibavStreamDecoder {
     timeline_fps: Rational,
     next_source_frame: u64,
     cache: LruCache<u64, FrameImage>,
+    decoded_frame: ffmpeg::frame::Video,
     scratch_frame: ffmpeg::frame::Video,
     eof: bool,
+    source: Source,
+    media_root: std::path::PathBuf,
 }
 
 /// The libav C types are `!Send` by default (raw pointers inside), but each
@@ -132,10 +169,11 @@ impl LibavStreamDecoder {
             ffmpeg::format::Pixel::RGBA,
             width,
             height,
-            scaling::Flags::BILINEAR,
+            scaling::Flags::FAST_BILINEAR,
         )
         .context("failed to create swscale context")?;
 
+        let decoded_frame = ffmpeg::frame::Video::empty();
         let scratch_frame = ffmpeg::frame::Video::empty();
 
         let cap = NonZeroUsize::new(cache_capacity.max(1))
@@ -152,12 +190,15 @@ impl LibavStreamDecoder {
             timeline_fps,
             next_source_frame: 0,
             cache: LruCache::new(cap),
+            decoded_frame,
             scratch_frame,
             eof: false,
+            source: source.clone(),
+            media_root: media_root.to_path_buf(),
         };
 
         if start_frame > 0 {
-            decoder_instance.seek_to_frame(start_frame)?;
+            decoder_instance.skip_to_frame(start_frame)?;
         }
 
         Ok(decoder_instance)
@@ -189,7 +230,7 @@ impl LibavStreamDecoder {
             return Ok(Some(frame.clone()));
         }
 
-        // If we need to go backwards, seek.
+        // If we need to go backwards, seek or reopen.
         if source_frame < self.next_source_frame {
             self.seek_to_frame(source_frame)?;
         }
@@ -213,18 +254,73 @@ impl LibavStreamDecoder {
     fn seek_to_frame(&mut self, target_frame: u64) -> anyhow::Result<()> {
         let target_pts = self.source_frame_to_pts(target_frame);
 
-        // Seek to the nearest keyframe at or before target_pts.
-        self.input_ctx
+        // Try a keyframe seek. This fails for non-seekable sources (e.g. lavfi
+        // generators), in which case we reopen and decode forward.
+        let seeked = self
+            .input_ctx
             .seek(target_pts, ..target_pts)
-            .context("failed to seek in video stream")?;
+            .is_ok();
 
-        self.decoder.flush();
+        if seeked {
+            self.decoder.flush();
+            self.eof = false;
+            self.next_source_frame = 0;
+
+            // Decode forward past any pre-target frames from the keyframe.
+            loop {
+                match self.decode_next_raw()? {
+                    Some((idx, image)) => {
+                        self.cache.put(idx, image);
+                        self.next_source_frame = idx.saturating_add(1);
+                        if idx >= target_frame {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+        } else {
+            // Non-seekable source: reopen from scratch and decode forward.
+            self.reopen_and_skip(target_frame)?;
+        }
+
+        Ok(())
+    }
+
+    /// Reopen the source from scratch and decode forward to `target_frame`.
+    /// Used when the demuxer doesn't support seeking (e.g. lavfi generators).
+    fn reopen_and_skip(&mut self, target_frame: u64) -> anyhow::Result<()> {
+        let input_ctx = open_source_input(&self.source, &self.media_root)?;
+        let stream = input_ctx
+            .streams()
+            .best(media::Type::Video)
+            .ok_or_else(|| anyhow!("no video stream found on reopen"))?;
+
+        let codec_params = stream.parameters();
+        let mut decoder_ctx = ffmpeg::codec::context::Context::from_parameters(codec_params)
+            .context("failed to create codec context on reopen")?;
+        unsafe {
+            (*decoder_ctx.as_mut_ptr()).thread_count = 0;
+        }
+        let decoder = decoder_ctx
+            .decoder()
+            .video()
+            .context("failed to open video decoder on reopen")?;
+
+        self.input_ctx = input_ctx;
+        self.decoder = decoder;
         self.eof = false;
-        self.next_source_frame = target_frame;
+        self.next_source_frame = 0;
 
-        // Decode forward past any frames before target to prime the decoder.
-        loop {
-            match self.decode_next_raw()? {
+        // Decode forward to target, caching along the way.
+        self.skip_to_frame(target_frame)?;
+        Ok(())
+    }
+
+    /// Decode forward from current position to `target_frame`, caching frames.
+    fn skip_to_frame(&mut self, target_frame: u64) -> anyhow::Result<()> {
+        while self.next_source_frame <= target_frame && !self.eof {
+            match self.decode_next_frame()? {
                 Some((idx, image)) => {
                     self.cache.put(idx, image);
                     if idx >= target_frame {
@@ -234,7 +330,6 @@ impl LibavStreamDecoder {
                 None => break,
             }
         }
-
         Ok(())
     }
 
@@ -247,13 +342,11 @@ impl LibavStreamDecoder {
     }
 
     fn decode_next_raw(&mut self) -> anyhow::Result<Option<(u64, FrameImage)>> {
-        let mut decoded = ffmpeg::frame::Video::empty();
-
         loop {
-            // Try to receive a decoded frame.
-            match self.decoder.receive_frame(&mut decoded) {
+            // Try to receive a decoded frame (reusing self.decoded_frame).
+            match self.decoder.receive_frame(&mut self.decoded_frame) {
                 Ok(()) => {
-                    return self.convert_frame(&decoded);
+                    return self.convert_decoded();
                 }
                 Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::error::EAGAIN => {
                     // Need more data -- feed the next video packet.
@@ -263,8 +356,8 @@ impl LibavStreamDecoder {
                         self.eof = true;
 
                         // Drain remaining frames.
-                        match self.decoder.receive_frame(&mut decoded) {
-                            Ok(()) => return self.convert_frame(&decoded),
+                        match self.decoder.receive_frame(&mut self.decoded_frame) {
+                            Ok(()) => return self.convert_decoded(),
                             Err(_) => return Ok(None),
                         }
                     }
@@ -295,11 +388,9 @@ impl LibavStreamDecoder {
         }
     }
 
-    fn convert_frame(
-        &mut self,
-        decoded: &ffmpeg::frame::Video,
-    ) -> anyhow::Result<Option<(u64, FrameImage)>> {
-        let pts = match decoded.pts() {
+    /// Scale self.decoded_frame → self.scratch_frame (RGBA) and copy out.
+    fn convert_decoded(&mut self) -> anyhow::Result<Option<(u64, FrameImage)>> {
+        let pts = match self.decoded_frame.pts() {
             Some(pts) => pts,
             None => return Ok(None),
         };
@@ -308,7 +399,7 @@ impl LibavStreamDecoder {
 
         // Scale/convert to RGBA.
         self.scaler
-            .run(decoded, &mut self.scratch_frame)
+            .run(&self.decoded_frame, &mut self.scratch_frame)
             .context("swscale conversion failed")?;
 
         // Copy RGBA data, handling potential stride padding.
@@ -336,7 +427,7 @@ impl LibavStreamDecoder {
 }
 
 // ---------------------------------------------------------------------------
-// StreamingAssets (FrameProvider for render_to_mp4)
+// StreamingAssets (FrameProvider for render_to_mp4 and render_frame_png)
 // ---------------------------------------------------------------------------
 
 struct StreamingAssets {
@@ -401,52 +492,14 @@ fn prepare_streaming_assets(
 }
 
 // ---------------------------------------------------------------------------
-// Batch decode (for render_frame_png)
-// ---------------------------------------------------------------------------
-
-fn decode_video_source_frames(
-    source: &Source,
-    timeline_fps: Rational,
-    requested_frames: BTreeSet<u64>,
-    media_root: &Path,
-) -> anyhow::Result<BTreeMap<u64, FrameImage>> {
-    if requested_frames.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-
-    ensure_ffmpeg_init();
-
-    let min_requested = *requested_frames.iter().next().unwrap();
-    let cache_size = requested_frames.len().max(16);
-
-    let mut decoder = LibavStreamDecoder::new(
-        source,
-        timeline_fps,
-        min_requested,
-        media_root,
-        cache_size,
-    )?;
-
-    let mut decoded = BTreeMap::new();
-    for &frame in &requested_frames {
-        match decoder.get_frame(frame)? {
-            Some(image) => {
-                decoded.insert(frame, image);
-            }
-            None => break,
-        }
-    }
-
-    Ok(decoded)
-}
-
-// ---------------------------------------------------------------------------
 // FfmpegRenderBackend (public API)
 // ---------------------------------------------------------------------------
 
 pub struct FfmpegRenderBackend {
     timeline: Arc<CompiledTimeline>,
     options: RenderBackendOptions,
+    renderer: Option<Box<dyn RenderBackend>>,
+    assets: Option<StreamingAssets>,
 }
 
 impl FfmpegRenderBackend {
@@ -454,6 +507,8 @@ impl FfmpegRenderBackend {
         Self {
             timeline,
             options: RenderBackendOptions::default(),
+            renderer: None,
+            assets: None,
         }
     }
 
@@ -461,23 +516,40 @@ impl FfmpegRenderBackend {
         timeline: Arc<CompiledTimeline>,
         options: RenderBackendOptions,
     ) -> Self {
-        Self { timeline, options }
+        Self {
+            timeline,
+            options,
+            renderer: None,
+            assets: None,
+        }
     }
 
-    pub fn render_to_mp4(&self, on_progress: &mut dyn FnMut(u64, u64)) -> anyhow::Result<Vec<u8>> {
-        let media_root = media_root(self.options.media_root.as_deref())?;
-        let stream_cache_capacity = self
-            .options
-            .stream_cache_frames
-            .or_else(|| {
-                env::var("LUMEN_STREAM_CACHE_FRAMES")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok())
-            })
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_LIBAV_CACHE_FRAMES);
-        let mut assets =
-            prepare_streaming_assets(&self.timeline, &media_root, stream_cache_capacity)?;
+    fn init_if_needed(&mut self) -> anyhow::Result<()> {
+        if self.renderer.is_none() {
+            let renderer =
+                create_renderer(self.timeline.canvas.width, self.timeline.canvas.height)?;
+            self.renderer = Some(renderer);
+        }
+        if self.assets.is_none() {
+            let root = media_root(self.options.media_root.as_deref())?;
+            let cache_capacity = self
+                .options
+                .stream_cache_frames
+                .or_else(|| {
+                    env::var("LUMEN_STREAM_CACHE_FRAMES")
+                        .ok()
+                        .and_then(|value| value.parse::<usize>().ok())
+                })
+                .filter(|value| *value > 0)
+                .unwrap_or(DEFAULT_LIBAV_CACHE_FRAMES);
+            let assets = prepare_streaming_assets(&self.timeline, &root, cache_capacity)?;
+            self.assets = Some(assets);
+        }
+        Ok(())
+    }
+
+    pub fn render_to_mp4(&mut self, on_progress: &mut dyn FnMut(u64, u64)) -> anyhow::Result<Vec<u8>> {
+        self.init_if_needed()?;
 
         let width = self.timeline.canvas.width;
         let height = self.timeline.canvas.height;
@@ -501,11 +573,12 @@ impl FfmpegRenderBackend {
         let encode_handle =
             thread::spawn(move || encode_rgba_stream(width, height, fps, encoder, rx));
 
-        let mut renderer = create_renderer(width, height)?;
+        let renderer = self.renderer.as_mut().unwrap();
+        let assets = self.assets.as_mut().unwrap();
 
         for frame in 0..total_frames {
             let rgba = renderer
-                .render_frame(self.timeline.as_ref(), frame, &mut assets)
+                .render_frame(self.timeline.as_ref(), frame, assets)
                 .map_err(|err| anyhow!("failed to render frame {frame}: {err}"))?;
             tx.send(rgba)
                 .map_err(|_| anyhow!("encoder thread stopped unexpectedly"))?;
@@ -521,93 +594,23 @@ impl FfmpegRenderBackend {
         }
     }
 
-    pub fn render_frame_png(&self, frame: u64) -> anyhow::Result<Vec<u8>> {
-        let media_root = media_root(self.options.media_root.as_deref())?;
-        let max_decoded_source_frames = self
-            .options
-            .max_decoded_source_frames
-            .or_else(|| {
-                env::var("LUMEN_MAX_DECODED_SOURCE_FRAMES")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok())
-            })
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_MAX_DECODED_FRAMES);
-        let requirements = collect_requirements(self.timeline.as_ref(), std::iter::once(frame))?;
-        let mut assets = prepare_assets(
-            self.timeline.as_ref(),
-            &requirements,
-            &media_root,
-            max_decoded_source_frames,
-        )?;
+    pub fn render_frame_png(&mut self, frame: u64) -> anyhow::Result<Vec<u8>> {
+        self.init_if_needed()?;
 
-        let mut renderer =
-            create_renderer(self.timeline.canvas.width, self.timeline.canvas.height)?;
+        let renderer = self.renderer.as_mut().unwrap();
+        let assets = self.assets.as_mut().unwrap();
+
         let rgba = renderer
-            .render_frame(self.timeline.as_ref(), frame, &mut assets)
+            .render_frame(self.timeline.as_ref(), frame, assets)
             .map_err(|err| anyhow!("failed to render preview frame {frame}: {err}"))?;
 
+        let width = self.timeline.canvas.width;
+        let height = self.timeline.canvas.height;
         let mut png = Vec::new();
         let encoder = PngEncoder::new(&mut png);
         encoder
-            .write_image(
-                &rgba,
-                self.timeline.canvas.width,
-                self.timeline.canvas.height,
-                image::ExtendedColorType::Rgba8,
-            )
+            .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
             .context("failed to encode preview PNG")?;
         Ok(png)
     }
-}
-
-fn prepare_assets(
-    timeline: &CompiledTimeline,
-    requirements: &FrameRequirements,
-    media_root: &Path,
-    max_frames: usize,
-) -> anyhow::Result<PreparedAssets> {
-    let total_requested_video_frames: usize = requirements.videos.values().map(BTreeSet::len).sum();
-
-    if total_requested_video_frames > max_frames {
-        return Err(anyhow!(
-            "requested decoded video frames ({total_requested_video_frames}) exceeds configured bound ({max_frames})"
-        ));
-    }
-
-    let mut prepared = PreparedAssets::default();
-
-    for source_id in &requirements.images {
-        let source = timeline
-            .source(source_id)
-            .ok_or_else(|| anyhow!("missing source `{source_id}`"))?;
-        let image = decode_image_source(source, media_root)?;
-        prepared.images.insert(source_id.clone(), image);
-    }
-
-    let fps = timeline.timeline.fps;
-    let mut decode_handles = Vec::new();
-
-    for (source_id, frames) in &requirements.videos {
-        let source = timeline
-            .source(source_id)
-            .ok_or_else(|| anyhow!("missing source `{source_id}`"))?
-            .clone();
-        let frame_set = frames.clone();
-        let decode_root = media_root.to_path_buf();
-        decode_handles.push(thread::spawn(move || {
-            decode_video_source_frames(&source, fps, frame_set, &decode_root)
-                .map(|frames| (source.id.clone(), frames))
-        }));
-    }
-
-    for handle in decode_handles {
-        let result = match handle.join() {
-            Ok(result) => result,
-            Err(_) => return Err(anyhow!("video decode thread panicked")),
-        }?;
-        prepared.videos.insert(result.0, result.1);
-    }
-
-    Ok(prepared)
 }

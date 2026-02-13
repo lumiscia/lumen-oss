@@ -79,7 +79,7 @@ pub fn execute_render(
     };
 
     let render_started = Instant::now();
-    let backend = FfmpegRenderBackend::new_with_options(Arc::new(timeline), backend_options);
+    let mut backend = FfmpegRenderBackend::new_with_options(Arc::new(timeline), backend_options);
     let bytes = backend
         .render_to_mp4(&mut |frame, total| {
             let ratio = if total == 0 {
