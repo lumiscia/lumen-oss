@@ -85,11 +85,7 @@ impl GpuRenderer {
         frame: u64,
         provider: &mut dyn FrameProvider,
     ) -> Result<Vec<u8>, RenderError> {
-        if timeline.has_compositing_nodes() {
-            return Err(RenderError::Unsupported(
-                "clip groups and masks are not supported in Vello; use Skia renderer".to_string(),
-            ));
-        }
+        ensure_timeline_supported(timeline)?;
 
         if frame >= timeline.total_frames() {
             return Err(RenderError::FrameOutOfRange {
@@ -221,6 +217,16 @@ impl GpuRenderer {
 
         Ok(())
     }
+}
+
+fn ensure_timeline_supported(timeline: &CompiledTimeline) -> Result<(), RenderError> {
+    if timeline.has_compositing_nodes() {
+        return Err(RenderError::Unsupported(
+            "clip groups and masks are not supported in Vello; use Skia renderer".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 impl RenderBackend for GpuRenderer {
@@ -670,8 +676,15 @@ fn to_font_ref(font: &FontData) -> Option<FontRef<'_>> {
 
 #[cfg(test)]
 mod tests {
-    use super::layout_rect;
-    use crate::model::{FitMode, Transform};
+    use super::{ensure_timeline_supported, layout_rect};
+    use crate::{
+        compile::compile_project,
+        model::{
+            Canvas, Clip, ClipContent, ColorRgba, FitMode, Layer, LayerItem, Project, Timeline,
+            Transform,
+        },
+        time::Rational,
+    };
 
     #[test]
     fn contain_fit_keeps_aspect_ratio() {
@@ -711,5 +724,63 @@ mod tests {
         assert_eq!(rect.width, 200.0);
         assert_eq!(rect.height, 200.0);
         assert_eq!(rect.y, -50.0);
+    }
+
+    #[test]
+    fn rejects_timeline_with_compositing_nodes() {
+        let project = test_project(true);
+        let timeline = compile_project(&project).expect("compile");
+
+        let err = ensure_timeline_supported(&timeline).expect_err("must fail");
+        assert!(err.to_string().contains("not supported in Vello"));
+    }
+
+    #[test]
+    fn allows_timeline_without_compositing_nodes() {
+        let project = test_project(false);
+        let timeline = compile_project(&project).expect("compile");
+
+        ensure_timeline_supported(&timeline).expect("supported");
+    }
+
+    fn test_project(with_mask: bool) -> Project {
+        let mut clip = solid_clip("clip");
+        if with_mask {
+            clip.mask = Some(Box::new(LayerItem::Clip(solid_clip("mask"))));
+        }
+
+        Project {
+            canvas: Canvas {
+                width: 320,
+                height: 180,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_1".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(clip)],
+            }],
+            audio: Default::default(),
+        }
+    }
+
+    fn solid_clip(id: &str) -> Clip {
+        Clip {
+            id: id.to_string(),
+            start_frame: 0,
+            duration_frames: 30,
+            opacity: 1.0,
+            transform: Transform::default(),
+            animation: Default::default(),
+            mask: None,
+            content: ClipContent::Solid {
+                color: ColorRgba(255, 255, 255, 255),
+            },
+        }
     }
 }

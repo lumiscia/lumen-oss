@@ -8,7 +8,7 @@ name = "lumen"
 path = "src/lib.rs"
 
 [features]
-default = ["renderer-vello"]
+default = ["renderer-skia"]
 renderer-vello = ["dep:vello", "dep:pollster", "dep:futures-intrusive", "dep:skrifa"]
 renderer-skia = ["dep:skia-safe"]
 skia-metal = ["renderer-skia", "skia-safe/metal", "dep:objc2", "dep:objc2-metal"]

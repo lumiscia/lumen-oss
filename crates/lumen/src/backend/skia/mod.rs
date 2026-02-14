@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use skia_safe::{
     BlendMode, Canvas, Color, ColorType, Data, Font, FontMgr, IPoint, ImageInfo, Paint, Point,
-    RRect, Rect, SaveLayerRec, Typeface, images, paint::Style as PaintStyle,
+    RRect, Rect, Typeface, canvas::SaveLayerRec, images, paint::Style as PaintStyle,
 };
 
 use crate::{
@@ -137,7 +137,9 @@ impl SkiaRenderer {
         pass: RenderPass,
     ) -> Result<bool, RenderError> {
         match item {
-            CompiledLayerItem::Clip(clip) => self.render_clip_node(timeline, clip, frame, provider, pass),
+            CompiledLayerItem::Clip(clip) => {
+                self.render_clip_node(timeline, clip, frame, provider, pass)
+            }
             CompiledLayerItem::Group(group) => {
                 self.render_group_node(timeline, group, frame, provider, pass)
             }
@@ -168,7 +170,8 @@ impl SkiaRenderer {
 
         let mut drew_output = drew_content;
         if let Some(mask) = clip.mask.as_deref() {
-            let drew_mask = self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
+            let drew_mask =
+                self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
             if !drew_mask {
                 clear_current_layer(self.surface.canvas());
                 drew_output = false;
@@ -212,7 +215,8 @@ impl SkiaRenderer {
 
         let mut drew_output = drew_any;
         if let Some(mask) = group.mask.as_deref() {
-            let drew_mask = self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
+            let drew_mask =
+                self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
             if !drew_mask {
                 clear_current_layer(self.surface.canvas());
                 drew_output = false;
@@ -242,7 +246,13 @@ impl SkiaRenderer {
 
         match &operation.kind {
             CompiledOperationKind::Solid { color } => {
-                draw_solid(self.surface.canvas(), transform, opacity, *color, blend_mode);
+                draw_solid(
+                    self.surface.canvas(),
+                    transform,
+                    opacity,
+                    *color,
+                    blend_mode,
+                );
                 Ok(true)
             }
             CompiledOperationKind::Shape(shape) => {
@@ -278,7 +288,9 @@ impl SkiaRenderer {
             }
             CompiledOperationKind::Video(video) => {
                 if let Some(source_frame) = resolve_video_frame(operation, video, frame)? {
-                    if let Some(frame_image) = provider.video_frame(video.source_id.as_str(), source_frame)? {
+                    if let Some(frame_image) =
+                        provider.video_frame(video.source_id.as_str(), source_frame)?
+                    {
                         draw_image(
                             self.surface.canvas(),
                             transform,
@@ -347,7 +359,8 @@ impl RenderBackend for SkiaRenderer {
 
         for layer in timeline.layers() {
             for item in &layer.items {
-                let _ = self.render_layer_item(timeline, item, frame, provider, RenderPass::Content)?;
+                let _ =
+                    self.render_layer_item(timeline, item, frame, provider, RenderPass::Content)?;
             }
         }
 

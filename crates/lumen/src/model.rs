@@ -404,3 +404,37 @@ fn default_font_size() -> f32 {
 fn default_text_color() -> ColorRgba {
     ColorRgba(255, 255, 255, 255)
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::Project;
+
+    #[test]
+    fn rejects_legacy_layer_clips_field() {
+        let payload = json!({
+            "canvas": {
+                "width": 320,
+                "height": 180,
+                "background": [0, 0, 0, 255]
+            },
+            "timeline": {
+                "fps": { "num": 30, "den": 1 },
+                "total_frames": 10
+            },
+            "sources": [],
+            "layers": [
+                {
+                    "id": "layer_1",
+                    "z_index": 0,
+                    "clips": []
+                }
+            ],
+            "audio": { "tracks": [] }
+        });
+
+        let err = serde_json::from_value::<Project>(payload).expect_err("must fail");
+        assert!(err.to_string().contains("unknown field `clips`"));
+    }
+}

@@ -360,7 +360,10 @@ fn index_sources(sources: &[Source]) -> Result<HashMap<String, Source>, CompileE
     Ok(map)
 }
 
-fn compile_layer(layer: &Layer, ctx: &mut CompileContext<'_>) -> Result<CompiledLayer, CompileError> {
+fn compile_layer(
+    layer: &Layer,
+    ctx: &mut CompileContext<'_>,
+) -> Result<CompiledLayer, CompileError> {
     let mut items = Vec::with_capacity(layer.items.len());
     for item in &layer.items {
         items.push(compile_layer_item(layer, item, 1, ctx)?);
@@ -795,9 +798,9 @@ mod tests {
     use crate::{
         compile::{CompiledOperationKind, compile_project},
         model::{
-            Canvas, Clip, ClipAnimation, ClipContent, ColorRgba, Easing, Layer, LayerItem,
-            Project, ScalarKeyframe, Source, SourceKind, SourceMediaType, TextClip, Timeline,
-            VideoClip,
+            Canvas, Clip, ClipAnimation, ClipContent, ClipGroup, ColorRgba, Easing, Layer,
+            LayerItem, Project, ScalarKeyframe, Source, SourceKind, SourceMediaType, TextClip,
+            Timeline, VideoClip,
         },
         time::Rational,
     };
@@ -1040,5 +1043,56 @@ mod tests {
 
         let err = compile_project(&project).expect_err("must fail");
         assert!(err.to_string().contains("keyframes overlap"));
+    }
+
+    #[test]
+    fn rejects_item_tree_depth_over_limit() {
+        let mut root = LayerItem::Clip(Clip {
+            id: "clip_root".to_string(),
+            start_frame: 0,
+            duration_frames: 30,
+            opacity: 1.0,
+            transform: Default::default(),
+            animation: Default::default(),
+            mask: None,
+            content: ClipContent::Text(TextClip {
+                text: "hello".to_string(),
+                font_size: 20.0,
+                color: ColorRgba(255, 255, 255, 255),
+                align: Default::default(),
+            }),
+        });
+
+        for depth in 0..16 {
+            root = LayerItem::Group(ClipGroup {
+                id: format!("group_{depth}"),
+                opacity: 1.0,
+                transform: Default::default(),
+                items: vec![root],
+                mask: None,
+            });
+        }
+
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![root],
+            }],
+            audio: Default::default(),
+        };
+
+        let err = compile_project(&project).expect_err("must fail");
+        assert!(err.to_string().contains("item tree exceeds max depth"));
     }
 }
