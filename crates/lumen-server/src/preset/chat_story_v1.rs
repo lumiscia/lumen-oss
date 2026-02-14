@@ -120,6 +120,7 @@ struct LayoutConstants {
     compact_height: f32,
     expanded_height: f32,
     header_height: f32,
+    panel_corner_radius: f32,
     bubble_max_width: f32,
     bubble_radius: f32,
     text_size: f32,
@@ -134,7 +135,6 @@ struct LayoutConstants {
     panel_expand_duration_frames: u64,
     message_intro_duration_frames: u64,
     message_reflow_duration_frames: u64,
-    message_entry_offset_x: f32,
     message_entry_offset_y: f32,
 }
 
@@ -448,7 +448,7 @@ fn build_chat_layer(
                 rotation_degrees: 0.0,
             },
             ColorRgba(0, 0, 0, 255),
-            layout.scale * 2.0,
+            layout.panel_corner_radius,
         );
         let is_expand_transition = expanded && start_frame == expand_at_frame;
         if is_expand_transition {
@@ -480,12 +480,12 @@ fn build_chat_layer(
                 rotation_degrees: 0.0,
             },
             ColorRgba(0, 0, 0, 255),
-            layout.scale * 2.0,
+            layout.panel_corner_radius,
         )));
 
-        let avatar_size = 16.0 * layout.scale;
+        let avatar_size = 17.0 * layout.scale;
         let avatar_x = panel_x + (layout.panel_width * 0.5) - (avatar_size * 0.5);
-        let avatar_y = layout.panel_y + (2.0 * layout.scale);
+        let avatar_y = layout.panel_y + (3.0 * layout.scale);
         if let Some(source_id) = avatar_source_id.as_deref() {
             interval_items.push(LayerItem::Clip(image_clip(
                 format!("chat_avatar_i{interval_index}"),
@@ -526,21 +526,21 @@ fn build_chat_layer(
                 duration_frames,
                 Transform {
                     x: panel_x + (7.0 * layout.scale),
-                    y: layout.panel_y + (8.0 * layout.scale),
+                    y: layout.panel_y + (10.0 * layout.scale),
                     width: Some(22.0 * layout.scale),
                     height: Some(layout.header_height),
                     rotation_degrees: 0.0,
                 },
                 "<".to_string(),
-                9.0 * layout.scale,
-                ColorRgba(72, 162, 255, 255),
+                10.0 * layout.scale,
+                ColorRgba(0, 122, 255, 255),
                 TextAlign::Left,
             )));
         }
 
         if preset.header.show_video_icon {
             let icon_body_x = panel_x + layout.panel_width - (15.5 * layout.scale);
-            let icon_body_y = layout.panel_y + (10.5 * layout.scale);
+            let icon_body_y = layout.panel_y + (12.0 * layout.scale);
             let icon_body_w = 8.0 * layout.scale;
             let icon_body_h = 5.0 * layout.scale;
             let icon_lens_w = 2.4 * layout.scale;
@@ -559,7 +559,7 @@ fn build_chat_layer(
                     height: Some(icon_body_h),
                     rotation_degrees: 0.0,
                 },
-                ColorRgba(72, 162, 255, 255),
+                ColorRgba(0, 122, 255, 255),
                 1.2 * layout.scale,
             )));
 
@@ -574,7 +574,7 @@ fn build_chat_layer(
                     height: Some(icon_lens_h),
                     rotation_degrees: 0.0,
                 },
-                ColorRgba(72, 162, 255, 255),
+                ColorRgba(0, 122, 255, 255),
                 0.5 * layout.scale,
             )));
         }
@@ -585,13 +585,13 @@ fn build_chat_layer(
             duration_frames,
             Transform {
                 x: panel_x + (44.0 * layout.scale),
-                y: layout.panel_y + (17.0 * layout.scale),
+                y: layout.panel_y + (7.5 * layout.scale),
                 width: Some(layout.panel_width - (88.0 * layout.scale)),
                 height: Some(layout.header_height),
                 rotation_degrees: 0.0,
             },
             preset.header.title.clone(),
-            8.0 * layout.scale,
+            9.0 * layout.scale,
             ColorRgba(248, 248, 248, 255),
             TextAlign::Center,
         )));
@@ -608,13 +608,13 @@ fn build_chat_layer(
             duration_frames,
             Transform {
                 x: panel_x + (44.0 * layout.scale),
-                y: layout.panel_y + (21.0 * layout.scale),
+                y: layout.panel_y + (17.0 * layout.scale),
                 width: Some(layout.panel_width - (88.0 * layout.scale)),
                 height: Some(layout.header_height),
                 rotation_degrees: 0.0,
             },
             subtitle.to_string(),
-            4.5 * layout.scale,
+            5.2 * layout.scale,
             ColorRgba(150, 150, 154, 255),
             TextAlign::Center,
         )));
@@ -881,21 +881,18 @@ fn compute_message_motion(
         return motion;
     }
 
-    let x_offset = match placed.measured.side {
-        ChatStorySide::Left => -layout.message_entry_offset_x,
-        ChatStorySide::Right => layout.message_entry_offset_x,
-    };
-    motion.start_x = placed.x + x_offset;
+    motion.start_x = placed.x;
     motion.start_y = placed.y + layout.message_entry_offset_y;
-    motion.animation.x.push(ScalarKeyframe {
-        frame: 0,
-        value: placed.x,
-        duration_frames: intro_duration,
-        easing: Easing::EaseOut,
-    });
     motion.animation.y.push(ScalarKeyframe {
         frame: 0,
         value: placed.y,
+        duration_frames: intro_duration,
+        easing: Easing::EaseOut,
+    });
+    motion.start_opacity = 0.0;
+    motion.animation.opacity.push(ScalarKeyframe {
+        frame: 0,
+        value: 1.0,
         duration_frames: intro_duration,
         easing: Easing::EaseOut,
     });
@@ -1136,7 +1133,7 @@ fn default_bubble_color(side: ChatStorySide, uses_image: bool) -> ColorRgba {
     match (side, uses_image) {
         (ChatStorySide::Left, _) => ColorRgba(42, 42, 45, 255),
         (ChatStorySide::Right, true) => ColorRgba(245, 245, 246, 255),
-        (ChatStorySide::Right, false) => ColorRgba(53, 150, 255, 255),
+        (ChatStorySide::Right, false) => ColorRgba(0, 122, 255, 255),
     }
 }
 
@@ -1339,9 +1336,9 @@ fn default_true() -> bool {
 impl LayoutConstants {
     fn new(canvas_width: u32, fps: u32) -> Self {
         let scale = (canvas_width as f32) / 360.0;
-        let text_size = 12.0 * scale;
+        let text_size = 13.0 * scale;
         let panel_expand_duration_frames = seconds_to_frames(0.24, fps).max(1);
-        let message_intro_duration_frames = seconds_to_frames(0.18, fps).max(1);
+        let message_intro_duration_frames = seconds_to_frames(0.30, fps).max(1);
         let message_reflow_duration_frames = seconds_to_frames(0.22, fps).max(1);
         Self {
             scale,
@@ -1349,23 +1346,23 @@ impl LayoutConstants {
             panel_y: 132.0 * scale,
             compact_height: 88.0 * scale,
             expanded_height: 438.0 * scale,
-            header_height: 28.0 * scale,
+            header_height: 34.0 * scale,
+            panel_corner_radius: 12.0 * scale,
             bubble_max_width: 178.0 * scale,
-            bubble_radius: 10.0 * scale,
+            bubble_radius: 17.0 * scale,
             text_size,
-            line_height: 1.28 * text_size,
-            message_gap: 6.0 * scale,
+            line_height: 1.34 * text_size,
+            message_gap: 3.0 * scale,
             panel_side_padding: 10.0 * scale,
-            panel_top_padding: 6.0 * scale,
-            panel_bottom_padding: 8.0 * scale,
-            bubble_padding_x: 8.0 * scale,
-            bubble_padding_y: 5.0 * scale,
+            panel_top_padding: 8.0 * scale,
+            panel_bottom_padding: 10.0 * scale,
+            bubble_padding_x: 9.0 * scale,
+            bubble_padding_y: 6.0 * scale,
             image_inset: 2.0 * scale,
             panel_expand_duration_frames,
             message_intro_duration_frames,
             message_reflow_duration_frames,
-            message_entry_offset_x: 12.0 * scale,
-            message_entry_offset_y: 0.0,
+            message_entry_offset_y: 8.0 * scale,
         }
     }
 }
