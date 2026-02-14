@@ -3,7 +3,7 @@ pub mod model;
 pub mod source_pipeline;
 pub mod time;
 
-#[cfg(any(feature = "renderer-vello", feature = "renderer-skia"))]
+#[cfg(feature = "renderer-skia")]
 pub mod backend;
 
 pub use compile::{CompileError, CompiledTimeline, compile_project};

@@ -1,11 +1,11 @@
-# Lumen V0 GPU Architecture (Vello + FFmpeg, Deprecated)
+# Lumen V0 GPU Architecture (Historical Vello + FFmpeg)
 
 ## Deprecation Status
 
-Vello is deprecated in Lumiscia. Skia is the preferred renderer and is better across our
-production metrics (visual correctness, throughput, and operational reliability). This document is
-kept for historical context and legacy compatibility only.
-New compositing features (clip groups and alpha masks) are not implemented on the Vello path.
+Vello has been removed from the Lumiscia runtime codebase. Skia is the preferred renderer and is
+better across our production metrics (visual correctness, throughput, and operational reliability).
+This document is kept for historical context only.
+New compositing features (clip groups and alpha masks) were never implemented on the Vello path.
 
 ## Inputs From Vello Source
 This design follows the render path used in Vello's own code and examples:

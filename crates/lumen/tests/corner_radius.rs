@@ -100,32 +100,3 @@ fn skia_corner_radius_clips_media_corners() {
     assert_eq!(alpha_at(&frame, 19, 19, 20), 0);
     assert!(alpha_at(&frame, 10, 10, 20) > 0);
 }
-
-#[cfg(feature = "renderer-vello")]
-#[test]
-fn vello_corner_radius_clips_media_corners() {
-    let project = test_project();
-    let timeline = compile_project(&project).expect("compile");
-    let mut provider = SolidImageProvider {
-        image: test_image(),
-    };
-
-    let renderer = lumen::backend::vello::GpuRenderer::new(20, 20);
-    let mut renderer = match renderer {
-        Ok(renderer) => renderer,
-        Err(err) => {
-            eprintln!("skipping vello corner-radius test: {err}");
-            return;
-        }
-    };
-
-    let frame = renderer
-        .render_frame(&timeline, 0, &mut provider)
-        .expect("render");
-
-    assert_eq!(alpha_at(&frame, 0, 0, 20), 0);
-    assert_eq!(alpha_at(&frame, 19, 0, 20), 0);
-    assert_eq!(alpha_at(&frame, 0, 19, 20), 0);
-    assert_eq!(alpha_at(&frame, 19, 19, 20), 0);
-    assert!(alpha_at(&frame, 10, 10, 20) > 0);
-}

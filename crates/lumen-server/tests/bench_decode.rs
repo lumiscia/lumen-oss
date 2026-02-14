@@ -7,7 +7,7 @@
 //!
 //!   cargo test -p lumen-server --release --test bench_decode -- --nocapture
 //!   cargo test -p lumen-server --release --test bench_decode --no-default-features \
-//!       --features "renderer-vello decode-subprocess" -- --nocapture
+//!       --features "renderer-skia decode-subprocess" -- --nocapture
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};

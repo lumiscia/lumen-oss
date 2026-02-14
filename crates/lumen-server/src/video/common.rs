@@ -33,9 +33,7 @@ pub fn create_renderer(width: u32, height: u32) -> anyhow::Result<Box<dyn Render
     }
     #[cfg(not(feature = "renderer-skia"))]
     {
-        let renderer = lumen::backend::vello::GpuRenderer::new(width, height)
-            .map_err(|err| anyhow!("failed to initialize GPU renderer: {err}"))?;
-        Ok(Box::new(renderer))
+        Err(anyhow!("renderer-skia feature is required"))
     }
 }
 

@@ -9,7 +9,6 @@ path = "src/lib.rs"
 
 [features]
 default = ["renderer-skia"]
-renderer-vello = ["dep:vello", "dep:pollster", "dep:futures-intrusive", "dep:skrifa"]
 renderer-skia = ["dep:skia-safe"]
 skia-metal = ["renderer-skia", "skia-safe/metal", "dep:objc2", "dep:objc2-metal"]
 skia-vulkan = ["renderer-skia", "skia-safe/vulkan", "dep:ash"]
@@ -18,12 +17,6 @@ skia-vulkan = ["renderer-skia", "skia-safe/vulkan", "dep:ash"]
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
-
-# Vello renderer deps (default)
-skrifa = { version = "0.40.0", optional = true }
-vello = { version = "0.7.0", optional = true }
-pollster = { version = "0.4.0", optional = true }
-futures-intrusive = { version = "0.5.0", optional = true }
 
 # Skia renderer deps
 skia-safe = { version = "0.91", optional = true, features = ["textlayout"] }

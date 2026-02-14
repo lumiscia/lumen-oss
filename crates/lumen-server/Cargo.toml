@@ -17,7 +17,6 @@ path = "src/bin/lumen_runpod.rs"
 
 [features]
 default = ["renderer-skia", "decode-libav"]
-renderer-vello = ["lumen/renderer-vello"]
 renderer-skia = ["lumen/renderer-skia"]
 skia-metal = ["lumen/skia-metal"]
 skia-vulkan = ["lumen/skia-vulkan"]

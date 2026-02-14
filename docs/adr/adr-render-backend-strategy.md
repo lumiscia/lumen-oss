@@ -1,4 +1,4 @@
-# ADR: Render Backend Strategy (Rust Orchestration + Skia, Vello Deprecated)
+# ADR: Render Backend Strategy (Rust Orchestration + Skia)
 
 - Status: Amended
 - Date: 2026-02-13
@@ -7,32 +7,29 @@
 
 ## Context
 
-Lumiscia currently renders on the server with Rust orchestration and GPU backends.
+Lumiscia renders on the server with Rust orchestration and a Skia backend.
 Skia has outperformed Vello for Lumiscia workloads in correctness, throughput, and operational
-reliability, so the strategy is now explicitly Skia-first with Vello deprecated.
+reliability, and the Vello backend has now been removed.
 
 ## Decision
 
 1. Rust remains the orchestration layer for job control, timeline compilation, source pipeline
    mapping, decode/render/encode coordination, and FFmpeg process management.
 2. A C++ Skia GPU backend is introduced behind an incremental backend boundary.
-3. Vello is deprecated. It remains compileable for legacy compatibility only.
+3. Vello is removed from the runtime codebase.
 4. Skia Graphite is the first production GPU target (Ganesh skipped; Graphite is production-ready
    as of Skia m138+).
-5. Feature flags (`renderer-vello` / `renderer-skia`) in `lumen-server` control backend selection.
+5. `renderer-skia` is the only renderer backend feature in `lumen-server`.
 6. New compositing features (clip groups and alpha masks) ship only on Skia + CanvasKit preview.
 
 ## Platform GPU Targets
 
 - Linux production target order:
   - Primary: Skia Graphite on Vulkan
-  - Legacy only: Vello backend (deprecated, no new feature support)
 - macOS production target order:
   - Primary: Skia Graphite on Metal
-  - Legacy only: Vello backend (deprecated, no new feature support)
 
-Skia is the default production path. Vello remains available only for controlled compatibility
-cases and does not receive new compositing semantics.
+Skia is the only production path.
 
 ## Web Preview Backend
 
@@ -65,24 +62,23 @@ Numbers are contract targets and can only be changed by a new ADR update.
 2. Introduce and enforce a backend boundary in Rust first.
 3. Keep FFmpeg process model unchanged through benchmark phases to isolate renderer effects.
 4. Do not compare backends with different scenes, codecs, hardware classes, or harness logic.
-5. Keep Vello compileable while migration remains in flight, but do not add feature work there.
+5. Keep historical Vello notes in docs only; no runtime Vello support remains.
 
 ## Rollout Policy
 
 1. Server rendering remains the source of truth for final output.
-2. Production rollout must use backend feature flags and canary cohorts.
+2. Production rollout uses Skia feature flags and canary cohorts.
 3. Rollback thresholds (error-rate, timeout-rate, throughput degradation) must be defined before
    canary starts.
-4. Vello remains a deprecated compatibility option and is not part of the default rollout path.
+4. Vello is not part of the runtime rollout path.
 
 ## Consequences
 
 - Positive:
   - controlled migration risk,
-  - reproducible backend comparison,
-  - explicit fallback path.
+  - single-renderer operational focus.
 - Tradeoff:
-  - temporary dual-backend maintenance burden.
+  - no renderer fallback backend in runtime.
 
 ## Execution Contract / Exit Criteria
 
@@ -107,3 +103,9 @@ This ADR is complete when:
 - Decision point 3 amended: Vello is explicitly deprecated.
 - Skia is the preferred renderer across quality, performance, and reliability for Lumiscia.
 - New mask/group compositing work is Skia + CanvasKit only; Vello receives no new feature support.
+
+### 2026-02-14: Vello runtime removal
+
+- Decision point 3 amended again: Vello backend removed from runtime code.
+- `renderer-vello` feature removed from `lumen` and `lumen-server`.
+- Skia is now the only renderer backend path.
