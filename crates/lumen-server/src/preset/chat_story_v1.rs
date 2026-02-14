@@ -447,7 +447,7 @@ fn build_chat_layer(
                 height: Some(panel_height),
                 rotation_degrees: 0.0,
             },
-            ColorRgba(10, 10, 12, 228),
+            ColorRgba(0, 0, 0, 255),
             layout.scale * 2.0,
         );
         let is_expand_transition = expanded && start_frame == expand_at_frame;
@@ -463,6 +463,8 @@ fn build_chat_layer(
                 });
             }
         }
+        let interval_mask =
+            interval_panel_mask_clip(format!("chat_interval_mask_i{interval_index}"), &panel_clip);
         interval_items.push(LayerItem::Clip(panel_clip));
 
         let header_id = format!("chat_header_i{interval_index}");
@@ -477,7 +479,7 @@ fn build_chat_layer(
                 height: Some(layout.header_height),
                 rotation_degrees: 0.0,
             },
-            ColorRgba(18, 18, 21, 240),
+            ColorRgba(0, 0, 0, 255),
             layout.scale * 2.0,
         )));
 
@@ -802,7 +804,7 @@ fn build_chat_layer(
             opacity: 1.0,
             transform: GroupTransform::default(),
             items: interval_items,
-            mask: None,
+            mask: Some(Box::new(LayerItem::Clip(interval_mask))),
         }));
 
         previous_placements = placed_messages
@@ -1182,6 +1184,27 @@ fn bubble_content_mask_clip(id: String, bubble_clip: &Clip, radius: f32) -> Clip
         bubble_clip.start_frame,
         bubble_clip.duration_frames,
         bubble_clip.transform,
+        ColorRgba(255, 255, 255, 255),
+        radius,
+    );
+    clip.animation = animation;
+    clip
+}
+
+fn interval_panel_mask_clip(id: String, panel_clip: &Clip) -> Clip {
+    let mut animation = panel_clip.animation.clone();
+    animation.opacity.clear();
+    let radius = match panel_clip.content {
+        ClipContent::Shape(ShapeClip {
+            shape: Shape::Rectangle { radius, .. },
+        }) => radius,
+        _ => 0.0,
+    };
+    let mut clip = shape_clip(
+        id,
+        panel_clip.start_frame,
+        panel_clip.duration_frames,
+        panel_clip.transform,
         ColorRgba(255, 255, 255, 255),
         radius,
     );
