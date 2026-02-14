@@ -2,9 +2,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{Context, anyhow};
 use lumen::{
-    AudioMix, Clip, ClipAnimation, ClipContent, ColorRgba, Easing, FitMode, ImageClip, Layer,
-    LayerItem, Project, ScalarKeyframe, Shape, ShapeClip, Source, SourceKind, SourceMediaType,
-    SourcePipeline, TextAlign, TextClip, Timeline, Transform, VideoClip, time::Rational,
+    AudioMix, Clip, ClipAnimation, ClipContent, ClipGroup, ColorRgba, Easing, FitMode,
+    GroupTransform, ImageClip, Layer, LayerItem, Project, ScalarKeyframe, Shape, ShapeClip, Source,
+    SourceKind, SourceMediaType, SourcePipeline, TextAlign, TextClip, Timeline, Transform,
+    VideoClip, time::Rational,
 };
 use serde::Deserialize;
 use skrifa::{
@@ -413,7 +414,7 @@ fn build_chat_layer(
     avatar_source_id: Option<String>,
     total_frames: u64,
 ) -> anyhow::Result<Layer> {
-    let mut clips = Vec::new();
+    let mut items = Vec::new();
     let _ = preset.overlays.len();
     let panel_x = ((preset.canvas.width as f32) - layout.panel_width) * 0.5;
     let mut previous_placements: HashMap<usize, PlacedMessage> = HashMap::new();
@@ -432,6 +433,7 @@ fn build_chat_layer(
         } else {
             layout.compact_height
         };
+        let mut interval_items = Vec::new();
 
         let panel_id = format!("chat_panel_i{interval_index}");
         let mut panel_clip = shape_clip(
@@ -461,10 +463,10 @@ fn build_chat_layer(
                 });
             }
         }
-        clips.push(panel_clip);
+        interval_items.push(LayerItem::Clip(panel_clip));
 
         let header_id = format!("chat_header_i{interval_index}");
-        clips.push(shape_clip(
+        interval_items.push(LayerItem::Clip(shape_clip(
             header_id,
             start_frame,
             duration_frames,
@@ -477,13 +479,13 @@ fn build_chat_layer(
             },
             ColorRgba(18, 18, 21, 240),
             layout.scale * 2.0,
-        ));
+        )));
 
         let avatar_size = 16.0 * layout.scale;
         let avatar_x = panel_x + (layout.panel_width * 0.5) - (avatar_size * 0.5);
         let avatar_y = layout.panel_y + (2.0 * layout.scale);
         if let Some(source_id) = avatar_source_id.as_deref() {
-            clips.push(image_clip(
+            interval_items.push(LayerItem::Clip(image_clip(
                 format!("chat_avatar_i{interval_index}"),
                 start_frame,
                 duration_frames,
@@ -497,9 +499,9 @@ fn build_chat_layer(
                 source_id.to_string(),
                 FitMode::Cover,
                 avatar_size * 0.5,
-            ));
+            )));
         } else {
-            clips.push(shape_clip(
+            interval_items.push(LayerItem::Clip(shape_clip(
                 format!("chat_avatar_placeholder_i{interval_index}"),
                 start_frame,
                 duration_frames,
@@ -512,11 +514,11 @@ fn build_chat_layer(
                 },
                 ColorRgba(233, 204, 163, 255),
                 avatar_size * 0.5,
-            ));
+            )));
         }
 
         if preset.header.show_back_icon {
-            clips.push(text_clip(
+            interval_items.push(LayerItem::Clip(text_clip(
                 format!("chat_back_icon_i{interval_index}"),
                 start_frame,
                 duration_frames,
@@ -531,7 +533,7 @@ fn build_chat_layer(
                 9.0 * layout.scale,
                 ColorRgba(72, 162, 255, 255),
                 TextAlign::Left,
-            ));
+            )));
         }
 
         if preset.header.show_video_icon {
@@ -544,7 +546,7 @@ fn build_chat_layer(
             let icon_lens_x = icon_body_x + icon_body_w + (0.7 * layout.scale);
             let icon_lens_y = icon_body_y + ((icon_body_h - icon_lens_h) * 0.5);
 
-            clips.push(shape_clip(
+            interval_items.push(LayerItem::Clip(shape_clip(
                 format!("chat_video_icon_body_i{interval_index}"),
                 start_frame,
                 duration_frames,
@@ -557,9 +559,9 @@ fn build_chat_layer(
                 },
                 ColorRgba(72, 162, 255, 255),
                 1.2 * layout.scale,
-            ));
+            )));
 
-            clips.push(shape_clip(
+            interval_items.push(LayerItem::Clip(shape_clip(
                 format!("chat_video_icon_lens_i{interval_index}"),
                 start_frame,
                 duration_frames,
@@ -572,10 +574,10 @@ fn build_chat_layer(
                 },
                 ColorRgba(72, 162, 255, 255),
                 0.5 * layout.scale,
-            ));
+            )));
         }
 
-        clips.push(text_clip(
+        interval_items.push(LayerItem::Clip(text_clip(
             format!("chat_title_i{interval_index}"),
             start_frame,
             duration_frames,
@@ -590,7 +592,30 @@ fn build_chat_layer(
             8.0 * layout.scale,
             ColorRgba(248, 248, 248, 255),
             TextAlign::Center,
-        ));
+        )));
+
+        let subtitle = preset
+            .header
+            .subtitle
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("Message");
+        interval_items.push(LayerItem::Clip(text_clip(
+            format!("chat_subtitle_i{interval_index}"),
+            start_frame,
+            duration_frames,
+            Transform {
+                x: panel_x + (44.0 * layout.scale),
+                y: layout.panel_y + (21.0 * layout.scale),
+                width: Some(layout.panel_width - (88.0 * layout.scale)),
+                height: Some(layout.header_height),
+                rotation_degrees: 0.0,
+            },
+            subtitle.to_string(),
+            4.5 * layout.scale,
+            ColorRgba(150, 150, 154, 255),
+            TextAlign::Center,
+        )));
 
         let mut visible: Vec<&PreparedMessage> = messages
             .iter()
@@ -621,6 +646,7 @@ fn build_chat_layer(
             message_area_bottom,
             layout,
         );
+        let mut message_items = Vec::new();
 
         for placed in placed_messages.iter().cloned() {
             let motion = compute_message_motion(
@@ -651,7 +677,16 @@ fn build_chat_layer(
             );
             bubble_clip.opacity = motion.start_opacity;
             bubble_clip.animation = motion.animation.clone();
-            clips.push(bubble_clip);
+            let bubble_mask = bubble_content_mask_clip(
+                format!(
+                    "chat_msg_content_mask_i{interval_index}_m{}",
+                    placed.measured.index
+                ),
+                &bubble_clip,
+                layout.bubble_radius,
+            );
+            message_items.push(LayerItem::Clip(bubble_clip));
+            let mut message_content_items = Vec::new();
 
             match &placed.measured.content {
                 MeasuredMessageContent::Text { lines } => {
@@ -685,7 +720,7 @@ fn build_chat_layer(
                             layout.bubble_padding_x,
                             layout.bubble_padding_y + (line_index as f32 * layout.line_height),
                         );
-                        clips.push(text);
+                        message_content_items.push(LayerItem::Clip(text));
                     }
                 }
                 MeasuredMessageContent::Image {
@@ -714,10 +749,61 @@ fn build_chat_layer(
                     image.opacity = motion.start_opacity;
                     image.animation =
                         offset_animation(&motion.animation, layout.image_inset, layout.image_inset);
-                    clips.push(image);
+                    message_content_items.push(LayerItem::Clip(image));
                 }
             }
+
+            if !message_content_items.is_empty() {
+                message_items.push(LayerItem::Group(ClipGroup {
+                    id: format!(
+                        "chat_msg_content_group_i{interval_index}_m{}",
+                        placed.measured.index
+                    ),
+                    opacity: 1.0,
+                    transform: GroupTransform::default(),
+                    items: message_content_items,
+                    mask: Some(Box::new(LayerItem::Clip(bubble_mask))),
+                }));
+            }
         }
+
+        let mut viewport_mask = message_viewport_mask_clip(
+            interval_index,
+            start_frame,
+            duration_frames,
+            panel_x,
+            panel_height,
+            layout,
+        );
+        if is_expand_transition {
+            let expand_frames = layout.panel_expand_duration_frames.min(duration_frames);
+            if expand_frames > 0 {
+                let compact_message_height = message_area_height(layout.compact_height, layout);
+                let expanded_message_height = message_area_height(panel_height, layout);
+                viewport_mask.transform.height = Some(compact_message_height);
+                viewport_mask.animation.height.push(ScalarKeyframe {
+                    frame: 0,
+                    value: expanded_message_height,
+                    duration_frames: expand_frames,
+                    easing: Easing::EaseInOut,
+                });
+            }
+        }
+        interval_items.push(LayerItem::Group(ClipGroup {
+            id: format!("chat_message_view_group_i{interval_index}"),
+            opacity: 1.0,
+            transform: GroupTransform::default(),
+            items: message_items,
+            mask: Some(Box::new(LayerItem::Clip(viewport_mask))),
+        }));
+
+        items.push(LayerItem::Group(ClipGroup {
+            id: format!("chat_interval_group_i{interval_index}"),
+            opacity: 1.0,
+            transform: GroupTransform::default(),
+            items: interval_items,
+            mask: None,
+        }));
 
         previous_placements = placed_messages
             .into_iter()
@@ -728,7 +814,7 @@ fn build_chat_layer(
     Ok(Layer {
         id: "chat_overlay_layer".to_string(),
         z_index: 100,
-        items: clips.into_iter().map(LayerItem::Clip).collect(),
+        items,
     })
 }
 
@@ -1059,6 +1145,50 @@ fn default_text_color(side: ChatStorySide, uses_image: bool) -> ColorRgba {
     }
 }
 
+fn message_area_height(panel_height: f32, layout: &LayoutConstants) -> f32 {
+    (panel_height - layout.header_height - layout.panel_top_padding - layout.panel_bottom_padding)
+        .max(1.0)
+}
+
+fn message_viewport_mask_clip(
+    interval_index: usize,
+    start_frame: u64,
+    duration_frames: u64,
+    panel_x: f32,
+    panel_height: f32,
+    layout: &LayoutConstants,
+) -> Clip {
+    shape_clip(
+        format!("chat_msg_viewport_mask_i{interval_index}"),
+        start_frame,
+        duration_frames,
+        Transform {
+            x: panel_x,
+            y: layout.panel_y + layout.header_height + layout.panel_top_padding,
+            width: Some(layout.panel_width),
+            height: Some(message_area_height(panel_height, layout)),
+            rotation_degrees: 0.0,
+        },
+        ColorRgba(255, 255, 255, 255),
+        0.0,
+    )
+}
+
+fn bubble_content_mask_clip(id: String, bubble_clip: &Clip, radius: f32) -> Clip {
+    let mut animation = bubble_clip.animation.clone();
+    animation.opacity.clear();
+    let mut clip = shape_clip(
+        id,
+        bubble_clip.start_frame,
+        bubble_clip.duration_frames,
+        bubble_clip.transform,
+        ColorRgba(255, 255, 255, 255),
+        radius,
+    );
+    clip.animation = animation;
+    clip
+}
+
 fn shape_clip(
     id: String,
     start_frame: u64,
@@ -1294,6 +1424,38 @@ impl TextMeasurer {
 #[cfg(test)]
 mod tests {
     use super::{ChatStoryPresetV1, compile_chat_story_project};
+    use lumen::{Clip, LayerItem};
+
+    fn visit_layer_item<'a>(item: &'a LayerItem, visit: &mut impl FnMut(&'a LayerItem)) {
+        visit(item);
+        match item {
+            LayerItem::Clip(clip) => {
+                if let Some(mask) = clip.mask.as_deref() {
+                    visit_layer_item(mask, visit);
+                }
+            }
+            LayerItem::Group(group) => {
+                for child in &group.items {
+                    visit_layer_item(child, visit);
+                }
+                if let Some(mask) = group.mask.as_deref() {
+                    visit_layer_item(mask, visit);
+                }
+            }
+        }
+    }
+
+    fn collect_clips(items: &[LayerItem]) -> Vec<&Clip> {
+        let mut clips = Vec::new();
+        for item in items {
+            visit_layer_item(item, &mut |candidate| {
+                if let LayerItem::Clip(clip) = candidate {
+                    clips.push(clip);
+                }
+            });
+        }
+        clips
+    }
 
     fn sample_preset() -> ChatStoryPresetV1 {
         serde_json::from_value(serde_json::json!({
@@ -1369,12 +1531,14 @@ mod tests {
             .iter()
             .find(|layer| layer.id == "chat_overlay_layer")
             .expect("chat layer");
-        let panel_starts: Vec<u64> = chat_layer
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                LayerItem::Clip(clip) if clip.id.starts_with("chat_panel_i") => Some(clip.start_frame),
-                _ => None,
+        let panel_starts: Vec<u64> = collect_clips(chat_layer.items.as_slice())
+            .into_iter()
+            .filter_map(|clip| {
+                if clip.id.starts_with("chat_panel_i") {
+                    Some(clip.start_frame)
+                } else {
+                    None
+                }
             })
             .collect();
         assert_eq!(panel_starts, vec![0, 15, 36, 75, 93, 180]);
@@ -1394,13 +1558,9 @@ mod tests {
             (project.canvas.width as f32 - (248.0 * (project.canvas.width as f32 / 360.0))) * 0.5;
         let panel_w = 248.0 * (project.canvas.width as f32 / 360.0);
 
-        for bubble in chat_layer
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                LayerItem::Clip(clip) if clip.id.starts_with("chat_msg_bubble_") => Some(clip),
-                _ => None,
-            })
+        for bubble in collect_clips(chat_layer.items.as_slice())
+            .into_iter()
+            .filter(|clip| clip.id.starts_with("chat_msg_bubble_"))
         {
             let x = bubble
                 .animation
@@ -1412,5 +1572,41 @@ mod tests {
             assert!(x >= panel_x - 0.1);
             assert!(x + width <= panel_x + panel_w + 0.1);
         }
+    }
+
+    #[test]
+    fn emits_group_and_mask_structure_for_message_feed() {
+        let preset = sample_preset();
+        let project = compile_chat_story_project(&preset).expect("compile");
+        let chat_layer = project
+            .layers
+            .iter()
+            .find(|layer| layer.id == "chat_overlay_layer")
+            .expect("chat layer");
+
+        assert!(
+            chat_layer
+                .items
+                .iter()
+                .all(|item| matches!(item, LayerItem::Group(_)))
+        );
+
+        let mut has_viewport_group_mask = false;
+        let mut masked_content_groups = 0usize;
+        for item in &chat_layer.items {
+            visit_layer_item(item, &mut |candidate| {
+                if let LayerItem::Group(group) = candidate {
+                    if group.id.starts_with("chat_message_view_group_i") {
+                        has_viewport_group_mask = group.mask.is_some();
+                    }
+                    if group.id.starts_with("chat_msg_content_group_i") && group.mask.is_some() {
+                        masked_content_groups = masked_content_groups.saturating_add(1);
+                    }
+                }
+            });
+        }
+
+        assert!(has_viewport_group_mask);
+        assert!(masked_content_groups > 0);
     }
 }
