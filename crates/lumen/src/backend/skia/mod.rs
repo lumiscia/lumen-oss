@@ -7,13 +7,16 @@ pub mod vulkan;
 use std::collections::HashMap;
 
 use skia_safe::{
-    Canvas, Color, ColorType, Data, Font, FontMgr, IPoint, ImageInfo, Paint, Point, RRect, Rect,
-    Typeface, images, paint::Style as PaintStyle,
+    BlendMode, Canvas, Color, ColorType, Data, Font, FontMgr, IPoint, ImageInfo, Paint, Point,
+    RRect, Rect, SaveLayerRec, Typeface, images, paint::Style as PaintStyle,
 };
 
 use crate::{
     backend::{FrameImage, FrameProvider, RenderBackend, RenderError, pixel_len},
-    compile::{CompiledOperationKind, CompiledTimeline, VideoSourceRef},
+    compile::{
+        CompiledClipNode, CompiledGroupNode, CompiledLayerItem, CompiledOperation,
+        CompiledOperationKind, CompiledTimeline, VideoSourceRef,
+    },
     model::{ColorRgba, FitMode, Shape, ShapeClip, TextAlign, TextClip, Transform},
 };
 
@@ -46,6 +49,21 @@ pub struct SkiaRenderer {
     font_cache: HashMap<u32, Font>,
     width: u32,
     height: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RenderPass {
+    Content,
+    Mask,
+}
+
+impl RenderPass {
+    fn blend_mode(self) -> BlendMode {
+        match self {
+            Self::Content => BlendMode::SrcOver,
+            Self::Mask => BlendMode::DstIn,
+        }
+    }
 }
 
 // Safety: SkiaRenderer is used single-threaded; the owner controls access.
@@ -110,6 +128,174 @@ impl SkiaRenderer {
         Ok(())
     }
 
+    fn render_layer_item(
+        &mut self,
+        timeline: &CompiledTimeline,
+        item: &CompiledLayerItem,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+        pass: RenderPass,
+    ) -> Result<bool, RenderError> {
+        match item {
+            CompiledLayerItem::Clip(clip) => self.render_clip_node(timeline, clip, frame, provider, pass),
+            CompiledLayerItem::Group(group) => {
+                self.render_group_node(timeline, group, frame, provider, pass)
+            }
+        }
+    }
+
+    fn render_clip_node(
+        &mut self,
+        timeline: &CompiledTimeline,
+        clip: &CompiledClipNode,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+        pass: RenderPass,
+    ) -> Result<bool, RenderError> {
+        let operation = timeline
+            .operation(clip.operation_index)
+            .ok_or(RenderError::MissingOperation(clip.operation_index))?;
+
+        if !operation.contains_frame(frame) {
+            return Ok(false);
+        }
+
+        if clip.mask.is_some() {
+            self.surface.canvas().save_layer(&SaveLayerRec::default());
+        }
+
+        let drew_content = self.draw_operation(timeline, operation, frame, provider, pass)?;
+
+        let mut drew_output = drew_content;
+        if let Some(mask) = clip.mask.as_deref() {
+            let drew_mask = self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
+            if !drew_mask {
+                clear_current_layer(self.surface.canvas());
+                drew_output = false;
+            }
+            self.surface.canvas().restore();
+        }
+
+        Ok(drew_output)
+    }
+
+    fn render_group_node(
+        &mut self,
+        timeline: &CompiledTimeline,
+        group: &CompiledGroupNode,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+        pass: RenderPass,
+    ) -> Result<bool, RenderError> {
+        if group.opacity <= 0.0 {
+            return Ok(false);
+        }
+
+        self.surface.canvas().save();
+        self.surface
+            .canvas()
+            .translate(Point::new(group.transform.x, group.transform.y));
+        if group.transform.rotation_degrees != 0.0 {
+            self.surface
+                .canvas()
+                .rotate(group.transform.rotation_degrees, None);
+        }
+
+        self.surface
+            .canvas()
+            .save_layer_alpha_f(None, group.opacity.clamp(0.0, 1.0));
+
+        let mut drew_any = false;
+        for item in &group.items {
+            drew_any |= self.render_layer_item(timeline, item, frame, provider, pass)?;
+        }
+
+        let mut drew_output = drew_any;
+        if let Some(mask) = group.mask.as_deref() {
+            let drew_mask = self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
+            if !drew_mask {
+                clear_current_layer(self.surface.canvas());
+                drew_output = false;
+            }
+        }
+
+        self.surface.canvas().restore();
+        self.surface.canvas().restore();
+
+        Ok(drew_output)
+    }
+
+    fn draw_operation(
+        &mut self,
+        _timeline: &CompiledTimeline,
+        operation: &CompiledOperation,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+        pass: RenderPass,
+    ) -> Result<bool, RenderError> {
+        let opacity = operation.resolved_opacity(frame);
+        if opacity <= 0.0 {
+            return Ok(false);
+        }
+        let transform = operation.resolved_transform(frame);
+        let blend_mode = pass.blend_mode();
+
+        match &operation.kind {
+            CompiledOperationKind::Solid { color } => {
+                draw_solid(self.surface.canvas(), transform, opacity, *color, blend_mode);
+                Ok(true)
+            }
+            CompiledOperationKind::Shape(shape) => {
+                draw_shape(self.surface.canvas(), transform, opacity, shape, blend_mode);
+                Ok(true)
+            }
+            CompiledOperationKind::Text(text) => {
+                draw_text(
+                    self.surface.canvas(),
+                    &self.typeface,
+                    &mut self.font_cache,
+                    transform,
+                    opacity,
+                    text,
+                    blend_mode,
+                );
+                Ok(true)
+            }
+            CompiledOperationKind::Image(image) => {
+                if let Some(frame_image) = provider.image(image.source_id.as_str())? {
+                    draw_image(
+                        self.surface.canvas(),
+                        transform,
+                        opacity,
+                        image.fit,
+                        image.corner_radius,
+                        &frame_image,
+                        blend_mode,
+                    );
+                    return Ok(true);
+                }
+                Ok(false)
+            }
+            CompiledOperationKind::Video(video) => {
+                if let Some(source_frame) = resolve_video_frame(operation, video, frame)? {
+                    if let Some(frame_image) = provider.video_frame(video.source_id.as_str(), source_frame)? {
+                        draw_image(
+                            self.surface.canvas(),
+                            transform,
+                            opacity,
+                            video.fit,
+                            video.corner_radius,
+                            &frame_image,
+                            blend_mode,
+                        );
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+        }
+    }
+
     fn readback_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
         // Flush GPU work before readback
         #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
@@ -159,64 +345,9 @@ impl RenderBackend for SkiaRenderer {
         let bg = timeline.canvas.background;
         self.surface.canvas().clear(to_sk_color(bg, 1.0));
 
-        let operation_indices = timeline.operation_indices_for_frame(frame)?;
-
-        for operation_index in operation_indices {
-            let operation = timeline
-                .operation(*operation_index)
-                .ok_or(RenderError::MissingOperation(*operation_index))?;
-
-            let opacity = operation.resolved_opacity(frame);
-            if opacity <= 0.0 {
-                continue;
-            }
-            let transform = operation.resolved_transform(frame);
-
-            match &operation.kind {
-                CompiledOperationKind::Solid { color } => {
-                    draw_solid(self.surface.canvas(), transform, opacity, *color);
-                }
-                CompiledOperationKind::Shape(shape) => {
-                    draw_shape(self.surface.canvas(), transform, opacity, shape);
-                }
-                CompiledOperationKind::Text(text) => {
-                    draw_text(
-                        self.surface.canvas(),
-                        &self.typeface,
-                        &mut self.font_cache,
-                        transform,
-                        opacity,
-                        text,
-                    );
-                }
-                CompiledOperationKind::Image(image) => {
-                    if let Some(frame_image) = provider.image(image.source_id.as_str())? {
-                        draw_image(
-                            self.surface.canvas(),
-                            transform,
-                            opacity,
-                            image.fit,
-                            image.corner_radius,
-                            &frame_image,
-                        );
-                    }
-                }
-                CompiledOperationKind::Video(video) => {
-                    if let Some(source_frame) = resolve_video_frame(operation, video, frame)? {
-                        if let Some(frame_image) =
-                            provider.video_frame(video.source_id.as_str(), source_frame)?
-                        {
-                            draw_image(
-                                self.surface.canvas(),
-                                transform,
-                                opacity,
-                                video.fit,
-                                video.corner_radius,
-                                &frame_image,
-                            );
-                        }
-                    }
-                }
+        for layer in timeline.layers() {
+            for item in &layer.items {
+                let _ = self.render_layer_item(timeline, item, frame, provider, RenderPass::Content)?;
             }
         }
 
@@ -286,6 +417,10 @@ fn resolve_video_frame(
         .map_err(Into::into)
 }
 
+fn clear_current_layer(canvas: &Canvas) {
+    canvas.draw_color(Color::from_argb(0, 0, 0, 0), BlendMode::Clear);
+}
+
 // -- Drawing primitives -------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
@@ -344,13 +479,20 @@ fn to_sk_color(c: ColorRgba, opacity: f32) -> Color {
     Color::from_argb(alpha_scaled(c.a(), opacity), c.r(), c.g(), c.b())
 }
 
-fn draw_solid(canvas: &Canvas, transform: Transform, opacity: f32, color: ColorRgba) {
+fn draw_solid(
+    canvas: &Canvas,
+    transform: Transform,
+    opacity: f32,
+    color: ColorRgba,
+    blend_mode: BlendMode,
+) {
     let rect = layout_rect(transform, 1.0, 1.0, FitMode::Fill);
 
     let mut paint = Paint::default();
     paint.set_color(to_sk_color(color, opacity));
     paint.set_anti_alias(true);
     paint.set_style(PaintStyle::Fill);
+    paint.set_blend_mode(blend_mode);
 
     canvas.draw_rect(
         Rect::from_xywh(
@@ -363,7 +505,13 @@ fn draw_solid(canvas: &Canvas, transform: Transform, opacity: f32, color: ColorR
     );
 }
 
-fn draw_shape(canvas: &Canvas, transform: Transform, opacity: f32, shape: &ShapeClip) {
+fn draw_shape(
+    canvas: &Canvas,
+    transform: Transform,
+    opacity: f32,
+    shape: &ShapeClip,
+    blend_mode: BlendMode,
+) {
     let rect = layout_rect(transform, 1.0, 1.0, FitMode::Fill);
     let sk_rect = Rect::from_xywh(
         rect.x as f32,
@@ -378,6 +526,7 @@ fn draw_shape(canvas: &Canvas, transform: Transform, opacity: f32, shape: &Shape
             paint.set_color(to_sk_color(fill, opacity));
             paint.set_anti_alias(true);
             paint.set_style(PaintStyle::Fill);
+            paint.set_blend_mode(blend_mode);
 
             if radius > 0.0 {
                 let rrect = RRect::new_rect_xy(sk_rect, radius, radius);
@@ -391,6 +540,7 @@ fn draw_shape(canvas: &Canvas, transform: Transform, opacity: f32, shape: &Shape
             paint.set_color(to_sk_color(fill, opacity));
             paint.set_anti_alias(true);
             paint.set_style(PaintStyle::Fill);
+            paint.set_blend_mode(blend_mode);
 
             canvas.draw_oval(sk_rect, &paint);
         }
@@ -404,6 +554,7 @@ fn draw_text(
     transform: Transform,
     opacity: f32,
     text: &TextClip,
+    blend_mode: BlendMode,
 ) {
     let font_size = text.font_size.max(1.0);
     let font = font_cache
@@ -413,6 +564,7 @@ fn draw_text(
     let mut paint = Paint::default();
     paint.set_color(to_sk_color(text.color, opacity));
     paint.set_anti_alias(true);
+    paint.set_blend_mode(blend_mode);
 
     let (_, metrics) = font.metrics();
     let line_height = (metrics.descent - metrics.ascent + metrics.leading).max(font_size);
@@ -466,6 +618,7 @@ fn draw_image(
     fit: FitMode,
     corner_radius: f32,
     image: &FrameImage,
+    blend_mode: BlendMode,
 ) {
     let info = ImageInfo::new(
         (image.width as i32, image.height as i32),
@@ -516,6 +669,7 @@ fn draw_image(
 
     let mut paint = Paint::default();
     paint.set_alpha_f(opacity);
+    paint.set_blend_mode(blend_mode);
 
     canvas.draw_image(&sk_image, Point::new(0.0, 0.0), Some(&paint));
     canvas.restore();

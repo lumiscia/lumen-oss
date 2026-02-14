@@ -11,7 +11,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
-use lumen::{Project, compile_project};
+use lumen::{LayerItem, Project, compile_project};
 use serde::{Deserialize, Serialize};
 use tokio::task::spawn_blocking;
 
@@ -339,7 +339,17 @@ fn validate_project_limits(project: &Project, total_frames: u64) -> Result<(), A
         )));
     }
 
-    let total_clips: usize = project.layers.iter().map(|layer| layer.clips.len()).sum();
+    let total_clips: usize = project
+        .layers
+        .iter()
+        .map(|layer| {
+            layer
+                .items
+                .iter()
+                .map(count_layer_item_nodes)
+                .sum::<usize>()
+        })
+        .sum();
     if total_clips > MAX_TOTAL_CLIPS {
         return Err(ApiError::bad_request(format!(
             "project has {total_clips} clips, limit is {MAX_TOTAL_CLIPS}"
@@ -360,6 +370,28 @@ fn validate_project_limits(project: &Project, total_frames: u64) -> Result<(), A
     }
 
     Ok(())
+}
+
+fn count_layer_item_nodes(item: &LayerItem) -> usize {
+    match item {
+        LayerItem::Clip(clip) => {
+            let mask_count = clip
+                .mask
+                .as_deref()
+                .map(count_layer_item_nodes)
+                .unwrap_or(0);
+            1 + mask_count
+        }
+        LayerItem::Group(group) => {
+            let child_count: usize = group.items.iter().map(count_layer_item_nodes).sum();
+            let mask_count = group
+                .mask
+                .as_deref()
+                .map(count_layer_item_nodes)
+                .unwrap_or(0);
+            child_count + mask_count
+        }
+    }
 }
 
 fn to_progress_event(status: &RenderJobStatus) -> RenderProgressEvent {

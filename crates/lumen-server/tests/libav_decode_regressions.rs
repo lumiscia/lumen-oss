@@ -32,7 +32,8 @@ fn generator_project(
         "layers": [{
             "id": "layer_0",
             "z_index": 0,
-            "clips": [{
+            "items": [{
+                "kind": "clip",
                 "id": "clip_0",
                 "start_frame": 0,
                 "duration_frames": total_frames,

@@ -85,6 +85,12 @@ impl GpuRenderer {
         frame: u64,
         provider: &mut dyn FrameProvider,
     ) -> Result<Vec<u8>, RenderError> {
+        if timeline.has_compositing_nodes() {
+            return Err(RenderError::Unsupported(
+                "clip groups and masks are not supported in Vello; use Skia renderer".to_string(),
+            ));
+        }
+
         if frame >= timeline.total_frames() {
             return Err(RenderError::FrameOutOfRange {
                 frame,

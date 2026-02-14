@@ -86,12 +86,20 @@ pub enum SourceMediaType {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Layer {
     pub id: String,
     #[serde(default)]
     pub z_index: i32,
     #[serde(default)]
-    pub clips: Vec<Clip>,
+    pub items: Vec<LayerItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LayerItem {
+    Clip(Clip),
+    Group(ClipGroup),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,7 +113,42 @@ pub struct Clip {
     pub transform: Transform,
     #[serde(default)]
     pub animation: ClipAnimation,
+    #[serde(default)]
+    pub mask: Option<Box<LayerItem>>,
     pub content: ClipContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipGroup {
+    pub id: String,
+    #[serde(default = "default_opacity")]
+    pub opacity: f32,
+    #[serde(default)]
+    pub transform: GroupTransform,
+    #[serde(default)]
+    pub items: Vec<LayerItem>,
+    #[serde(default)]
+    pub mask: Option<Box<LayerItem>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GroupTransform {
+    #[serde(default)]
+    pub x: f32,
+    #[serde(default)]
+    pub y: f32,
+    #[serde(default)]
+    pub rotation_degrees: f32,
+}
+
+impl Default for GroupTransform {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            rotation_degrees: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

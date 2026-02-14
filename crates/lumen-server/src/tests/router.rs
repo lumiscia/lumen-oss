@@ -311,7 +311,8 @@ fn valid_project_json() -> serde_json::Value {
         "layers": [{
             "id": "layer_text",
             "z_index": 0,
-            "clips": [{
+            "items": [{
+                "kind": "clip",
                 "id": "clip_text_1",
                 "start_frame": 0,
                 "duration_frames": 2,

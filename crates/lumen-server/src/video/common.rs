@@ -258,6 +258,10 @@ struct FastPathPlan {
 }
 
 fn analyze_fast_path_timeline(timeline: &CompiledTimeline) -> anyhow::Result<Option<FastPathPlan>> {
+    if timeline.has_compositing_nodes() {
+        return Ok(None);
+    }
+
     let total_frames = timeline.total_frames();
     if total_frames == 0 {
         return Ok(None);

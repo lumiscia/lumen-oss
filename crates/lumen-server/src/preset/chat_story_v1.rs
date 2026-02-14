@@ -3,8 +3,8 @@ use std::collections::{BTreeSet, HashMap};
 use anyhow::{Context, anyhow};
 use lumen::{
     AudioMix, Clip, ClipAnimation, ClipContent, ColorRgba, Easing, FitMode, ImageClip, Layer,
-    Project, ScalarKeyframe, Shape, ShapeClip, Source, SourceKind, SourceMediaType, SourcePipeline,
-    TextAlign, TextClip, Timeline, Transform, VideoClip, time::Rational,
+    LayerItem, Project, ScalarKeyframe, Shape, ShapeClip, Source, SourceKind, SourceMediaType,
+    SourcePipeline, TextAlign, TextClip, Timeline, Transform, VideoClip, time::Rational,
 };
 use serde::Deserialize;
 use skrifa::{
@@ -379,7 +379,7 @@ fn build_background_layer(
     Layer {
         id: "chat_background_layer".to_string(),
         z_index: 0,
-        clips: vec![Clip {
+        items: vec![LayerItem::Clip(Clip {
             id: "chat_background_clip".to_string(),
             start_frame: 0,
             duration_frames: total_frames,
@@ -392,13 +392,14 @@ fn build_background_layer(
                 rotation_degrees: 0.0,
             },
             animation: ClipAnimation::default(),
+            mask: None,
             content: ClipContent::Video(VideoClip {
                 source: source_id,
                 pipeline: SourcePipeline::default(),
                 fit,
                 corner_radius: 0.0,
             }),
-        }],
+        })],
     }
 }
 
@@ -727,7 +728,7 @@ fn build_chat_layer(
     Ok(Layer {
         id: "chat_overlay_layer".to_string(),
         z_index: 100,
-        clips,
+        items: clips.into_iter().map(LayerItem::Clip).collect(),
     })
 }
 
@@ -1073,6 +1074,7 @@ fn shape_clip(
         opacity: 1.0,
         transform,
         animation: ClipAnimation::default(),
+        mask: None,
         content: ClipContent::Shape(ShapeClip {
             shape: Shape::Rectangle { fill, radius },
         }),
@@ -1096,6 +1098,7 @@ fn text_clip(
         opacity: 1.0,
         transform,
         animation: ClipAnimation::default(),
+        mask: None,
         content: ClipContent::Text(TextClip {
             text,
             font_size,
@@ -1121,6 +1124,7 @@ fn image_clip(
         opacity: 1.0,
         transform,
         animation: ClipAnimation::default(),
+        mask: None,
         content: ClipContent::Image(ImageClip {
             source,
             fit,
@@ -1366,10 +1370,12 @@ mod tests {
             .find(|layer| layer.id == "chat_overlay_layer")
             .expect("chat layer");
         let panel_starts: Vec<u64> = chat_layer
-            .clips
+            .items
             .iter()
-            .filter(|clip| clip.id.starts_with("chat_panel_i"))
-            .map(|clip| clip.start_frame)
+            .filter_map(|item| match item {
+                LayerItem::Clip(clip) if clip.id.starts_with("chat_panel_i") => Some(clip.start_frame),
+                _ => None,
+            })
             .collect();
         assert_eq!(panel_starts, vec![0, 15, 36, 75, 93, 180]);
     }
@@ -1389,9 +1395,12 @@ mod tests {
         let panel_w = 248.0 * (project.canvas.width as f32 / 360.0);
 
         for bubble in chat_layer
-            .clips
+            .items
             .iter()
-            .filter(|clip| clip.id.starts_with("chat_msg_bubble_"))
+            .filter_map(|item| match item {
+                LayerItem::Clip(clip) if clip.id.starts_with("chat_msg_bubble_") => Some(clip),
+                _ => None,
+            })
         {
             let x = bubble
                 .animation

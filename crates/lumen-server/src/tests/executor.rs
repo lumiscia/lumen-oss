@@ -18,7 +18,8 @@ fn missing_source_project() -> Project {
         "layers": [{
             "id": "layer_video",
             "z_index": 0,
-            "clips": [{
+            "items": [{
+                "kind": "clip",
                 "id": "clip_video_1",
                 "start_frame": 0,
                 "duration_frames": 2,

@@ -1,7 +1,7 @@
 use lumen::{
-    Canvas, Clip, ClipContent, ColorRgba, FitMode, ImageClip, Layer, Project, Source, SourceKind,
-    SourceMediaType, Timeline, Transform, backend::FrameImage, compile::compile_project,
-    time::Rational,
+    Canvas, Clip, ClipContent, ColorRgba, FitMode, ImageClip, Layer, LayerItem, Project, Source,
+    SourceKind, SourceMediaType, Timeline, Transform, backend::FrameImage,
+    compile::compile_project, time::Rational,
 };
 
 struct SolidImageProvider {
@@ -41,7 +41,7 @@ fn test_project() -> Project {
         layers: vec![Layer {
             id: "media".to_string(),
             z_index: 0,
-            clips: vec![Clip {
+            items: vec![LayerItem::Clip(Clip {
                 id: "img_clip".to_string(),
                 start_frame: 0,
                 duration_frames: 1,
@@ -54,12 +54,13 @@ fn test_project() -> Project {
                     rotation_degrees: 0.0,
                 },
                 animation: Default::default(),
+                mask: None,
                 content: ClipContent::Image(ImageClip {
                     source: "img".to_string(),
                     fit: FitMode::Fill,
                     corner_radius: 6.0,
                 }),
-            }],
+            })],
         }],
         audio: Default::default(),
     }

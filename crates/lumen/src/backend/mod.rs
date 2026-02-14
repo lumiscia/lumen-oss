@@ -36,6 +36,8 @@ pub enum RenderError {
     Text(String),
     #[error("surface creation failed: {0}")]
     SurfaceCreation(String),
+    #[error("unsupported render feature: {0}")]
+    Unsupported(String),
 }
 
 #[derive(Debug, Error)]

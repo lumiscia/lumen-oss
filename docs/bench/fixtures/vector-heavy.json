@@ -21,8 +21,9 @@
     {
       "id": "vector_layer_0",
       "z_index": 0,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "shape_0",
           "start_frame": 0,
           "duration_frames": 300,
@@ -47,6 +48,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_1",
           "start_frame": 0,
           "duration_frames": 300,
@@ -70,6 +72,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_2",
           "start_frame": 0,
           "duration_frames": 300,
@@ -94,6 +97,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_3",
           "start_frame": 0,
           "duration_frames": 300,
@@ -117,6 +121,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_4",
           "start_frame": 0,
           "duration_frames": 300,
@@ -141,6 +146,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_5",
           "start_frame": 0,
           "duration_frames": 300,
@@ -164,6 +170,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_6",
           "start_frame": 0,
           "duration_frames": 300,
@@ -188,6 +195,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_7",
           "start_frame": 0,
           "duration_frames": 300,
@@ -211,6 +219,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_8",
           "start_frame": 0,
           "duration_frames": 300,
@@ -235,6 +244,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_9",
           "start_frame": 0,
           "duration_frames": 300,
@@ -258,6 +268,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_10",
           "start_frame": 0,
           "duration_frames": 300,
@@ -282,6 +293,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_11",
           "start_frame": 0,
           "duration_frames": 300,
@@ -305,6 +317,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_12",
           "start_frame": 0,
           "duration_frames": 300,
@@ -329,6 +342,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_13",
           "start_frame": 0,
           "duration_frames": 300,
@@ -352,6 +366,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_14",
           "start_frame": 0,
           "duration_frames": 300,
@@ -376,6 +391,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_15",
           "start_frame": 0,
           "duration_frames": 300,
@@ -399,6 +415,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_16",
           "start_frame": 0,
           "duration_frames": 300,
@@ -423,6 +440,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_17",
           "start_frame": 0,
           "duration_frames": 300,
@@ -446,6 +464,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_18",
           "start_frame": 0,
           "duration_frames": 300,
@@ -470,6 +489,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_19",
           "start_frame": 0,
           "duration_frames": 300,
@@ -493,6 +513,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_20",
           "start_frame": 0,
           "duration_frames": 300,
@@ -517,6 +538,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_21",
           "start_frame": 0,
           "duration_frames": 300,
@@ -540,6 +562,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_22",
           "start_frame": 0,
           "duration_frames": 300,
@@ -564,6 +587,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_23",
           "start_frame": 0,
           "duration_frames": 300,
@@ -587,6 +611,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_24",
           "start_frame": 0,
           "duration_frames": 300,
@@ -611,6 +636,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_25",
           "start_frame": 0,
           "duration_frames": 300,
@@ -634,6 +660,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_26",
           "start_frame": 0,
           "duration_frames": 300,
@@ -658,6 +685,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_27",
           "start_frame": 0,
           "duration_frames": 300,
@@ -681,6 +709,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_28",
           "start_frame": 0,
           "duration_frames": 300,
@@ -705,6 +734,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_29",
           "start_frame": 0,
           "duration_frames": 300,
@@ -728,6 +758,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_30",
           "start_frame": 0,
           "duration_frames": 300,
@@ -752,6 +783,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_31",
           "start_frame": 0,
           "duration_frames": 300,
@@ -775,6 +807,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_32",
           "start_frame": 0,
           "duration_frames": 300,
@@ -799,6 +832,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_33",
           "start_frame": 0,
           "duration_frames": 300,
@@ -822,6 +856,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_34",
           "start_frame": 0,
           "duration_frames": 300,
@@ -846,6 +881,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_35",
           "start_frame": 0,
           "duration_frames": 300,
@@ -869,6 +905,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_36",
           "start_frame": 0,
           "duration_frames": 300,
@@ -893,6 +930,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_37",
           "start_frame": 0,
           "duration_frames": 300,
@@ -916,6 +954,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_38",
           "start_frame": 0,
           "duration_frames": 300,
@@ -940,6 +979,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_39",
           "start_frame": 0,
           "duration_frames": 300,
@@ -963,6 +1003,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_40",
           "start_frame": 0,
           "duration_frames": 300,
@@ -987,6 +1028,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_41",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1010,6 +1052,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_42",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1034,6 +1077,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_43",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1057,6 +1101,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_44",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1085,8 +1130,9 @@
     {
       "id": "vector_layer_1",
       "z_index": 1,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "shape_45",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1110,6 +1156,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_46",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1134,6 +1181,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_47",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1157,6 +1205,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_48",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1181,6 +1230,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_49",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1204,6 +1254,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_50",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1228,6 +1279,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_51",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1251,6 +1303,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_52",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1275,6 +1328,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_53",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1298,6 +1352,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_54",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1322,6 +1377,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_55",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1345,6 +1401,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_56",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1369,6 +1426,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_57",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1392,6 +1450,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_58",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1416,6 +1475,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_59",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1439,6 +1499,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_60",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1463,6 +1524,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_61",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1486,6 +1548,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_62",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1510,6 +1573,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_63",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1533,6 +1597,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_64",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1557,6 +1622,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_65",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1580,6 +1646,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_66",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1604,6 +1671,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_67",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1627,6 +1695,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_68",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1651,6 +1720,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_69",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1674,6 +1744,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_70",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1698,6 +1769,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_71",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1721,6 +1793,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_72",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1745,6 +1818,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_73",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1768,6 +1842,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_74",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1792,6 +1867,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_75",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1815,6 +1891,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_76",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1839,6 +1916,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_77",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1862,6 +1940,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_78",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1886,6 +1965,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_79",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1909,6 +1989,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_80",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1933,6 +2014,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_81",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1956,6 +2038,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_82",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1980,6 +2063,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_83",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2003,6 +2087,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_84",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2027,6 +2112,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_85",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2050,6 +2136,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_86",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2074,6 +2161,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_87",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2097,6 +2185,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_88",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2121,6 +2210,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_89",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2148,8 +2238,9 @@
     {
       "id": "vector_layer_2",
       "z_index": 2,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "shape_90",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2174,6 +2265,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_91",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2197,6 +2289,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_92",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2221,6 +2314,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_93",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2244,6 +2338,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_94",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2268,6 +2363,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_95",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2291,6 +2387,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_96",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2315,6 +2412,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_97",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2338,6 +2436,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_98",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2362,6 +2461,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_99",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2385,6 +2485,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_100",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2409,6 +2510,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_101",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2432,6 +2534,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_102",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2456,6 +2559,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_103",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2479,6 +2583,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_104",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2503,6 +2608,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_105",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2526,6 +2632,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_106",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2550,6 +2657,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_107",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2573,6 +2681,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_108",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2597,6 +2706,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_109",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2620,6 +2730,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_110",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2644,6 +2755,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_111",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2667,6 +2779,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_112",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2691,6 +2804,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_113",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2714,6 +2828,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_114",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2738,6 +2853,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_115",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2761,6 +2877,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_116",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2785,6 +2902,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_117",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2808,6 +2926,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_118",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2832,6 +2951,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_119",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2855,6 +2975,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_120",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2879,6 +3000,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_121",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2902,6 +3024,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_122",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2926,6 +3049,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_123",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2949,6 +3073,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_124",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2973,6 +3098,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_125",
           "start_frame": 0,
           "duration_frames": 300,
@@ -2996,6 +3122,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_126",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3020,6 +3147,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_127",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3043,6 +3171,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_128",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3067,6 +3196,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_129",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3090,6 +3220,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_130",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3114,6 +3245,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_131",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3137,6 +3269,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_132",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3161,6 +3294,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_133",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3184,6 +3318,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_134",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3212,8 +3347,9 @@
     {
       "id": "vector_layer_3",
       "z_index": 3,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "shape_135",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3237,6 +3373,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_136",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3261,6 +3398,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_137",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3284,6 +3422,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_138",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3308,6 +3447,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_139",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3331,6 +3471,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_140",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3355,6 +3496,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_141",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3378,6 +3520,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_142",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3402,6 +3545,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_143",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3425,6 +3569,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_144",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3449,6 +3594,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_145",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3472,6 +3618,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_146",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3496,6 +3643,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_147",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3519,6 +3667,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_148",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3543,6 +3692,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_149",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3566,6 +3716,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_150",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3590,6 +3741,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_151",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3613,6 +3765,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_152",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3637,6 +3790,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_153",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3660,6 +3814,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_154",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3684,6 +3839,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_155",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3707,6 +3863,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_156",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3731,6 +3888,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_157",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3754,6 +3912,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_158",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3778,6 +3937,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_159",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3801,6 +3961,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_160",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3825,6 +3986,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_161",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3848,6 +4010,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_162",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3872,6 +4035,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_163",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3895,6 +4059,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_164",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3919,6 +4084,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_165",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3942,6 +4108,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_166",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3966,6 +4133,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_167",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3989,6 +4157,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_168",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4013,6 +4182,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_169",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4036,6 +4206,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_170",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4060,6 +4231,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_171",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4083,6 +4255,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_172",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4107,6 +4280,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_173",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4130,6 +4304,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_174",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4154,6 +4329,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_175",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4177,6 +4353,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_176",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4201,6 +4378,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_177",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4224,6 +4402,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_178",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4248,6 +4427,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_179",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4275,8 +4455,9 @@
     {
       "id": "vector_layer_4",
       "z_index": 4,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "shape_180",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4301,6 +4482,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_181",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4324,6 +4506,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_182",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4348,6 +4531,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_183",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4371,6 +4555,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_184",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4395,6 +4580,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_185",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4418,6 +4604,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_186",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4442,6 +4629,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_187",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4465,6 +4653,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_188",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4489,6 +4678,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_189",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4512,6 +4702,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_190",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4536,6 +4727,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_191",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4559,6 +4751,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_192",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4583,6 +4776,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_193",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4606,6 +4800,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_194",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4630,6 +4825,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_195",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4653,6 +4849,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_196",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4677,6 +4874,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_197",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4700,6 +4898,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_198",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4724,6 +4923,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_199",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4747,6 +4947,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_200",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4771,6 +4972,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_201",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4794,6 +4996,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_202",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4818,6 +5021,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_203",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4841,6 +5045,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_204",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4865,6 +5070,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_205",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4888,6 +5094,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_206",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4912,6 +5119,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_207",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4935,6 +5143,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_208",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4959,6 +5168,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_209",
           "start_frame": 0,
           "duration_frames": 300,
@@ -4982,6 +5192,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_210",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5006,6 +5217,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_211",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5029,6 +5241,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_212",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5053,6 +5266,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_213",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5076,6 +5290,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_214",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5100,6 +5315,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_215",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5123,6 +5339,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_216",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5147,6 +5364,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_217",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5170,6 +5388,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_218",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5194,6 +5413,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_219",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5217,6 +5437,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_220",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5241,6 +5462,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_221",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5264,6 +5486,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_222",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5288,6 +5511,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_223",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5311,6 +5535,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_224",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5339,8 +5564,9 @@
     {
       "id": "vector_layer_5",
       "z_index": 5,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "shape_225",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5364,6 +5590,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_226",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5388,6 +5615,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_227",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5411,6 +5639,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_228",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5435,6 +5664,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_229",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5458,6 +5688,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_230",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5482,6 +5713,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_231",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5505,6 +5737,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_232",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5529,6 +5762,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_233",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5552,6 +5786,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_234",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5576,6 +5811,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_235",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5599,6 +5835,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_236",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5623,6 +5860,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_237",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5646,6 +5884,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_238",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5670,6 +5909,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_239",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5693,6 +5933,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_240",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5717,6 +5958,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_241",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5740,6 +5982,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_242",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5764,6 +6007,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_243",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5787,6 +6031,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_244",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5811,6 +6056,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_245",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5834,6 +6080,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_246",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5858,6 +6105,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_247",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5881,6 +6129,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_248",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5905,6 +6154,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_249",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5928,6 +6178,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_250",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5952,6 +6203,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_251",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5975,6 +6227,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_252",
           "start_frame": 0,
           "duration_frames": 300,
@@ -5999,6 +6252,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_253",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6022,6 +6276,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_254",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6046,6 +6301,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_255",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6069,6 +6325,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_256",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6093,6 +6350,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_257",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6116,6 +6374,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_258",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6140,6 +6399,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_259",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6163,6 +6423,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_260",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6187,6 +6448,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_261",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6210,6 +6472,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_262",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6234,6 +6497,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_263",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6257,6 +6521,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_264",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6281,6 +6546,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_265",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6304,6 +6570,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_266",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6328,6 +6595,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_267",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6351,6 +6619,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_268",
           "start_frame": 0,
           "duration_frames": 300,
@@ -6375,6 +6644,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "shape_269",
           "start_frame": 0,
           "duration_frames": 300,

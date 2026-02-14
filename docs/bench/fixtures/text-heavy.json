@@ -21,8 +21,9 @@
     {
       "id": "text_layer_0",
       "z_index": 0,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "text_0",
           "start_frame": 0,
           "duration_frames": 300,
@@ -48,6 +49,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_1",
           "start_frame": 3,
           "duration_frames": 297,
@@ -73,6 +75,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_2",
           "start_frame": 6,
           "duration_frames": 294,
@@ -98,6 +101,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_3",
           "start_frame": 9,
           "duration_frames": 291,
@@ -123,6 +127,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_4",
           "start_frame": 12,
           "duration_frames": 288,
@@ -148,6 +153,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_5",
           "start_frame": 15,
           "duration_frames": 285,
@@ -173,6 +179,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_6",
           "start_frame": 18,
           "duration_frames": 282,
@@ -198,6 +205,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_7",
           "start_frame": 21,
           "duration_frames": 279,
@@ -223,6 +231,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_8",
           "start_frame": 24,
           "duration_frames": 276,
@@ -248,6 +257,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_9",
           "start_frame": 27,
           "duration_frames": 273,
@@ -273,6 +283,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_10",
           "start_frame": 30,
           "duration_frames": 270,
@@ -298,6 +309,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_11",
           "start_frame": 33,
           "duration_frames": 267,
@@ -323,6 +335,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_12",
           "start_frame": 36,
           "duration_frames": 264,
@@ -348,6 +361,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_13",
           "start_frame": 39,
           "duration_frames": 261,
@@ -373,6 +387,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_14",
           "start_frame": 42,
           "duration_frames": 258,
@@ -398,6 +413,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_15",
           "start_frame": 45,
           "duration_frames": 255,
@@ -423,6 +439,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_16",
           "start_frame": 48,
           "duration_frames": 252,
@@ -448,6 +465,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_17",
           "start_frame": 1,
           "duration_frames": 299,
@@ -473,6 +491,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_18",
           "start_frame": 4,
           "duration_frames": 296,
@@ -498,6 +517,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_19",
           "start_frame": 7,
           "duration_frames": 293,
@@ -523,6 +543,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_20",
           "start_frame": 10,
           "duration_frames": 290,
@@ -548,6 +569,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_21",
           "start_frame": 13,
           "duration_frames": 287,
@@ -573,6 +595,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_22",
           "start_frame": 16,
           "duration_frames": 284,
@@ -598,6 +621,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_23",
           "start_frame": 19,
           "duration_frames": 281,
@@ -623,6 +647,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_24",
           "start_frame": 22,
           "duration_frames": 278,
@@ -648,6 +673,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_25",
           "start_frame": 25,
           "duration_frames": 275,
@@ -673,6 +699,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_26",
           "start_frame": 28,
           "duration_frames": 272,
@@ -698,6 +725,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_27",
           "start_frame": 31,
           "duration_frames": 269,
@@ -723,6 +751,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_28",
           "start_frame": 34,
           "duration_frames": 266,
@@ -748,6 +777,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_29",
           "start_frame": 37,
           "duration_frames": 263,
@@ -773,6 +803,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_30",
           "start_frame": 40,
           "duration_frames": 260,
@@ -798,6 +829,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_31",
           "start_frame": 43,
           "duration_frames": 257,
@@ -827,8 +859,9 @@
     {
       "id": "text_layer_1",
       "z_index": 1,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "text_32",
           "start_frame": 7,
           "duration_frames": 293,
@@ -854,6 +887,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_33",
           "start_frame": 10,
           "duration_frames": 290,
@@ -879,6 +913,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_34",
           "start_frame": 13,
           "duration_frames": 287,
@@ -904,6 +939,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_35",
           "start_frame": 16,
           "duration_frames": 284,
@@ -929,6 +965,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_36",
           "start_frame": 19,
           "duration_frames": 281,
@@ -954,6 +991,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_37",
           "start_frame": 22,
           "duration_frames": 278,
@@ -979,6 +1017,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_38",
           "start_frame": 25,
           "duration_frames": 275,
@@ -1004,6 +1043,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_39",
           "start_frame": 28,
           "duration_frames": 272,
@@ -1029,6 +1069,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_40",
           "start_frame": 31,
           "duration_frames": 269,
@@ -1054,6 +1095,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_41",
           "start_frame": 34,
           "duration_frames": 266,
@@ -1079,6 +1121,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_42",
           "start_frame": 37,
           "duration_frames": 263,
@@ -1104,6 +1147,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_43",
           "start_frame": 40,
           "duration_frames": 260,
@@ -1129,6 +1173,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_44",
           "start_frame": 43,
           "duration_frames": 257,
@@ -1154,6 +1199,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_45",
           "start_frame": 46,
           "duration_frames": 254,
@@ -1179,6 +1225,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_46",
           "start_frame": 49,
           "duration_frames": 251,
@@ -1204,6 +1251,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_47",
           "start_frame": 2,
           "duration_frames": 298,
@@ -1229,6 +1277,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_48",
           "start_frame": 5,
           "duration_frames": 295,
@@ -1254,6 +1303,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_49",
           "start_frame": 8,
           "duration_frames": 292,
@@ -1279,6 +1329,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_50",
           "start_frame": 11,
           "duration_frames": 289,
@@ -1304,6 +1355,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_51",
           "start_frame": 14,
           "duration_frames": 286,
@@ -1329,6 +1381,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_52",
           "start_frame": 17,
           "duration_frames": 283,
@@ -1354,6 +1407,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_53",
           "start_frame": 20,
           "duration_frames": 280,
@@ -1379,6 +1433,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_54",
           "start_frame": 23,
           "duration_frames": 277,
@@ -1404,6 +1459,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_55",
           "start_frame": 26,
           "duration_frames": 274,
@@ -1429,6 +1485,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_56",
           "start_frame": 29,
           "duration_frames": 271,
@@ -1454,6 +1511,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_57",
           "start_frame": 32,
           "duration_frames": 268,
@@ -1479,6 +1537,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_58",
           "start_frame": 35,
           "duration_frames": 265,
@@ -1504,6 +1563,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_59",
           "start_frame": 38,
           "duration_frames": 262,
@@ -1529,6 +1589,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_60",
           "start_frame": 41,
           "duration_frames": 259,
@@ -1554,6 +1615,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_61",
           "start_frame": 44,
           "duration_frames": 256,
@@ -1579,6 +1641,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_62",
           "start_frame": 47,
           "duration_frames": 253,
@@ -1604,6 +1667,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_63",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1633,8 +1697,9 @@
     {
       "id": "text_layer_2",
       "z_index": 2,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "text_64",
           "start_frame": 14,
           "duration_frames": 286,
@@ -1660,6 +1725,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_65",
           "start_frame": 17,
           "duration_frames": 283,
@@ -1685,6 +1751,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_66",
           "start_frame": 20,
           "duration_frames": 280,
@@ -1710,6 +1777,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_67",
           "start_frame": 23,
           "duration_frames": 277,
@@ -1735,6 +1803,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_68",
           "start_frame": 26,
           "duration_frames": 274,
@@ -1760,6 +1829,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_69",
           "start_frame": 29,
           "duration_frames": 271,
@@ -1785,6 +1855,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_70",
           "start_frame": 32,
           "duration_frames": 268,
@@ -1810,6 +1881,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_71",
           "start_frame": 35,
           "duration_frames": 265,
@@ -1835,6 +1907,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_72",
           "start_frame": 38,
           "duration_frames": 262,
@@ -1860,6 +1933,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_73",
           "start_frame": 41,
           "duration_frames": 259,
@@ -1885,6 +1959,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_74",
           "start_frame": 44,
           "duration_frames": 256,
@@ -1910,6 +1985,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_75",
           "start_frame": 47,
           "duration_frames": 253,
@@ -1935,6 +2011,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_76",
           "start_frame": 0,
           "duration_frames": 300,
@@ -1960,6 +2037,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_77",
           "start_frame": 3,
           "duration_frames": 297,
@@ -1985,6 +2063,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_78",
           "start_frame": 6,
           "duration_frames": 294,
@@ -2010,6 +2089,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_79",
           "start_frame": 9,
           "duration_frames": 291,
@@ -2035,6 +2115,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_80",
           "start_frame": 12,
           "duration_frames": 288,
@@ -2060,6 +2141,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_81",
           "start_frame": 15,
           "duration_frames": 285,
@@ -2085,6 +2167,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_82",
           "start_frame": 18,
           "duration_frames": 282,
@@ -2110,6 +2193,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_83",
           "start_frame": 21,
           "duration_frames": 279,
@@ -2135,6 +2219,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_84",
           "start_frame": 24,
           "duration_frames": 276,
@@ -2160,6 +2245,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_85",
           "start_frame": 27,
           "duration_frames": 273,
@@ -2185,6 +2271,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_86",
           "start_frame": 30,
           "duration_frames": 270,
@@ -2210,6 +2297,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_87",
           "start_frame": 33,
           "duration_frames": 267,
@@ -2235,6 +2323,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_88",
           "start_frame": 36,
           "duration_frames": 264,
@@ -2260,6 +2349,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_89",
           "start_frame": 39,
           "duration_frames": 261,
@@ -2285,6 +2375,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_90",
           "start_frame": 42,
           "duration_frames": 258,
@@ -2310,6 +2401,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_91",
           "start_frame": 45,
           "duration_frames": 255,
@@ -2335,6 +2427,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_92",
           "start_frame": 48,
           "duration_frames": 252,
@@ -2360,6 +2453,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_93",
           "start_frame": 1,
           "duration_frames": 299,
@@ -2385,6 +2479,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_94",
           "start_frame": 4,
           "duration_frames": 296,
@@ -2410,6 +2505,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_95",
           "start_frame": 7,
           "duration_frames": 293,
@@ -2439,8 +2535,9 @@
     {
       "id": "text_layer_3",
       "z_index": 3,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "text_96",
           "start_frame": 21,
           "duration_frames": 279,
@@ -2466,6 +2563,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_97",
           "start_frame": 24,
           "duration_frames": 276,
@@ -2491,6 +2589,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_98",
           "start_frame": 27,
           "duration_frames": 273,
@@ -2516,6 +2615,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_99",
           "start_frame": 30,
           "duration_frames": 270,
@@ -2541,6 +2641,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_100",
           "start_frame": 33,
           "duration_frames": 267,
@@ -2566,6 +2667,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_101",
           "start_frame": 36,
           "duration_frames": 264,
@@ -2591,6 +2693,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_102",
           "start_frame": 39,
           "duration_frames": 261,
@@ -2616,6 +2719,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_103",
           "start_frame": 42,
           "duration_frames": 258,
@@ -2641,6 +2745,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_104",
           "start_frame": 45,
           "duration_frames": 255,
@@ -2666,6 +2771,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_105",
           "start_frame": 48,
           "duration_frames": 252,
@@ -2691,6 +2797,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_106",
           "start_frame": 1,
           "duration_frames": 299,
@@ -2716,6 +2823,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_107",
           "start_frame": 4,
           "duration_frames": 296,
@@ -2741,6 +2849,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_108",
           "start_frame": 7,
           "duration_frames": 293,
@@ -2766,6 +2875,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_109",
           "start_frame": 10,
           "duration_frames": 290,
@@ -2791,6 +2901,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_110",
           "start_frame": 13,
           "duration_frames": 287,
@@ -2816,6 +2927,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_111",
           "start_frame": 16,
           "duration_frames": 284,
@@ -2841,6 +2953,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_112",
           "start_frame": 19,
           "duration_frames": 281,
@@ -2866,6 +2979,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_113",
           "start_frame": 22,
           "duration_frames": 278,
@@ -2891,6 +3005,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_114",
           "start_frame": 25,
           "duration_frames": 275,
@@ -2916,6 +3031,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_115",
           "start_frame": 28,
           "duration_frames": 272,
@@ -2941,6 +3057,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_116",
           "start_frame": 31,
           "duration_frames": 269,
@@ -2966,6 +3083,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_117",
           "start_frame": 34,
           "duration_frames": 266,
@@ -2991,6 +3109,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_118",
           "start_frame": 37,
           "duration_frames": 263,
@@ -3016,6 +3135,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_119",
           "start_frame": 40,
           "duration_frames": 260,
@@ -3041,6 +3161,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_120",
           "start_frame": 43,
           "duration_frames": 257,
@@ -3066,6 +3187,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_121",
           "start_frame": 46,
           "duration_frames": 254,
@@ -3091,6 +3213,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_122",
           "start_frame": 49,
           "duration_frames": 251,
@@ -3116,6 +3239,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_123",
           "start_frame": 2,
           "duration_frames": 298,
@@ -3141,6 +3265,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_124",
           "start_frame": 5,
           "duration_frames": 295,
@@ -3166,6 +3291,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_125",
           "start_frame": 8,
           "duration_frames": 292,
@@ -3191,6 +3317,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_126",
           "start_frame": 11,
           "duration_frames": 289,
@@ -3216,6 +3343,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_127",
           "start_frame": 14,
           "duration_frames": 286,
@@ -3245,8 +3373,9 @@
     {
       "id": "text_layer_4",
       "z_index": 4,
-      "clips": [
+      "items": [
         {
+          "kind": "clip",
           "id": "text_128",
           "start_frame": 28,
           "duration_frames": 272,
@@ -3272,6 +3401,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_129",
           "start_frame": 31,
           "duration_frames": 269,
@@ -3297,6 +3427,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_130",
           "start_frame": 34,
           "duration_frames": 266,
@@ -3322,6 +3453,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_131",
           "start_frame": 37,
           "duration_frames": 263,
@@ -3347,6 +3479,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_132",
           "start_frame": 40,
           "duration_frames": 260,
@@ -3372,6 +3505,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_133",
           "start_frame": 43,
           "duration_frames": 257,
@@ -3397,6 +3531,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_134",
           "start_frame": 46,
           "duration_frames": 254,
@@ -3422,6 +3557,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_135",
           "start_frame": 49,
           "duration_frames": 251,
@@ -3447,6 +3583,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_136",
           "start_frame": 2,
           "duration_frames": 298,
@@ -3472,6 +3609,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_137",
           "start_frame": 5,
           "duration_frames": 295,
@@ -3497,6 +3635,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_138",
           "start_frame": 8,
           "duration_frames": 292,
@@ -3522,6 +3661,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_139",
           "start_frame": 11,
           "duration_frames": 289,
@@ -3547,6 +3687,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_140",
           "start_frame": 14,
           "duration_frames": 286,
@@ -3572,6 +3713,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_141",
           "start_frame": 17,
           "duration_frames": 283,
@@ -3597,6 +3739,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_142",
           "start_frame": 20,
           "duration_frames": 280,
@@ -3622,6 +3765,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_143",
           "start_frame": 23,
           "duration_frames": 277,
@@ -3647,6 +3791,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_144",
           "start_frame": 26,
           "duration_frames": 274,
@@ -3672,6 +3817,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_145",
           "start_frame": 29,
           "duration_frames": 271,
@@ -3697,6 +3843,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_146",
           "start_frame": 32,
           "duration_frames": 268,
@@ -3722,6 +3869,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_147",
           "start_frame": 35,
           "duration_frames": 265,
@@ -3747,6 +3895,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_148",
           "start_frame": 38,
           "duration_frames": 262,
@@ -3772,6 +3921,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_149",
           "start_frame": 41,
           "duration_frames": 259,
@@ -3797,6 +3947,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_150",
           "start_frame": 44,
           "duration_frames": 256,
@@ -3822,6 +3973,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_151",
           "start_frame": 47,
           "duration_frames": 253,
@@ -3847,6 +3999,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_152",
           "start_frame": 0,
           "duration_frames": 300,
@@ -3872,6 +4025,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_153",
           "start_frame": 3,
           "duration_frames": 297,
@@ -3897,6 +4051,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_154",
           "start_frame": 6,
           "duration_frames": 294,
@@ -3922,6 +4077,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_155",
           "start_frame": 9,
           "duration_frames": 291,
@@ -3947,6 +4103,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_156",
           "start_frame": 12,
           "duration_frames": 288,
@@ -3972,6 +4129,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_157",
           "start_frame": 15,
           "duration_frames": 285,
@@ -3997,6 +4155,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_158",
           "start_frame": 18,
           "duration_frames": 282,
@@ -4022,6 +4181,7 @@
           }
         },
         {
+          "kind": "clip",
           "id": "text_159",
           "start_frame": 21,
           "duration_frames": 279,

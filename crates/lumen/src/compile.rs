@@ -4,11 +4,14 @@ use thiserror::Error;
 
 use crate::{
     model::{
-        Canvas, ClipContent, Easing, FitMode, Layer, Project, ScalarKeyframe, ShapeClip, Source,
-        SourceMediaType, SourcePipeline, TextClip, Timeline, Transform,
+        Canvas, Clip, ClipContent, ClipGroup, Easing, FitMode, GroupTransform, Layer, LayerItem,
+        Project, ScalarKeyframe, ShapeClip, Source, SourceMediaType, SourcePipeline, TextClip,
+        Timeline, Transform,
     },
     source_pipeline::{PipelineError, map_source_frame},
 };
+
+const MAX_ITEM_TREE_DEPTH: usize = 16;
 
 #[derive(Debug, Error)]
 pub enum CompileError {
@@ -34,6 +37,14 @@ pub enum CompileError {
         clip_id: String,
         reason: String,
     },
+    #[error("invalid group `{group_id}` in layer `{layer_id}`: {reason}")]
+    InvalidGroup {
+        layer_id: String,
+        group_id: String,
+        reason: String,
+    },
+    #[error("item tree exceeds max depth {max_depth} in layer `{layer_id}`")]
+    ItemTreeDepthExceeded { layer_id: String, max_depth: usize },
     #[error("source pipeline error: {0}")]
     Pipeline(#[from] PipelineError),
 }
@@ -45,6 +56,8 @@ pub struct CompiledTimeline {
     sources: HashMap<String, Source>,
     operations: Vec<CompiledOperation>,
     frame_index: Vec<Vec<usize>>,
+    layers: Vec<CompiledLayer>,
+    has_compositing_nodes: bool,
 }
 
 impl CompiledTimeline {
@@ -70,6 +83,42 @@ impl CompiledTimeline {
     pub fn sources(&self) -> impl Iterator<Item = &Source> {
         self.sources.values()
     }
+
+    pub fn layers(&self) -> &[CompiledLayer] {
+        self.layers.as_slice()
+    }
+
+    pub fn has_compositing_nodes(&self) -> bool {
+        self.has_compositing_nodes
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CompiledLayer {
+    pub id: String,
+    pub z_index: i32,
+    pub items: Vec<CompiledLayerItem>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CompiledLayerItem {
+    Clip(CompiledClipNode),
+    Group(CompiledGroupNode),
+}
+
+#[derive(Debug, Clone)]
+pub struct CompiledClipNode {
+    pub operation_index: usize,
+    pub mask: Option<Box<CompiledLayerItem>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompiledGroupNode {
+    pub id: String,
+    pub opacity: f32,
+    pub transform: GroupTransform,
+    pub items: Vec<CompiledLayerItem>,
+    pub mask: Option<Box<CompiledLayerItem>>,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +220,14 @@ pub struct CompiledScalarKeyframe {
     pub easing: Easing,
 }
 
+struct CompileContext<'a> {
+    total_frames: u64,
+    sources: &'a HashMap<String, Source>,
+    operations: Vec<CompiledOperation>,
+    has_compositing_nodes: bool,
+    max_depth: usize,
+}
+
 fn evaluate_scalar_track(base: f32, track: &[CompiledScalarKeyframe], local_frame: u64) -> f32 {
     let mut current = base;
 
@@ -216,24 +273,29 @@ pub fn compile_project(project: &Project) -> Result<CompiledTimeline, CompileErr
 
     let sources = index_sources(&project.sources)?;
 
-    let mut staged = Vec::new();
-    let mut sequence = 0usize;
+    let mut ordered_layers: Vec<(usize, &Layer)> = project.layers.iter().enumerate().collect();
+    ordered_layers.sort_by(|left, right| {
+        left.1
+            .z_index
+            .cmp(&right.1.z_index)
+            .then_with(|| left.0.cmp(&right.0))
+    });
 
-    for layer in &project.layers {
-        compile_layer(
-            layer,
-            project.timeline.total_frames,
-            &sources,
-            &mut staged,
-            &mut sequence,
-        )?;
+    let mut ctx = CompileContext {
+        total_frames: project.timeline.total_frames,
+        sources: &sources,
+        operations: Vec::new(),
+        has_compositing_nodes: false,
+        max_depth: MAX_ITEM_TREE_DEPTH,
+    };
+
+    let mut layers = Vec::with_capacity(ordered_layers.len());
+    for (_, layer) in ordered_layers {
+        layers.push(compile_layer(layer, &mut ctx)?);
     }
 
-    staged.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    let operations: Vec<CompiledOperation> = staged.into_iter().map(|(_, _, op)| op).collect();
-
     let mut frame_index = vec![Vec::new(); project.timeline.total_frames as usize];
-    for (index, operation) in operations.iter().enumerate() {
+    for (index, operation) in ctx.operations.iter().enumerate() {
         for frame in operation.start_frame..operation.end_frame.min(project.timeline.total_frames) {
             if let Some(slot) = frame_index.get_mut(frame as usize) {
                 slot.push(index);
@@ -241,12 +303,20 @@ pub fn compile_project(project: &Project) -> Result<CompiledTimeline, CompileErr
         }
     }
 
+    let CompileContext {
+        operations,
+        has_compositing_nodes,
+        ..
+    } = ctx;
+
     Ok(CompiledTimeline {
         canvas: project.canvas.clone(),
         timeline: project.timeline.clone(),
         sources,
         operations,
         frame_index,
+        layers,
+        has_compositing_nodes,
     })
 }
 
@@ -290,114 +360,201 @@ fn index_sources(sources: &[Source]) -> Result<HashMap<String, Source>, CompileE
     Ok(map)
 }
 
-fn compile_layer(
+fn compile_layer(layer: &Layer, ctx: &mut CompileContext<'_>) -> Result<CompiledLayer, CompileError> {
+    let mut items = Vec::with_capacity(layer.items.len());
+    for item in &layer.items {
+        items.push(compile_layer_item(layer, item, 1, ctx)?);
+    }
+
+    Ok(CompiledLayer {
+        id: layer.id.clone(),
+        z_index: layer.z_index,
+        items,
+    })
+}
+
+fn compile_layer_item(
     layer: &Layer,
-    total_frames: u64,
-    sources: &HashMap<String, Source>,
-    staged: &mut Vec<(i32, usize, CompiledOperation)>,
-    sequence: &mut usize,
-) -> Result<(), CompileError> {
-    for clip in &layer.clips {
-        if clip.duration_frames == 0 {
-            return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
-                clip_id: clip.id.clone(),
-                reason: "duration_frames must be greater than 0".to_string(),
-            });
-        }
-
-        if !clip.opacity.is_finite() || clip.opacity < 0.0 {
-            return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
-                clip_id: clip.id.clone(),
-                reason: "opacity must be a finite number >= 0".to_string(),
-            });
-        }
-
-        if !clip.transform.x.is_finite()
-            || !clip.transform.y.is_finite()
-            || !clip.transform.rotation_degrees.is_finite()
-        {
-            return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
-                clip_id: clip.id.clone(),
-                reason: "transform values must be finite".to_string(),
-            });
-        }
-
-        if let Some(width) = clip.transform.width {
-            if !width.is_finite() || width <= 0.0 {
-                return Err(CompileError::InvalidClip {
-                    layer_id: layer.id.clone(),
-                    clip_id: clip.id.clone(),
-                    reason: "transform width must be finite and greater than 0".to_string(),
-                });
-            }
-        }
-
-        if let Some(height) = clip.transform.height {
-            if !height.is_finite() || height <= 0.0 {
-                return Err(CompileError::InvalidClip {
-                    layer_id: layer.id.clone(),
-                    clip_id: clip.id.clone(),
-                    reason: "transform height must be finite and greater than 0".to_string(),
-                });
-            }
-        }
-
-        let end_frame = clip
-            .start_frame
-            .checked_add(clip.duration_frames)
-            .ok_or_else(|| CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
-                clip_id: clip.id.clone(),
-                reason: "frame range overflow".to_string(),
-            })?;
-
-        if end_frame > total_frames {
-            return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
-                clip_id: clip.id.clone(),
-                reason: format!("clip ends at frame {end_frame} beyond timeline {total_frames}"),
-            });
-        }
-
-        let animation = compile_clip_animation(layer, clip)?;
-        let kind = compile_clip_content(layer, clip, sources)?;
-
-        let operation = CompiledOperation {
-            id: clip.id.clone(),
+    item: &LayerItem,
+    depth: usize,
+    ctx: &mut CompileContext<'_>,
+) -> Result<CompiledLayerItem, CompileError> {
+    if depth > ctx.max_depth {
+        return Err(CompileError::ItemTreeDepthExceeded {
             layer_id: layer.id.clone(),
-            start_frame: clip.start_frame,
-            end_frame,
-            z_index: layer.z_index,
-            opacity: clip.opacity.clamp(0.0, 1.0),
-            transform: clip.transform,
-            animation,
-            kind,
-        };
+            max_depth: ctx.max_depth,
+        });
+    }
 
-        staged.push((layer.z_index, *sequence, operation));
-        *sequence = sequence.saturating_add(1);
+    match item {
+        LayerItem::Clip(clip) => {
+            let operation = compile_clip_operation(layer, clip, ctx)?;
+            let operation_index = ctx.operations.len();
+            ctx.operations.push(operation);
+
+            let mask = if let Some(mask) = clip.mask.as_deref() {
+                ctx.has_compositing_nodes = true;
+                Some(Box::new(compile_layer_item(layer, mask, depth + 1, ctx)?))
+            } else {
+                None
+            };
+
+            Ok(CompiledLayerItem::Clip(CompiledClipNode {
+                operation_index,
+                mask,
+            }))
+        }
+        LayerItem::Group(group) => {
+            validate_group(layer, group)?;
+            ctx.has_compositing_nodes = true;
+
+            let mut items = Vec::with_capacity(group.items.len());
+            for child in &group.items {
+                items.push(compile_layer_item(layer, child, depth + 1, ctx)?);
+            }
+
+            let mask = if let Some(mask) = group.mask.as_deref() {
+                Some(Box::new(compile_layer_item(layer, mask, depth + 1, ctx)?))
+            } else {
+                None
+            };
+
+            Ok(CompiledLayerItem::Group(CompiledGroupNode {
+                id: group.id.clone(),
+                opacity: group.opacity.clamp(0.0, 1.0),
+                transform: group.transform,
+                items,
+                mask,
+            }))
+        }
+    }
+}
+
+fn validate_group(layer: &Layer, group: &ClipGroup) -> Result<(), CompileError> {
+    if !group.opacity.is_finite() || group.opacity < 0.0 {
+        return Err(CompileError::InvalidGroup {
+            layer_id: layer.id.clone(),
+            group_id: group.id.clone(),
+            reason: "opacity must be a finite number >= 0".to_string(),
+        });
+    }
+
+    if !group.transform.x.is_finite()
+        || !group.transform.y.is_finite()
+        || !group.transform.rotation_degrees.is_finite()
+    {
+        return Err(CompileError::InvalidGroup {
+            layer_id: layer.id.clone(),
+            group_id: group.id.clone(),
+            reason: "transform values must be finite".to_string(),
+        });
     }
 
     Ok(())
 }
 
-fn compile_clip_animation(
+fn compile_clip_operation(
     layer: &Layer,
+    clip: &Clip,
+    ctx: &CompileContext<'_>,
+) -> Result<CompiledOperation, CompileError> {
+    if clip.duration_frames == 0 {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer.id.clone(),
+            clip_id: clip.id.clone(),
+            reason: "duration_frames must be greater than 0".to_string(),
+        });
+    }
+
+    if !clip.opacity.is_finite() || clip.opacity < 0.0 {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer.id.clone(),
+            clip_id: clip.id.clone(),
+            reason: "opacity must be a finite number >= 0".to_string(),
+        });
+    }
+
+    if !clip.transform.x.is_finite()
+        || !clip.transform.y.is_finite()
+        || !clip.transform.rotation_degrees.is_finite()
+    {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer.id.clone(),
+            clip_id: clip.id.clone(),
+            reason: "transform values must be finite".to_string(),
+        });
+    }
+
+    if let Some(width) = clip.transform.width {
+        if !width.is_finite() || width <= 0.0 {
+            return Err(CompileError::InvalidClip {
+                layer_id: layer.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: "transform width must be finite and greater than 0".to_string(),
+            });
+        }
+    }
+
+    if let Some(height) = clip.transform.height {
+        if !height.is_finite() || height <= 0.0 {
+            return Err(CompileError::InvalidClip {
+                layer_id: layer.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: "transform height must be finite and greater than 0".to_string(),
+            });
+        }
+    }
+
+    let end_frame = clip
+        .start_frame
+        .checked_add(clip.duration_frames)
+        .ok_or_else(|| CompileError::InvalidClip {
+            layer_id: layer.id.clone(),
+            clip_id: clip.id.clone(),
+            reason: "frame range overflow".to_string(),
+        })?;
+
+    if end_frame > ctx.total_frames {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer.id.clone(),
+            clip_id: clip.id.clone(),
+            reason: format!(
+                "clip ends at frame {end_frame} beyond timeline {}",
+                ctx.total_frames
+            ),
+        });
+    }
+
+    let animation = compile_clip_animation(layer.id.as_str(), clip)?;
+    let kind = compile_clip_content(layer.id.as_str(), clip, ctx.sources)?;
+
+    Ok(CompiledOperation {
+        id: clip.id.clone(),
+        layer_id: layer.id.clone(),
+        start_frame: clip.start_frame,
+        end_frame,
+        z_index: layer.z_index,
+        opacity: clip.opacity.clamp(0.0, 1.0),
+        transform: clip.transform,
+        animation,
+        kind,
+    })
+}
+
+fn compile_clip_animation(
+    layer_id: &str,
     clip: &crate::model::Clip,
 ) -> Result<CompiledClipAnimation, CompileError> {
     if clip.transform.width.is_none() && !clip.animation.width.is_empty() {
         return Err(CompileError::InvalidClip {
-            layer_id: layer.id.clone(),
+            layer_id: layer_id.to_string(),
             clip_id: clip.id.clone(),
             reason: "animation.width requires transform.width".to_string(),
         });
     }
     if clip.transform.height.is_none() && !clip.animation.height.is_empty() {
         return Err(CompileError::InvalidClip {
-            layer_id: layer.id.clone(),
+            layer_id: layer_id.to_string(),
             clip_id: clip.id.clone(),
             reason: "animation.height requires transform.height".to_string(),
         });
@@ -405,7 +562,7 @@ fn compile_clip_animation(
 
     if clip.transform.width.is_some() {
         validate_dimension_keyframes(
-            layer,
+            layer_id,
             clip,
             "animation.width",
             clip.animation.width.as_slice(),
@@ -413,7 +570,7 @@ fn compile_clip_animation(
     }
     if clip.transform.height.is_some() {
         validate_dimension_keyframes(
-            layer,
+            layer_id,
             clip,
             "animation.height",
             clip.animation.height.as_slice(),
@@ -422,27 +579,27 @@ fn compile_clip_animation(
 
     Ok(CompiledClipAnimation {
         opacity: compile_scalar_track(
-            layer,
+            layer_id,
             clip,
             "animation.opacity",
             clip.animation.opacity.as_slice(),
         )?,
-        x: compile_scalar_track(layer, clip, "animation.x", clip.animation.x.as_slice())?,
-        y: compile_scalar_track(layer, clip, "animation.y", clip.animation.y.as_slice())?,
+        x: compile_scalar_track(layer_id, clip, "animation.x", clip.animation.x.as_slice())?,
+        y: compile_scalar_track(layer_id, clip, "animation.y", clip.animation.y.as_slice())?,
         width: compile_scalar_track(
-            layer,
+            layer_id,
             clip,
             "animation.width",
             clip.animation.width.as_slice(),
         )?,
         height: compile_scalar_track(
-            layer,
+            layer_id,
             clip,
             "animation.height",
             clip.animation.height.as_slice(),
         )?,
         rotation_degrees: compile_scalar_track(
-            layer,
+            layer_id,
             clip,
             "animation.rotation_degrees",
             clip.animation.rotation_degrees.as_slice(),
@@ -451,7 +608,7 @@ fn compile_clip_animation(
 }
 
 fn validate_dimension_keyframes(
-    layer: &Layer,
+    layer_id: &str,
     clip: &crate::model::Clip,
     field: &str,
     keyframes: &[ScalarKeyframe],
@@ -459,7 +616,7 @@ fn validate_dimension_keyframes(
     for keyframe in keyframes {
         if !keyframe.value.is_finite() || keyframe.value <= 0.0 {
             return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
+                layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
                 reason: format!("{field} values must be finite and > 0"),
             });
@@ -469,7 +626,7 @@ fn validate_dimension_keyframes(
 }
 
 fn compile_scalar_track(
-    layer: &Layer,
+    layer_id: &str,
     clip: &crate::model::Clip,
     field: &str,
     keyframes: &[ScalarKeyframe],
@@ -483,14 +640,14 @@ fn compile_scalar_track(
     for (index, keyframe) in sorted.into_iter().enumerate() {
         if !keyframe.value.is_finite() {
             return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
+                layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
                 reason: format!("{field}[{index}] value must be finite"),
             });
         }
         if keyframe.frame >= clip.duration_frames {
             return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
+                layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
                 reason: format!(
                     "{field}[{index}] frame {} is out of clip range {}",
@@ -503,13 +660,13 @@ fn compile_scalar_track(
             .frame
             .checked_add(keyframe.duration_frames)
             .ok_or_else(|| CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
+                layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
                 reason: format!("{field}[{index}] frame range overflow"),
             })?;
         if end > clip.duration_frames {
             return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
+                layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
                 reason: format!(
                     "{field}[{index}] ends at {} beyond clip duration {}",
@@ -519,7 +676,7 @@ fn compile_scalar_track(
         }
         if index > 0 && keyframe.frame < previous_end {
             return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
+                layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
                 reason: format!("{field} keyframes overlap"),
             });
@@ -538,7 +695,7 @@ fn compile_scalar_track(
 }
 
 fn compile_clip_content(
-    layer: &Layer,
+    layer_id: &str,
     clip: &crate::model::Clip,
     sources: &HashMap<String, Source>,
 ) -> Result<CompiledOperationKind, CompileError> {
@@ -547,10 +704,16 @@ fn compile_clip_content(
         ClipContent::Shape(shape) => Ok(CompiledOperationKind::Shape(shape.clone())),
         ClipContent::Text(text) => Ok(CompiledOperationKind::Text(text.clone())),
         ClipContent::Image(image) => {
-            validate_source_type(layer, clip, sources, &image.source, SourceMediaType::Image)?;
+            validate_source_type(
+                layer_id,
+                clip.id.as_str(),
+                sources,
+                &image.source,
+                SourceMediaType::Image,
+            )?;
             if !image.corner_radius.is_finite() || image.corner_radius < 0.0 {
                 return Err(CompileError::InvalidClip {
-                    layer_id: layer.id.clone(),
+                    layer_id: layer_id.to_string(),
                     clip_id: clip.id.clone(),
                     reason: "image corner_radius must be finite and >= 0".to_string(),
                 });
@@ -562,17 +725,23 @@ fn compile_clip_content(
             }))
         }
         ClipContent::Video(video) => {
-            validate_source_type(layer, clip, sources, &video.source, SourceMediaType::Video)?;
+            validate_source_type(
+                layer_id,
+                clip.id.as_str(),
+                sources,
+                &video.source,
+                SourceMediaType::Video,
+            )?;
             if !video.corner_radius.is_finite() || video.corner_radius < 0.0 {
                 return Err(CompileError::InvalidClip {
-                    layer_id: layer.id.clone(),
+                    layer_id: layer_id.to_string(),
                     clip_id: clip.id.clone(),
                     reason: "video corner_radius must be finite and >= 0".to_string(),
                 });
             }
             let _ =
                 map_source_frame(&video.pipeline, 0).map_err(|err| CompileError::InvalidClip {
-                    layer_id: layer.id.clone(),
+                    layer_id: layer_id.to_string(),
                     clip_id: clip.id.clone(),
                     reason: err.to_string(),
                 })?;
@@ -588,8 +757,8 @@ fn compile_clip_content(
 }
 
 fn validate_source_type(
-    layer: &Layer,
-    clip: &crate::model::Clip,
+    layer_id: &str,
+    clip_id: &str,
     sources: &HashMap<String, Source>,
     source_id: &str,
     expected: SourceMediaType,
@@ -611,8 +780,8 @@ fn validate_source_type(
         if matches!(source.kind, crate::model::SourceKind::Generator { media, .. } if media == SourceMediaType::Audio)
         {
             return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
-                clip_id: clip.id.clone(),
+                layer_id: layer_id.to_string(),
+                clip_id: clip_id.to_string(),
                 reason: "video clip cannot use audio generator source".to_string(),
             });
         }
@@ -626,8 +795,9 @@ mod tests {
     use crate::{
         compile::{CompiledOperationKind, compile_project},
         model::{
-            Canvas, Clip, ClipAnimation, ClipContent, ColorRgba, Easing, Layer, Project,
-            ScalarKeyframe, Source, SourceKind, SourceMediaType, TextClip, Timeline, VideoClip,
+            Canvas, Clip, ClipAnimation, ClipContent, ColorRgba, Easing, Layer, LayerItem,
+            Project, ScalarKeyframe, Source, SourceKind, SourceMediaType, TextClip, Timeline,
+            VideoClip,
         },
         time::Rational,
     };
@@ -654,20 +824,21 @@ mod tests {
             layers: vec![Layer {
                 id: "layer_a".to_string(),
                 z_index: 1,
-                clips: vec![Clip {
+                items: vec![LayerItem::Clip(Clip {
                     id: "clip_a".to_string(),
                     start_frame: 0,
                     duration_frames: 30,
                     opacity: 1.0,
                     transform: Default::default(),
                     animation: Default::default(),
+                    mask: None,
                     content: ClipContent::Video(VideoClip {
                         source: "video_1".to_string(),
                         pipeline: Default::default(),
                         fit: Default::default(),
                         corner_radius: 0.0,
                     }),
-                }],
+                })],
             }],
             audio: Default::default(),
         };
@@ -703,20 +874,21 @@ mod tests {
             layers: vec![Layer {
                 id: "layer_a".to_string(),
                 z_index: 0,
-                clips: vec![Clip {
+                items: vec![LayerItem::Clip(Clip {
                     id: "clip_a".to_string(),
                     start_frame: 0,
                     duration_frames: 10,
                     opacity: 1.0,
                     transform: Default::default(),
                     animation: Default::default(),
+                    mask: None,
                     content: ClipContent::Video(VideoClip {
                         source: "image_1".to_string(),
                         pipeline: Default::default(),
                         fit: Default::default(),
                         corner_radius: 0.0,
                     }),
-                }],
+                })],
             }],
             audio: Default::default(),
         };
@@ -741,20 +913,21 @@ mod tests {
             layers: vec![Layer {
                 id: "layer_a".to_string(),
                 z_index: 0,
-                clips: vec![Clip {
+                items: vec![LayerItem::Clip(Clip {
                     id: "clip_a".to_string(),
                     start_frame: 8,
                     duration_frames: 4,
                     opacity: 1.0,
                     transform: Default::default(),
                     animation: Default::default(),
+                    mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
                         font_size: 20.0,
                         color: ColorRgba(255, 255, 255, 255),
                         align: Default::default(),
                     }),
-                }],
+                })],
             }],
             audio: Default::default(),
         };
@@ -779,7 +952,7 @@ mod tests {
             layers: vec![Layer {
                 id: "layer_a".to_string(),
                 z_index: 0,
-                clips: vec![Clip {
+                items: vec![LayerItem::Clip(Clip {
                     id: "clip_a".to_string(),
                     start_frame: 0,
                     duration_frames: 30,
@@ -794,13 +967,14 @@ mod tests {
                         }],
                         ..Default::default()
                     },
+                    mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
                         font_size: 20.0,
                         color: ColorRgba(255, 255, 255, 255),
                         align: Default::default(),
                     }),
-                }],
+                })],
             }],
             audio: Default::default(),
         };
@@ -829,7 +1003,7 @@ mod tests {
             layers: vec![Layer {
                 id: "layer_a".to_string(),
                 z_index: 0,
-                clips: vec![Clip {
+                items: vec![LayerItem::Clip(Clip {
                     id: "clip_a".to_string(),
                     start_frame: 0,
                     duration_frames: 20,
@@ -852,13 +1026,14 @@ mod tests {
                         ],
                         ..Default::default()
                     },
+                    mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
                         font_size: 20.0,
                         color: ColorRgba(255, 255, 255, 255),
                         align: Default::default(),
                     }),
-                }],
+                })],
             }],
             audio: Default::default(),
         };

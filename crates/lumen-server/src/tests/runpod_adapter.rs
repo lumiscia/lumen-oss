@@ -21,7 +21,8 @@ async fn runpod_adapter_returns_non_retryable_error_without_staging() {
                 "layers": [{
                     "id": "layer_text",
                     "z_index": 0,
-                    "clips": [{
+                    "items": [{
+                        "kind": "clip",
                         "id": "clip_text_1",
                         "start_frame": 0,
                         "duration_frames": 2,
