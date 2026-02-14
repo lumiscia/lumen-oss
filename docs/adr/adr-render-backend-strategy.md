@@ -1,4 +1,4 @@
-# ADR: Render Backend Strategy (Rust Orchestration + Vello/Skia)
+# ADR: Render Backend Strategy (Rust Orchestration + Skia, Vello Deprecated)
 
 - Status: Amended
 - Date: 2026-02-13
@@ -7,36 +7,37 @@
 
 ## Context
 
-Lumiscia currently renders on the server with Rust orchestration and a Vello GPU renderer.
-We need to evaluate a C++ Skia GPU renderer while preserving production safety, reproducibility,
-and a deterministic migration path.
+Lumiscia currently renders on the server with Rust orchestration and GPU backends.
+Skia has outperformed Vello for Lumiscia workloads in correctness, throughput, and operational
+reliability, so the strategy is now explicitly Skia-first with Vello deprecated.
 
 ## Decision
 
 1. Rust remains the orchestration layer for job control, timeline compilation, source pipeline
    mapping, decode/render/encode coordination, and FFmpeg process management.
 2. A C++ Skia GPU backend is introduced behind an incremental backend boundary.
-3. Vello stays as an existing backend for comparison, fallback, and production rollback.
+3. Vello is deprecated. It remains compileable for legacy compatibility only.
 4. Skia Graphite is the first production GPU target (Ganesh skipped; Graphite is production-ready
    as of Skia m138+).
 5. Feature flags (`renderer-vello` / `renderer-skia`) in `lumen-server` control backend selection.
+6. New compositing features (clip groups and alpha masks) ship only on Skia + CanvasKit preview.
 
 ## Platform GPU Targets
 
 - Linux production target order:
   - Primary: Skia Graphite on Vulkan
-  - Fallback: Vello backend
+  - Legacy only: Vello backend (deprecated, no new feature support)
 - macOS production target order:
   - Primary: Skia Graphite on Metal
-  - Fallback: Vello backend
+  - Legacy only: Vello backend (deprecated, no new feature support)
 
-If primary initialization fails or runtime error-rate thresholds are exceeded, rendering must
-fallback to the configured Vello path without changing timeline semantics.
+Skia is the default production path. Vello remains available only for controlled compatibility
+cases and does not receive new compositing semantics.
 
 ## Web Preview Backend
 
 A TypeScript CanvasKit renderer (`@lumiscia/canvas-renderer`) provides feature-equivalent browser
-preview rendering. It consumes the same `DrawOperation` structures and applies identical
+preview rendering. It consumes the same recursive `RenderNode` trees and applies identical
 layout/fit/compositing logic, with known approximations:
 
 - Text rendering is marked "approximate" (browser font stack differs from server Roboto).
@@ -64,7 +65,7 @@ Numbers are contract targets and can only be changed by a new ADR update.
 2. Introduce and enforce a backend boundary in Rust first.
 3. Keep FFmpeg process model unchanged through benchmark phases to isolate renderer effects.
 4. Do not compare backends with different scenes, codecs, hardware classes, or harness logic.
-5. Do not remove Vello until Skia meets correctness and reliability gates for burn-in.
+5. Keep Vello compileable while migration remains in flight, but do not add feature work there.
 
 ## Rollout Policy
 
@@ -72,7 +73,7 @@ Numbers are contract targets and can only be changed by a new ADR update.
 2. Production rollout must use backend feature flags and canary cohorts.
 3. Rollback thresholds (error-rate, timeout-rate, throughput degradation) must be defined before
    canary starts.
-4. Vello remains runnable during the full Skia burn-in period.
+4. Vello remains a deprecated compatibility option and is not part of the default rollout path.
 
 ## Consequences
 
@@ -100,3 +101,9 @@ This ADR is complete when:
 - Platform targets updated: Graphite on Vulkan (Linux) / Metal (macOS).
 - New section: "Web Preview Backend" documenting CanvasKit + MediaProvider role.
 - `lumen-wasm` removed from workspace; replaced by `@lumiscia/canvas-renderer`.
+
+### 2026-02-14: Skia-first default, Vello deprecation
+
+- Decision point 3 amended: Vello is explicitly deprecated.
+- Skia is the preferred renderer across quality, performance, and reliability for Lumiscia.
+- New mask/group compositing work is Skia + CanvasKit only; Vello receives no new feature support.

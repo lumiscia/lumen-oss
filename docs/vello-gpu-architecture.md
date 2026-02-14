@@ -1,4 +1,11 @@
-# Lumen V0 GPU Architecture (Vello + FFmpeg)
+# Lumen V0 GPU Architecture (Vello + FFmpeg, Deprecated)
+
+## Deprecation Status
+
+Vello is deprecated in Lumiscia. Skia is the preferred renderer and is better across our
+production metrics (visual correctness, throughput, and operational reliability). This document is
+kept for historical context and legacy compatibility only.
+New compositing features (clip groups and alpha masks) are not implemented on the Vello path.
 
 ## Inputs From Vello Source
 This design follows the render path used in Vello's own code and examples:
@@ -71,11 +78,10 @@ No API compatibility with the old track schema is preserved.
 
 ## Crates
 - `lumen-server`: FFmpeg backend + job orchestration.
-- `lumen-wasm`: backend-agnostic compile/runtime API (future WebCodecs backend).
+- `@lumiscia/canvas-renderer`: CanvasKit preview renderer aligned with Skia semantics.
 
 ## Performance Principles
 - Reuse GPU resources per job.
 - Keep source decode sequential when possible for cache locality.
 - Avoid per-request renderer init.
 - Keep queues bounded and backpressured.
-
