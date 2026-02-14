@@ -389,7 +389,7 @@ fn count_layer_item_nodes(item: &LayerItem) -> usize {
                 .as_deref()
                 .map(count_layer_item_nodes)
                 .unwrap_or(0);
-            child_count + mask_count
+            1 + child_count + mask_count
         }
     }
 }
