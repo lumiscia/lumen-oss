@@ -57,7 +57,7 @@ async fn runpod_adapter_returns_non_retryable_error_without_staging() {
 }
 
 #[tokio::test]
-async fn runpod_adapter_rejects_unknown_preset_kind() {
+async fn runpod_adapter_rejects_non_project_payload() {
     let request: RunpodJobRequest = serde_json::from_value(json!({
         "input": {
             "job_id": "job_bad_preset",

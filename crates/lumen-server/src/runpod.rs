@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
+use lumen::Project;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::executor::{RenderExecutionError, RenderExecutionOptions, execute_render};
-use crate::preset::project_from_payload;
 
 #[derive(Debug, Deserialize)]
 pub struct RunpodJobRequest {
@@ -84,8 +84,8 @@ pub async fn handle_runpod_request(request: RunpodJobRequest) -> RunpodJobRespon
 async fn execute_request(
     request: RunpodJobRequest,
 ) -> Result<RunpodJobResponse, RunpodRenderError> {
-    let project =
-        project_from_payload(&request.input.project).map_err(|err| RunpodRenderError {
+    let project: Project =
+        serde_json::from_value(request.input.project.clone()).map_err(|err| RunpodRenderError {
             code: "invalid_project_payload".to_string(),
             message: sanitize_error_message(&err.to_string()),
             retryable: false,

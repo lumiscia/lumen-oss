@@ -4,7 +4,6 @@ pub mod endpoint;
 pub mod executor;
 pub mod jobs;
 pub mod middleware;
-pub mod preset;
 pub mod preview_cache;
 pub mod runpod;
 pub mod server;
