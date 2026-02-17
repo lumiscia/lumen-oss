@@ -1,13 +1,21 @@
 mod renders;
 
 use axum::{
-    Router, middleware,
+    Router,
+    http::{Method, header},
+    middleware,
     routing::{get, post},
 };
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::{app_state::AppState, middleware::authorization};
 
 pub fn build_router(state: AppState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
+
     Router::new()
         .route("/renders", get(renders::list_renders))
         .route("/renders", post(renders::create_render))
@@ -27,5 +35,6 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             authorization::require_bearer,
         ))
+        .layer(cors)
         .with_state(state)
 }
