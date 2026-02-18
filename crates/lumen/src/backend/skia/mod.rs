@@ -838,6 +838,23 @@ fn draw_image(
     };
 
     let rect = layout_rect(transform, image.width as f64, image.height as f64, fit);
+    let dst_rect = Rect::from_xywh(
+        rect.x as f32,
+        rect.y as f32,
+        rect.width as f32,
+        rect.height as f32,
+    );
+
+    let mut paint = Paint::default();
+    paint.set_alpha_f(opacity);
+    paint.set_blend_mode(blend_mode);
+
+    // Fast path: the common case (video/image layers) doesn't need a local
+    // canvas transform or clip stack.
+    if transform.rotation_degrees == 0.0 && corner_radius <= 0.0 {
+        canvas.draw_image_rect(&sk_image, None, dst_rect, &paint);
+        return;
+    }
 
     let scale_x = rect.width as f32 / image.width as f32;
     let scale_y = rect.height as f32 / image.height as f32;
@@ -866,10 +883,6 @@ fn draw_image(
         );
         canvas.clip_rrect(clip, None, Some(true));
     }
-
-    let mut paint = Paint::default();
-    paint.set_alpha_f(opacity);
-    paint.set_blend_mode(blend_mode);
 
     canvas.draw_image(&sk_image, Point::new(0.0, 0.0), Some(&paint));
     canvas.restore();
