@@ -61,7 +61,7 @@ impl RenderPass {
     fn blend_mode(self) -> BlendMode {
         match self {
             Self::Content => BlendMode::SrcOver,
-            Self::Mask => BlendMode::DstIn,
+            Self::Mask => BlendMode::SrcOver,
         }
     }
 }
@@ -170,8 +170,7 @@ impl SkiaRenderer {
 
         let mut drew_output = drew_content;
         if let Some(mask) = clip.mask.as_deref() {
-            let drew_mask =
-                self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
+            let drew_mask = self.render_mask_layer(timeline, mask, frame, provider)?;
             if !drew_mask {
                 clear_current_layer(self.surface.canvas());
                 drew_output = false;
@@ -215,8 +214,7 @@ impl SkiaRenderer {
 
         let mut drew_output = drew_any;
         if let Some(mask) = group.mask.as_deref() {
-            let drew_mask =
-                self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
+            let drew_mask = self.render_mask_layer(timeline, mask, frame, provider)?;
             if !drew_mask {
                 clear_current_layer(self.surface.canvas());
                 drew_output = false;
@@ -227,6 +225,27 @@ impl SkiaRenderer {
         self.surface.canvas().restore();
 
         Ok(drew_output)
+    }
+
+    fn render_mask_layer(
+        &mut self,
+        timeline: &CompiledTimeline,
+        mask: &CompiledLayerItem,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+    ) -> Result<bool, RenderError> {
+        let mut paint = Paint::default();
+        paint.set_blend_mode(BlendMode::DstIn);
+
+        self.surface
+            .canvas()
+            .save_layer(&SaveLayerRec::default().paint(&paint));
+
+        let drew_mask =
+            self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
+        self.surface.canvas().restore();
+
+        Ok(drew_mask)
     }
 
     fn draw_operation(
