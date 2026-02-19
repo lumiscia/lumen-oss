@@ -33,14 +33,14 @@ Skia is the only production path.
 
 ## Web Preview Backend
 
-A TypeScript CanvasKit renderer (`@lumiscia/canvas-renderer`) provides feature-equivalent browser
-preview rendering. It consumes the same recursive `RenderNode` trees and applies identical
-layout/fit/compositing logic, with known approximations:
+A WASM-backed renderer (`@lumiscia/canvas-renderer` + `lumen-wasm`) provides feature-equivalent
+browser preview rendering. It runs the Rust Skia backend compiled for `wasm32-unknown-emscripten`,
+and uses Mediabunny (WebCodecs) for client-side media decoding, with known approximations:
 
 - Text rendering is marked "approximate" (browser font stack differs from server Roboto).
 - Dropped video frames fall back to last-good-frame with an "approximate" badge.
 
-The CanvasKit renderer replaces the previous `lumen-wasm` WASM runtime approach.
+The WASM renderer replaces the previous CanvasKit preview approach.
 
 ## Success Criteria
 
@@ -109,3 +109,8 @@ This ADR is complete when:
 - Decision point 3 amended again: Vello backend removed from runtime code.
 - `renderer-vello` feature removed from `lumen` and `lumen-server`.
 - Skia is now the only renderer backend path.
+
+### 2026-02-19: WASM preview renderer reintroduced
+
+- Web preview now runs the Rust Skia backend via `lumen-wasm` (emscripten).
+- `@lumiscia/canvas-renderer` wraps the WASM module and Mediabunny (WebCodecs) media decode.

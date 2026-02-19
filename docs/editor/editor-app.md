@@ -9,7 +9,7 @@ This app is **not** deployed to Cloudflare and should run locally only.
 
 ## Goals
 - Run a local dev editor UI for all styles.
-- Preview frames with CanvasKit via `@lumiscia/canvas-renderer`.
+- Preview frames with lumen-wasm via `@lumiscia/canvas-renderer`.
 - Submit render jobs to the Rust renderer API.
 - Keep configuration explicit via `.env`.
 
@@ -41,8 +41,8 @@ Add an `apps/editor/.env.example` with these keys.
 ### Preview flow
 1. User edits a preset via `@lumiscia/editor` UI.
 2. Convert preset → `Project` using the editor package.
-3. Build render layers for preview (Project → RenderLayer adapter).
-4. Render a single frame via `LumenPreviewRenderer.renderFrame()`.
+3. Load the project into `LumenPreviewRenderer` and query frame requirements.
+4. Decode required media with Mediabunny (WebCodecs) and render frames in WASM.
 5. Surface approximation badges per `docs/preview-parity-matrix.md`.
 
 ### Render flow (video generation)
