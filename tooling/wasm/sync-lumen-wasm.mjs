@@ -3,7 +3,7 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const targetRoot = resolve(rootDir, 'crates/lumen-wasm/target/wasm32-unknown-emscripten')
+const targetRoot = resolve(rootDir, 'target/wasm32-unknown-emscripten')
 const buildDirs = ['release', 'debug']
 const artifacts = ['lumen_wasm.js', 'lumen_wasm.wasm']
 
@@ -13,7 +13,7 @@ const sourceDir = buildDirs
 
 if (!sourceDir) {
 	console.warn(
-		'[lumen-wasm] Missing wasm artifacts. Run `pnpm wasm:build` or `cargo build -p lumen-wasm --target wasm32-unknown-emscripten --release` first.',
+		'[lumen-wasm] Missing wasm artifacts. Run `pnpm wasm:build` to generate lumen_wasm.js and lumen_wasm.wasm.',
 	)
 	process.exit(0)
 }
