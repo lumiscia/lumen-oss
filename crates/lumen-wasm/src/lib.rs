@@ -6,7 +6,7 @@ use std::{
 use lumen::{
     backend::{FrameImage, FrameProvider, ProviderError},
     compile::{CompiledOperationKind, CompiledTimeline, compile_project_with_scale},
-    model::Project,
+    model::{LayoutNode, LayoutNodeKind, Project},
 };
 use serde::Serialize;
 
@@ -90,6 +90,9 @@ fn collect_frame_requirements(
             CompiledOperationKind::Image(image) => {
                 images.insert(image.source_id.clone());
             }
+            CompiledOperationKind::Layout(layout) => {
+                collect_layout_image_requirements(&layout.root, &mut images);
+            }
             CompiledOperationKind::Video(video) => {
                 let source_frame = operation
                     .resolve_video_source_frame(frame)
@@ -119,6 +122,20 @@ fn collect_frame_requirements(
     videos.sort_by(|left, right| left.source_id.cmp(&right.source_id));
 
     Ok(FrameRequirementsPayload { images, videos })
+}
+
+fn collect_layout_image_requirements(node: &LayoutNode, images: &mut HashSet<String>) {
+    match &node.kind {
+        LayoutNodeKind::Container { children } => {
+            for child in children {
+                collect_layout_image_requirements(child, images);
+            }
+        }
+        LayoutNodeKind::Text(_) => {}
+        LayoutNodeKind::Image(image) => {
+            images.insert(image.source.clone());
+        }
+    }
 }
 
 unsafe fn read_bytes(ptr: *const u8, len: usize) -> Result<Vec<u8>, String> {

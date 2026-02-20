@@ -5,8 +5,9 @@ use thiserror::Error;
 use crate::{
     model::{
         Canvas, Clip, ClipContent, ClipGroup, Easing, FitMode, GroupTransform, Layer, LayerItem,
-        Project, ScalarKeyframe, Shape, ShapeClip, Source, SourceMediaType, SourcePipeline, TextClip,
-        Timeline, Transform,
+        LayoutClip, LayoutEdges, LayoutImageNode, LayoutNode, LayoutNodeKind, LayoutNodeStyle,
+        LayoutTextNode, Project, ScalarKeyframe, Shape, ShapeClip, Source, SourceMediaType,
+        SourcePipeline, TextClip, Timeline, Transform,
     },
     source_pipeline::{PipelineError, map_source_frame},
 };
@@ -185,6 +186,7 @@ pub enum CompiledOperationKind {
     Text(TextClip),
     Image(ImageSourceRef),
     Video(VideoSourceRef),
+    Layout(LayoutClip),
 }
 
 #[derive(Debug, Clone)]
@@ -275,7 +277,7 @@ pub fn compile_project(project: &Project) -> Result<CompiledTimeline, CompileErr
 pub fn compile_project_with_scale(
     project: &Project,
     scale: f32,
- ) -> Result<CompiledTimeline, CompileError> {
+) -> Result<CompiledTimeline, CompileError> {
     let scale = resolve_scale(scale)?;
     validate_canvas(&project.canvas, scale)?;
     validate_timeline(&project.timeline)?;
@@ -617,7 +619,7 @@ fn compile_clip_animation(
     layer_id: &str,
     clip: &crate::model::Clip,
     scale: f32,
- ) -> Result<CompiledClipAnimation, CompileError> {
+) -> Result<CompiledClipAnimation, CompileError> {
     if clip.transform.width.is_none() && !clip.animation.width.is_empty() {
         return Err(CompileError::InvalidClip {
             layer_id: layer_id.to_string(),
@@ -720,7 +722,7 @@ fn compile_scalar_track(
     field: &str,
     keyframes: &[ScalarKeyframe],
     scale: f32,
- ) -> Result<Vec<CompiledScalarKeyframe>, CompileError> {
+) -> Result<Vec<CompiledScalarKeyframe>, CompileError> {
     let mut sorted = keyframes.to_vec();
     sorted.sort_by_key(|keyframe| keyframe.frame);
 
@@ -789,7 +791,7 @@ fn compile_clip_content(
     clip: &crate::model::Clip,
     sources: &HashMap<String, Source>,
     scale: f32,
- ) -> Result<CompiledOperationKind, CompileError> {
+) -> Result<CompiledOperationKind, CompileError> {
     match &clip.content {
         ClipContent::Solid { color } => Ok(CompiledOperationKind::Solid { color: *color }),
         ClipContent::Shape(shape) => {
@@ -854,7 +856,347 @@ fn compile_clip_content(
                 corner_radius: video.corner_radius * scale,
             }))
         }
+        ClipContent::Layout(layout) => {
+            if clip.transform.width.is_none() || clip.transform.height.is_none() {
+                return Err(CompileError::InvalidClip {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip.id.clone(),
+                    reason: "layout clips require transform.width and transform.height".to_string(),
+                });
+            }
+            let compiled_layout =
+                compile_layout_clip(layer_id, clip.id.as_str(), layout, sources, scale)?;
+            Ok(CompiledOperationKind::Layout(compiled_layout))
+        }
     }
+}
+
+fn compile_layout_clip(
+    layer_id: &str,
+    clip_id: &str,
+    layout: &LayoutClip,
+    sources: &HashMap<String, Source>,
+    scale: f32,
+) -> Result<LayoutClip, CompileError> {
+    Ok(LayoutClip {
+        root: compile_layout_node(
+            layer_id,
+            clip_id,
+            "root".to_string(),
+            &layout.root,
+            sources,
+            scale,
+        )?,
+    })
+}
+
+fn compile_layout_node(
+    layer_id: &str,
+    clip_id: &str,
+    node_path: String,
+    node: &LayoutNode,
+    sources: &HashMap<String, Source>,
+    scale: f32,
+) -> Result<LayoutNode, CompileError> {
+    let style = compile_layout_style(layer_id, clip_id, node_path.as_str(), &node.style, scale)?;
+
+    let kind = match &node.kind {
+        LayoutNodeKind::Container { children } => {
+            let mut compiled_children = Vec::with_capacity(children.len());
+            for (index, child) in children.iter().enumerate() {
+                compiled_children.push(compile_layout_node(
+                    layer_id,
+                    clip_id,
+                    format!("{node_path}.children[{index}]"),
+                    child,
+                    sources,
+                    scale,
+                )?);
+            }
+            LayoutNodeKind::Container {
+                children: compiled_children,
+            }
+        }
+        LayoutNodeKind::Text(text) => LayoutNodeKind::Text(compile_layout_text_node(
+            layer_id,
+            clip_id,
+            node_path.as_str(),
+            text,
+            scale,
+        )?),
+        LayoutNodeKind::Image(image) => LayoutNodeKind::Image(compile_layout_image_node(
+            layer_id,
+            clip_id,
+            node_path.as_str(),
+            image,
+            sources,
+            scale,
+        )?),
+    };
+
+    Ok(LayoutNode { style, kind })
+}
+
+fn compile_layout_text_node(
+    layer_id: &str,
+    clip_id: &str,
+    node_path: &str,
+    text: &LayoutTextNode,
+    scale: f32,
+) -> Result<LayoutTextNode, CompileError> {
+    if !text.font_size.is_finite() || text.font_size <= 0.0 {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer_id.to_string(),
+            clip_id: clip_id.to_string(),
+            reason: format!("{node_path}.font_size must be finite and > 0"),
+        });
+    }
+
+    if let Some(line_height) = text.line_height
+        && (!line_height.is_finite() || line_height <= 0.0)
+    {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer_id.to_string(),
+            clip_id: clip_id.to_string(),
+            reason: format!("{node_path}.line_height must be finite and > 0"),
+        });
+    }
+
+    Ok(LayoutTextNode {
+        text: text.text.clone(),
+        font_size: (text.font_size * scale).max(1.0),
+        color: text.color,
+        align: text.align,
+        line_height: text.line_height.map(|value| value * scale),
+    })
+}
+
+fn compile_layout_image_node(
+    layer_id: &str,
+    clip_id: &str,
+    node_path: &str,
+    image: &LayoutImageNode,
+    sources: &HashMap<String, Source>,
+    scale: f32,
+) -> Result<LayoutImageNode, CompileError> {
+    validate_source_type(
+        layer_id,
+        clip_id,
+        sources,
+        image.source.as_str(),
+        SourceMediaType::Image,
+    )?;
+    if !image.corner_radius.is_finite() || image.corner_radius < 0.0 {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer_id.to_string(),
+            clip_id: clip_id.to_string(),
+            reason: format!("{node_path}.corner_radius must be finite and >= 0"),
+        });
+    }
+
+    Ok(LayoutImageNode {
+        source: image.source.clone(),
+        fit: image.fit,
+        corner_radius: image.corner_radius * scale,
+    })
+}
+
+fn compile_layout_style(
+    layer_id: &str,
+    clip_id: &str,
+    node_path: &str,
+    style: &LayoutNodeStyle,
+    scale: f32,
+) -> Result<LayoutNodeStyle, CompileError> {
+    if !style.flex_grow.is_finite() || style.flex_grow < 0.0 {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer_id.to_string(),
+            clip_id: clip_id.to_string(),
+            reason: format!("{node_path}.style.flex_grow must be finite and >= 0"),
+        });
+    }
+    if !style.flex_shrink.is_finite() || style.flex_shrink < 0.0 {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer_id.to_string(),
+            clip_id: clip_id.to_string(),
+            reason: format!("{node_path}.style.flex_shrink must be finite and >= 0"),
+        });
+    }
+    if !style.gap.is_finite() || style.gap < 0.0 {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer_id.to_string(),
+            clip_id: clip_id.to_string(),
+            reason: format!("{node_path}.style.gap must be finite and >= 0"),
+        });
+    }
+    if !style.corner_radius.is_finite() || style.corner_radius < 0.0 {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer_id.to_string(),
+            clip_id: clip_id.to_string(),
+            reason: format!("{node_path}.style.corner_radius must be finite and >= 0"),
+        });
+    }
+
+    let width = compile_optional_layout_dimension(
+        layer_id,
+        clip_id,
+        node_path,
+        "style.width",
+        style.width,
+        scale,
+    )?;
+    let height = compile_optional_layout_dimension(
+        layer_id,
+        clip_id,
+        node_path,
+        "style.height",
+        style.height,
+        scale,
+    )?;
+    let min_width = compile_optional_layout_dimension(
+        layer_id,
+        clip_id,
+        node_path,
+        "style.min_width",
+        style.min_width,
+        scale,
+    )?;
+    let min_height = compile_optional_layout_dimension(
+        layer_id,
+        clip_id,
+        node_path,
+        "style.min_height",
+        style.min_height,
+        scale,
+    )?;
+    let max_width = compile_optional_layout_dimension(
+        layer_id,
+        clip_id,
+        node_path,
+        "style.max_width",
+        style.max_width,
+        scale,
+    )?;
+    let max_height = compile_optional_layout_dimension(
+        layer_id,
+        clip_id,
+        node_path,
+        "style.max_height",
+        style.max_height,
+        scale,
+    )?;
+
+    let padding = compile_layout_edges(
+        layer_id,
+        clip_id,
+        node_path,
+        "style.padding",
+        style.padding,
+        scale,
+    )?;
+    let margin = compile_layout_edges(
+        layer_id,
+        clip_id,
+        node_path,
+        "style.margin",
+        style.margin,
+        scale,
+    )?;
+
+    Ok(LayoutNodeStyle {
+        display: style.display,
+        flex_direction: style.flex_direction,
+        justify_content: style.justify_content,
+        align_items: style.align_items,
+        align_self: style.align_self,
+        flex_grow: style.flex_grow,
+        flex_shrink: style.flex_shrink,
+        width,
+        height,
+        min_width,
+        min_height,
+        max_width,
+        max_height,
+        padding,
+        margin,
+        gap: style.gap * scale,
+        background: style.background,
+        corner_radius: style.corner_radius * scale,
+    })
+}
+
+fn compile_optional_layout_dimension(
+    layer_id: &str,
+    clip_id: &str,
+    node_path: &str,
+    field: &str,
+    value: Option<f32>,
+    scale: f32,
+) -> Result<Option<f32>, CompileError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if !value.is_finite() || value < 0.0 {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer_id.to_string(),
+            clip_id: clip_id.to_string(),
+            reason: format!("{node_path}.{field} must be finite and >= 0"),
+        });
+    }
+    Ok(Some(value * scale))
+}
+
+fn compile_layout_edges(
+    layer_id: &str,
+    clip_id: &str,
+    node_path: &str,
+    field: &str,
+    edges: LayoutEdges,
+    scale: f32,
+) -> Result<LayoutEdges, CompileError> {
+    Ok(LayoutEdges {
+        top: compile_layout_edge(layer_id, clip_id, node_path, field, "top", edges.top, scale)?,
+        right: compile_layout_edge(
+            layer_id,
+            clip_id,
+            node_path,
+            field,
+            "right",
+            edges.right,
+            scale,
+        )?,
+        bottom: compile_layout_edge(
+            layer_id,
+            clip_id,
+            node_path,
+            field,
+            "bottom",
+            edges.bottom,
+            scale,
+        )?,
+        left: compile_layout_edge(
+            layer_id, clip_id, node_path, field, "left", edges.left, scale,
+        )?,
+    })
+}
+
+fn compile_layout_edge(
+    layer_id: &str,
+    clip_id: &str,
+    node_path: &str,
+    field: &str,
+    edge_name: &str,
+    value: f32,
+    scale: f32,
+) -> Result<f32, CompileError> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer_id.to_string(),
+            clip_id: clip_id.to_string(),
+            reason: format!("{node_path}.{field}.{edge_name} must be finite and >= 0"),
+        });
+    }
+    Ok(value * scale)
 }
 
 fn validate_source_type(
