@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::expr::Scalar;
 
 use crate::time::Rational;
 
@@ -131,12 +132,12 @@ pub struct ClipGroup {
     pub mask: Option<Box<LayerItem>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupTransform {
     #[serde(default)]
-    pub x: f32,
+    pub x: Scalar,
     #[serde(default)]
-    pub y: f32,
+    pub y: Scalar,
     #[serde(default)]
     pub rotation_degrees: f32,
 }
@@ -144,8 +145,8 @@ pub struct GroupTransform {
 impl Default for GroupTransform {
     fn default() -> Self {
         Self {
-            x: 0.0,
-            y: 0.0,
+            x: Scalar::Literal(0.0),
+            y: Scalar::Literal(0.0),
             rotation_degrees: 0.0,
         }
     }
@@ -187,16 +188,16 @@ pub enum Easing {
     EaseInOut,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
     #[serde(default)]
-    pub x: f32,
+    pub x: Scalar,
     #[serde(default)]
-    pub y: f32,
+    pub y: Scalar,
     #[serde(default)]
-    pub width: Option<f32>,
+    pub width: Option<Scalar>,
     #[serde(default)]
-    pub height: Option<f32>,
+    pub height: Option<Scalar>,
     #[serde(default)]
     pub rotation_degrees: f32,
 }
@@ -204,8 +205,8 @@ pub struct Transform {
 impl Default for Transform {
     fn default() -> Self {
         Self {
-            x: 0.0,
-            y: 0.0,
+            x: Scalar::Literal(0.0),
+            y: Scalar::Literal(0.0),
             width: None,
             height: None,
             rotation_degrees: 0.0,
@@ -271,6 +272,8 @@ pub struct LayoutClip {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutNode {
+    #[serde(default)]
+    pub id: Option<String>,
     #[serde(default)]
     pub style: LayoutNodeStyle,
     #[serde(flatten)]
@@ -350,17 +353,17 @@ pub struct LayoutNodeStyle {
     #[serde(default = "default_flex_shrink")]
     pub flex_shrink: f32,
     #[serde(default)]
-    pub width: Option<f32>,
+    pub width: Option<Scalar>,
     #[serde(default)]
-    pub height: Option<f32>,
+    pub height: Option<Scalar>,
     #[serde(default)]
-    pub min_width: Option<f32>,
+    pub min_width: Option<Scalar>,
     #[serde(default)]
-    pub min_height: Option<f32>,
+    pub min_height: Option<Scalar>,
     #[serde(default)]
-    pub max_width: Option<f32>,
+    pub max_width: Option<Scalar>,
     #[serde(default)]
-    pub max_height: Option<f32>,
+    pub max_height: Option<Scalar>,
     #[serde(default)]
     pub padding: LayoutEdges,
     #[serde(default)]
