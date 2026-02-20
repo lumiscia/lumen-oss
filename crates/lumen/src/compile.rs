@@ -86,6 +86,7 @@ pub struct CompiledTimeline {
     frame_index: Vec<Vec<usize>>,
     layers: Vec<CompiledLayer>,
     has_compositing_nodes: bool,
+    clip_index: ClipPropertyIndex,
 }
 
 impl CompiledTimeline {
@@ -118,6 +119,10 @@ impl CompiledTimeline {
 
     pub fn has_compositing_nodes(&self) -> bool {
         self.has_compositing_nodes
+    }
+
+    pub(crate) fn clip_index(&self) -> &ClipPropertyIndex {
+        &self.clip_index
     }
 }
 
@@ -172,25 +177,38 @@ impl CompiledOperation {
     }
 
     pub fn resolved_opacity(&self, frame: u64) -> f32 {
+        self.resolved_opacity_with_ctx(frame, &EmptyExprCtx)
+    }
+
+    pub fn resolved_opacity_with_ctx(&self, frame: u64, expr_ctx: &dyn ExprEvalCtx) -> f32 {
         let local = self.local_frame(frame);
-        evaluate_scalar_track(self.opacity, &self.animation.opacity, local).clamp(0.0, 1.0)
+        evaluate_scalar_track(self.opacity, &self.animation.opacity, local, expr_ctx).clamp(0.0, 1.0)
     }
 
     pub fn resolved_transform(&self, frame: u64) -> CompiledTransform {
+        self.resolved_transform_with_ctx(frame, &EmptyExprCtx)
+    }
+
+    pub fn resolved_transform_with_ctx(
+        &self,
+        frame: u64,
+        expr_ctx: &dyn ExprEvalCtx,
+    ) -> CompiledTransform {
         let local = self.local_frame(frame);
         let mut transform = self.transform;
-        transform.x = evaluate_scalar_track(transform.x, &self.animation.x, local);
-        transform.y = evaluate_scalar_track(transform.y, &self.animation.y, local);
+        transform.x = evaluate_scalar_track(transform.x, &self.animation.x, local, expr_ctx);
+        transform.y = evaluate_scalar_track(transform.y, &self.animation.y, local, expr_ctx);
         transform.rotation_degrees = evaluate_scalar_track(
             transform.rotation_degrees,
             &self.animation.rotation_degrees,
             local,
+            expr_ctx,
         );
         if let Some(width) = transform.width {
-            transform.width = Some(evaluate_scalar_track(width, &self.animation.width, local));
+            transform.width = Some(evaluate_scalar_track(width, &self.animation.width, local, expr_ctx));
         }
         if let Some(height) = transform.height {
-            transform.height = Some(evaluate_scalar_track(height, &self.animation.height, local));
+            transform.height = Some(evaluate_scalar_track(height, &self.animation.height, local, expr_ctx));
         }
         transform
     }
@@ -241,10 +259,16 @@ pub struct CompiledClipAnimation {
     pub rotation_degrees: Vec<CompiledScalarKeyframe>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
+pub enum CompiledScalarValue {
+    Literal(f32),
+    DeferredExpr { parsed: ParsedExpr },
+}
+
+#[derive(Debug, Clone)]
 pub struct CompiledScalarKeyframe {
     pub frame: u64,
-    pub value: f32,
+    pub value: CompiledScalarValue,
     pub duration_frames: u64,
     pub easing: Easing,
 }
@@ -259,11 +283,13 @@ struct CompileContext<'a> {
     max_depth: usize,
     scale: f32,
     clip_index: &'a ClipPropertyIndex,
+    layout_node_ids: &'a HashSet<String>,
 }
 
 // ── Clip property index ────────────────────────────────────────────────────────
 
-struct ClipPropertyIndex {
+#[derive(Debug, Clone)]
+pub(crate) struct ClipPropertyIndex {
     canvas_width: f32,
     canvas_height: f32,
     clips: HashMap<String, CompiledTransform>,
@@ -435,6 +461,37 @@ fn collect_layer_item_transforms(
     }
 }
 
+fn collect_project_layout_node_ids(project: &Project) -> HashSet<String> {
+    let mut node_ids: HashSet<String> = HashSet::new();
+    for layer in &project.layers {
+        for item in &layer.items {
+            collect_layer_item_node_ids(item, &mut node_ids);
+        }
+    }
+    node_ids
+}
+
+fn collect_layer_item_node_ids(item: &LayerItem, node_ids: &mut HashSet<String>) {
+    match item {
+        LayerItem::Clip(clip) => {
+            if let ClipContent::Layout(layout) = &clip.content {
+                node_ids.extend(collect_layout_node_ids(&layout.root));
+            }
+            if let Some(mask) = clip.mask.as_deref() {
+                collect_layer_item_node_ids(mask, node_ids);
+            }
+        }
+        LayerItem::Group(group) => {
+            for child in &group.items {
+                collect_layer_item_node_ids(child, node_ids);
+            }
+            if let Some(mask) = group.mask.as_deref() {
+                collect_layer_item_node_ids(mask, node_ids);
+            }
+        }
+    }
+}
+
 fn build_clip_property_index(project: &Project) -> Result<ClipPropertyIndex, CompileError> {
     let mut unresolved: HashMap<String, UnresolvedEntry> = HashMap::new();
     for layer in &project.layers {
@@ -527,30 +584,56 @@ fn build_clip_property_index(project: &Project) -> Result<ClipPropertyIndex, Com
 
 // ── Animation evaluation ───────────────────────────────────────────────────────
 
-fn evaluate_scalar_track(base: f32, track: &[CompiledScalarKeyframe], local_frame: u64) -> f32 {
+struct EmptyExprCtx;
+
+impl ExprEvalCtx for EmptyExprCtx {
+    fn resolve(&self, _target: &str, _property: ExprProp) -> Option<f32> {
+        None
+    }
+}
+
+fn resolve_compiled_scalar_value(
+    value: &CompiledScalarValue,
+    expr_ctx: &dyn ExprEvalCtx,
+) -> Option<f32> {
+    match value {
+        CompiledScalarValue::Literal(v) => Some(*v),
+        CompiledScalarValue::DeferredExpr { parsed } => eval_expr(parsed, expr_ctx).ok(),
+    }
+}
+
+fn evaluate_scalar_track(
+    base: f32,
+    track: &[CompiledScalarKeyframe],
+    local_frame: u64,
+    expr_ctx: &dyn ExprEvalCtx,
+) -> f32 {
     let mut current = base;
 
     for keyframe in track {
         if local_frame < keyframe.frame {
             break;
         }
+        let Some(target_value) = resolve_compiled_scalar_value(&keyframe.value, expr_ctx) else {
+            continue;
+        };
 
         let from = current;
         if keyframe.duration_frames == 0 {
-            current = keyframe.value;
+            current = target_value;
             continue;
         }
 
         let end = keyframe.frame.saturating_add(keyframe.duration_frames);
         if local_frame >= end {
-            current = keyframe.value;
+            current = target_value;
             continue;
         }
 
         let progress =
             (local_frame.saturating_sub(keyframe.frame)) as f32 / (keyframe.duration_frames as f32);
         let eased = apply_easing(progress, keyframe.easing);
-        return from + (keyframe.value - from) * eased;
+        return from + (target_value - from) * eased;
     }
 
     current
@@ -583,6 +666,7 @@ pub fn compile_project_with_scale(
     let sources = index_sources(&project.sources)?;
 
     let clip_index = build_clip_property_index(project)?;
+    let layout_node_ids = collect_project_layout_node_ids(project);
 
     let mut ordered_layers: Vec<(usize, &Layer)> = project.layers.iter().enumerate().collect();
     ordered_layers.sort_by(|left, right| {
@@ -600,6 +684,7 @@ pub fn compile_project_with_scale(
         max_depth: MAX_ITEM_TREE_DEPTH,
         scale,
         clip_index: &clip_index,
+        layout_node_ids: &layout_node_ids,
     };
 
     let mut layers = Vec::with_capacity(ordered_layers.len());
@@ -623,6 +708,8 @@ pub fn compile_project_with_scale(
     } = ctx;
 
     let canvas = compile_canvas(&project.canvas, scale);
+    let runtime_clip_index = scale_clip_property_index(&clip_index, scale);
+
     Ok(CompiledTimeline {
         canvas,
         timeline: project.timeline.clone(),
@@ -631,6 +718,7 @@ pub fn compile_project_with_scale(
         frame_index,
         layers,
         has_compositing_nodes,
+        clip_index: runtime_clip_index,
     })
 }
 
@@ -657,6 +745,28 @@ fn scale_dimension(value: u32, scale: f32) -> u32 {
         return 1;
     }
     scaled.min(u32::MAX as f64) as u32
+}
+
+fn scale_clip_property_index(index: &ClipPropertyIndex, scale: f32) -> ClipPropertyIndex {
+    let mut clips: HashMap<String, CompiledTransform> = HashMap::with_capacity(index.clips.len());
+    for (id, transform) in &index.clips {
+        clips.insert(
+            id.clone(),
+            CompiledTransform {
+                x: transform.x * scale,
+                y: transform.y * scale,
+                width: transform.width.map(|v| v * scale),
+                height: transform.height.map(|v| v * scale),
+                rotation_degrees: transform.rotation_degrees,
+            },
+        );
+    }
+
+    ClipPropertyIndex {
+        canvas_width: index.canvas_width * scale,
+        canvas_height: index.canvas_height * scale,
+        clips,
+    }
 }
 
 fn validate_canvas(canvas: &Canvas, scale: f32) -> Result<(), CompileError> {
@@ -875,7 +985,13 @@ fn compile_clip_operation(
         });
     }
 
-    let animation = compile_clip_animation(layer.id.as_str(), clip, ctx.scale, ctx.clip_index)?;
+    let animation = compile_clip_animation(
+        layer.id.as_str(),
+        clip,
+        ctx.scale,
+        ctx.clip_index,
+        ctx.layout_node_ids,
+    )?;
     let kind = compile_clip_content(
         layer.id.as_str(),
         clip,
@@ -981,6 +1097,7 @@ fn compile_clip_animation(
     clip: &crate::model::Clip,
     scale: f32,
     clip_index: &ClipPropertyIndex,
+    layout_node_ids: &HashSet<String>,
 ) -> Result<CompiledClipAnimation, CompileError> {
     if clip.transform.width.is_none() && !clip.animation.width.is_empty() {
         return Err(CompileError::InvalidClip {
@@ -1005,6 +1122,7 @@ fn compile_clip_animation(
             clip.animation.opacity.as_slice(),
             1.0,
             clip_index,
+            layout_node_ids,
             false,
         )?,
         x: compile_scalar_track(
@@ -1014,6 +1132,7 @@ fn compile_clip_animation(
             clip.animation.x.as_slice(),
             scale,
             clip_index,
+            layout_node_ids,
             false,
         )?,
         y: compile_scalar_track(
@@ -1023,6 +1142,7 @@ fn compile_clip_animation(
             clip.animation.y.as_slice(),
             scale,
             clip_index,
+            layout_node_ids,
             false,
         )?,
         width: compile_scalar_track(
@@ -1032,6 +1152,7 @@ fn compile_clip_animation(
             clip.animation.width.as_slice(),
             scale,
             clip_index,
+            layout_node_ids,
             true,
         )?,
         height: compile_scalar_track(
@@ -1041,6 +1162,7 @@ fn compile_clip_animation(
             clip.animation.height.as_slice(),
             scale,
             clip_index,
+            layout_node_ids,
             true,
         )?,
         rotation_degrees: compile_scalar_track(
@@ -1050,32 +1172,80 @@ fn compile_clip_animation(
             clip.animation.rotation_degrees.as_slice(),
             1.0,
             clip_index,
+            layout_node_ids,
             false,
         )?,
     })
 }
 
-fn resolve_keyframe_scalar_value(
+fn compile_keyframe_scalar_value(
     layer_id: &str,
     clip: &crate::model::Clip,
     field: &str,
     index: usize,
     value: &Scalar,
+    scale: f32,
     clip_index: &ClipPropertyIndex,
-) -> Result<f32, CompileError> {
+    layout_node_ids: &HashSet<String>,
+) -> Result<CompiledScalarValue, CompileError> {
     match value {
-        Scalar::Literal(v) => Ok(*v),
+        Scalar::Literal(v) => Ok(CompiledScalarValue::Literal(*v * scale)),
         Scalar::Expr(source) => {
             let parsed = parse_expr(source).map_err(|e| CompileError::ExprError {
                 layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
                 reason: format!("{field}[{index}] {e}"),
             })?;
-            eval_expr(&parsed, clip_index).map_err(|e| CompileError::ExprError {
-                layer_id: layer_id.to_string(),
-                clip_id: clip.id.clone(),
-                reason: format!("{field}[{index}] {}", eval_error_reason(&e)),
-            })
+
+            let refs = collect_parsed_expr_refs(&parsed);
+            let mut has_layout_node_ref = false;
+            for r in &refs {
+                let target = &r.target;
+                if target == "canvas" {
+                    if matches!(r.property, ExprProp::Width | ExprProp::Height) {
+                        continue;
+                    }
+                    return Err(CompileError::ExprError {
+                        layer_id: layer_id.to_string(),
+                        clip_id: clip.id.clone(),
+                        reason: format!("{field}[{index}] unknown reference `{}.{}`", target, prop_str(r.property)),
+                    });
+                }
+                if clip_index.clips.contains_key(target.as_str()) {
+                    if clip_index.resolve(target, r.property).is_some() {
+                        continue;
+                    }
+                    return Err(CompileError::ExprError {
+                        layer_id: layer_id.to_string(),
+                        clip_id: clip.id.clone(),
+                        reason: format!("{field}[{index}] unknown reference `{}.{}`", target, prop_str(r.property)),
+                    });
+                }
+                if layout_node_ids.contains(target.as_str()) {
+                    has_layout_node_ref = true;
+                    continue;
+                }
+
+                return Err(CompileError::ExprError {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip.id.clone(),
+                    reason: format!("{field}[{index}] unknown reference `{}.{}`", target, prop_str(r.property)),
+                });
+            }
+
+            if has_layout_node_ref {
+                return Ok(CompiledScalarValue::DeferredExpr {
+                    parsed: scale_parsed_expr_literals(&parsed, scale),
+                });
+            }
+
+            eval_expr(&parsed, clip_index)
+                .map(|v| CompiledScalarValue::Literal(v * scale))
+                .map_err(|e| CompileError::ExprError {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip.id.clone(),
+                    reason: format!("{field}[{index}] {}", eval_error_reason(&e)),
+                })
         }
     }
 }
@@ -1087,6 +1257,7 @@ fn compile_scalar_track(
     keyframes: &[ScalarKeyframe],
     scale: f32,
     clip_index: &ClipPropertyIndex,
+    layout_node_ids: &HashSet<String>,
     require_positive: bool,
 ) -> Result<Vec<CompiledScalarKeyframe>, CompileError> {
     let mut sorted = keyframes.to_vec();
@@ -1096,22 +1267,28 @@ fn compile_scalar_track(
     let mut previous_end = 0u64;
 
     for (index, keyframe) in sorted.into_iter().enumerate() {
-        let value = resolve_keyframe_scalar_value(
+        let value = compile_keyframe_scalar_value(
             layer_id,
             clip,
             field,
             index,
             &keyframe.value,
+            scale,
             clip_index,
+            layout_node_ids,
         )?;
-        if !value.is_finite() {
+        let resolved_for_validation = match &value {
+            CompiledScalarValue::Literal(v) => Some(*v),
+            CompiledScalarValue::DeferredExpr { .. } => None,
+        };
+        if let Some(v) = resolved_for_validation && !v.is_finite() {
             return Err(CompileError::InvalidClip {
                 layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
                 reason: format!("{field}[{index}] value must be finite"),
             });
         }
-        if require_positive && value <= 0.0 {
+        if require_positive && resolved_for_validation.is_some_and(|v| v <= 0.0) {
             return Err(CompileError::InvalidClip {
                 layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
@@ -1158,7 +1335,7 @@ fn compile_scalar_track(
         previous_end = end.max(keyframe.frame);
         compiled.push(CompiledScalarKeyframe {
             frame: keyframe.frame,
-            value: value * scale,
+            value,
             duration_frames: keyframe.duration_frames,
             easing: keyframe.easing,
         });
@@ -1635,6 +1812,22 @@ fn collect_parsed_expr_refs(expr: &ParsedExpr) -> Vec<&crate::expr::ExprRef> {
             refs.extend(collect_parsed_expr_refs(rhs));
             refs
         }
+    }
+}
+
+fn scale_parsed_expr_literals(expr: &ParsedExpr, scale: f32) -> ParsedExpr {
+    match expr {
+        ParsedExpr::Literal(v) => ParsedExpr::Literal(v * scale),
+        ParsedExpr::Ref(r) => ParsedExpr::Ref(r.clone()),
+        ParsedExpr::UnaryOp { op, expr } => ParsedExpr::UnaryOp {
+            op: *op,
+            expr: Box::new(scale_parsed_expr_literals(expr, scale)),
+        },
+        ParsedExpr::BinOp { op, lhs, rhs } => ParsedExpr::BinOp {
+            op: *op,
+            lhs: Box::new(scale_parsed_expr_literals(lhs, scale)),
+            rhs: Box::new(scale_parsed_expr_literals(rhs, scale)),
+        },
     }
 }
 

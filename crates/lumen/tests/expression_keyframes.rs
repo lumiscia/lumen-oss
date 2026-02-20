@@ -1,5 +1,6 @@
 use lumen::{
-    Canvas, Clip, ClipAnimation, ClipContent, ColorRgba, Easing, Layer, LayerItem, Project, Scalar,
+    Canvas, Clip, ClipAnimation, ClipContent, ColorRgba, Easing, ExprEvalCtx, ExprProp, Layer,
+    LayerItem, LayoutClip, LayoutNode, LayoutNodeKind, LayoutNodeStyle, Project, Scalar,
     ScalarKeyframe, TextClip, Timeline, Transform, compile::CompileError, compile_project,
     time::Rational,
 };
@@ -40,6 +41,17 @@ fn base_project(items: Vec<LayerItem>) -> Project {
             items,
         }],
         audio: Default::default(),
+    }
+}
+
+struct StubExprCtx;
+
+impl ExprEvalCtx for StubExprCtx {
+    fn resolve(&self, target: &str, property: ExprProp) -> Option<f32> {
+        if target == "chat_msg_row_s0_m0" && property == ExprProp::Height {
+            return Some(36.0);
+        }
+        None
     }
 }
 
@@ -112,4 +124,68 @@ fn rejects_unknown_refs_in_keyframe_expressions() {
     let project = base_project(vec![LayerItem::Clip(clip)]);
     let error = compile_project(&project).expect_err("must fail");
     assert!(matches!(error, CompileError::ExprError { .. }));
+}
+
+#[test]
+fn resolves_layout_node_refs_in_keyframe_expressions_at_runtime() {
+    let layout = Clip {
+        id: "layout_source".to_string(),
+        start_frame: 0,
+        duration_frames: 30,
+        opacity: 1.0,
+        transform: Transform {
+            x: Scalar::Literal(0.0),
+            y: Scalar::Literal(0.0),
+            width: Some(Scalar::Literal(200.0)),
+            height: Some(Scalar::Literal(120.0)),
+            rotation_degrees: 0.0,
+        },
+        animation: Default::default(),
+        mask: None,
+        content: ClipContent::Layout(LayoutClip {
+            root: LayoutNode {
+                id: None,
+                style: Default::default(),
+                kind: LayoutNodeKind::Container {
+                    children: vec![LayoutNode {
+                        id: Some("chat_msg_row_s0_m0".to_string()),
+                        style: LayoutNodeStyle {
+                            width: Some(Scalar::Literal(160.0)),
+                            height: Some(Scalar::Literal(24.0)),
+                            ..Default::default()
+                        },
+                        kind: LayoutNodeKind::Container { children: vec![] },
+                    }],
+                },
+            },
+        }),
+    };
+
+    let animated_mask = text_clip(
+        "animated_mask",
+        Transform {
+            x: Scalar::Literal(0.0),
+            y: Scalar::Literal(0.0),
+            width: Some(Scalar::Literal(160.0)),
+            height: Some(Scalar::Literal(10.0)),
+            rotation_degrees: 0.0,
+        },
+        ClipAnimation {
+            height: vec![ScalarKeyframe {
+                frame: 0,
+                value: Scalar::Expr("chat_msg_row_s0_m0.height + 12".to_string()),
+                duration_frames: 0,
+                easing: Easing::Linear,
+            }],
+            ..Default::default()
+        },
+    );
+
+    let project = base_project(vec![LayerItem::Clip(layout), LayerItem::Clip(animated_mask)]);
+    let compiled = compile_project(&project).expect("compile");
+    let frame_ops = compiled.operation_indices_for_frame(0).expect("frame ops");
+    let op = compiled.operation(frame_ops[1]).expect("animated op");
+
+    let resolved = op.resolved_transform_with_ctx(0, &StubExprCtx);
+    assert_eq!(resolved.height, Some(48.0));
 }

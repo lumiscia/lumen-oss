@@ -22,9 +22,9 @@ use taffy::tree::NodeId as TaffyNodeId;
 use crate::{
     backend::{FrameImage, FrameProvider, RenderBackend, RenderError, pixel_len},
     compile::{
+        ClipPropertyIndex,
         CompiledClipNode, CompiledGroupNode, CompiledLayerItem, CompiledOperation,
-        CompiledOperationKind, CompiledTimeline, VideoSourceRef,
-        CompiledTransform,
+        CompiledOperationKind, CompiledTimeline, CompiledTransform, VideoSourceRef,
     },
     expr::{ExprEvalCtx, ExprProp, Scalar, eval_expr, parse_expr},
     model::{
@@ -78,6 +78,7 @@ struct CachedLayoutClip {
 struct LayoutRenderTree {
     taffy: TaffyTree<()>,
     root: LayoutRenderNode,
+    named_layouts: HashMap<String, (f32, f32, f32, f32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +163,22 @@ impl ExprEvalCtx for LayoutNodeExprCtx {
     }
 }
 
+struct RuntimeExprCtx<'a> {
+    static_ctx: &'a ClipPropertyIndex,
+    layout_ctx: Option<&'a LayoutNodeExprCtx>,
+}
+
+impl ExprEvalCtx for RuntimeExprCtx<'_> {
+    fn resolve(&self, target: &str, property: ExprProp) -> Option<f32> {
+        if let Some(layout_ctx) = self.layout_ctx
+            && let Some(v) = layout_ctx.resolve(target, property)
+        {
+            return Some(v);
+        }
+        self.static_ctx.resolve(target, property)
+    }
+}
+
 // -- SkiaRenderer impl --------------------------------------------------------
 
 impl SkiaRenderer {
@@ -231,13 +248,14 @@ impl SkiaRenderer {
         frame: u64,
         provider: &mut dyn FrameProvider,
         pass: RenderPass,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<bool, RenderError> {
         match item {
             CompiledLayerItem::Clip(clip) => {
-                self.render_clip_node(timeline, clip, frame, provider, pass)
+                self.render_clip_node(timeline, clip, frame, provider, pass, expr_ctx)
             }
             CompiledLayerItem::Group(group) => {
-                self.render_group_node(timeline, group, frame, provider, pass)
+                self.render_group_node(timeline, group, frame, provider, pass, expr_ctx)
             }
         }
     }
@@ -249,6 +267,7 @@ impl SkiaRenderer {
         frame: u64,
         provider: &mut dyn FrameProvider,
         pass: RenderPass,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<bool, RenderError> {
         let operation = timeline
             .operation(clip.operation_index)
@@ -259,7 +278,7 @@ impl SkiaRenderer {
         }
 
         if let Some(mask) = clip.mask.as_deref() {
-            if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame)? {
+            if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame, expr_ctx)? {
                 return match simple_mask {
                     SimpleMaskResult::Hidden => Ok(false),
                     SimpleMaskResult::Clip(mask_clip) => {
@@ -267,7 +286,7 @@ impl SkiaRenderer {
 
                         apply_simple_mask_clip(self.surface.canvas(), mask_clip);
                         let drew_content =
-                            self.draw_operation(timeline, operation, frame, provider, pass)?;
+                            self.draw_operation(operation, frame, provider, pass, expr_ctx)?;
                         self.surface.canvas().restore();
                         Ok(drew_content)
                     }
@@ -279,14 +298,14 @@ impl SkiaRenderer {
             self.surface.canvas().save_layer(&SaveLayerRec::default());
         }
 
-        let drew_content = self.draw_operation(timeline, operation, frame, provider, pass)?;
+        let drew_content = self.draw_operation(operation, frame, provider, pass, expr_ctx)?;
 
         let mut drew_output = drew_content;
         if let Some(mask) = clip.mask.as_deref() {
             if !drew_content {
                 drew_output = false;
             } else {
-                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider)?;
+                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider, expr_ctx)?;
                 if !drew_mask {
                     clear_current_layer(self.surface.canvas());
                     drew_output = false;
@@ -305,6 +324,7 @@ impl SkiaRenderer {
         frame: u64,
         provider: &mut dyn FrameProvider,
         pass: RenderPass,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<bool, RenderError> {
         if group.opacity <= 0.0 {
             return Ok(false);
@@ -323,7 +343,7 @@ impl SkiaRenderer {
         let mut has_simple_mask_clip = false;
         let mut complex_mask = None;
         if let Some(mask) = group.mask.as_deref() {
-            if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame)? {
+            if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame, expr_ctx)? {
                 match simple_mask {
                     SimpleMaskResult::Hidden => {
                         self.surface.canvas().restore();
@@ -351,7 +371,7 @@ impl SkiaRenderer {
 
         let mut drew_any = false;
         for item in &group.items {
-            drew_any |= self.render_layer_item(timeline, item, frame, provider, pass)?;
+            drew_any |= self.render_layer_item(timeline, item, frame, provider, pass, expr_ctx)?;
         }
 
         let mut drew_output = drew_any;
@@ -359,7 +379,7 @@ impl SkiaRenderer {
             if !drew_any {
                 drew_output = false;
             } else {
-                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider)?;
+                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider, expr_ctx)?;
                 if !drew_mask {
                     clear_current_layer(self.surface.canvas());
                     drew_output = false;
@@ -384,6 +404,7 @@ impl SkiaRenderer {
         mask: &CompiledLayerItem,
         frame: u64,
         provider: &mut dyn FrameProvider,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<bool, RenderError> {
         let mut paint = Paint::default();
         paint.set_blend_mode(BlendMode::DstIn);
@@ -393,7 +414,7 @@ impl SkiaRenderer {
             .save_layer(&SaveLayerRec::default().paint(&paint));
 
         let drew_mask =
-            self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
+            self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask, expr_ctx)?;
         self.surface.canvas().restore();
 
         Ok(drew_mask)
@@ -404,6 +425,7 @@ impl SkiaRenderer {
         timeline: &CompiledTimeline,
         mask: &CompiledLayerItem,
         frame: u64,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<Option<SimpleMaskResult>, RenderError> {
         let CompiledLayerItem::Clip(mask_clip) = mask else {
             return Ok(None);
@@ -420,7 +442,7 @@ impl SkiaRenderer {
             return Ok(Some(SimpleMaskResult::Hidden));
         }
 
-        let opacity = operation.resolved_opacity(frame);
+        let opacity = operation.resolved_opacity_with_ctx(frame, expr_ctx);
         if opacity <= 0.0 {
             return Ok(Some(SimpleMaskResult::Hidden));
         }
@@ -428,7 +450,7 @@ impl SkiaRenderer {
             return Ok(None);
         }
 
-        let transform = operation.resolved_transform(frame);
+        let transform = operation.resolved_transform_with_ctx(frame, expr_ctx);
         if transform.rotation_degrees != 0.0 {
             return Ok(None);
         }
@@ -489,17 +511,17 @@ impl SkiaRenderer {
 
     fn draw_operation(
         &mut self,
-        _timeline: &CompiledTimeline,
         operation: &CompiledOperation,
         frame: u64,
         provider: &mut dyn FrameProvider,
         pass: RenderPass,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<bool, RenderError> {
-        let opacity = operation.resolved_opacity(frame);
+        let opacity = operation.resolved_opacity_with_ctx(frame, expr_ctx);
         if opacity <= 0.0 {
             return Ok(false);
         }
-        let transform = operation.resolved_transform(frame);
+        let transform = operation.resolved_transform_with_ctx(frame, expr_ctx);
         let blend_mode = pass.blend_mode();
 
         match &operation.kind {
@@ -646,6 +668,79 @@ impl SkiaRenderer {
         Ok(false)
     }
 
+    fn collect_frame_layout_expr_ctx(
+        &mut self,
+        timeline: &CompiledTimeline,
+        frame: u64,
+    ) -> Result<LayoutNodeExprCtx, RenderError> {
+        let mut layouts: HashMap<String, (f32, f32, f32, f32)> = HashMap::new();
+        let static_expr_ctx = RuntimeExprCtx {
+            static_ctx: timeline.clip_index(),
+            layout_ctx: None,
+        };
+
+        for layer in timeline.layers() {
+            for item in &layer.items {
+                self.collect_layout_nodes_from_item(
+                    timeline,
+                    item,
+                    frame,
+                    &static_expr_ctx,
+                    &mut layouts,
+                )?;
+            }
+        }
+
+        Ok(LayoutNodeExprCtx { layouts })
+    }
+
+    fn collect_layout_nodes_from_item(
+        &mut self,
+        timeline: &CompiledTimeline,
+        item: &CompiledLayerItem,
+        frame: u64,
+        expr_ctx: &RuntimeExprCtx<'_>,
+        layouts: &mut HashMap<String, (f32, f32, f32, f32)>,
+    ) -> Result<(), RenderError> {
+        match item {
+            CompiledLayerItem::Clip(clip) => {
+                let operation = timeline
+                    .operation(clip.operation_index)
+                    .ok_or(RenderError::MissingOperation(clip.operation_index))?;
+                if operation.contains_frame(frame)
+                    && let CompiledOperationKind::Layout(layout_clip) = &operation.kind
+                {
+                    let transform = operation.resolved_transform_with_ctx(frame, expr_ctx);
+                    let width = transform.width.unwrap_or(1.0).max(1.0);
+                    let height = transform.height.unwrap_or(1.0).max(1.0);
+                    let tree = build_layout_render_tree(
+                        &self.typeface,
+                        &mut self.font_cache,
+                        layout_clip,
+                        width,
+                        height,
+                    )?;
+                    for (id, values) in &tree.named_layouts {
+                        layouts.insert(id.clone(), *values);
+                    }
+                }
+                if let Some(mask) = clip.mask.as_deref() {
+                    self.collect_layout_nodes_from_item(timeline, mask, frame, expr_ctx, layouts)?;
+                }
+            }
+            CompiledLayerItem::Group(group) => {
+                for child in &group.items {
+                    self.collect_layout_nodes_from_item(timeline, child, frame, expr_ctx, layouts)?;
+                }
+                if let Some(mask) = group.mask.as_deref() {
+                    self.collect_layout_nodes_from_item(timeline, mask, frame, expr_ctx, layouts)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn readback_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
         self.readback_into(Vec::new())
     }
@@ -700,10 +795,22 @@ impl RenderBackend for SkiaRenderer {
         let bg = timeline.canvas.background;
         self.surface.canvas().clear(to_sk_color(bg, 1.0));
 
+        let layout_expr_ctx = self.collect_frame_layout_expr_ctx(timeline, frame)?;
+        let expr_ctx = RuntimeExprCtx {
+            static_ctx: timeline.clip_index(),
+            layout_ctx: Some(&layout_expr_ctx),
+        };
+
         for layer in timeline.layers() {
             for item in &layer.items {
-                let _ =
-                    self.render_layer_item(timeline, item, frame, provider, RenderPass::Content)?;
+                let _ = self.render_layer_item(
+                    timeline,
+                    item,
+                    frame,
+                    provider,
+                    RenderPass::Content,
+                    &expr_ctx,
+                )?;
             }
         }
 
@@ -735,10 +842,22 @@ impl SkiaRenderer {
         let bg = timeline.canvas.background;
         self.surface.canvas().clear(to_sk_color(bg, 1.0));
 
+        let layout_expr_ctx = self.collect_frame_layout_expr_ctx(timeline, frame)?;
+        let expr_ctx = RuntimeExprCtx {
+            static_ctx: timeline.clip_index(),
+            layout_ctx: Some(&layout_expr_ctx),
+        };
+
         for layer in timeline.layers() {
             for item in &layer.items {
-                let _ =
-                    self.render_layer_item(timeline, item, frame, provider, RenderPass::Content)?;
+                let _ = self.render_layer_item(
+                    timeline,
+                    item,
+                    frame,
+                    provider,
+                    RenderPass::Content,
+                    &expr_ctx,
+                )?;
             }
         }
 
@@ -872,17 +991,11 @@ fn build_layout_render_tree(
         .compute_layout(root.taffy_node, available)
         .map_err(|err| RenderError::SurfaceCreation(format!("taffy compute failed: {err}")))?;
 
-    // Collect computed layouts for named nodes
-    let mut named_layouts: HashMap<String, (f32, f32, f32, f32)> = HashMap::new();
-    for (id, taffy_id) in &node_id_map {
-        if let Ok(lay) = taffy.layout(*taffy_id) {
-            named_layouts
-                .insert(id.clone(), (lay.size.width, lay.size.height, lay.location.x, lay.location.y));
-        }
-    }
-
     // Second pass if any nodes have deferred dimension exprs
-    let ctx = LayoutNodeExprCtx { layouts: named_layouts };
+    let first_pass_layouts = collect_named_layouts(&taffy, &node_id_map);
+    let ctx = LayoutNodeExprCtx {
+        layouts: first_pass_layouts,
+    };
     let any_changed = apply_deferred_layout_dims(&mut taffy, &root, &ctx);
     if any_changed {
         taffy
@@ -890,7 +1003,29 @@ fn build_layout_render_tree(
             .map_err(|err| RenderError::SurfaceCreation(format!("taffy recompute failed: {err}")))?;
     }
 
-    Ok(LayoutRenderTree { taffy, root })
+    let named_layouts = collect_named_layouts(&taffy, &node_id_map);
+
+    Ok(LayoutRenderTree {
+        taffy,
+        root,
+        named_layouts,
+    })
+}
+
+fn collect_named_layouts(
+    taffy: &TaffyTree<()>,
+    node_id_map: &HashMap<String, TaffyNodeId>,
+) -> HashMap<String, (f32, f32, f32, f32)> {
+    let mut named_layouts: HashMap<String, (f32, f32, f32, f32)> = HashMap::new();
+    for (id, taffy_id) in node_id_map {
+        if let Ok(lay) = taffy.layout(*taffy_id) {
+            named_layouts.insert(
+                id.clone(),
+                (lay.size.width, lay.size.height, lay.location.x, lay.location.y),
+            );
+        }
+    }
+    named_layouts
 }
 
 fn build_layout_render_node(
