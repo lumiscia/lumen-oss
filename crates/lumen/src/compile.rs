@@ -1226,6 +1226,13 @@ fn compile_keyframe_scalar_value(
                     continue;
                 }
 
+                // If the project contains layout nodes, allow unresolved id-like refs
+                // to defer to runtime layout-node evaluation.
+                if !layout_node_ids.is_empty() {
+                    has_layout_node_ref = true;
+                    continue;
+                }
+
                 return Err(CompileError::ExprError {
                     layer_id: layer_id.to_string(),
                     clip_id: clip.id.clone(),
