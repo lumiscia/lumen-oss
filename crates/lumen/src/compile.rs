@@ -1236,11 +1236,12 @@ fn validate_source_type(
 #[cfg(test)]
 mod tests {
     use crate::{
-        compile::{CompiledOperationKind, compile_project},
+        compile::{CompiledOperationKind, compile_project, compile_project_with_scale},
         model::{
             Canvas, Clip, ClipAnimation, ClipContent, ClipGroup, ColorRgba, Easing, Layer,
-            LayerItem, Project, ScalarKeyframe, Source, SourceKind, SourceMediaType, TextClip,
-            Timeline, VideoClip,
+            LayerItem, LayoutClip, LayoutNode, LayoutNodeKind, LayoutTextNode, Project,
+            ScalarKeyframe, Source, SourceKind, SourceMediaType, TextClip, Timeline, Transform,
+            VideoClip,
         },
         time::Rational,
     };
@@ -1483,6 +1484,124 @@ mod tests {
 
         let err = compile_project(&project).expect_err("must fail");
         assert!(err.to_string().contains("keyframes overlap"));
+    }
+
+    #[test]
+    fn rejects_layout_clip_without_dimensions() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_layout".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: 0.0,
+                        y: 0.0,
+                        width: None,
+                        height: Some(180.0),
+                        rotation_degrees: 0.0,
+                    },
+                    animation: Default::default(),
+                    mask: None,
+                    content: ClipContent::Layout(LayoutClip {
+                        root: LayoutNode {
+                            style: Default::default(),
+                            kind: LayoutNodeKind::Container { children: vec![] },
+                        },
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let err = compile_project(&project).expect_err("must fail");
+        assert!(
+            err.to_string()
+                .contains("layout clips require transform.width and transform.height")
+        );
+    }
+
+    #[test]
+    fn compiles_layout_clip_and_scales_text() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_layout".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: 10.0,
+                        y: 20.0,
+                        width: Some(300.0),
+                        height: Some(180.0),
+                        rotation_degrees: 0.0,
+                    },
+                    animation: Default::default(),
+                    mask: None,
+                    content: ClipContent::Layout(LayoutClip {
+                        root: LayoutNode {
+                            style: Default::default(),
+                            kind: LayoutNodeKind::Container {
+                                children: vec![LayoutNode {
+                                    style: Default::default(),
+                                    kind: LayoutNodeKind::Text(LayoutTextNode {
+                                        text: "hello".to_string(),
+                                        font_size: 10.0,
+                                        color: ColorRgba(255, 255, 255, 255),
+                                        align: Default::default(),
+                                        line_height: None,
+                                    }),
+                                }],
+                            },
+                        },
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let compiled = compile_project_with_scale(&project, 2.0).expect("compile");
+        let frame_ops = compiled.operation_indices_for_frame(0).expect("frame ops");
+        assert_eq!(frame_ops.len(), 1);
+        let operation = compiled.operation(frame_ops[0]).expect("operation");
+        match &operation.kind {
+            CompiledOperationKind::Layout(layout) => {
+                let LayoutNodeKind::Container { children } = &layout.root.kind else {
+                    panic!("expected container root");
+                };
+                let LayoutNodeKind::Text(text) = &children[0].kind else {
+                    panic!("expected text child");
+                };
+                assert_eq!(text.font_size, 20.0);
+            }
+            _ => panic!("expected layout operation"),
+        }
     }
 
     #[test]
