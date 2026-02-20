@@ -322,6 +322,15 @@ pub struct LayoutEdges {
     pub left: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutOverflow {
+    #[default]
+    Visible,
+    Hidden,
+}
+
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutNodeStyle {
     #[serde(default)]
@@ -334,6 +343,8 @@ pub struct LayoutNodeStyle {
     pub align_items: LayoutAlignItems,
     #[serde(default)]
     pub align_self: LayoutAlignSelf,
+    #[serde(default)]
+    pub overflow: LayoutOverflow,
     #[serde(default)]
     pub flex_grow: f32,
     #[serde(default = "default_flex_shrink")]
@@ -370,6 +381,7 @@ impl Default for LayoutNodeStyle {
             justify_content: LayoutJustifyContent::FlexStart,
             align_items: LayoutAlignItems::Stretch,
             align_self: LayoutAlignSelf::Auto,
+            overflow: LayoutOverflow::Visible,
             flex_grow: 0.0,
             flex_shrink: default_flex_shrink(),
             width: None,

@@ -28,6 +28,7 @@ use crate::{
     model::{
         ColorRgba, FitMode, LayoutAlignItems, LayoutAlignSelf, LayoutClip, LayoutDisplay,
         LayoutFlexDirection, LayoutJustifyContent, LayoutNode, LayoutNodeKind, LayoutNodeStyle,
+        LayoutOverflow,
         Shape, ShapeClip, TextAlign, TextClip, Transform,
     },
 };
@@ -1046,6 +1047,21 @@ fn draw_layout_render_node(
         blend_mode,
     );
 
+
+    let mut clipped_children = false;
+    if node.style.overflow == LayoutOverflow::Hidden {
+        if matches!(node.kind, LayoutRenderNodeKind::Container { .. }) {
+            canvas.save();
+            if node.style.corner_radius > 0.0 {
+                let radius = node.style.corner_radius.min(width.min(height) * 0.5);
+                let rrect = RRect::new_rect_xy(Rect::from_xywh(x, y, width, height), radius, radius);
+                canvas.clip_rrect(rrect, None, Some(true));
+            } else {
+                canvas.clip_rect(Rect::from_xywh(x, y, width, height), None, Some(true));
+            }
+            clipped_children = true;
+        }
+    }
     match &node.kind {
         LayoutRenderNodeKind::Container { children } => {
             for child in children {
@@ -1080,6 +1096,10 @@ fn draw_layout_render_node(
                 drew_any = true;
             }
         }
+    }
+
+    if clipped_children {
+        canvas.restore();
     }
 
     Ok(drew_any)

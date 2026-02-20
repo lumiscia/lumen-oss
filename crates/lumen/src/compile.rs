@@ -1109,6 +1109,7 @@ fn compile_layout_style(
         justify_content: style.justify_content,
         align_items: style.align_items,
         align_self: style.align_self,
+        overflow: style.overflow,
         flex_grow: style.flex_grow,
         flex_shrink: style.flex_shrink,
         width,
