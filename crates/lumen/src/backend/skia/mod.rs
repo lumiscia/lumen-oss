@@ -480,6 +480,10 @@ impl SkiaRenderer {
     }
 
     fn readback_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
+        self.readback_into(Vec::new())
+    }
+
+    fn readback_into(&mut self, mut buffer: Vec<u8>) -> Result<Vec<u8>, RenderError> {
         // Flush GPU work before readback
         #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
         if let Some(ref mut gpu) = self.gpu {
@@ -493,16 +497,17 @@ impl SkiaRenderer {
             None,
         );
         let row_bytes = self.width as usize * 4;
-        let mut pixels = vec![0u8; pixel_len(self.width, self.height)?];
+        let required = pixel_len(self.width, self.height)?;
+        buffer.resize(required, 0);
 
         let success = self
             .surface
-            .read_pixels(&info, &mut pixels, row_bytes, IPoint::new(0, 0));
+            .read_pixels(&info, &mut buffer, row_bytes, IPoint::new(0, 0));
         if !success {
             return Err(RenderError::SurfaceCreation("readPixels failed".into()));
         }
 
-        Ok(pixels)
+        Ok(buffer)
     }
 }
 
@@ -536,6 +541,41 @@ impl RenderBackend for SkiaRenderer {
         }
 
         self.readback_rgba()
+    }
+}
+
+impl SkiaRenderer {
+    /// Like `render_frame` but reuses the provided buffer for pixel readback,
+    /// avoiding a per-frame allocation.
+    pub fn render_frame_reuse(
+        &mut self,
+        timeline: &CompiledTimeline,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+        buffer: Vec<u8>,
+    ) -> Result<Vec<u8>, RenderError> {
+        if frame >= timeline.total_frames() {
+            return Err(RenderError::FrameOutOfRange {
+                frame,
+                total_frames: timeline.total_frames(),
+            });
+        }
+
+        if self.width != timeline.canvas.width || self.height != timeline.canvas.height {
+            self.resize(timeline.canvas.width, timeline.canvas.height)?;
+        }
+
+        let bg = timeline.canvas.background;
+        self.surface.canvas().clear(to_sk_color(bg, 1.0));
+
+        for layer in timeline.layers() {
+            for item in &layer.items {
+                let _ =
+                    self.render_layer_item(timeline, item, frame, provider, RenderPass::Content)?;
+            }
+        }
+
+        self.readback_into(buffer)
     }
 }
 

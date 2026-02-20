@@ -1,11 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
-    slice,
-    str,
+    slice, str,
 };
 
 use lumen::{
-    backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
+    backend::{FrameImage, FrameProvider, ProviderError},
     compile::{CompiledOperationKind, CompiledTimeline, compile_project_with_scale},
     model::Project,
 };
@@ -193,13 +192,17 @@ pub extern "C" fn lumen_renderer_destroy(renderer_ptr: *mut WasmRenderer) {
 #[unsafe(no_mangle)]
 pub extern "C" fn lumen_renderer_width(renderer_ptr: *mut WasmRenderer) -> u32 {
     let renderer = unsafe { renderer_ptr.as_ref() };
-    renderer.map(|value| value.timeline.canvas.width).unwrap_or(0)
+    renderer
+        .map(|value| value.timeline.canvas.width)
+        .unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lumen_renderer_height(renderer_ptr: *mut WasmRenderer) -> u32 {
     let renderer = unsafe { renderer_ptr.as_ref() };
-    renderer.map(|value| value.timeline.canvas.height).unwrap_or(0)
+    renderer
+        .map(|value| value.timeline.canvas.height)
+        .unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
@@ -226,9 +229,10 @@ pub extern "C" fn lumen_renderer_render_frame(
         }
     };
 
+    let buffer = std::mem::take(&mut renderer.last_frame);
     match renderer
         .renderer
-        .render_frame(&renderer.timeline, frame, media)
+        .render_frame_reuse(&renderer.timeline, frame, media, buffer)
     {
         Ok(pixels) => {
             renderer.clear_error();
@@ -300,7 +304,11 @@ pub extern "C" fn lumen_renderer_last_error_len(renderer_ptr: *mut WasmRenderer)
     let Some(renderer) = renderer else {
         return 0;
     };
-    renderer.last_error.as_ref().map(|err| err.len()).unwrap_or(0)
+    renderer
+        .last_error
+        .as_ref()
+        .map(|err| err.len())
+        .unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
@@ -324,6 +332,35 @@ pub extern "C" fn lumen_media_clear(media_ptr: *mut WasmMediaStore) {
         return;
     };
     media.clear();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lumen_media_clear_videos(media_ptr: *mut WasmMediaStore) {
+    let Some(media) = (unsafe { media_ptr.as_mut() }) else {
+        return;
+    };
+    media.videos.clear();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lumen_media_has_image(
+    media_ptr: *mut WasmMediaStore,
+    source_ptr: *const u8,
+    source_len: usize,
+) -> u8 {
+    let media = match unsafe { media_ptr.as_ref() } {
+        Some(media) => media,
+        None => return 0,
+    };
+    let source_id = match unsafe { read_string(source_ptr, source_len) } {
+        Ok(value) => value,
+        Err(_) => return 0,
+    };
+    if media.images.contains_key(&source_id) {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -378,6 +415,81 @@ pub extern "C" fn lumen_media_set_video_frame(
     let rgba = match unsafe { read_bytes(rgba_ptr, rgba_len) } {
         Ok(value) => value,
         Err(_) => return 0,
+    };
+    let image = match FrameImage::new(width, height, rgba) {
+        Ok(image) => image,
+        Err(_) => return 0,
+    };
+    media
+        .videos
+        .entry(source_id)
+        .or_default()
+        .insert(source_frame, image);
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lumen_media_set_image_owned(
+    media_ptr: *mut WasmMediaStore,
+    source_ptr: *const u8,
+    source_len: usize,
+    width: u32,
+    height: u32,
+    rgba_ptr: *mut u8,
+    rgba_len: usize,
+) -> u8 {
+    let media = match unsafe { media_ptr.as_mut() } {
+        Some(media) => media,
+        None => return 0,
+    };
+    let source_id = match unsafe { read_string(source_ptr, source_len) } {
+        Ok(value) => value,
+        Err(_) => return 0,
+    };
+    // SAFETY: In wasm32-unknown-emscripten, Rust and Emscripten share the same
+    // dlmalloc allocator, so memory allocated via JS `_malloc` can be safely
+    // adopted by a Vec and freed by Rust's global allocator.
+    let rgba = if rgba_ptr.is_null() && rgba_len > 0 {
+        return 0;
+    } else if rgba_len == 0 {
+        Vec::new()
+    } else {
+        unsafe { Vec::from_raw_parts(rgba_ptr, rgba_len, rgba_len) }
+    };
+    let image = match FrameImage::new(width, height, rgba) {
+        Ok(image) => image,
+        Err(_) => return 0,
+    };
+    media.images.insert(source_id, image);
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lumen_media_set_video_frame_owned(
+    media_ptr: *mut WasmMediaStore,
+    source_ptr: *const u8,
+    source_len: usize,
+    source_frame: u64,
+    width: u32,
+    height: u32,
+    rgba_ptr: *mut u8,
+    rgba_len: usize,
+) -> u8 {
+    let media = match unsafe { media_ptr.as_mut() } {
+        Some(media) => media,
+        None => return 0,
+    };
+    let source_id = match unsafe { read_string(source_ptr, source_len) } {
+        Ok(value) => value,
+        Err(_) => return 0,
+    };
+    // SAFETY: Same as lumen_media_set_image_owned — shared dlmalloc allocator.
+    let rgba = if rgba_ptr.is_null() && rgba_len > 0 {
+        return 0;
+    } else if rgba_len == 0 {
+        Vec::new()
+    } else {
+        unsafe { Vec::from_raw_parts(rgba_ptr, rgba_len, rgba_len) }
     };
     let image = match FrameImage::new(width, height, rgba) {
         Ok(image) => image,
