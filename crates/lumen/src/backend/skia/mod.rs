@@ -94,6 +94,7 @@ enum LayoutRenderNodeKind {
 #[derive(Debug, Clone)]
 struct LayoutTextRender {
     lines: Vec<String>,
+    line_widths: Vec<f32>,
     font_size: f32,
     line_height: f32,
     color: ColorRgba,
@@ -800,6 +801,14 @@ fn opacity_is_fully_opaque(opacity: f32) -> bool {
     opacity >= (1.0 - f32::EPSILON)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ClipBounds {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
 fn layout_cache_key(operation: &CompiledOperation) -> usize {
     operation as *const CompiledOperation as usize
 }
@@ -887,6 +896,7 @@ fn build_layout_render_node(
                 style: node.style.clone(),
                 kind: LayoutRenderNodeKind::Text(LayoutTextRender {
                     lines: measured.lines,
+                    line_widths: measured.line_widths,
                     font_size: text_node.font_size.max(1.0),
                     line_height: measured.line_height,
                     color: text_node.color,
@@ -955,6 +965,12 @@ fn draw_layout_render_tree(
 ) -> Result<bool, RenderError> {
     let target_width = transform.width.unwrap_or(1.0).max(1.0);
     let target_height = transform.height.unwrap_or(1.0).max(1.0);
+    let clip_bounds = ClipBounds {
+        left: transform.x,
+        top: transform.y,
+        right: transform.x + target_width,
+        bottom: transform.y + target_height,
+    };
 
     if transform.rotation_degrees != 0.0 {
         canvas.save();
@@ -976,6 +992,7 @@ fn draw_layout_render_tree(
         opacity,
         blend_mode,
         provider,
+        &clip_bounds,
     )?;
 
     if transform.rotation_degrees != 0.0 {
@@ -997,6 +1014,7 @@ fn draw_layout_render_node(
     opacity: f32,
     blend_mode: BlendMode,
     provider: &mut dyn FrameProvider,
+    clip_bounds: &ClipBounds,
 ) -> Result<bool, RenderError> {
     let layout = tree
         .taffy
@@ -1006,6 +1024,16 @@ fn draw_layout_render_node(
     let y = origin_y + layout.location.y;
     let width = layout.size.width.max(0.0);
     let height = layout.size.height.max(0.0);
+    if width <= 0.0 || height <= 0.0 {
+        return Ok(false);
+    }
+    if x >= clip_bounds.right
+        || y >= clip_bounds.bottom
+        || x + width <= clip_bounds.left
+        || y + height <= clip_bounds.top
+    {
+        return Ok(false);
+    }
 
     let mut drew_any = draw_layout_background(
         canvas,
@@ -1023,7 +1051,7 @@ fn draw_layout_render_node(
             for child in children {
                 drew_any |= draw_layout_render_node(
                     canvas, typeface, font_cache, tree, child, origin_x, origin_y, opacity,
-                    blend_mode, provider,
+                    blend_mode, provider, clip_bounds,
                 )?;
             }
         }
@@ -1115,8 +1143,7 @@ fn draw_layout_text_lines(
     paint.set_blend_mode(blend_mode);
 
     let mut y_cursor = y;
-    for line in &text.lines {
-        let (line_width, _) = font.measure_str(line.as_str(), None);
+    for (line, line_width) in text.lines.iter().zip(text.line_widths.iter().copied()) {
         let line_x = match text.align {
             TextAlign::Left => x,
             TextAlign::Center => x + (width - line_width) * 0.5,
@@ -1224,6 +1251,7 @@ fn resolve_layout_dimension(
 #[derive(Debug, Clone)]
 struct MeasuredLayoutTextBlock {
     lines: Vec<String>,
+    line_widths: Vec<f32>,
     width: f32,
     height: f32,
     line_height: f32,
@@ -1248,11 +1276,11 @@ fn measure_layout_text_block(
         .max(1.0);
     let wrap_width = style.width.or(style.max_width).map(|value| value.max(1.0));
     let lines = wrap_text_for_layout(font, text_node.text.as_str(), wrap_width);
-    let max_line_width = lines
+    let line_widths = lines
         .iter()
         .map(|line| measure_font_width(font, line.as_str()))
-        .fold(0.0_f32, f32::max)
-        .max(1.0);
+        .collect::<Vec<_>>();
+    let max_line_width = line_widths.iter().copied().fold(0.0_f32, f32::max).max(1.0);
     let width = wrap_width
         .map(|limit| max_line_width.min(limit))
         .unwrap_or(max_line_width)
@@ -1261,6 +1289,7 @@ fn measure_layout_text_block(
 
     MeasuredLayoutTextBlock {
         lines,
+        line_widths,
         width,
         height,
         line_height,
