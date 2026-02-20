@@ -1050,7 +1050,7 @@ fn draw_layout_render_node(
         LayoutRenderNodeKind::Container { children } => {
             for child in children {
                 drew_any |= draw_layout_render_node(
-                    canvas, typeface, font_cache, tree, child, origin_x, origin_y, opacity,
+                    canvas, typeface, font_cache, tree, child, x, y, opacity,
                     blend_mode, provider, clip_bounds,
                 )?;
             }
