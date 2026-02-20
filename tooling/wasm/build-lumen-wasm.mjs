@@ -51,7 +51,7 @@ execFileSync(
 		'-s',
 		'EXPORT_ES6=1',
 		'-s',
-		'ENVIRONMENT=web',
+		'ENVIRONMENT=web,worker',
 		'-s',
 		'WASM_BIGINT=1',
 		'-s',
