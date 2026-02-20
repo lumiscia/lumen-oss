@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::expr::Scalar;
+use serde::{Deserialize, Serialize};
 
 use crate::time::Rational;
 
@@ -168,10 +168,10 @@ pub struct ClipAnimation {
     pub rotation_degrees: Vec<ScalarKeyframe>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScalarKeyframe {
     pub frame: u64,
-    pub value: f32,
+    pub value: Scalar,
     #[serde(default)]
     pub duration_frames: u64,
     #[serde(default)]
@@ -332,7 +332,6 @@ pub enum LayoutOverflow {
     Visible,
     Hidden,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutNodeStyle {
