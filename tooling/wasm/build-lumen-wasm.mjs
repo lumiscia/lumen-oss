@@ -47,6 +47,8 @@ execFileSync(
 		'-s',
 		exportArg,
 		'-s',
+		"EXPORTED_RUNTIME_METHODS=['HEAPU8']",
+		'-s',
 		'MODULARIZE=1',
 		'-s',
 		'EXPORT_ES6=1',
