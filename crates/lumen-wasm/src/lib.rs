@@ -66,6 +66,7 @@ struct FrameRequirementsPayload {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct VideoRequirementsPayload {
     source_id: String,
     frames: Vec<u64>,
