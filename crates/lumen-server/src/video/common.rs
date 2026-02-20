@@ -4,11 +4,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     env,
+    hash::{Hash, Hasher},
     io::Write,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc,
+    sync::{Mutex, mpsc},
+    time::Duration,
 };
+
+use reqwest::blocking::Client;
+use tempfile::NamedTempFile;
 
 use anyhow::{Context, anyhow};
 use lumen::{
@@ -44,6 +49,104 @@ pub struct RenderBackendOptions {
     pub encode_queue: Option<usize>,
     pub max_decoded_source_frames: Option<usize>,
     pub stream_cache_frames: Option<usize>,
+}
+
+pub struct WebAssetCache {
+    root: PathBuf,
+    index: Mutex<HashMap<String, PathBuf>>,
+    client: Client,
+    _temp_dir: Option<tempfile::TempDir>,
+}
+
+impl WebAssetCache {
+    pub fn new_temp() -> anyhow::Result<Self> {
+        let temp_dir = tempfile::tempdir().context("failed to create web asset cache")?;
+        Self::new_with_root(temp_dir.path().to_path_buf(), Some(temp_dir))
+    }
+
+    fn new_with_root(root: PathBuf, temp_dir: Option<tempfile::TempDir>) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(&root)
+            .with_context(|| format!("failed to create web asset cache dir `{}`", root.display()))?;
+        let client = Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .context("failed to build web asset cache http client")?;
+        Ok(Self {
+            root,
+            index: Mutex::new(HashMap::new()),
+            client,
+            _temp_dir: temp_dir,
+        })
+    }
+
+    pub fn resolve(&self, url: &str) -> anyhow::Result<PathBuf> {
+        if let Some(path) = self.cached_path(url)? {
+            return Ok(path);
+        }
+
+        let target = self.cache_path(url)?;
+        if target.exists() {
+            self.insert_cached(url, &target)?;
+            return Ok(target);
+        }
+
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .with_context(|| format!("failed to download asset `{url}`"))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(anyhow!(
+                "failed to download asset `{url}`: HTTP {status}"
+            ));
+        }
+        let bytes = response
+            .bytes()
+            .with_context(|| format!("failed to read asset `{url}`"))?;
+
+        let mut temp_file = NamedTempFile::new_in(&self.root)
+            .with_context(|| format!("failed to create temp file for `{url}`"))?;
+        temp_file
+            .write_all(&bytes)
+            .with_context(|| format!("failed to write asset `{url}`"))?;
+        match temp_file.persist(&target) {
+            Ok(_) => {}
+            Err(err) => {
+                if !target.exists() {
+                    return Err(err).with_context(|| format!("failed to persist asset `{url}`"));
+                }
+            }
+        }
+
+        self.insert_cached(url, &target)?;
+        Ok(target)
+    }
+
+    fn cached_path(&self, url: &str) -> anyhow::Result<Option<PathBuf>> {
+        let lock = self
+            .index
+            .lock()
+            .map_err(|_| anyhow!("web asset cache lock poisoned"))?;
+        Ok(lock.get(url).cloned())
+    }
+
+    fn insert_cached(&self, url: &str, path: &Path) -> anyhow::Result<()> {
+        let mut lock = self
+            .index
+            .lock()
+            .map_err(|_| anyhow!("web asset cache lock poisoned"))?;
+        lock.insert(url.to_string(), path.to_path_buf());
+        Ok(())
+    }
+
+    fn cache_path(&self, url: &str) -> anyhow::Result<PathBuf> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        url.hash(&mut hasher);
+        let hash = hasher.finish();
+        let ext = extract_extension(url).filter(|ext| !ext.is_empty()).unwrap_or("bin");
+        Ok(self.root.join(format!("{hash}.{ext}")))
+    }
 }
 
 #[derive(Default)]
@@ -127,10 +230,14 @@ impl FrameProvider for PreparedAssets {
     }
 }
 
-pub fn decode_image_source(source: &Source, media_root: &Path) -> anyhow::Result<FrameImage> {
+pub fn decode_image_source(
+    source: &Source,
+    media_root: &Path,
+    asset_cache: Option<&WebAssetCache>,
+) -> anyhow::Result<FrameImage> {
     match &source.kind {
         SourceKind::File { path, .. } => {
-            let resolved = resolve_source_file_path(path, media_root)?;
+            let resolved = resolve_source_file_path(path, media_root, asset_cache)?;
             let image = image::ImageReader::open(&resolved)
                 .with_context(|| format!("failed to open image `{}`", resolved.display()))?
                 .decode()
@@ -362,6 +469,7 @@ fn background_hex_rgba(color: lumen::model::ColorRgba) -> String {
 pub fn try_render_ffmpeg_fast_path(
     timeline: &CompiledTimeline,
     options: &RenderBackendOptions,
+    asset_cache: Option<&WebAssetCache>,
     on_progress: &mut dyn FnMut(u64, u64),
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(plan) = analyze_fast_path_timeline(timeline)? else {
@@ -436,7 +544,7 @@ pub fn try_render_ffmpeg_fast_path(
 
     match &plan.source.kind {
         SourceKind::File { path, .. } => {
-            let resolved = resolve_source_file_path(path, &media_root)?;
+            let resolved = resolve_source_file_path(path, &media_root, asset_cache)?;
             command.arg("-i").arg(resolved);
         }
         SourceKind::Generator { filter, .. } => {
@@ -480,8 +588,16 @@ pub fn try_render_ffmpeg_fast_path(
     Ok(Some(bytes))
 }
 
-pub fn resolve_source_file_path(path: &str, root_override: &Path) -> anyhow::Result<PathBuf> {
+pub fn resolve_source_file_path(
+    path: &str,
+    root_override: &Path,
+    asset_cache: Option<&WebAssetCache>,
+) -> anyhow::Result<PathBuf> {
     let root = media_root(Some(root_override))?;
+    if is_http_url(path) {
+        let cache = asset_cache.ok_or_else(|| anyhow!("web asset cache unavailable for `{path}`"))?;
+        return cache.resolve(path);
+    }
     resolve_local_path_with_root(path, &root)
 }
 
@@ -542,6 +658,21 @@ pub fn resolve_local_path_with_root(source: &str, root: &Path) -> anyhow::Result
     }
 
     Ok(candidate)
+}
+
+fn is_http_url(source: &str) -> bool {
+    source.starts_with("http://") || source.starts_with("https://")
+}
+
+fn extract_extension(url: &str) -> Option<&str> {
+    let trimmed = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches('/');
+    let name = trimmed.rsplit('/').next().unwrap_or("");
+    let path = Path::new(name);
+    path.extension().and_then(|ext| ext.to_str())
 }
 
 #[cfg(test)]

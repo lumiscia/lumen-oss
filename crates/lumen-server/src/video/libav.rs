@@ -22,7 +22,7 @@ use lumen::{
 };
 
 use super::common::{
-    DEFAULT_ENCODE_QUEUE, choose_video_encoder, create_renderer, decode_image_source,
+    DEFAULT_ENCODE_QUEUE, WebAssetCache, choose_video_encoder, create_renderer, decode_image_source,
     encode_rgba_stream, media_root, resolve_source_file_path, try_render_ffmpeg_fast_path,
 };
 
@@ -57,10 +57,14 @@ fn ensure_ffmpeg_init() -> anyhow::Result<()> {
 // Source input helpers
 // ---------------------------------------------------------------------------
 
-fn open_source_input(source: &Source, media_root: &Path) -> anyhow::Result<format::context::Input> {
+fn open_source_input(
+    source: &Source,
+    media_root: &Path,
+    asset_cache: Option<&WebAssetCache>,
+) -> anyhow::Result<format::context::Input> {
     match &source.kind {
         SourceKind::File { path, .. } => {
-            let resolved = resolve_source_file_path(path, media_root)?;
+            let resolved = resolve_source_file_path(path, media_root, asset_cache)?;
             format::input(&resolved)
                 .with_context(|| format!("failed to open video file `{}`", resolved.display()))
         }
@@ -252,6 +256,7 @@ struct LibavStreamDecoder {
     last_decoded_image: Option<FrameImage>,
     source: Source,
     media_root: std::path::PathBuf,
+    asset_cache: Option<Arc<WebAssetCache>>,
 }
 
 /// The libav C types are `!Send` by default (raw pointers inside), but each
@@ -266,11 +271,12 @@ impl LibavStreamDecoder {
         timeline_fps: Rational,
         start_frame: u64,
         media_root: &Path,
+        asset_cache: Option<Arc<WebAssetCache>>,
         cache_capacity: usize,
     ) -> anyhow::Result<Self> {
         ensure_ffmpeg_init()?;
 
-        let input_ctx = open_source_input(source, media_root)?;
+        let input_ctx = open_source_input(source, media_root, asset_cache.as_deref())?;
         let stream = input_ctx
             .streams()
             .best(media::Type::Video)
@@ -335,6 +341,7 @@ impl LibavStreamDecoder {
             last_decoded_image: None,
             source: source.clone(),
             media_root: media_root.to_path_buf(),
+            asset_cache,
         };
 
         if start_frame > 0 {
@@ -511,7 +518,11 @@ impl LibavStreamDecoder {
     /// Reopen the source from scratch and decode forward to `target_frame`.
     /// Used when the demuxer doesn't support seeking (e.g. lavfi generators).
     fn reopen_and_skip(&mut self, target_frame: u64) -> anyhow::Result<()> {
-        let input_ctx = open_source_input(&self.source, &self.media_root)?;
+        let input_ctx = open_source_input(
+            &self.source,
+            &self.media_root,
+            self.asset_cache.as_deref(),
+        )?;
         let (video_stream_index, time_base, decoder) = {
             let stream = input_ctx
                 .streams()
@@ -784,6 +795,7 @@ impl FrameProvider for StreamingAssets {
 fn prepare_streaming_assets(
     timeline: &CompiledTimeline,
     media_root: &Path,
+    asset_cache: Option<Arc<WebAssetCache>>,
     cache_capacity: usize,
     request_queue_capacity: usize,
     prefetch_frames: u64,
@@ -796,11 +808,18 @@ fn prepare_streaming_assets(
     for source in timeline.sources() {
         match source.media_type() {
             SourceMediaType::Image => {
-                let image = decode_image_source(source, media_root)?;
+                let image = decode_image_source(source, media_root, asset_cache.as_deref())?;
                 images.insert(source.id.clone(), image);
             }
             SourceMediaType::Video => {
-                let decoder = LibavStreamDecoder::new(source, fps, 0, media_root, cache_capacity)?;
+                let decoder = LibavStreamDecoder::new(
+                    source,
+                    fps,
+                    0,
+                    media_root,
+                    asset_cache.clone(),
+                    cache_capacity,
+                )?;
                 let worker = VideoDecodeWorker::spawn(
                     source.id.as_str(),
                     decoder,
@@ -828,6 +847,7 @@ pub struct FfmpegRenderBackend {
     options: RenderBackendOptions,
     renderer: Option<Box<dyn RenderBackend>>,
     assets: Option<StreamingAssets>,
+    asset_cache: Option<Arc<WebAssetCache>>,
 }
 
 impl FfmpegRenderBackend {
@@ -837,6 +857,7 @@ impl FfmpegRenderBackend {
             options: RenderBackendOptions::default(),
             renderer: None,
             assets: None,
+            asset_cache: None,
         }
     }
 
@@ -849,7 +870,18 @@ impl FfmpegRenderBackend {
             options,
             renderer: None,
             assets: None,
+            asset_cache: None,
         }
+    }
+
+    fn ensure_asset_cache(&mut self) -> anyhow::Result<Arc<WebAssetCache>> {
+        if let Some(cache) = &self.asset_cache {
+            return Ok(Arc::clone(cache));
+        }
+
+        let cache = Arc::new(WebAssetCache::new_temp()?);
+        self.asset_cache = Some(Arc::clone(&cache));
+        Ok(cache)
     }
 
     fn init_if_needed(&mut self) -> anyhow::Result<()> {
@@ -880,9 +912,11 @@ impl FfmpegRenderBackend {
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(DEFAULT_LIBAV_PREFETCH_FRAMES);
 
+            let asset_cache = Some(self.ensure_asset_cache()?);
             let assets = prepare_streaming_assets(
                 &self.timeline,
                 &root,
+                asset_cache,
                 cache_capacity,
                 request_queue_capacity,
                 prefetch_frames,
@@ -966,9 +1000,13 @@ impl FfmpegRenderBackend {
         &mut self,
         on_progress: &mut dyn FnMut(u64, u64),
     ) -> anyhow::Result<Vec<u8>> {
-        if let Some(bytes) =
-            try_render_ffmpeg_fast_path(self.timeline.as_ref(), &self.options, on_progress)?
-        {
+        let asset_cache = Some(self.ensure_asset_cache()?);
+        if let Some(bytes) = try_render_ffmpeg_fast_path(
+            self.timeline.as_ref(),
+            &self.options,
+            asset_cache.as_deref(),
+            on_progress,
+        )? {
             return Ok(bytes);
         }
 

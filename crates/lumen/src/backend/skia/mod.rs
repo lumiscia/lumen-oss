@@ -57,11 +57,23 @@ enum RenderPass {
     Mask,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SimpleMaskResult {
+    Hidden,
+    Clip(SimpleMaskClip),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SimpleMaskClip {
+    Rect(RRect),
+    Oval(Rect),
+}
+
 impl RenderPass {
     fn blend_mode(self) -> BlendMode {
         match self {
             Self::Content => BlendMode::SrcOver,
-            Self::Mask => BlendMode::DstIn,
+            Self::Mask => BlendMode::SrcOver,
         }
     }
 }
@@ -162,6 +174,22 @@ impl SkiaRenderer {
             return Ok(false);
         }
 
+        if let Some(mask) = clip.mask.as_deref() {
+            if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame)? {
+                return match simple_mask {
+                    SimpleMaskResult::Hidden => Ok(false),
+                    SimpleMaskResult::Clip(mask_clip) => {
+                        self.surface.canvas().save();
+                        apply_simple_mask_clip(self.surface.canvas(), mask_clip);
+                        let drew_content =
+                            self.draw_operation(timeline, operation, frame, provider, pass)?;
+                        self.surface.canvas().restore();
+                        Ok(drew_content)
+                    }
+                };
+            }
+        }
+
         if clip.mask.is_some() {
             self.surface.canvas().save_layer(&SaveLayerRec::default());
         }
@@ -170,11 +198,14 @@ impl SkiaRenderer {
 
         let mut drew_output = drew_content;
         if let Some(mask) = clip.mask.as_deref() {
-            let drew_mask =
-                self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
-            if !drew_mask {
-                clear_current_layer(self.surface.canvas());
+            if !drew_content {
                 drew_output = false;
+            } else {
+                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider)?;
+                if !drew_mask {
+                    clear_current_layer(self.surface.canvas());
+                    drew_output = false;
+                }
             }
             self.surface.canvas().restore();
         }
@@ -204,9 +235,33 @@ impl SkiaRenderer {
                 .rotate(group.transform.rotation_degrees, None);
         }
 
-        self.surface
-            .canvas()
-            .save_layer_alpha_f(None, group.opacity.clamp(0.0, 1.0));
+        let mut has_simple_mask_clip = false;
+        let mut complex_mask = None;
+        if let Some(mask) = group.mask.as_deref() {
+            if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame)? {
+                match simple_mask {
+                    SimpleMaskResult::Hidden => {
+                        self.surface.canvas().restore();
+                        return Ok(false);
+                    }
+                    SimpleMaskResult::Clip(mask_clip) => {
+                        self.surface.canvas().save();
+                        apply_simple_mask_clip(self.surface.canvas(), mask_clip);
+                        has_simple_mask_clip = true;
+                    }
+                }
+            } else {
+                complex_mask = Some(mask);
+            }
+        }
+
+        let group_opacity = group.opacity.clamp(0.0, 1.0);
+        let use_group_layer = !opacity_is_fully_opaque(group_opacity) || complex_mask.is_some();
+        if use_group_layer {
+            self.surface
+                .canvas()
+                .save_layer_alpha_f(None, group_opacity);
+        }
 
         let mut drew_any = false;
         for item in &group.items {
@@ -214,19 +269,135 @@ impl SkiaRenderer {
         }
 
         let mut drew_output = drew_any;
-        if let Some(mask) = group.mask.as_deref() {
-            let drew_mask =
-                self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
-            if !drew_mask {
-                clear_current_layer(self.surface.canvas());
+        if let Some(mask) = complex_mask {
+            if !drew_any {
                 drew_output = false;
+            } else {
+                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider)?;
+                if !drew_mask {
+                    clear_current_layer(self.surface.canvas());
+                    drew_output = false;
+                }
             }
         }
 
-        self.surface.canvas().restore();
+        if use_group_layer {
+            self.surface.canvas().restore();
+        }
+        if has_simple_mask_clip {
+            self.surface.canvas().restore();
+        }
         self.surface.canvas().restore();
 
         Ok(drew_output)
+    }
+
+    fn render_mask_layer(
+        &mut self,
+        timeline: &CompiledTimeline,
+        mask: &CompiledLayerItem,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+    ) -> Result<bool, RenderError> {
+        let mut paint = Paint::default();
+        paint.set_blend_mode(BlendMode::DstIn);
+
+        self.surface
+            .canvas()
+            .save_layer(&SaveLayerRec::default().paint(&paint));
+
+        let drew_mask =
+            self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
+        self.surface.canvas().restore();
+
+        Ok(drew_mask)
+    }
+
+    fn try_simple_mask(
+        &self,
+        timeline: &CompiledTimeline,
+        mask: &CompiledLayerItem,
+        frame: u64,
+    ) -> Result<Option<SimpleMaskResult>, RenderError> {
+        let CompiledLayerItem::Clip(mask_clip) = mask else {
+            return Ok(None);
+        };
+
+        if mask_clip.mask.is_some() {
+            return Ok(None);
+        }
+
+        let operation = timeline
+            .operation(mask_clip.operation_index)
+            .ok_or(RenderError::MissingOperation(mask_clip.operation_index))?;
+        if !operation.contains_frame(frame) {
+            return Ok(Some(SimpleMaskResult::Hidden));
+        }
+
+        let opacity = operation.resolved_opacity(frame);
+        if opacity <= 0.0 {
+            return Ok(Some(SimpleMaskResult::Hidden));
+        }
+        if !opacity_is_fully_opaque(opacity) {
+            return Ok(None);
+        }
+
+        let transform = operation.resolved_transform(frame);
+        if transform.rotation_degrees != 0.0 {
+            return Ok(None);
+        }
+
+        match &operation.kind {
+            CompiledOperationKind::Solid { color } => {
+                if color.a() < 255 {
+                    return Ok(None);
+                }
+                let rect = layout_rect(transform, 1.0, 1.0, FitMode::Fill);
+                Ok(Some(SimpleMaskResult::Clip(SimpleMaskClip::Rect(
+                    RRect::new_rect_xy(
+                        Rect::from_xywh(
+                            rect.x as f32,
+                            rect.y as f32,
+                            rect.width as f32,
+                            rect.height as f32,
+                        ),
+                        0.0,
+                        0.0,
+                    ),
+                ))))
+            }
+            CompiledOperationKind::Shape(shape) => {
+                let rect = layout_rect(transform, 1.0, 1.0, FitMode::Fill);
+                let sk_rect = Rect::from_xywh(
+                    rect.x as f32,
+                    rect.y as f32,
+                    rect.width as f32,
+                    rect.height as f32,
+                );
+
+                match shape.shape {
+                    Shape::Rectangle { fill, radius } => {
+                        if fill.a() < 255 {
+                            return Ok(None);
+                        }
+
+                        let radius = radius.max(0.0);
+                        Ok(Some(SimpleMaskResult::Clip(SimpleMaskClip::Rect(
+                            RRect::new_rect_xy(sk_rect, radius, radius),
+                        ))))
+                    }
+                    Shape::Ellipse { fill } => {
+                        if fill.a() < 255 {
+                            return Ok(None);
+                        }
+                        Ok(Some(SimpleMaskResult::Clip(SimpleMaskClip::Oval(sk_rect))))
+                    }
+                }
+            }
+            CompiledOperationKind::Text(_)
+            | CompiledOperationKind::Image(_)
+            | CompiledOperationKind::Video(_) => Ok(None),
+        }
     }
 
     fn draw_operation(
@@ -309,6 +480,10 @@ impl SkiaRenderer {
     }
 
     fn readback_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
+        self.readback_into(Vec::new())
+    }
+
+    fn readback_into(&mut self, mut buffer: Vec<u8>) -> Result<Vec<u8>, RenderError> {
         // Flush GPU work before readback
         #[cfg(any(feature = "skia-metal", feature = "skia-vulkan"))]
         if let Some(ref mut gpu) = self.gpu {
@@ -322,16 +497,17 @@ impl SkiaRenderer {
             None,
         );
         let row_bytes = self.width as usize * 4;
-        let mut pixels = vec![0u8; pixel_len(self.width, self.height)?];
+        let required = pixel_len(self.width, self.height)?;
+        buffer.resize(required, 0);
 
         let success = self
             .surface
-            .read_pixels(&info, &mut pixels, row_bytes, IPoint::new(0, 0));
+            .read_pixels(&info, &mut buffer, row_bytes, IPoint::new(0, 0));
         if !success {
             return Err(RenderError::SurfaceCreation("readPixels failed".into()));
         }
 
-        Ok(pixels)
+        Ok(buffer)
     }
 }
 
@@ -365,6 +541,41 @@ impl RenderBackend for SkiaRenderer {
         }
 
         self.readback_rgba()
+    }
+}
+
+impl SkiaRenderer {
+    /// Like `render_frame` but reuses the provided buffer for pixel readback,
+    /// avoiding a per-frame allocation.
+    pub fn render_frame_reuse(
+        &mut self,
+        timeline: &CompiledTimeline,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+        buffer: Vec<u8>,
+    ) -> Result<Vec<u8>, RenderError> {
+        if frame >= timeline.total_frames() {
+            return Err(RenderError::FrameOutOfRange {
+                frame,
+                total_frames: timeline.total_frames(),
+            });
+        }
+
+        if self.width != timeline.canvas.width || self.height != timeline.canvas.height {
+            self.resize(timeline.canvas.width, timeline.canvas.height)?;
+        }
+
+        let bg = timeline.canvas.background;
+        self.surface.canvas().clear(to_sk_color(bg, 1.0));
+
+        for layer in timeline.layers() {
+            for item in &layer.items {
+                let _ =
+                    self.render_layer_item(timeline, item, frame, provider, RenderPass::Content)?;
+            }
+        }
+
+        self.readback_into(buffer)
     }
 }
 
@@ -432,6 +643,22 @@ fn resolve_video_frame(
 
 fn clear_current_layer(canvas: &Canvas) {
     canvas.draw_color(Color::from_argb(0, 0, 0, 0), BlendMode::Clear);
+}
+
+fn apply_simple_mask_clip(canvas: &Canvas, clip: SimpleMaskClip) {
+    match clip {
+        SimpleMaskClip::Rect(rrect) => {
+            canvas.clip_rrect(rrect, None, Some(true));
+        }
+        SimpleMaskClip::Oval(rect) => {
+            let path = skia_safe::Path::oval(rect, None);
+            canvas.clip_path(&path, None, Some(true));
+        }
+    }
+}
+
+fn opacity_is_fully_opaque(opacity: f32) -> bool {
+    opacity >= (1.0 - f32::EPSILON)
 }
 
 // -- Drawing primitives -------------------------------------------------------
@@ -651,6 +878,23 @@ fn draw_image(
     };
 
     let rect = layout_rect(transform, image.width as f64, image.height as f64, fit);
+    let dst_rect = Rect::from_xywh(
+        rect.x as f32,
+        rect.y as f32,
+        rect.width as f32,
+        rect.height as f32,
+    );
+
+    let mut paint = Paint::default();
+    paint.set_alpha_f(opacity);
+    paint.set_blend_mode(blend_mode);
+
+    // Fast path: the common case (video/image layers) doesn't need a local
+    // canvas transform or clip stack.
+    if transform.rotation_degrees == 0.0 && corner_radius <= 0.0 {
+        canvas.draw_image_rect(&sk_image, None, dst_rect, &paint);
+        return;
+    }
 
     let scale_x = rect.width as f32 / image.width as f32;
     let scale_y = rect.height as f32 / image.height as f32;
@@ -679,10 +923,6 @@ fn draw_image(
         );
         canvas.clip_rrect(clip, None, Some(true));
     }
-
-    let mut paint = Paint::default();
-    paint.set_alpha_f(opacity);
-    paint.set_blend_mode(blend_mode);
 
     canvas.draw_image(&sk_image, Point::new(0.0, 0.0), Some(&paint));
     canvas.restore();

@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::{
     model::{
         Canvas, Clip, ClipContent, ClipGroup, Easing, FitMode, GroupTransform, Layer, LayerItem,
-        Project, ScalarKeyframe, ShapeClip, Source, SourceMediaType, SourcePipeline, TextClip,
+        Project, ScalarKeyframe, Shape, ShapeClip, Source, SourceMediaType, SourcePipeline, TextClip,
         Timeline, Transform,
     },
     source_pipeline::{PipelineError, map_source_frame},
@@ -226,6 +226,7 @@ struct CompileContext<'a> {
     operations: Vec<CompiledOperation>,
     has_compositing_nodes: bool,
     max_depth: usize,
+    scale: f32,
 }
 
 fn evaluate_scalar_track(base: f32, track: &[CompiledScalarKeyframe], local_frame: u64) -> f32 {
@@ -268,7 +269,15 @@ fn apply_easing(progress: f32, easing: Easing) -> f32 {
 }
 
 pub fn compile_project(project: &Project) -> Result<CompiledTimeline, CompileError> {
-    validate_canvas(&project.canvas)?;
+    compile_project_with_scale(project, 1.0)
+}
+
+pub fn compile_project_with_scale(
+    project: &Project,
+    scale: f32,
+ ) -> Result<CompiledTimeline, CompileError> {
+    let scale = resolve_scale(scale)?;
+    validate_canvas(&project.canvas, scale)?;
     validate_timeline(&project.timeline)?;
 
     let sources = index_sources(&project.sources)?;
@@ -287,6 +296,7 @@ pub fn compile_project(project: &Project) -> Result<CompiledTimeline, CompileErr
         operations: Vec::new(),
         has_compositing_nodes: false,
         max_depth: MAX_ITEM_TREE_DEPTH,
+        scale,
     };
 
     let mut layers = Vec::with_capacity(ordered_layers.len());
@@ -309,8 +319,9 @@ pub fn compile_project(project: &Project) -> Result<CompiledTimeline, CompileErr
         ..
     } = ctx;
 
+    let canvas = compile_canvas(&project.canvas, scale);
     Ok(CompiledTimeline {
-        canvas: project.canvas.clone(),
+        canvas,
         timeline: project.timeline.clone(),
         sources,
         operations,
@@ -320,13 +331,54 @@ pub fn compile_project(project: &Project) -> Result<CompiledTimeline, CompileErr
     })
 }
 
-fn validate_canvas(canvas: &Canvas) -> Result<(), CompileError> {
+fn resolve_scale(scale: f32) -> Result<f32, CompileError> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(CompileError::InvalidCanvas(
+            "scale must be finite and > 0".to_string(),
+        ));
+    }
+    Ok(scale)
+}
+
+fn compile_canvas(canvas: &Canvas, scale: f32) -> Canvas {
+    Canvas {
+        width: scale_dimension(canvas.width, scale),
+        height: scale_dimension(canvas.height, scale),
+        background: canvas.background,
+    }
+}
+
+fn scale_dimension(value: u32, scale: f32) -> u32 {
+    let scaled = (value as f64 * scale as f64).round();
+    if scaled <= 1.0 {
+        return 1;
+    }
+    scaled.min(u32::MAX as f64) as u32
+}
+
+fn validate_canvas(canvas: &Canvas, scale: f32) -> Result<(), CompileError> {
     if canvas.width == 0 || canvas.height == 0 {
         return Err(CompileError::InvalidCanvas(
             "width and height must be greater than 0".to_string(),
         ));
     }
-
+    let width = (canvas.width as f64 * scale as f64).round();
+    let height = (canvas.height as f64 * scale as f64).round();
+    if !width.is_finite() || !height.is_finite() {
+        return Err(CompileError::InvalidCanvas(
+            "scaled canvas width/height must be finite".to_string(),
+        ));
+    }
+    if width <= 0.0 || height <= 0.0 {
+        return Err(CompileError::InvalidCanvas(
+            "scaled canvas width/height must be greater than 0".to_string(),
+        ));
+    }
+    if width > u32::MAX as f64 || height > u32::MAX as f64 {
+        return Err(CompileError::InvalidCanvas(
+            "scaled canvas dimensions exceed u32 range".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -422,10 +474,16 @@ fn compile_layer_item(
                 None
             };
 
+            let transform = GroupTransform {
+                x: group.transform.x * ctx.scale,
+                y: group.transform.y * ctx.scale,
+                rotation_degrees: group.transform.rotation_degrees,
+            };
+
             Ok(CompiledLayerItem::Group(CompiledGroupNode {
                 id: group.id.clone(),
                 opacity: group.opacity.clamp(0.0, 1.0),
-                transform: group.transform,
+                transform,
                 items,
                 mask,
             }))
@@ -528,8 +586,9 @@ fn compile_clip_operation(
         });
     }
 
-    let animation = compile_clip_animation(layer.id.as_str(), clip)?;
-    let kind = compile_clip_content(layer.id.as_str(), clip, ctx.sources)?;
+    let animation = compile_clip_animation(layer.id.as_str(), clip, ctx.scale)?;
+    let kind = compile_clip_content(layer.id.as_str(), clip, ctx.sources, ctx.scale)?;
+    let transform = compile_operation_transform(clip.transform, ctx.scale);
 
     Ok(CompiledOperation {
         id: clip.id.clone(),
@@ -538,16 +597,27 @@ fn compile_clip_operation(
         end_frame,
         z_index: layer.z_index,
         opacity: clip.opacity.clamp(0.0, 1.0),
-        transform: clip.transform,
+        transform,
         animation,
         kind,
     })
 }
 
+fn compile_operation_transform(transform: Transform, scale: f32) -> Transform {
+    Transform {
+        x: transform.x * scale,
+        y: transform.y * scale,
+        width: transform.width.map(|value| value * scale),
+        height: transform.height.map(|value| value * scale),
+        rotation_degrees: transform.rotation_degrees,
+    }
+}
+
 fn compile_clip_animation(
     layer_id: &str,
     clip: &crate::model::Clip,
-) -> Result<CompiledClipAnimation, CompileError> {
+    scale: f32,
+ ) -> Result<CompiledClipAnimation, CompileError> {
     if clip.transform.width.is_none() && !clip.animation.width.is_empty() {
         return Err(CompileError::InvalidClip {
             layer_id: layer_id.to_string(),
@@ -586,26 +656,42 @@ fn compile_clip_animation(
             clip,
             "animation.opacity",
             clip.animation.opacity.as_slice(),
+            1.0,
         )?,
-        x: compile_scalar_track(layer_id, clip, "animation.x", clip.animation.x.as_slice())?,
-        y: compile_scalar_track(layer_id, clip, "animation.y", clip.animation.y.as_slice())?,
+        x: compile_scalar_track(
+            layer_id,
+            clip,
+            "animation.x",
+            clip.animation.x.as_slice(),
+            scale,
+        )?,
+        y: compile_scalar_track(
+            layer_id,
+            clip,
+            "animation.y",
+            clip.animation.y.as_slice(),
+            scale,
+        )?,
         width: compile_scalar_track(
             layer_id,
             clip,
             "animation.width",
             clip.animation.width.as_slice(),
+            scale,
         )?,
         height: compile_scalar_track(
             layer_id,
             clip,
             "animation.height",
             clip.animation.height.as_slice(),
+            scale,
         )?,
         rotation_degrees: compile_scalar_track(
             layer_id,
             clip,
             "animation.rotation_degrees",
             clip.animation.rotation_degrees.as_slice(),
+            1.0,
         )?,
     })
 }
@@ -633,7 +719,8 @@ fn compile_scalar_track(
     clip: &crate::model::Clip,
     field: &str,
     keyframes: &[ScalarKeyframe],
-) -> Result<Vec<CompiledScalarKeyframe>, CompileError> {
+    scale: f32,
+ ) -> Result<Vec<CompiledScalarKeyframe>, CompileError> {
     let mut sorted = keyframes.to_vec();
     sorted.sort_by_key(|keyframe| keyframe.frame);
 
@@ -688,7 +775,7 @@ fn compile_scalar_track(
         previous_end = end.max(keyframe.frame);
         compiled.push(CompiledScalarKeyframe {
             frame: keyframe.frame,
-            value: keyframe.value,
+            value: keyframe.value * scale,
             duration_frames: keyframe.duration_frames,
             easing: keyframe.easing,
         });
@@ -701,11 +788,22 @@ fn compile_clip_content(
     layer_id: &str,
     clip: &crate::model::Clip,
     sources: &HashMap<String, Source>,
-) -> Result<CompiledOperationKind, CompileError> {
+    scale: f32,
+ ) -> Result<CompiledOperationKind, CompileError> {
     match &clip.content {
         ClipContent::Solid { color } => Ok(CompiledOperationKind::Solid { color: *color }),
-        ClipContent::Shape(shape) => Ok(CompiledOperationKind::Shape(shape.clone())),
-        ClipContent::Text(text) => Ok(CompiledOperationKind::Text(text.clone())),
+        ClipContent::Shape(shape) => {
+            let mut scaled = shape.clone();
+            if let Shape::Rectangle { radius, .. } = &mut scaled.shape {
+                *radius = (*radius * scale).max(0.0);
+            }
+            Ok(CompiledOperationKind::Shape(scaled))
+        }
+        ClipContent::Text(text) => {
+            let mut scaled = text.clone();
+            scaled.font_size = (scaled.font_size * scale).max(1.0);
+            Ok(CompiledOperationKind::Text(scaled))
+        }
         ClipContent::Image(image) => {
             validate_source_type(
                 layer_id,
@@ -724,7 +822,7 @@ fn compile_clip_content(
             Ok(CompiledOperationKind::Image(ImageSourceRef {
                 source_id: image.source.clone(),
                 fit: image.fit,
-                corner_radius: image.corner_radius,
+                corner_radius: image.corner_radius * scale,
             }))
         }
         ClipContent::Video(video) => {
@@ -753,7 +851,7 @@ fn compile_clip_content(
                 source_id: video.source.clone(),
                 pipeline: video.pipeline.clone(),
                 fit: video.fit,
-                corner_radius: video.corner_radius,
+                corner_radius: video.corner_radius * scale,
             }))
         }
     }

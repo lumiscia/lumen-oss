@@ -20,7 +20,7 @@ use lumen::{
 };
 
 use super::common::{
-    DEFAULT_ENCODE_QUEUE, DEFAULT_MAX_DECODED_FRAMES, DEFAULT_STREAM_CACHE_FRAMES,
+    DEFAULT_ENCODE_QUEUE, DEFAULT_MAX_DECODED_FRAMES, DEFAULT_STREAM_CACHE_FRAMES, WebAssetCache,
     FrameRequirements, PreparedAssets, choose_video_encoder, collect_requirements, create_renderer,
     decode_image_source, encode_rgba_stream, frame_size, media_root, resolve_source_file_path,
     try_render_ffmpeg_fast_path,
@@ -31,6 +31,7 @@ pub use super::common::RenderBackendOptions;
 pub struct FfmpegRenderBackend {
     timeline: Arc<CompiledTimeline>,
     options: RenderBackendOptions,
+    asset_cache: Option<Arc<WebAssetCache>>,
 }
 
 impl FfmpegRenderBackend {
@@ -38,23 +39,42 @@ impl FfmpegRenderBackend {
         Self {
             timeline,
             options: RenderBackendOptions::default(),
+            asset_cache: None,
         }
+    }
+
+    fn ensure_asset_cache(&mut self) -> anyhow::Result<Arc<WebAssetCache>> {
+        if let Some(cache) = &self.asset_cache {
+            return Ok(Arc::clone(cache));
+        }
+
+        let cache = Arc::new(WebAssetCache::new_temp()?);
+        self.asset_cache = Some(Arc::clone(&cache));
+        Ok(cache)
     }
 
     pub fn new_with_options(
         timeline: Arc<CompiledTimeline>,
         options: RenderBackendOptions,
     ) -> Self {
-        Self { timeline, options }
+        Self {
+            timeline,
+            options,
+            asset_cache: None,
+        }
     }
 
     pub fn render_to_mp4(
         &mut self,
         on_progress: &mut dyn FnMut(u64, u64),
     ) -> anyhow::Result<Vec<u8>> {
-        if let Some(bytes) =
-            try_render_ffmpeg_fast_path(self.timeline.as_ref(), &self.options, on_progress)?
-        {
+        let asset_cache = Some(self.ensure_asset_cache()?);
+        if let Some(bytes) = try_render_ffmpeg_fast_path(
+            self.timeline.as_ref(),
+            &self.options,
+            asset_cache.as_deref(),
+            on_progress,
+        )? {
             return Ok(bytes);
         }
 
@@ -69,8 +89,12 @@ impl FfmpegRenderBackend {
             })
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_STREAM_CACHE_FRAMES);
-        let mut assets =
-            prepare_streaming_assets(&self.timeline, &media_root, stream_cache_capacity)?;
+        let mut assets = prepare_streaming_assets(
+            &self.timeline,
+            &media_root,
+            asset_cache,
+            stream_cache_capacity,
+        )?;
 
         let width = self.timeline.canvas.width;
         let height = self.timeline.canvas.height;
@@ -172,8 +196,13 @@ impl FfmpegRenderBackend {
             })
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_STREAM_CACHE_FRAMES);
-        let mut assets =
-            prepare_streaming_assets(&self.timeline, &media_root, stream_cache_capacity)?;
+        let asset_cache = Some(self.ensure_asset_cache()?);
+        let mut assets = prepare_streaming_assets(
+            &self.timeline,
+            &media_root,
+            asset_cache,
+            stream_cache_capacity,
+        )?;
         self.decode_video_dependencies_for_frame(frame, &mut assets)
     }
 
@@ -190,8 +219,13 @@ impl FfmpegRenderBackend {
             })
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_STREAM_CACHE_FRAMES);
-        let mut assets =
-            prepare_streaming_assets(&self.timeline, &media_root, stream_cache_capacity)?;
+        let asset_cache = Some(self.ensure_asset_cache()?);
+        let mut assets = prepare_streaming_assets(
+            &self.timeline,
+            &media_root,
+            asset_cache,
+            stream_cache_capacity,
+        )?;
 
         let count = frames.min(self.timeline.total_frames());
         for frame in 0..count {
@@ -214,8 +248,13 @@ impl FfmpegRenderBackend {
             })
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_STREAM_CACHE_FRAMES);
-        let mut assets =
-            prepare_streaming_assets(&self.timeline, &media_root, stream_cache_capacity)?;
+        let asset_cache = Some(self.ensure_asset_cache()?);
+        let mut assets = prepare_streaming_assets(
+            &self.timeline,
+            &media_root,
+            asset_cache,
+            stream_cache_capacity,
+        )?;
 
         for frame in frames {
             self.decode_video_dependencies_for_frame(*frame, &mut assets)?;
@@ -236,11 +275,13 @@ impl FfmpegRenderBackend {
             })
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_MAX_DECODED_FRAMES);
+        let asset_cache = Some(self.ensure_asset_cache()?);
         let requirements = collect_requirements(self.timeline.as_ref(), std::iter::once(frame))?;
         let mut assets = prepare_assets(
             self.timeline.as_ref(),
             &requirements,
             &media_root,
+            asset_cache.clone(),
             max_decoded_source_frames,
         )?;
 
@@ -277,6 +318,7 @@ struct VideoStreamDecoder {
     source: Source,
     fps: Rational,
     media_root: std::path::PathBuf,
+    asset_cache: Option<Arc<WebAssetCache>>,
 }
 
 impl VideoStreamDecoder {
@@ -287,13 +329,21 @@ impl VideoStreamDecoder {
         height: u32,
         start_frame: u64,
         media_root: &Path,
+        asset_cache: Option<Arc<WebAssetCache>>,
         cache_capacity: usize,
     ) -> anyhow::Result<Self> {
         let frame_byte_size = frame_size(width, height)?;
         let cap = NonZeroUsize::new(cache_capacity.max(1))
             .ok_or_else(|| anyhow!("invalid cache capacity"))?;
-        let (child, stdout) =
-            Self::spawn_ffmpeg(&source, fps, width, height, start_frame, media_root)?;
+        let (child, stdout) = Self::spawn_ffmpeg(
+            &source,
+            fps,
+            width,
+            height,
+            start_frame,
+            media_root,
+            asset_cache.as_deref(),
+        )?;
         Ok(Self {
             child,
             stdout,
@@ -305,6 +355,7 @@ impl VideoStreamDecoder {
             source,
             fps,
             media_root: media_root.to_path_buf(),
+            asset_cache,
         })
     }
 
@@ -315,6 +366,7 @@ impl VideoStreamDecoder {
         _height: u32,
         start_frame: u64,
         media_root: &Path,
+        asset_cache: Option<&WebAssetCache>,
     ) -> anyhow::Result<(Child, BufReader<ChildStdout>)> {
         let mut command = Command::new("ffmpeg");
         command
@@ -325,7 +377,7 @@ impl VideoStreamDecoder {
 
         match &source.kind {
             SourceKind::File { path, .. } => {
-                let resolved = resolve_source_file_path(path, media_root)?;
+                let resolved = resolve_source_file_path(path, media_root, asset_cache)?;
                 command.arg("-hwaccel").arg("auto").arg("-i").arg(resolved);
             }
             SourceKind::Generator { filter, .. } => {
@@ -405,6 +457,7 @@ impl VideoStreamDecoder {
             self.height,
             start_frame,
             &self.media_root,
+            self.asset_cache.as_deref(),
         )?;
         self.child = child;
         self.stdout = stdout;
@@ -448,6 +501,7 @@ impl FrameProvider for StreamingAssets {
 fn prepare_streaming_assets(
     timeline: &CompiledTimeline,
     media_root: &Path,
+    asset_cache: Option<Arc<WebAssetCache>>,
     cache_capacity: usize,
 ) -> anyhow::Result<StreamingAssets> {
     let fps = timeline.timeline.fps;
@@ -457,11 +511,12 @@ fn prepare_streaming_assets(
     for source in timeline.sources() {
         match source.media_type() {
             SourceMediaType::Image => {
-                let image = decode_image_source(source, media_root)?;
+                let image = decode_image_source(source, media_root, asset_cache.as_deref())?;
                 images.insert(source.id.clone(), image);
             }
             SourceMediaType::Video => {
-                let (width, height) = probe_video_dimensions(source, media_root)?;
+                let (width, height) =
+                    probe_video_dimensions(source, media_root, asset_cache.as_deref())?;
                 let decoder = VideoStreamDecoder::new(
                     source.clone(),
                     fps,
@@ -469,6 +524,7 @@ fn prepare_streaming_assets(
                     height,
                     0,
                     media_root,
+                    asset_cache.clone(),
                     cache_capacity,
                 )?;
                 video_decoders.insert(source.id.clone(), decoder);
@@ -487,6 +543,7 @@ fn prepare_assets(
     timeline: &CompiledTimeline,
     requirements: &FrameRequirements,
     media_root: &Path,
+    asset_cache: Option<Arc<WebAssetCache>>,
     max_frames: usize,
 ) -> anyhow::Result<PreparedAssets> {
     let total_requested_video_frames: usize = requirements.videos.values().map(BTreeSet::len).sum();
@@ -503,7 +560,7 @@ fn prepare_assets(
         let source = timeline
             .source(source_id)
             .ok_or_else(|| anyhow!("missing source `{source_id}`"))?;
-        let image = decode_image_source(source, media_root)?;
+        let image = decode_image_source(source, media_root, asset_cache.as_deref())?;
         prepared.images.insert(source_id.clone(), image);
     }
 
@@ -517,8 +574,9 @@ fn prepare_assets(
             .clone();
         let frame_set = frames.clone();
         let decode_root = media_root.to_path_buf();
+        let decode_cache = asset_cache.clone();
         decode_handles.push(thread::spawn(move || {
-            decode_video_source_frames(&source, fps, frame_set, &decode_root)
+            decode_video_source_frames(&source, fps, frame_set, &decode_root, decode_cache)
                 .map(|frames| (source.id.clone(), frames))
         }));
     }
@@ -539,12 +597,13 @@ fn decode_video_source_frames(
     fps: Rational,
     requested_frames: BTreeSet<u64>,
     media_root: &Path,
+    asset_cache: Option<Arc<WebAssetCache>>,
 ) -> anyhow::Result<BTreeMap<u64, FrameImage>> {
     if requested_frames.is_empty() {
         return Ok(BTreeMap::new());
     }
 
-    let (width, height) = probe_video_dimensions(source, media_root)?;
+    let (width, height) = probe_video_dimensions(source, media_root, asset_cache.as_deref())?;
     let fsize = frame_size(width, height)?;
     let min_requested = requested_frames
         .iter()
@@ -557,7 +616,14 @@ fn decode_video_source_frames(
         .copied()
         .ok_or_else(|| anyhow!("requested frame set unexpectedly empty"))?;
 
-    let mut command = decode_command(source, fps, min_requested, max_requested, media_root)?;
+    let mut command = decode_command(
+        source,
+        fps,
+        min_requested,
+        max_requested,
+        media_root,
+        asset_cache.as_deref(),
+    )?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = command
@@ -614,6 +680,7 @@ fn decode_command(
     min_frame: u64,
     max_frame: u64,
     media_root: &Path,
+    asset_cache: Option<&WebAssetCache>,
 ) -> anyhow::Result<Command> {
     let mut command = Command::new("ffmpeg");
     command
@@ -624,7 +691,7 @@ fn decode_command(
 
     match &source.kind {
         SourceKind::File { path, .. } => {
-            let resolved = resolve_source_file_path(path, media_root)?;
+            let resolved = resolve_source_file_path(path, media_root, asset_cache)?;
             command.arg("-hwaccel").arg("auto").arg("-i").arg(resolved);
         }
         SourceKind::Generator { filter, .. } => {
@@ -658,7 +725,11 @@ fn decode_command(
     Ok(command)
 }
 
-fn probe_video_dimensions(source: &Source, media_root: &Path) -> anyhow::Result<(u32, u32)> {
+fn probe_video_dimensions(
+    source: &Source,
+    media_root: &Path,
+    asset_cache: Option<&WebAssetCache>,
+) -> anyhow::Result<(u32, u32)> {
     let mut command = Command::new("ffprobe");
     command
         .arg("-v")
@@ -672,7 +743,7 @@ fn probe_video_dimensions(source: &Source, media_root: &Path) -> anyhow::Result<
 
     match &source.kind {
         SourceKind::File { path, .. } => {
-            command.arg(resolve_source_file_path(path, media_root)?);
+            command.arg(resolve_source_file_path(path, media_root, asset_cache)?);
         }
         SourceKind::Generator { filter, .. } => {
             command.arg("-f").arg("lavfi").arg("-i").arg(filter);
