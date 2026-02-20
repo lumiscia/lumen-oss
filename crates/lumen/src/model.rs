@@ -221,6 +221,7 @@ pub enum ClipContent {
     Text(TextClip),
     Image(ImageClip),
     Video(VideoClip),
+    Layout(LayoutClip),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -261,6 +262,178 @@ pub enum TextAlign {
     #[default]
     Center,
     Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayoutClip {
+    pub root: LayoutNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayoutNode {
+    #[serde(default)]
+    pub style: LayoutNodeStyle,
+    #[serde(flatten)]
+    pub kind: LayoutNodeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LayoutNodeKind {
+    Container {
+        #[serde(default)]
+        children: Vec<LayoutNode>,
+    },
+    Text(LayoutTextNode),
+    Image(LayoutImageNode),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayoutTextNode {
+    pub text: String,
+    #[serde(default = "default_font_size")]
+    pub font_size: f32,
+    #[serde(default = "default_text_color")]
+    pub color: ColorRgba,
+    #[serde(default = "default_layout_text_align")]
+    pub align: TextAlign,
+    #[serde(default)]
+    pub line_height: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayoutImageNode {
+    pub source: String,
+    #[serde(default)]
+    pub fit: FitMode,
+    #[serde(default = "default_corner_radius")]
+    pub corner_radius: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub struct LayoutEdges {
+    #[serde(default)]
+    pub top: f32,
+    #[serde(default)]
+    pub right: f32,
+    #[serde(default)]
+    pub bottom: f32,
+    #[serde(default)]
+    pub left: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayoutNodeStyle {
+    #[serde(default)]
+    pub display: LayoutDisplay,
+    #[serde(default)]
+    pub flex_direction: LayoutFlexDirection,
+    #[serde(default)]
+    pub justify_content: LayoutJustifyContent,
+    #[serde(default)]
+    pub align_items: LayoutAlignItems,
+    #[serde(default)]
+    pub align_self: LayoutAlignSelf,
+    #[serde(default)]
+    pub flex_grow: f32,
+    #[serde(default = "default_flex_shrink")]
+    pub flex_shrink: f32,
+    #[serde(default)]
+    pub width: Option<f32>,
+    #[serde(default)]
+    pub height: Option<f32>,
+    #[serde(default)]
+    pub min_width: Option<f32>,
+    #[serde(default)]
+    pub min_height: Option<f32>,
+    #[serde(default)]
+    pub max_width: Option<f32>,
+    #[serde(default)]
+    pub max_height: Option<f32>,
+    #[serde(default)]
+    pub padding: LayoutEdges,
+    #[serde(default)]
+    pub margin: LayoutEdges,
+    #[serde(default)]
+    pub gap: f32,
+    #[serde(default)]
+    pub background: Option<ColorRgba>,
+    #[serde(default = "default_corner_radius")]
+    pub corner_radius: f32,
+}
+
+impl Default for LayoutNodeStyle {
+    fn default() -> Self {
+        Self {
+            display: LayoutDisplay::Flex,
+            flex_direction: LayoutFlexDirection::Column,
+            justify_content: LayoutJustifyContent::FlexStart,
+            align_items: LayoutAlignItems::Stretch,
+            align_self: LayoutAlignSelf::Auto,
+            flex_grow: 0.0,
+            flex_shrink: default_flex_shrink(),
+            width: None,
+            height: None,
+            min_width: None,
+            min_height: None,
+            max_width: None,
+            max_height: None,
+            padding: LayoutEdges::default(),
+            margin: LayoutEdges::default(),
+            gap: 0.0,
+            background: None,
+            corner_radius: default_corner_radius(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutDisplay {
+    #[default]
+    Flex,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutFlexDirection {
+    Row,
+    #[default]
+    Column,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutJustifyContent {
+    #[default]
+    FlexStart,
+    Center,
+    FlexEnd,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutAlignItems {
+    #[default]
+    Stretch,
+    FlexStart,
+    Center,
+    FlexEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutAlignSelf {
+    #[default]
+    Auto,
+    Stretch,
+    FlexStart,
+    Center,
+    FlexEnd,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -403,6 +576,14 @@ fn default_font_size() -> f32 {
 
 fn default_text_color() -> ColorRgba {
     ColorRgba(255, 255, 255, 255)
+}
+
+fn default_layout_text_align() -> TextAlign {
+    TextAlign::Left
+}
+
+fn default_flex_shrink() -> f32 {
+    1.0
 }
 
 #[cfg(test)]

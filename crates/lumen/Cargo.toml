@@ -17,6 +17,7 @@ skia-vulkan = ["renderer-skia", "skia-safe/vulkan", "dep:ash"]
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
+taffy = "0.9.2"
 
 # Skia renderer deps
 skia-safe = { version = "0.91", optional = true, features = ["textlayout"] }

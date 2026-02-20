@@ -19,7 +19,7 @@ use anyhow::{Context, anyhow};
 use lumen::{
     backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
     compile::{CompiledOperationKind, CompiledTimeline},
-    model::{FitMode, LoopMode, Source, SourceKind, SourcePipeline},
+    model::{FitMode, LayoutNode, LayoutNodeKind, LoopMode, Source, SourceKind, SourcePipeline},
     time::Rational,
 };
 
@@ -65,8 +65,9 @@ impl WebAssetCache {
     }
 
     fn new_with_root(root: PathBuf, temp_dir: Option<tempfile::TempDir>) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(&root)
-            .with_context(|| format!("failed to create web asset cache dir `{}`", root.display()))?;
+        std::fs::create_dir_all(&root).with_context(|| {
+            format!("failed to create web asset cache dir `{}`", root.display())
+        })?;
         let client = Client::builder()
             .timeout(Duration::from_secs(60))
             .build()
@@ -97,9 +98,7 @@ impl WebAssetCache {
             .with_context(|| format!("failed to download asset `{url}`"))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(anyhow!(
-                "failed to download asset `{url}`: HTTP {status}"
-            ));
+            return Err(anyhow!("failed to download asset `{url}`: HTTP {status}"));
         }
         let bytes = response
             .bytes()
@@ -144,7 +143,9 @@ impl WebAssetCache {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         url.hash(&mut hasher);
         let hash = hasher.finish();
-        let ext = extract_extension(url).filter(|ext| !ext.is_empty()).unwrap_or("bin");
+        let ext = extract_extension(url)
+            .filter(|ext| !ext.is_empty())
+            .unwrap_or("bin");
         Ok(self.root.join(format!("{hash}.{ext}")))
     }
 }
@@ -175,6 +176,9 @@ pub fn collect_requirements(
                 CompiledOperationKind::Image(image) => {
                     requirements.images.insert(image.source_id.clone());
                 }
+                CompiledOperationKind::Layout(layout) => {
+                    collect_layout_image_requirements(&layout.root, &mut requirements.images);
+                }
                 CompiledOperationKind::Video(video) => {
                     if let Some(source_frame) = operation
                         .resolve_video_source_frame(frame)
@@ -195,6 +199,20 @@ pub fn collect_requirements(
     }
 
     Ok(requirements)
+}
+
+fn collect_layout_image_requirements(node: &LayoutNode, images: &mut HashSet<String>) {
+    match &node.kind {
+        LayoutNodeKind::Container { children } => {
+            for child in children {
+                collect_layout_image_requirements(child, images);
+            }
+        }
+        LayoutNodeKind::Text(_) => {}
+        LayoutNodeKind::Image(image) => {
+            images.insert(image.source.clone());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -595,7 +613,8 @@ pub fn resolve_source_file_path(
 ) -> anyhow::Result<PathBuf> {
     let root = media_root(Some(root_override))?;
     if is_http_url(path) {
-        let cache = asset_cache.ok_or_else(|| anyhow!("web asset cache unavailable for `{path}`"))?;
+        let cache =
+            asset_cache.ok_or_else(|| anyhow!("web asset cache unavailable for `{path}`"))?;
         return cache.resolve(path);
     }
     resolve_local_path_with_root(path, &root)
