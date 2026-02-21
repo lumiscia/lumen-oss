@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 
 use crate::backend::skia::SkiaRenderer;
 use crate::backend::{FrameProvider, RenderError, Renderer};
@@ -28,6 +28,30 @@ impl RenderOrchestrator {
         timeline: Arc<CompiledTimeline>,
         frame_range: Range<u64>,
         make_provider: impl Fn() -> P + Send + Sync + 'static,
+        on_frame: F,
+    ) -> Result<(), RenderError>
+    where
+        P: FrameProvider + 'static,
+        F: FnMut(u64, Vec<u8>) + Send,
+    {
+        self.render_range_with(
+            timeline,
+            frame_range,
+            make_provider,
+            |width, height| Ok::<_, RenderError>(Box::new(SkiaRenderer::new(width, height)?)),
+            on_frame,
+        )
+    }
+
+    pub fn render_range_with<P, F>(
+        &self,
+        timeline: Arc<CompiledTimeline>,
+        frame_range: Range<u64>,
+        make_provider: impl Fn() -> P + Send + Sync + 'static,
+        make_renderer: impl Fn(u32, u32) -> Result<Box<dyn Renderer>, RenderError>
+        + Send
+        + Sync
+        + 'static,
         mut on_frame: F,
     ) -> Result<(), RenderError>
     where
@@ -45,6 +69,8 @@ impl RenderOrchestrator {
         let next_frame = Arc::new(AtomicU64::new(frame_range.start));
         let stop = Arc::new(AtomicBool::new(false));
         let provider_factory = Arc::new(make_provider);
+        let renderer_factory = Arc::new(make_renderer);
+        let in_flight_budget = Arc::new(OutstandingBudget::new(queue_depth));
 
         enum WorkerMsg {
             Frame { frame: u64, pixels: Vec<u8> },
@@ -60,14 +86,16 @@ impl RenderOrchestrator {
             let timeline = Arc::clone(&timeline);
             let stop = Arc::clone(&stop);
             let provider_factory = Arc::clone(&provider_factory);
+            let renderer_factory = Arc::clone(&renderer_factory);
+            let in_flight_budget = Arc::clone(&in_flight_budget);
 
             handles.push(std::thread::spawn(move || {
                 let mut provider = provider_factory();
                 let mut renderer =
-                    match SkiaRenderer::new(timeline.canvas.width, timeline.canvas.height) {
+                    match renderer_factory(timeline.canvas.width, timeline.canvas.height) {
                         Ok(renderer) => renderer,
                         Err(err) => {
-                            let _ = tx.send(WorkerMsg::Err(err));
+                            if tx.send(WorkerMsg::Err(err)).is_err() {}
                             return;
                         }
                     };
@@ -77,20 +105,27 @@ impl RenderOrchestrator {
                         break;
                     }
 
+                    if !in_flight_budget.acquire(&stop) {
+                        break;
+                    }
+
                     let frame = next_frame.fetch_add(1, Ordering::AcqRel);
                     if frame >= frame_range.end {
+                        in_flight_budget.release();
                         break;
                     }
 
                     match renderer.render_frame(&timeline, frame, &mut provider) {
                         Ok(pixels) => {
                             if tx.send(WorkerMsg::Frame { frame, pixels }).is_err() {
+                                in_flight_budget.release();
                                 break;
                             }
                         }
                         Err(err) => {
                             stop.store(true, Ordering::Release);
-                            let _ = tx.send(WorkerMsg::Err(err));
+                            in_flight_budget.release();
+                            if tx.send(WorkerMsg::Err(err)).is_err() {}
                             break;
                         }
                     }
@@ -110,29 +145,41 @@ impl RenderOrchestrator {
                     while let Some(pixels) = pending.remove(&expected) {
                         on_frame(expected, pixels);
                         expected += 1;
+                        in_flight_budget.release();
                     }
                 }
                 Ok(WorkerMsg::Err(err)) => {
                     error = Some(err);
                     stop.store(true, Ordering::Release);
+                    in_flight_budget.notify_all();
                     break;
                 }
                 Err(_) => {
-                    error = Some(RenderError::Failed(
-                        "render workers exited before completing frame range".to_string(),
-                    ));
-                    stop.store(true, Ordering::Release);
+                    if expected < frame_range.end {
+                        error = Some(RenderError::Failed(
+                            "render workers exited before completing frame range".to_string(),
+                        ));
+                        stop.store(true, Ordering::Release);
+                        in_flight_budget.notify_all();
+                    }
                     break;
                 }
             }
         }
 
+        let mut worker_panicked = false;
         for handle in handles {
-            let _ = handle.join();
+            if handle.join().is_err() {
+                worker_panicked = true;
+            }
         }
 
         if let Some(err) = error {
             return Err(err);
+        }
+
+        if worker_panicked {
+            return Err(RenderError::WorkerPanicked);
         }
 
         Ok(())
@@ -146,5 +193,51 @@ impl Default for RenderOrchestrator {
                 .map(|value| value.get())
                 .unwrap_or(1),
         )
+    }
+}
+
+#[derive(Debug)]
+struct OutstandingBudget {
+    available: Mutex<usize>,
+    cv: Condvar,
+}
+
+impl OutstandingBudget {
+    fn new(slots: usize) -> Self {
+        Self {
+            available: Mutex::new(slots.max(1)),
+            cv: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self, stop: &AtomicBool) -> bool {
+        let mut available = match self.available.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        while *available == 0 {
+            if stop.load(Ordering::Acquire) {
+                return false;
+            }
+            available = match self.cv.wait(available) {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+        }
+        *available -= 1;
+        true
+    }
+
+    fn release(&self) {
+        let mut available = match self.available.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *available = available.saturating_add(1);
+        self.cv.notify_one();
+    }
+
+    fn notify_all(&self) {
+        self.cv.notify_all();
     }
 }

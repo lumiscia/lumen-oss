@@ -30,6 +30,8 @@ pub enum RenderError {
     InvalidImagePayload,
     #[error("pixel size overflow")]
     SizeOverflow,
+    #[error("render worker thread panicked")]
+    WorkerPanicked,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +62,10 @@ pub trait FrameProvider: Send {
         source_id: &str,
         source_frame: u64,
     ) -> Result<Option<FrameImage>, ProviderError>;
+
+    fn video_frame_count(&mut self, _source_id: &str) -> Result<Option<u64>, ProviderError> {
+        Ok(None)
+    }
 }
 
 pub trait Renderer: Send {
@@ -69,29 +75,6 @@ pub trait Renderer: Send {
         frame: u64,
         provider: &mut dyn FrameProvider,
     ) -> Result<Vec<u8>, RenderError>;
-}
-
-pub trait RenderBackend: Send {
-    fn render_frame(
-        &mut self,
-        timeline: &CompiledTimeline,
-        frame: u64,
-        provider: &mut dyn FrameProvider,
-    ) -> Result<Vec<u8>, RenderError>;
-}
-
-impl<T> RenderBackend for T
-where
-    T: Renderer + Send,
-{
-    fn render_frame(
-        &mut self,
-        timeline: &CompiledTimeline,
-        frame: u64,
-        provider: &mut dyn FrameProvider,
-    ) -> Result<Vec<u8>, RenderError> {
-        Renderer::render_frame(self, timeline, frame, provider)
-    }
 }
 
 pub fn pixel_len(width: u32, height: u32) -> Result<usize, RenderError> {

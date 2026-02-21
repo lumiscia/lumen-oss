@@ -40,3 +40,24 @@ impl<'de> Deserialize<'de> for Rational {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Rational;
+
+    #[test]
+    fn as_f32_handles_zero_denominator() {
+        assert_eq!(Rational::new(10, 0).as_f32(), 0.0);
+        assert!((Rational::new(30000, 1001).as_f32() - 29.97003).abs() < 0.0001);
+    }
+
+    #[test]
+    fn serde_round_trip() {
+        let value = Rational::new(24, 1);
+        let json = serde_json::to_string(&value).expect("serialize rational");
+        assert_eq!(json, "[24,1]");
+
+        let restored: Rational = serde_json::from_str(json.as_str()).expect("deserialize rational");
+        assert_eq!(restored, value);
+    }
+}

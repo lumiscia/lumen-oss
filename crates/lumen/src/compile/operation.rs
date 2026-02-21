@@ -1,12 +1,12 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use thiserror::Error;
 
 use crate::expression::{ExprEvalContext, ExprEvalError, ParsedExpr, eval_expr};
 use crate::model::{
-    BaseStyle, BlendMode, Canvas, ClipStyle, FitMode, Layer, LayoutNode, LayoutNodeKind,
-    LayoutNodeStyle, ShapeGeometry, SourceFrameContext, SourceMedia, TextAlign, Timeline,
-    VerticalAlign, VideoPipeline,
+    BlendMode, Canvas, FitMode, Layer, LayoutAlign, LayoutDirection, LayoutJustify, ShapeGeometry,
+    SourceFrameContext, SourceMedia, TextAlign, Timeline, VerticalAlign, VideoPipeline,
 };
 
 use super::scalar::ScalarHandle;
@@ -19,9 +19,11 @@ pub struct CompiledTimeline {
     pub layers: Vec<CompiledLayer>,
     pub(crate) operations: Vec<CompiledOperation>,
     pub(crate) frame_index: Vec<Vec<usize>>,
-    pub(crate) literal_scalars: Vec<(String, f32)>,
+    pub(crate) literal_scalars: Vec<(usize, f32)>,
     pub(crate) expression_scalars: Vec<CompiledExpressionBinding>,
     pub(crate) eval_order: Vec<usize>,
+    pub(crate) path_indices: Arc<HashMap<String, usize>>,
+    pub(crate) scalar_count: usize,
 }
 
 impl CompiledTimeline {
@@ -51,6 +53,14 @@ impl CompiledTimeline {
         &self,
         frame: u64,
     ) -> Result<RuntimeFrameContext, RuntimeEvalError> {
+        self.resolve_frame_context_with_overrides(frame, &HashMap::new())
+    }
+
+    pub fn resolve_frame_context_with_overrides(
+        &self,
+        frame: u64,
+        overrides: &HashMap<String, f32>,
+    ) -> Result<RuntimeFrameContext, RuntimeEvalError> {
         if frame >= self.total_frames() {
             return Err(RuntimeEvalError::FrameOutOfRange {
                 frame,
@@ -58,63 +68,142 @@ impl CompiledTimeline {
             });
         }
 
-        let mut values =
-            HashMap::with_capacity(self.literal_scalars.len() + self.expression_scalars.len() + 6);
-        values.insert("canvas.width".to_string(), self.canvas.width as f32);
-        values.insert("canvas.height".to_string(), self.canvas.height as f32);
-        values.insert("timeline.frame".to_string(), frame as f32);
-        values.insert(
-            "timeline.duration".to_string(),
-            self.timeline.duration_frames as f32,
-        );
-        values.insert("timeline.fps".to_string(), self.timeline.fps_f32());
-
-        for (path, value) in &self.literal_scalars {
-            values.insert(path.clone(), *value);
+        let mut scalar_values = vec![0.0; self.scalar_count];
+        for (index, value) in &self.literal_scalars {
+            if let Some(slot) = scalar_values.get_mut(*index) {
+                *slot = *value;
+            }
         }
+        for (path, value) in overrides {
+            if let Some(index) = self.path_indices.get(path.as_str())
+                && let Some(slot) = scalar_values.get_mut(*index)
+            {
+                *slot = *value;
+            }
+        }
+
+        let canvas_width = self.canvas.width as f32;
+        let canvas_height = self.canvas.height as f32;
+        let timeline_frame = frame as f32;
+        let timeline_duration = self.timeline.duration_frames as f32;
+        let timeline_fps = self.timeline.fps_f32();
 
         for binding_index in &self.eval_order {
             let binding = &self.expression_scalars[*binding_index];
-            let ctx = FrameEvalMap { values: &values };
+            if overrides.contains_key(binding.path.as_str()) {
+                continue;
+            }
+            let eval_ctx = FrameEvalMap {
+                scalar_values: scalar_values.as_slice(),
+                path_indices: self.path_indices.as_ref(),
+                overrides,
+                canvas_width,
+                canvas_height,
+                timeline_frame,
+                timeline_duration,
+                timeline_fps,
+            };
             let value =
-                eval_expr(&binding.expr, &ctx).map_err(|source| RuntimeEvalError::Expr {
+                eval_expr(&binding.expr, &eval_ctx).map_err(|source| RuntimeEvalError::Expr {
                     owner_id: binding.owner_id.clone(),
                     property_path: binding.path.clone(),
                     expression: binding.expression.clone(),
                     source,
                 })?;
-            values.insert(binding.path.clone(), value);
+            if let Some(slot) = scalar_values.get_mut(binding.index) {
+                *slot = value;
+            }
         }
 
-        Ok(RuntimeFrameContext { values })
+        Ok(RuntimeFrameContext {
+            scalar_values,
+            path_indices: Arc::clone(&self.path_indices),
+            canvas_width,
+            canvas_height,
+            timeline_frame,
+            timeline_duration,
+            timeline_fps,
+        })
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct RuntimeFrameContext {
-    values: HashMap<String, f32>,
+    scalar_values: Vec<f32>,
+    path_indices: Arc<HashMap<String, usize>>,
+    canvas_width: f32,
+    canvas_height: f32,
+    timeline_frame: f32,
+    timeline_duration: f32,
+    timeline_fps: f32,
 }
 
 impl RuntimeFrameContext {
     pub fn get(&self, path: &str) -> Option<f32> {
-        self.values.get(path).copied()
+        match path {
+            "canvas.width" => Some(self.canvas_width),
+            "canvas.height" => Some(self.canvas_height),
+            "timeline.frame" => Some(self.timeline_frame),
+            "timeline.duration" => Some(self.timeline_duration),
+            "timeline.fps" => Some(self.timeline_fps),
+            _ => self
+                .path_indices
+                .get(path)
+                .and_then(|index| self.scalar_values.get(*index))
+                .copied(),
+        }
+    }
+
+    pub fn scalar(&self, index: usize) -> Option<f32> {
+        self.scalar_values.get(index).copied()
     }
 
     pub fn resolve(&self, target: &str, property: &str) -> Option<f32> {
-        let path = format!("{}.{}", target, property);
-        self.get(path.as_str())
+        match (target, property) {
+            ("canvas", "width") => Some(self.canvas_width),
+            ("canvas", "height") => Some(self.canvas_height),
+            ("timeline", "frame") => Some(self.timeline_frame),
+            ("timeline", "duration") => Some(self.timeline_duration),
+            ("timeline", "fps") => Some(self.timeline_fps),
+            _ => {
+                let path = format!("{}.{}", target, property);
+                self.get(path.as_str())
+            }
+        }
     }
 }
 
 #[derive(Debug)]
 struct FrameEvalMap<'a> {
-    values: &'a HashMap<String, f32>,
+    scalar_values: &'a [f32],
+    path_indices: &'a HashMap<String, usize>,
+    overrides: &'a HashMap<String, f32>,
+    canvas_width: f32,
+    canvas_height: f32,
+    timeline_frame: f32,
+    timeline_duration: f32,
+    timeline_fps: f32,
 }
 
 impl ExprEvalContext for FrameEvalMap<'_> {
     fn resolve(&self, target: &str, property: &str) -> Option<f32> {
-        let path = format!("{}.{}", target, property);
-        self.values.get(path.as_str()).copied()
+        match (target, property) {
+            ("canvas", "width") => Some(self.canvas_width),
+            ("canvas", "height") => Some(self.canvas_height),
+            ("timeline", "frame") => Some(self.timeline_frame),
+            ("timeline", "duration") => Some(self.timeline_duration),
+            ("timeline", "fps") => Some(self.timeline_fps),
+            _ => {
+                let path = format!("{}.{}", target, property);
+                if let Some(value) = self.overrides.get(path.as_str()) {
+                    return Some(*value);
+                }
+                self.path_indices
+                    .get(path.as_str())
+                    .and_then(|index| self.scalar_values.get(*index))
+                    .copied()
+            }
+        }
     }
 }
 
@@ -135,6 +224,7 @@ pub enum RuntimeEvalError {
 
 #[derive(Debug, Clone)]
 pub struct CompiledExpressionBinding {
+    pub index: usize,
     pub path: String,
     pub owner_id: String,
     pub expression: String,
@@ -310,6 +400,9 @@ pub struct CompiledLayoutNodeStyle {
     pub grow: Option<ScalarHandle>,
     pub shrink: Option<ScalarHandle>,
     pub basis: Option<ScalarHandle>,
+    pub justify: Option<LayoutJustify>,
+    pub align: Option<LayoutAlign>,
+    pub direction: Option<LayoutDirection>,
 }
 
 #[derive(Debug, Clone)]
@@ -343,29 +436,6 @@ pub struct CompiledBaseStyle {
     pub visible: bool,
     pub opacity: ScalarHandle,
     pub blend_mode: BlendMode,
-    pub blur: ScalarHandle,
-    pub shadow: Option<CompiledShadowStyle>,
-    pub transform: CompiledTransformStyle,
-    pub alignment: [ScalarHandle; 2],
-}
-
-impl CompiledBaseStyle {
-    pub fn from_base(base: &BaseStyle, defaults: BaseStyleDefaults) -> Self {
-        Self {
-            visible: base.visible,
-            opacity: defaults.opacity,
-            blend_mode: base.blend_mode,
-            blur: defaults.blur,
-            shadow: defaults.shadow,
-            transform: defaults.transform,
-            alignment: defaults.alignment,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct BaseStyleDefaults {
-    pub opacity: ScalarHandle,
     pub blur: ScalarHandle,
     pub shadow: Option<CompiledShadowStyle>,
     pub transform: CompiledTransformStyle,
@@ -415,91 +485,106 @@ pub struct CompiledShadowStyle {
 
 impl ScalarHandle {
     pub fn resolve(&self, state: &RuntimeFrameContext) -> f32 {
-        state.get(self.path()).unwrap_or(self.fallback())
+        state.scalar(self.index()).unwrap_or(self.fallback())
     }
 }
 
-impl From<&LayoutNodeStyle> for CompiledLayoutNodeStyle {
-    fn from(_: &LayoutNodeStyle) -> Self {
-        Self {
-            width: None,
-            height: None,
-            min_width: None,
-            min_height: None,
-            max_width: None,
-            max_height: None,
-            padding_left: None,
-            padding_top: None,
-            padding_right: None,
-            padding_bottom: None,
-            gap: None,
-            grow: None,
-            shrink: None,
-            basis: None,
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use crate::Rational;
+    use crate::expression::parse_expr;
+    use crate::model::{Canvas, Timeline};
+
+    use super::{
+        CompiledExpressionBinding, CompiledTimeline, RuntimeEvalError, RuntimeFrameContext,
+        ScalarHandle,
+    };
+
+    fn test_timeline() -> CompiledTimeline {
+        let mut path_indices = HashMap::new();
+        path_indices.insert("layout_node.x".to_string(), 0);
+        path_indices.insert("clip_a.x".to_string(), 1);
+
+        CompiledTimeline {
+            canvas: Canvas {
+                width: 1920,
+                height: 1080,
+                background: [0, 0, 0, 255],
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1),
+                duration_frames: 120,
+            },
+            sources: Vec::new(),
+            layers: Vec::new(),
+            operations: Vec::new(),
+            frame_index: vec![Vec::new(); 120],
+            literal_scalars: vec![(0, 0.0)],
+            expression_scalars: vec![CompiledExpressionBinding {
+                index: 1,
+                path: "clip_a.x".to_string(),
+                owner_id: "clip_a".to_string(),
+                expression: "layout_node.x + 10".to_string(),
+                expr: parse_expr("layout_node.x + 10").expect("parse expression"),
+            }],
+            eval_order: vec![0],
+            path_indices: Arc::new(path_indices),
+            scalar_count: 2,
         }
     }
-}
 
-impl From<&LayoutNode> for CompiledLayoutNode {
-    fn from(node: &LayoutNode) -> Self {
-        let kind = match &node.kind {
-            LayoutNodeKind::Container { children } => CompiledLayoutNodeKind::Container {
-                children: children.iter().map(Self::from).collect(),
-            },
-            LayoutNodeKind::Text { content } => CompiledLayoutNodeKind::Text {
-                content: content.clone(),
-            },
-            LayoutNodeKind::Image { .. } => CompiledLayoutNodeKind::Image { source_index: 0 },
-        };
+    #[test]
+    fn resolves_frame_context_with_layout_overrides() {
+        let timeline = test_timeline();
+        let mut overrides = HashMap::new();
+        overrides.insert("layout_node.x".to_string(), 32.0);
+        let frame_state = timeline
+            .resolve_frame_context_with_overrides(10, &overrides)
+            .expect("resolve frame context");
 
-        Self {
-            id: node.id.clone(),
-            style: CompiledLayoutNodeStyle::from(&node.style),
-            kind,
-        }
+        assert_eq!(frame_state.get("layout_node.x"), Some(32.0));
+        assert_eq!(frame_state.get("clip_a.x"), Some(42.0));
+        assert_eq!(frame_state.resolve("timeline", "frame"), Some(10.0));
     }
-}
 
-impl From<&ClipStyle> for CompiledClipStyle {
-    fn from(style: &ClipStyle) -> Self {
-        let zero = ScalarHandle::new("__default.zero".to_string(), 0.0);
-        let one = ScalarHandle::new("__default.one".to_string(), 1.0);
+    #[test]
+    fn scalar_handle_resolves_by_index() {
+        let timeline = test_timeline();
+        let mut overrides = HashMap::new();
+        overrides.insert("layout_node.x".to_string(), 5.0);
+        let frame_state = timeline
+            .resolve_frame_context_with_overrides(0, &overrides)
+            .expect("resolve frame context");
 
-        Self {
-            base: CompiledBaseStyle {
-                visible: style.base.visible,
-                opacity: one.clone(),
-                blend_mode: style.base.blend_mode,
-                blur: zero.clone(),
-                shadow: None,
-                transform: CompiledTransformStyle {
-                    x: zero.clone(),
-                    y: zero.clone(),
-                    width: one.clone(),
-                    height: one.clone(),
-                    rotation: zero.clone(),
-                    anchor_x: zero.clone(),
-                    anchor_y: zero.clone(),
-                    scale_x: one.clone(),
-                    scale_y: one.clone(),
-                    skew_x: zero.clone(),
-                    skew_y: zero.clone(),
-                },
-                alignment: [zero.clone(), zero.clone()],
-            },
-            fill: style.fill,
-            stroke: None,
-            corner_radius: None,
-            font_family: style.font_family.clone(),
-            font_size: one.clone(),
-            font_weight: one.clone(),
-            color: style.color,
-            align: style.align.unwrap_or_default(),
-            vertical_align: style.vertical_align.unwrap_or_default(),
-            letter_spacing: zero.clone(),
-            line_height: one,
-            fit: style.fit.unwrap_or_default(),
-            color_matrix: style.color_matrix,
-        }
+        let handle = ScalarHandle::new(1, 0.0);
+        assert_eq!(handle.resolve(&frame_state), 15.0);
+    }
+
+    #[test]
+    fn rejects_out_of_range_frame() {
+        let timeline = test_timeline();
+        let error = timeline
+            .resolve_frame_context(999)
+            .expect_err("frame must be invalid");
+        assert!(matches!(
+            error,
+            RuntimeEvalError::FrameOutOfRange {
+                frame: 999,
+                total_frames: 120
+            }
+        ));
+    }
+
+    #[test]
+    fn runtime_frame_context_resolves_builtins() {
+        let timeline = test_timeline();
+        let frame_state: RuntimeFrameContext = timeline
+            .resolve_frame_context(4)
+            .expect("resolve frame context");
+        assert_eq!(frame_state.resolve("canvas", "width"), Some(1920.0));
+        assert_eq!(frame_state.resolve("timeline", "fps"), Some(30.0));
     }
 }

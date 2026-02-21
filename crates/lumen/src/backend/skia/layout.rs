@@ -2,12 +2,13 @@ use std::collections::HashMap;
 
 use skia_safe::Rect;
 use taffy::prelude::{
-    AvailableSpace, Dimension, Display, FlexDirection, LengthPercentage, NodeId, Rect as TaffyRect,
-    Size as TaffySize, Style as TaffyStyle, TaffyTree,
+    AlignItems, AvailableSpace, Dimension, Display, FlexDirection, JustifyContent,
+    LengthPercentage, NodeId, Rect as TaffyRect, Size as TaffySize, Style as TaffyStyle, TaffyTree,
 };
 
 use crate::backend::RenderError;
 use crate::compile::{CompiledLayoutNode, CompiledLayoutNodeKind, RuntimeFrameContext};
+use crate::model::{LayoutAlign, LayoutDirection, LayoutJustify};
 
 #[derive(Debug, Clone)]
 pub struct LayoutBox {
@@ -15,12 +16,6 @@ pub struct LayoutBox {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-}
-
-impl LayoutBox {
-    pub fn as_rect(&self) -> Rect {
-        Rect::from_xywh(self.x, self.y, self.width, self.height)
-    }
 }
 
 pub fn compute_layout_boxes(
@@ -92,7 +87,12 @@ fn build_layout_node(
 fn taffy_style(node: &CompiledLayoutNode, frame_state: &RuntimeFrameContext) -> TaffyStyle {
     let mut style = TaffyStyle::default();
     style.display = Display::Flex;
-    style.flex_direction = FlexDirection::Column;
+    style.flex_direction = match node.style.direction.unwrap_or(LayoutDirection::Column) {
+        LayoutDirection::Row => FlexDirection::Row,
+        LayoutDirection::Column => FlexDirection::Column,
+    };
+    style.justify_content = node.style.justify.map(to_justify_content);
+    style.align_items = node.style.align.map(to_align_items);
 
     style.size = TaffySize {
         width: dimension(node.style.width.as_ref(), frame_state),
@@ -144,6 +144,26 @@ fn taffy_style(node: &CompiledLayoutNode, frame_state: &RuntimeFrameContext) -> 
     style.flex_basis = dimension(node.style.basis.as_ref(), frame_state);
 
     style
+}
+
+fn to_justify_content(justify: LayoutJustify) -> JustifyContent {
+    match justify {
+        LayoutJustify::Start => JustifyContent::Start,
+        LayoutJustify::Center => JustifyContent::Center,
+        LayoutJustify::End => JustifyContent::End,
+        LayoutJustify::SpaceBetween => JustifyContent::SpaceBetween,
+        LayoutJustify::SpaceAround => JustifyContent::SpaceAround,
+        LayoutJustify::SpaceEvenly => JustifyContent::SpaceEvenly,
+    }
+}
+
+fn to_align_items(align: LayoutAlign) -> AlignItems {
+    match align {
+        LayoutAlign::Start => AlignItems::Start,
+        LayoutAlign::Center => AlignItems::Center,
+        LayoutAlign::End => AlignItems::End,
+        LayoutAlign::Stretch => AlignItems::Stretch,
+    }
 }
 
 fn dimension(

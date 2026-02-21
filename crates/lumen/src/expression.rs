@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,12 +95,13 @@ pub trait ExprEvalContext {
 }
 
 pub fn parse_expr(source: &str) -> Result<ParsedExpr, ExprParseError> {
-    let mut parser = Parser::new(source);
+    let mut parser = Parser::new(source)?;
     let ast = parser.parse_expr()?;
     parser.expect_end()?;
 
     let mut refs = Vec::new();
-    collect_refs(&ast, &mut refs);
+    let mut seen = HashSet::new();
+    collect_refs(&ast, &mut refs, &mut seen);
 
     Ok(ParsedExpr {
         source: source.to_string(),
@@ -135,7 +137,7 @@ fn eval_node(expr: &Expr, ctx: &dyn ExprEvalContext) -> Result<f32, ExprEvalErro
                 BinOp::Sub => left - right,
                 BinOp::Mul => left * right,
                 BinOp::Div => {
-                    if right.abs() <= f32::EPSILON {
+                    if right == 0.0 {
                         return Err(ExprEvalError::DivisionByZero);
                     }
                     left / right
@@ -256,20 +258,24 @@ fn assert_arg_count(name: &str, args: &[f32], expected: usize) -> Result<(), Exp
     }
 }
 
-fn collect_refs(expr: &Expr, out: &mut Vec<ExprRef>) {
+fn collect_refs(expr: &Expr, out: &mut Vec<ExprRef>, seen: &mut HashSet<ExprRef>) {
     match expr {
         Expr::Number(_) => {}
-        Expr::Unary { expr, .. } => collect_refs(expr, out),
+        Expr::Unary { expr, .. } => collect_refs(expr, out, seen),
         Expr::Binary { left, right, .. } => {
-            collect_refs(left, out);
-            collect_refs(right, out);
+            collect_refs(left, out, seen);
+            collect_refs(right, out, seen);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                collect_refs(arg, out);
+                collect_refs(arg, out, seen);
             }
         }
-        Expr::Ref(reference) => out.push(reference.clone()),
+        Expr::Ref(reference) => {
+            if seen.insert(reference.clone()) {
+                out.push(reference.clone());
+            }
+        }
     }
 }
 
@@ -431,14 +437,10 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(source: &'a str) -> Self {
+    fn new(source: &'a str) -> Result<Self, ExprParseError> {
         let mut lexer = Lexer::new(source);
-        let current = lexer.next_token().unwrap_or(Token {
-            kind: TokenKind::End,
-            offset: source.len(),
-            text: String::new(),
-        });
-        Self { lexer, current }
+        let current = lexer.next_token()?;
+        Ok(Self { lexer, current })
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ExprParseError> {
@@ -647,5 +649,30 @@ mod tests {
         };
         let error = eval_expr(&parsed, &ctx).expect_err("expected error");
         assert!(error.to_string().contains("clip_missing.width"));
+    }
+
+    #[test]
+    fn deduplicates_references() {
+        let parsed = parse_expr("canvas.width * canvas.width").expect("parse");
+        let refs = parsed.references();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].target, "canvas");
+        assert_eq!(refs[0].property, "width");
+    }
+
+    #[test]
+    fn parses_first_token_lex_error() {
+        let error = parse_expr("$oops").expect_err("first token must fail");
+        assert!(error.to_string().contains("$"));
+    }
+
+    #[test]
+    fn allows_division_by_small_non_zero_numbers() {
+        let parsed = parse_expr("1 / 0.00000001").expect("parse");
+        let ctx = MapCtx {
+            map: HashMap::new(),
+        };
+        let value = eval_expr(&parsed, &ctx).expect("eval");
+        assert!(value > 0.0);
     }
 }

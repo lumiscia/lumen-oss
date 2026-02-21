@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{BaseStyle, ClipStyle, FitMode, LayoutNode, StyleValue};
+use super::{BaseStyle, ClipStyle, LayoutNode, StyleValue};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -223,16 +223,137 @@ impl VideoPipeline {
     }
 }
 
-pub fn default_fit() -> FitMode {
-    FitMode::Cover
-}
-
-pub type SourcePipeline = VideoPipeline;
-
 fn default_speed() -> f32 {
     1.0
 }
 
 fn default_polygon_closed() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LoopLabel, LoopMode, SourceFrameContext, TrimRange, VideoPipeline};
+
+    #[test]
+    fn source_frame_without_loop_stops_at_end() {
+        let pipeline = VideoPipeline {
+            trim: Some(TrimRange {
+                start_frame: 10,
+                end_frame: 20,
+            }),
+            speed: 1.0,
+            r#loop: LoopMode::Label(LoopLabel::None),
+        };
+
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 0,
+                source_length: 100
+            }),
+            Some(10)
+        );
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 9,
+                source_length: 100
+            }),
+            Some(19)
+        );
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 10,
+                source_length: 100
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn source_frame_infinite_loop_wraps() {
+        let pipeline = VideoPipeline {
+            trim: Some(TrimRange {
+                start_frame: 4,
+                end_frame: 7,
+            }),
+            speed: 1.0,
+            r#loop: LoopMode::Label(LoopLabel::Infinite),
+        };
+
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 0,
+                source_length: 100
+            }),
+            Some(4)
+        );
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 3,
+                source_length: 100
+            }),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn source_frame_finite_loop_stops_after_span() {
+        let pipeline = VideoPipeline {
+            trim: Some(TrimRange {
+                start_frame: 20,
+                end_frame: 23,
+            }),
+            speed: 1.0,
+            r#loop: LoopMode::Finite { finite: 2 },
+        };
+
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 5,
+                source_length: 100
+            }),
+            Some(22)
+        );
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 6,
+                source_length: 100
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn source_frame_negative_speed_reverses_trim_window() {
+        let pipeline = VideoPipeline {
+            trim: Some(TrimRange {
+                start_frame: 10,
+                end_frame: 15,
+            }),
+            speed: -1.0,
+            r#loop: LoopMode::Label(LoopLabel::Infinite),
+        };
+
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 0,
+                source_length: 100
+            }),
+            Some(14)
+        );
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 1,
+                source_length: 100
+            }),
+            Some(13)
+        );
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 5,
+                source_length: 100
+            }),
+            Some(14)
+        );
+    }
 }

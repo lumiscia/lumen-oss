@@ -222,7 +222,7 @@ pub struct StrokeDashStyle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub struct ClipStyle {
     #[serde(flatten)]
     pub base: BaseStyle,
@@ -313,4 +313,23 @@ fn default_scale() -> StyleValue {
 
 fn default_stroke_width() -> StyleValue {
     StyleValue::Value(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StyleValue;
+
+    #[test]
+    fn style_value_number_deserializes_as_literal() {
+        let value: StyleValue =
+            serde_json::from_str("12.5").expect("deserialize literal style value");
+        assert_eq!(value, StyleValue::Value(12.5));
+    }
+
+    #[test]
+    fn style_value_string_deserializes_as_expression() {
+        let value: StyleValue = serde_json::from_str("\"timeline.frame / 30.0\"")
+            .expect("deserialize expression style value");
+        assert_eq!(value, StyleValue::Expr("timeline.frame / 30.0".to_string()));
+    }
 }

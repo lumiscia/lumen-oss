@@ -18,8 +18,6 @@ path = "src/bin/lumen_runpod.rs"
 [features]
 default = ["renderer-skia", "decode-libav"]
 renderer-skia = ["lumen/renderer-skia"]
-skia-metal = ["lumen/skia-metal"]
-skia-vulkan = ["lumen/skia-vulkan"]
 decode-libav = ["dep:ffmpeg-next"]
 decode-subprocess = []
 

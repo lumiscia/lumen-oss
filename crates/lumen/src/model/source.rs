@@ -16,8 +16,6 @@ pub enum SourceMedia {
     Audio,
 }
 
-pub type SourceMediaType = SourceMedia;
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceKind {

@@ -64,6 +64,8 @@ pub enum CompileError {
     },
     #[error("circular dependency detected: {nodes:?}")]
     CircularDependency { nodes: Vec<String> },
+    #[error("unsupported project version `{0}`")]
+    UnsupportedVersion(String),
 }
 
 pub fn compile_project(
@@ -78,6 +80,10 @@ pub fn compile_project_with_scale(
 ) -> Result<Arc<CompiledTimeline>, CompileError> {
     if !scale.is_finite() || scale <= 0.0 {
         return Err(CompileError::InvalidScale(scale));
+    }
+
+    if project.version != "1" {
+        return Err(CompileError::UnsupportedVersion(project.version.clone()));
     }
 
     if project.canvas.width == 0 || project.canvas.height == 0 {
@@ -135,6 +141,9 @@ pub fn compile_project_with_scale(
         }
     }
 
+    let scalar_count = ctx.registry.path_indices.len();
+    let path_indices = Arc::new(ctx.registry.path_indices);
+
     let timeline = CompiledTimeline {
         canvas: scaled.canvas,
         timeline: scaled.timeline,
@@ -145,6 +154,8 @@ pub fn compile_project_with_scale(
         literal_scalars: ctx.registry.literal_scalars,
         expression_scalars: ctx.registry.expression_scalars,
         eval_order,
+        path_indices,
+        scalar_count,
     };
 
     Ok(Arc::new(timeline))
@@ -265,7 +276,8 @@ fn compile_sources(sources: &[Source]) -> Result<HashMap<String, CompiledSourceR
 #[derive(Default)]
 struct PropertyRegistry {
     seen_paths: HashSet<String>,
-    literal_scalars: Vec<(String, f32)>,
+    path_indices: HashMap<String, usize>,
+    literal_scalars: Vec<(usize, f32)>,
     expression_scalars: Vec<CompiledExpressionBinding>,
     dependency_nodes: Vec<DependencyNode>,
 }
@@ -286,15 +298,18 @@ impl PropertyRegistry {
         if !self.seen_paths.insert(path.clone()) {
             return Err(CompileError::DuplicateItemId(path));
         }
+        let index = self.path_indices.len();
+        self.path_indices.insert(path.clone(), index);
 
         match scalar {
             CompiledScalarValue::Literal(value) => {
-                self.literal_scalars.push((path.clone(), value));
-                Ok(ScalarHandle::new(path, value))
+                self.literal_scalars.push((index, value));
+                Ok(ScalarHandle::new(index, value))
             }
             CompiledScalarValue::Expr(parsed) => {
                 let fallback = 0.0;
                 self.expression_scalars.push(CompiledExpressionBinding {
+                    index,
                     path: path.clone(),
                     owner_id: owner_id.to_string(),
                     expression: parsed.source().to_string(),
@@ -304,7 +319,7 @@ impl PropertyRegistry {
                     path: path.clone(),
                     refs: parsed.references().to_vec(),
                 });
-                Ok(ScalarHandle::new(path, fallback))
+                Ok(ScalarHandle::new(index, fallback))
             }
         }
     }
@@ -627,10 +642,38 @@ fn compile_layout_node(
             &mut ctx.registry,
             scale,
         )?,
+        justify: node.style.justify,
+        align: node.style.align,
+        direction: node.style.direction,
     };
 
+    if style.width.is_none() {
+        register_scalar(
+            owner_id,
+            node.id.as_str(),
+            "width",
+            Some(&StyleValue::Value(0.0)),
+            0.0,
+            true,
+            &mut ctx.registry,
+            scale,
+        )?;
+    }
+    if style.height.is_none() {
+        register_scalar(
+            owner_id,
+            node.id.as_str(),
+            "height",
+            Some(&StyleValue::Value(0.0)),
+            0.0,
+            true,
+            &mut ctx.registry,
+            scale,
+        )?;
+    }
+
     // register runtime-ref layout outputs
-    let _ = register_scalar(
+    register_scalar(
         owner_id,
         node.id.as_str(),
         "x",
@@ -640,7 +683,7 @@ fn compile_layout_node(
         &mut ctx.registry,
         scale,
     )?;
-    let _ = register_scalar(
+    register_scalar(
         owner_id,
         node.id.as_str(),
         "y",
@@ -689,17 +732,18 @@ fn compile_optional_layout_scalar(
     registry: &mut PropertyRegistry,
     scale: f32,
 ) -> Result<Option<ScalarHandle>, CompileError> {
-    let compiled = compile_optional_scalar(value, default, scale, spatial).map_err(|source| {
-        CompileError::ExprParse {
-            owner_id: owner_id.to_string(),
-            property_path: format!("{}.{}", target_id, property),
-            expression: value
-                .and_then(StyleValue::as_expr)
-                .unwrap_or_default()
-                .to_string(),
-            source,
-        }
-    })?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let compiled =
+        compile_optional_scalar(Some(value), default, scale, spatial).map_err(|source| {
+            CompileError::ExprParse {
+                owner_id: owner_id.to_string(),
+                property_path: format!("{}.{}", target_id, property),
+                expression: value.as_expr().unwrap_or_default().to_string(),
+                source,
+            }
+        })?;
     let handle = registry.register(owner_id, target_id, property, compiled)?;
     Ok(Some(handle))
 }
@@ -1176,5 +1220,33 @@ mod tests {
 
         let error = compile_project(&project).expect_err("cycle expected");
         assert!(error.to_string().contains("circular dependency"));
+    }
+
+    #[test]
+    fn rejects_unsupported_project_version() {
+        let project = crate::model::Project {
+            version: "99".to_string(),
+            canvas: crate::model::Canvas {
+                width: 100,
+                height: 100,
+                background: [0, 0, 0, 255],
+            },
+            timeline: crate::model::Timeline {
+                fps: crate::Rational::new(30, 1),
+                duration_frames: 10,
+            },
+            sources: Vec::new(),
+            layers: vec![crate::model::Layer {
+                id: "layer_0".to_string(),
+                items: Vec::new(),
+            }],
+            audio: crate::model::AudioMix::default(),
+        };
+
+        let error = compile_project(&project).expect_err("version should be rejected");
+        assert!(matches!(
+            error,
+            crate::compile::CompileError::UnsupportedVersion(_)
+        ));
     }
 }
