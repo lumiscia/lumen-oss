@@ -221,6 +221,8 @@ pub struct StrokeDashStyle {
     pub offset: StyleValue,
 }
 
+// Note: deny_unknown_fields is intentionally omitted here because
+// #[serde(flatten)] on `base` is incompatible with it in serde.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct ClipStyle {

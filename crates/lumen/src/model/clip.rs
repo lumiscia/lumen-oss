@@ -179,12 +179,12 @@ impl VideoPipeline {
             start_frame: 0,
             end_frame: ctx.source_length,
         });
-        if trim.end_frame <= trim.start_frame {
+        let start = trim.start_frame.min(ctx.source_length);
+        let end = trim.end_frame.min(ctx.source_length);
+        if end <= start {
             return None;
         }
-
-        let start = trim.start_frame;
-        let len = trim.end_frame - trim.start_frame;
+        let len = end - start;
         let speed = self.speed;
         if !speed.is_finite() {
             return None;
@@ -214,7 +214,7 @@ impl VideoPipeline {
         };
 
         let frame = if speed < 0.0 {
-            trim.end_frame.saturating_sub(1).saturating_sub(within_trim)
+            end.saturating_sub(1).saturating_sub(within_trim)
         } else {
             start.saturating_add(within_trim)
         };
@@ -354,6 +354,41 @@ mod tests {
                 source_length: 100
             }),
             Some(14)
+        );
+    }
+
+    #[test]
+    fn source_frame_clamps_trim_to_source_length() {
+        let pipeline = VideoPipeline {
+            trim: Some(TrimRange {
+                start_frame: 90,
+                end_frame: 200,
+            }),
+            speed: 1.0,
+            r#loop: LoopMode::Label(LoopLabel::None),
+        };
+
+        // source_length=100, so effective trim is 90..100 (len=10)
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 0,
+                source_length: 100
+            }),
+            Some(90)
+        );
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 9,
+                source_length: 100
+            }),
+            Some(99)
+        );
+        assert_eq!(
+            pipeline.source_frame_for(SourceFrameContext {
+                local_frame: 10,
+                source_length: 100
+            }),
+            None
         );
     }
 }
