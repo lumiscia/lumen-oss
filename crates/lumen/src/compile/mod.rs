@@ -109,12 +109,10 @@ pub fn compile_project_with_scale(
     }
 
     if project.timeline.duration_frames > MAX_DURATION_FRAMES {
-        return Err(CompileError::InvalidTimeline(
-            format!(
-                "timeline duration_frames {} exceeds maximum {}",
-                project.timeline.duration_frames, MAX_DURATION_FRAMES
-            ),
-        ));
+        return Err(CompileError::InvalidTimeline(format!(
+            "timeline duration_frames {} exceeds maximum {}",
+            project.timeline.duration_frames, MAX_DURATION_FRAMES
+        )));
     }
 
     let mut scaled = project.clone();
@@ -1170,7 +1168,7 @@ fn register_scalar(
 
 #[cfg(test)]
 mod tests {
-    use crate::compile::compile_project;
+    use crate::compile::{compile_project, compile_project_with_scale};
     use crate::model::{
         Canvas, ClipContent, ClipItem, Layer, LayerItem, Project, StyleValue, Timeline,
     };
@@ -1235,6 +1233,44 @@ mod tests {
         assert!(error.to_string().contains("circular dependency"));
     }
 
+    #[test]
+    fn scaled_canvas_expression_resolves_once() {
+        let mut clip = ClipItem {
+            id: "clip_a".to_string(),
+            start_frame: 0,
+            duration_frames: 10,
+            content: ClipContent::Solid,
+            style: Default::default(),
+            mask: None,
+        };
+        clip.style.base.transform.width = StyleValue::Expr("canvas.width * 0.5".to_string());
+
+        let project = Project {
+            version: "1".to_string(),
+            canvas: Canvas {
+                width: 200,
+                height: 100,
+                background: [0, 0, 0, 255],
+            },
+            timeline: Timeline {
+                fps: crate::Rational::new(30, 1),
+                duration_frames: 10,
+            },
+            sources: Vec::new(),
+            layers: vec![Layer {
+                id: "layer_0".to_string(),
+                items: vec![LayerItem::Clip(clip)],
+            }],
+            audio: Default::default(),
+        };
+
+        let timeline =
+            compile_project_with_scale(&project, 0.5).expect("scaled compile should succeed");
+        let frame_state = timeline
+            .resolve_frame_context(0)
+            .expect("frame context should resolve");
+        assert_eq!(frame_state.get("clip_a.width"), Some(50.0));
+    }
     #[test]
     fn rejects_unsupported_project_version() {
         let project = crate::model::Project {

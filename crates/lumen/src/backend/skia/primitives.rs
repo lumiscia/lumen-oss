@@ -1,7 +1,8 @@
 use skia_safe::canvas::SrcRectConstraint;
 use skia_safe::{
-    AlphaType, BlendMode as SkiaBlendMode, Canvas, ClipOp, Color4f, ColorType, Data, Font, ImageInfo,
-    Paint, PaintStyle, PathBuilder, RRect, Rect, Vector, color_filters,
+    AlphaType, BlendMode as SkiaBlendMode, Canvas, ClipOp, Color4f, ColorType, Data, Font, FontMgr,
+    FontStyle, ImageInfo, Paint, PaintStyle, PathBuilder, RRect, Rect, Vector, color_filters,
+    font_style::{Slant, Weight, Width},
 };
 
 use crate::backend::{FrameImage, RenderError};
@@ -160,6 +161,7 @@ fn draw_shape(
         stroke_paint.set_color4f(to_color4f(stroke.color, opacity), None);
         stroke_paint.set_blend_mode(to_skia_blend_mode(operation.style.base.blend_mode));
         apply_color_matrix(&mut stroke_paint, operation.style.color_matrix.as_ref());
+        apply_stroke_dash_effect(&mut stroke_paint, stroke, frame_state);
 
         match geometry {
             ShapeGeometry::Rect => {
@@ -191,8 +193,7 @@ fn draw_text(
         return Ok(());
     }
 
-    let mut font = Font::default();
-    font.set_size(operation.style.font_size.resolve(frame_state).max(1.0));
+    let font = resolve_font(operation, frame_state);
 
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
@@ -210,6 +211,7 @@ fn draw_text(
     let font_size = font.size();
     let line_step = font_size * line_height_factor;
     let lines: Vec<&str> = content.split('\n').collect();
+    let letter_spacing = operation.style.letter_spacing.resolve(frame_state);
     let total_text_height = line_step * (lines.len() as f32 - 1.0) + font_size;
 
     let first_baseline = match operation.style.vertical_align {
@@ -224,18 +226,105 @@ fn draw_text(
         if line.is_empty() {
             continue;
         }
-        let line_width = font.measure_str(line, Some(&paint)).0;
+        let line_width = measure_line_width(line, &font, &paint, letter_spacing);
         let x = match operation.style.align {
             crate::model::TextAlign::Left => bounds.left,
             crate::model::TextAlign::Center => bounds.left + (bounds.width() - line_width) * 0.5,
             crate::model::TextAlign::Right => bounds.right - line_width,
         };
         let baseline = first_baseline + (i as f32) * line_step;
-        canvas.draw_str(line, (x, baseline), &font, &paint);
+        draw_text_line(canvas, line, x, baseline, &font, &paint, letter_spacing);
     }
     Ok(())
 }
 
+fn apply_stroke_dash_effect(
+    paint: &mut Paint,
+    stroke: &crate::compile::CompiledStrokeStyle,
+    frame_state: &RuntimeFrameContext,
+) {
+    if stroke.dash_pattern.is_empty() {
+        return;
+    }
+
+    let mut intervals = stroke
+        .dash_pattern
+        .iter()
+        .map(|value| value.resolve(frame_state).abs())
+        .filter(|value| *value > 0.0)
+        .collect::<Vec<_>>();
+    if intervals.len() < 2 {
+        return;
+    }
+    if intervals.len() % 2 == 1 {
+        let first = intervals[0];
+        intervals.push(first);
+    }
+
+    let phase = stroke.dash_offset.resolve(frame_state);
+    paint.set_path_effect(skia_safe::PathEffect::dash(intervals.as_slice(), phase));
+}
+
+fn resolve_font(operation: &CompiledOperation, frame_state: &RuntimeFrameContext) -> Font {
+    let mut font = Font::default();
+    font.set_size(operation.style.font_size.resolve(frame_state).max(1.0));
+
+    let font_mgr = FontMgr::new();
+    let font_weight = operation.style.font_weight.resolve(frame_state);
+    if let Some(family) = operation.style.font_family.as_deref() {
+        let requested = font_style_for_weight(font_weight);
+        if let Some(typeface) = font_mgr.match_family_style(family, requested) {
+            font.set_typeface(typeface);
+            return font;
+        }
+    }
+
+    if let Some(typeface) = font_mgr.legacy_make_typeface(None, font_style_for_weight(font_weight))
+    {
+        font.set_typeface(typeface);
+    }
+
+    font
+}
+
+fn font_style_for_weight(weight: f32) -> FontStyle {
+    let normalized = weight.clamp(1.0, 1000.0).round() as i32;
+    FontStyle::new(Weight::from(normalized), Width::NORMAL, Slant::Upright)
+}
+
+fn measure_line_width(line: &str, font: &Font, paint: &Paint, letter_spacing: f32) -> f32 {
+    let width = font.measure_str(line, Some(paint)).0;
+    let count = line.chars().count();
+    if count <= 1 {
+        width
+    } else {
+        width + letter_spacing * (count.saturating_sub(1) as f32)
+    }
+}
+
+fn draw_text_line(
+    canvas: &Canvas,
+    line: &str,
+    x: f32,
+    baseline: f32,
+    font: &Font,
+    paint: &Paint,
+    letter_spacing: f32,
+) {
+    let count = line.chars().count();
+    if count <= 1 || letter_spacing.abs() <= f32::EPSILON {
+        canvas.draw_str(line, (x, baseline), font, paint);
+        return;
+    }
+
+    let mut cursor = x;
+    for glyph in line.chars() {
+        let glyph = glyph.to_string();
+        canvas.draw_str(glyph.as_str(), (cursor, baseline), font, paint);
+        let advance = font.measure_str(glyph.as_str(), Some(paint)).0;
+        cursor += advance + letter_spacing;
+    }
+}
 fn draw_image(
     canvas: &Canvas,
     bounds: Rect,

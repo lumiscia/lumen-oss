@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use skia_safe::canvas::SaveLayerRec;
-use skia_safe::{AlphaType, Canvas, Color, ColorType, ImageInfo, Rect, Surface, surfaces};
+use skia_safe::{
+    AlphaType, Canvas, Color, ColorType, ImageInfo, Paint, Rect, Surface, image_filters, surfaces,
+};
 
 use crate::backend::{FrameImage, FrameProvider, ProvidedFrame, RenderError, Renderer, pixel_len};
 use crate::compile::{
@@ -329,6 +331,59 @@ fn draw_clip_content(
 ) -> Result<(), RenderError> {
     let bounds = resolved_bounds(&operation.style.base, frame_state);
 
+    let blur_sigma = operation.style.base.blur.resolve(frame_state).max(0.0);
+    if blur_sigma > 0.0 {
+        let mut blur_paint = Paint::default();
+        blur_paint.set_anti_alias(true);
+        let blur_filter = image_filters::blur(
+            (blur_sigma, blur_sigma),
+            None,
+            None,
+            None::<image_filters::CropRect>,
+        );
+        blur_paint.set_image_filter(blur_filter);
+
+        let layer = SaveLayerRec::default().bounds(&bounds).paint(&blur_paint);
+        canvas.save_layer(&layer);
+        let result = draw_clip_pixels(
+            canvas,
+            timeline,
+            frame,
+            operation,
+            frame_state,
+            provider,
+            opacity,
+            video_frame_counts,
+            bounds,
+        );
+        canvas.restore();
+        return result;
+    }
+
+    draw_clip_pixels(
+        canvas,
+        timeline,
+        frame,
+        operation,
+        frame_state,
+        provider,
+        opacity,
+        video_frame_counts,
+        bounds,
+    )
+}
+
+fn draw_clip_pixels(
+    canvas: &Canvas,
+    timeline: &CompiledTimeline,
+    frame: u64,
+    operation: &CompiledOperation,
+    frame_state: &RuntimeFrameContext,
+    provider: &mut dyn FrameProvider,
+    opacity: f32,
+    video_frame_counts: &mut HashMap<String, Option<u64>>,
+    bounds: Rect,
+) -> Result<(), RenderError> {
     if let CompiledOperationKind::Layout(layout_clip) = &operation.kind {
         return draw_layout_clip(
             canvas,
@@ -354,7 +409,6 @@ fn draw_clip_content(
         opacity,
     )
 }
-
 fn draw_layout_clip(
     canvas: &Canvas,
     timeline: &CompiledTimeline,
@@ -688,4 +742,147 @@ fn apply_transform(canvas: &Canvas, base: &CompiledBaseStyle, state: &RuntimeFra
     canvas.skew((transform.skew_x, transform.skew_y));
     canvas.scale((transform.scale_x, transform.scale_y));
     canvas.translate((-anchor_x, -anchor_y));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SkiaRenderer;
+    use crate::Rational;
+    use crate::backend::{FrameProvider, ProvidedFrame, ProviderError, Renderer};
+    use crate::compile::compile_project;
+    use crate::model::{
+        Canvas, ClipContent, ClipItem, ClipStyle, Layer, LayerItem, Project, ShapeGeometry,
+        StrokeDashStyle, StrokeStyle, StyleValue, TextAlign, Timeline, VerticalAlign,
+    };
+
+    struct NullProvider;
+
+    impl FrameProvider for NullProvider {
+        fn image(&mut self, _source_id: &str) -> Result<ProvidedFrame, ProviderError> {
+            Ok(ProvidedFrame::Missing)
+        }
+
+        fn video_frame(
+            &mut self,
+            _source_id: &str,
+            _source_frame: u64,
+        ) -> Result<ProvidedFrame, ProviderError> {
+            Ok(ProvidedFrame::EndOfStream)
+        }
+    }
+
+    fn project_with_clip(content: ClipContent, style: ClipStyle) -> Project {
+        Project {
+            version: "1".to_string(),
+            canvas: Canvas {
+                width: 160,
+                height: 90,
+                background: [0, 0, 0, 255],
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1),
+                duration_frames: 1,
+            },
+            sources: Vec::new(),
+            layers: vec![Layer {
+                id: "layer_0".to_string(),
+                items: vec![LayerItem::Clip(ClipItem {
+                    id: "clip_0".to_string(),
+                    start_frame: 0,
+                    duration_frames: 1,
+                    content,
+                    style,
+                    mask: None,
+                })],
+            }],
+            audio: Default::default(),
+        }
+    }
+
+    fn render_single_frame(project: Project) -> Vec<u8> {
+        let timeline = compile_project(&project).expect("project compile should succeed");
+        let mut renderer = SkiaRenderer::new(timeline.canvas.width, timeline.canvas.height)
+            .expect("renderer init");
+        let mut provider = NullProvider;
+        renderer
+            .render_frame(timeline.as_ref(), 0, &mut provider)
+            .expect("frame render should succeed")
+    }
+
+    #[test]
+    fn dashed_stroke_changes_raster_output() {
+        let mut solid_style = ClipStyle::default();
+        solid_style.stroke = Some(StrokeStyle {
+            color: [255, 255, 255, 255],
+            width: StyleValue::Value(8.0),
+            dash: None,
+        });
+
+        let mut dashed_style = solid_style.clone();
+        if let Some(stroke) = &mut dashed_style.stroke {
+            stroke.dash = Some(StrokeDashStyle {
+                pattern: vec![StyleValue::Value(12.0), StyleValue::Value(6.0)],
+                offset: StyleValue::Value(0.0),
+            });
+        }
+
+        let solid = render_single_frame(project_with_clip(
+            ClipContent::Shape {
+                geometry: ShapeGeometry::Rect,
+            },
+            solid_style,
+        ));
+        let dashed = render_single_frame(project_with_clip(
+            ClipContent::Shape {
+                geometry: ShapeGeometry::Rect,
+            },
+            dashed_style,
+        ));
+
+        assert_ne!(solid, dashed);
+    }
+
+    #[test]
+    fn clip_blur_changes_raster_output() {
+        let mut sharp_style = ClipStyle::default();
+        sharp_style.fill = Some([255, 0, 0, 255]);
+        sharp_style.base.blur = StyleValue::Value(0.0);
+
+        let mut blurred_style = sharp_style.clone();
+        blurred_style.base.blur = StyleValue::Value(10.0);
+
+        let sharp = render_single_frame(project_with_clip(ClipContent::Solid, sharp_style));
+        let blurred = render_single_frame(project_with_clip(ClipContent::Solid, blurred_style));
+
+        assert_ne!(sharp, blurred);
+    }
+
+    #[test]
+    fn text_letter_spacing_changes_raster_output() {
+        let mut compact_style = ClipStyle::default();
+        compact_style.color = Some([255, 255, 255, 255]);
+        compact_style.font_size = Some(StyleValue::Value(28.0));
+        compact_style.align = Some(TextAlign::Left);
+        compact_style.vertical_align = Some(VerticalAlign::Top);
+        compact_style.base.alignment = [StyleValue::Value(-1.0), StyleValue::Value(-1.0)];
+        compact_style.letter_spacing = Some(StyleValue::Value(0.0));
+
+        let mut expanded_style = compact_style.clone();
+        expanded_style.letter_spacing = Some(StyleValue::Value(8.0));
+
+        let compact = render_single_frame(project_with_clip(
+            ClipContent::Text {
+                content: "HELLO".to_string(),
+            },
+            compact_style,
+        ));
+        let expanded = render_single_frame(project_with_clip(
+            ClipContent::Text {
+                content: "HELLO".to_string(),
+            },
+            expanded_style,
+        ));
+
+        assert_ne!(compact, expanded);
+    }
 }
