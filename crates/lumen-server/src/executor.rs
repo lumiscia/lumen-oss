@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{path::PathBuf, time::Instant};
 
 use lumen::{Project, compile_project};
 
@@ -79,7 +79,7 @@ pub fn execute_render(
     };
 
     let render_started = Instant::now();
-    let mut backend = FfmpegRenderBackend::new_with_options(Arc::new(timeline), backend_options);
+    let mut backend = FfmpegRenderBackend::new_with_options(timeline, backend_options);
     let bytes = backend
         .render_to_mp4(&mut |frame, total| {
             let ratio = if total == 0 {

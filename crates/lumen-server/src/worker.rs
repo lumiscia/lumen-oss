@@ -115,7 +115,7 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
 
             emit(0.10, "compiling");
             let compile_started = Instant::now();
-            let timeline = std::sync::Arc::new(compile_project(&project)?);
+            let timeline = compile_project(&project)?;
             let compile_ms = compile_started.elapsed().as_millis();
 
             emit(0.16, "rendering");

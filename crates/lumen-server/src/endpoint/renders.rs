@@ -290,9 +290,7 @@ pub async fn get_frame(
                 serde_json::from_value(job.payload).map_err(ApiError::internal)?;
             let timeline =
                 compile_project(&project).map_err(|err| ApiError::bad_request(err.to_string()))?;
-            let compiled = Arc::new(CompiledPreview {
-                timeline: Arc::new(timeline),
-            });
+            let compiled = Arc::new(CompiledPreview { timeline });
             state
                 .preview_cache
                 .put_compiled(compiled_cache_key, compiled.clone())

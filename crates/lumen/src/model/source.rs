@@ -21,5 +21,4 @@ pub enum SourceMedia {
 pub enum SourceKind {
     File { path: String },
     Url { url: String },
-    Generator { filter: String },
 }

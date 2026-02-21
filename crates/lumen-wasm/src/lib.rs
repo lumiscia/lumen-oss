@@ -536,3 +536,100 @@ pub extern "C" fn lumen_media_set_video_frame_owned(
         .insert(source_frame, image);
     1
 }
+
+#[cfg(test)]
+mod tests {
+    use super::collect_frame_requirements;
+    use lumen::Rational;
+    use lumen::compile::{CompiledOperationKind, compile_project_with_scale};
+    use lumen::model::{
+        Canvas, ClipContent, ClipItem, ClipStyle, Layer, LayerItem, LoopMode, Project, Source,
+        SourceKind, SourceMedia, StyleValue, Timeline, TrimRange, VideoPipeline,
+    };
+
+    fn sample_timeline() -> std::sync::Arc<lumen::compile::CompiledTimeline> {
+        let project = Project {
+            version: "1".to_string(),
+            canvas: Canvas {
+                width: 1280,
+                height: 720,
+                background: [0, 0, 0, 255],
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1),
+                duration_frames: 12,
+            },
+            sources: vec![Source {
+                id: "video_0".to_string(),
+                media: SourceMedia::Video,
+                kind: SourceKind::File {
+                    path: "fixtures/video.mp4".to_string(),
+                },
+            }],
+            layers: vec![Layer {
+                id: "layer_0".to_string(),
+                items: vec![LayerItem::Clip(ClipItem {
+                    id: "clip_0".to_string(),
+                    start_frame: 0,
+                    duration_frames: 12,
+                    content: ClipContent::Video {
+                        source: "video_0".to_string(),
+                        pipeline: VideoPipeline {
+                            trim: Some(TrimRange {
+                                start_frame: 10,
+                                end_frame: 16,
+                            }),
+                            speed: 1.5,
+                            r#loop: LoopMode::Finite { finite: 2 },
+                        },
+                    },
+                    style: ClipStyle {
+                        base: lumen::model::BaseStyle {
+                            transform: lumen::model::TransformStyle {
+                                width: StyleValue::Value(1280.0),
+                                height: StyleValue::Value(720.0),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    mask: None,
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        compile_project_with_scale(&project, 1.0).expect("compile should succeed")
+    }
+
+    #[test]
+    fn requirements_match_runtime_source_frame_resolution() {
+        let timeline = sample_timeline();
+
+        for frame in 0..timeline.total_frames() {
+            let payload =
+                collect_frame_requirements(timeline.as_ref(), frame).expect("requirements payload");
+            let actual = payload
+                .videos
+                .iter()
+                .find(|video| video.source_id == "video_0")
+                .and_then(|video| video.frames.first().copied());
+
+            let expected = timeline
+                .operation_indices_for_frame(frame)
+                .expect("operation indices")
+                .iter()
+                .filter_map(|index| timeline.operation(*index))
+                .find_map(|operation| match &operation.kind {
+                    CompiledOperationKind::Video(video) => timeline
+                        .source(video.source_index)
+                        .filter(|source| source.id == "video_0")
+                        .and_then(|_| operation.resolved_video_source_frame(frame, None)),
+                    _ => None,
+                });
+
+            assert_eq!(actual, expected);
+        }
+    }
+}

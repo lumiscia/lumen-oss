@@ -384,7 +384,7 @@ fn sequential_frame_decode() {
     let _bench_guard = bench_guard();
 
     let project = generator_project(1280, 720, 30, 60);
-    let timeline = Arc::new(compile_project(&project).expect("compile"));
+    let timeline = compile_project(&project).expect("compile");
     let mut backend = FfmpegRenderBackend::new(Arc::clone(&timeline));
 
     // Warmup
@@ -435,7 +435,7 @@ fn random_access_decode() {
     let _bench_guard = bench_guard();
 
     let project = generator_project(1280, 720, 30, 120);
-    let timeline = Arc::new(compile_project(&project).expect("compile"));
+    let timeline = compile_project(&project).expect("compile");
     let mut backend = FfmpegRenderBackend::new(Arc::clone(&timeline));
 
     // Warmup
@@ -490,7 +490,7 @@ fn full_render_pipeline() {
     let _bench_guard = bench_guard();
 
     let project = generator_project(1280, 720, 30, 90);
-    let timeline = Arc::new(compile_project(&project).expect("compile"));
+    let timeline = compile_project(&project).expect("compile");
 
     eprintln!();
     eprintln!(
@@ -501,7 +501,7 @@ fn full_render_pipeline() {
     // Warmup run
     {
         let warmup_project = generator_project(640, 360, 30, 5);
-        let warmup_tl = Arc::new(compile_project(&warmup_project).expect("compile"));
+        let warmup_tl = compile_project(&warmup_project).expect("compile");
         let mut warmup_backend = FfmpegRenderBackend::new(warmup_tl);
         warmup_backend
             .render_to_mp4(&mut |_, _| {})
@@ -566,7 +566,7 @@ fn sequential_1080p() {
     let _bench_guard = bench_guard();
 
     let project = generator_project(1920, 1080, 30, 30);
-    let timeline = Arc::new(compile_project(&project).expect("compile"));
+    let timeline = compile_project(&project).expect("compile");
     let mut backend = FfmpegRenderBackend::new(Arc::clone(&timeline));
 
     // Warmup

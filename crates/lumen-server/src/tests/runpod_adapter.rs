@@ -1,50 +1,67 @@
+use lumen::{
+    Rational,
+    model::{
+        BaseStyle, Canvas, ClipContent, ClipItem, ClipStyle, Layer, LayerItem, Project, StyleValue,
+        Timeline, TransformStyle,
+    },
+};
 use serde_json::json;
 
 use crate::runpod::{RunpodJobRequest, handle_runpod_request};
+
+fn valid_project_value() -> serde_json::Value {
+    let mut style = ClipStyle::default();
+    style.base = BaseStyle {
+        transform: TransformStyle {
+            x: StyleValue::Value(20.0),
+            y: StyleValue::Value(20.0),
+            width: StyleValue::Value(280.0),
+            height: StyleValue::Value(80.0),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    style.font_size = Some(StyleValue::Value(24.0));
+    style.color = Some([255, 255, 255, 255]);
+    style.align = Some(lumen::model::TextAlign::Center);
+
+    let project = Project {
+        version: "1".to_string(),
+        canvas: Canvas {
+            width: 320,
+            height: 180,
+            background: [0, 0, 0, 255],
+        },
+        timeline: Timeline {
+            fps: Rational::new(30, 1),
+            duration_frames: 2,
+        },
+        sources: Vec::new(),
+        layers: vec![Layer {
+            id: "layer_text".to_string(),
+            items: vec![LayerItem::Clip(ClipItem {
+                id: "clip_text_1".to_string(),
+                start_frame: 0,
+                duration_frames: 2,
+                content: ClipContent::Text {
+                    content: "Hello".to_string(),
+                },
+                style,
+                mask: None,
+            })],
+        }],
+        audio: Default::default(),
+    };
+
+    serde_json::to_value(project).expect("serialize project")
+}
 
 #[tokio::test]
 async fn runpod_adapter_returns_non_retryable_error_without_staging() {
     let request: RunpodJobRequest = serde_json::from_value(json!({
         "input": {
             "job_id": "job_test",
-            "project": {
-                "canvas": {
-                    "width": 320,
-                    "height": 180,
-                    "background": [0, 0, 0, 255]
-                },
-                "timeline": {
-                    "fps": { "num": 30, "den": 1 },
-                    "total_frames": 2
-                },
-                "sources": [],
-                "layers": [{
-                    "id": "layer_text",
-                    "z_index": 0,
-                    "items": [{
-                        "kind": "clip",
-                        "id": "clip_text_1",
-                        "start_frame": 0,
-                        "duration_frames": 2,
-                        "opacity": 1.0,
-                        "transform": {
-                            "x": 20.0,
-                            "y": 20.0,
-                            "width": 280.0,
-                            "height": 80.0,
-                            "rotation_degrees": 0.0
-                        },
-                        "content": {
-                            "type": "text",
-                            "text": "Hello",
-                            "font_size": 24.0,
-                            "color": [255, 255, 255, 255],
-                            "align": "center"
-                        }
-                    }]
-                }],
-                "audio": { "tracks": [] }
-            }
+            "project": valid_project_value()
         }
     }))
     .expect("request json");

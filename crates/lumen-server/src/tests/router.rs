@@ -298,6 +298,7 @@ async fn render_events_endpoint_returns_sse_stream() {
 
 fn valid_project_json() -> serde_json::Value {
     json!({
+        "version": "1",
         "canvas": {
             "width": 320,
             "height": 180,
@@ -305,22 +306,27 @@ fn valid_project_json() -> serde_json::Value {
         },
         "timeline": {
             "fps": { "num": 30, "den": 1 },
-            "total_frames": 2
+            "duration_frames": 2
         },
         "sources": [],
         "layers": [{
             "id": "layer_text",
-            "z_index": 0,
             "items": [{
-                "kind": "clip",
+                "type": "clip",
                 "id": "clip_text_1",
                 "start_frame": 0,
                 "duration_frames": 2,
-                "opacity": 1.0,
-                "transform": { "x": 20.0, "y": 20.0, "width": 280.0, "height": 80.0, "rotation_degrees": 0.0 },
                 "content": {
                     "type": "text",
-                    "text": "Hello",
+                    "content": "Hello"
+                },
+                "style": {
+                    "transform": {
+                        "x": 20.0,
+                        "y": 20.0,
+                        "width": 280.0,
+                        "height": 80.0
+                    },
                     "font_size": 24.0,
                     "color": [255, 255, 255, 255],
                     "align": "center"

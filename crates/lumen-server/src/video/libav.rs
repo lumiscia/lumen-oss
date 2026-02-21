@@ -15,9 +15,9 @@ use ffmpeg_next::{self as ffmpeg, format, media, software::scaling};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lru::LruCache;
 use lumen::{
-    backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError, RenderBackend},
-    compile::{CompiledOperationKind, CompiledTimeline},
-    model::{Source, SourceKind, SourceMediaType},
+    backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError, Renderer},
+    compile::{CompiledOperationKind, CompiledSource, CompiledTimeline},
+    model::{Source, SourceKind, SourceMedia},
     time::Rational,
 };
 
@@ -64,14 +64,42 @@ fn open_source_input(
     asset_cache: Option<&WebAssetCache>,
 ) -> anyhow::Result<format::context::Input> {
     match &source.kind {
-        SourceKind::File { path, .. } => {
+        SourceKind::File { path } => {
             let resolved = resolve_source_file_path(path, media_root, asset_cache)?;
             format::input(&resolved)
                 .with_context(|| format!("failed to open video file `{}`", resolved.display()))
         }
-        SourceKind::Generator { filter, .. } => open_lavfi_input(filter)
-            .with_context(|| format!("failed to open lavfi source `{filter}`")),
+        SourceKind::Url { url } => {
+            let resolved = resolve_source_file_path(url, media_root, asset_cache)?;
+            format::input(&resolved)
+                .with_context(|| format!("failed to open video file `{}`", resolved.display()))
+        }
     }
+}
+
+fn compiled_source_to_runtime_source(source: &CompiledSource) -> anyhow::Result<Source> {
+    if source.path.starts_with("generator:") {
+        return Err(anyhow!(
+            "generator sources are no longer supported in lumen-server (`{}`)",
+            source.id
+        ));
+    }
+
+    let kind = if source.path.starts_with("http://") || source.path.starts_with("https://") {
+        SourceKind::Url {
+            url: source.path.clone(),
+        }
+    } else {
+        SourceKind::File {
+            path: source.path.clone(),
+        }
+    };
+
+    Ok(Source {
+        id: source.id.clone(),
+        media: source.media,
+        kind,
+    })
 }
 
 fn open_video_decoder(
@@ -195,40 +223,6 @@ fn try_attach_hw_device(
     }
 
     Ok(())
-}
-
-/// Open a lavfi virtual input by explicitly specifying the lavfi demuxer.
-///
-/// `format::input("lavfi:<filter>")` only works when ffmpeg is built with the
-/// lavfi protocol. When it isn't available (common on Homebrew builds), we
-/// fall back to the raw `avformat_open_input` with `iformat` set to the lavfi
-/// demuxer, which is always present if libavfilter is linked.
-fn open_lavfi_input(filter: &str) -> Result<format::context::Input, ffmpeg::Error> {
-    unsafe {
-        let iformat = ffmpeg_next::ffi::av_find_input_format(b"lavfi\0".as_ptr() as *const _);
-        if iformat.is_null() {
-            return Err(ffmpeg::Error::DemuxerNotFound);
-        }
-
-        let path = CString::new(filter).map_err(|_| ffmpeg::Error::InvalidData)?;
-        let mut ps = ptr::null_mut();
-
-        match ffmpeg_next::ffi::avformat_open_input(
-            &mut ps,
-            path.as_ptr(),
-            iformat,
-            ptr::null_mut(),
-        ) {
-            0 => match ffmpeg_next::ffi::avformat_find_stream_info(ps, ptr::null_mut()) {
-                r if r >= 0 => Ok(format::context::Input::wrap(ps)),
-                e => {
-                    ffmpeg_next::ffi::avformat_close_input(&mut ps);
-                    Err(ffmpeg::Error::from(e))
-                }
-            },
-            e => Err(ffmpeg::Error::from(e)),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -812,15 +806,17 @@ fn prepare_streaming_assets(
     let mut images = HashMap::new();
     let mut video_workers = HashMap::new();
 
-    for source in timeline.sources() {
-        match source.media_type() {
-            SourceMediaType::Image => {
-                let image = decode_image_source(source, media_root, asset_cache.as_deref())?;
+    for source in &timeline.sources {
+        let runtime_source = compiled_source_to_runtime_source(source)?;
+        match source.media {
+            SourceMedia::Image => {
+                let image =
+                    decode_image_source(&runtime_source, media_root, asset_cache.as_deref())?;
                 images.insert(source.id.clone(), image);
             }
-            SourceMediaType::Video => {
+            SourceMedia::Video => {
                 let decoder = LibavStreamDecoder::new(
-                    source,
+                    &runtime_source,
                     fps,
                     0,
                     media_root,
@@ -835,7 +831,7 @@ fn prepare_streaming_assets(
                 );
                 video_workers.insert(source.id.clone(), worker);
             }
-            SourceMediaType::Audio => {}
+            SourceMedia::Audio => {}
         }
     }
 
@@ -852,7 +848,7 @@ fn prepare_streaming_assets(
 pub struct FfmpegRenderBackend {
     timeline: Arc<CompiledTimeline>,
     options: RenderBackendOptions,
-    renderer: Option<Box<dyn RenderBackend>>,
+    renderer: Option<Box<dyn Renderer>>,
     assets: Option<StreamingAssets>,
     asset_cache: Option<Arc<WebAssetCache>>,
 }
@@ -960,20 +956,24 @@ impl FfmpegRenderBackend {
                 .ok_or_else(|| anyhow!("missing operation index {}", operation_index))?;
 
             if let CompiledOperationKind::Video(video) = &operation.kind {
-                let source_frame = operation
-                    .resolve_video_source_frame(frame)
-                    .map_err(|err| anyhow!(err.to_string()))?;
-                if let Some(source_frame) = source_frame {
-                    let _ = assets
-                        .video_frame(video.source_id.as_str(), source_frame)
-                        .map_err(|err| {
-                            anyhow!(
-                                "failed to decode source `{}` frame {}: {err}",
-                                video.source_id,
-                                source_frame
-                            )
-                        })?;
-                }
+                let Some(source_frame) = operation.resolved_video_source_frame(frame, None) else {
+                    continue;
+                };
+                let source_id = self
+                    .timeline
+                    .source(video.source_index)
+                    .ok_or_else(|| anyhow!("missing source index {}", video.source_index))?
+                    .id
+                    .clone();
+                let _ = assets
+                    .video_frame(source_id.as_str(), source_frame)
+                    .map_err(|err| {
+                        anyhow!(
+                            "failed to decode source `{}` frame {}: {err}",
+                            source_id,
+                            source_frame
+                        )
+                    })?;
             }
         }
 

@@ -17,9 +17,11 @@ use tempfile::NamedTempFile;
 
 use anyhow::{Context, anyhow};
 use lumen::{
-    backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError, RenderBackend},
-    compile::{CompiledOperationKind, CompiledTimeline},
-    model::{FitMode, LayoutNode, LayoutNodeKind, LoopMode, Source, SourceKind, SourcePipeline},
+    backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError, Renderer},
+    compile::{
+        CompiledLayoutNode, CompiledLayoutNodeKind, CompiledOperationKind, CompiledTimeline,
+    },
+    model::{Source, SourceKind},
     time::Rational,
 };
 
@@ -29,7 +31,7 @@ pub const DEFAULT_MAX_DECODED_FRAMES: usize = 120_000;
 #[allow(dead_code)]
 pub const DEFAULT_STREAM_CACHE_FRAMES: usize = 256;
 
-pub fn create_renderer(width: u32, height: u32) -> anyhow::Result<Box<dyn RenderBackend>> {
+pub fn create_renderer(width: u32, height: u32) -> anyhow::Result<Box<dyn Renderer>> {
     #[cfg(feature = "renderer-skia")]
     {
         let renderer = lumen::backend::skia::SkiaRenderer::new(width, height)
@@ -174,24 +176,30 @@ pub fn collect_requirements(
 
             match &operation.kind {
                 CompiledOperationKind::Image(image) => {
-                    requirements.images.insert(image.source_id.clone());
+                    if let Some(source) = timeline.source(image.source_index) {
+                        requirements.images.insert(source.id.clone());
+                    }
                 }
                 CompiledOperationKind::Layout(layout) => {
-                    collect_layout_image_requirements(&layout.root, &mut requirements.images);
+                    collect_layout_image_requirements(
+                        timeline,
+                        &layout.root,
+                        &mut requirements.images,
+                    );
                 }
                 CompiledOperationKind::Video(video) => {
-                    if let Some(source_frame) = operation
-                        .resolve_video_source_frame(frame)
-                        .map_err(|err| anyhow!(err.to_string()))?
+                    if let Some(source) = timeline.source(video.source_index)
+                        && let Some(source_frame) =
+                            operation.resolved_video_source_frame(frame, None)
                     {
                         requirements
                             .videos
-                            .entry(video.source_id.clone())
+                            .entry(source.id.clone())
                             .or_default()
                             .insert(source_frame);
                     }
                 }
-                CompiledOperationKind::Solid { .. }
+                CompiledOperationKind::Solid
                 | CompiledOperationKind::Shape(_)
                 | CompiledOperationKind::Text(_) => {}
             }
@@ -201,16 +209,22 @@ pub fn collect_requirements(
     Ok(requirements)
 }
 
-fn collect_layout_image_requirements(node: &LayoutNode, images: &mut HashSet<String>) {
+fn collect_layout_image_requirements(
+    timeline: &CompiledTimeline,
+    node: &CompiledLayoutNode,
+    images: &mut HashSet<String>,
+) {
     match &node.kind {
-        LayoutNodeKind::Container { children } => {
+        CompiledLayoutNodeKind::Container { children } => {
             for child in children {
-                collect_layout_image_requirements(child, images);
+                collect_layout_image_requirements(timeline, child, images);
             }
         }
-        LayoutNodeKind::Text(_) => {}
-        LayoutNodeKind::Image(image) => {
-            images.insert(image.source.clone());
+        CompiledLayoutNodeKind::Text { .. } => {}
+        CompiledLayoutNodeKind::Image { source_index } => {
+            if let Some(source) = timeline.source(*source_index) {
+                images.insert(source.id.clone());
+            }
         }
     }
 }
@@ -261,7 +275,7 @@ pub fn decode_image_source(
     asset_cache: Option<&WebAssetCache>,
 ) -> anyhow::Result<FrameImage> {
     match &source.kind {
-        SourceKind::File { path, .. } => {
+        SourceKind::File { path } => {
             let resolved = resolve_source_file_path(path, media_root, asset_cache)?;
             let image = image::ImageReader::open(&resolved)
                 .with_context(|| format!("failed to open image `{}`", resolved.display()))?
@@ -271,9 +285,16 @@ pub fn decode_image_source(
             FrameImage::new(rgba.width(), rgba.height(), rgba.into_raw())
                 .map_err(|err| anyhow!("failed to build image frame: {err}"))
         }
-        SourceKind::Generator { .. } => Err(anyhow!(
-            "generator sources are not supported for image clips"
-        )),
+        SourceKind::Url { url } => {
+            let resolved = resolve_source_file_path(url, media_root, asset_cache)?;
+            let image = image::ImageReader::open(&resolved)
+                .with_context(|| format!("failed to open image `{}`", resolved.display()))?
+                .decode()
+                .with_context(|| format!("failed to decode image `{}`", resolved.display()))?;
+            let rgba = image.into_rgba8();
+            FrameImage::new(rgba.width(), rgba.height(), rgba.into_raw())
+                .map_err(|err| anyhow!("failed to build image frame: {err}"))
+        }
     }
 }
 
@@ -377,240 +398,13 @@ pub fn encode_rgba_stream(
         .with_context(|| format!("failed to read encoded output `{}`", output_path.display()))
 }
 
-fn approx_eq(a: f32, b: f32) -> bool {
-    (a - b).abs() < 1e-3
-}
-
-struct FastPathPlan {
-    source: Source,
-    pipeline: SourcePipeline,
-    fit: FitMode,
-}
-
-fn analyze_fast_path_timeline(timeline: &CompiledTimeline) -> anyhow::Result<Option<FastPathPlan>> {
-    if timeline.has_compositing_nodes() {
-        return Ok(None);
-    }
-
-    let total_frames = timeline.total_frames();
-    if total_frames == 0 {
-        return Ok(None);
-    }
-
-    let mut single_operation_index: Option<usize> = None;
-    for frame in 0..total_frames {
-        let operation_indices = timeline
-            .operation_indices_for_frame(frame)
-            .map_err(|err| anyhow!(err.to_string()))?;
-        if operation_indices.len() != 1 {
-            return Ok(None);
-        }
-
-        let op_idx = *operation_indices
-            .first()
-            .ok_or_else(|| anyhow!("missing operation for frame {frame}"))?;
-        match single_operation_index {
-            Some(expected) if expected != op_idx => return Ok(None),
-            None => single_operation_index = Some(op_idx),
-            _ => {}
-        }
-    }
-
-    let op_idx =
-        single_operation_index.ok_or_else(|| anyhow!("missing operation index for timeline"))?;
-    let operation = timeline
-        .operation(op_idx)
-        .ok_or_else(|| anyhow!("missing operation index {}", op_idx))?;
-
-    if operation.start_frame != 0 || operation.end_frame != total_frames {
-        return Ok(None);
-    }
-    if !approx_eq(operation.opacity, 1.0) {
-        return Ok(None);
-    }
-    if !approx_eq(operation.transform.x, 0.0)
-        || !approx_eq(operation.transform.y, 0.0)
-        || !approx_eq(operation.transform.rotation_degrees, 0.0)
-    {
-        return Ok(None);
-    }
-
-    let expected_width = timeline.canvas.width as f32;
-    let expected_height = timeline.canvas.height as f32;
-    let Some(width) = operation.transform.width else {
-        return Ok(None);
-    };
-    let Some(height) = operation.transform.height else {
-        return Ok(None);
-    };
-    if !approx_eq(width, expected_width) || !approx_eq(height, expected_height) {
-        return Ok(None);
-    }
-
-    let CompiledOperationKind::Video(video) = &operation.kind else {
-        return Ok(None);
-    };
-    if !approx_eq(video.corner_radius, 0.0) {
-        return Ok(None);
-    }
-    if video.pipeline.looping != LoopMode::None {
-        return Ok(None);
-    }
-    if !video.pipeline.speed.is_finite() || !approx_eq(video.pipeline.speed, 1.0) {
-        return Ok(None);
-    }
-
-    for frame in 0..total_frames {
-        let source_frame = operation
-            .resolve_video_source_frame(frame)
-            .map_err(|err| anyhow!(err.to_string()))?;
-        if source_frame.is_none() {
-            return Ok(None);
-        }
-    }
-
-    let source = timeline
-        .source(video.source_id.as_str())
-        .ok_or_else(|| anyhow!("missing source `{}`", video.source_id))?
-        .clone();
-
-    Ok(Some(FastPathPlan {
-        source,
-        pipeline: video.pipeline.clone(),
-        fit: video.fit,
-    }))
-}
-
-fn background_hex_rgba(color: lumen::model::ColorRgba) -> String {
-    format!(
-        "0x{:02x}{:02x}{:02x}{:02x}",
-        color.r(),
-        color.g(),
-        color.b(),
-        color.a()
-    )
-}
-
 pub fn try_render_ffmpeg_fast_path(
-    timeline: &CompiledTimeline,
-    options: &RenderBackendOptions,
-    asset_cache: Option<&WebAssetCache>,
-    on_progress: &mut dyn FnMut(u64, u64),
+    _timeline: &CompiledTimeline,
+    _options: &RenderBackendOptions,
+    _asset_cache: Option<&WebAssetCache>,
+    _on_progress: &mut dyn FnMut(u64, u64),
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    let Some(plan) = analyze_fast_path_timeline(timeline)? else {
-        return Ok(None);
-    };
-
-    let media_root = media_root(options.media_root.as_deref())?;
-    let encoder = choose_video_encoder(options.video_encoder.as_deref());
-    let fps = timeline.timeline.fps;
-    let total_frames = timeline.total_frames();
-
-    let mut filters = Vec::<String>::new();
-    filters.push(format!("fps={}/{}", fps.num, fps.den));
-
-    if let Some(trim) = plan.pipeline.trim {
-        if let Some(end_frame) = trim.end_frame {
-            filters.push(format!(
-                "trim=start_frame={}:end_frame={}",
-                trim.start_frame, end_frame
-            ));
-        } else if trim.start_frame > 0 {
-            filters.push(format!("trim=start_frame={}", trim.start_frame));
-        }
-    }
-
-    if plan.pipeline.reverse {
-        filters.push("reverse".to_string());
-    }
-
-    filters.push("setpts=PTS-STARTPTS".to_string());
-    match plan.fit {
-        FitMode::Fill => {
-            filters.push(format!(
-                "scale={}:{}:flags=fast_bilinear",
-                timeline.canvas.width, timeline.canvas.height
-            ));
-        }
-        FitMode::Contain => {
-            filters.push(format!(
-                "scale={}:{}:flags=fast_bilinear:force_original_aspect_ratio=decrease",
-                timeline.canvas.width, timeline.canvas.height
-            ));
-            filters.push(format!(
-                "pad={}:{}:(ow-iw)/2:(oh-ih)/2:{}",
-                timeline.canvas.width,
-                timeline.canvas.height,
-                background_hex_rgba(timeline.canvas.background)
-            ));
-        }
-        FitMode::Cover => {
-            filters.push(format!(
-                "scale={}:{}:flags=fast_bilinear:force_original_aspect_ratio=increase",
-                timeline.canvas.width, timeline.canvas.height
-            ));
-            filters.push(format!(
-                "crop={}:{}",
-                timeline.canvas.width, timeline.canvas.height
-            ));
-        }
-    }
-
-    let tmp = tempfile::tempdir().context("failed to create temporary fast-path directory")?;
-    let output_path = tmp.path().join("fast-path.mp4");
-
-    let mut command = Command::new("ffmpeg");
-    command
-        .arg("-y")
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-nostdin");
-
-    match &plan.source.kind {
-        SourceKind::File { path, .. } => {
-            let resolved = resolve_source_file_path(path, &media_root, asset_cache)?;
-            command.arg("-i").arg(resolved);
-        }
-        SourceKind::Generator { filter, .. } => {
-            command.arg("-f").arg("lavfi").arg("-i").arg(filter);
-        }
-    }
-
-    command
-        .arg("-an")
-        .arg("-vf")
-        .arg(filters.join(","))
-        .arg("-frames:v")
-        .arg(total_frames.to_string())
-        .arg("-c:v")
-        .arg(&encoder)
-        .arg("-pix_fmt")
-        .arg("yuv420p")
-        .arg("-movflags")
-        .arg("+faststart")
-        .arg(&output_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-
-    let output = command
-        .output()
-        .context("failed to spawn ffmpeg fast-path process")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "ffmpeg fast-path failed with encoder `{encoder}`: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let bytes = std::fs::read(&output_path).with_context(|| {
-        format!(
-            "failed to read fast-path output `{}`",
-            output_path.display()
-        )
-    })?;
-    on_progress(total_frames, total_frames);
-    Ok(Some(bytes))
+    Ok(None)
 }
 
 pub fn resolve_source_file_path(

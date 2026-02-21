@@ -14,8 +14,8 @@ use image::{ImageEncoder, codecs::png::PngEncoder};
 use lru::LruCache;
 use lumen::{
     backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError},
-    compile::{CompiledOperationKind, CompiledTimeline},
-    model::{Source, SourceKind, SourceMediaType},
+    compile::{CompiledOperationKind, CompiledSource, CompiledTimeline},
+    model::{Source, SourceKind, SourceMedia},
     time::Rational,
 };
 
@@ -27,6 +27,41 @@ use super::common::{
 };
 
 pub use super::common::RenderBackendOptions;
+
+fn compiled_source_to_runtime_source(source: &CompiledSource) -> anyhow::Result<Source> {
+    if source.path.starts_with("generator:") {
+        return Err(anyhow!(
+            "generator sources are no longer supported in lumen-server (`{}`)",
+            source.id
+        ));
+    }
+
+    let kind = if source.path.starts_with("http://") || source.path.starts_with("https://") {
+        SourceKind::Url {
+            url: source.path.clone(),
+        }
+    } else {
+        SourceKind::File {
+            path: source.path.clone(),
+        }
+    };
+
+    Ok(Source {
+        id: source.id.clone(),
+        media: source.media,
+        kind,
+    })
+}
+
+fn compiled_source_by_id<'a>(
+    timeline: &'a CompiledTimeline,
+    source_id: &str,
+) -> Option<&'a CompiledSource> {
+    timeline
+        .sources
+        .iter()
+        .find(|source| source.id == source_id)
+}
 
 pub struct FfmpegRenderBackend {
     timeline: Arc<CompiledTimeline>,
@@ -162,20 +197,24 @@ impl FfmpegRenderBackend {
                 .ok_or_else(|| anyhow!("missing operation index {}", operation_index))?;
 
             if let CompiledOperationKind::Video(video) = &operation.kind {
-                let source_frame = operation
-                    .resolve_video_source_frame(frame)
-                    .map_err(|err| anyhow!(err.to_string()))?;
-                if let Some(source_frame) = source_frame {
-                    let _ = assets
-                        .video_frame(video.source_id.as_str(), source_frame)
-                        .map_err(|err| {
-                            anyhow!(
-                                "failed to decode source `{}` frame {}: {err}",
-                                video.source_id,
-                                source_frame
-                            )
-                        })?;
-                }
+                let Some(source_frame) = operation.resolved_video_source_frame(frame, None) else {
+                    continue;
+                };
+                let source_id = self
+                    .timeline
+                    .source(video.source_index)
+                    .ok_or_else(|| anyhow!("missing source index {}", video.source_index))?
+                    .id
+                    .clone();
+                let _ = assets
+                    .video_frame(source_id.as_str(), source_frame)
+                    .map_err(|err| {
+                        anyhow!(
+                            "failed to decode source `{}` frame {}: {err}",
+                            source_id,
+                            source_frame
+                        )
+                    })?;
             }
         }
 
@@ -376,12 +415,13 @@ impl VideoStreamDecoder {
             .arg("-nostdin");
 
         match &source.kind {
-            SourceKind::File { path, .. } => {
+            SourceKind::File { path } => {
                 let resolved = resolve_source_file_path(path, media_root, asset_cache)?;
                 command.arg("-hwaccel").arg("auto").arg("-i").arg(resolved);
             }
-            SourceKind::Generator { filter, .. } => {
-                command.arg("-f").arg("lavfi").arg("-i").arg(filter);
+            SourceKind::Url { url } => {
+                let resolved = resolve_source_file_path(url, media_root, asset_cache)?;
+                command.arg("-hwaccel").arg("auto").arg("-i").arg(resolved);
             }
         }
 
@@ -517,17 +557,19 @@ fn prepare_streaming_assets(
     let mut images = HashMap::new();
     let mut video_decoders = HashMap::new();
 
-    for source in timeline.sources() {
-        match source.media_type() {
-            SourceMediaType::Image => {
-                let image = decode_image_source(source, media_root, asset_cache.as_deref())?;
+    for source in &timeline.sources {
+        let runtime_source = compiled_source_to_runtime_source(source)?;
+        match source.media {
+            SourceMedia::Image => {
+                let image =
+                    decode_image_source(&runtime_source, media_root, asset_cache.as_deref())?;
                 images.insert(source.id.clone(), image);
             }
-            SourceMediaType::Video => {
+            SourceMedia::Video => {
                 let (width, height) =
-                    probe_video_dimensions(source, media_root, asset_cache.as_deref())?;
+                    probe_video_dimensions(&runtime_source, media_root, asset_cache.as_deref())?;
                 let decoder = VideoStreamDecoder::new(
-                    source.clone(),
+                    runtime_source,
                     fps,
                     width,
                     height,
@@ -538,7 +580,7 @@ fn prepare_streaming_assets(
                 )?;
                 video_decoders.insert(source.id.clone(), decoder);
             }
-            SourceMediaType::Audio => {}
+            SourceMedia::Audio => {}
         }
     }
 
@@ -566,10 +608,10 @@ fn prepare_assets(
     let mut prepared = PreparedAssets::default();
 
     for source_id in &requirements.images {
-        let source = timeline
-            .source(source_id)
+        let compiled_source = compiled_source_by_id(timeline, source_id)
             .ok_or_else(|| anyhow!("missing source `{source_id}`"))?;
-        let image = decode_image_source(source, media_root, asset_cache.as_deref())?;
+        let source = compiled_source_to_runtime_source(compiled_source)?;
+        let image = decode_image_source(&source, media_root, asset_cache.as_deref())?;
         prepared.images.insert(source_id.clone(), image);
     }
 
@@ -577,10 +619,9 @@ fn prepare_assets(
     let mut decode_handles = Vec::new();
 
     for (source_id, frames) in &requirements.videos {
-        let source = timeline
-            .source(source_id)
-            .ok_or_else(|| anyhow!("missing source `{source_id}`"))?
-            .clone();
+        let compiled_source = compiled_source_by_id(timeline, source_id)
+            .ok_or_else(|| anyhow!("missing source `{source_id}`"))?;
+        let source = compiled_source_to_runtime_source(compiled_source)?;
         let frame_set = frames.clone();
         let decode_root = media_root.to_path_buf();
         let decode_cache = asset_cache.clone();
@@ -699,12 +740,13 @@ fn decode_command(
         .arg("-nostdin");
 
     match &source.kind {
-        SourceKind::File { path, .. } => {
+        SourceKind::File { path } => {
             let resolved = resolve_source_file_path(path, media_root, asset_cache)?;
             command.arg("-hwaccel").arg("auto").arg("-i").arg(resolved);
         }
-        SourceKind::Generator { filter, .. } => {
-            command.arg("-f").arg("lavfi").arg("-i").arg(filter);
+        SourceKind::Url { url } => {
+            let resolved = resolve_source_file_path(url, media_root, asset_cache)?;
+            command.arg("-hwaccel").arg("auto").arg("-i").arg(resolved);
         }
     }
 
@@ -751,11 +793,11 @@ fn probe_video_dimensions(
         .arg("csv=p=0:s=x");
 
     match &source.kind {
-        SourceKind::File { path, .. } => {
+        SourceKind::File { path } => {
             command.arg(resolve_source_file_path(path, media_root, asset_cache)?);
         }
-        SourceKind::Generator { filter, .. } => {
-            command.arg("-f").arg("lavfi").arg("-i").arg(filter);
+        SourceKind::Url { url } => {
+            command.arg(resolve_source_file_path(url, media_root, asset_cache)?);
         }
     }
 

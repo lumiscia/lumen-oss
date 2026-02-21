@@ -1,52 +1,54 @@
-use lumen::Project;
-use serde_json::json;
+use lumen::{
+    Project, Rational,
+    model::{
+        BaseStyle, Canvas, ClipContent, ClipItem, ClipStyle, Layer, LayerItem, StyleValue,
+        Timeline, TransformStyle,
+    },
+};
 
 use crate::executor::{RenderExecutionOptions, execute_render};
 
 fn missing_source_project() -> Project {
-    serde_json::from_value(json!({
-        "canvas": {
-            "width": 320,
-            "height": 180,
-            "background": [0, 0, 0, 255]
+    let mut style = ClipStyle::default();
+    style.base = BaseStyle {
+        transform: TransformStyle {
+            x: StyleValue::Value(0.0),
+            y: StyleValue::Value(0.0),
+            width: StyleValue::Value(320.0),
+            height: StyleValue::Value(180.0),
+            ..Default::default()
         },
-        "timeline": {
-            "fps": { "num": 30, "den": 1 },
-            "total_frames": 2
+        ..Default::default()
+    };
+
+    Project {
+        version: "1".to_string(),
+        canvas: Canvas {
+            width: 320,
+            height: 180,
+            background: [0, 0, 0, 255],
         },
-        "sources": [],
-        "layers": [{
-            "id": "layer_video",
-            "z_index": 0,
-            "items": [{
-                "kind": "clip",
-                "id": "clip_video_1",
-                "start_frame": 0,
-                "duration_frames": 2,
-                "opacity": 1.0,
-                "transform": {
-                    "x": 0.0,
-                    "y": 0.0,
-                    "width": 320.0,
-                    "height": 180.0,
-                    "rotation_degrees": 0.0
+        timeline: Timeline {
+            fps: Rational::new(30, 1),
+            duration_frames: 2,
+        },
+        sources: Vec::new(),
+        layers: vec![Layer {
+            id: "layer_video".to_string(),
+            items: vec![LayerItem::Clip(ClipItem {
+                id: "clip_video_1".to_string(),
+                start_frame: 0,
+                duration_frames: 2,
+                content: ClipContent::Video {
+                    source: "missing_source".to_string(),
+                    pipeline: Default::default(),
                 },
-                "content": {
-                    "type": "video",
-                    "source": "missing_source",
-                    "pipeline": {
-                        "trim": null,
-                        "speed": 1.0,
-                        "reverse": false,
-                        "looping": { "mode": "none" }
-                    },
-                    "fit": "cover"
-                }
-            }]
+                style,
+                mask: None,
+            })],
         }],
-        "audio": { "tracks": [] }
-    }))
-    .expect("project json")
+        audio: Default::default(),
+    }
 }
 
 #[test]
