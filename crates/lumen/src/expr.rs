@@ -89,6 +89,44 @@ pub enum ExprEvalError {
     DivisionByZero,
 }
 
+// -- Display ------------------------------------------------------------------
+
+impl std::fmt::Display for ExprProp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExprProp::Width => write!(f, "width"),
+            ExprProp::Height => write!(f, "height"),
+            ExprProp::X => write!(f, "x"),
+            ExprProp::Y => write!(f, "y"),
+        }
+    }
+}
+
+impl std::fmt::Display for ParsedExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParsedExpr::Literal(v) => write!(f, "{v}"),
+            ParsedExpr::Ref(r) => write!(f, "{}.{}", r.target, r.property),
+            ParsedExpr::UnaryOp { op, expr } => {
+                let op_char = match op {
+                    UnaryOp::Plus => "+",
+                    UnaryOp::Minus => "-",
+                };
+                write!(f, "{op_char}({expr})")
+            }
+            ParsedExpr::BinOp { op, lhs, rhs } => {
+                let op_char = match op {
+                    BinOp::Add => "+",
+                    BinOp::Sub => "-",
+                    BinOp::Mul => "*",
+                    BinOp::Div => "/",
+                };
+                write!(f, "({lhs} {op_char} {rhs})")
+            }
+        }
+    }
+}
+
 // -- Eval context -------------------------------------------------------------
 
 pub trait ExprEvalCtx {

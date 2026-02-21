@@ -423,9 +423,16 @@ fn collect_layer_item_transforms(
     item: &LayerItem,
     layer_id: &str,
     unresolved: &mut HashMap<String, UnresolvedEntry>,
-) {
+) -> Result<(), CompileError> {
     match item {
         LayerItem::Clip(clip) => {
+            if unresolved.contains_key(&clip.id) {
+                return Err(CompileError::InvalidClip {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip.id.clone(),
+                    reason: "duplicate item id".to_string(),
+                });
+            }
             unresolved.insert(
                 clip.id.clone(),
                 UnresolvedEntry {
@@ -437,10 +444,17 @@ fn collect_layer_item_transforms(
                 },
             );
             if let Some(mask) = clip.mask.as_deref() {
-                collect_layer_item_transforms(mask, layer_id, unresolved);
+                collect_layer_item_transforms(mask, layer_id, unresolved)?;
             }
         }
         LayerItem::Group(group) => {
+            if unresolved.contains_key(&group.id) {
+                return Err(CompileError::InvalidGroup {
+                    layer_id: layer_id.to_string(),
+                    group_id: group.id.clone(),
+                    reason: "duplicate item id".to_string(),
+                });
+            }
             unresolved.insert(
                 group.id.clone(),
                 UnresolvedEntry {
@@ -452,13 +466,14 @@ fn collect_layer_item_transforms(
                 },
             );
             for child in &group.items {
-                collect_layer_item_transforms(child, layer_id, unresolved);
+                collect_layer_item_transforms(child, layer_id, unresolved)?;
             }
             if let Some(mask) = group.mask.as_deref() {
-                collect_layer_item_transforms(mask, layer_id, unresolved);
+                collect_layer_item_transforms(mask, layer_id, unresolved)?;
             }
         }
     }
+    Ok(())
 }
 
 fn collect_project_layout_node_ids(project: &Project) -> HashSet<String> {
@@ -496,7 +511,7 @@ fn build_clip_property_index(project: &Project) -> Result<ClipPropertyIndex, Com
     let mut unresolved: HashMap<String, UnresolvedEntry> = HashMap::new();
     for layer in &project.layers {
         for item in &layer.items {
-            collect_layer_item_transforms(item, &layer.id, &mut unresolved);
+            collect_layer_item_transforms(item, &layer.id, &mut unresolved)?;
         }
     }
 
@@ -1794,7 +1809,8 @@ fn compile_optional_layout_dimension(
             }
 
             if has_node_ref {
-                return Ok(Some(Scalar::Expr(s)));
+                let scaled = scale_parsed_expr_literals(&parsed, scale);
+                return Ok(Some(Scalar::Expr(scaled.to_string())));
             }
 
             // All refs are canvas or clip refs — resolve now.

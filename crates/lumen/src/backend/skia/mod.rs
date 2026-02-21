@@ -585,8 +585,15 @@ impl SkiaRenderer {
                 }
                 Ok(false)
             }
-            CompiledOperationKind::Layout(layout) => self
-                .draw_layout_operation(operation, transform, opacity, layout, provider, blend_mode),
+            CompiledOperationKind::Layout(layout) => self.draw_layout_operation(
+                operation,
+                transform,
+                opacity,
+                layout,
+                provider,
+                blend_mode,
+                expr_ctx.static_ctx,
+            ),
         }
     }
 
@@ -598,6 +605,7 @@ impl SkiaRenderer {
         layout: &LayoutClip,
         provider: &mut dyn FrameProvider,
         blend_mode: BlendMode,
+        clip_index: &ClipPropertyIndex,
     ) -> Result<bool, RenderError> {
         let width = transform.width.unwrap_or(1.0).max(1.0);
         let height = transform.height.unwrap_or(1.0).max(1.0);
@@ -611,6 +619,7 @@ impl SkiaRenderer {
                 layout,
                 width,
                 height,
+                clip_index,
             )?;
             return draw_layout_render_tree(
                 self.surface.canvas(),
@@ -641,6 +650,7 @@ impl SkiaRenderer {
                 layout,
                 width,
                 height,
+                clip_index,
             )?;
             self.layout_cache.insert(
                 key,
@@ -719,6 +729,7 @@ impl SkiaRenderer {
                         layout_clip,
                         width,
                         height,
+                        timeline.clip_index(),
                     )?;
                     for (id, values) in &tree.named_layouts {
                         layouts.insert(id.clone(), *values);
@@ -977,6 +988,7 @@ fn build_layout_render_tree(
     layout: &LayoutClip,
     width: f32,
     height: f32,
+    clip_index: &ClipPropertyIndex,
 ) -> Result<LayoutRenderTree, RenderError> {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_id_map: HashMap<String, TaffyNodeId> = HashMap::new();
@@ -993,10 +1005,14 @@ fn build_layout_render_tree(
 
     // Second pass if any nodes have deferred dimension exprs
     let first_pass_layouts = collect_named_layouts(&taffy, &node_id_map);
-    let ctx = LayoutNodeExprCtx {
+    let layout_ctx = LayoutNodeExprCtx {
         layouts: first_pass_layouts,
     };
-    let any_changed = apply_deferred_layout_dims(&mut taffy, &root, &ctx);
+    let combined_ctx = RuntimeExprCtx {
+        static_ctx: clip_index,
+        layout_ctx: Some(&layout_ctx),
+    };
+    let any_changed = apply_deferred_layout_dims(&mut taffy, &root, &combined_ctx);
     if any_changed {
         taffy
             .compute_layout(root.taffy_node, available)
@@ -1166,7 +1182,7 @@ fn build_layout_render_node(
 fn apply_deferred_layout_dims(
     taffy: &mut TaffyTree<()>,
     node: &LayoutRenderNode,
-    ctx: &LayoutNodeExprCtx,
+    ctx: &dyn ExprEvalCtx,
 ) -> bool {
     let mut any_changed = false;
 
