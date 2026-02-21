@@ -33,11 +33,52 @@ impl<'de> Deserialize<'de> for Rational {
     where
         D: Deserializer<'de>,
     {
-        let raw = <[u32; 2]>::deserialize(deserializer)?;
-        Ok(Self {
-            num: raw[0],
-            den: raw[1],
-        })
+        use serde::de;
+
+        struct RationalVisitor;
+
+        impl<'de> de::Visitor<'de> for RationalVisitor {
+            type Value = Rational;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a [num, den] array or {\"num\": N, \"den\": D} object")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                let num = seq
+                    .next_element::<u32>()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let den = seq
+                    .next_element::<u32>()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                Ok(Rational { num, den })
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut num = None;
+                let mut den = None;
+                while let Some(key) = map.next_key::<&str>()? {
+                    match key {
+                        "num" => num = Some(map.next_value()?),
+                        "den" => den = Some(map.next_value()?),
+                        _ => {
+                            let _ = map.next_value::<de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                let num = num.ok_or_else(|| de::Error::missing_field("num"))?;
+                let den = den.ok_or_else(|| de::Error::missing_field("den"))?;
+                Ok(Rational { num, den })
+            }
+        }
+
+        deserializer.deserialize_any(RationalVisitor)
     }
 }
 
@@ -59,5 +100,12 @@ mod tests {
 
         let restored: Rational = serde_json::from_str(json.as_str()).expect("deserialize rational");
         assert_eq!(restored, value);
+    }
+
+    #[test]
+    fn serde_object_form() {
+        let json = r#"{"num": 30000, "den": 1001}"#;
+        let value: Rational = serde_json::from_str(json).expect("deserialize object rational");
+        assert_eq!(value, Rational::new(30000, 1001));
     }
 }
