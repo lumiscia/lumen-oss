@@ -1423,12 +1423,7 @@ fn compile_clip_content(
                     reason: "video corner_radius must be finite and >= 0".to_string(),
                 });
             }
-            let _ =
-                map_source_frame(&video.pipeline, 0).map_err(|err| CompileError::InvalidClip {
-                    layer_id: layer_id.to_string(),
-                    clip_id: clip.id.clone(),
-                    reason: err.to_string(),
-                })?;
+            map_source_frame(&video.pipeline, 0).map_err(CompileError::from)?;
 
             Ok(CompiledOperationKind::Video(VideoSourceRef {
                 source_id: video.source.clone(),

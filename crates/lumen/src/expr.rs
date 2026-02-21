@@ -45,7 +45,7 @@ pub struct ExprRef {
     pub property: ExprProp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExprProp {
     Width,
     Height,
