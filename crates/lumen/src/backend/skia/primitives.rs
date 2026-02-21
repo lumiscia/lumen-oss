@@ -1,6 +1,6 @@
 use skia_safe::canvas::SrcRectConstraint;
 use skia_safe::{
-    AlphaType, BlendMode as SkiaBlendMode, Canvas, Color4f, ColorType, Data, Font, ImageInfo,
+    AlphaType, BlendMode as SkiaBlendMode, Canvas, ClipOp, Color4f, ColorType, Data, Font, ImageInfo,
     Paint, PaintStyle, PathBuilder, RRect, Rect, Vector, color_filters,
 };
 
@@ -88,6 +88,7 @@ pub fn draw_operation_content(
                     opacity,
                     operation.style.base.blend_mode,
                     operation.style.color_matrix.as_ref(),
+                    resolved_corner_radius(operation, frame_state),
                 )?;
             }
             Ok(())
@@ -205,20 +206,33 @@ fn draw_text(
     );
     apply_color_matrix(&mut paint, operation.style.color_matrix.as_ref());
 
-    let text_width = font.measure_str(content, Some(&paint)).0;
-    let x = match operation.style.align {
-        crate::model::TextAlign::Left => bounds.left,
-        crate::model::TextAlign::Center => bounds.left + (bounds.width() - text_width) * 0.5,
-        crate::model::TextAlign::Right => bounds.right - text_width,
+    let line_height_factor = operation.style.line_height.resolve(frame_state).max(0.1);
+    let font_size = font.size();
+    let line_step = font_size * line_height_factor;
+    let lines: Vec<&str> = content.split('\n').collect();
+    let total_text_height = line_step * (lines.len() as f32 - 1.0) + font_size;
+
+    let first_baseline = match operation.style.vertical_align {
+        crate::model::VerticalAlign::Top => bounds.top + font_size,
+        crate::model::VerticalAlign::Middle => {
+            bounds.top + (bounds.height() - total_text_height) * 0.5 + font_size
+        }
+        crate::model::VerticalAlign::Bottom => bounds.bottom - total_text_height + font_size,
     };
 
-    let baseline = match operation.style.vertical_align {
-        crate::model::VerticalAlign::Top => bounds.top + font.size(),
-        crate::model::VerticalAlign::Middle => bounds.top + bounds.height() * 0.5,
-        crate::model::VerticalAlign::Bottom => bounds.bottom,
-    };
-
-    canvas.draw_str(content, (x, baseline), &font, &paint);
+    for (i, line) in lines.iter().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let line_width = font.measure_str(line, Some(&paint)).0;
+        let x = match operation.style.align {
+            crate::model::TextAlign::Left => bounds.left,
+            crate::model::TextAlign::Center => bounds.left + (bounds.width() - line_width) * 0.5,
+            crate::model::TextAlign::Right => bounds.right - line_width,
+        };
+        let baseline = first_baseline + (i as f32) * line_step;
+        canvas.draw_str(line, (x, baseline), &font, &paint);
+    }
     Ok(())
 }
 
@@ -230,6 +244,7 @@ fn draw_image(
     opacity: f32,
     blend_mode: BlendMode,
     color_matrix: Option<&[[f32; 5]; 4]>,
+    corner_radius: [f32; 4],
 ) -> Result<(), RenderError> {
     let info = ImageInfo::new(
         (frame_image.width as i32, frame_image.height as i32),
@@ -256,7 +271,24 @@ fn draw_image(
     paint.set_blend_mode(to_skia_blend_mode(blend_mode));
     apply_color_matrix(&mut paint, color_matrix);
 
+    let has_radius = corner_radius.iter().any(|r| *r > 0.0);
+    if has_radius {
+        canvas.save();
+        let radii = [
+            Vector::new(corner_radius[0], corner_radius[0]),
+            Vector::new(corner_radius[1], corner_radius[1]),
+            Vector::new(corner_radius[2], corner_radius[2]),
+            Vector::new(corner_radius[3], corner_radius[3]),
+        ];
+        let rrect = RRect::new_rect_radii(bounds, &radii);
+        canvas.clip_rrect(rrect, ClipOp::Intersect, true);
+    }
+
     canvas.draw_image_rect(image, Some((&src, SrcRectConstraint::Strict)), &dst, &paint);
+
+    if has_radius {
+        canvas.restore();
+    }
     Ok(())
 }
 
