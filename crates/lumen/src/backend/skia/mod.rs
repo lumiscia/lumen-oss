@@ -625,10 +625,30 @@ impl SkiaRenderer {
     ) -> Result<bool, RenderError> {
         let width = transform.width.unwrap_or(1.0).max(1.0);
         let height = transform.height.unwrap_or(1.0).max(1.0);
+        let cacheable =
+            operation.animation.width.is_empty() && operation.animation.height.is_empty();
 
-        // The collect pass (collect_frame_layout_expr_ctx) ran first and already
-        // populated the cache for this frame. Only rebuild if the entry is missing
-        // or stale (e.g. animated dimensions changed since last frame).
+        if !cacheable {
+            let tree = build_layout_render_tree(
+                &self.typeface,
+                &mut self.font_cache,
+                layout,
+                width,
+                height,
+                clip_index,
+            )?;
+            return draw_layout_render_tree(
+                self.surface.canvas(),
+                &self.typeface,
+                &mut self.font_cache,
+                transform,
+                opacity,
+                blend_mode,
+                &tree,
+                provider,
+            );
+        }
+
         let key = layout_cache_key(operation);
         let should_rebuild = self
             .layout_cache
@@ -719,39 +739,16 @@ impl SkiaRenderer {
                     let transform = operation.resolved_transform_with_ctx(frame, expr_ctx);
                     let width = transform.width.unwrap_or(1.0).max(1.0);
                     let height = transform.height.unwrap_or(1.0).max(1.0);
-
-                    let key = layout_cache_key(operation);
-                    let cache_valid = self
-                        .layout_cache
-                        .get(&key)
-                        .map(|c| approx_eq(c.width, width) && approx_eq(c.height, height))
-                        .unwrap_or(false);
-
-                    if cache_valid {
-                        // Reuse cached tree — no rebuild needed for this frame.
-                        if let Some(cached) = self.layout_cache.get(&key) {
-                            for (id, values) in &cached.tree.named_layouts {
-                                layouts.insert(id.clone(), *values);
-                            }
-                        }
-                    } else {
-                        // Cache miss: build the tree and populate the cache so the
-                        // draw pass can reuse it without a second build.
-                        if self.layout_cache.len() > 256 {
-                            self.layout_cache.clear();
-                        }
-                        let tree = build_layout_render_tree(
-                            &self.typeface,
-                            &mut self.font_cache,
-                            layout_clip,
-                            width,
-                            height,
-                            timeline.clip_index(),
-                        )?;
-                        for (id, values) in &tree.named_layouts {
-                            layouts.insert(id.clone(), *values);
-                        }
-                        self.layout_cache.insert(key, CachedLayoutClip { width, height, tree });
+                    let tree = build_layout_render_tree(
+                        &self.typeface,
+                        &mut self.font_cache,
+                        layout_clip,
+                        width,
+                        height,
+                        timeline.clip_index(),
+                    )?;
+                    for (id, values) in &tree.named_layouts {
+                        layouts.insert(id.clone(), *values);
                     }
                 }
                 if let Some(mask) = clip.mask.as_deref() {
