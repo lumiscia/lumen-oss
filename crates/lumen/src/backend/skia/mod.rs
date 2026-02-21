@@ -582,18 +582,57 @@ fn simple_mask_geometry(
     if !is_axis_aligned_transform(&operation.style.base, frame_state) {
         return None;
     }
+    // Only use simple clip when mask is guaranteed to be fully opaque
+    let opacity = operation.style.base.opacity.resolve(frame_state);
+    if (opacity - 1.0).abs() > f32::EPSILON {
+        return None;
+    }
+    let blur = operation.style.base.blur.resolve(frame_state);
+    if blur > 0.0 {
+        return None;
+    }
     let bounds = resolved_bounds(&operation.style.base, frame_state);
     match &operation.kind {
-        CompiledOperationKind::Solid
-        | CompiledOperationKind::Shape(crate::compile::CompiledShape {
+        CompiledOperationKind::Solid => {
+            if let Some(fill) = operation.style.fill {
+                if fill[3] < 255 {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+            Some(mask::SimpleMaskGeometry::Rect {
+                bounds,
+                corner_radius: resolved_corner_radius(operation, frame_state),
+            })
+        }
+        CompiledOperationKind::Shape(crate::compile::CompiledShape {
             geometry: crate::model::ShapeGeometry::Rect,
-        }) => Some(mask::SimpleMaskGeometry::Rect {
-            bounds,
-            corner_radius: resolved_corner_radius(operation, frame_state),
-        }),
+        }) => {
+            if let Some(fill) = operation.style.fill {
+                if fill[3] < 255 {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+            Some(mask::SimpleMaskGeometry::Rect {
+                bounds,
+                corner_radius: resolved_corner_radius(operation, frame_state),
+            })
+        }
         CompiledOperationKind::Shape(crate::compile::CompiledShape {
             geometry: crate::model::ShapeGeometry::Ellipse,
-        }) => Some(mask::SimpleMaskGeometry::Ellipse { bounds }),
+        }) => {
+            if let Some(fill) = operation.style.fill {
+                if fill[3] < 255 {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+            Some(mask::SimpleMaskGeometry::Ellipse { bounds })
+        }
         _ => None,
     }
 }
