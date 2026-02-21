@@ -13,6 +13,7 @@ fn text_clip(id: &str, transform: Transform, animation: ClipAnimation) -> Clip {
         opacity: 1.0,
         transform,
         animation,
+        shadow: None,
         mask: None,
         content: ClipContent::Text(TextClip {
             text: id.to_string(),
@@ -141,6 +142,7 @@ fn resolves_layout_node_refs_in_keyframe_expressions_at_runtime() {
             rotation_degrees: 0.0,
         },
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Layout(LayoutClip {
             root: LayoutNode {
@@ -181,7 +183,10 @@ fn resolves_layout_node_refs_in_keyframe_expressions_at_runtime() {
         },
     );
 
-    let project = base_project(vec![LayerItem::Clip(layout), LayerItem::Clip(animated_mask)]);
+    let project = base_project(vec![
+        LayerItem::Clip(layout),
+        LayerItem::Clip(animated_mask),
+    ]);
     let compiled = compile_project(&project).expect("compile");
     let frame_ops = compiled.operation_indices_for_frame(0).expect("frame ops");
     let op = compiled.operation(frame_ops[1]).expect("animated op");

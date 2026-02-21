@@ -5,11 +5,11 @@
 //! limits, and duplicate ID handling.
 
 use lumen::{
-    Canvas, Clip, ClipContent, ClipGroup, ColorRgba, Easing, GroupTransform, ImageClip, Layer,
-    LayerItem, LayoutClip, LayoutNode, LayoutNodeKind, LoopMode, Project, Scalar, ScalarKeyframe,
-    Shape, ShapeClip, Source, SourceKind, SourceMediaType, SourcePipeline, Timeline, Transform,
-    TrimRange, VideoClip, compile::CompileError, compile_project, compile_project_with_scale,
-    time::Rational,
+    Canvas, Clip, ClipContent, ClipGroup, ClipShadow, ColorRgba, Easing, GroupTransform, ImageClip,
+    Layer, LayerItem, LayoutClip, LayoutNode, LayoutNodeKind, LoopMode, Project, Scalar,
+    ScalarKeyframe, Shape, ShapeClip, Source, SourceKind, SourceMediaType, SourcePipeline,
+    Timeline, Transform, TrimRange, VideoClip, compile::CompileError, compile_project,
+    compile_project_with_scale, time::Rational,
 };
 
 // ---------------------------------------------------------------------------
@@ -31,7 +31,6 @@ fn black() -> ColorRgba {
 fn solid_content() -> ClipContent {
     ClipContent::Solid { color: white() }
 }
-
 
 fn default_transform(w: f32, h: f32) -> Transform {
     Transform {
@@ -61,6 +60,7 @@ fn solid_clip(id: &str, start: u64, duration: u64) -> Clip {
         opacity: 1.0,
         transform: minimal_transform(),
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: solid_content(),
     }
@@ -302,6 +302,72 @@ fn clamps_opacity_above_one_to_one() {
     assert!(op.opacity <= 1.0);
 }
 
+#[test]
+fn rejects_clip_shadow_with_negative_blur_sigma() {
+    let mut p = base_project();
+    if let LayerItem::Clip(clip) = &mut p.layers[0].items[0] {
+        clip.shadow = Some(ClipShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur_sigma: -1.0,
+            color: ColorRgba(0, 0, 0, 255),
+        });
+    }
+    let err = compile_project(&p).unwrap_err();
+    assert!(matches!(err, CompileError::InvalidClip { .. }));
+}
+
+#[test]
+fn rejects_clip_shadow_with_non_finite_blur_sigma() {
+    let mut p = base_project();
+    if let LayerItem::Clip(clip) = &mut p.layers[0].items[0] {
+        clip.shadow = Some(ClipShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur_sigma: f32::NAN,
+            color: ColorRgba(0, 0, 0, 255),
+        });
+    }
+    let err = compile_project(&p).unwrap_err();
+    assert!(matches!(err, CompileError::InvalidClip { .. }));
+}
+
+#[test]
+fn rejects_clip_shadow_with_non_finite_offset() {
+    let mut p = base_project();
+    if let LayerItem::Clip(clip) = &mut p.layers[0].items[0] {
+        clip.shadow = Some(ClipShadow {
+            offset_x: f32::INFINITY,
+            offset_y: 0.0,
+            blur_sigma: 4.0,
+            color: ColorRgba(0, 0, 0, 255),
+        });
+    }
+    let err = compile_project(&p).unwrap_err();
+    assert!(matches!(err, CompileError::InvalidClip { .. }));
+}
+
+#[test]
+fn accepts_clip_shadow_with_valid_values() {
+    let mut p = base_project();
+    if let LayerItem::Clip(clip) = &mut p.layers[0].items[0] {
+        clip.shadow = Some(ClipShadow {
+            offset_x: 8.0,
+            offset_y: -4.0,
+            blur_sigma: 6.0,
+            color: ColorRgba(0, 0, 0, 128),
+        });
+    }
+
+    let compiled = compile_project(&p).expect("compile");
+    let op = compiled.operation(0).expect("operation");
+    let shadow = op.shadow.expect("shadow");
+    assert_eq!(shadow.offset_x, 8.0);
+    assert_eq!(shadow.offset_y, -4.0);
+    assert_eq!(shadow.blur_sigma, 6.0);
+    assert_eq!(shadow.color, ColorRgba(0, 0, 0, 128));
+}
+
 // ===========================================================================
 // Animation keyframe validation
 // ===========================================================================
@@ -468,6 +534,7 @@ fn rejects_missing_image_source() {
         opacity: 1.0,
         transform: default_transform(100.0, 100.0),
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Image(ImageClip {
             source: "nonexistent".into(),
@@ -496,6 +563,7 @@ fn rejects_source_type_mismatch() {
         opacity: 1.0,
         transform: default_transform(100.0, 100.0),
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Image(ImageClip {
             source: "src_vid".into(), // wrong type: video, expected image
@@ -524,6 +592,7 @@ fn accepts_valid_image_source() {
         opacity: 1.0,
         transform: default_transform(100.0, 100.0),
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Image(ImageClip {
             source: "src_img".into(),
@@ -551,6 +620,7 @@ fn rejects_negative_corner_radius() {
         opacity: 1.0,
         transform: default_transform(100.0, 100.0),
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Image(ImageClip {
             source: "src_img".into(),
@@ -800,6 +870,7 @@ fn rejects_layout_clip_without_width() {
             rotation_degrees: 0.0,
         },
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Layout(LayoutClip {
             root: LayoutNode {
@@ -829,6 +900,7 @@ fn rejects_layout_clip_without_height() {
             rotation_degrees: 0.0,
         },
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Layout(LayoutClip {
             root: LayoutNode {
@@ -863,6 +935,7 @@ fn rejects_reverse_without_bounded_trim() {
         opacity: 1.0,
         transform: default_transform(100.0, 100.0),
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Video(VideoClip {
             source: "vid".into(),
@@ -897,6 +970,7 @@ fn rejects_loop_without_bounded_trim() {
         opacity: 1.0,
         transform: default_transform(100.0, 100.0),
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Video(VideoClip {
             source: "vid".into(),
@@ -931,6 +1005,7 @@ fn accepts_valid_video_pipeline() {
         opacity: 1.0,
         transform: default_transform(100.0, 100.0),
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Video(VideoClip {
             source: "vid".into(),
@@ -964,6 +1039,7 @@ fn compiles_clip_with_mask() {
         opacity: 1.0,
         transform: minimal_transform(),
         animation: Default::default(),
+        shadow: None,
         mask: Some(Box::new(LayerItem::Clip(solid_clip("mask", 0, 30)))),
         content: solid_content(),
     })];
@@ -1033,6 +1109,7 @@ fn compiles_rectangle_shape() {
         opacity: 1.0,
         transform: default_transform(50.0, 50.0),
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Shape(ShapeClip {
             shape: Shape::Rectangle {
@@ -1054,6 +1131,7 @@ fn compiles_ellipse_shape() {
         opacity: 1.0,
         transform: default_transform(50.0, 50.0),
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Shape(ShapeClip {
             shape: Shape::Ellipse {

@@ -115,8 +115,33 @@ pub struct Clip {
     #[serde(default)]
     pub animation: ClipAnimation,
     #[serde(default)]
+    pub shadow: Option<ClipShadow>,
+    #[serde(default)]
     pub mask: Option<Box<LayerItem>>,
     pub content: ClipContent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ClipShadow {
+    #[serde(default)]
+    pub offset_x: f32,
+    #[serde(default)]
+    pub offset_y: f32,
+    #[serde(default = "default_shadow_blur_sigma")]
+    pub blur_sigma: f32,
+    #[serde(default = "default_shadow_color")]
+    pub color: ColorRgba,
+}
+
+impl Default for ClipShadow {
+    fn default() -> Self {
+        Self {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur_sigma: default_shadow_blur_sigma(),
+            color: default_shadow_color(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -578,6 +603,14 @@ fn default_speed() -> f32 {
 
 fn default_corner_radius() -> f32 {
     0.0
+}
+
+fn default_shadow_blur_sigma() -> f32 {
+    0.0
+}
+
+fn default_shadow_color() -> ColorRgba {
+    ColorRgba(0, 0, 0, 255)
 }
 
 fn default_volume() -> f32 {
