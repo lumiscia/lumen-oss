@@ -1,9 +1,10 @@
 //! Scale-factor tests for compile_project_with_scale.
 
 use lumen::{
-    Canvas, Clip, ClipAnimation, ClipContent, ClipShadow, ColorRgba, Easing, ImageClip, Layer,
-    LayerItem, Project, Scalar, ScalarKeyframe, Shape, ShapeClip, Source, SourceKind,
-    SourceMediaType, TextClip, Timeline, Transform, compile_project_with_scale, time::Rational,
+    Canvas, Clip, ClipAnimation, ClipContent, ClipGroup, ClipShadow, ColorRgba, Easing,
+    GroupTransform, ImageClip, Layer, LayerItem, Project, Scalar, ScalarKeyframe, Shape, ShapeClip,
+    Source, SourceKind, SourceMediaType, TextClip, Timeline, Transform, compile_project_with_scale,
+    time::Rational,
 };
 
 fn base_project() -> Project {
@@ -326,6 +327,40 @@ fn scales_clip_shadow_offsets_and_blur_sigma() {
     assert_eq!(shadow.offset_y, -3.0);
     assert_eq!(shadow.blur_sigma, 6.0);
     assert_eq!(shadow.color, ColorRgba(10, 20, 30, 200));
+}
+
+#[test]
+fn scales_group_shadow_offsets_and_blur_sigma() {
+    let mut p = base_project();
+    p.layers[0].items = vec![LayerItem::Group(ClipGroup {
+        id: "group".into(),
+        opacity: 1.0,
+        transform: GroupTransform {
+            x: Scalar::Literal(0.0),
+            y: Scalar::Literal(0.0),
+            rotation_degrees: 0.0,
+        },
+        items: vec![LayerItem::Clip(solid_clip("inner", 0.0, 0.0, 100.0, 100.0))],
+        shadow: Some(ClipShadow {
+            offset_x: 20.0,
+            offset_y: -8.0,
+            blur_sigma: 10.0,
+            color: ColorRgba(0, 0, 0, 220),
+        }),
+        mask: None,
+    })];
+
+    let compiled = compile_project_with_scale(&p, 0.5).unwrap();
+    let layer = &compiled.layers()[0];
+    let group = match &layer.items[0] {
+        lumen::compile::CompiledLayerItem::Group(group) => group,
+        _ => panic!("expected group"),
+    };
+    let shadow = group.shadow.expect("shadow");
+    assert_eq!(shadow.offset_x, 10.0);
+    assert_eq!(shadow.offset_y, -4.0);
+    assert_eq!(shadow.blur_sigma, 5.0);
+    assert_eq!(shadow.color, ColorRgba(0, 0, 0, 220));
 }
 
 // ===========================================================================

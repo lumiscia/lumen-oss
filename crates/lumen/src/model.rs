@@ -154,6 +154,8 @@ pub struct ClipGroup {
     #[serde(default)]
     pub items: Vec<LayerItem>,
     #[serde(default)]
+    pub shadow: Option<ClipShadow>,
+    #[serde(default)]
     pub mask: Option<Box<LayerItem>>,
 }
 

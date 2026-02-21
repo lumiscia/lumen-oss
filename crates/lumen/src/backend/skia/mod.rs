@@ -7,8 +7,9 @@ pub mod vulkan;
 use std::collections::HashMap;
 
 use skia_safe::{
-    BlendMode, Canvas, Color, ColorType, Data, Font, FontMgr, IPoint, ImageInfo, Paint, Point,
-    RRect, Rect, Typeface, canvas::SaveLayerRec, images, paint::Style as PaintStyle,
+    BlendMode, Canvas, Color, Color4f, ColorType, Data, Font, FontMgr, IPoint, ImageInfo, Paint,
+    Point, RRect, Rect, Typeface, canvas::SaveLayerRec, image_filters, images,
+    paint::Style as PaintStyle,
 };
 use taffy::prelude::{
     AlignItems as TaffyAlignItems, AlignSelf as TaffyAlignSelf, AvailableSpace, Dimension,
@@ -22,16 +23,15 @@ use taffy::tree::NodeId as TaffyNodeId;
 use crate::{
     backend::{FrameImage, FrameProvider, RenderBackend, RenderError, pixel_len},
     compile::{
-        ClipPropertyIndex,
-        CompiledClipNode, CompiledGroupNode, CompiledLayerItem, CompiledOperation,
-        CompiledOperationKind, CompiledTimeline, CompiledTransform, VideoSourceRef,
+        ClipPropertyIndex, CompiledClipNode, CompiledClipShadow, CompiledGroupNode,
+        CompiledLayerItem, CompiledOperation, CompiledOperationKind, CompiledTimeline,
+        CompiledTransform, VideoSourceRef,
     },
     expr::{ExprEvalCtx, ExprProp, Scalar, eval_expr, parse_expr},
     model::{
         ColorRgba, FitMode, LayoutAlignItems, LayoutAlignSelf, LayoutClip, LayoutDisplay,
         LayoutFlexDirection, LayoutJustifyContent, LayoutNode, LayoutNodeKind, LayoutNodeStyle,
-        LayoutOverflow,
-        Shape, ShapeClip, TextAlign, TextClip,
+        LayoutOverflow, Shape, ShapeClip, TextAlign, TextClip,
     },
 };
 
@@ -305,7 +305,8 @@ impl SkiaRenderer {
             if !drew_content {
                 drew_output = false;
             } else {
-                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider, expr_ctx)?;
+                let drew_mask =
+                    self.render_mask_layer(timeline, mask, frame, provider, expr_ctx)?;
                 if !drew_mask {
                     clear_current_layer(self.surface.canvas());
                     drew_output = false;
@@ -340,12 +341,37 @@ impl SkiaRenderer {
                 .rotate(group.transform.rotation_degrees, None);
         }
 
+        let mut has_shadow_layer = false;
+        if let RenderPass::Content = pass {
+            if let Some(shadow) = group.shadow.filter(|shadow| shadow_is_visible(*shadow)) {
+                if let Some(filter) = image_filters::drop_shadow(
+                    (shadow.offset_x, shadow.offset_y),
+                    (shadow.blur_sigma, shadow.blur_sigma),
+                    to_sk_color4f(shadow.color),
+                    None,
+                    None,
+                    image_filters::CropRect::default(),
+                ) {
+                    let mut paint = Paint::default();
+                    paint.set_blend_mode(pass.blend_mode());
+                    paint.set_image_filter(filter);
+                    self.surface
+                        .canvas()
+                        .save_layer(&SaveLayerRec::default().paint(&paint));
+                    has_shadow_layer = true;
+                }
+            }
+        }
+
         let mut has_simple_mask_clip = false;
         let mut complex_mask = None;
         if let Some(mask) = group.mask.as_deref() {
             if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame, expr_ctx)? {
                 match simple_mask {
                     SimpleMaskResult::Hidden => {
+                        if has_shadow_layer {
+                            self.surface.canvas().restore();
+                        }
                         self.surface.canvas().restore();
                         return Ok(false);
                     }
@@ -379,7 +405,8 @@ impl SkiaRenderer {
             if !drew_any {
                 drew_output = false;
             } else {
-                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider, expr_ctx)?;
+                let drew_mask =
+                    self.render_mask_layer(timeline, mask, frame, provider, expr_ctx)?;
                 if !drew_mask {
                     clear_current_layer(self.surface.canvas());
                     drew_output = false;
@@ -391,6 +418,9 @@ impl SkiaRenderer {
             self.surface.canvas().restore();
         }
         if has_simple_mask_clip {
+            self.surface.canvas().restore();
+        }
+        if has_shadow_layer {
             self.surface.canvas().restore();
         }
         self.surface.canvas().restore();
@@ -447,6 +477,9 @@ impl SkiaRenderer {
             return Ok(Some(SimpleMaskResult::Hidden));
         }
         if !opacity_is_fully_opaque(opacity) {
+            return Ok(None);
+        }
+        if operation.shadow.is_some_and(shadow_is_visible) {
             return Ok(None);
         }
 
@@ -524,6 +557,58 @@ impl SkiaRenderer {
         let transform = operation.resolved_transform_with_ctx(frame, expr_ctx);
         let blend_mode = pass.blend_mode();
 
+        if let RenderPass::Content = pass {
+            if let Some(shadow) = operation.shadow.filter(|shadow| shadow_is_visible(*shadow)) {
+                if let Some(filter) = image_filters::drop_shadow(
+                    (shadow.offset_x, shadow.offset_y),
+                    (shadow.blur_sigma, shadow.blur_sigma),
+                    to_sk_color4f(shadow.color),
+                    None,
+                    None,
+                    image_filters::CropRect::default(),
+                ) {
+                    let mut paint = Paint::default();
+                    paint.set_blend_mode(blend_mode);
+                    paint.set_image_filter(filter);
+                    self.surface
+                        .canvas()
+                        .save_layer(&SaveLayerRec::default().paint(&paint));
+                    let drew = self.draw_operation_content(
+                        operation,
+                        frame,
+                        provider,
+                        transform,
+                        opacity,
+                        blend_mode,
+                        expr_ctx.static_ctx,
+                    )?;
+                    self.surface.canvas().restore();
+                    return Ok(drew);
+                }
+            }
+        }
+
+        self.draw_operation_content(
+            operation,
+            frame,
+            provider,
+            transform,
+            opacity,
+            blend_mode,
+            expr_ctx.static_ctx,
+        )
+    }
+
+    fn draw_operation_content(
+        &mut self,
+        operation: &CompiledOperation,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+        transform: CompiledTransform,
+        opacity: f32,
+        blend_mode: BlendMode,
+        clip_index: &ClipPropertyIndex,
+    ) -> Result<bool, RenderError> {
         match &operation.kind {
             CompiledOperationKind::Solid { color } => {
                 draw_solid(
@@ -586,13 +671,7 @@ impl SkiaRenderer {
                 Ok(false)
             }
             CompiledOperationKind::Layout(layout) => self.draw_layout_operation(
-                operation,
-                transform,
-                opacity,
-                layout,
-                provider,
-                blend_mode,
-                expr_ctx.static_ctx,
+                operation, transform, opacity, layout, provider, blend_mode, clip_index,
             ),
         }
     }
@@ -992,8 +1071,13 @@ fn build_layout_render_tree(
 ) -> Result<LayoutRenderTree, RenderError> {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_id_map: HashMap<String, TaffyNodeId> = HashMap::new();
-    let root =
-        build_layout_render_node(&mut taffy, typeface, font_cache, &layout.root, &mut node_id_map)?;
+    let root = build_layout_render_node(
+        &mut taffy,
+        typeface,
+        font_cache,
+        &layout.root,
+        &mut node_id_map,
+    )?;
 
     let available = TaffySize {
         width: AvailableSpace::Definite(width),
@@ -1016,7 +1100,9 @@ fn build_layout_render_tree(
     if any_changed {
         taffy
             .compute_layout(root.taffy_node, available)
-            .map_err(|err| RenderError::SurfaceCreation(format!("taffy recompute failed: {err}")))?;
+            .map_err(|err| {
+                RenderError::SurfaceCreation(format!("taffy recompute failed: {err}"))
+            })?;
     }
 
     let named_layouts = collect_named_layouts(&taffy, &node_id_map);
@@ -1037,7 +1123,12 @@ fn collect_named_layouts(
         if let Ok(lay) = taffy.layout(*taffy_id) {
             named_layouts.insert(
                 id.clone(),
-                (lay.size.width, lay.size.height, lay.location.x, lay.location.y),
+                (
+                    lay.size.width,
+                    lay.size.height,
+                    lay.location.x,
+                    lay.location.y,
+                ),
             );
         }
     }
@@ -1373,14 +1464,14 @@ fn draw_layout_render_node(
         blend_mode,
     );
 
-
     let mut clipped_children = false;
     if node.style.overflow == LayoutOverflow::Hidden {
         if matches!(node.kind, LayoutRenderNodeKind::Container { .. }) {
             canvas.save();
             if node.style.corner_radius > 0.0 {
                 let radius = node.style.corner_radius.min(width.min(height) * 0.5);
-                let rrect = RRect::new_rect_xy(Rect::from_xywh(x, y, width, height), radius, radius);
+                let rrect =
+                    RRect::new_rect_xy(Rect::from_xywh(x, y, width, height), radius, radius);
                 canvas.clip_rrect(rrect, None, Some(true));
             } else {
                 canvas.clip_rect(Rect::from_xywh(x, y, width, height), None, Some(true));
@@ -1392,8 +1483,17 @@ fn draw_layout_render_node(
         LayoutRenderNodeKind::Container { children } => {
             for child in children {
                 drew_any |= draw_layout_render_node(
-                    canvas, typeface, font_cache, tree, child, x, y, opacity,
-                    blend_mode, provider, clip_bounds,
+                    canvas,
+                    typeface,
+                    font_cache,
+                    tree,
+                    child,
+                    x,
+                    y,
+                    opacity,
+                    blend_mode,
+                    provider,
+                    clip_bounds,
                 )?;
             }
         }
@@ -1799,6 +1899,24 @@ fn alpha_scaled(alpha: u8, opacity: f32) -> u8 {
 
 fn to_sk_color(c: ColorRgba, opacity: f32) -> Color {
     Color::from_argb(alpha_scaled(c.a(), opacity), c.r(), c.g(), c.b())
+}
+
+fn to_sk_color4f(c: ColorRgba) -> Color4f {
+    Color4f::new(
+        c.r() as f32 / 255.0,
+        c.g() as f32 / 255.0,
+        c.b() as f32 / 255.0,
+        c.a() as f32 / 255.0,
+    )
+}
+
+fn shadow_is_visible(shadow: CompiledClipShadow) -> bool {
+    if shadow.color.a() == 0 {
+        return false;
+    }
+    shadow.blur_sigma > f32::EPSILON
+        || shadow.offset_x.abs() > f32::EPSILON
+        || shadow.offset_y.abs() > f32::EPSILON
 }
 
 fn draw_solid(

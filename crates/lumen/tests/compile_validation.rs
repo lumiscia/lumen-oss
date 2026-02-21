@@ -648,6 +648,7 @@ fn rejects_group_with_nan_opacity() {
             rotation_degrees: 0.0,
         },
         items: vec![LayerItem::Clip(solid_clip("inner", 0, 30))],
+        shadow: None,
         mask: None,
     })];
     let err = compile_project(&p).unwrap_err();
@@ -666,6 +667,7 @@ fn rejects_group_with_negative_opacity() {
             rotation_degrees: 0.0,
         },
         items: vec![LayerItem::Clip(solid_clip("inner", 0, 30))],
+        shadow: None,
         mask: None,
     })];
     let err = compile_project(&p).unwrap_err();
@@ -684,6 +686,7 @@ fn rejects_group_with_nan_rotation() {
             rotation_degrees: f32::INFINITY,
         },
         items: vec![LayerItem::Clip(solid_clip("inner", 0, 30))],
+        shadow: None,
         mask: None,
     })];
     let err = compile_project(&p).unwrap_err();
@@ -702,9 +705,69 @@ fn accepts_valid_group() {
             rotation_degrees: 45.0,
         },
         items: vec![LayerItem::Clip(solid_clip("inner", 0, 30))],
+        shadow: None,
         mask: None,
     })];
     compile_project(&p).expect("valid group");
+}
+
+#[test]
+fn rejects_group_with_invalid_shadow() {
+    let mut p = base_project();
+    p.layers[0].items = vec![LayerItem::Group(ClipGroup {
+        id: "group_1".into(),
+        opacity: 1.0,
+        transform: GroupTransform {
+            x: Scalar::Literal(0.0),
+            y: Scalar::Literal(0.0),
+            rotation_degrees: 0.0,
+        },
+        items: vec![LayerItem::Clip(solid_clip("inner", 0, 30))],
+        shadow: Some(ClipShadow {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur_sigma: -1.0,
+            color: ColorRgba(0, 0, 0, 255),
+        }),
+        mask: None,
+    })];
+
+    let err = compile_project(&p).unwrap_err();
+    assert!(matches!(err, CompileError::InvalidGroup { .. }));
+}
+
+#[test]
+fn compiles_group_shadow() {
+    let mut p = base_project();
+    p.layers[0].items = vec![LayerItem::Group(ClipGroup {
+        id: "group_1".into(),
+        opacity: 1.0,
+        transform: GroupTransform {
+            x: Scalar::Literal(0.0),
+            y: Scalar::Literal(0.0),
+            rotation_degrees: 0.0,
+        },
+        items: vec![LayerItem::Clip(solid_clip("inner", 0, 30))],
+        shadow: Some(ClipShadow {
+            offset_x: 6.0,
+            offset_y: -2.0,
+            blur_sigma: 4.0,
+            color: ColorRgba(0, 0, 0, 180),
+        }),
+        mask: None,
+    })];
+
+    let compiled = compile_project(&p).expect("compile");
+    let layer = &compiled.layers()[0];
+    let group = match &layer.items[0] {
+        lumen::compile::CompiledLayerItem::Group(group) => group,
+        _ => panic!("expected group"),
+    };
+    let shadow = group.shadow.expect("shadow");
+    assert_eq!(shadow.offset_x, 6.0);
+    assert_eq!(shadow.offset_y, -2.0);
+    assert_eq!(shadow.blur_sigma, 4.0);
+    assert_eq!(shadow.color, ColorRgba(0, 0, 0, 180));
 }
 
 // ===========================================================================
@@ -727,6 +790,7 @@ fn rejects_excessive_nesting_depth() {
                 rotation_degrees: 0.0,
             },
             items: vec![deepest],
+            shadow: None,
             mask: None,
         });
     }
@@ -750,6 +814,7 @@ fn accepts_nesting_within_depth_limit() {
                 rotation_degrees: 0.0,
             },
             items: vec![item],
+            shadow: None,
             mask: None,
         });
     }

@@ -150,6 +150,7 @@ pub struct CompiledGroupNode {
     pub id: String,
     pub opacity: f32,
     pub transform: CompiledGroupTransform,
+    pub shadow: Option<CompiledClipShadow>,
     pub items: Vec<CompiledLayerItem>,
     pub mask: Option<Box<CompiledLayerItem>>,
 }
@@ -929,6 +930,13 @@ fn compile_layer_item(
                 ctx.scale,
                 ctx.clip_index,
             )?;
+            let shadow = compile_shadow_values(group.shadow, ctx.scale).map_err(|reason| {
+                CompileError::InvalidGroup {
+                    layer_id: layer.id.clone(),
+                    group_id: group.id.clone(),
+                    reason,
+                }
+            })?;
             if !transform.x.is_finite()
                 || !transform.y.is_finite()
                 || !transform.rotation_degrees.is_finite()
@@ -944,6 +952,7 @@ fn compile_layer_item(
                 id: group.id.clone(),
                 opacity: group.opacity.clamp(0.0, 1.0),
                 transform,
+                shadow,
                 items,
                 mask,
             }))
@@ -1027,7 +1036,13 @@ fn compile_clip_operation(
         ctx.clip_index,
         ctx.layout_node_ids,
     )?;
-    let shadow = compile_clip_shadow(layer.id.as_str(), clip.id.as_str(), clip.shadow, ctx.scale)?;
+    let shadow = compile_shadow_values(clip.shadow, ctx.scale).map_err(|reason| {
+        CompileError::InvalidClip {
+            layer_id: layer.id.clone(),
+            clip_id: clip.id.clone(),
+            reason,
+        }
+    })?;
     let kind = compile_clip_content(
         layer.id.as_str(),
         clip,
@@ -1087,29 +1102,19 @@ fn compile_clip_operation(
     })
 }
 
-fn compile_clip_shadow(
-    layer_id: &str,
-    clip_id: &str,
+fn compile_shadow_values(
     shadow: Option<crate::model::ClipShadow>,
     scale: f32,
-) -> Result<Option<CompiledClipShadow>, CompileError> {
+) -> Result<Option<CompiledClipShadow>, String> {
     let Some(shadow) = shadow else {
         return Ok(None);
     };
 
     if !shadow.offset_x.is_finite() || !shadow.offset_y.is_finite() {
-        return Err(CompileError::InvalidClip {
-            layer_id: layer_id.to_string(),
-            clip_id: clip_id.to_string(),
-            reason: "shadow offset_x/offset_y must be finite".to_string(),
-        });
+        return Err("shadow offset_x/offset_y must be finite".to_string());
     }
     if !shadow.blur_sigma.is_finite() || shadow.blur_sigma < 0.0 {
-        return Err(CompileError::InvalidClip {
-            layer_id: layer_id.to_string(),
-            clip_id: clip_id.to_string(),
-            reason: "shadow blur_sigma must be finite and >= 0".to_string(),
-        });
+        return Err("shadow blur_sigma must be finite and >= 0".to_string());
     }
 
     Ok(Some(CompiledClipShadow {
@@ -2541,6 +2546,7 @@ mod tests {
                 opacity: 1.0,
                 transform: Default::default(),
                 items: vec![root],
+                shadow: None,
                 mask: None,
             });
         }
