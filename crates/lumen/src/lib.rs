@@ -1,15 +1,11 @@
-pub mod compile;
-pub mod expr;
-pub mod model;
-pub mod source_pipeline;
-pub mod time;
-
-#[cfg(feature = "renderer-skia")]
 pub mod backend;
+pub mod compile;
+pub mod expression;
+pub mod model;
+pub mod orchestrator;
 
+pub use backend::{FrameImage, FrameProvider, ProviderError, RenderError, Renderer};
 pub use compile::{CompileError, CompiledTimeline, compile_project, compile_project_with_scale};
-pub use expr::{
-    BinOp, ExprEvalCtx, ExprEvalError, ExprParseError, ExprProp, ExprRef, ParsedExpr, Scalar,
-    UnaryOp, eval_expr, parse_expr,
-};
+pub use expression::{ExprEvalError, ExprParseError, ParsedExpr, parse_expr};
 pub use model::*;
+pub use orchestrator::RenderOrchestrator;
