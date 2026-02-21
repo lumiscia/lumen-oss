@@ -22,6 +22,7 @@ fn solid_clip_with_animation(
         opacity: 1.0,
         transform,
         animation,
+        shadow: None,
         mask: None,
         content: ClipContent::Solid {
             color: ColorRgba(255, 255, 255, 255),
@@ -355,6 +356,7 @@ fn opacity_animation_clamps_to_zero_one() {
             }],
             ..Default::default()
         },
+        shadow: None,
         mask: None,
         content: ClipContent::Solid {
             color: ColorRgba(255, 255, 255, 255),
@@ -474,6 +476,7 @@ fn operation_contains_frame_at_boundaries() {
             rotation_degrees: 0.0,
         },
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Solid {
             color: ColorRgba(255, 255, 255, 255),
@@ -523,6 +526,7 @@ fn local_frame_is_relative_to_start() {
             rotation_degrees: 0.0,
         },
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Solid {
             color: ColorRgba(255, 255, 255, 255),

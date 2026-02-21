@@ -1,9 +1,10 @@
 //! Scale-factor tests for compile_project_with_scale.
 
 use lumen::{
-    Canvas, Clip, ClipAnimation, ClipContent, ColorRgba, Easing, ImageClip, Layer, LayerItem,
-    Project, Scalar, ScalarKeyframe, Shape, ShapeClip, Source, SourceKind, SourceMediaType,
-    TextClip, Timeline, Transform, compile_project_with_scale, time::Rational,
+    Canvas, Clip, ClipAnimation, ClipContent, ClipGroup, ClipShadow, ColorRgba, Easing,
+    GroupTransform, ImageClip, Layer, LayerItem, Project, Scalar, ScalarKeyframe, Shape, ShapeClip,
+    Source, SourceKind, SourceMediaType, TextClip, Timeline, Transform, compile_project_with_scale,
+    time::Rational,
 };
 
 fn base_project() -> Project {
@@ -41,6 +42,7 @@ fn solid_clip(id: &str, x: f32, y: f32, w: f32, h: f32) -> Clip {
             rotation_degrees: 0.0,
         },
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Solid {
             color: ColorRgba(255, 255, 255, 255),
@@ -142,6 +144,7 @@ fn scales_position_keyframe_values() {
             }],
             ..Default::default()
         },
+        shadow: None,
         mask: None,
         content: ClipContent::Solid {
             color: ColorRgba(255, 255, 255, 255),
@@ -177,6 +180,7 @@ fn does_not_scale_opacity_keyframes() {
             }],
             ..Default::default()
         },
+        shadow: None,
         mask: None,
         content: ClipContent::Solid {
             color: ColorRgba(255, 255, 255, 255),
@@ -208,6 +212,7 @@ fn scales_shape_corner_radius() {
             rotation_degrees: 0.0,
         },
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Shape(ShapeClip {
             shape: Shape::Rectangle {
@@ -243,6 +248,7 @@ fn scales_text_font_size() {
             rotation_degrees: 0.0,
         },
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Text(TextClip {
             text: "hello".into(),
@@ -284,6 +290,7 @@ fn scales_image_corner_radius() {
             rotation_degrees: 0.0,
         },
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Image(ImageClip {
             source: "img".into(),
@@ -299,6 +306,61 @@ fn scales_image_corner_radius() {
         }
         _ => panic!("expected image"),
     }
+}
+
+#[test]
+fn scales_clip_shadow_offsets_and_blur_sigma() {
+    let mut p = base_project();
+    let mut clip = solid_clip("shadow", 0.0, 0.0, 100.0, 100.0);
+    clip.shadow = Some(ClipShadow {
+        offset_x: 16.0,
+        offset_y: -6.0,
+        blur_sigma: 12.0,
+        color: ColorRgba(10, 20, 30, 200),
+    });
+    p.layers[0].items = vec![LayerItem::Clip(clip)];
+
+    let compiled = compile_project_with_scale(&p, 0.5).unwrap();
+    let op = compiled.operation(0).unwrap();
+    let shadow = op.shadow.expect("shadow");
+    assert_eq!(shadow.offset_x, 8.0);
+    assert_eq!(shadow.offset_y, -3.0);
+    assert_eq!(shadow.blur_sigma, 6.0);
+    assert_eq!(shadow.color, ColorRgba(10, 20, 30, 200));
+}
+
+#[test]
+fn scales_group_shadow_offsets_and_blur_sigma() {
+    let mut p = base_project();
+    p.layers[0].items = vec![LayerItem::Group(ClipGroup {
+        id: "group".into(),
+        opacity: 1.0,
+        transform: GroupTransform {
+            x: Scalar::Literal(0.0),
+            y: Scalar::Literal(0.0),
+            rotation_degrees: 0.0,
+        },
+        items: vec![LayerItem::Clip(solid_clip("inner", 0.0, 0.0, 100.0, 100.0))],
+        shadow: Some(ClipShadow {
+            offset_x: 20.0,
+            offset_y: -8.0,
+            blur_sigma: 10.0,
+            color: ColorRgba(0, 0, 0, 220),
+        }),
+        mask: None,
+    })];
+
+    let compiled = compile_project_with_scale(&p, 0.5).unwrap();
+    let layer = &compiled.layers()[0];
+    let group = match &layer.items[0] {
+        lumen::compile::CompiledLayerItem::Group(group) => group,
+        _ => panic!("expected group"),
+    };
+    let shadow = group.shadow.expect("shadow");
+    assert_eq!(shadow.offset_x, 10.0);
+    assert_eq!(shadow.offset_y, -4.0);
+    assert_eq!(shadow.blur_sigma, 5.0);
+    assert_eq!(shadow.color, ColorRgba(0, 0, 0, 220));
 }
 
 // ===========================================================================
@@ -321,6 +383,7 @@ fn preserves_frame_numbers_under_scale() {
             rotation_degrees: 0.0,
         },
         animation: Default::default(),
+        shadow: None,
         mask: None,
         content: ClipContent::Solid {
             color: ColorRgba(255, 255, 255, 255),

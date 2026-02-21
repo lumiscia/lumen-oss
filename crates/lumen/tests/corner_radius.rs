@@ -54,6 +54,7 @@ fn test_project() -> Project {
                     rotation_degrees: 0.0,
                 },
                 animation: Default::default(),
+                shadow: None,
                 mask: None,
                 content: ClipContent::Image(ImageClip {
                     source: "img".to_string(),

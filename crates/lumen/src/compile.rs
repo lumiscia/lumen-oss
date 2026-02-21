@@ -150,6 +150,7 @@ pub struct CompiledGroupNode {
     pub id: String,
     pub opacity: f32,
     pub transform: CompiledGroupTransform,
+    pub shadow: Option<CompiledClipShadow>,
     pub items: Vec<CompiledLayerItem>,
     pub mask: Option<Box<CompiledLayerItem>>,
 }
@@ -164,6 +165,7 @@ pub struct CompiledOperation {
     pub opacity: f32,
     pub transform: CompiledTransform,
     pub animation: CompiledClipAnimation,
+    pub shadow: Option<CompiledClipShadow>,
     pub kind: CompiledOperationKind,
 }
 
@@ -182,7 +184,8 @@ impl CompiledOperation {
 
     pub fn resolved_opacity_with_ctx(&self, frame: u64, expr_ctx: &dyn ExprEvalCtx) -> f32 {
         let local = self.local_frame(frame);
-        evaluate_scalar_track(self.opacity, &self.animation.opacity, local, expr_ctx).clamp(0.0, 1.0)
+        evaluate_scalar_track(self.opacity, &self.animation.opacity, local, expr_ctx)
+            .clamp(0.0, 1.0)
     }
 
     pub fn resolved_transform(&self, frame: u64) -> CompiledTransform {
@@ -205,10 +208,20 @@ impl CompiledOperation {
             expr_ctx,
         );
         if let Some(width) = transform.width {
-            transform.width = Some(evaluate_scalar_track(width, &self.animation.width, local, expr_ctx));
+            transform.width = Some(evaluate_scalar_track(
+                width,
+                &self.animation.width,
+                local,
+                expr_ctx,
+            ));
         }
         if let Some(height) = transform.height {
-            transform.height = Some(evaluate_scalar_track(height, &self.animation.height, local, expr_ctx));
+            transform.height = Some(evaluate_scalar_track(
+                height,
+                &self.animation.height,
+                local,
+                expr_ctx,
+            ));
         }
         transform
     }
@@ -271,6 +284,14 @@ pub struct CompiledScalarKeyframe {
     pub value: CompiledScalarValue,
     pub duration_frames: u64,
     pub easing: Easing,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CompiledClipShadow {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_sigma: f32,
+    pub color: crate::model::ColorRgba,
 }
 
 // ── Compile context ────────────────────────────────────────────────────────────
@@ -909,6 +930,13 @@ fn compile_layer_item(
                 ctx.scale,
                 ctx.clip_index,
             )?;
+            let shadow = compile_shadow_values(group.shadow, ctx.scale).map_err(|reason| {
+                CompileError::InvalidGroup {
+                    layer_id: layer.id.clone(),
+                    group_id: group.id.clone(),
+                    reason,
+                }
+            })?;
             if !transform.x.is_finite()
                 || !transform.y.is_finite()
                 || !transform.rotation_degrees.is_finite()
@@ -924,6 +952,7 @@ fn compile_layer_item(
                 id: group.id.clone(),
                 opacity: group.opacity.clamp(0.0, 1.0),
                 transform,
+                shadow,
                 items,
                 mask,
             }))
@@ -1007,6 +1036,13 @@ fn compile_clip_operation(
         ctx.clip_index,
         ctx.layout_node_ids,
     )?;
+    let shadow = compile_shadow_values(clip.shadow, ctx.scale).map_err(|reason| {
+        CompileError::InvalidClip {
+            layer_id: layer.id.clone(),
+            clip_id: clip.id.clone(),
+            reason,
+        }
+    })?;
     let kind = compile_clip_content(
         layer.id.as_str(),
         clip,
@@ -1061,8 +1097,32 @@ fn compile_clip_operation(
         opacity: clip.opacity.clamp(0.0, 1.0),
         transform,
         animation,
+        shadow,
         kind,
     })
+}
+
+fn compile_shadow_values(
+    shadow: Option<crate::model::ClipShadow>,
+    scale: f32,
+) -> Result<Option<CompiledClipShadow>, String> {
+    let Some(shadow) = shadow else {
+        return Ok(None);
+    };
+
+    if !shadow.offset_x.is_finite() || !shadow.offset_y.is_finite() {
+        return Err("shadow offset_x/offset_y must be finite".to_string());
+    }
+    if !shadow.blur_sigma.is_finite() || shadow.blur_sigma < 0.0 {
+        return Err("shadow blur_sigma must be finite and >= 0".to_string());
+    }
+
+    Ok(Some(CompiledClipShadow {
+        offset_x: shadow.offset_x * scale,
+        offset_y: shadow.offset_y * scale,
+        blur_sigma: shadow.blur_sigma * scale,
+        color: shadow.color,
+    }))
 }
 
 fn compile_operation_transform(
@@ -1223,7 +1283,11 @@ fn compile_keyframe_scalar_value(
                     return Err(CompileError::ExprError {
                         layer_id: layer_id.to_string(),
                         clip_id: clip.id.clone(),
-                        reason: format!("{field}[{index}] unknown reference `{}.{}`", target, prop_str(r.property)),
+                        reason: format!(
+                            "{field}[{index}] unknown reference `{}.{}`",
+                            target,
+                            prop_str(r.property)
+                        ),
                     });
                 }
                 if clip_index.clips.contains_key(target.as_str()) {
@@ -1233,7 +1297,11 @@ fn compile_keyframe_scalar_value(
                     return Err(CompileError::ExprError {
                         layer_id: layer_id.to_string(),
                         clip_id: clip.id.clone(),
-                        reason: format!("{field}[{index}] unknown reference `{}.{}`", target, prop_str(r.property)),
+                        reason: format!(
+                            "{field}[{index}] unknown reference `{}.{}`",
+                            target,
+                            prop_str(r.property)
+                        ),
                     });
                 }
                 if layout_node_ids.contains(target.as_str()) {
@@ -1251,7 +1319,11 @@ fn compile_keyframe_scalar_value(
                 return Err(CompileError::ExprError {
                     layer_id: layer_id.to_string(),
                     clip_id: clip.id.clone(),
-                    reason: format!("{field}[{index}] unknown reference `{}.{}`", target, prop_str(r.property)),
+                    reason: format!(
+                        "{field}[{index}] unknown reference `{}.{}`",
+                        target,
+                        prop_str(r.property)
+                    ),
                 });
             }
 
@@ -1303,7 +1375,9 @@ fn compile_scalar_track(
             CompiledScalarValue::Literal(v) => Some(*v),
             CompiledScalarValue::DeferredExpr { .. } => None,
         };
-        if let Some(v) = resolved_for_validation && !v.is_finite() {
+        if let Some(v) = resolved_for_validation
+            && !v.is_finite()
+        {
             return Err(CompileError::InvalidClip {
                 layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
@@ -2108,6 +2182,7 @@ mod tests {
                     opacity: 1.0,
                     transform: Default::default(),
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Video(VideoClip {
                         source: "video_1".to_string(),
@@ -2158,6 +2233,7 @@ mod tests {
                     opacity: 1.0,
                     transform: Default::default(),
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Video(VideoClip {
                         source: "image_1".to_string(),
@@ -2197,6 +2273,7 @@ mod tests {
                     opacity: 1.0,
                     transform: Default::default(),
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
@@ -2244,6 +2321,7 @@ mod tests {
                         }],
                         ..Default::default()
                     },
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
@@ -2303,6 +2381,7 @@ mod tests {
                         ],
                         ..Default::default()
                     },
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
@@ -2348,6 +2427,7 @@ mod tests {
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Layout(LayoutClip {
                         root: LayoutNode {
@@ -2397,6 +2477,7 @@ mod tests {
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Layout(LayoutClip {
                         root: LayoutNode {
@@ -2449,6 +2530,7 @@ mod tests {
             opacity: 1.0,
             transform: Default::default(),
             animation: Default::default(),
+            shadow: None,
             mask: None,
             content: ClipContent::Text(TextClip {
                 text: "hello".to_string(),
@@ -2464,6 +2546,7 @@ mod tests {
                 opacity: 1.0,
                 transform: Default::default(),
                 items: vec![root],
+                shadow: None,
                 mask: None,
             });
         }
@@ -2519,6 +2602,7 @@ mod tests {
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
@@ -2567,6 +2651,7 @@ mod tests {
                             rotation_degrees: 0.0,
                         },
                         animation: Default::default(),
+                        shadow: None,
                         mask: None,
                         content: ClipContent::Text(TextClip {
                             text: "a".to_string(),
@@ -2588,6 +2673,7 @@ mod tests {
                             rotation_degrees: 0.0,
                         },
                         animation: Default::default(),
+                        shadow: None,
                         mask: None,
                         content: ClipContent::Text(TextClip {
                             text: "b".to_string(),
@@ -2637,6 +2723,7 @@ mod tests {
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
@@ -2692,6 +2779,7 @@ mod tests {
                         }],
                         ..Default::default()
                     },
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
@@ -2747,6 +2835,7 @@ mod tests {
                         }],
                         ..Default::default()
                     },
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
@@ -2792,6 +2881,7 @@ mod tests {
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Text(TextClip {
                         text: "hello".to_string(),
@@ -2837,6 +2927,7 @@ mod tests {
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Layout(LayoutClip {
                         root: LayoutNode {
@@ -2892,6 +2983,7 @@ mod tests {
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Layout(LayoutClip {
                         root: LayoutNode {
@@ -2957,6 +3049,7 @@ mod tests {
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Layout(LayoutClip {
                         root: LayoutNode {
@@ -3018,6 +3111,7 @@ mod tests {
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
+                    shadow: None,
                     mask: None,
                     content: ClipContent::Layout(LayoutClip {
                         root: LayoutNode {

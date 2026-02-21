@@ -9,8 +9,8 @@
 use lumen::{
     BinOp, Canvas, Clip, ClipAnimation, ClipContent, ColorRgba, ExprEvalCtx, ExprEvalError,
     ExprParseError, ExprProp, ExprRef, Layer, LayerItem, ParsedExpr, Project, Scalar, TextClip,
-    Timeline, Transform, UnaryOp, compile::CompileError, compile_project, compile_project_with_scale,
-    eval_expr, parse_expr, time::Rational,
+    Timeline, Transform, UnaryOp, compile::CompileError, compile_project,
+    compile_project_with_scale, eval_expr, parse_expr, time::Rational,
 };
 use std::collections::HashMap;
 
@@ -111,7 +111,8 @@ fn parse_rejects_missing_property() {
     let err = parse_expr("canvas.").unwrap_err();
     // After dot with no valid ident, should be malformed or unknown property
     assert!(
-        matches!(err, ExprParseError::Malformed(_)) || matches!(err, ExprParseError::UnknownProperty(_))
+        matches!(err, ExprParseError::Malformed(_))
+            || matches!(err, ExprParseError::UnknownProperty(_))
     );
 }
 
@@ -305,6 +306,7 @@ fn text_clip(id: &str, transform: Transform, animation: ClipAnimation) -> Clip {
         opacity: 1.0,
         transform,
         animation,
+        shadow: None,
         mask: None,
         content: ClipContent::Text(TextClip {
             text: id.to_string(),
