@@ -3,10 +3,12 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 
+#[cfg(feature = "renderer-skia")]
 use crate::backend::skia::SkiaRenderer;
 use crate::backend::{FrameProvider, RenderError, Renderer};
 use crate::compile::CompiledTimeline;
 
+const MAX_RENDER_WORKERS: usize = 32;
 #[derive(Debug, Clone, Copy)]
 pub struct RenderOrchestrator {
     thread_count: usize,
@@ -15,7 +17,7 @@ pub struct RenderOrchestrator {
 impl RenderOrchestrator {
     pub fn new(thread_count: usize) -> Self {
         Self {
-            thread_count: thread_count.max(1),
+            thread_count: thread_count.max(1).min(MAX_RENDER_WORKERS),
         }
     }
 
@@ -23,6 +25,7 @@ impl RenderOrchestrator {
         self.thread_count
     }
 
+    #[cfg(feature = "renderer-skia")]
     pub fn render_range<P, F>(
         &self,
         timeline: Arc<CompiledTimeline>,
@@ -166,6 +169,10 @@ impl RenderOrchestrator {
                 }
             }
         }
+
+        // Ensure all workers unblock for joining, even on normal completion.
+        stop.store(true, Ordering::Release);
+        in_flight_budget.notify_all();
 
         let mut worker_panicked = false;
         for handle in handles {

@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::compile::{CompiledTimeline, RuntimeEvalError};
 
+#[cfg(feature = "renderer-skia")]
 pub mod skia;
 
 #[derive(Debug, Error)]
