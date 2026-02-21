@@ -4,7 +4,7 @@ use lumen::Project;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::executor::{RenderExecutionError, RenderExecutionOptions, execute_render};
+use crate::executor::{execute_render, RenderExecutionError, RenderExecutionOptions};
 
 #[derive(Debug, Deserialize)]
 pub struct RunpodJobRequest {
@@ -108,6 +108,8 @@ async fn execute_request(
         stream_cache_frames: None,
     };
 
+    validate_artifact_staging(&request.input.artifact_staging)?;
+
     let mut progress = |event: crate::executor::RenderExecutionProgress| {
         tracing::info!(
             job_id = request.input.job_id,
@@ -142,6 +144,28 @@ fn map_execution_error(error: RenderExecutionError) -> RunpodRenderError {
         message: sanitize_error_message(&error.message),
         retryable: error.retryable,
     }
+}
+
+fn validate_artifact_staging(
+    staging: &Option<RunpodArtifactStaging>,
+) -> Result<(), RunpodRenderError> {
+    let Some(staging) = staging else {
+        return Err(RunpodRenderError {
+            code: "artifact_staging_missing".to_string(),
+            message: "artifact staging details are required".to_string(),
+            retryable: false,
+        });
+    };
+
+    if staging.upload_url.as_deref().is_none() {
+        return Err(RunpodRenderError {
+            code: "artifact_upload_url_missing".to_string(),
+            message: "artifact_staging.upload_url is required".to_string(),
+            retryable: false,
+        });
+    }
+
+    Ok(())
 }
 
 async fn upload_artifact(

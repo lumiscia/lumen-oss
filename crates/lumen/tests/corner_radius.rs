@@ -1,6 +1,6 @@
 use lumen::{
-    Canvas, Clip, ClipContent, ColorRgba, FitMode, ImageClip, Layer, LayerItem, Project, Source,
-    SourceKind, SourceMediaType, Timeline, Transform, backend::FrameImage,
+    Canvas, Clip, ClipContent, ColorRgba, FitMode, ImageClip, Layer, LayerItem, Project, Scalar,
+    Source, SourceKind, SourceMediaType, Timeline, Transform, backend::FrameImage,
     compile::compile_project, time::Rational,
 };
 
@@ -47,10 +47,10 @@ fn test_project() -> Project {
                 duration_frames: 1,
                 opacity: 1.0,
                 transform: Transform {
-                    x: 0.0,
-                    y: 0.0,
-                    width: Some(20.0),
-                    height: Some(20.0),
+                    x: Scalar::Literal(0.0),
+                    y: Scalar::Literal(0.0),
+                    width: Some(Scalar::Literal(20.0)),
+                    height: Some(Scalar::Literal(20.0)),
                     rotation_degrees: 0.0,
                 },
                 animation: Default::default(),

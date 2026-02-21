@@ -22,14 +22,16 @@ use taffy::tree::NodeId as TaffyNodeId;
 use crate::{
     backend::{FrameImage, FrameProvider, RenderBackend, RenderError, pixel_len},
     compile::{
+        ClipPropertyIndex,
         CompiledClipNode, CompiledGroupNode, CompiledLayerItem, CompiledOperation,
-        CompiledOperationKind, CompiledTimeline, VideoSourceRef,
+        CompiledOperationKind, CompiledTimeline, CompiledTransform, VideoSourceRef,
     },
+    expr::{ExprEvalCtx, ExprProp, Scalar, eval_expr, parse_expr},
     model::{
         ColorRgba, FitMode, LayoutAlignItems, LayoutAlignSelf, LayoutClip, LayoutDisplay,
         LayoutFlexDirection, LayoutJustifyContent, LayoutNode, LayoutNodeKind, LayoutNodeStyle,
         LayoutOverflow,
-        Shape, ShapeClip, TextAlign, TextClip, Transform,
+        Shape, ShapeClip, TextAlign, TextClip,
     },
 };
 
@@ -76,6 +78,7 @@ struct CachedLayoutClip {
 struct LayoutRenderTree {
     taffy: TaffyTree<()>,
     root: LayoutRenderNode,
+    named_layouts: HashMap<String, (f32, f32, f32, f32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +86,7 @@ struct LayoutRenderNode {
     taffy_node: TaffyNodeId,
     style: LayoutNodeStyle,
     kind: LayoutRenderNodeKind,
+    has_deferred_dims: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +143,43 @@ impl RenderPass {
 // Safety: SkiaRenderer is used single-threaded; the owner controls access.
 // The GPU context and surface are not shared across threads concurrently.
 unsafe impl Send for SkiaRenderer {}
+
+// -- LayoutNodeExprCtx --------------------------------------------------------
+
+struct LayoutNodeExprCtx {
+    // node_id -> (computed_width, computed_height, computed_x, computed_y)
+    layouts: HashMap<String, (f32, f32, f32, f32)>,
+}
+
+impl ExprEvalCtx for LayoutNodeExprCtx {
+    fn resolve(&self, target: &str, property: ExprProp) -> Option<f32> {
+        let (w, h, x, y) = self.layouts.get(target)?;
+        match property {
+            ExprProp::Width => Some(*w),
+            ExprProp::Height => Some(*h),
+            ExprProp::X => Some(*x),
+            ExprProp::Y => Some(*y),
+        }
+    }
+}
+
+struct RuntimeExprCtx<'a> {
+    static_ctx: &'a ClipPropertyIndex,
+    layout_ctx: Option<&'a LayoutNodeExprCtx>,
+}
+
+impl ExprEvalCtx for RuntimeExprCtx<'_> {
+    fn resolve(&self, target: &str, property: ExprProp) -> Option<f32> {
+        if let Some(layout_ctx) = self.layout_ctx
+            && let Some(v) = layout_ctx.resolve(target, property)
+        {
+            return Some(v);
+        }
+        self.static_ctx.resolve(target, property)
+    }
+}
+
+// -- SkiaRenderer impl --------------------------------------------------------
 
 impl SkiaRenderer {
     pub fn new(width: u32, height: u32) -> Result<Self, RenderError> {
@@ -207,13 +248,14 @@ impl SkiaRenderer {
         frame: u64,
         provider: &mut dyn FrameProvider,
         pass: RenderPass,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<bool, RenderError> {
         match item {
             CompiledLayerItem::Clip(clip) => {
-                self.render_clip_node(timeline, clip, frame, provider, pass)
+                self.render_clip_node(timeline, clip, frame, provider, pass, expr_ctx)
             }
             CompiledLayerItem::Group(group) => {
-                self.render_group_node(timeline, group, frame, provider, pass)
+                self.render_group_node(timeline, group, frame, provider, pass, expr_ctx)
             }
         }
     }
@@ -225,6 +267,7 @@ impl SkiaRenderer {
         frame: u64,
         provider: &mut dyn FrameProvider,
         pass: RenderPass,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<bool, RenderError> {
         let operation = timeline
             .operation(clip.operation_index)
@@ -235,14 +278,15 @@ impl SkiaRenderer {
         }
 
         if let Some(mask) = clip.mask.as_deref() {
-            if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame)? {
+            if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame, expr_ctx)? {
                 return match simple_mask {
                     SimpleMaskResult::Hidden => Ok(false),
                     SimpleMaskResult::Clip(mask_clip) => {
                         self.surface.canvas().save();
+
                         apply_simple_mask_clip(self.surface.canvas(), mask_clip);
                         let drew_content =
-                            self.draw_operation(timeline, operation, frame, provider, pass)?;
+                            self.draw_operation(operation, frame, provider, pass, expr_ctx)?;
                         self.surface.canvas().restore();
                         Ok(drew_content)
                     }
@@ -254,14 +298,14 @@ impl SkiaRenderer {
             self.surface.canvas().save_layer(&SaveLayerRec::default());
         }
 
-        let drew_content = self.draw_operation(timeline, operation, frame, provider, pass)?;
+        let drew_content = self.draw_operation(operation, frame, provider, pass, expr_ctx)?;
 
         let mut drew_output = drew_content;
         if let Some(mask) = clip.mask.as_deref() {
             if !drew_content {
                 drew_output = false;
             } else {
-                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider)?;
+                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider, expr_ctx)?;
                 if !drew_mask {
                     clear_current_layer(self.surface.canvas());
                     drew_output = false;
@@ -280,6 +324,7 @@ impl SkiaRenderer {
         frame: u64,
         provider: &mut dyn FrameProvider,
         pass: RenderPass,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<bool, RenderError> {
         if group.opacity <= 0.0 {
             return Ok(false);
@@ -298,7 +343,7 @@ impl SkiaRenderer {
         let mut has_simple_mask_clip = false;
         let mut complex_mask = None;
         if let Some(mask) = group.mask.as_deref() {
-            if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame)? {
+            if let Some(simple_mask) = self.try_simple_mask(timeline, mask, frame, expr_ctx)? {
                 match simple_mask {
                     SimpleMaskResult::Hidden => {
                         self.surface.canvas().restore();
@@ -306,6 +351,7 @@ impl SkiaRenderer {
                     }
                     SimpleMaskResult::Clip(mask_clip) => {
                         self.surface.canvas().save();
+
                         apply_simple_mask_clip(self.surface.canvas(), mask_clip);
                         has_simple_mask_clip = true;
                     }
@@ -325,7 +371,7 @@ impl SkiaRenderer {
 
         let mut drew_any = false;
         for item in &group.items {
-            drew_any |= self.render_layer_item(timeline, item, frame, provider, pass)?;
+            drew_any |= self.render_layer_item(timeline, item, frame, provider, pass, expr_ctx)?;
         }
 
         let mut drew_output = drew_any;
@@ -333,7 +379,7 @@ impl SkiaRenderer {
             if !drew_any {
                 drew_output = false;
             } else {
-                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider)?;
+                let drew_mask = self.render_mask_layer(timeline, mask, frame, provider, expr_ctx)?;
                 if !drew_mask {
                     clear_current_layer(self.surface.canvas());
                     drew_output = false;
@@ -358,6 +404,7 @@ impl SkiaRenderer {
         mask: &CompiledLayerItem,
         frame: u64,
         provider: &mut dyn FrameProvider,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<bool, RenderError> {
         let mut paint = Paint::default();
         paint.set_blend_mode(BlendMode::DstIn);
@@ -367,7 +414,7 @@ impl SkiaRenderer {
             .save_layer(&SaveLayerRec::default().paint(&paint));
 
         let drew_mask =
-            self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask)?;
+            self.render_layer_item(timeline, mask, frame, provider, RenderPass::Mask, expr_ctx)?;
         self.surface.canvas().restore();
 
         Ok(drew_mask)
@@ -378,6 +425,7 @@ impl SkiaRenderer {
         timeline: &CompiledTimeline,
         mask: &CompiledLayerItem,
         frame: u64,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<Option<SimpleMaskResult>, RenderError> {
         let CompiledLayerItem::Clip(mask_clip) = mask else {
             return Ok(None);
@@ -394,7 +442,7 @@ impl SkiaRenderer {
             return Ok(Some(SimpleMaskResult::Hidden));
         }
 
-        let opacity = operation.resolved_opacity(frame);
+        let opacity = operation.resolved_opacity_with_ctx(frame, expr_ctx);
         if opacity <= 0.0 {
             return Ok(Some(SimpleMaskResult::Hidden));
         }
@@ -402,7 +450,7 @@ impl SkiaRenderer {
             return Ok(None);
         }
 
-        let transform = operation.resolved_transform(frame);
+        let transform = operation.resolved_transform_with_ctx(frame, expr_ctx);
         if transform.rotation_degrees != 0.0 {
             return Ok(None);
         }
@@ -463,17 +511,17 @@ impl SkiaRenderer {
 
     fn draw_operation(
         &mut self,
-        _timeline: &CompiledTimeline,
         operation: &CompiledOperation,
         frame: u64,
         provider: &mut dyn FrameProvider,
         pass: RenderPass,
+        expr_ctx: &RuntimeExprCtx<'_>,
     ) -> Result<bool, RenderError> {
-        let opacity = operation.resolved_opacity(frame);
+        let opacity = operation.resolved_opacity_with_ctx(frame, expr_ctx);
         if opacity <= 0.0 {
             return Ok(false);
         }
-        let transform = operation.resolved_transform(frame);
+        let transform = operation.resolved_transform_with_ctx(frame, expr_ctx);
         let blend_mode = pass.blend_mode();
 
         match &operation.kind {
@@ -537,19 +585,27 @@ impl SkiaRenderer {
                 }
                 Ok(false)
             }
-            CompiledOperationKind::Layout(layout) => self
-                .draw_layout_operation(operation, transform, opacity, layout, provider, blend_mode),
+            CompiledOperationKind::Layout(layout) => self.draw_layout_operation(
+                operation,
+                transform,
+                opacity,
+                layout,
+                provider,
+                blend_mode,
+                expr_ctx.static_ctx,
+            ),
         }
     }
 
     fn draw_layout_operation(
         &mut self,
         operation: &CompiledOperation,
-        transform: Transform,
+        transform: CompiledTransform,
         opacity: f32,
         layout: &LayoutClip,
         provider: &mut dyn FrameProvider,
         blend_mode: BlendMode,
+        clip_index: &ClipPropertyIndex,
     ) -> Result<bool, RenderError> {
         let width = transform.width.unwrap_or(1.0).max(1.0);
         let height = transform.height.unwrap_or(1.0).max(1.0);
@@ -563,6 +619,7 @@ impl SkiaRenderer {
                 layout,
                 width,
                 height,
+                clip_index,
             )?;
             return draw_layout_render_tree(
                 self.surface.canvas(),
@@ -593,6 +650,7 @@ impl SkiaRenderer {
                 layout,
                 width,
                 height,
+                clip_index,
             )?;
             self.layout_cache.insert(
                 key,
@@ -618,6 +676,80 @@ impl SkiaRenderer {
         }
 
         Ok(false)
+    }
+
+    fn collect_frame_layout_expr_ctx(
+        &mut self,
+        timeline: &CompiledTimeline,
+        frame: u64,
+    ) -> Result<LayoutNodeExprCtx, RenderError> {
+        let mut layouts: HashMap<String, (f32, f32, f32, f32)> = HashMap::new();
+        let static_expr_ctx = RuntimeExprCtx {
+            static_ctx: timeline.clip_index(),
+            layout_ctx: None,
+        };
+
+        for layer in timeline.layers() {
+            for item in &layer.items {
+                self.collect_layout_nodes_from_item(
+                    timeline,
+                    item,
+                    frame,
+                    &static_expr_ctx,
+                    &mut layouts,
+                )?;
+            }
+        }
+
+        Ok(LayoutNodeExprCtx { layouts })
+    }
+
+    fn collect_layout_nodes_from_item(
+        &mut self,
+        timeline: &CompiledTimeline,
+        item: &CompiledLayerItem,
+        frame: u64,
+        expr_ctx: &RuntimeExprCtx<'_>,
+        layouts: &mut HashMap<String, (f32, f32, f32, f32)>,
+    ) -> Result<(), RenderError> {
+        match item {
+            CompiledLayerItem::Clip(clip) => {
+                let operation = timeline
+                    .operation(clip.operation_index)
+                    .ok_or(RenderError::MissingOperation(clip.operation_index))?;
+                if operation.contains_frame(frame)
+                    && let CompiledOperationKind::Layout(layout_clip) = &operation.kind
+                {
+                    let transform = operation.resolved_transform_with_ctx(frame, expr_ctx);
+                    let width = transform.width.unwrap_or(1.0).max(1.0);
+                    let height = transform.height.unwrap_or(1.0).max(1.0);
+                    let tree = build_layout_render_tree(
+                        &self.typeface,
+                        &mut self.font_cache,
+                        layout_clip,
+                        width,
+                        height,
+                        timeline.clip_index(),
+                    )?;
+                    for (id, values) in &tree.named_layouts {
+                        layouts.insert(id.clone(), *values);
+                    }
+                }
+                if let Some(mask) = clip.mask.as_deref() {
+                    self.collect_layout_nodes_from_item(timeline, mask, frame, expr_ctx, layouts)?;
+                }
+            }
+            CompiledLayerItem::Group(group) => {
+                for child in &group.items {
+                    self.collect_layout_nodes_from_item(timeline, child, frame, expr_ctx, layouts)?;
+                }
+                if let Some(mask) = group.mask.as_deref() {
+                    self.collect_layout_nodes_from_item(timeline, mask, frame, expr_ctx, layouts)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn readback_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
@@ -674,10 +806,22 @@ impl RenderBackend for SkiaRenderer {
         let bg = timeline.canvas.background;
         self.surface.canvas().clear(to_sk_color(bg, 1.0));
 
+        let layout_expr_ctx = self.collect_frame_layout_expr_ctx(timeline, frame)?;
+        let expr_ctx = RuntimeExprCtx {
+            static_ctx: timeline.clip_index(),
+            layout_ctx: Some(&layout_expr_ctx),
+        };
+
         for layer in timeline.layers() {
             for item in &layer.items {
-                let _ =
-                    self.render_layer_item(timeline, item, frame, provider, RenderPass::Content)?;
+                let _ = self.render_layer_item(
+                    timeline,
+                    item,
+                    frame,
+                    provider,
+                    RenderPass::Content,
+                    &expr_ctx,
+                )?;
             }
         }
 
@@ -709,10 +853,22 @@ impl SkiaRenderer {
         let bg = timeline.canvas.background;
         self.surface.canvas().clear(to_sk_color(bg, 1.0));
 
+        let layout_expr_ctx = self.collect_frame_layout_expr_ctx(timeline, frame)?;
+        let expr_ctx = RuntimeExprCtx {
+            static_ctx: timeline.clip_index(),
+            layout_ctx: Some(&layout_expr_ctx),
+        };
+
         for layer in timeline.layers() {
             for item in &layer.items {
-                let _ =
-                    self.render_layer_item(timeline, item, frame, provider, RenderPass::Content)?;
+                let _ = self.render_layer_item(
+                    timeline,
+                    item,
+                    frame,
+                    provider,
+                    RenderPass::Content,
+                    &expr_ctx,
+                )?;
             }
         }
 
@@ -818,26 +974,74 @@ fn approx_eq(left: f32, right: f32) -> bool {
     (left - right).abs() <= 0.5
 }
 
+fn scalar_opt_to_f32(s: &Option<Scalar>) -> Option<f32> {
+    match s {
+        None => None,
+        Some(Scalar::Literal(v)) => Some(*v),
+        Some(Scalar::Expr(_)) => None, // deferred — callers handle Expr separately
+    }
+}
+
 fn build_layout_render_tree(
     typeface: &Typeface,
     font_cache: &mut HashMap<u32, Font>,
     layout: &LayoutClip,
     width: f32,
     height: f32,
+    clip_index: &ClipPropertyIndex,
 ) -> Result<LayoutRenderTree, RenderError> {
     let mut taffy = TaffyTree::<()>::new();
-    let root = build_layout_render_node(&mut taffy, typeface, font_cache, &layout.root)?;
+    let mut node_id_map: HashMap<String, TaffyNodeId> = HashMap::new();
+    let root =
+        build_layout_render_node(&mut taffy, typeface, font_cache, &layout.root, &mut node_id_map)?;
+
+    let available = TaffySize {
+        width: AvailableSpace::Definite(width),
+        height: AvailableSpace::Definite(height),
+    };
     taffy
-        .compute_layout(
-            root.taffy_node,
-            TaffySize {
-                width: AvailableSpace::Definite(width),
-                height: AvailableSpace::Definite(height),
-            },
-        )
+        .compute_layout(root.taffy_node, available)
         .map_err(|err| RenderError::SurfaceCreation(format!("taffy compute failed: {err}")))?;
 
-    Ok(LayoutRenderTree { taffy, root })
+    // Second pass if any nodes have deferred dimension exprs
+    let first_pass_layouts = collect_named_layouts(&taffy, &node_id_map);
+    let layout_ctx = LayoutNodeExprCtx {
+        layouts: first_pass_layouts,
+    };
+    let combined_ctx = RuntimeExprCtx {
+        static_ctx: clip_index,
+        layout_ctx: Some(&layout_ctx),
+    };
+    let any_changed = apply_deferred_layout_dims(&mut taffy, &root, &combined_ctx);
+    if any_changed {
+        taffy
+            .compute_layout(root.taffy_node, available)
+            .map_err(|err| RenderError::SurfaceCreation(format!("taffy recompute failed: {err}")))?;
+    }
+
+    let named_layouts = collect_named_layouts(&taffy, &node_id_map);
+
+    Ok(LayoutRenderTree {
+        taffy,
+        root,
+        named_layouts,
+    })
+}
+
+fn collect_named_layouts(
+    taffy: &TaffyTree<()>,
+    node_id_map: &HashMap<String, TaffyNodeId>,
+) -> HashMap<String, (f32, f32, f32, f32)> {
+    let mut named_layouts: HashMap<String, (f32, f32, f32, f32)> = HashMap::new();
+    for (id, taffy_id) in node_id_map {
+        if let Ok(lay) = taffy.layout(*taffy_id) {
+            named_layouts.insert(
+                id.clone(),
+                (lay.size.width, lay.size.height, lay.location.x, lay.location.y),
+            );
+        }
+    }
+    named_layouts
 }
 
 fn build_layout_render_node(
@@ -845,24 +1049,41 @@ fn build_layout_render_node(
     typeface: &Typeface,
     font_cache: &mut HashMap<u32, Font>,
     node: &LayoutNode,
+    node_id_map: &mut HashMap<String, TaffyNodeId>,
 ) -> Result<LayoutRenderNode, RenderError> {
     let base_style = layout_style_to_taffy(&node.style);
+
+    let has_deferred_dims = [
+        &node.style.width,
+        &node.style.height,
+        &node.style.min_width,
+        &node.style.min_height,
+        &node.style.max_width,
+        &node.style.max_height,
+    ]
+    .iter()
+    .any(|s| matches!(s, Some(Scalar::Expr(_))));
 
     match &node.kind {
         LayoutNodeKind::Container { children } => {
             let mut rendered_children = Vec::with_capacity(children.len());
             let mut child_nodes = Vec::with_capacity(children.len());
             for child in children {
-                let rendered_child = build_layout_render_node(taffy, typeface, font_cache, child)?;
+                let rendered_child =
+                    build_layout_render_node(taffy, typeface, font_cache, child, node_id_map)?;
                 child_nodes.push(rendered_child.taffy_node);
                 rendered_children.push(rendered_child);
             }
             let taffy_node = taffy
                 .new_with_children(base_style, &child_nodes)
                 .map_err(|err| RenderError::SurfaceCreation(format!("taffy node failed: {err}")))?;
+            if let Some(id) = &node.id {
+                node_id_map.insert(id.clone(), taffy_node);
+            }
             Ok(LayoutRenderNode {
                 taffy_node,
                 style: node.style.clone(),
+                has_deferred_dims,
                 kind: LayoutRenderNodeKind::Container {
                     children: rendered_children,
                 },
@@ -871,15 +1092,15 @@ fn build_layout_render_node(
         LayoutNodeKind::Text(text_node) => {
             let measured = measure_layout_text_block(typeface, font_cache, text_node, &node.style);
             let width = resolve_layout_dimension(
-                node.style.width,
-                node.style.min_width,
-                node.style.max_width,
+                scalar_opt_to_f32(&node.style.width),
+                scalar_opt_to_f32(&node.style.min_width),
+                scalar_opt_to_f32(&node.style.max_width),
                 measured.width,
             );
             let height = resolve_layout_dimension(
-                node.style.height,
-                node.style.min_height,
-                node.style.max_height,
+                scalar_opt_to_f32(&node.style.height),
+                scalar_opt_to_f32(&node.style.min_height),
+                scalar_opt_to_f32(&node.style.max_height),
                 measured.height,
             );
 
@@ -892,9 +1113,13 @@ fn build_layout_render_node(
             let taffy_node = taffy
                 .new_leaf(leaf_style)
                 .map_err(|err| RenderError::SurfaceCreation(format!("taffy leaf failed: {err}")))?;
+            if let Some(id) = &node.id {
+                node_id_map.insert(id.clone(), taffy_node);
+            }
             Ok(LayoutRenderNode {
                 taffy_node,
                 style: node.style.clone(),
+                has_deferred_dims,
                 kind: LayoutRenderNodeKind::Text(LayoutTextRender {
                     lines: measured.lines,
                     line_widths: measured.line_widths,
@@ -906,30 +1131,26 @@ fn build_layout_render_node(
             })
         }
         LayoutNodeKind::Image(image_node) => {
-            let intrinsic_width = node
-                .style
-                .width
-                .or(node.style.max_width)
-                .or(node.style.min_width)
+            let intrinsic_width = scalar_opt_to_f32(&node.style.width)
+                .or_else(|| scalar_opt_to_f32(&node.style.max_width))
+                .or_else(|| scalar_opt_to_f32(&node.style.min_width))
                 .unwrap_or(1.0)
                 .max(1.0);
-            let intrinsic_height = node
-                .style
-                .height
-                .or(node.style.max_height)
-                .or(node.style.min_height)
+            let intrinsic_height = scalar_opt_to_f32(&node.style.height)
+                .or_else(|| scalar_opt_to_f32(&node.style.max_height))
+                .or_else(|| scalar_opt_to_f32(&node.style.min_height))
                 .unwrap_or(1.0)
                 .max(1.0);
             let width = resolve_layout_dimension(
-                node.style.width,
-                node.style.min_width,
-                node.style.max_width,
+                scalar_opt_to_f32(&node.style.width),
+                scalar_opt_to_f32(&node.style.min_width),
+                scalar_opt_to_f32(&node.style.max_width),
                 intrinsic_width,
             );
             let height = resolve_layout_dimension(
-                node.style.height,
-                node.style.min_height,
-                node.style.max_height,
+                scalar_opt_to_f32(&node.style.height),
+                scalar_opt_to_f32(&node.style.min_height),
+                scalar_opt_to_f32(&node.style.max_height),
                 intrinsic_height,
             );
 
@@ -941,9 +1162,13 @@ fn build_layout_render_node(
             let taffy_node = taffy
                 .new_leaf(leaf_style)
                 .map_err(|err| RenderError::SurfaceCreation(format!("taffy leaf failed: {err}")))?;
+            if let Some(id) = &node.id {
+                node_id_map.insert(id.clone(), taffy_node);
+            }
             Ok(LayoutRenderNode {
                 taffy_node,
                 style: node.style.clone(),
+                has_deferred_dims,
                 kind: LayoutRenderNodeKind::Image(LayoutImageRender {
                     source: image_node.source.clone(),
                     fit: image_node.fit,
@@ -954,11 +1179,112 @@ fn build_layout_render_node(
     }
 }
 
+fn apply_deferred_layout_dims(
+    taffy: &mut TaffyTree<()>,
+    node: &LayoutRenderNode,
+    ctx: &dyn ExprEvalCtx,
+) -> bool {
+    let mut any_changed = false;
+
+    // Recurse into children first
+    if let LayoutRenderNodeKind::Container { children } = &node.kind {
+        for child in children {
+            any_changed |= apply_deferred_layout_dims(taffy, child, ctx);
+        }
+    }
+
+    if !node.has_deferred_dims {
+        return any_changed;
+    }
+
+    let Ok(current_style) = taffy.style(node.taffy_node) else {
+        return any_changed;
+    };
+    let mut updated_style = current_style.clone();
+    let mut node_changed = false;
+
+    // Resolve a single Scalar::Expr field against ctx
+    let try_resolve = |s: &Option<Scalar>| -> Option<f32> {
+        match s {
+            Some(Scalar::Expr(expr_str)) => {
+                let parsed = parse_expr(expr_str.as_str()).ok()?;
+                eval_expr(&parsed, ctx).ok()
+            }
+            _ => None,
+        }
+    };
+
+    // Helper: check if a Dimension is significantly different from a resolved f32.
+    // Uses resolve_to_option since Dimension is a newtype (taffy 0.9), not an enum.
+    let is_significant_change = |dim: Dimension, v: f32| -> bool {
+        match dim.into_option() {
+            Some(x) => (x - v).abs() > 0.5,
+            None => true, // auto → any concrete value is a change
+        }
+    };
+
+    // size.width
+    if let Some(v) = try_resolve(&node.style.width) {
+        let new_dim = Dimension::length(v.max(0.0));
+        if is_significant_change(updated_style.size.width, v) {
+            updated_style.size.width = new_dim;
+            node_changed = true;
+        }
+    }
+    // size.height
+    if let Some(v) = try_resolve(&node.style.height) {
+        let new_dim = Dimension::length(v.max(0.0));
+        if is_significant_change(updated_style.size.height, v) {
+            updated_style.size.height = new_dim;
+            node_changed = true;
+        }
+    }
+    // min_size.width
+    if let Some(v) = try_resolve(&node.style.min_width) {
+        let new_dim = Dimension::length(v.max(0.0));
+        if is_significant_change(updated_style.min_size.width, v) {
+            updated_style.min_size.width = new_dim;
+            node_changed = true;
+        }
+    }
+    // min_size.height
+    if let Some(v) = try_resolve(&node.style.min_height) {
+        let new_dim = Dimension::length(v.max(0.0));
+        if is_significant_change(updated_style.min_size.height, v) {
+            updated_style.min_size.height = new_dim;
+            node_changed = true;
+        }
+    }
+    // max_size.width
+    if let Some(v) = try_resolve(&node.style.max_width) {
+        let new_dim = Dimension::length(v.max(0.0));
+        if is_significant_change(updated_style.max_size.width, v) {
+            updated_style.max_size.width = new_dim;
+            node_changed = true;
+        }
+    }
+    // max_size.height
+    if let Some(v) = try_resolve(&node.style.max_height) {
+        let new_dim = Dimension::length(v.max(0.0));
+        if is_significant_change(updated_style.max_size.height, v) {
+            updated_style.max_size.height = new_dim;
+            node_changed = true;
+        }
+    }
+
+    if node_changed {
+        let _ = taffy.set_style(node.taffy_node, updated_style);
+        any_changed = true;
+    }
+
+    any_changed
+}
+
 fn draw_layout_render_tree(
     canvas: &Canvas,
     typeface: &Typeface,
     font_cache: &mut HashMap<u32, Font>,
-    transform: Transform,
+    transform: CompiledTransform,
     opacity: f32,
     blend_mode: BlendMode,
     tree: &LayoutRenderTree,
@@ -1080,7 +1406,7 @@ fn draw_layout_render_node(
             if let Some(frame_image) = provider.image(image.source.as_str())? {
                 draw_image(
                     canvas,
-                    Transform {
+                    CompiledTransform {
                         x,
                         y,
                         width: Some(width.max(1.0)),
@@ -1215,16 +1541,16 @@ fn layout_style_to_taffy(style: &LayoutNodeStyle) -> TaffyStyle {
     taffy.flex_grow = style.flex_grow;
     taffy.flex_shrink = style.flex_shrink;
     taffy.size = TaffySize {
-        width: to_taffy_dimension(style.width),
-        height: to_taffy_dimension(style.height),
+        width: to_taffy_dimension(&style.width),
+        height: to_taffy_dimension(&style.height),
     };
     taffy.min_size = TaffySize {
-        width: to_taffy_dimension(style.min_width),
-        height: to_taffy_dimension(style.min_height),
+        width: to_taffy_dimension(&style.min_width),
+        height: to_taffy_dimension(&style.min_height),
     };
     taffy.max_size = TaffySize {
-        width: to_taffy_dimension(style.max_width),
-        height: to_taffy_dimension(style.max_height),
+        width: to_taffy_dimension(&style.max_width),
+        height: to_taffy_dimension(&style.max_height),
     };
     taffy.padding = TaffyRect {
         left: TaffyLengthPercentage::length(style.padding.left),
@@ -1245,10 +1571,11 @@ fn layout_style_to_taffy(style: &LayoutNodeStyle) -> TaffyStyle {
     taffy
 }
 
-fn to_taffy_dimension(value: Option<f32>) -> Dimension {
+fn to_taffy_dimension(value: &Option<Scalar>) -> Dimension {
     match value {
-        Some(value) => Dimension::length(value.max(0.0)),
         None => Dimension::auto(),
+        Some(Scalar::Literal(v)) => Dimension::length(v.max(0.0)),
+        Some(Scalar::Expr(_)) => Dimension::auto(), // deferred, first-pass uses auto
     }
 }
 
@@ -1294,7 +1621,9 @@ fn measure_layout_text_block(
         .line_height
         .unwrap_or(default_line_height)
         .max(1.0);
-    let wrap_width = style.width.or(style.max_width).map(|value| value.max(1.0));
+    let wrap_width = scalar_opt_to_f32(&style.width)
+        .or_else(|| scalar_opt_to_f32(&style.max_width))
+        .map(|value| value.max(1.0));
     let lines = wrap_text_for_layout(font, text_node.text.as_str(), wrap_width);
     let line_widths = lines
         .iter()
@@ -1425,7 +1754,7 @@ struct LayoutRect {
 }
 
 fn layout_rect(
-    transform: Transform,
+    transform: CompiledTransform,
     source_width: f64,
     source_height: f64,
     fit: FitMode,
@@ -1474,7 +1803,7 @@ fn to_sk_color(c: ColorRgba, opacity: f32) -> Color {
 
 fn draw_solid(
     canvas: &Canvas,
-    transform: Transform,
+    transform: CompiledTransform,
     opacity: f32,
     color: ColorRgba,
     blend_mode: BlendMode,
@@ -1500,7 +1829,7 @@ fn draw_solid(
 
 fn draw_shape(
     canvas: &Canvas,
-    transform: Transform,
+    transform: CompiledTransform,
     opacity: f32,
     shape: &ShapeClip,
     blend_mode: BlendMode,
@@ -1544,7 +1873,7 @@ fn draw_text(
     canvas: &Canvas,
     typeface: &Typeface,
     font_cache: &mut HashMap<u32, Font>,
-    transform: Transform,
+    transform: CompiledTransform,
     opacity: f32,
     text: &TextClip,
     blend_mode: BlendMode,
@@ -1606,7 +1935,7 @@ fn draw_text(
 
 fn draw_image(
     canvas: &Canvas,
-    transform: Transform,
+    transform: CompiledTransform,
     opacity: f32,
     fit: FitMode,
     corner_radius: f32,
@@ -1688,7 +2017,7 @@ mod tests {
     #[test]
     fn contain_fit_keeps_aspect_ratio() {
         let rect = layout_rect(
-            Transform {
+            CompiledTransform {
                 x: 0.0,
                 y: 0.0,
                 width: Some(200.0),
@@ -1707,7 +2036,7 @@ mod tests {
     #[test]
     fn cover_fit_expands_aspect_ratio() {
         let rect = layout_rect(
-            Transform {
+            CompiledTransform {
                 x: 0.0,
                 y: 0.0,
                 width: Some(200.0),

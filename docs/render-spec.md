@@ -1,7 +1,7 @@
 # Render Semantics Spec
 
 - Version: 0.1
-- Date: 2026-02-13
+- Date: 2026-02-21
 - Scope: Canonical server render semantics and preview target semantics.
 
 ## 1) Timeline and Clip Ordering
@@ -52,6 +52,105 @@ Semantics:
 6. `width`/`height` tracks require base `transform.width`/`transform.height` to be set and all
    animated values > 0.
 7. Resolved opacity is clamped to `[0.0, 1.0]` before compositing.
+
+## 2.2) Scalar Expression Semantics
+
+Scalar fields may be either a numeric literal or an expression string.
+
+Expression-capable fields:
+
+- Clip transform: `x`, `y`, `width`, `height`
+- Group transform: `x`, `y`
+- Clip animation keyframe `value` for scalar tracks
+- Layout node style dimensions: `width`, `height`, `min_width`, `min_height`, `max_width`,
+  `max_height`
+
+### Grammar and Operators
+
+Expressions support full arithmetic composition (not just single binary ops), including unary
+operators and parentheses.
+
+```text
+expr        := add_sub
+add_sub     := mul_div (('+' | '-') mul_div)*
+mul_div     := unary (('*' | '/') unary)*
+unary       := ('+' | '-') unary | primary
+primary     := number | reference | '(' expr ')'
+reference   := ident '.' property
+ident       := [A-Za-z_][A-Za-z0-9_]*
+property    := 'width' | 'height' | 'x' | 'y'
+```
+
+Notes:
+
+- Numbers support decimal and scientific notation (for example `12`, `12.5`, `1e3`).
+- Whitespace is allowed.
+- Unknown properties are invalid.
+
+### Reference Namespaces
+
+- `canvas.width`, `canvas.height` are valid.
+- `canvas.x`, `canvas.y` are invalid.
+- `<clip_or_group_id>.x|y|width|height` is valid when that id exists and the property exists.
+- `<layout_node_id>.x|y|width|height` is valid only in runtime-evaluated layout-aware contexts.
+
+### Resolution Timing
+
+1. Compile-time transform index:
+   - All clip/group transforms are resolved iteratively against known ids plus `canvas`.
+   - Cycles or unresolvable dependency chains fail compilation.
+2. Compile-time scalar resolution:
+   - Expressions referencing only `canvas`/clip/group values resolve immediately.
+3. Deferred runtime expression resolution:
+   - Layout node dimension expressions that reference layout node ids are preserved for runtime.
+   - Keyframe expressions that include layout-node references are preserved for runtime.
+   - If a project contains layout nodes, unresolved id-like keyframe refs are treated as deferred
+     layout-time refs instead of hard-failing at compile-time.
+
+### Runtime Expression Context
+
+When evaluating deferred expressions, runtime context includes:
+
+- Static clip index (`canvas` + compiled clip/group transforms)
+- Per-frame measured layout node values (`width`, `height`, `x`, `y`)
+
+Deferred layout dimension evaluation is done after an initial layout pass, then layout is recomputed
+if any deferred dimensions changed.
+
+### Keyframe Expression Behavior
+
+1. Keyframes are still applied in frame order with no-overlap rules.
+2. A keyframe target expression is evaluated at runtime when reached.
+3. If deferred expression evaluation fails for that frame (for example unresolved reference), that
+   keyframe is skipped for that frame and animation keeps the current value.
+4. Interpolation/easing behavior is unchanged once a keyframe target is resolved.
+
+### Scaling Rules
+
+- Numeric literals in scalar fields are multiplied by compile scale.
+- Compile-time-resolved expression results are multiplied once by compile scale.
+- Deferred expression literals are scaled before runtime evaluation so runtime values remain in
+  scaled pixel space.
+
+### Validation and Errors
+
+- Empty/malformed expressions fail compilation.
+- Division by zero fails compilation for compile-time-evaluated expressions.
+- Unknown references fail compilation unless they are deferred layout-node cases above.
+- `animation.width`/`animation.height` resolved numeric values must be `> 0`.
+- Scalar values must be finite where validated.
+- Layout node dimension expression dependencies must be acyclic.
+
+### Example (chat mask growth)
+
+```text
+base = chat_header.height + viewport_base_padding
+k1: base + msg_row_0.height
+k2: base + msg_row_0.height + msg_row_1.height
+k3: base + msg_row_0.height + msg_row_1.height + msg_row_2.height
+```
+
+Each keyframe can animate from the previously resolved height to the next expression-derived height.
 
 ## 3) Opacity and Alpha Composition
 

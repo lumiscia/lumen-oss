@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 use crate::{
+    expr::{ExprEvalCtx, ExprEvalError, ExprProp, ParsedExpr, Scalar, eval_expr, parse_expr},
     model::{
         Canvas, Clip, ClipContent, ClipGroup, Easing, FitMode, GroupTransform, Layer, LayerItem,
         LayoutClip, LayoutEdges, LayoutImageNode, LayoutNode, LayoutNodeKind, LayoutNodeStyle,
@@ -46,9 +47,35 @@ pub enum CompileError {
     },
     #[error("item tree exceeds max depth {max_depth} in layer `{layer_id}`")]
     ItemTreeDepthExceeded { layer_id: String, max_depth: usize },
+    #[error("expression error in clip `{clip_id}` in layer `{layer_id}`: {reason}")]
+    ExprError {
+        layer_id: String,
+        clip_id: String,
+        reason: String,
+    },
     #[error("source pipeline error: {0}")]
     Pipeline(#[from] PipelineError),
 }
+
+// ── Compiled transform types ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy)]
+pub struct CompiledTransform {
+    pub x: f32,
+    pub y: f32,
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+    pub rotation_degrees: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CompiledGroupTransform {
+    pub x: f32,
+    pub y: f32,
+    pub rotation_degrees: f32,
+}
+
+// ── Compiled timeline ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct CompiledTimeline {
@@ -59,6 +86,7 @@ pub struct CompiledTimeline {
     frame_index: Vec<Vec<usize>>,
     layers: Vec<CompiledLayer>,
     has_compositing_nodes: bool,
+    clip_index: ClipPropertyIndex,
 }
 
 impl CompiledTimeline {
@@ -92,6 +120,10 @@ impl CompiledTimeline {
     pub fn has_compositing_nodes(&self) -> bool {
         self.has_compositing_nodes
     }
+
+    pub(crate) fn clip_index(&self) -> &ClipPropertyIndex {
+        &self.clip_index
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -117,7 +149,7 @@ pub struct CompiledClipNode {
 pub struct CompiledGroupNode {
     pub id: String,
     pub opacity: f32,
-    pub transform: GroupTransform,
+    pub transform: CompiledGroupTransform,
     pub items: Vec<CompiledLayerItem>,
     pub mask: Option<Box<CompiledLayerItem>>,
 }
@@ -130,7 +162,7 @@ pub struct CompiledOperation {
     pub end_frame: u64,
     pub z_index: i32,
     pub opacity: f32,
-    pub transform: Transform,
+    pub transform: CompiledTransform,
     pub animation: CompiledClipAnimation,
     pub kind: CompiledOperationKind,
 }
@@ -145,25 +177,38 @@ impl CompiledOperation {
     }
 
     pub fn resolved_opacity(&self, frame: u64) -> f32 {
-        let local = self.local_frame(frame);
-        evaluate_scalar_track(self.opacity, &self.animation.opacity, local).clamp(0.0, 1.0)
+        self.resolved_opacity_with_ctx(frame, &EmptyExprCtx)
     }
 
-    pub fn resolved_transform(&self, frame: u64) -> Transform {
+    pub fn resolved_opacity_with_ctx(&self, frame: u64, expr_ctx: &dyn ExprEvalCtx) -> f32 {
+        let local = self.local_frame(frame);
+        evaluate_scalar_track(self.opacity, &self.animation.opacity, local, expr_ctx).clamp(0.0, 1.0)
+    }
+
+    pub fn resolved_transform(&self, frame: u64) -> CompiledTransform {
+        self.resolved_transform_with_ctx(frame, &EmptyExprCtx)
+    }
+
+    pub fn resolved_transform_with_ctx(
+        &self,
+        frame: u64,
+        expr_ctx: &dyn ExprEvalCtx,
+    ) -> CompiledTransform {
         let local = self.local_frame(frame);
         let mut transform = self.transform;
-        transform.x = evaluate_scalar_track(transform.x, &self.animation.x, local);
-        transform.y = evaluate_scalar_track(transform.y, &self.animation.y, local);
+        transform.x = evaluate_scalar_track(transform.x, &self.animation.x, local, expr_ctx);
+        transform.y = evaluate_scalar_track(transform.y, &self.animation.y, local, expr_ctx);
         transform.rotation_degrees = evaluate_scalar_track(
             transform.rotation_degrees,
             &self.animation.rotation_degrees,
             local,
+            expr_ctx,
         );
         if let Some(width) = transform.width {
-            transform.width = Some(evaluate_scalar_track(width, &self.animation.width, local));
+            transform.width = Some(evaluate_scalar_track(width, &self.animation.width, local, expr_ctx));
         }
         if let Some(height) = transform.height {
-            transform.height = Some(evaluate_scalar_track(height, &self.animation.height, local));
+            transform.height = Some(evaluate_scalar_track(height, &self.animation.height, local, expr_ctx));
         }
         transform
     }
@@ -214,13 +259,21 @@ pub struct CompiledClipAnimation {
     pub rotation_degrees: Vec<CompiledScalarKeyframe>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
+pub enum CompiledScalarValue {
+    Literal(f32),
+    DeferredExpr { parsed: ParsedExpr },
+}
+
+#[derive(Debug, Clone)]
 pub struct CompiledScalarKeyframe {
     pub frame: u64,
-    pub value: f32,
+    pub value: CompiledScalarValue,
     pub duration_frames: u64,
     pub easing: Easing,
 }
+
+// ── Compile context ────────────────────────────────────────────────────────────
 
 struct CompileContext<'a> {
     total_frames: u64,
@@ -229,32 +282,373 @@ struct CompileContext<'a> {
     has_compositing_nodes: bool,
     max_depth: usize,
     scale: f32,
+    clip_index: &'a ClipPropertyIndex,
+    layout_node_ids: &'a HashSet<String>,
 }
 
-fn evaluate_scalar_track(base: f32, track: &[CompiledScalarKeyframe], local_frame: u64) -> f32 {
+// ── Clip property index ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClipPropertyIndex {
+    canvas_width: f32,
+    canvas_height: f32,
+    clips: HashMap<String, CompiledTransform>,
+}
+
+impl ExprEvalCtx for ClipPropertyIndex {
+    fn resolve(&self, target: &str, property: ExprProp) -> Option<f32> {
+        match target {
+            "canvas" => match property {
+                ExprProp::Width => Some(self.canvas_width),
+                ExprProp::Height => Some(self.canvas_height),
+                _ => None,
+            },
+            id => {
+                let ct = self.clips.get(id)?;
+                match property {
+                    ExprProp::X => Some(ct.x),
+                    ExprProp::Y => Some(ct.y),
+                    ExprProp::Width => ct.width,
+                    ExprProp::Height => ct.height,
+                }
+            }
+        }
+    }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+fn prop_str(p: ExprProp) -> &'static str {
+    match p {
+        ExprProp::Width => "width",
+        ExprProp::Height => "height",
+        ExprProp::X => "x",
+        ExprProp::Y => "y",
+    }
+}
+
+fn eval_error_reason(e: &ExprEvalError) -> String {
+    match e {
+        ExprEvalError::UnresolvedRef { target, property } => {
+            format!("unknown reference `{}.{}`", target, prop_str(*property))
+        }
+        ExprEvalError::DivisionByZero => "division by zero".to_string(),
+    }
+}
+
+/// Resolve a Scalar to f32 in the context of a ClipPropertyIndex.
+/// Any unresolved reference is an error (all deps must already be in the index).
+fn resolve_scalar(
+    layer_id: &str,
+    clip_id: &str,
+    scalar: &Scalar,
+    scale: f32,
+    index: &ClipPropertyIndex,
+) -> Result<f32, CompileError> {
+    match scalar {
+        Scalar::Literal(v) => Ok(v * scale),
+        Scalar::Expr(s) => {
+            let parsed = parse_expr(s).map_err(|e| CompileError::ExprError {
+                layer_id: layer_id.to_string(),
+                clip_id: clip_id.to_string(),
+                reason: e.to_string(),
+            })?;
+            eval_expr(&parsed, index)
+                .map(|v| v * scale)
+                .map_err(|e| CompileError::ExprError {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip_id.to_string(),
+                    reason: eval_error_reason(&e),
+                })
+        }
+    }
+}
+
+/// Try to resolve a Scalar during iterative index building.
+/// Returns Ok(None) if a dependency is not yet in the index (signal to skip and retry).
+/// Returns Ok(Some(v)) on success, Err on permanent failure.
+fn try_resolve_scalar_for_index(
+    layer_id: &str,
+    clip_id: &str,
+    scalar: &Scalar,
+    index: &ClipPropertyIndex,
+    all_ids: &HashSet<String>,
+) -> Result<Option<f32>, CompileError> {
+    match scalar {
+        Scalar::Literal(v) => Ok(Some(*v)),
+        Scalar::Expr(s) => {
+            let parsed = parse_expr(s).map_err(|e| CompileError::ExprError {
+                layer_id: layer_id.to_string(),
+                clip_id: clip_id.to_string(),
+                reason: e.to_string(),
+            })?;
+            match eval_expr(&parsed, index) {
+                Ok(v) => Ok(Some(v)),
+                Err(ExprEvalError::UnresolvedRef { target, property }) => {
+                    // If target is a known id not yet resolved → skip for now.
+                    if all_ids.contains(&target) {
+                        Ok(None)
+                    } else {
+                        Err(CompileError::ExprError {
+                            layer_id: layer_id.to_string(),
+                            clip_id: clip_id.to_string(),
+                            reason: format!(
+                                "unknown reference `{}.{}`",
+                                target,
+                                prop_str(property)
+                            ),
+                        })
+                    }
+                }
+                Err(e) => Err(CompileError::ExprError {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip_id.to_string(),
+                    reason: eval_error_reason(&e),
+                }),
+            }
+        }
+    }
+}
+
+/// Collect all Clip/Group ids and their transforms from a LayerItem tree.
+struct UnresolvedEntry {
+    layer_id: String,
+    x: Scalar,
+    y: Scalar,
+    width: Option<Scalar>,
+    height: Option<Scalar>,
+}
+
+fn collect_layer_item_transforms(
+    item: &LayerItem,
+    layer_id: &str,
+    unresolved: &mut HashMap<String, UnresolvedEntry>,
+) -> Result<(), CompileError> {
+    match item {
+        LayerItem::Clip(clip) => {
+            if unresolved.contains_key(&clip.id) {
+                return Err(CompileError::InvalidClip {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip.id.clone(),
+                    reason: "duplicate item id".to_string(),
+                });
+            }
+            unresolved.insert(
+                clip.id.clone(),
+                UnresolvedEntry {
+                    layer_id: layer_id.to_string(),
+                    x: clip.transform.x.clone(),
+                    y: clip.transform.y.clone(),
+                    width: clip.transform.width.clone(),
+                    height: clip.transform.height.clone(),
+                },
+            );
+            if let Some(mask) = clip.mask.as_deref() {
+                collect_layer_item_transforms(mask, layer_id, unresolved)?;
+            }
+        }
+        LayerItem::Group(group) => {
+            if unresolved.contains_key(&group.id) {
+                return Err(CompileError::InvalidGroup {
+                    layer_id: layer_id.to_string(),
+                    group_id: group.id.clone(),
+                    reason: "duplicate item id".to_string(),
+                });
+            }
+            unresolved.insert(
+                group.id.clone(),
+                UnresolvedEntry {
+                    layer_id: layer_id.to_string(),
+                    x: group.transform.x.clone(),
+                    y: group.transform.y.clone(),
+                    width: None,
+                    height: None,
+                },
+            );
+            for child in &group.items {
+                collect_layer_item_transforms(child, layer_id, unresolved)?;
+            }
+            if let Some(mask) = group.mask.as_deref() {
+                collect_layer_item_transforms(mask, layer_id, unresolved)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_project_layout_node_ids(project: &Project) -> HashSet<String> {
+    let mut node_ids: HashSet<String> = HashSet::new();
+    for layer in &project.layers {
+        for item in &layer.items {
+            collect_layer_item_node_ids(item, &mut node_ids);
+        }
+    }
+    node_ids
+}
+
+fn collect_layer_item_node_ids(item: &LayerItem, node_ids: &mut HashSet<String>) {
+    match item {
+        LayerItem::Clip(clip) => {
+            if let ClipContent::Layout(layout) = &clip.content {
+                node_ids.extend(collect_layout_node_ids(&layout.root));
+            }
+            if let Some(mask) = clip.mask.as_deref() {
+                collect_layer_item_node_ids(mask, node_ids);
+            }
+        }
+        LayerItem::Group(group) => {
+            for child in &group.items {
+                collect_layer_item_node_ids(child, node_ids);
+            }
+            if let Some(mask) = group.mask.as_deref() {
+                collect_layer_item_node_ids(mask, node_ids);
+            }
+        }
+    }
+}
+
+fn build_clip_property_index(project: &Project) -> Result<ClipPropertyIndex, CompileError> {
+    let mut unresolved: HashMap<String, UnresolvedEntry> = HashMap::new();
+    for layer in &project.layers {
+        for item in &layer.items {
+            collect_layer_item_transforms(item, &layer.id, &mut unresolved)?;
+        }
+    }
+
+    let all_ids: HashSet<String> = unresolved.keys().cloned().collect();
+
+    let mut index = ClipPropertyIndex {
+        canvas_width: project.canvas.width as f32,
+        canvas_height: project.canvas.height as f32,
+        clips: HashMap::new(),
+    };
+
+    // Iterative resolution: keep looping until all entries are resolved or
+    // no progress can be made.
+    loop {
+        if unresolved.is_empty() {
+            break;
+        }
+
+        let mut progress = false;
+        let keys: Vec<String> = unresolved.keys().cloned().collect();
+
+        for key in keys {
+            let Some(entry) = unresolved.get(&key) else {
+                continue;
+            };
+            let layer_id = entry.layer_id.clone();
+
+            let rx = try_resolve_scalar_for_index(&layer_id, &key, &entry.x, &index, &all_ids)?;
+            let Some(rx) = rx else { continue };
+
+            // Re-borrow after potential index mutation
+            let entry = unresolved.get(&key).unwrap();
+            let ry = try_resolve_scalar_for_index(&layer_id, &key, &entry.y, &index, &all_ids)?;
+            let Some(ry) = ry else { continue };
+
+            let entry = unresolved.get(&key).unwrap();
+            let rw = match &entry.width {
+                None => None,
+                Some(w) => {
+                    let resolved =
+                        try_resolve_scalar_for_index(&layer_id, &key, w, &index, &all_ids)?;
+                    let Some(v) = resolved else { continue };
+                    Some(v)
+                }
+            };
+
+            let entry = unresolved.get(&key).unwrap();
+            let rh = match &entry.height {
+                None => None,
+                Some(h) => {
+                    let resolved =
+                        try_resolve_scalar_for_index(&layer_id, &key, h, &index, &all_ids)?;
+                    let Some(v) = resolved else { continue };
+                    Some(v)
+                }
+            };
+
+            index.clips.insert(
+                key.clone(),
+                CompiledTransform {
+                    x: rx,
+                    y: ry,
+                    width: rw,
+                    height: rh,
+                    rotation_degrees: 0.0, // not used in index
+                },
+            );
+            unresolved.remove(&key);
+            progress = true;
+        }
+
+        if !progress && !unresolved.is_empty() {
+            // No progress — cycle or unresolvable reference.
+            let (stuck_id, stuck_entry) = unresolved.iter().next().unwrap();
+            return Err(CompileError::ExprError {
+                layer_id: stuck_entry.layer_id.clone(),
+                clip_id: stuck_id.clone(),
+                reason: "expression cycle or unresolvable reference".to_string(),
+            });
+        }
+    }
+
+    Ok(index)
+}
+
+// ── Animation evaluation ───────────────────────────────────────────────────────
+
+struct EmptyExprCtx;
+
+impl ExprEvalCtx for EmptyExprCtx {
+    fn resolve(&self, _target: &str, _property: ExprProp) -> Option<f32> {
+        None
+    }
+}
+
+fn resolve_compiled_scalar_value(
+    value: &CompiledScalarValue,
+    expr_ctx: &dyn ExprEvalCtx,
+) -> Option<f32> {
+    match value {
+        CompiledScalarValue::Literal(v) => Some(*v),
+        CompiledScalarValue::DeferredExpr { parsed } => eval_expr(parsed, expr_ctx).ok(),
+    }
+}
+
+fn evaluate_scalar_track(
+    base: f32,
+    track: &[CompiledScalarKeyframe],
+    local_frame: u64,
+    expr_ctx: &dyn ExprEvalCtx,
+) -> f32 {
     let mut current = base;
 
     for keyframe in track {
         if local_frame < keyframe.frame {
             break;
         }
+        let Some(target_value) = resolve_compiled_scalar_value(&keyframe.value, expr_ctx) else {
+            continue;
+        };
 
         let from = current;
         if keyframe.duration_frames == 0 {
-            current = keyframe.value;
+            current = target_value;
             continue;
         }
 
         let end = keyframe.frame.saturating_add(keyframe.duration_frames);
         if local_frame >= end {
-            current = keyframe.value;
+            current = target_value;
             continue;
         }
 
         let progress =
             (local_frame.saturating_sub(keyframe.frame)) as f32 / (keyframe.duration_frames as f32);
         let eased = apply_easing(progress, keyframe.easing);
-        return from + (keyframe.value - from) * eased;
+        return from + (target_value - from) * eased;
     }
 
     current
@@ -270,6 +664,8 @@ fn apply_easing(progress: f32, easing: Easing) -> f32 {
     }
 }
 
+// ── Public entry points ────────────────────────────────────────────────────────
+
 pub fn compile_project(project: &Project) -> Result<CompiledTimeline, CompileError> {
     compile_project_with_scale(project, 1.0)
 }
@@ -283,6 +679,9 @@ pub fn compile_project_with_scale(
     validate_timeline(&project.timeline)?;
 
     let sources = index_sources(&project.sources)?;
+
+    let clip_index = build_clip_property_index(project)?;
+    let layout_node_ids = collect_project_layout_node_ids(project);
 
     let mut ordered_layers: Vec<(usize, &Layer)> = project.layers.iter().enumerate().collect();
     ordered_layers.sort_by(|left, right| {
@@ -299,6 +698,8 @@ pub fn compile_project_with_scale(
         has_compositing_nodes: false,
         max_depth: MAX_ITEM_TREE_DEPTH,
         scale,
+        clip_index: &clip_index,
+        layout_node_ids: &layout_node_ids,
     };
 
     let mut layers = Vec::with_capacity(ordered_layers.len());
@@ -322,6 +723,8 @@ pub fn compile_project_with_scale(
     } = ctx;
 
     let canvas = compile_canvas(&project.canvas, scale);
+    let runtime_clip_index = scale_clip_property_index(&clip_index, scale);
+
     Ok(CompiledTimeline {
         canvas,
         timeline: project.timeline.clone(),
@@ -330,6 +733,7 @@ pub fn compile_project_with_scale(
         frame_index,
         layers,
         has_compositing_nodes,
+        clip_index: runtime_clip_index,
     })
 }
 
@@ -356,6 +760,28 @@ fn scale_dimension(value: u32, scale: f32) -> u32 {
         return 1;
     }
     scaled.min(u32::MAX as f64) as u32
+}
+
+fn scale_clip_property_index(index: &ClipPropertyIndex, scale: f32) -> ClipPropertyIndex {
+    let mut clips: HashMap<String, CompiledTransform> = HashMap::with_capacity(index.clips.len());
+    for (id, transform) in &index.clips {
+        clips.insert(
+            id.clone(),
+            CompiledTransform {
+                x: transform.x * scale,
+                y: transform.y * scale,
+                width: transform.width.map(|v| v * scale),
+                height: transform.height.map(|v| v * scale),
+                rotation_degrees: transform.rotation_degrees,
+            },
+        );
+    }
+
+    ClipPropertyIndex {
+        canvas_width: index.canvas_width * scale,
+        canvas_height: index.canvas_height * scale,
+        clips,
+    }
 }
 
 fn validate_canvas(canvas: &Canvas, scale: f32) -> Result<(), CompileError> {
@@ -476,11 +902,23 @@ fn compile_layer_item(
                 None
             };
 
-            let transform = GroupTransform {
-                x: group.transform.x * ctx.scale,
-                y: group.transform.y * ctx.scale,
-                rotation_degrees: group.transform.rotation_degrees,
-            };
+            let transform = compile_group_transform(
+                &layer.id,
+                &group.id,
+                &group.transform,
+                ctx.scale,
+                ctx.clip_index,
+            )?;
+            if !transform.x.is_finite()
+                || !transform.y.is_finite()
+                || !transform.rotation_degrees.is_finite()
+            {
+                return Err(CompileError::InvalidGroup {
+                    layer_id: layer.id.clone(),
+                    group_id: group.id.clone(),
+                    reason: "transform values must be finite".to_string(),
+                });
+            }
 
             Ok(CompiledLayerItem::Group(CompiledGroupNode {
                 id: group.id.clone(),
@@ -502,10 +940,7 @@ fn validate_group(layer: &Layer, group: &ClipGroup) -> Result<(), CompileError> 
         });
     }
 
-    if !group.transform.x.is_finite()
-        || !group.transform.y.is_finite()
-        || !group.transform.rotation_degrees.is_finite()
-    {
+    if !group.transform.rotation_degrees.is_finite() {
         return Err(CompileError::InvalidGroup {
             layer_id: layer.id.clone(),
             group_id: group.id.clone(),
@@ -537,35 +972,12 @@ fn compile_clip_operation(
         });
     }
 
-    if !clip.transform.x.is_finite()
-        || !clip.transform.y.is_finite()
-        || !clip.transform.rotation_degrees.is_finite()
-    {
+    if !clip.transform.rotation_degrees.is_finite() {
         return Err(CompileError::InvalidClip {
             layer_id: layer.id.clone(),
             clip_id: clip.id.clone(),
             reason: "transform values must be finite".to_string(),
         });
-    }
-
-    if let Some(width) = clip.transform.width {
-        if !width.is_finite() || width <= 0.0 {
-            return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
-                clip_id: clip.id.clone(),
-                reason: "transform width must be finite and greater than 0".to_string(),
-            });
-        }
-    }
-
-    if let Some(height) = clip.transform.height {
-        if !height.is_finite() || height <= 0.0 {
-            return Err(CompileError::InvalidClip {
-                layer_id: layer.id.clone(),
-                clip_id: clip.id.clone(),
-                reason: "transform height must be finite and greater than 0".to_string(),
-            });
-        }
     }
 
     let end_frame = clip
@@ -588,9 +1000,57 @@ fn compile_clip_operation(
         });
     }
 
-    let animation = compile_clip_animation(layer.id.as_str(), clip, ctx.scale)?;
-    let kind = compile_clip_content(layer.id.as_str(), clip, ctx.sources, ctx.scale)?;
-    let transform = compile_operation_transform(clip.transform, ctx.scale);
+    let animation = compile_clip_animation(
+        layer.id.as_str(),
+        clip,
+        ctx.scale,
+        ctx.clip_index,
+        ctx.layout_node_ids,
+    )?;
+    let kind = compile_clip_content(
+        layer.id.as_str(),
+        clip,
+        ctx.sources,
+        ctx.scale,
+        ctx.clip_index,
+    )?;
+    let transform = compile_operation_transform(
+        &layer.id,
+        &clip.id,
+        &clip.transform,
+        ctx.scale,
+        ctx.clip_index,
+    )?;
+
+    // Validate compiled transform values.
+    if !transform.x.is_finite()
+        || !transform.y.is_finite()
+        || !transform.rotation_degrees.is_finite()
+    {
+        return Err(CompileError::InvalidClip {
+            layer_id: layer.id.clone(),
+            clip_id: clip.id.clone(),
+            reason: "transform values must be finite".to_string(),
+        });
+    }
+    if let Some(width) = transform.width {
+        if !width.is_finite() || width <= 0.0 {
+            return Err(CompileError::InvalidClip {
+                layer_id: layer.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: "transform width must be finite and greater than 0".to_string(),
+            });
+        }
+    }
+    if let Some(height) = transform.height {
+        if !height.is_finite() || height <= 0.0 {
+            return Err(CompileError::InvalidClip {
+                layer_id: layer.id.clone(),
+                clip_id: clip.id.clone(),
+                reason: "transform height must be finite and greater than 0".to_string(),
+            });
+        }
+    }
 
     Ok(CompiledOperation {
         id: clip.id.clone(),
@@ -605,20 +1065,54 @@ fn compile_clip_operation(
     })
 }
 
-fn compile_operation_transform(transform: Transform, scale: f32) -> Transform {
-    Transform {
-        x: transform.x * scale,
-        y: transform.y * scale,
-        width: transform.width.map(|value| value * scale),
-        height: transform.height.map(|value| value * scale),
+fn compile_operation_transform(
+    layer_id: &str,
+    clip_id: &str,
+    transform: &Transform,
+    scale: f32,
+    clip_index: &ClipPropertyIndex,
+) -> Result<CompiledTransform, CompileError> {
+    let x = resolve_scalar(layer_id, clip_id, &transform.x, scale, clip_index)?;
+    let y = resolve_scalar(layer_id, clip_id, &transform.y, scale, clip_index)?;
+    let width = match &transform.width {
+        None => None,
+        Some(w) => Some(resolve_scalar(layer_id, clip_id, w, scale, clip_index)?),
+    };
+    let height = match &transform.height {
+        None => None,
+        Some(h) => Some(resolve_scalar(layer_id, clip_id, h, scale, clip_index)?),
+    };
+    Ok(CompiledTransform {
+        x,
+        y,
+        width,
+        height,
         rotation_degrees: transform.rotation_degrees,
-    }
+    })
+}
+
+fn compile_group_transform(
+    layer_id: &str,
+    group_id: &str,
+    transform: &GroupTransform,
+    scale: f32,
+    clip_index: &ClipPropertyIndex,
+) -> Result<CompiledGroupTransform, CompileError> {
+    let x = resolve_scalar(layer_id, group_id, &transform.x, scale, clip_index)?;
+    let y = resolve_scalar(layer_id, group_id, &transform.y, scale, clip_index)?;
+    Ok(CompiledGroupTransform {
+        x,
+        y,
+        rotation_degrees: transform.rotation_degrees,
+    })
 }
 
 fn compile_clip_animation(
     layer_id: &str,
     clip: &crate::model::Clip,
     scale: f32,
+    clip_index: &ClipPropertyIndex,
+    layout_node_ids: &HashSet<String>,
 ) -> Result<CompiledClipAnimation, CompileError> {
     if clip.transform.width.is_none() && !clip.animation.width.is_empty() {
         return Err(CompileError::InvalidClip {
@@ -635,23 +1129,6 @@ fn compile_clip_animation(
         });
     }
 
-    if clip.transform.width.is_some() {
-        validate_dimension_keyframes(
-            layer_id,
-            clip,
-            "animation.width",
-            clip.animation.width.as_slice(),
-        )?;
-    }
-    if clip.transform.height.is_some() {
-        validate_dimension_keyframes(
-            layer_id,
-            clip,
-            "animation.height",
-            clip.animation.height.as_slice(),
-        )?;
-    }
-
     Ok(CompiledClipAnimation {
         opacity: compile_scalar_track(
             layer_id,
@@ -659,6 +1136,9 @@ fn compile_clip_animation(
             "animation.opacity",
             clip.animation.opacity.as_slice(),
             1.0,
+            clip_index,
+            layout_node_ids,
+            false,
         )?,
         x: compile_scalar_track(
             layer_id,
@@ -666,6 +1146,9 @@ fn compile_clip_animation(
             "animation.x",
             clip.animation.x.as_slice(),
             scale,
+            clip_index,
+            layout_node_ids,
+            false,
         )?,
         y: compile_scalar_track(
             layer_id,
@@ -673,6 +1156,9 @@ fn compile_clip_animation(
             "animation.y",
             clip.animation.y.as_slice(),
             scale,
+            clip_index,
+            layout_node_ids,
+            false,
         )?,
         width: compile_scalar_track(
             layer_id,
@@ -680,6 +1166,9 @@ fn compile_clip_animation(
             "animation.width",
             clip.animation.width.as_slice(),
             scale,
+            clip_index,
+            layout_node_ids,
+            true,
         )?,
         height: compile_scalar_track(
             layer_id,
@@ -687,6 +1176,9 @@ fn compile_clip_animation(
             "animation.height",
             clip.animation.height.as_slice(),
             scale,
+            clip_index,
+            layout_node_ids,
+            true,
         )?,
         rotation_degrees: compile_scalar_track(
             layer_id,
@@ -694,26 +1186,90 @@ fn compile_clip_animation(
             "animation.rotation_degrees",
             clip.animation.rotation_degrees.as_slice(),
             1.0,
+            clip_index,
+            layout_node_ids,
+            false,
         )?,
     })
 }
 
-fn validate_dimension_keyframes(
+fn compile_keyframe_scalar_value(
     layer_id: &str,
     clip: &crate::model::Clip,
     field: &str,
-    keyframes: &[ScalarKeyframe],
-) -> Result<(), CompileError> {
-    for keyframe in keyframes {
-        if !keyframe.value.is_finite() || keyframe.value <= 0.0 {
-            return Err(CompileError::InvalidClip {
+    index: usize,
+    value: &Scalar,
+    scale: f32,
+    clip_index: &ClipPropertyIndex,
+    layout_node_ids: &HashSet<String>,
+) -> Result<CompiledScalarValue, CompileError> {
+    match value {
+        Scalar::Literal(v) => Ok(CompiledScalarValue::Literal(*v * scale)),
+        Scalar::Expr(source) => {
+            let parsed = parse_expr(source).map_err(|e| CompileError::ExprError {
                 layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
-                reason: format!("{field} values must be finite and > 0"),
-            });
+                reason: format!("{field}[{index}] {e}"),
+            })?;
+
+            let refs = collect_parsed_expr_refs(&parsed);
+            let mut has_layout_node_ref = false;
+            for r in &refs {
+                let target = &r.target;
+                if target == "canvas" {
+                    if matches!(r.property, ExprProp::Width | ExprProp::Height) {
+                        continue;
+                    }
+                    return Err(CompileError::ExprError {
+                        layer_id: layer_id.to_string(),
+                        clip_id: clip.id.clone(),
+                        reason: format!("{field}[{index}] unknown reference `{}.{}`", target, prop_str(r.property)),
+                    });
+                }
+                if clip_index.clips.contains_key(target.as_str()) {
+                    if clip_index.resolve(target, r.property).is_some() {
+                        continue;
+                    }
+                    return Err(CompileError::ExprError {
+                        layer_id: layer_id.to_string(),
+                        clip_id: clip.id.clone(),
+                        reason: format!("{field}[{index}] unknown reference `{}.{}`", target, prop_str(r.property)),
+                    });
+                }
+                if layout_node_ids.contains(target.as_str()) {
+                    has_layout_node_ref = true;
+                    continue;
+                }
+
+                // If the project contains layout nodes, allow unresolved id-like refs
+                // to defer to runtime layout-node evaluation.
+                if !layout_node_ids.is_empty() {
+                    has_layout_node_ref = true;
+                    continue;
+                }
+
+                return Err(CompileError::ExprError {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip.id.clone(),
+                    reason: format!("{field}[{index}] unknown reference `{}.{}`", target, prop_str(r.property)),
+                });
+            }
+
+            if has_layout_node_ref {
+                return Ok(CompiledScalarValue::DeferredExpr {
+                    parsed: scale_parsed_expr_literals(&parsed, scale),
+                });
+            }
+
+            eval_expr(&parsed, clip_index)
+                .map(|v| CompiledScalarValue::Literal(v * scale))
+                .map_err(|e| CompileError::ExprError {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip.id.clone(),
+                    reason: format!("{field}[{index}] {}", eval_error_reason(&e)),
+                })
         }
     }
-    Ok(())
 }
 
 fn compile_scalar_track(
@@ -722,6 +1278,9 @@ fn compile_scalar_track(
     field: &str,
     keyframes: &[ScalarKeyframe],
     scale: f32,
+    clip_index: &ClipPropertyIndex,
+    layout_node_ids: &HashSet<String>,
+    require_positive: bool,
 ) -> Result<Vec<CompiledScalarKeyframe>, CompileError> {
     let mut sorted = keyframes.to_vec();
     sorted.sort_by_key(|keyframe| keyframe.frame);
@@ -730,11 +1289,32 @@ fn compile_scalar_track(
     let mut previous_end = 0u64;
 
     for (index, keyframe) in sorted.into_iter().enumerate() {
-        if !keyframe.value.is_finite() {
+        let value = compile_keyframe_scalar_value(
+            layer_id,
+            clip,
+            field,
+            index,
+            &keyframe.value,
+            scale,
+            clip_index,
+            layout_node_ids,
+        )?;
+        let resolved_for_validation = match &value {
+            CompiledScalarValue::Literal(v) => Some(*v),
+            CompiledScalarValue::DeferredExpr { .. } => None,
+        };
+        if let Some(v) = resolved_for_validation && !v.is_finite() {
             return Err(CompileError::InvalidClip {
                 layer_id: layer_id.to_string(),
                 clip_id: clip.id.clone(),
                 reason: format!("{field}[{index}] value must be finite"),
+            });
+        }
+        if require_positive && resolved_for_validation.is_some_and(|v| v <= 0.0) {
+            return Err(CompileError::InvalidClip {
+                layer_id: layer_id.to_string(),
+                clip_id: clip.id.clone(),
+                reason: format!("{field}[{index}] value must be > 0"),
             });
         }
         if keyframe.frame >= clip.duration_frames {
@@ -777,7 +1357,7 @@ fn compile_scalar_track(
         previous_end = end.max(keyframe.frame);
         compiled.push(CompiledScalarKeyframe {
             frame: keyframe.frame,
-            value: keyframe.value * scale,
+            value,
             duration_frames: keyframe.duration_frames,
             easing: keyframe.easing,
         });
@@ -791,6 +1371,7 @@ fn compile_clip_content(
     clip: &crate::model::Clip,
     sources: &HashMap<String, Source>,
     scale: f32,
+    clip_index: &ClipPropertyIndex,
 ) -> Result<CompiledOperationKind, CompileError> {
     match &clip.content {
         ClipContent::Solid { color } => Ok(CompiledOperationKind::Solid { color: *color }),
@@ -842,12 +1423,7 @@ fn compile_clip_content(
                     reason: "video corner_radius must be finite and >= 0".to_string(),
                 });
             }
-            let _ =
-                map_source_frame(&video.pipeline, 0).map_err(|err| CompileError::InvalidClip {
-                    layer_id: layer_id.to_string(),
-                    clip_id: clip.id.clone(),
-                    reason: err.to_string(),
-                })?;
+            map_source_frame(&video.pipeline, 0).map_err(CompileError::from)?;
 
             Ok(CompiledOperationKind::Video(VideoSourceRef {
                 source_id: video.source.clone(),
@@ -864,12 +1440,20 @@ fn compile_clip_content(
                     reason: "layout clips require transform.width and transform.height".to_string(),
                 });
             }
-            let compiled_layout =
-                compile_layout_clip(layer_id, clip.id.as_str(), layout, sources, scale)?;
+            let compiled_layout = compile_layout_clip(
+                layer_id,
+                clip.id.as_str(),
+                layout,
+                sources,
+                scale,
+                clip_index,
+            )?;
             Ok(CompiledOperationKind::Layout(compiled_layout))
         }
     }
 }
+
+// ── Layout compilation ─────────────────────────────────────────────────────────
 
 fn compile_layout_clip(
     layer_id: &str,
@@ -877,7 +1461,11 @@ fn compile_layout_clip(
     layout: &LayoutClip,
     sources: &HashMap<String, Source>,
     scale: f32,
+    clip_index: &ClipPropertyIndex,
 ) -> Result<LayoutClip, CompileError> {
+    let node_ids = collect_layout_node_ids(&layout.root);
+    validate_layout_node_exprs(layer_id, clip_id, &layout.root, &node_ids)?;
+
     Ok(LayoutClip {
         root: compile_layout_node(
             layer_id,
@@ -886,6 +1474,8 @@ fn compile_layout_clip(
             &layout.root,
             sources,
             scale,
+            clip_index,
+            &node_ids,
         )?,
     })
 }
@@ -897,8 +1487,18 @@ fn compile_layout_node(
     node: &LayoutNode,
     sources: &HashMap<String, Source>,
     scale: f32,
+    clip_index: &ClipPropertyIndex,
+    node_ids: &HashSet<String>,
 ) -> Result<LayoutNode, CompileError> {
-    let style = compile_layout_style(layer_id, clip_id, node_path.as_str(), &node.style, scale)?;
+    let style = compile_layout_style(
+        layer_id,
+        clip_id,
+        node_path.as_str(),
+        &node.style,
+        scale,
+        clip_index,
+        node_ids,
+    )?;
 
     let kind = match &node.kind {
         LayoutNodeKind::Container { children } => {
@@ -911,6 +1511,8 @@ fn compile_layout_node(
                     child,
                     sources,
                     scale,
+                    clip_index,
+                    node_ids,
                 )?);
             }
             LayoutNodeKind::Container {
@@ -934,7 +1536,11 @@ fn compile_layout_node(
         )?),
     };
 
-    Ok(LayoutNode { style, kind })
+    Ok(LayoutNode {
+        id: node.id.clone(),
+        style,
+        kind,
+    })
 }
 
 fn compile_layout_text_node(
@@ -1007,6 +1613,8 @@ fn compile_layout_style(
     node_path: &str,
     style: &LayoutNodeStyle,
     scale: f32,
+    clip_index: &ClipPropertyIndex,
+    node_ids: &HashSet<String>,
 ) -> Result<LayoutNodeStyle, CompileError> {
     if !style.flex_grow.is_finite() || style.flex_grow < 0.0 {
         return Err(CompileError::InvalidClip {
@@ -1042,48 +1650,60 @@ fn compile_layout_style(
         clip_id,
         node_path,
         "style.width",
-        style.width,
+        style.width.clone(),
         scale,
+        clip_index,
+        node_ids,
     )?;
     let height = compile_optional_layout_dimension(
         layer_id,
         clip_id,
         node_path,
         "style.height",
-        style.height,
+        style.height.clone(),
         scale,
+        clip_index,
+        node_ids,
     )?;
     let min_width = compile_optional_layout_dimension(
         layer_id,
         clip_id,
         node_path,
         "style.min_width",
-        style.min_width,
+        style.min_width.clone(),
         scale,
+        clip_index,
+        node_ids,
     )?;
     let min_height = compile_optional_layout_dimension(
         layer_id,
         clip_id,
         node_path,
         "style.min_height",
-        style.min_height,
+        style.min_height.clone(),
         scale,
+        clip_index,
+        node_ids,
     )?;
     let max_width = compile_optional_layout_dimension(
         layer_id,
         clip_id,
         node_path,
         "style.max_width",
-        style.max_width,
+        style.max_width.clone(),
         scale,
+        clip_index,
+        node_ids,
     )?;
     let max_height = compile_optional_layout_dimension(
         layer_id,
         clip_id,
         node_path,
         "style.max_height",
-        style.max_height,
+        style.max_height.clone(),
         scale,
+        clip_index,
+        node_ids,
     )?;
 
     let padding = compile_layout_edges(
@@ -1131,20 +1751,102 @@ fn compile_optional_layout_dimension(
     clip_id: &str,
     node_path: &str,
     field: &str,
-    value: Option<f32>,
+    value: Option<Scalar>,
     scale: f32,
-) -> Result<Option<f32>, CompileError> {
-    let Some(value) = value else {
+    clip_index: &ClipPropertyIndex,
+    node_ids: &HashSet<String>,
+) -> Result<Option<Scalar>, CompileError> {
+    let Some(scalar) = value else {
         return Ok(None);
     };
-    if !value.is_finite() || value < 0.0 {
-        return Err(CompileError::InvalidClip {
-            layer_id: layer_id.to_string(),
-            clip_id: clip_id.to_string(),
-            reason: format!("{node_path}.{field} must be finite and >= 0"),
-        });
+
+    match scalar {
+        Scalar::Literal(v) => {
+            if !v.is_finite() || v < 0.0 {
+                return Err(CompileError::InvalidClip {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip_id.to_string(),
+                    reason: format!("{node_path}.{field} must be finite and >= 0"),
+                });
+            }
+            Ok(Some(Scalar::Literal(v * scale)))
+        }
+        Scalar::Expr(s) => {
+            let parsed = parse_expr(&s).map_err(|e| CompileError::ExprError {
+                layer_id: layer_id.to_string(),
+                clip_id: clip_id.to_string(),
+                reason: e.to_string(),
+            })?;
+
+            // Classify all ref targets.
+            let refs = collect_parsed_expr_refs(&parsed);
+            let mut has_node_ref = false;
+            for r in &refs {
+                let target = &r.target;
+                if target == "canvas" {
+                    // canvas.width/height are valid; canvas.x/y would fail at eval.
+                    // Just let eval handle it.
+                    continue;
+                }
+                if clip_index.clips.contains_key(target.as_str()) {
+                    continue;
+                }
+                if node_ids.contains(target.as_str()) {
+                    has_node_ref = true;
+                    continue;
+                }
+                // Unknown reference.
+                return Err(CompileError::ExprError {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip_id.to_string(),
+                    reason: format!("unknown reference `{}.{}`", target, prop_str(r.property)),
+                });
+            }
+
+            if has_node_ref {
+                let scaled = scale_parsed_expr_literals(&parsed, scale);
+                return Ok(Some(Scalar::Expr(scaled.to_string())));
+            }
+
+            // All refs are canvas or clip refs — resolve now.
+            let resolved = eval_expr(&parsed, clip_index).map_err(|e| CompileError::ExprError {
+                layer_id: layer_id.to_string(),
+                clip_id: clip_id.to_string(),
+                reason: eval_error_reason(&e),
+            })?;
+            Ok(Some(Scalar::Literal(resolved * scale)))
+        }
     }
-    Ok(Some(value * scale))
+}
+
+/// Recursively collect all ExprRef nodes from a parsed expression.
+fn collect_parsed_expr_refs(expr: &ParsedExpr) -> Vec<&crate::expr::ExprRef> {
+    match expr {
+        ParsedExpr::Literal(_) => vec![],
+        ParsedExpr::Ref(r) => vec![r],
+        ParsedExpr::UnaryOp { expr, .. } => collect_parsed_expr_refs(expr),
+        ParsedExpr::BinOp { lhs, rhs, .. } => {
+            let mut refs = collect_parsed_expr_refs(lhs);
+            refs.extend(collect_parsed_expr_refs(rhs));
+            refs
+        }
+    }
+}
+
+fn scale_parsed_expr_literals(expr: &ParsedExpr, scale: f32) -> ParsedExpr {
+    match expr {
+        ParsedExpr::Literal(v) => ParsedExpr::Literal(v * scale),
+        ParsedExpr::Ref(r) => ParsedExpr::Ref(r.clone()),
+        ParsedExpr::UnaryOp { op, expr } => ParsedExpr::UnaryOp {
+            op: *op,
+            expr: Box::new(scale_parsed_expr_literals(expr, scale)),
+        },
+        ParsedExpr::BinOp { op, lhs, rhs } => ParsedExpr::BinOp {
+            op: *op,
+            lhs: Box::new(scale_parsed_expr_literals(lhs, scale)),
+            rhs: Box::new(scale_parsed_expr_literals(rhs, scale)),
+        },
+    }
 }
 
 fn compile_layout_edges(
@@ -1200,6 +1902,131 @@ fn compile_layout_edge(
     Ok(value * scale)
 }
 
+// ── Layout node ID collection and cycle detection ─────────────────────────────
+
+fn collect_layout_node_ids(node: &LayoutNode) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    collect_layout_node_ids_inner(node, &mut ids);
+    ids
+}
+
+fn collect_layout_node_ids_inner(node: &LayoutNode, ids: &mut HashSet<String>) {
+    if let Some(id) = &node.id {
+        ids.insert(id.clone());
+    }
+    if let LayoutNodeKind::Container { children } = &node.kind {
+        for child in children {
+            collect_layout_node_ids_inner(child, ids);
+        }
+    }
+}
+
+fn validate_layout_node_exprs(
+    layer_id: &str,
+    clip_id: &str,
+    root: &LayoutNode,
+    node_ids: &HashSet<String>,
+) -> Result<(), CompileError> {
+    let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
+    build_layout_dim_dep_graph(root, node_ids, &mut adj);
+
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut in_stack: HashSet<String> = HashSet::new();
+
+    for node_id in node_ids {
+        if !visited.contains(node_id) {
+            if layout_has_cycle(node_id, &adj, &mut visited, &mut in_stack) {
+                return Err(CompileError::ExprError {
+                    layer_id: layer_id.to_string(),
+                    clip_id: clip_id.to_string(),
+                    reason: format!("layout expression cycle at node `{node_id}`"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn build_layout_dim_dep_graph(
+    node: &LayoutNode,
+    node_ids: &HashSet<String>,
+    adj: &mut HashMap<String, HashSet<String>>,
+) {
+    if let Some(id) = &node.id {
+        let mut deps: HashSet<String> = HashSet::new();
+        let dim_fields = [
+            node.style.width.as_ref(),
+            node.style.height.as_ref(),
+            node.style.min_width.as_ref(),
+            node.style.min_height.as_ref(),
+            node.style.max_width.as_ref(),
+            node.style.max_height.as_ref(),
+        ];
+        for scalar in dim_fields.into_iter().flatten() {
+            if let Scalar::Expr(s) = scalar {
+                if let Ok(parsed) = parse_expr(s) {
+                    collect_layout_node_deps(&parsed, node_ids, &mut deps);
+                }
+            }
+        }
+        adj.insert(id.clone(), deps);
+    }
+
+    if let LayoutNodeKind::Container { children } = &node.kind {
+        for child in children {
+            build_layout_dim_dep_graph(child, node_ids, adj);
+        }
+    }
+}
+
+fn collect_layout_node_deps(
+    expr: &ParsedExpr,
+    node_ids: &HashSet<String>,
+    deps: &mut HashSet<String>,
+) {
+    match expr {
+        ParsedExpr::Literal(_) => {}
+        ParsedExpr::Ref(r) => {
+            if node_ids.contains(&r.target) {
+                deps.insert(r.target.clone());
+            }
+        }
+        ParsedExpr::UnaryOp { expr, .. } => {
+            collect_layout_node_deps(expr, node_ids, deps);
+        }
+        ParsedExpr::BinOp { lhs, rhs, .. } => {
+            collect_layout_node_deps(lhs, node_ids, deps);
+            collect_layout_node_deps(rhs, node_ids, deps);
+        }
+    }
+}
+
+fn layout_has_cycle(
+    node: &str,
+    adj: &HashMap<String, HashSet<String>>,
+    visited: &mut HashSet<String>,
+    in_stack: &mut HashSet<String>,
+) -> bool {
+    visited.insert(node.to_string());
+    in_stack.insert(node.to_string());
+
+    if let Some(deps) = adj.get(node) {
+        for dep in deps {
+            if in_stack.contains(dep.as_str()) {
+                return true;
+            }
+            if !visited.contains(dep.as_str()) && layout_has_cycle(dep, adj, visited, in_stack) {
+                return true;
+            }
+        }
+    }
+
+    in_stack.remove(node);
+    false
+}
+
+// ── Source validation ──────────────────────────────────────────────────────────
+
 fn validate_source_type(
     layer_id: &str,
     clip_id: &str,
@@ -1234,15 +2061,20 @@ fn validate_source_type(
     Ok(())
 }
 
+// ── Tests ──────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use crate::{
-        compile::{CompiledOperationKind, compile_project, compile_project_with_scale},
+        compile::{
+            CompileError, CompiledOperationKind, compile_project, compile_project_with_scale,
+        },
+        expr::Scalar,
         model::{
             Canvas, Clip, ClipAnimation, ClipContent, ClipGroup, ColorRgba, Easing, Layer,
-            LayerItem, LayoutClip, LayoutNode, LayoutNodeKind, LayoutTextNode, Project,
-            ScalarKeyframe, Source, SourceKind, SourceMediaType, TextClip, Timeline, Transform,
-            VideoClip,
+            LayerItem, LayoutClip, LayoutNode, LayoutNodeKind, LayoutNodeStyle, LayoutTextNode,
+            Project, ScalarKeyframe, Source, SourceKind, SourceMediaType, TextClip, Timeline,
+            Transform, VideoClip,
         },
         time::Rational,
     };
@@ -1406,7 +2238,7 @@ mod tests {
                     animation: ClipAnimation {
                         opacity: vec![ScalarKeyframe {
                             frame: 0,
-                            value: 1.0,
+                            value: Scalar::Literal(1.0),
                             duration_frames: 10,
                             easing: Easing::EaseOut,
                         }],
@@ -1458,13 +2290,13 @@ mod tests {
                         y: vec![
                             ScalarKeyframe {
                                 frame: 2,
-                                value: 10.0,
+                                value: Scalar::Literal(10.0),
                                 duration_frames: 8,
                                 easing: Easing::EaseOut,
                             },
                             ScalarKeyframe {
                                 frame: 6,
-                                value: 20.0,
+                                value: Scalar::Literal(20.0),
                                 duration_frames: 8,
                                 easing: Easing::EaseIn,
                             },
@@ -1509,16 +2341,17 @@ mod tests {
                     duration_frames: 30,
                     opacity: 1.0,
                     transform: Transform {
-                        x: 0.0,
-                        y: 0.0,
+                        x: Scalar::Literal(0.0),
+                        y: Scalar::Literal(0.0),
                         width: None,
-                        height: Some(180.0),
+                        height: Some(Scalar::Literal(180.0)),
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
                     mask: None,
                     content: ClipContent::Layout(LayoutClip {
                         root: LayoutNode {
+                            id: None,
                             style: Default::default(),
                             kind: LayoutNodeKind::Container { children: vec![] },
                         },
@@ -1557,19 +2390,21 @@ mod tests {
                     duration_frames: 30,
                     opacity: 1.0,
                     transform: Transform {
-                        x: 10.0,
-                        y: 20.0,
-                        width: Some(300.0),
-                        height: Some(180.0),
+                        x: Scalar::Literal(10.0),
+                        y: Scalar::Literal(20.0),
+                        width: Some(Scalar::Literal(300.0)),
+                        height: Some(Scalar::Literal(180.0)),
                         rotation_degrees: 0.0,
                     },
                     animation: Default::default(),
                     mask: None,
                     content: ClipContent::Layout(LayoutClip {
                         root: LayoutNode {
+                            id: None,
                             style: Default::default(),
                             kind: LayoutNodeKind::Container {
                                 children: vec![LayoutNode {
+                                    id: None,
                                     style: Default::default(),
                                     kind: LayoutNodeKind::Text(LayoutTextNode {
                                         text: "hello".to_string(),
@@ -1654,5 +2489,567 @@ mod tests {
 
         let err = compile_project(&project).expect_err("must fail");
         assert!(err.to_string().contains("item tree exceeds max depth"));
+    }
+    #[test]
+    fn canvas_width_expr_resolves_in_transform() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_a".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: Scalar::Expr("canvas.width".to_string()),
+                        y: Scalar::Literal(0.0),
+                        width: None,
+                        height: None,
+                        rotation_degrees: 0.0,
+                    },
+                    animation: Default::default(),
+                    mask: None,
+                    content: ClipContent::Text(TextClip {
+                        text: "hello".to_string(),
+                        font_size: 20.0,
+                        color: ColorRgba(255, 255, 255, 255),
+                        align: Default::default(),
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let compiled = compile_project(&project).expect("compile");
+        let frame_ops = compiled.operation_indices_for_frame(0).expect("frame ops");
+        let op = compiled.operation(frame_ops[0]).expect("op");
+        assert_eq!(op.resolved_transform(0).x, 640.0);
+    }
+
+    #[test]
+    fn cross_clip_expr_resolves_in_transform() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![
+                    LayerItem::Clip(Clip {
+                        id: "clip_a".to_string(),
+                        start_frame: 0,
+                        duration_frames: 30,
+                        opacity: 1.0,
+                        transform: Transform {
+                            x: Scalar::Literal(100.0),
+                            y: Scalar::Literal(0.0),
+                            width: Some(Scalar::Literal(200.0)),
+                            height: None,
+                            rotation_degrees: 0.0,
+                        },
+                        animation: Default::default(),
+                        mask: None,
+                        content: ClipContent::Text(TextClip {
+                            text: "a".to_string(),
+                            font_size: 20.0,
+                            color: ColorRgba(255, 255, 255, 255),
+                            align: Default::default(),
+                        }),
+                    }),
+                    LayerItem::Clip(Clip {
+                        id: "clip_b".to_string(),
+                        start_frame: 0,
+                        duration_frames: 30,
+                        opacity: 1.0,
+                        transform: Transform {
+                            x: Scalar::Expr("clip_a.x + clip_a.width".to_string()),
+                            y: Scalar::Literal(0.0),
+                            width: None,
+                            height: None,
+                            rotation_degrees: 0.0,
+                        },
+                        animation: Default::default(),
+                        mask: None,
+                        content: ClipContent::Text(TextClip {
+                            text: "b".to_string(),
+                            font_size: 20.0,
+                            color: ColorRgba(255, 255, 255, 255),
+                            align: Default::default(),
+                        }),
+                    }),
+                ],
+            }],
+            audio: Default::default(),
+        };
+
+        let compiled = compile_project(&project).expect("compile");
+        let frame_ops = compiled.operation_indices_for_frame(0).expect("frame ops");
+        assert_eq!(frame_ops.len(), 2);
+        let op_b = compiled.operation(frame_ops[1]).expect("op_b");
+        assert_eq!(op_b.resolved_transform(0).x, 300.0);
+    }
+
+    #[test]
+    fn transform_expr_scales_once_with_compile_scale() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_a".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: Scalar::Expr("canvas.width / 2".to_string()),
+                        y: Scalar::Literal(0.0),
+                        width: None,
+                        height: None,
+                        rotation_degrees: 0.0,
+                    },
+                    animation: Default::default(),
+                    mask: None,
+                    content: ClipContent::Text(TextClip {
+                        text: "hello".to_string(),
+                        font_size: 20.0,
+                        color: ColorRgba(255, 255, 255, 255),
+                        align: Default::default(),
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let compiled = compile_project_with_scale(&project, 2.0).expect("compile");
+        let frame_ops = compiled.operation_indices_for_frame(0).expect("frame ops");
+        let op = compiled.operation(frame_ops[0]).expect("op");
+        assert_eq!(op.resolved_transform(0).x, 640.0);
+    }
+
+    #[test]
+    fn keyframe_expr_resolves_and_scales_once() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_a".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: Scalar::Literal(0.0),
+                        y: Scalar::Literal(0.0),
+                        width: Some(Scalar::Literal(100.0)),
+                        height: None,
+                        rotation_degrees: 0.0,
+                    },
+                    animation: ClipAnimation {
+                        width: vec![ScalarKeyframe {
+                            frame: 0,
+                            value: Scalar::Expr("(canvas.width / 4) + 10".to_string()),
+                            duration_frames: 0,
+                            easing: Easing::Linear,
+                        }],
+                        ..Default::default()
+                    },
+                    mask: None,
+                    content: ClipContent::Text(TextClip {
+                        text: "hello".to_string(),
+                        font_size: 20.0,
+                        color: ColorRgba(255, 255, 255, 255),
+                        align: Default::default(),
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let compiled = compile_project_with_scale(&project, 2.0).expect("compile");
+        let frame_ops = compiled.operation_indices_for_frame(0).expect("frame ops");
+        let op = compiled.operation(frame_ops[0]).expect("op");
+        assert_eq!(op.resolved_transform(0).width, Some(340.0));
+    }
+
+    #[test]
+    fn keyframe_expr_unknown_ref_errors() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_a".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: Scalar::Literal(0.0),
+                        y: Scalar::Literal(0.0),
+                        width: Some(Scalar::Literal(100.0)),
+                        height: None,
+                        rotation_degrees: 0.0,
+                    },
+                    animation: ClipAnimation {
+                        width: vec![ScalarKeyframe {
+                            frame: 0,
+                            value: Scalar::Expr("ghost.width + 10".to_string()),
+                            duration_frames: 0,
+                            easing: Easing::Linear,
+                        }],
+                        ..Default::default()
+                    },
+                    mask: None,
+                    content: ClipContent::Text(TextClip {
+                        text: "hello".to_string(),
+                        font_size: 20.0,
+                        color: ColorRgba(255, 255, 255, 255),
+                        align: Default::default(),
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let err = compile_project(&project).expect_err("must fail");
+        assert!(matches!(err, CompileError::ExprError { .. }));
+    }
+
+    #[test]
+    fn unknown_clip_ref_in_transform_errors() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_a".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: Scalar::Expr("nonexistent.width".to_string()),
+                        y: Scalar::Literal(0.0),
+                        width: None,
+                        height: None,
+                        rotation_degrees: 0.0,
+                    },
+                    animation: Default::default(),
+                    mask: None,
+                    content: ClipContent::Text(TextClip {
+                        text: "hello".to_string(),
+                        font_size: 20.0,
+                        color: ColorRgba(255, 255, 255, 255),
+                        align: Default::default(),
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let err = compile_project(&project).expect_err("must fail");
+        assert!(matches!(err, CompileError::ExprError { .. }));
+    }
+
+    #[test]
+    fn layout_node_unknown_ref_errors() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_layout".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: Scalar::Literal(0.0),
+                        y: Scalar::Literal(0.0),
+                        width: Some(Scalar::Literal(300.0)),
+                        height: Some(Scalar::Literal(200.0)),
+                        rotation_degrees: 0.0,
+                    },
+                    animation: Default::default(),
+                    mask: None,
+                    content: ClipContent::Layout(LayoutClip {
+                        root: LayoutNode {
+                            id: None,
+                            style: Default::default(),
+                            kind: LayoutNodeKind::Container {
+                                children: vec![LayoutNode {
+                                    id: None,
+                                    style: LayoutNodeStyle {
+                                        width: Some(Scalar::Expr("node_ghost.width".to_string())),
+                                        ..Default::default()
+                                    },
+                                    kind: LayoutNodeKind::Container { children: vec![] },
+                                }],
+                            },
+                        },
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let err = compile_project(&project).expect_err("must fail");
+        assert!(matches!(err, CompileError::ExprError { .. }));
+    }
+
+    #[test]
+    fn layout_node_cycle_errors() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_layout".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: Scalar::Literal(0.0),
+                        y: Scalar::Literal(0.0),
+                        width: Some(Scalar::Literal(300.0)),
+                        height: Some(Scalar::Literal(200.0)),
+                        rotation_degrees: 0.0,
+                    },
+                    animation: Default::default(),
+                    mask: None,
+                    content: ClipContent::Layout(LayoutClip {
+                        root: LayoutNode {
+                            id: None,
+                            style: Default::default(),
+                            kind: LayoutNodeKind::Container {
+                                children: vec![
+                                    LayoutNode {
+                                        id: Some("node_a".to_string()),
+                                        style: LayoutNodeStyle {
+                                            width: Some(Scalar::Expr("node_b.width".to_string())),
+                                            ..Default::default()
+                                        },
+                                        kind: LayoutNodeKind::Container { children: vec![] },
+                                    },
+                                    LayoutNode {
+                                        id: Some("node_b".to_string()),
+                                        style: LayoutNodeStyle {
+                                            width: Some(Scalar::Expr("node_a.width".to_string())),
+                                            ..Default::default()
+                                        },
+                                        kind: LayoutNodeKind::Container { children: vec![] },
+                                    },
+                                ],
+                            },
+                        },
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let err = compile_project(&project).expect_err("must fail");
+        assert!(matches!(err, CompileError::ExprError { .. }));
+    }
+
+    #[test]
+    fn layout_node_expr_passes_compilation() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_layout".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: Scalar::Literal(0.0),
+                        y: Scalar::Literal(0.0),
+                        width: Some(Scalar::Literal(300.0)),
+                        height: Some(Scalar::Literal(200.0)),
+                        rotation_degrees: 0.0,
+                    },
+                    animation: Default::default(),
+                    mask: None,
+                    content: ClipContent::Layout(LayoutClip {
+                        root: LayoutNode {
+                            id: None,
+                            style: Default::default(),
+                            kind: LayoutNodeKind::Container {
+                                children: vec![
+                                    LayoutNode {
+                                        id: Some("node_a".to_string()),
+                                        style: Default::default(),
+                                        kind: LayoutNodeKind::Container { children: vec![] },
+                                    },
+                                    LayoutNode {
+                                        id: None,
+                                        style: LayoutNodeStyle {
+                                            height: Some(Scalar::Expr("node_a.width".to_string())),
+                                            ..Default::default()
+                                        },
+                                        kind: LayoutNodeKind::Container { children: vec![] },
+                                    },
+                                ],
+                            },
+                        },
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        assert!(compile_project(&project).is_ok());
+    }
+
+    #[test]
+    fn layout_node_expr_with_mixed_known_and_unknown_refs_errors() {
+        let project = Project {
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: ColorRgba(0, 0, 0, 255),
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1).expect("fps"),
+                total_frames: 30,
+            },
+            sources: vec![],
+            layers: vec![Layer {
+                id: "layer_a".to_string(),
+                z_index: 0,
+                items: vec![LayerItem::Clip(Clip {
+                    id: "clip_layout".to_string(),
+                    start_frame: 0,
+                    duration_frames: 30,
+                    opacity: 1.0,
+                    transform: Transform {
+                        x: Scalar::Literal(0.0),
+                        y: Scalar::Literal(0.0),
+                        width: Some(Scalar::Literal(300.0)),
+                        height: Some(Scalar::Literal(200.0)),
+                        rotation_degrees: 0.0,
+                    },
+                    animation: Default::default(),
+                    mask: None,
+                    content: ClipContent::Layout(LayoutClip {
+                        root: LayoutNode {
+                            id: None,
+                            style: Default::default(),
+                            kind: LayoutNodeKind::Container {
+                                children: vec![
+                                    LayoutNode {
+                                        id: Some("node_a".to_string()),
+                                        style: Default::default(),
+                                        kind: LayoutNodeKind::Container { children: vec![] },
+                                    },
+                                    LayoutNode {
+                                        id: None,
+                                        style: LayoutNodeStyle {
+                                            width: Some(Scalar::Expr(
+                                                "node_a.width + ghost.width".to_string(),
+                                            )),
+                                            ..Default::default()
+                                        },
+                                        kind: LayoutNodeKind::Container { children: vec![] },
+                                    },
+                                ],
+                            },
+                        },
+                    }),
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let err = compile_project(&project).expect_err("must fail");
+        assert!(matches!(err, CompileError::ExprError { .. }));
     }
 }
