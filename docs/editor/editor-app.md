@@ -2,14 +2,14 @@
 
 ## Summary
 Create a local-only editor app that hosts the UI from `@lumiscia/editor`, renders previews using
-`@lumiscia/canvas-renderer`, and submits final renders to the Rust renderer API (`lumen-server`).
+`@lumiscia/lumen/canvas`, and submits final renders to the Rust renderer API (`lumen-server`).
 This app is **not** deployed to Cloudflare and should run locally only.
 
 **Proposed app:** `apps/editor` (`@lumiscia/editor-app`)
 
 ## Goals
 - Run a local dev editor UI for all styles.
-- Preview frames with lumen-wasm via `@lumiscia/canvas-renderer`.
+- Preview frames with lumen-wasm via `@lumiscia/lumen/canvas`.
 - Submit render jobs to the Rust renderer API.
 - Keep configuration explicit via `.env`.
 
@@ -32,8 +32,8 @@ Add an `apps/editor/.env.example` with these keys.
 
 ## Dependencies
 - `@lumiscia/editor` for editor UI + preset conversion.
-- `@lumiscia/templates` for template compilation (transitively used by the editor package).
-- `@lumiscia/canvas-renderer` for preview rendering.
+- `@lumiscia/lumen` + `@lumiscia/lumen-jsx` for shared project types and JSX runtime utilities.
+- `@lumiscia/templates` for preset compilation.
 - `@lumiscia/shared` for schema types.
 
 ## App architecture

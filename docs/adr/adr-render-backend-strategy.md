@@ -33,7 +33,7 @@ Skia is the only production path.
 
 ## Web Preview Backend
 
-A WASM-backed renderer (`@lumiscia/canvas-renderer` + `lumen-wasm`) provides feature-equivalent
+A WASM-backed renderer (`@lumiscia/lumen` + `lumen-wasm`) provides feature-equivalent
 browser preview rendering. It runs the Rust Skia backend compiled for `wasm32-unknown-emscripten`,
 and uses Mediabunny (WebCodecs) for client-side media decoding, with known approximations:
 
@@ -96,7 +96,7 @@ This ADR is complete when:
 - Point 5 removed: Graphite is no longer deferred.
 - Platform targets updated: Graphite on Vulkan (Linux) / Metal (macOS).
 - New section: "Web Preview Backend" documenting CanvasKit + MediaProvider role.
-- `lumen-wasm` removed from workspace; replaced by `@lumiscia/canvas-renderer`.
+- `lumen-wasm` removed from workspace; replaced by `@lumiscia/lumen`.
 
 ### 2026-02-14: Skia-first default, Vello deprecation
 
@@ -113,4 +113,4 @@ This ADR is complete when:
 ### 2026-02-19: WASM preview renderer reintroduced
 
 - Web preview now runs the Rust Skia backend via `lumen-wasm` (emscripten).
-- `@lumiscia/canvas-renderer` wraps the WASM module and Mediabunny (WebCodecs) media decode.
+- `@lumiscia/lumen/canvas` wraps the WASM module and Mediabunny (WebCodecs) media decode.

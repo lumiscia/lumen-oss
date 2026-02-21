@@ -19,9 +19,9 @@ or call the renderer API directly.
 - No server-side rendering or production hosting concerns.
 
 ## Dependencies
-- `@lumiscia/templates` for template-to-Project compilation.
-- `@lumiscia/shared` for Zod schemas and shared types.
-- `@lumiscia/canvas-renderer` types only (preview wiring lives in the app).
+- `@lumiscia/templates` for preset-to-Project compilation.
+- `@lumiscia/lumen` for shared `Project` types.
+- `@lumiscia/lumen/canvas` types only (preview wiring lives in the app).
 
 ## Public API (proposed)
 
