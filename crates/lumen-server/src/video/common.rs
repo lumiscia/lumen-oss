@@ -17,7 +17,7 @@ use tempfile::NamedTempFile;
 
 use anyhow::{Context, anyhow};
 use lumen::{
-    backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
+    backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError, RenderBackend},
     compile::{CompiledOperationKind, CompiledTimeline},
     model::{FitMode, LayoutNode, LayoutNodeKind, LoopMode, Source, SourceKind, SourcePipeline},
     time::Rational,
@@ -222,21 +222,26 @@ pub struct PreparedAssets {
 }
 
 impl FrameProvider for PreparedAssets {
-    fn image(&mut self, source_id: &str) -> Result<Option<FrameImage>, ProviderError> {
-        Ok(self.images.get(source_id).cloned())
+    fn image(&mut self, source_id: &str) -> Result<ProvidedFrame, ProviderError> {
+        Ok(self
+            .images
+            .get(source_id)
+            .cloned()
+            .map(ProvidedFrame::Ready)
+            .unwrap_or(ProvidedFrame::Missing))
     }
 
     fn video_frame(
         &mut self,
         source_id: &str,
         source_frame: u64,
-    ) -> Result<Option<FrameImage>, ProviderError> {
+    ) -> Result<ProvidedFrame, ProviderError> {
         let Some(frames) = self.videos.get(source_id) else {
             return Err(ProviderError::MissingSource(source_id.to_string()));
         };
 
         if let Some(frame) = frames.get(&source_frame) {
-            return Ok(Some(frame.clone()));
+            return Ok(ProvidedFrame::Ready(frame.clone()));
         }
 
         let prev = frames.range(..=source_frame).next_back();
@@ -244,7 +249,9 @@ impl FrameProvider for PreparedAssets {
 
         Ok(prev
             .map(|(_, frame)| frame.clone())
-            .or_else(|| next.map(|(_, frame)| frame.clone())))
+            .or_else(|| next.map(|(_, frame)| frame.clone()))
+            .map(ProvidedFrame::Ready)
+            .unwrap_or(ProvidedFrame::Missing))
     }
 }
 

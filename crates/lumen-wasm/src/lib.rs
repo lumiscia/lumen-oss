@@ -5,7 +5,7 @@ use std::{
 };
 
 use lumen::{
-    backend::{FrameImage, FrameProvider, ProviderError, Renderer},
+    backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError, Renderer},
     compile::{
         CompiledLayoutNode, CompiledLayoutNodeKind, CompiledOperationKind, CompiledTimeline,
         compile_project_with_scale,
@@ -28,19 +28,26 @@ impl WasmMediaStore {
 }
 
 impl FrameProvider for WasmMediaStore {
-    fn image(&mut self, source_id: &str) -> Result<Option<FrameImage>, ProviderError> {
-        Ok(self.images.get(source_id).cloned())
+    fn image(&mut self, source_id: &str) -> Result<ProvidedFrame, ProviderError> {
+        Ok(self
+            .images
+            .get(source_id)
+            .cloned()
+            .map(ProvidedFrame::Ready)
+            .unwrap_or(ProvidedFrame::Missing))
     }
 
     fn video_frame(
         &mut self,
         source_id: &str,
         source_frame: u64,
-    ) -> Result<Option<FrameImage>, ProviderError> {
+    ) -> Result<ProvidedFrame, ProviderError> {
         Ok(self
             .videos
             .get(source_id)
-            .and_then(|frames| frames.get(&source_frame).cloned()))
+            .and_then(|frames| frames.get(&source_frame).cloned())
+            .map(ProvidedFrame::Ready)
+            .unwrap_or(ProvidedFrame::Missing))
     }
 }
 
@@ -101,13 +108,12 @@ fn collect_frame_requirements(
             }
             CompiledOperationKind::Video(video) => {
                 if let Some(source) = timeline.source(video.source_index) {
-                    let source_frame = operation
-                        .source_frame_at(frame, u64::MAX / 4)
-                        .unwrap_or(operation.local_frame(frame));
-                    videos
-                        .entry(source.id.clone())
-                        .or_default()
-                        .insert(source_frame);
+                    if let Some(source_frame) = operation.resolved_video_source_frame(frame, None) {
+                        videos
+                            .entry(source.id.clone())
+                            .or_default()
+                            .insert(source_frame);
+                    }
                 }
             }
             _ => {}

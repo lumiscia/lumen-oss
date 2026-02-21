@@ -56,13 +56,19 @@ impl FrameImage {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum ProvidedFrame {
+    Ready(FrameImage),
+    Missing,
+    EndOfStream,
+}
 pub trait FrameProvider: Send {
-    fn image(&mut self, source_id: &str) -> Result<Option<FrameImage>, ProviderError>;
+    fn image(&mut self, source_id: &str) -> Result<ProvidedFrame, ProviderError>;
     fn video_frame(
         &mut self,
         source_id: &str,
         source_frame: u64,
-    ) -> Result<Option<FrameImage>, ProviderError>;
+    ) -> Result<ProvidedFrame, ProviderError>;
 
     fn video_frame_count(&mut self, _source_id: &str) -> Result<Option<u64>, ProviderError> {
         Ok(None)

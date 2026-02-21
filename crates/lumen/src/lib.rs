@@ -5,7 +5,7 @@ pub mod model;
 pub mod orchestrator;
 pub mod time;
 
-pub use backend::{FrameImage, FrameProvider, ProviderError, RenderError, Renderer};
+pub use backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError, RenderError, Renderer};
 pub use compile::{
     CompileError, CompiledOperation, CompiledOperationKind, CompiledTimeline, RuntimeEvalError,
     RuntimeFrameContext, compile_project, compile_project_with_scale,

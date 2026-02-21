@@ -13,17 +13,17 @@ use anyhow::{Context, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lru::LruCache;
 use lumen::{
-    backend::{FrameImage, FrameProvider, ProviderError},
+    backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError},
     compile::{CompiledOperationKind, CompiledTimeline},
     model::{Source, SourceKind, SourceMediaType},
     time::Rational,
 };
 
 use super::common::{
-    DEFAULT_ENCODE_QUEUE, DEFAULT_MAX_DECODED_FRAMES, DEFAULT_STREAM_CACHE_FRAMES, WebAssetCache,
-    FrameRequirements, PreparedAssets, choose_video_encoder, collect_requirements, create_renderer,
-    decode_image_source, encode_rgba_stream, frame_size, media_root, resolve_source_file_path,
-    try_render_ffmpeg_fast_path,
+    DEFAULT_ENCODE_QUEUE, DEFAULT_MAX_DECODED_FRAMES, DEFAULT_STREAM_CACHE_FRAMES,
+    FrameRequirements, PreparedAssets, WebAssetCache, choose_video_encoder, collect_requirements,
+    create_renderer, decode_image_source, encode_rgba_stream, frame_size, media_root,
+    resolve_source_file_path, try_render_ffmpeg_fast_path,
 };
 
 pub use super::common::RenderBackendOptions;
@@ -479,22 +479,31 @@ struct StreamingAssets {
 }
 
 impl FrameProvider for StreamingAssets {
-    fn image(&mut self, source_id: &str) -> Result<Option<FrameImage>, ProviderError> {
-        Ok(self.images.get(source_id).cloned())
+    fn image(&mut self, source_id: &str) -> Result<ProvidedFrame, ProviderError> {
+        Ok(self
+            .images
+            .get(source_id)
+            .cloned()
+            .map(ProvidedFrame::Ready)
+            .unwrap_or(ProvidedFrame::Missing))
     }
 
     fn video_frame(
         &mut self,
         source_id: &str,
         source_frame: u64,
-    ) -> Result<Option<FrameImage>, ProviderError> {
+    ) -> Result<ProvidedFrame, ProviderError> {
         let decoder = self
             .video_decoders
             .get_mut(source_id)
             .ok_or_else(|| ProviderError::MissingSource(source_id.to_string()))?;
         decoder
             .get_frame(source_frame)
-            .map_err(|err| ProviderError::Decode(err.to_string()))
+            .map(|frame| match frame {
+                Some(image) => ProvidedFrame::Ready(image),
+                None => ProvidedFrame::EndOfStream,
+            })
+            .map_err(|err| ProviderError::Failed(err.to_string()))
     }
 }
 

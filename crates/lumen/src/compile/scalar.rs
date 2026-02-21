@@ -38,11 +38,7 @@ pub fn compile_scalar(
             Ok(CompiledScalarValue::Literal(scaled))
         }
         StyleValue::Expr(expr) => {
-            let source = if spatial && (scale - 1.0).abs() > f32::EPSILON {
-                format!("({}) * {}", expr, scale)
-            } else {
-                expr.clone()
-            };
+            let source = expr.clone();
             Ok(CompiledScalarValue::Expr(parse_expr(&source)?))
         }
     }
@@ -95,12 +91,12 @@ mod tests {
     }
 
     #[test]
-    fn compiles_scaled_expression_values() {
+    fn does_not_scale_spatial_expression_source() {
         let value = compile_scalar(&StyleValue::Expr("canvas.width".to_string()), 2.0, true)
             .expect("compile expression");
         match &value {
             CompiledScalarValue::Expr(parsed) => {
-                assert!(parsed.source().contains("* 2"));
+                assert_eq!(parsed.source(), "canvas.width");
             }
             _ => panic!("expected expression"),
         }

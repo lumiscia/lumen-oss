@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{AlphaType, Canvas, Color, ColorType, ImageInfo, Rect, Surface, surfaces};
 
-use crate::backend::{FrameImage, FrameProvider, RenderError, Renderer, pixel_len};
+use crate::backend::{FrameImage, FrameProvider, ProvidedFrame, RenderError, Renderer, pixel_len};
 use crate::compile::{
     CompiledBaseStyle, CompiledImage, CompiledLayerItem, CompiledLayoutNode,
     CompiledLayoutNodeKind, CompiledOperation, CompiledOperationKind, CompiledText,
@@ -530,6 +530,7 @@ fn load_frame_image(
             };
             provider
                 .image(source.id.as_str())
+                .map(map_provided_frame)
                 .map_err(RenderError::from)
         }
         CompiledOperationKind::Video(video) => {
@@ -538,20 +539,24 @@ fn load_frame_image(
             };
             let source_frame_count =
                 video_frame_count(source.id.as_str(), provider, video_frame_counts)?;
-            let source_frame = match source_frame_count {
-                Some(source_length) if source_length > 0 => operation
-                    .source_frame_at(frame, source_length)
-                    .unwrap_or(operation.local_frame(frame)),
-                _ => operation.local_frame(frame),
-            };
+            let source_frame = operation
+                .resolved_video_source_frame(frame, source_frame_count)
+                .unwrap_or(operation.local_frame(frame));
             provider
                 .video_frame(source.id.as_str(), source_frame)
+                .map(map_provided_frame)
                 .map_err(RenderError::from)
         }
         _ => Ok(None),
     }
 }
 
+fn map_provided_frame(frame: ProvidedFrame) -> Option<FrameImage> {
+    match frame {
+        ProvidedFrame::Ready(image) => Some(image),
+        ProvidedFrame::Missing | ProvidedFrame::EndOfStream => None,
+    }
+}
 fn video_frame_count(
     source_id: &str,
     provider: &mut dyn FrameProvider,

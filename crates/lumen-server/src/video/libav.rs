@@ -15,15 +15,16 @@ use ffmpeg_next::{self as ffmpeg, format, media, software::scaling};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lru::LruCache;
 use lumen::{
-    backend::{FrameImage, FrameProvider, ProviderError, RenderBackend},
+    backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError, RenderBackend},
     compile::{CompiledOperationKind, CompiledTimeline},
     model::{Source, SourceKind, SourceMediaType},
     time::Rational,
 };
 
 use super::common::{
-    DEFAULT_ENCODE_QUEUE, WebAssetCache, choose_video_encoder, create_renderer, decode_image_source,
-    encode_rgba_stream, media_root, resolve_source_file_path, try_render_ffmpeg_fast_path,
+    DEFAULT_ENCODE_QUEUE, WebAssetCache, choose_video_encoder, create_renderer,
+    decode_image_source, encode_rgba_stream, media_root, resolve_source_file_path,
+    try_render_ffmpeg_fast_path,
 };
 
 pub use super::common::RenderBackendOptions;
@@ -518,11 +519,8 @@ impl LibavStreamDecoder {
     /// Reopen the source from scratch and decode forward to `target_frame`.
     /// Used when the demuxer doesn't support seeking (e.g. lavfi generators).
     fn reopen_and_skip(&mut self, target_frame: u64) -> anyhow::Result<()> {
-        let input_ctx = open_source_input(
-            &self.source,
-            &self.media_root,
-            self.asset_cache.as_deref(),
-        )?;
+        let input_ctx =
+            open_source_input(&self.source, &self.media_root, self.asset_cache.as_deref())?;
         let (video_stream_index, time_base, decoder) = {
             let stream = input_ctx
                 .streams()
@@ -773,22 +771,31 @@ fn run_decode_worker(
 }
 
 impl FrameProvider for StreamingAssets {
-    fn image(&mut self, source_id: &str) -> Result<Option<FrameImage>, ProviderError> {
-        Ok(self.images.get(source_id).cloned())
+    fn image(&mut self, source_id: &str) -> Result<ProvidedFrame, ProviderError> {
+        Ok(self
+            .images
+            .get(source_id)
+            .cloned()
+            .map(ProvidedFrame::Ready)
+            .unwrap_or(ProvidedFrame::Missing))
     }
 
     fn video_frame(
         &mut self,
         source_id: &str,
         source_frame: u64,
-    ) -> Result<Option<FrameImage>, ProviderError> {
+    ) -> Result<ProvidedFrame, ProviderError> {
         let worker = self
             .video_workers
             .get_mut(source_id)
             .ok_or_else(|| ProviderError::MissingSource(source_id.to_string()))?;
         worker
             .get_frame(source_frame)
-            .map_err(|err| ProviderError::Decode(err.to_string()))
+            .map(|frame| match frame {
+                Some(image) => ProvidedFrame::Ready(image),
+                None => ProvidedFrame::EndOfStream,
+            })
+            .map_err(|err| ProviderError::Failed(err.to_string()))
     }
 }
 

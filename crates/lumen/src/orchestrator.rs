@@ -35,7 +35,7 @@ impl RenderOrchestrator {
     ) -> Result<(), RenderError>
     where
         P: FrameProvider + 'static,
-        F: FnMut(u64, Vec<u8>) + Send,
+        F: FnMut(u64, Vec<u8>) -> Result<(), RenderError> + Send,
     {
         self.render_range_with(
             timeline,
@@ -59,7 +59,7 @@ impl RenderOrchestrator {
     ) -> Result<(), RenderError>
     where
         P: FrameProvider + 'static,
-        F: FnMut(u64, Vec<u8>) + Send,
+        F: FnMut(u64, Vec<u8>) -> Result<(), RenderError> + Send,
     {
         if frame_range.start >= frame_range.end {
             return Ok(());
@@ -146,9 +146,18 @@ impl RenderOrchestrator {
                 Ok(WorkerMsg::Frame { frame, pixels }) => {
                     pending.insert(frame, pixels);
                     while let Some(pixels) = pending.remove(&expected) {
-                        on_frame(expected, pixels);
-                        expected += 1;
+                        let emit_result = on_frame(expected, pixels);
                         in_flight_budget.release();
+                        if let Err(err) = emit_result {
+                            error = Some(err);
+                            stop.store(true, Ordering::Release);
+                            in_flight_budget.notify_all();
+                            break;
+                        }
+                        expected += 1;
+                    }
+                    if error.is_some() {
+                        break;
                     }
                 }
                 Ok(WorkerMsg::Err(err)) => {

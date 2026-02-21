@@ -310,6 +310,23 @@ impl CompiledOperation {
         }
     }
 
+    pub fn resolved_video_source_frame(
+        &self,
+        frame: u64,
+        source_length: Option<u64>,
+    ) -> Option<u64> {
+        if !self.contains_frame(frame) {
+            return None;
+        }
+
+        match &self.kind {
+            CompiledOperationKind::Video(_) => source_length
+                .filter(|value| *value > 0)
+                .and_then(|length| self.source_frame_at(frame, length))
+                .or_else(|| Some(self.local_frame(frame))),
+            _ => None,
+        }
+    }
     pub fn resolved_opacity(&self, state: &RuntimeFrameContext) -> f32 {
         self.style.base.opacity.resolve(state).clamp(0.0, 1.0)
     }
