@@ -45,8 +45,6 @@ pub enum CompileError {
     DuplicateItemId(String),
     #[error("mask item id `{mask_id}` collides with layer item id")]
     MaskIdCollision { mask_id: String },
-    #[error("source `{source_id}` is url-based and must be materialized to file before compile")]
-    UrlSourceUnsupported { source_id: String },
     #[error("missing source `{source_id}`")]
     MissingSource { source_id: String },
     #[error("source `{source_id}` has media `{found:?}` but expected `{expected:?}`")]
@@ -318,7 +316,8 @@ fn resolve_source<'a>(
 mod tests {
     use crate::compile::{compile_project, compile_project_with_scale};
     use crate::model::{
-        Canvas, ClipContent, ClipItem, Layer, LayerItem, Project, StyleValue, Timeline,
+        Canvas, ClipContent, ClipItem, Layer, LayerItem, Project, Source, SourceKind, SourceMedia,
+        StyleValue, Timeline,
     };
 
     #[test]
@@ -419,6 +418,95 @@ mod tests {
             .expect("frame context should resolve");
         assert_eq!(frame_state.get("clip_a.width"), Some(50.0));
     }
+    #[test]
+    fn compiles_url_sources() {
+        let source_url = "https://cdn.example.com/media/background.png";
+        let project = Project {
+            version: "1".to_string(),
+            canvas: Canvas {
+                width: 320,
+                height: 180,
+                background: [0, 0, 0, 255],
+            },
+            timeline: Timeline {
+                fps: crate::Rational::new(30, 1),
+                duration_frames: 2,
+            },
+            sources: vec![Source {
+                id: "image_0".to_string(),
+                media: SourceMedia::Image,
+                kind: SourceKind::Url {
+                    url: source_url.to_string(),
+                },
+            }],
+            layers: vec![Layer {
+                id: "layer_0".to_string(),
+                items: vec![LayerItem::Clip(ClipItem {
+                    id: "clip_0".to_string(),
+                    start_frame: 0,
+                    duration_frames: 2,
+                    content: ClipContent::Image {
+                        source: "image_0".to_string(),
+                    },
+                    style: Default::default(),
+                    mask: None,
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let timeline = compile_project(&project).expect("url source compile should succeed");
+        let source = timeline.source(0).expect("compiled source");
+        assert_eq!(source.id, "image_0");
+        assert_eq!(source.path, source_url);
+    }
+
+    #[test]
+    fn preserves_source_order_for_mixed_file_and_url_sources() {
+        let project = Project {
+            version: "1".to_string(),
+            canvas: Canvas {
+                width: 320,
+                height: 180,
+                background: [0, 0, 0, 255],
+            },
+            timeline: Timeline {
+                fps: crate::Rational::new(30, 1),
+                duration_frames: 2,
+            },
+            sources: vec![
+                Source {
+                    id: "file_0".to_string(),
+                    media: SourceMedia::Image,
+                    kind: SourceKind::File {
+                        path: "fixtures/image.png".to_string(),
+                    },
+                },
+                Source {
+                    id: "url_0".to_string(),
+                    media: SourceMedia::Video,
+                    kind: SourceKind::Url {
+                        url: "https://cdn.example.com/media/video.mp4".to_string(),
+                    },
+                },
+            ],
+            layers: vec![Layer {
+                id: "layer_0".to_string(),
+                items: Vec::new(),
+            }],
+            audio: Default::default(),
+        };
+
+        let timeline = compile_project(&project).expect("mixed source compile should succeed");
+        let first = timeline.source(0).expect("first source");
+        let second = timeline.source(1).expect("second source");
+
+        assert_eq!(first.id, "file_0");
+        assert_eq!(first.path, "fixtures/image.png");
+        assert_eq!(second.id, "url_0");
+        assert_eq!(second.path, "https://cdn.example.com/media/video.mp4");
+    }
+
     #[test]
     fn rejects_unsupported_project_version() {
         let project = crate::model::Project {

@@ -604,6 +604,51 @@ mod tests {
     }
 
     #[test]
+    fn url_source_projects_compile_and_surface_image_requirements() {
+        let project = Project {
+            version: "1".to_string(),
+            canvas: Canvas {
+                width: 640,
+                height: 360,
+                background: [0, 0, 0, 255],
+            },
+            timeline: Timeline {
+                fps: Rational::new(30, 1),
+                duration_frames: 2,
+            },
+            sources: vec![Source {
+                id: "image_0".to_string(),
+                media: SourceMedia::Image,
+                kind: SourceKind::Url {
+                    url: "https://cdn.example.com/preview/background.png".to_string(),
+                },
+            }],
+            layers: vec![Layer {
+                id: "layer_0".to_string(),
+                items: vec![LayerItem::Clip(ClipItem {
+                    id: "clip_0".to_string(),
+                    start_frame: 0,
+                    duration_frames: 2,
+                    content: ClipContent::Image {
+                        source: "image_0".to_string(),
+                    },
+                    style: ClipStyle::default(),
+                    mask: None,
+                })],
+            }],
+            audio: Default::default(),
+        };
+
+        let timeline =
+            compile_project_with_scale(&project, 1.0).expect("url source project should compile");
+        let requirements =
+            collect_frame_requirements(timeline.as_ref(), 0).expect("requirements should resolve");
+
+        assert_eq!(requirements.images, vec!["image_0".to_string()]);
+        assert!(requirements.videos.is_empty());
+    }
+
+    #[test]
     fn requirements_match_runtime_source_frame_resolution() {
         let timeline = sample_timeline();
 

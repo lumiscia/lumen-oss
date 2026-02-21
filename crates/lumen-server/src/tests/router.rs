@@ -65,6 +65,34 @@ async fn authorized_post_creates_queued_job() {
 }
 
 #[tokio::test]
+async fn authorized_post_accepts_url_sources() {
+    let app = endpoint::build_router(AppState::with_defaults("secret".to_string()));
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/renders")
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(url_source_project_json().to_string()))
+        .expect("request");
+
+    let response = app.oneshot(request).await.expect("response");
+    let status = response.status();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "unexpected response body: {}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+#[tokio::test]
 async fn lifecycle_completes_and_returns_artifact_and_frame() {
     let state = AppState::with_defaults("secret".to_string());
     worker::spawn_render_worker(state.clone());
@@ -294,6 +322,43 @@ async fn render_events_endpoint_returns_sse_stream() {
         content_type.starts_with("text/event-stream"),
         "unexpected content type: {content_type}"
     );
+}
+
+fn url_source_project_json() -> serde_json::Value {
+    json!({
+        "version": "1",
+        "canvas": {
+            "width": 320,
+            "height": 180,
+            "background": [0, 0, 0, 255]
+        },
+        "timeline": {
+            "fps": { "num": 30, "den": 1 },
+            "duration_frames": 2
+        },
+        "sources": [{
+            "id": "image_0",
+            "media": "image",
+            "kind": {
+                "type": "url",
+                "url": "https://cdn.example.com/media/background.png"
+            }
+        }],
+        "layers": [{
+            "id": "layer_image",
+            "items": [{
+                "type": "clip",
+                "id": "clip_image_1",
+                "start_frame": 0,
+                "duration_frames": 2,
+                "content": {
+                    "type": "image",
+                    "source": "image_0"
+                }
+            }]
+        }],
+        "audio": { "tracks": [] }
+    })
 }
 
 fn valid_project_json() -> serde_json::Value {

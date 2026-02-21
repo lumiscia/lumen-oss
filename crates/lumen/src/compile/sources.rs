@@ -23,11 +23,7 @@ pub(super) fn compile_sources(
 
         let path = match &source.kind {
             SourceKind::File { path } => path.clone(),
-            SourceKind::Url { .. } => {
-                return Err(CompileError::UrlSourceUnsupported {
-                    source_id: source.id.clone(),
-                });
-            }
+            SourceKind::Url { url } => url.clone(),
         };
 
         lookup.insert(

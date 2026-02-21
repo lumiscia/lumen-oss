@@ -128,3 +128,55 @@ fn run() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use lumen::compile_project;
+    use serde_json::json;
+
+    #[test]
+    fn url_source_project_json_deserializes_and_compiles() {
+        let raw = json!({
+            "version": "1",
+            "canvas": {
+                "width": 320,
+                "height": 180,
+                "background": [0, 0, 0, 255]
+            },
+            "timeline": {
+                "fps": { "num": 30, "den": 1 },
+                "duration_frames": 2
+            },
+            "sources": [{
+                "id": "image_0",
+                "media": "image",
+                "kind": {
+                    "type": "url",
+                    "url": "https://cdn.example.com/media/background.png"
+                }
+            }],
+            "layers": [{
+                "id": "layer_image",
+                "items": [{
+                    "type": "clip",
+                    "id": "clip_image_1",
+                    "start_frame": 0,
+                    "duration_frames": 2,
+                    "content": {
+                        "type": "image",
+                        "source": "image_0"
+                    }
+                }]
+            }],
+            "audio": { "tracks": [] }
+        })
+        .to_string();
+
+        let project: super::Project =
+            serde_json::from_str(raw.as_str()).expect("project JSON should deserialize");
+        let timeline = compile_project(&project).expect("project should compile");
+        let source = timeline.source(0).expect("compiled source");
+        assert_eq!(source.id, "image_0");
+        assert_eq!(source.path, "https://cdn.example.com/media/background.png");
+    }
+}
