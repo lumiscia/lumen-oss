@@ -25,6 +25,10 @@ pub use operation::{
 pub use scalar::ScalarHandle;
 use scalar::{CompiledScalarValue, compile_optional_scalar};
 
+/// Upper bound on timeline duration to prevent OOM from malicious/malformed projects.
+/// 1_000_000 frames at 30 fps ≈ 9.25 hours — generous for any legitimate use.
+const MAX_DURATION_FRAMES: u64 = 1_000_000;
+
 #[derive(Debug, Error)]
 pub enum CompileError {
     #[error("invalid scale `{0}`")]
@@ -101,6 +105,15 @@ pub fn compile_project_with_scale(
     if project.timeline.duration_frames == 0 {
         return Err(CompileError::InvalidTimeline(
             "timeline duration_frames must be > 0".to_string(),
+        ));
+    }
+
+    if project.timeline.duration_frames > MAX_DURATION_FRAMES {
+        return Err(CompileError::InvalidTimeline(
+            format!(
+                "timeline duration_frames {} exceeds maximum {}",
+                project.timeline.duration_frames, MAX_DURATION_FRAMES
+            ),
         ));
     }
 
