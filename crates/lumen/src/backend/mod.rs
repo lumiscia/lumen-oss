@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::compile::CompiledTimeline;
+use crate::compile::{CompiledTimeline, RuntimeEvalError};
 
 pub mod skia;
 
@@ -20,10 +20,16 @@ pub enum RenderError {
     FrameOutOfRange { frame: u64, total_frames: u64 },
     #[error("provider error: {0}")]
     Provider(#[from] ProviderError),
+    #[error("frame evaluation failed: {0}")]
+    FrameEval(#[from] RuntimeEvalError),
     #[error("renderer initialization failed: {0}")]
     RendererInit(String),
     #[error("render failed: {0}")]
     Failed(String),
+    #[error("image payload length does not match dimensions")]
+    InvalidImagePayload,
+    #[error("pixel size overflow")]
+    SizeOverflow,
 }
 
 #[derive(Debug, Clone)]
@@ -35,14 +41,9 @@ pub struct FrameImage {
 
 impl FrameImage {
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, RenderError> {
-        let expected = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|pixels| pixels.checked_mul(4))
-            .ok_or_else(|| RenderError::Failed("pixel size overflow".to_string()))?;
+        let expected = pixel_len(width, height)?;
         if rgba.len() != expected {
-            return Err(RenderError::Failed(
-                "image payload length does not match dimensions".to_string(),
-            ));
+            return Err(RenderError::InvalidImagePayload);
         }
         Ok(Self {
             width,
@@ -68,4 +69,34 @@ pub trait Renderer: Send {
         frame: u64,
         provider: &mut dyn FrameProvider,
     ) -> Result<Vec<u8>, RenderError>;
+}
+
+pub trait RenderBackend: Send {
+    fn render_frame(
+        &mut self,
+        timeline: &CompiledTimeline,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+    ) -> Result<Vec<u8>, RenderError>;
+}
+
+impl<T> RenderBackend for T
+where
+    T: Renderer + Send,
+{
+    fn render_frame(
+        &mut self,
+        timeline: &CompiledTimeline,
+        frame: u64,
+        provider: &mut dyn FrameProvider,
+    ) -> Result<Vec<u8>, RenderError> {
+        Renderer::render_frame(self, timeline, frame, provider)
+    }
+}
+
+pub fn pixel_len(width: u32, height: u32) -> Result<usize, RenderError> {
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or(RenderError::SizeOverflow)?;
+    pixels.checked_mul(4).ok_or(RenderError::SizeOverflow)
 }

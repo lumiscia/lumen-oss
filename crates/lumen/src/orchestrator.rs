@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 
+use crate::backend::skia::SkiaRenderer;
 use crate::backend::{FrameProvider, RenderError, Renderer};
 use crate::compile::CompiledTimeline;
 
@@ -20,23 +23,119 @@ impl RenderOrchestrator {
         self.thread_count
     }
 
-    pub fn render_range<P, R, M, F>(
+    pub fn render_range<P, F>(
         &self,
-        _timeline: Arc<CompiledTimeline>,
-        _frame_range: Range<u64>,
-        _make_provider: M,
-        _make_renderer: impl Fn() -> R + Send + Sync,
-        _on_frame: F,
+        timeline: Arc<CompiledTimeline>,
+        frame_range: Range<u64>,
+        make_provider: impl Fn() -> P + Send + Sync + 'static,
+        mut on_frame: F,
     ) -> Result<(), RenderError>
     where
         P: FrameProvider + 'static,
-        R: Renderer + 'static,
-        M: Fn() -> P + Send + Sync,
         F: FnMut(u64, Vec<u8>) + Send,
     {
-        Err(RenderError::Failed(
-            "render orchestrator not implemented yet".to_string(),
-        ))
+        if frame_range.start >= frame_range.end {
+            return Ok(());
+        }
+
+        let total_frames = frame_range.end - frame_range.start;
+        let worker_count = self.thread_count.min(total_frames as usize).max(1);
+        let queue_depth = worker_count.saturating_mul(2).max(2);
+
+        let next_frame = Arc::new(AtomicU64::new(frame_range.start));
+        let stop = Arc::new(AtomicBool::new(false));
+        let provider_factory = Arc::new(make_provider);
+
+        enum WorkerMsg {
+            Frame { frame: u64, pixels: Vec<u8> },
+            Err(RenderError),
+        }
+
+        let (tx, rx) = mpsc::sync_channel::<WorkerMsg>(queue_depth);
+        let mut handles = Vec::with_capacity(worker_count);
+
+        for _ in 0..worker_count {
+            let tx = tx.clone();
+            let next_frame = Arc::clone(&next_frame);
+            let timeline = Arc::clone(&timeline);
+            let stop = Arc::clone(&stop);
+            let provider_factory = Arc::clone(&provider_factory);
+
+            handles.push(std::thread::spawn(move || {
+                let mut provider = provider_factory();
+                let mut renderer =
+                    match SkiaRenderer::new(timeline.canvas.width, timeline.canvas.height) {
+                        Ok(renderer) => renderer,
+                        Err(err) => {
+                            let _ = tx.send(WorkerMsg::Err(err));
+                            return;
+                        }
+                    };
+
+                loop {
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
+
+                    let frame = next_frame.fetch_add(1, Ordering::AcqRel);
+                    if frame >= frame_range.end {
+                        break;
+                    }
+
+                    match renderer.render_frame(&timeline, frame, &mut provider) {
+                        Ok(pixels) => {
+                            if tx.send(WorkerMsg::Frame { frame, pixels }).is_err() {
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            stop.store(true, Ordering::Release);
+                            let _ = tx.send(WorkerMsg::Err(err));
+                            break;
+                        }
+                    }
+                }
+            }));
+        }
+        drop(tx);
+
+        let mut expected = frame_range.start;
+        let mut pending = BTreeMap::<u64, Vec<u8>>::new();
+        let mut error = None;
+
+        while expected < frame_range.end {
+            match rx.recv() {
+                Ok(WorkerMsg::Frame { frame, pixels }) => {
+                    pending.insert(frame, pixels);
+                    while let Some(pixels) = pending.remove(&expected) {
+                        on_frame(expected, pixels);
+                        expected += 1;
+                    }
+                }
+                Ok(WorkerMsg::Err(err)) => {
+                    error = Some(err);
+                    stop.store(true, Ordering::Release);
+                    break;
+                }
+                Err(_) => {
+                    error = Some(RenderError::Failed(
+                        "render workers exited before completing frame range".to_string(),
+                    ));
+                    stop.store(true, Ordering::Release);
+                    break;
+                }
+            }
+        }
+
+        for handle in handles {
+            let _ = handle.join();
+        }
+
+        if let Some(err) = error {
+            return Err(err);
+        }
+
+        Ok(())
     }
 }
 

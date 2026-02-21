@@ -10,25 +10,18 @@ path = "src/lib.rs"
 [features]
 default = ["renderer-skia"]
 renderer-skia = ["dep:skia-safe"]
-skia-metal = ["renderer-skia", "skia-safe/metal", "dep:objc2", "dep:objc2-metal"]
-skia-vulkan = ["renderer-skia", "skia-safe/vulkan", "dep:ash"]
+skia-metal = ["renderer-skia"]
+skia-vulkan = ["renderer-skia"]
 
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 taffy = "0.9.2"
+rayon = "1.11.0"
 
 # Skia renderer deps
 skia-safe = { version = "0.91", optional = true, features = ["textlayout"] }
-
-# Vulkan GPU backend (Linux headless)
-ash = { version = "0.38", optional = true, features = ["loaded"] }
-
-# Metal GPU backend (macOS)
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = { version = "0.6", optional = true }
-objc2-metal = { version = "0.3", optional = true, features = ["MTLDevice", "MTLCommandQueue"] }
 
 [dev-dependencies]
 serde_json = "1.0.149"

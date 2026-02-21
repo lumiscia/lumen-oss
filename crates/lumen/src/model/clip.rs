@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{BaseStyle, LayoutNode, StyleValue};
+use super::{BaseStyle, ClipStyle, FitMode, LayoutNode, StyleValue};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -15,6 +15,22 @@ pub struct Layer {
 pub enum LayerItem {
     Clip(ClipItem),
     Group(GroupItem),
+}
+
+impl LayerItem {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Clip(clip) => clip.id.as_str(),
+            Self::Group(group) => group.id.as_str(),
+        }
+    }
+
+    pub fn mask(&self) -> Option<&LayerItem> {
+        match self {
+            Self::Clip(clip) => clip.mask.as_deref(),
+            Self::Group(group) => group.mask.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -37,7 +53,7 @@ pub struct GroupItem {
     #[serde(default)]
     pub items: Vec<LayerItem>,
     #[serde(default)]
-    pub style: ClipStyle,
+    pub style: BaseStyle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask: Option<Box<LayerItem>>,
 }
@@ -46,48 +62,23 @@ pub struct GroupItem {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClipContent {
     Solid,
-    Shape { geometry: ShapeGeometry },
-    Text { content: String },
-    Image { source: String },
+    Shape {
+        geometry: ShapeGeometry,
+    },
+    Text {
+        content: String,
+    },
+    Image {
+        source: String,
+    },
     Video {
         source: String,
         #[serde(default)]
         pipeline: VideoPipeline,
     },
-    Layout { root: LayoutNode },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct ClipStyle {
-    #[serde(flatten)]
-    pub base: BaseStyle,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fill: Option<[u8; 4]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fit: Option<FitMode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub font_size: Option<StyleValue>,
-}
-
-impl Default for ClipStyle {
-    fn default() -> Self {
-        Self {
-            base: BaseStyle::default(),
-            fill: None,
-            fit: None,
-            font_size: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum FitMode {
-    Cover,
-    Contain,
-    Fill,
-    None,
+    Layout {
+        root: LayoutNode,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,7 +97,7 @@ impl Default for VideoPipeline {
         Self {
             trim: None,
             speed: default_speed(),
-            r#loop: LoopMode::None,
+            r#loop: LoopMode::default(),
         }
     }
 }
@@ -121,19 +112,19 @@ pub struct TrimRange {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum LoopMode {
-    Label(LoopModeLabel),
+    Label(LoopLabel),
     Finite { finite: u32 },
 }
 
 impl Default for LoopMode {
     fn default() -> Self {
-        Self::Label(LoopModeLabel::None)
+        Self::Label(LoopLabel::None)
     }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum LoopModeLabel {
+pub enum LoopLabel {
     None,
     Infinite,
 }
@@ -153,13 +144,90 @@ pub enum ShapeGeometry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct PolygonVertex {
-    pub x: f32,
-    pub y: f32,
+    pub x: StyleValue,
+    pub y: StyleValue,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cp_in: Option<[f32; 2]>,
+    pub cp_in: Option<[StyleValue; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cp_out: Option<[f32; 2]>,
+    pub cp_out: Option<[StyleValue; 2]>,
 }
+
+impl PolygonVertex {
+    pub fn from_literal(x: f32, y: f32) -> Self {
+        Self {
+            x: StyleValue::Value(x),
+            y: StyleValue::Value(y),
+            cp_in: None,
+            cp_out: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SourceFrameContext {
+    pub local_frame: u64,
+    pub source_length: u64,
+}
+
+impl VideoPipeline {
+    pub fn source_frame_for(&self, ctx: SourceFrameContext) -> Option<u64> {
+        if ctx.source_length == 0 {
+            return None;
+        }
+
+        let trim = self.trim.unwrap_or(TrimRange {
+            start_frame: 0,
+            end_frame: ctx.source_length,
+        });
+        if trim.end_frame <= trim.start_frame {
+            return None;
+        }
+
+        let start = trim.start_frame;
+        let len = trim.end_frame - trim.start_frame;
+        let speed = self.speed;
+        if !speed.is_finite() {
+            return None;
+        }
+
+        let source_step = ((ctx.local_frame as f64) * (speed.abs() as f64)).floor() as u64;
+        let total_span = match self.r#loop {
+            LoopMode::Label(LoopLabel::None) => len,
+            LoopMode::Label(LoopLabel::Infinite) => len,
+            LoopMode::Finite { finite } => len.saturating_mul(u64::from(finite.max(1))),
+        };
+
+        if matches!(self.r#loop, LoopMode::Label(LoopLabel::None)) && source_step >= total_span {
+            return None;
+        }
+        if matches!(self.r#loop, LoopMode::Finite { .. }) && source_step >= total_span {
+            return None;
+        }
+
+        let within_trim = if len == 0 {
+            0
+        } else {
+            match self.r#loop {
+                LoopMode::Label(LoopLabel::None) => source_step.min(len.saturating_sub(1)),
+                LoopMode::Label(LoopLabel::Infinite) | LoopMode::Finite { .. } => source_step % len,
+            }
+        };
+
+        let frame = if speed < 0.0 {
+            trim.end_frame.saturating_sub(1).saturating_sub(within_trim)
+        } else {
+            start.saturating_add(within_trim)
+        };
+
+        Some(frame.min(ctx.source_length.saturating_sub(1)))
+    }
+}
+
+pub fn default_fit() -> FitMode {
+    FitMode::Cover
+}
+
+pub type SourcePipeline = VideoPipeline;
 
 fn default_speed() -> f32 {
     1.0

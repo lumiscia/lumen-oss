@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::time::Rational;
+
 use super::{Layer, Source};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -29,21 +31,21 @@ pub struct Canvas {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Timeline {
-    pub fps: [u32; 2],
+    pub fps: Rational,
     pub duration_frames: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+impl Timeline {
+    pub fn fps_f32(&self) -> f32 {
+        self.fps.as_f32()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AudioMix {
     #[serde(default)]
     pub tracks: Vec<AudioTrack>,
-}
-
-impl Default for AudioMix {
-    fn default() -> Self {
-        Self { tracks: Vec::new() }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,7 +54,7 @@ pub struct AudioTrack {
     pub source: String,
     #[serde(default)]
     pub start_frame: u64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_frames: Option<u64>,
 }
 

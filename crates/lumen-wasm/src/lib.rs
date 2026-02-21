@@ -1,12 +1,16 @@
 use std::{
     collections::{HashMap, HashSet},
     slice, str,
+    sync::Arc,
 };
 
 use lumen::{
-    backend::{FrameImage, FrameProvider, ProviderError},
-    compile::{CompiledOperationKind, CompiledTimeline, compile_project_with_scale},
-    model::{LayoutNode, LayoutNodeKind, Project},
+    backend::{FrameImage, FrameProvider, ProviderError, Renderer},
+    compile::{
+        CompiledLayoutNode, CompiledLayoutNodeKind, CompiledOperationKind, CompiledTimeline,
+        compile_project_with_scale,
+    },
+    model::Project,
 };
 use serde::Serialize;
 
@@ -41,7 +45,7 @@ impl FrameProvider for WasmMediaStore {
 }
 
 pub struct WasmRenderer {
-    timeline: CompiledTimeline,
+    timeline: Arc<CompiledTimeline>,
     renderer: lumen::backend::skia::SkiaRenderer,
     last_frame: Vec<u8>,
     last_requirements: Vec<u8>,
@@ -88,18 +92,20 @@ fn collect_frame_requirements(
             .ok_or_else(|| format!("missing operation index {index}"))?;
         match &operation.kind {
             CompiledOperationKind::Image(image) => {
-                images.insert(image.source_id.clone());
+                if let Some(source) = timeline.source(image.source_index) {
+                    images.insert(source.id.clone());
+                }
             }
             CompiledOperationKind::Layout(layout) => {
-                collect_layout_image_requirements(&layout.root, &mut images);
+                collect_layout_image_requirements(timeline, &layout.root, &mut images);
             }
             CompiledOperationKind::Video(video) => {
-                let source_frame = operation
-                    .resolve_video_source_frame(frame)
-                    .map_err(|err| err.to_string())?;
-                if let Some(source_frame) = source_frame {
+                if let Some(source) = timeline.source(video.source_index) {
+                    let source_frame = operation
+                        .source_frame_at(frame, u64::MAX / 4)
+                        .unwrap_or(operation.local_frame(frame));
                     videos
-                        .entry(video.source_id.clone())
+                        .entry(source.id.clone())
                         .or_default()
                         .insert(source_frame);
                 }
@@ -124,16 +130,22 @@ fn collect_frame_requirements(
     Ok(FrameRequirementsPayload { images, videos })
 }
 
-fn collect_layout_image_requirements(node: &LayoutNode, images: &mut HashSet<String>) {
+fn collect_layout_image_requirements(
+    timeline: &CompiledTimeline,
+    node: &CompiledLayoutNode,
+    images: &mut HashSet<String>,
+) {
     match &node.kind {
-        LayoutNodeKind::Container { children } => {
+        CompiledLayoutNodeKind::Container { children } => {
             for child in children {
-                collect_layout_image_requirements(child, images);
+                collect_layout_image_requirements(timeline, child, images);
             }
         }
-        LayoutNodeKind::Text(_) => {}
-        LayoutNodeKind::Image(image) => {
-            images.insert(image.source.clone());
+        CompiledLayoutNodeKind::Text { .. } => {}
+        CompiledLayoutNodeKind::Image { source_index } => {
+            if let Some(source) = timeline.source(*source_index) {
+                images.insert(source.id.clone());
+            }
         }
     }
 }
@@ -246,10 +258,9 @@ pub extern "C" fn lumen_renderer_render_frame(
         }
     };
 
-    let buffer = std::mem::take(&mut renderer.last_frame);
     match renderer
         .renderer
-        .render_frame_reuse(&renderer.timeline, frame, media, buffer)
+        .render_frame(renderer.timeline.as_ref(), frame, media)
     {
         Ok(pixels) => {
             renderer.clear_error();
@@ -273,7 +284,7 @@ pub extern "C" fn lumen_renderer_frame_requirements(
         None => return std::ptr::null(),
     };
 
-    let payload = match collect_frame_requirements(&renderer.timeline, frame) {
+    let payload = match collect_frame_requirements(renderer.timeline.as_ref(), frame) {
         Ok(payload) => payload,
         Err(err) => {
             renderer.set_error(err);
