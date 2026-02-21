@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use skia_safe::canvas::SrcRectConstraint;
 use skia_safe::{
     AlphaType, BlendMode as SkiaBlendMode, Canvas, ClipOp, Color4f, ColorType, Data, Font, FontMgr,
@@ -47,6 +49,8 @@ pub fn draw_operation_content(
     frame_image: Option<&FrameImage>,
     bounds: Rect,
     opacity: f32,
+    font_mgr: &FontMgr,
+    font_cache: &mut HashMap<(Option<String>, u32, u32), Font>,
 ) -> Result<(), RenderError> {
     match &operation.kind {
         CompiledOperationKind::Solid => {
@@ -78,6 +82,8 @@ pub fn draw_operation_content(
             frame_state,
             bounds,
             opacity,
+            font_mgr,
+            font_cache,
         ),
         CompiledOperationKind::Image(_) | CompiledOperationKind::Video(_) => {
             if let Some(image) = frame_image {
@@ -188,12 +194,14 @@ fn draw_text(
     frame_state: &RuntimeFrameContext,
     bounds: Rect,
     opacity: f32,
+    font_mgr: &FontMgr,
+    font_cache: &mut HashMap<(Option<String>, u32, u32), Font>,
 ) -> Result<(), RenderError> {
     if content.is_empty() {
         return Ok(());
     }
 
-    let font = resolve_font(operation, frame_state);
+    let font = resolve_font(operation, frame_state, font_mgr, font_cache);
 
     let mut paint = Paint::default();
     paint.set_anti_alias(true);
@@ -265,25 +273,36 @@ fn apply_stroke_dash_effect(
     paint.set_path_effect(skia_safe::PathEffect::dash(intervals.as_slice(), phase));
 }
 
-fn resolve_font(operation: &CompiledOperation, frame_state: &RuntimeFrameContext) -> Font {
+fn resolve_font(
+    operation: &CompiledOperation,
+    frame_state: &RuntimeFrameContext,
+    font_mgr: &FontMgr,
+    font_cache: &mut HashMap<(Option<String>, u32, u32), Font>,
+) -> Font {
+    let size_bits = operation.style.font_size.resolve(frame_state).max(1.0).to_bits();
+    let weight_bits = operation.style.font_weight.resolve(frame_state).to_bits();
+    let key = (operation.style.font_family.clone(), weight_bits, size_bits);
+
+    if let Some(cached) = font_cache.get(&key) {
+        return cached.clone();
+    }
+
+    // Cache miss — build font using the long-lived FontMgr (no XPC each time)
     let mut font = Font::default();
     font.set_size(operation.style.font_size.resolve(frame_state).max(1.0));
-
-    let font_mgr = FontMgr::new();
     let font_weight = operation.style.font_weight.resolve(frame_state);
     if let Some(family) = operation.style.font_family.as_deref() {
         let requested = font_style_for_weight(font_weight);
         if let Some(typeface) = font_mgr.match_family_style(family, requested) {
             font.set_typeface(typeface);
-            return font;
         }
-    }
-
-    if let Some(typeface) = font_mgr.legacy_make_typeface(None, font_style_for_weight(font_weight))
+    } else if let Some(typeface) =
+        font_mgr.legacy_make_typeface(None, font_style_for_weight(font_weight))
     {
         font.set_typeface(typeface);
     }
 
+    font_cache.insert(key, font.clone());
     font
 }
 
@@ -325,6 +344,7 @@ fn draw_text_line(
         cursor += advance + letter_spacing;
     }
 }
+
 fn draw_image(
     canvas: &Canvas,
     bounds: Rect,
@@ -342,7 +362,10 @@ fn draw_image(
         None,
     );
     let row_bytes = frame_image.width as usize * 4;
-    let data = Data::new_copy(frame_image.rgba.as_slice());
+    // SAFETY: frame_image.rgba is borrowed for the duration of this call.
+    // `data` and `image` are local and dropped before the function returns,
+    // so they cannot outlive the borrow.
+    let data = unsafe { Data::new_bytes(frame_image.rgba.as_slice()) };
     let image = skia_safe::images::raster_from_data(&info, data, row_bytes)
         .ok_or_else(|| RenderError::Failed("failed to create image from rgba".to_string()))?;
 

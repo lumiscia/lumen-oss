@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    AlphaType, Canvas, Color, ColorType, ImageInfo, Paint, Rect, Surface, image_filters, surfaces,
+    AlphaType, Canvas, Color, ColorType, Font, FontMgr, ImageInfo, Paint, Rect, Surface,
+    image_filters, surfaces,
 };
 
 use crate::backend::{FrameImage, FrameProvider, ProvidedFrame, RenderError, Renderer, pixel_len};
@@ -22,6 +23,8 @@ pub struct SkiaRenderer {
     height: u32,
     surface: Surface,
     video_frame_counts: HashMap<String, Option<u64>>,
+    font_mgr: FontMgr,
+    font_cache: HashMap<(Option<String>, u32, u32), Font>,
 }
 
 // SAFETY: CPU raster Skia surfaces are !Send in the type system, but each renderer is created,
@@ -40,8 +43,18 @@ impl SkiaRenderer {
             height,
             surface,
             video_frame_counts: HashMap::new(),
+            font_mgr: FontMgr::new(),
+            font_cache: HashMap::new(),
         })
     }
+}
+
+struct DrawContext<'a> {
+    provider: &'a mut dyn FrameProvider,
+    font_mgr: &'a FontMgr,
+    font_cache: &'a mut HashMap<(Option<String>, u32, u32), Font>,
+    video_frame_counts: &'a mut HashMap<String, Option<u64>>,
+    precomputed_layouts: &'a HashMap<usize, HashMap<String, layout::LayoutBox>>,
 }
 
 impl Renderer for SkiaRenderer {
@@ -59,7 +72,8 @@ impl Renderer for SkiaRenderer {
         }
 
         let initial_frame_state = timeline.resolve_frame_context(frame)?;
-        let layout_overrides = collect_layout_overrides(timeline, frame, &initial_frame_state)?;
+        let (layout_overrides, precomputed_layouts) =
+            collect_layout_data(timeline, frame, &initial_frame_state)?;
         let frame_state = if layout_overrides.is_empty() {
             initial_frame_state
         } else {
@@ -71,6 +85,14 @@ impl Renderer for SkiaRenderer {
             let bg = timeline.canvas.background;
             canvas.clear(Color::from_argb(bg[3], bg[0], bg[1], bg[2]));
 
+            let mut ctx = DrawContext {
+                provider,
+                font_mgr: &self.font_mgr,
+                font_cache: &mut self.font_cache,
+                video_frame_counts: &mut self.video_frame_counts,
+                precomputed_layouts: &precomputed_layouts,
+            };
+
             for layer in &timeline.layers {
                 for item in &layer.items {
                     draw_layer_item(
@@ -79,9 +101,8 @@ impl Renderer for SkiaRenderer {
                         frame,
                         item,
                         &frame_state,
-                        provider,
+                        &mut ctx,
                         1.0,
-                        &mut self.video_frame_counts,
                         false,
                     )?;
                 }
@@ -111,15 +132,18 @@ impl Renderer for SkiaRenderer {
     }
 }
 
+fn opacity_is_fully_opaque(opacity: f32) -> bool {
+    opacity >= 1.0 - f32::EPSILON
+}
+
 fn draw_layer_item(
     canvas: &Canvas,
     timeline: &CompiledTimeline,
     frame: u64,
     item: &CompiledLayerItem,
     frame_state: &RuntimeFrameContext,
-    provider: &mut dyn FrameProvider,
+    ctx: &mut DrawContext,
     parent_opacity: f32,
-    video_frame_counts: &mut HashMap<String, Option<u64>>,
     render_mask_items: bool,
 ) -> Result<(), RenderError> {
     match item {
@@ -154,9 +178,8 @@ fn draw_layer_item(
                         frame,
                         operation,
                         frame_state,
-                        provider,
+                        ctx,
                         opacity,
-                        video_frame_counts,
                     ),
                     mask::MaskPhase::Mask => draw_layer_item(
                         canvas,
@@ -164,9 +187,8 @@ fn draw_layer_item(
                         frame,
                         mask_item,
                         frame_state,
-                        provider,
+                        ctx,
                         1.0,
-                        video_frame_counts,
                         true,
                     ),
                 })?;
@@ -177,9 +199,8 @@ fn draw_layer_item(
                     frame,
                     operation,
                     frame_state,
-                    provider,
+                    ctx,
                     opacity,
-                    video_frame_counts,
                 )?;
             }
 
@@ -210,9 +231,8 @@ fn draw_layer_item(
                         frame,
                         &group.items,
                         frame_state,
-                        provider,
+                        ctx,
                         opacity,
-                        video_frame_counts,
                     ),
                     mask::MaskPhase::Mask => draw_layer_item(
                         canvas,
@@ -220,9 +240,8 @@ fn draw_layer_item(
                         frame,
                         mask_item,
                         frame_state,
-                        provider,
+                        ctx,
                         1.0,
-                        video_frame_counts,
                         true,
                     ),
                 })?;
@@ -233,9 +252,8 @@ fn draw_layer_item(
                     frame,
                     &group.items,
                     frame_state,
-                    provider,
+                    ctx,
                     opacity,
-                    video_frame_counts,
                 )?;
             }
 
@@ -251,23 +269,16 @@ fn draw_group_contents(
     frame: u64,
     items: &[CompiledLayerItem],
     frame_state: &RuntimeFrameContext,
-    provider: &mut dyn FrameProvider,
+    ctx: &mut DrawContext,
     opacity: f32,
-    video_frame_counts: &mut HashMap<String, Option<u64>>,
 ) -> Result<(), RenderError> {
-    canvas.save_layer_alpha_f(None, opacity);
+    if opacity_is_fully_opaque(opacity) {
+        canvas.save();
+    } else {
+        canvas.save_layer_alpha_f(None, opacity);
+    }
     for child in items {
-        draw_layer_item(
-            canvas,
-            timeline,
-            frame,
-            child,
-            frame_state,
-            provider,
-            1.0,
-            video_frame_counts,
-            false,
-        )?;
+        draw_layer_item(canvas, timeline, frame, child, frame_state, ctx, 1.0, false)?;
     }
     canvas.restore();
     Ok(())
@@ -279,9 +290,8 @@ fn draw_clip_with_shadow(
     frame: u64,
     operation: &CompiledOperation,
     frame_state: &RuntimeFrameContext,
-    provider: &mut dyn FrameProvider,
+    ctx: &mut DrawContext,
     opacity: f32,
-    video_frame_counts: &mut HashMap<String, Option<u64>>,
 ) -> Result<(), RenderError> {
     if let Some(shadow_style) = &operation.style.base.shadow {
         let bounds = resolved_bounds(&operation.style.base, frame_state);
@@ -293,30 +303,12 @@ fn draw_clip_with_shadow(
         );
         let layer = SaveLayerRec::default().bounds(&bounds).paint(&shadow_paint);
         canvas.save_layer(&layer);
-        draw_clip_content(
-            canvas,
-            timeline,
-            frame,
-            operation,
-            frame_state,
-            provider,
-            opacity,
-            video_frame_counts,
-        )?;
+        draw_clip_content(canvas, timeline, frame, operation, frame_state, ctx, opacity)?;
         canvas.restore();
         return Ok(());
     }
 
-    draw_clip_content(
-        canvas,
-        timeline,
-        frame,
-        operation,
-        frame_state,
-        provider,
-        opacity,
-        video_frame_counts,
-    )
+    draw_clip_content(canvas, timeline, frame, operation, frame_state, ctx, opacity)
 }
 
 fn draw_clip_content(
@@ -325,9 +317,8 @@ fn draw_clip_content(
     frame: u64,
     operation: &CompiledOperation,
     frame_state: &RuntimeFrameContext,
-    provider: &mut dyn FrameProvider,
+    ctx: &mut DrawContext,
     opacity: f32,
-    video_frame_counts: &mut HashMap<String, Option<u64>>,
 ) -> Result<(), RenderError> {
     let bounds = resolved_bounds(&operation.style.base, frame_state);
 
@@ -345,32 +336,12 @@ fn draw_clip_content(
 
         let layer = SaveLayerRec::default().bounds(&bounds).paint(&blur_paint);
         canvas.save_layer(&layer);
-        let result = draw_clip_pixels(
-            canvas,
-            timeline,
-            frame,
-            operation,
-            frame_state,
-            provider,
-            opacity,
-            video_frame_counts,
-            bounds,
-        );
+        let result = draw_clip_pixels(canvas, timeline, frame, operation, frame_state, ctx, opacity, bounds);
         canvas.restore();
         return result;
     }
 
-    draw_clip_pixels(
-        canvas,
-        timeline,
-        frame,
-        operation,
-        frame_state,
-        provider,
-        opacity,
-        video_frame_counts,
-        bounds,
-    )
+    draw_clip_pixels(canvas, timeline, frame, operation, frame_state, ctx, opacity, bounds)
 }
 
 fn draw_clip_pixels(
@@ -379,9 +350,8 @@ fn draw_clip_pixels(
     frame: u64,
     operation: &CompiledOperation,
     frame_state: &RuntimeFrameContext,
-    provider: &mut dyn FrameProvider,
+    ctx: &mut DrawContext,
     opacity: f32,
-    video_frame_counts: &mut HashMap<String, Option<u64>>,
     bounds: Rect,
 ) -> Result<(), RenderError> {
     if let CompiledOperationKind::Layout(layout_clip) = &operation.kind {
@@ -392,14 +362,13 @@ fn draw_clip_pixels(
             operation,
             &layout_clip.root,
             frame_state,
-            provider,
+            ctx,
             opacity,
-            video_frame_counts,
             bounds,
         );
     }
 
-    let frame_image = load_frame_image(timeline, frame, operation, provider, video_frame_counts)?;
+    let frame_image = load_frame_image(timeline, frame, operation, ctx)?;
     primitives::draw_operation_content(
         canvas,
         operation,
@@ -407,8 +376,11 @@ fn draw_clip_pixels(
         frame_image.as_ref(),
         bounds,
         opacity,
+        ctx.font_mgr,
+        ctx.font_cache,
     )
 }
+
 fn draw_layout_clip(
     canvas: &Canvas,
     timeline: &CompiledTimeline,
@@ -416,23 +388,29 @@ fn draw_layout_clip(
     operation: &CompiledOperation,
     root: &CompiledLayoutNode,
     frame_state: &RuntimeFrameContext,
-    provider: &mut dyn FrameProvider,
+    ctx: &mut DrawContext,
     opacity: f32,
-    video_frame_counts: &mut HashMap<String, Option<u64>>,
     bounds: Rect,
 ) -> Result<(), RenderError> {
-    let layout_boxes = layout::compute_layout_boxes(root, frame_state, bounds)?;
+    let key = operation as *const _ as usize;
+    let owned;
+    let layout_boxes = if let Some(boxes) = ctx.precomputed_layouts.get(&key) {
+        boxes
+    } else {
+        // Fallback: should not normally be reached
+        owned = layout::compute_layout_boxes(root, frame_state, bounds)?;
+        &owned
+    };
     draw_layout_node(
         canvas,
         timeline,
         frame,
         operation,
         root,
-        &layout_boxes,
+        layout_boxes,
         frame_state,
-        provider,
+        ctx,
         opacity,
-        video_frame_counts,
     )
 }
 
@@ -444,9 +422,8 @@ fn draw_layout_node(
     node: &CompiledLayoutNode,
     layout_boxes: &HashMap<String, layout::LayoutBox>,
     frame_state: &RuntimeFrameContext,
-    provider: &mut dyn FrameProvider,
+    ctx: &mut DrawContext,
     opacity: f32,
-    video_frame_counts: &mut HashMap<String, Option<u64>>,
 ) -> Result<(), RenderError> {
     let Some(layout_box) = layout_boxes.get(node.id.as_str()) else {
         return Ok(());
@@ -469,9 +446,8 @@ fn draw_layout_node(
                     child,
                     layout_boxes,
                     frame_state,
-                    provider,
+                    ctx,
                     opacity,
-                    video_frame_counts,
                 )?;
             }
             Ok(())
@@ -488,6 +464,8 @@ fn draw_layout_node(
                 None,
                 node_bounds,
                 opacity,
+                ctx.font_mgr,
+                ctx.font_cache,
             )
         }
         CompiledLayoutNodeKind::Image { source_index } => {
@@ -495,13 +473,7 @@ fn draw_layout_node(
             image_operation.kind = CompiledOperationKind::Image(CompiledImage {
                 source_index: *source_index,
             });
-            let frame_image = load_frame_image(
-                timeline,
-                frame,
-                &image_operation,
-                provider,
-                video_frame_counts,
-            )?;
+            let frame_image = load_frame_image(timeline, frame, &image_operation, ctx)?;
             primitives::draw_operation_content(
                 canvas,
                 &image_operation,
@@ -509,31 +481,48 @@ fn draw_layout_node(
                 frame_image.as_ref(),
                 node_bounds,
                 opacity,
+                ctx.font_mgr,
+                ctx.font_cache,
             )
         }
     }
 }
 
-fn collect_layout_overrides(
+fn collect_layout_data(
     timeline: &CompiledTimeline,
     frame: u64,
     frame_state: &RuntimeFrameContext,
-) -> Result<HashMap<String, f32>, RenderError> {
+) -> Result<
+    (
+        HashMap<String, f32>,
+        HashMap<usize, HashMap<String, layout::LayoutBox>>,
+    ),
+    RenderError,
+> {
     let mut overrides = HashMap::new();
+    let mut precomputed = HashMap::new();
     for layer in &timeline.layers {
         for item in &layer.items {
-            collect_layout_overrides_from_item(timeline, frame, item, frame_state, &mut overrides)?;
+            collect_layout_data_from_item(
+                timeline,
+                frame,
+                item,
+                frame_state,
+                &mut overrides,
+                &mut precomputed,
+            )?;
         }
     }
-    Ok(overrides)
+    Ok((overrides, precomputed))
 }
 
-fn collect_layout_overrides_from_item(
+fn collect_layout_data_from_item(
     timeline: &CompiledTimeline,
     frame: u64,
     item: &CompiledLayerItem,
     frame_state: &RuntimeFrameContext,
     overrides: &mut HashMap<String, f32>,
+    precomputed: &mut HashMap<usize, HashMap<String, layout::LayoutBox>>,
 ) -> Result<(), RenderError> {
     match item {
         CompiledLayerItem::Clip(node) => {
@@ -549,7 +538,9 @@ fn collect_layout_overrides_from_item(
             if let CompiledOperationKind::Layout(layout_clip) = &operation.kind {
                 let bounds = resolved_bounds(&operation.style.base, frame_state);
                 let boxes = layout::compute_layout_boxes(&layout_clip.root, frame_state, bounds)?;
-                for (id, layout_box) in boxes {
+                // Store keyed by operation pointer (stable within one render_frame call)
+                precomputed.insert(operation as *const _ as usize, boxes.clone());
+                for (id, layout_box) in &boxes {
                     overrides.insert(format!("{id}.x"), layout_box.x);
                     overrides.insert(format!("{id}.y"), layout_box.y);
                     overrides.insert(format!("{id}.width"), layout_box.width);
@@ -562,7 +553,14 @@ fn collect_layout_overrides_from_item(
                 return Ok(());
             }
             for child in &group.items {
-                collect_layout_overrides_from_item(timeline, frame, child, frame_state, overrides)?;
+                collect_layout_data_from_item(
+                    timeline,
+                    frame,
+                    child,
+                    frame_state,
+                    overrides,
+                    precomputed,
+                )?;
             }
         }
     }
@@ -574,15 +572,14 @@ fn load_frame_image(
     timeline: &CompiledTimeline,
     frame: u64,
     operation: &CompiledOperation,
-    provider: &mut dyn FrameProvider,
-    video_frame_counts: &mut HashMap<String, Option<u64>>,
+    ctx: &mut DrawContext,
 ) -> Result<Option<FrameImage>, RenderError> {
     match &operation.kind {
         CompiledOperationKind::Image(image) => {
             let Some(source) = timeline.source(image.source_index) else {
                 return Ok(None);
             };
-            provider
+            ctx.provider
                 .image(source.id.as_str())
                 .map(map_provided_frame)
                 .map_err(RenderError::from)
@@ -592,11 +589,11 @@ fn load_frame_image(
                 return Ok(None);
             };
             let source_frame_count =
-                video_frame_count(source.id.as_str(), provider, video_frame_counts)?;
+                video_frame_count(source.id.as_str(), ctx.provider, ctx.video_frame_counts)?;
             let source_frame = operation
                 .resolved_video_source_frame(frame, source_frame_count)
                 .unwrap_or(operation.local_frame(frame));
-            provider
+            ctx.provider
                 .video_frame(source.id.as_str(), source_frame)
                 .map(map_provided_frame)
                 .map_err(RenderError::from)
@@ -611,6 +608,7 @@ fn map_provided_frame(frame: ProvidedFrame) -> Option<FrameImage> {
         ProvidedFrame::Missing | ProvidedFrame::EndOfStream => None,
     }
 }
+
 fn video_frame_count(
     source_id: &str,
     provider: &mut dyn FrameProvider,
