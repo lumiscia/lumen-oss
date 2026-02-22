@@ -24,6 +24,35 @@ pub struct TextClip {
 }
 
 impl TextClip {
+    pub fn new(
+        meta: ClipMeta,
+        geometry: ClipGeometry,
+        content: impl Into<String>,
+        style: TextStyle,
+    ) -> Self {
+        Self {
+            meta,
+            geometry,
+            content: content.into(),
+            style,
+        }
+    }
+
+    pub fn with_default_geometry(
+        meta: ClipMeta,
+        content: impl Into<String>,
+        style: TextStyle,
+    ) -> Self {
+        Self::new(meta, ClipGeometry::default(), content, style)
+    }
+
+    pub fn with_geometry(mut self, geometry: ClipGeometry) -> Self {
+        self.geometry = geometry;
+        self
+    }
+}
+
+impl TextClip {
     fn build_paragraph(
         &self,
         style_ctx: &StyleContext,
@@ -252,6 +281,42 @@ mod tests {
             content: content.to_owned(),
             style,
         }
+    }
+
+    #[test]
+    fn text_clip_new_sets_fields() {
+        let style = text_style();
+        let clip = TextClip::new(
+            ClipMeta {
+                id: Some("txt".to_owned()),
+                start_frame: 3,
+                end_frame: 9,
+            },
+            ClipGeometry::default(),
+            "hello",
+            style.clone(),
+        );
+
+        assert_eq!(clip.meta.id.as_deref(), Some("txt"));
+        assert_eq!(clip.meta.start_frame, 3);
+        assert_eq!(clip.meta.end_frame, 9);
+        assert_eq!(clip.content, "hello");
+        assert_eq!(clip.style.font_family, style.font_family);
+    }
+
+    #[test]
+    fn text_clip_with_default_geometry_starts_from_default() {
+        let clip = TextClip::with_default_geometry(
+            ClipMeta {
+                id: Some("txt".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            "hello",
+            text_style(),
+        );
+
+        assert_eq!(clip.geometry, ClipGeometry::default());
     }
 
     fn frame_context() -> FrameContext {

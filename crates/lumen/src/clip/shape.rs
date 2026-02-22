@@ -47,6 +47,28 @@ pub struct ShapeClip {
     pub kind: ShapeKind,
 }
 
+impl ShapeClip {
+    pub fn new(meta: ClipMeta, geometry: ClipGeometry, kind: ShapeKind) -> Self {
+        Self {
+            meta,
+            geometry,
+            kind,
+        }
+    }
+
+    pub fn rectangle(meta: ClipMeta, geometry: ClipGeometry, style: RectStyle) -> Self {
+        Self::new(meta, geometry, ShapeKind::Rectangle(style))
+    }
+
+    pub fn ellipse(meta: ClipMeta, geometry: ClipGeometry, style: EllipseStyle) -> Self {
+        Self::new(meta, geometry, ShapeKind::Ellipse(style))
+    }
+
+    pub fn polygon(meta: ClipMeta, geometry: ClipGeometry, style: PolygonStyle) -> Self {
+        Self::new(meta, geometry, ShapeKind::Polygon(style))
+    }
+}
+
 impl Clip for ShapeClip {
     fn meta(&self) -> &ClipMeta {
         &self.meta
@@ -334,6 +356,58 @@ mod tests {
             },
             alignment: [literal(0.0), literal(0.0)],
             mask: None,
+        }
+    }
+
+    #[test]
+    fn shape_clip_new_keeps_supplied_fields() {
+        let meta = ClipMeta {
+            id: Some("shape".to_owned()),
+            start_frame: 2,
+            end_frame: 4,
+        };
+        let geometry = ClipGeometry::default();
+        let clip = ShapeClip::new(
+            meta.clone(),
+            geometry.clone(),
+            ShapeKind::Rectangle(RectStyle {
+                base: base_style(),
+                width: literal(10.0),
+                height: literal(8.0),
+                corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+                fill: None,
+                stroke: None,
+            }),
+        );
+
+        assert_eq!(clip.meta.id.as_deref(), Some("shape"));
+        assert_eq!(clip.meta.start_frame, 2);
+        assert_eq!(clip.meta.end_frame, 4);
+        assert_eq!(clip.geometry, geometry);
+    }
+
+    #[test]
+    fn shape_clip_rectangle_wraps_rect_style() {
+        let clip = ShapeClip::rectangle(
+            ClipMeta {
+                id: Some("rect".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            ClipGeometry::default(),
+            RectStyle {
+                base: base_style(),
+                width: literal(12.0),
+                height: literal(14.0),
+                corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+                fill: None,
+                stroke: None,
+            },
+        );
+
+        match clip.kind {
+            ShapeKind::Rectangle(_) => {}
+            ShapeKind::Ellipse(_) | ShapeKind::Polygon(_) => panic!("expected rectangle kind"),
         }
     }
 

@@ -101,18 +101,18 @@
 
 ### Implementation
 
-- [ ] T021 [US13] Implement FFmpeg global one-time initialization via `OnceLock<Result<(), String>>` in `crates/lumen/src/ffmpeg/mod.rs` — `fn ensure_ffmpeg_init() -> Result<(), FfmpegError>` calls `ffmpeg::init()` exactly once, sets log level to Error
-- [ ] T022 [US13] Define `LibavStreamDecoder` struct in `crates/lumen/src/ffmpeg/mod.rs` — fields: `input_ctx`, `video_stream_index`, `decoder`, `scaler`, `width`, `height`, `time_base`, `timeline_time_base`, `next_source_frame`, `cache: LruCache<u64, FrameImage>`, `buffer_pool: Vec<Vec<u8>>`, `decoded_frame`, `scratch_frame`, `packet`, `eof`, `draining`, `last_decoded_source_frame`, `last_decoded_image`
-- [ ] T023 [US13] Implement `LibavStreamDecoder::new(path, fps: Rational, cache_frames: usize)` in `crates/lumen/src/ffmpeg/mod.rs` — open input context, find video stream, open decoder, create `scaling::Context` (native format → RGBA, FAST_BILINEAR), read `time_base` and compute `timeline_time_base` from `fps`
-- [ ] T024 [US13] Implement `source_frame_to_pts` and `pts_to_source_frame` methods on `LibavStreamDecoder` in `crates/lumen/src/ffmpeg/mod.rs` — PTS ↔ frame index conversion using `time_base` and `timeline_time_base` rationals
-- [ ] T025 [US13] Implement `get_frame(target: u64) -> Result<Option<FrameImage>, FfmpegError>` on `LibavStreamDecoder` in `crates/lumen/src/ffmpeg/mod.rs` — (1) LRU cache check; (2) if behind, seek or reopen; (3) decode-forward loop; (4) swscale conversion with stride handling; (5) store in LRU; (6) return nearest if exact not cached
-- [ ] T026 [US13] Implement swscale RGBA conversion with stride handling in `crates/lumen/src/ffmpeg/mod.rs` — after `scaler.run(&decoded_frame, &mut scratch_frame)`, copy `width * 4` bytes per row (not full stride) into a pooled `Vec<u8>`
-- [ ] T027 [US13] Implement gap filling in `get_frame` in `crates/lumen/src/ffmpeg/mod.rs` — when `decoded_source_frame - last_decoded_source_frame > 1`, insert the last `FrameImage` into the LRU for all gap indices
-- [ ] T028 [US13] Implement LRU eviction with buffer recycling in `crates/lumen/src/ffmpeg/mod.rs` — on LRU eviction, attempt `Arc::try_unwrap` on the pixel buffer; if successful and capacity matches `frame_byte_size`, push back into `buffer_pool`
-- [ ] T029 [US13] Implement seek/reopen fallback in `get_frame` in `crates/lumen/src/ffmpeg/mod.rs` — attempt `input_ctx.seek(target_pts, ..target_pts)`; on failure (non-seekable source or error), call a `reopen_and_skip(target_frame)` helper that re-opens the source and decodes forward from frame 0
-- [ ] T030 [US14] Implement hardware decode attempt in `LibavStreamDecoder::new` in `crates/lumen/src/ffmpeg/mod.rs` — read `LUMEN_LIBAV_HW_DEVICE` env var; if `"auto"`, try each platform-specific device type via `av_hwdevice_ctx_create`; if all fail or env var absent, proceed with software decode; log warning on HW failure
-- [ ] T031 [P] [US14] Add `unsafe impl Send for LibavStreamDecoder` in `crates/lumen/src/ffmpeg/mod.rs` with doc comment: "Safe: decoder is owned exclusively by its worker thread and accessed only via the bounded channel"
-- [ ] T032 [P] [US13] Add decoder tests behind `#[cfg(feature = "ffmpeg")]` in `crates/lumen/src/ffmpeg/mod.rs` — test: PTS round-trip for known frame numbers; sequential forward decode returns correct frame count; backward seek returns correct frame; LRU cache hit after sequential forward; gap filling populates intermediate indices
+- [X] T021 [US13] Implement FFmpeg global one-time initialization via `OnceLock<Result<(), String>>` in `crates/lumen/src/ffmpeg/mod.rs` — `fn ensure_ffmpeg_init() -> Result<(), FfmpegError>` calls `ffmpeg::init()` exactly once, sets log level to Error
+- [X] T022 [US13] Define `LibavStreamDecoder` struct in `crates/lumen/src/ffmpeg/mod.rs` — fields: `input_ctx`, `video_stream_index`, `decoder`, `scaler`, `width`, `height`, `time_base`, `timeline_time_base`, `next_source_frame`, `cache: LruCache<u64, FrameImage>`, `buffer_pool: Vec<Vec<u8>>`, `decoded_frame`, `scratch_frame`, `packet`, `eof`, `draining`, `last_decoded_source_frame`, `last_decoded_image`
+- [X] T023 [US13] Implement `LibavStreamDecoder::new(path, fps: Rational, cache_frames: usize)` in `crates/lumen/src/ffmpeg/mod.rs` — open input context, find video stream, open decoder, create `scaling::Context` (native format → RGBA, FAST_BILINEAR), read `time_base` and compute `timeline_time_base` from `fps`
+- [X] T024 [US13] Implement `source_frame_to_pts` and `pts_to_source_frame` methods on `LibavStreamDecoder` in `crates/lumen/src/ffmpeg/mod.rs` — PTS ↔ frame index conversion using `time_base` and `timeline_time_base` rationals
+- [X] T025 [US13] Implement `get_frame(target: u64) -> Result<Option<FrameImage>, FfmpegError>` on `LibavStreamDecoder` in `crates/lumen/src/ffmpeg/mod.rs` — (1) LRU cache check; (2) if behind, seek or reopen; (3) decode-forward loop; (4) swscale conversion with stride handling; (5) store in LRU; (6) return nearest if exact not cached
+- [X] T026 [US13] Implement swscale RGBA conversion with stride handling in `crates/lumen/src/ffmpeg/mod.rs` — after `scaler.run(&decoded_frame, &mut scratch_frame)`, copy `width * 4` bytes per row (not full stride) into a pooled `Vec<u8>`
+- [X] T027 [US13] Implement gap filling in `get_frame` in `crates/lumen/src/ffmpeg/mod.rs` — when `decoded_source_frame - last_decoded_source_frame > 1`, insert the last `FrameImage` into the LRU for all gap indices
+- [X] T028 [US13] Implement LRU eviction with buffer recycling in `crates/lumen/src/ffmpeg/mod.rs` — on LRU eviction, attempt `Arc::try_unwrap` on the pixel buffer; if successful and capacity matches `frame_byte_size`, push back into `buffer_pool`
+- [X] T029 [US13] Implement seek/reopen fallback in `get_frame` in `crates/lumen/src/ffmpeg/mod.rs` — attempt `input_ctx.seek(target_pts, ..target_pts)`; on failure (non-seekable source or error), call a `reopen_and_skip(target_frame)` helper that re-opens the source and decodes forward from frame 0
+- [X] T030 [US14] Implement hardware decode attempt in `LibavStreamDecoder::new` in `crates/lumen/src/ffmpeg/mod.rs` — read `LUMEN_LIBAV_HW_DEVICE` env var; if `"auto"`, try each platform-specific device type via `av_hwdevice_ctx_create`; if all fail or env var absent, proceed with software decode; log warning on HW failure
+- [X] T031 [P] [US14] Add `unsafe impl Send for LibavStreamDecoder` in `crates/lumen/src/ffmpeg/mod.rs` with doc comment: "Safe: decoder is owned exclusively by its worker thread and accessed only via the bounded channel"
+- [X] T032 [P] [US13] Add decoder tests behind `#[cfg(feature = "ffmpeg")]` in `crates/lumen/src/ffmpeg/mod.rs` — test: PTS round-trip for known frame numbers; sequential forward decode returns correct frame count; backward seek returns correct frame; LRU cache hit after sequential forward; gap filling populates intermediate indices
 
 **Checkpoint**: `LibavStreamDecoder` decodes any FFmpeg-supported source to RGBA, caches frames in a bounded LRU, and handles backward seeks.
 
@@ -128,15 +128,15 @@
 
 ### Implementation
 
-- [ ] T033 [US15] Define `DecodeRequest` and `VideoDecodeWorker` structs in `crates/lumen/src/ffmpeg/worker.rs` — `DecodeRequest { source_frame: u64, reply: SyncSender<Result<Option<FrameImage>, FfmpegError>> }`; `VideoDecodeWorker { source_id, tx: Option<SyncSender<DecodeRequest>>, handle: Option<JoinHandle<()>> }`
-- [ ] T034 [US15] Implement `VideoDecodeWorker::spawn` in `crates/lumen/src/ffmpeg/worker.rs` — read config env vars (`LUMEN_LIBAV_PREFETCH_QUEUE`, `LUMEN_LIBAV_PREFETCH_FRAMES`), create bounded `sync_channel`, spawn worker thread via `thread::spawn(move || run_decode_worker(...))`
-- [ ] T035 [US15] Implement `VideoDecodeWorker::get_frame` in `crates/lumen/src/ffmpeg/worker.rs` — create one-shot reply channel, send `DecodeRequest`, block on `reply_rx.recv()`
-- [ ] T036 [US15] Implement `Drop for VideoDecodeWorker` in `crates/lumen/src/ffmpeg/worker.rs` — `self.tx.take()` closes the sender → worker loop exits; `self.handle.take().join()` waits for clean shutdown
-- [ ] T037 [US15] Implement `run_decode_worker` in `crates/lumen/src/ffmpeg/worker.rs` — recv loop: detect direction (Forward/Reverse/Random) by comparing current and last frame numbers; send reply; then prefetch next N frames in the detected direction
-- [ ] T038 [US15] Implement `StreamingAssets` + `FrameProvider` impl in `crates/lumen/src/render/backend/mod.rs` — `StreamingAssets { images: HashMap<String, FrameImage>, video_workers: HashMap<String, VideoDecodeWorker> }`; implement `FrameProvider::image` and `FrameProvider::video_frame` returning `ProvidedFrame` variants
-- [ ] T039 [US15] Add `ProvidedFrame` enum to `crates/lumen/src/render/backend/mod.rs` — `Ready(FrameImage)`, `EndOfStream`, `Missing`
-- [ ] T040 [US15] Implement optional encoder thread path (`render_to_mp4`) in `crates/lumen/src/ffmpeg/worker.rs` — bounded `sync_channel::<Vec<u8>>(LUMEN_ENCODE_QUEUE)`, spawn `encode_rgba_stream` thread, render loop sends RGBA frames, drop sender signals EOF, join encode thread
-- [ ] T041 [P] [US15] Add thread-safety documentation in `crates/lumen/src/ffmpeg/worker.rs` and `crates/lumen/src/ffmpeg/mod.rs` — doc comments covering: `LibavStreamDecoder` `unsafe Send` invariant, `FrameImage` as `Arc<Vec<u8>>` for cheap cross-thread clone, Skia surfaces must stay on render thread, `VideoDecodeWorker` channel as the only access path
+- [X] T033 [US15] Define `DecodeRequest` and `VideoDecodeWorker` structs in `crates/lumen/src/ffmpeg/worker.rs` — `DecodeRequest { source_frame: u64, reply: SyncSender<Result<Option<FrameImage>, FfmpegError>> }`; `VideoDecodeWorker { source_id, tx: Option<SyncSender<DecodeRequest>>, handle: Option<JoinHandle<()>> }`
+- [X] T034 [US15] Implement `VideoDecodeWorker::spawn` in `crates/lumen/src/ffmpeg/worker.rs` — read config env vars (`LUMEN_LIBAV_PREFETCH_QUEUE`, `LUMEN_LIBAV_PREFETCH_FRAMES`), create bounded `sync_channel`, spawn worker thread via `thread::spawn(move || run_decode_worker(...))`
+- [X] T035 [US15] Implement `VideoDecodeWorker::get_frame` in `crates/lumen/src/ffmpeg/worker.rs` — create one-shot reply channel, send `DecodeRequest`, block on `reply_rx.recv()`
+- [X] T036 [US15] Implement `Drop for VideoDecodeWorker` in `crates/lumen/src/ffmpeg/worker.rs` — `self.tx.take()` closes the sender → worker loop exits; `self.handle.take().join()` waits for clean shutdown
+- [X] T037 [US15] Implement `run_decode_worker` in `crates/lumen/src/ffmpeg/worker.rs` — recv loop: detect direction (Forward/Reverse/Random) by comparing current and last frame numbers; send reply; then prefetch next N frames in the detected direction
+- [X] T038 [US15] Implement `StreamingAssets` + `FrameProvider` impl in `crates/lumen/src/render/backend/mod.rs` — `StreamingAssets { images: HashMap<String, FrameImage>, video_workers: HashMap<String, VideoDecodeWorker> }`; implement `FrameProvider::image` and `FrameProvider::video_frame` returning `ProvidedFrame` variants
+- [X] T039 [US15] Add `ProvidedFrame` enum to `crates/lumen/src/render/backend/mod.rs` — `Ready(FrameImage)`, `EndOfStream`, `Missing`
+- [X] T040 [US15] Implement optional encoder thread path (`render_to_mp4`) in `crates/lumen/src/ffmpeg/worker.rs` — bounded `sync_channel::<Vec<u8>>(LUMEN_ENCODE_QUEUE)`, spawn `encode_rgba_stream` thread, render loop sends RGBA frames, drop sender signals EOF, join encode thread
+- [X] T041 [P] [US15] Add thread-safety documentation in `crates/lumen/src/ffmpeg/worker.rs` and `crates/lumen/src/ffmpeg/mod.rs` — doc comments covering: `LibavStreamDecoder` `unsafe Send` invariant, `FrameImage` as `Arc<Vec<u8>>` for cheap cross-thread clone, Skia surfaces must stay on render thread, `VideoDecodeWorker` channel as the only access path
 
 **Checkpoint**: Each video source decodes on its own thread; sequential playback is smooth via prefetch; workers shut down cleanly on drop.
 
@@ -152,12 +152,12 @@
 
 ### Implementation
 
-- [ ] T042 [US17] Create `crates/lumen/src/scene.rs` with `Scene` and `Layer` structs — `Scene { width: u32, height: u32, frame_rate: Rational, duration_frames: u32, layers: Vec<Layer> }`; `Layer { id: String, clips: Vec<ClipType>, blend_mode: BlendMode, opacity: StyleProperty<f32>, visible: bool }`
-- [ ] T043 [US17] Add `pub mod scene;` to `crates/lumen/src/lib.rs` and re-export `Scene`, `Layer`
-- [ ] T044 [US17] Implement structured render pipeline in `crates/lumen/src/render/mod.rs` — stages: validate frame range → collect expressions → `DependencyPlan::build` → topo sort → iterate `evaluation_order` with `ResultMap` → layer compositing loop → `read_surface_rgba`
-- [ ] T045 [US17] Implement layer compositing in `crates/lumen/src/render/mod.rs` — for each `Layer` where `visible == true`: create a layer-sized Skia surface, draw all clips in the layer to it, composite the layer surface onto the main canvas using the layer's resolved `blend_mode` and `opacity`
-- [ ] T046 [US17] Guard `frame >= scene.duration_frames` in the render pipeline entry point in `crates/lumen/src/render/mod.rs` — return `RenderError::OutOfRange { frame, duration: scene.duration_frames }`
-- [ ] T047 [P] [US17] Add layer compositing tests in `crates/lumen/src/render/mod.rs` — test: `visible: false` layer contributes no pixels; `BlendMode::Normal` layer at 50 % opacity blends correctly; layer opacity keyframes animate correctly across frames; out-of-range frame returns error
+- [X] T042 [US17] Create `crates/lumen/src/scene.rs` with `Scene` and `Layer` structs — `Scene { width: u32, height: u32, frame_rate: Rational, duration_frames: u32, layers: Vec<Layer> }`; `Layer { id: String, clips: Vec<ClipType>, blend_mode: BlendMode, opacity: StyleProperty<f32>, visible: bool }`
+- [X] T043 [US17] Add `pub mod scene;` to `crates/lumen/src/lib.rs` and re-export `Scene`, `Layer`
+- [X] T044 [US17] Implement structured render pipeline in `crates/lumen/src/render/mod.rs` — stages: validate frame range → collect expressions → `DependencyPlan::build` → topo sort → iterate `evaluation_order` with `ResultMap` → layer compositing loop → `read_surface_rgba`
+- [X] T045 [US17] Implement layer compositing in `crates/lumen/src/render/mod.rs` — for each `Layer` where `visible == true`: create a layer-sized Skia surface, draw all clips in the layer to it, composite the layer surface onto the main canvas using the layer's resolved `blend_mode` and `opacity`
+- [X] T046 [US17] Guard `frame >= scene.duration_frames` in the render pipeline entry point in `crates/lumen/src/render/mod.rs` — return `RenderError::OutOfRange { frame, duration: scene.duration_frames }`
+- [X] T047 [P] [US17] Add layer compositing tests in `crates/lumen/src/render/mod.rs` — test: `visible: false` layer contributes no pixels; `BlendMode::Normal` layer at 50 % opacity blends correctly; layer opacity keyframes animate correctly across frames; out-of-range frame returns error
 
 **Checkpoint**: `Scene` is the single entry point for rendering; layers composite correctly with blend modes and animated opacity.
 
@@ -167,10 +167,10 @@
 
 **Purpose**: Observability, ergonomics, and test coverage that span all user stories.
 
-- [ ] T048 [P] Add `tracing` span and event hooks at render pipeline stage boundaries in `crates/lumen/src/render/mod.rs` — one span per stage (dependency resolve, layout compute, clip draw, layer composite, pixel readback); log frame number and timing in each span
-- [ ] T049 [P] Add builder / constructor helpers for common clip + style setup in `crates/lumen/src/clip/` — e.g., `ShapeClip::rect(x, y, w, h, fill)`, `TextClip::simple(x, y, content, font_size)`, `ImageClip::new(x, y, w, h, source, fit)` — convenience constructors that pre-fill common fields
-- [ ] T050 [P] Add deterministic software-render snapshot tests in `crates/lumen/src/render/backend/software.rs` — render known scenes (solid red rect, text clip, two-layer blend) and compare RGBA output byte-by-byte against committed reference PNG fixtures; fail on any pixel diff
-- [ ] T051 [P] Add property-based fuzz tests for expression parsing and dependency resolution in `crates/lumen/src/expr/mod.rs` and `crates/lumen/src/dependency/tree.rs` — use `proptest` or `quickcheck`; assert: any random expression string either parses successfully or returns `ExpressionError::ParseError` (never panics); any DAG topology produces a valid topological order; any graph with a cycle returns `Cycle` error
+- [X] T048 [P] Add `tracing` span and event hooks at render pipeline stage boundaries in `crates/lumen/src/render/mod.rs` — one span per stage (dependency resolve, layout compute, clip draw, layer composite, pixel readback); log frame number and timing in each span
+- [X] T049 [P] Add builder / constructor helpers for common clip + style setup in `crates/lumen/src/clip/` — e.g., `ShapeClip::rect(x, y, w, h, fill)`, `TextClip::simple(x, y, content, font_size)`, `ImageClip::new(x, y, w, h, source, fit)` — convenience constructors that pre-fill common fields
+- [X] T050 [P] Add deterministic software-render snapshot tests in `crates/lumen/src/render/backend/software.rs` — render known scenes (solid red rect, text clip, two-layer blend) and compare RGBA output byte-by-byte against committed reference PNG fixtures; fail on any pixel diff
+- [X] T051 [P] Add property-based fuzz tests for expression parsing and dependency resolution in `crates/lumen/src/expr/mod.rs` and `crates/lumen/src/dependency/tree.rs` — use `proptest` or `quickcheck`; assert: any random expression string either parses successfully or returns `ExpressionError::ParseError` (never panics); any DAG topology produces a valid topological order; any graph with a cycle returns `Cycle` error
 
 ---
 
