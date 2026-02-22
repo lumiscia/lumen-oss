@@ -1,6 +1,6 @@
 use skia_safe::{Color, Paint, Rect, paint::Style as PaintStyle};
 
-use crate::clip::{Clip, ClipMeta, draw_with_base_style, style::TextStyle};
+use crate::clip::{Clip, ClipMeta, style::TextStyle};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 
@@ -26,11 +26,9 @@ impl Clip for TextClip {
             return Ok(());
         }
 
-        draw_with_base_style(
-            &self.style.base,
-            frame_ctx,
-            renderer_ctx,
-            |renderer_ctx, _resolved| {
+        self.style
+            .base
+            .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
                 let width = ((self.content.len() as f32) * 8.0).max(32.0);
                 let x = frame_ctx.width as f32 * 0.15;
                 let y = frame_ctx.height as f32 * 0.15;
@@ -53,7 +51,6 @@ impl Clip for TextClip {
                 );
 
                 Ok(())
-            },
-        )
+            })
     }
 }

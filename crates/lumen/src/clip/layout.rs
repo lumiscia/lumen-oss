@@ -3,7 +3,7 @@ use taffy::prelude::{AvailableSpace, Size, Style, TaffyTree};
 use taffy::tree::NodeId;
 
 use crate::clip::style::BaseStyle;
-use crate::clip::{Clip, ClipMeta, draw_with_base_style};
+use crate::clip::{Clip, ClipMeta};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 
@@ -55,11 +55,8 @@ impl Clip for LayoutClip {
             return Ok(());
         }
 
-        draw_with_base_style(
-            &self.style,
-            frame_ctx,
-            renderer_ctx,
-            |renderer_ctx, _resolved| {
+        self.style
+            .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
                 let mut paint = Paint::default();
                 paint.set_anti_alias(true);
                 paint.set_style(PaintStyle::Stroke);
@@ -86,7 +83,6 @@ impl Clip for LayoutClip {
                 }
 
                 Ok(())
-            },
-        )
+            })
     }
 }

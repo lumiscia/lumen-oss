@@ -7,7 +7,7 @@ pub mod text;
 
 use skia_safe::{Paint, canvas::SaveLayerRec};
 
-use crate::clip::style::{BaseStyle, ResolvedBaseStyle, resolve_base_style};
+use crate::clip::style::{BaseStyle, ResolvedBaseStyle, StyleContext};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 
@@ -84,53 +84,56 @@ impl Clip for ClipType {
     }
 }
 
-pub(crate) fn draw_with_base_style(
-    base_style: &BaseStyle,
-    frame_ctx: &FrameContext,
-    renderer_ctx: &mut RendererContext,
-    draw: impl Fn(&mut RendererContext, &ResolvedBaseStyle) -> Result<(), RenderError>,
-) -> Result<(), RenderError> {
-    let resolved = resolve_base_style(base_style);
-    if !resolved.visible {
-        return Ok(());
-    }
+impl BaseStyle {
+    pub(crate) fn draw(
+        &self,
+        frame: u32,
+        frame_ctx: &FrameContext,
+        renderer_ctx: &mut RendererContext,
+        draw: impl Fn(&mut RendererContext, &ResolvedBaseStyle) -> Result<(), RenderError>,
+    ) -> Result<(), RenderError> {
+        let resolved = self.resolve(&StyleContext::new(frame));
+        if !resolved.visible {
+            return Ok(());
+        }
 
-    if let Some(shadow) = resolved.shadow {
+        if let Some(shadow) = resolved.shadow {
+            let canvas = renderer_ctx.canvas();
+            canvas.save();
+            canvas.translate((
+                resolved.translate + frame_ctx.width as f32 * resolved.align_x + shadow.offset_x,
+                resolved.translate + frame_ctx.height as f32 * resolved.align_y + shadow.offset_y,
+            ));
+            canvas.scale((resolved.scale, resolved.scale));
+
+            let mut shadow_layer = Paint::default();
+            shadow_layer.set_blend_mode(resolved.blend_mode);
+            shadow_layer.set_alpha_f(
+                (resolved.opacity * (shadow.color[3] as f32 / 255.0) / (1.0 + shadow.blur * 0.1))
+                    .clamp(0.0, 1.0),
+            );
+            canvas.save_layer(&SaveLayerRec::default().paint(&shadow_layer));
+            draw(renderer_ctx, &resolved)?;
+            renderer_ctx.canvas().restore();
+            renderer_ctx.canvas().restore();
+        }
+
         let canvas = renderer_ctx.canvas();
         canvas.save();
         canvas.translate((
-            resolved.translate + frame_ctx.width as f32 * resolved.align_x + shadow.offset_x,
-            resolved.translate + frame_ctx.height as f32 * resolved.align_y + shadow.offset_y,
+            resolved.translate + frame_ctx.width as f32 * resolved.align_x,
+            resolved.translate + frame_ctx.height as f32 * resolved.align_y,
         ));
         canvas.scale((resolved.scale, resolved.scale));
 
-        let mut shadow_layer = Paint::default();
-        shadow_layer.set_blend_mode(resolved.blend_mode);
-        shadow_layer.set_alpha_f(
-            (resolved.opacity * (shadow.color[3] as f32 / 255.0) / (1.0 + shadow.blur * 0.1))
-                .clamp(0.0, 1.0),
-        );
-        canvas.save_layer(&SaveLayerRec::default().paint(&shadow_layer));
+        let mut layer = Paint::default();
+        layer.set_blend_mode(resolved.blend_mode);
+        layer.set_alpha_f((resolved.opacity / (1.0 + resolved.blur * 0.05)).clamp(0.0, 1.0));
+        canvas.save_layer(&SaveLayerRec::default().paint(&layer));
         draw(renderer_ctx, &resolved)?;
         renderer_ctx.canvas().restore();
         renderer_ctx.canvas().restore();
+
+        Ok(())
     }
-
-    let canvas = renderer_ctx.canvas();
-    canvas.save();
-    canvas.translate((
-        resolved.translate + frame_ctx.width as f32 * resolved.align_x,
-        resolved.translate + frame_ctx.height as f32 * resolved.align_y,
-    ));
-    canvas.scale((resolved.scale, resolved.scale));
-
-    let mut layer = Paint::default();
-    layer.set_blend_mode(resolved.blend_mode);
-    layer.set_alpha_f((resolved.opacity / (1.0 + resolved.blur * 0.05)).clamp(0.0, 1.0));
-    canvas.save_layer(&SaveLayerRec::default().paint(&layer));
-    draw(renderer_ctx, &resolved)?;
-    renderer_ctx.canvas().restore();
-    renderer_ctx.canvas().restore();
-
-    Ok(())
 }

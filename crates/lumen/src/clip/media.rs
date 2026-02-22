@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use skia_safe::{Color, Paint, Rect};
 
-use crate::clip::{Clip, ClipMeta, draw_with_base_style, style::BaseStyle};
+use crate::clip::{Clip, ClipMeta, style::BaseStyle};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 
@@ -35,11 +35,8 @@ impl Clip for ImageClip {
             return Ok(());
         }
 
-        draw_with_base_style(
-            &self.style,
-            frame_ctx,
-            renderer_ctx,
-            |renderer_ctx, _resolved| {
+        self.style
+            .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
                 let (width, height, color) = match renderer_ctx.media_store_mut() {
                     Some(media_store) => match media_store.get_image_resolver(self.source.as_str())
                     {
@@ -76,8 +73,7 @@ impl Clip for ImageClip {
                 );
 
                 Ok(())
-            },
-        )
+            })
     }
 }
 
@@ -106,11 +102,8 @@ impl Clip for VideoClip {
             return Ok(());
         }
 
-        draw_with_base_style(
-            &self.style,
-            frame_ctx,
-            renderer_ctx,
-            |renderer_ctx, _resolved| {
+        self.style
+            .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
                 let media_store = renderer_ctx
                     .media_store_mut()
                     .ok_or_else(|| RenderError::MissingSource(format!("video:{}", self.source)))?;
@@ -148,7 +141,6 @@ impl Clip for VideoClip {
                 );
 
                 Ok(())
-            },
-        )
+            })
     }
 }

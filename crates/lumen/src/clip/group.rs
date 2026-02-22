@@ -1,5 +1,5 @@
 use crate::clip::style::BaseStyle;
-use crate::clip::{Clip, ClipMeta, ClipType, draw_with_base_style};
+use crate::clip::{Clip, ClipMeta, ClipType};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 
@@ -25,16 +25,12 @@ impl Clip for GroupClip {
             return Ok(());
         }
 
-        draw_with_base_style(
-            &self.style,
-            frame_ctx,
-            renderer_ctx,
-            |renderer_ctx, _resolved| {
+        self.style
+            .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
                 for child in &self.children {
                     child.draw(frame, frame_ctx, renderer_ctx)?;
                 }
                 Ok(())
-            },
-        )
+            })
     }
 }
