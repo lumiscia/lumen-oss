@@ -1,8 +1,17 @@
-use skia_safe::surfaces;
+use crate::render::backend::{FrameProvider, RenderBackend, RenderError, read_surface_rgba};
+use crate::render::context::{FrameContext, RendererContext};
 
-use crate::backend::RenderError;
+#[derive(Debug, Default)]
+pub struct SoftwareRenderBackend;
 
-pub(super) fn create_surface(width: u32, height: u32) -> Result<skia_safe::Surface, RenderError> {
-    surfaces::raster_n32_premul((width as i32, height as i32))
-        .ok_or_else(|| RenderError::SurfaceCreation("failed to create raster surface".into()))
+impl RenderBackend for SoftwareRenderBackend {
+    fn render_frame(
+        &mut self,
+        renderer_ctx: &mut RendererContext,
+        _frame_ctx: &FrameContext,
+        _provider: &mut dyn FrameProvider,
+    ) -> Result<Vec<u8>, RenderError> {
+        renderer_ctx.clear();
+        read_surface_rgba(renderer_ctx)
+    }
 }

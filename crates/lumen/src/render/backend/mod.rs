@@ -1,3 +1,8 @@
+pub mod metal;
+pub mod software;
+pub mod vulkan;
+
+use skia_safe::{ColorType, IPoint, ImageInfo};
 use thiserror::Error;
 
 use crate::render::context::{FrameContext, RendererContext};
@@ -35,6 +40,8 @@ pub enum RenderError {
     MissingSource(String),
     #[error("render backend not initialized")]
     NotInitialized,
+    #[error("failed to read surface pixels")]
+    PixelReadback,
 }
 
 pub fn pixel_len(width: u32, height: u32) -> Result<usize, RenderError> {
@@ -43,4 +50,29 @@ pub fn pixel_len(width: u32, height: u32) -> Result<usize, RenderError> {
         .saturating_mul(4);
 
     usize::try_from(len).map_err(|_| RenderError::Unsupported("frame size overflow"))
+}
+
+pub(crate) fn read_surface_rgba(
+    renderer_ctx: &mut RendererContext,
+) -> Result<Vec<u8>, RenderError> {
+    let required = pixel_len(renderer_ctx.width, renderer_ctx.height)?;
+    let mut pixels = vec![0_u8; required];
+    let info = ImageInfo::new(
+        (renderer_ctx.width as i32, renderer_ctx.height as i32),
+        ColorType::RGBA8888,
+        skia_safe::AlphaType::Unpremul,
+        None,
+    );
+
+    let ok = renderer_ctx.surface.read_pixels(
+        &info,
+        pixels.as_mut_slice(),
+        renderer_ctx.width as usize * 4,
+        IPoint::new(0, 0),
+    );
+    if !ok {
+        return Err(RenderError::PixelReadback);
+    }
+
+    Ok(pixels)
 }

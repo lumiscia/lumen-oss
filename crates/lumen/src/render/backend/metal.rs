@@ -1,36 +1,21 @@
-use objc2::rc::Retained;
-use objc2_metal::{MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice};
-use skia_safe::gpu;
+use crate::render::backend::{
+    FrameProvider, RenderBackend, RenderError, software::SoftwareRenderBackend,
+};
+use crate::render::context::{FrameContext, RendererContext};
 
-use super::{GpuBackend, GpuState, create_gpu_surface};
-
-pub(super) struct MetalState {
-    pub _device: Retained<objc2::runtime::ProtocolObject<dyn MTLDevice>>,
-    pub _queue: Retained<objc2::runtime::ProtocolObject<dyn MTLCommandQueue>>,
+#[derive(Debug, Default)]
+pub struct MetalRenderBackend {
+    software_fallback: SoftwareRenderBackend,
 }
 
-pub(super) fn try_create(width: u32, height: u32) -> Option<(skia_safe::Surface, GpuState)> {
-    let device = MTLCreateSystemDefaultDevice()?;
-    let queue = device.newCommandQueue()?;
-
-    let backend = unsafe {
-        gpu::mtl::BackendContext::new(
-            Retained::as_ptr(&device) as gpu::mtl::Handle,
-            Retained::as_ptr(&queue) as gpu::mtl::Handle,
-        )
-    };
-
-    let mut context = gpu::direct_contexts::make_metal(&backend, None)?;
-    let surface = create_gpu_surface(&mut context, width, height).ok()?;
-
-    Some((
-        surface,
-        GpuState {
-            context,
-            _backend: GpuBackend::Metal(MetalState {
-                _device: device,
-                _queue: queue,
-            }),
-        },
-    ))
+impl RenderBackend for MetalRenderBackend {
+    fn render_frame(
+        &mut self,
+        renderer_ctx: &mut RendererContext,
+        frame_ctx: &FrameContext,
+        provider: &mut dyn FrameProvider,
+    ) -> Result<Vec<u8>, RenderError> {
+        self.software_fallback
+            .render_frame(renderer_ctx, frame_ctx, provider)
+    }
 }
