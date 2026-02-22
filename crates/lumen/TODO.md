@@ -139,7 +139,7 @@ This file tracks renderer work that is complete and remaining.
 
 ### P2: Reliability, ergonomics, and auditability
 
-- [ ] Improve render errors with clip id/frame context where available.
+- [x] Improve render errors with clip id/frame context where available.
 - [ ] Add tracing/log hooks for render phases and timings.
 - [ ] Add builder/constructor helpers for common clip/style setup.
 - [ ] Add backend contract tests (readback dimensions, alpha format, clear behavior).

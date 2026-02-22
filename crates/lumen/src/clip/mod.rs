@@ -171,6 +171,7 @@ impl Clip for ClipType {
             Self::Shape(clip) => clip.draw(frame, frame_ctx, renderer_ctx),
             Self::Text(clip) => clip.draw(frame, frame_ctx, renderer_ctx),
         }
+        .map_err(|err| err.with_clip_context(self.id(), frame))
     }
 }
 

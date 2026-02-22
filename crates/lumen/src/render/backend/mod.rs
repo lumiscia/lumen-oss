@@ -46,6 +46,40 @@ pub enum RenderError {
     PixelReadback,
     #[error("failed to create GPU surface")]
     GpuSurfaceCreation,
+    #[error(
+        "render failed at frame {frame} for clip {clip_id}: {source}"
+    )]
+    ClipContext {
+        clip_id: String,
+        frame: u32,
+        #[source]
+        source: Box<RenderError>,
+    },
+    #[error("render failed at frame {frame}: {source}")]
+    FrameContext {
+        frame: u32,
+        #[source]
+        source: Box<RenderError>,
+    },
+}
+
+impl RenderError {
+    pub fn with_clip_context(self, clip_id: Option<&str>, frame: u32) -> Self {
+        match self {
+            Self::ClipContext { .. } | Self::FrameContext { .. } => self,
+            other => match clip_id {
+                Some(clip_id) => Self::ClipContext {
+                    clip_id: clip_id.to_owned(),
+                    frame,
+                    source: Box::new(other),
+                },
+                None => Self::FrameContext {
+                    frame,
+                    source: Box::new(other),
+                },
+            },
+        }
+    }
 }
 
 #[allow(dead_code)]

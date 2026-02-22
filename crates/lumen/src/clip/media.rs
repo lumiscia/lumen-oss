@@ -351,7 +351,7 @@ mod tests {
 
     use super::{ImageClip, ImageFit, LoopMode, VideoClip, media_fit_rects};
     use crate::clip::{
-        Clip, ClipGeometry, ClipMeta, ResolvedClipGeometry,
+        Clip, ClipGeometry, ClipMeta, ClipType, ResolvedClipGeometry,
         style::{BaseStyle, StyleProperty, StyleValue, TransformStyle},
     };
     use crate::media::{ImageResolver, MediaStore, VideoResolver};
@@ -940,6 +940,55 @@ mod tests {
             .draw(0, &frame_ctx, &mut renderer_ctx)
             .expect_err("missing media store should error");
         assert!(matches!(err, RenderError::MissingSource(source) if source == "video:video"));
+    }
+
+    #[test]
+    fn clip_type_wraps_errors_with_clip_and_frame_context() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.clear();
+
+        let clip = ClipType::Video(VideoClip {
+            meta: ClipMeta {
+                id: Some("video-clip".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            geometry: geometry(),
+            source: "video".to_owned(),
+            fit: ImageFit::None,
+            style: base_style(),
+            trim: None,
+            speed: 1.0,
+            r#loop: LoopMode::None,
+        });
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        let err = clip
+            .draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect_err("clip type should wrap child errors");
+
+        match err {
+            RenderError::ClipContext {
+                clip_id,
+                frame,
+                source,
+            } => {
+                assert_eq!(clip_id, "video-clip");
+                assert_eq!(frame, 0);
+                assert!(matches!(
+                    *source,
+                    RenderError::MissingSource(inner) if inner == "video:video"
+                ));
+            }
+            other => panic!("expected clip context error, got {other:?}"),
+        }
     }
 
     #[test]
