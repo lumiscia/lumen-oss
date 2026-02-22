@@ -80,10 +80,10 @@ impl BaseStyle {
             blend_mode: self.blend_mode,
             blur: self.blur.resolve_or(ctx, 0.0).max(0.0),
             clip_radius: [
-                self.clip_radius[0].resolve_or(ctx, 0.0),
-                self.clip_radius[1].resolve_or(ctx, 0.0),
-                self.clip_radius[2].resolve_or(ctx, 0.0),
-                self.clip_radius[3].resolve_or(ctx, 0.0),
+                self.clip_radius[0].resolve_or(ctx, 0.0).max(0.0),
+                self.clip_radius[1].resolve_or(ctx, 0.0).max(0.0),
+                self.clip_radius[2].resolve_or(ctx, 0.0).max(0.0),
+                self.clip_radius[3].resolve_or(ctx, 0.0).max(0.0),
             ],
             translate_x: self.transform.translate[0].resolve_or(ctx, 0.0),
             translate_y: self.transform.translate[1].resolve_or(ctx, 0.0),
@@ -136,7 +136,7 @@ mod tests {
         assert!(resolved.visible);
         assert_eq!(resolved.opacity, 1.0);
         assert_eq!(resolved.blur, 0.0);
-        assert_eq!(resolved.clip_radius, [-1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(resolved.clip_radius, [0.0, 2.0, 3.0, 4.0]);
         assert_eq!(resolved.translate_x, 12.0);
         assert_eq!(resolved.translate_y, -3.0);
         assert_eq!(resolved.scale_x, -2.0);
