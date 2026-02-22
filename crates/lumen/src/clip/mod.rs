@@ -7,7 +7,9 @@ pub mod text;
 
 use skia_safe::{Paint, Point, RRect, Rect, canvas::SaveLayerRec};
 
-use crate::clip::style::{BaseStyle, ResolvedBaseStyle, StyleContext};
+use crate::clip::style::{
+    BaseStyle, ResolvedBaseStyle, Sequence, StyleContext, StyleProperty,
+};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 
@@ -16,6 +18,94 @@ pub struct ClipMeta {
     pub id: Option<String>,
     pub start_frame: u32,
     pub end_frame: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipGeometry {
+    pub x: StyleProperty<f32>,
+    pub y: StyleProperty<f32>,
+    pub width: StyleProperty<f32>,
+    pub height: StyleProperty<f32>,
+    pub anchor_x: StyleProperty<f32>,
+    pub anchor_y: StyleProperty<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedClipGeometry {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub anchor_x: f32,
+    pub anchor_y: f32,
+}
+
+impl ResolvedClipGeometry {
+    pub fn left(&self) -> f32 {
+        self.x - self.width * self.anchor_x
+    }
+
+    pub fn top(&self) -> f32 {
+        self.y - self.height * self.anchor_y
+    }
+
+    pub fn rect(&self) -> Rect {
+        Rect::from_xywh(self.left(), self.top(), self.width, self.height)
+    }
+
+    pub fn rect_for(&self, width: f32, height: f32) -> Rect {
+        let width = width.max(1.0);
+        let height = height.max(1.0);
+        Rect::from_xywh(
+            self.x - width * self.anchor_x,
+            self.y - height * self.anchor_y,
+            width,
+            height,
+        )
+    }
+}
+
+impl ClipGeometry {
+    pub fn resolve_with_defaults(
+        &self,
+        frame: u32,
+        default_x: f32,
+        default_y: f32,
+        default_width: f32,
+        default_height: f32,
+        default_anchor_x: f32,
+        default_anchor_y: f32,
+    ) -> ResolvedClipGeometry {
+        let ctx = StyleContext::new(frame);
+        ResolvedClipGeometry {
+            x: self.x.resolve_or(&ctx, default_x),
+            y: self.y.resolve_or(&ctx, default_y),
+            width: self.width.resolve_or(&ctx, default_width).max(1.0),
+            height: self.height.resolve_or(&ctx, default_height).max(1.0),
+            anchor_x: self
+                .anchor_x
+                .resolve_or(&ctx, default_anchor_x)
+                .clamp(0.0, 1.0),
+            anchor_y: self
+                .anchor_y
+                .resolve_or(&ctx, default_anchor_y)
+                .clamp(0.0, 1.0),
+        }
+    }
+}
+
+impl Default for ClipGeometry {
+    fn default() -> Self {
+        let unset = || StyleProperty::Sequence(Sequence::new(Vec::new()));
+        Self {
+            x: unset(),
+            y: unset(),
+            width: unset(),
+            height: unset(),
+            anchor_x: unset(),
+            anchor_y: unset(),
+        }
+    }
 }
 
 pub trait Clip {
@@ -197,4 +287,52 @@ fn apply_clip_radius(
     ];
     let rrect = RRect::new_rect_radii(rect, &radii);
     canvas.clip_rrect(rrect, None, true);
+}
+
+#[cfg(test)]
+mod tests {
+    use skia_safe::Rect;
+
+    use super::ClipGeometry;
+    use crate::clip::style::{StyleProperty, StyleValue};
+
+    fn literal(value: f32) -> StyleProperty<f32> {
+        StyleProperty::Value(StyleValue::Literal(value))
+    }
+
+    #[test]
+    fn geometry_resolves_anchor_position_into_top_left_rect() {
+        let geometry = ClipGeometry {
+            x: literal(60.0),
+            y: literal(40.0),
+            width: literal(20.0),
+            height: literal(10.0),
+            anchor_x: literal(0.5),
+            anchor_y: literal(1.0),
+        };
+
+        let resolved = geometry.resolve_with_defaults(0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0);
+
+        assert_eq!(resolved.left(), 50.0);
+        assert_eq!(resolved.top(), 30.0);
+        assert_eq!(resolved.rect(), Rect::from_xywh(50.0, 30.0, 20.0, 10.0));
+    }
+
+    #[test]
+    fn geometry_uses_fallbacks_and_clamps_anchor() {
+        let geometry = ClipGeometry {
+            anchor_x: literal(-1.0),
+            anchor_y: literal(2.0),
+            ..ClipGeometry::default()
+        };
+
+        let resolved = geometry.resolve_with_defaults(0, 10.0, 20.0, 30.0, 40.0, 0.25, 0.75);
+
+        assert_eq!(resolved.x, 10.0);
+        assert_eq!(resolved.y, 20.0);
+        assert_eq!(resolved.width, 30.0);
+        assert_eq!(resolved.height, 40.0);
+        assert_eq!(resolved.anchor_x, 0.0);
+        assert_eq!(resolved.anchor_y, 1.0);
+    }
 }
