@@ -512,6 +512,51 @@ mod tests {
     }
 
     #[test]
+    fn image_clip_rotation_respects_transform_origin() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.set_media_store(Box::new(TestMediaStore {
+            image: Some(TestImageResolver {
+                id: "img".to_owned(),
+                width: 1,
+                height: 1,
+                pixels: vec![25, 200, 50, 255],
+            }),
+            video: None,
+        }));
+        renderer_ctx.clear();
+
+        let mut style = base_style();
+        style.transform.rotation = literal(90.0);
+        style.transform.origin = [literal(0.1), literal(0.1)];
+
+        let clip = ImageClip {
+            meta: ClipMeta {
+                id: Some("img".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            source: "img".to_owned(),
+            style,
+        };
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("rotated image clip should draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+
+        assert_eq!(&pixels[idx(9, 10)..idx(9, 10) + 4], &[25, 200, 50, 255]);
+    }
+
+    #[test]
     fn video_clip_draws_rgba_pixels_from_resolver() {
         let mut renderer_ctx =
             RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");

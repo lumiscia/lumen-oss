@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use crate::expr::{Expression, ExpressionId, ExpressionScope, ExpressionValue};
 
 pub use base::{BaseStyle, ResolvedBaseStyle, ResolvedShadowStyle, ShadowStyle, TransformStyle};
-pub use shape::{EllipseStyle, PolygonStyle, RectStyle};
+pub use shape::{EllipseStyle, Fill, PolygonStyle, RectStyle, Stroke};
 pub use text::TextStyle;
 
 #[derive(Debug, Clone, Copy, Default)]

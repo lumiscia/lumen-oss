@@ -76,12 +76,12 @@ This file tracks renderer work that is complete and remaining.
 - [ ] Add explicit clip geometry (x/y/width/height/anchor) instead of frame-relative debug placement.
 - [ ] Thread resolved geometry through clip draw implementations.
 - [x] Replace scalar translate/scale with per-axis transform model plus rotation/skew/origin.
-- [ ] Add transform resolution + application ordering tests.
+- [x] Add transform resolution + application ordering tests.
 
 ### P1: Shape rendering fidelity
 
-- [ ] Add fill model (solid first, gradients/images later).
-- [ ] Add stroke model (width/color/cap/join/dash).
+- [x] Add fill model (solid first, gradients/images later).
+- [x] Add stroke model (width/color/cap/join/dash).
 - [x] Add rectangle corner radius (per-corner animatable).
 - [ ] Add clip radius support in `BaseStyle` for generic round clipping.
 - [ ] Replace shadow blur approximation with proper Skia blur mask filters.
