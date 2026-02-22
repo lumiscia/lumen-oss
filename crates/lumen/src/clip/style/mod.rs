@@ -5,30 +5,31 @@ mod text;
 use std::marker::PhantomData;
 
 pub use base::BaseStyle;
+pub use shape::{EllipseStyle, PolygonStyle, RectStyle};
 pub use text::TextStyle;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Sequence<T>(Vec<Keyframe<T>>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Keyframe<T> {
     frame: u32,
     value: StyleValue<T>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StyleExpression<T> {
     pub expr: String,
     pub value_type: PhantomData<T>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StyleValue<T> {
     Literal(T),
     Expression(StyleExpression<T>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StyleProperty<T> {
     Value(StyleValue<T>),
     Sequence(Sequence<T>),
@@ -48,7 +49,7 @@ where
     T: Default,
 {
     fn default() -> Self {
-        Self::Literal(Default::default())
+        Self::Value(Default::default())
     }
 }
 

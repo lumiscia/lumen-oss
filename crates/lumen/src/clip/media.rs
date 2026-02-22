@@ -1,59 +1,44 @@
 use std::ops::Range;
 
-use crate::{
-    LoopMode,
-    clip::{Clip, style::BaseStyle},
-};
+use crate::clip::{Clip, ClipMeta, style::BaseStyle};
+use crate::render::context::FrameContext;
 
-#[derive(Debug, Clone)]
-pub struct Image {
-    id: Option<String>,
-    source: String,
-    style: BaseStyle,
-}
-
-impl Clip for Image {
-    fn id(&self) -> Option<String> {
-        self.id
-    }
-
-    fn draw(&self, frame: u32) {
-        todo!()
-    }
-
-    fn start(&self) -> u32 {
-        todo!()
-    }
-
-    fn end(&self) -> u32 {
-        todo!()
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopMode {
+    None,
+    Repeat,
+    PingPong,
 }
 
 #[derive(Debug, Clone)]
-pub struct Video {
-    id: Option<String>,
-    source: String,
-    style: BaseStyle,
-    trim: Option<Range<f32>>,
-    speed: f32,
-    r#loop: LoopMode,
+pub struct ImageClip {
+    pub meta: ClipMeta,
+    pub source: String,
+    pub style: BaseStyle,
 }
 
-impl Clip for Video {
-    fn id(&self) -> Option<String> {
-        self.id
+impl Clip for ImageClip {
+    fn meta(&self) -> &ClipMeta {
+        &self.meta
     }
 
-    fn draw(&self, frame: u32) {
-        todo!()
+    fn draw(&self, _frame: u32, _frame_ctx: &FrameContext) {}
+}
+
+#[derive(Debug, Clone)]
+pub struct VideoClip {
+    pub meta: ClipMeta,
+    pub source: String,
+    pub style: BaseStyle,
+    pub trim: Option<Range<f32>>,
+    pub speed: f32,
+    pub r#loop: LoopMode,
+}
+
+impl Clip for VideoClip {
+    fn meta(&self) -> &ClipMeta {
+        &self.meta
     }
 
-    fn start(&self) -> u32 {
-        todo!()
-    }
-
-    fn end(&self) -> u32 {
-        todo!()
-    }
+    fn draw(&self, _frame: u32, _frame_ctx: &FrameContext) {}
 }
