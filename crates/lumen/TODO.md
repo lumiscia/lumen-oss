@@ -40,63 +40,108 @@ This file tracks renderer work that is complete and remaining.
 
 ## Remaining
 
-### Core render loop integration
+### P0: Stubbed systems (highest leverage)
 
-- [ ] Implement a scene/timeline renderer that owns clip ordering and traverses clips per frame.
-- [ ] Decide and implement deterministic z-order/layer ordering semantics.
-- [ ] Define and implement mask/clip-path semantics across groups and clips.
+- [ ] Replace `DependencyTree::topological_order` stub with Kahn topological sort.
+- [ ] Return cycle errors only when a real cycle exists (include deterministic behavior).
+- [ ] Replace `build_dependency_plan` free function with `DependencyPlan::build`.
+- [ ] Populate `DependencyPlan::evaluation_order` from the dependency tree.
+- [ ] Replace `parse_expression` / `evaluate_expression` free functions with `Expression::parse` / `Expression::evaluate`.
+- [ ] Parse expression references (`clip('id').property`, `layout('id').property`) and collect spans.
+- [ ] Implement expression AST + evaluator for literals, unary/binary ops, comparisons, logical ops.
+- [ ] Implement built-in math helpers (`min`, `max`, `abs`, `floor`, `ceil`, `round`, `clamp`, `lerp`, `sin`, `cos`).
+- [ ] Add expression error variants for parse, unknown function, type mismatch, and unresolved reference.
+- [ ] Add unit tests covering expression parsing/evaluation success paths and failures.
 
-### Backend depth
-- [ ] Implement actual Metal GPU backend execution path (context/device/surface lifecycle).
-- [ ] Implement actual Vulkan GPU backend execution path (instance/device/queue/surface lifecycle).
-- [ ] Add backend capability detection and backend selection strategy.
-- [ ] Add backend-specific error taxonomy and fallback policy.
+### P0: Style resolution correctness
 
-### Styling correctness
+- [ ] Move `resolve_style_value` / `resolve_style_value_or` onto `StyleProperty<T>` as methods.
+- [ ] Make keyframe APIs constructible outside the module (`Keyframe`, `Sequence` helpers or public fields).
+- [ ] Add frame-aware resolution for sequences (`resolve(frame)` / `resolve_or(frame, fallback)`).
+- [ ] Add interpolation trait(s) for animatable property types used today (`f32`, `u8`, `u32`, `bool`).
+- [ ] Add easing support on keyframes (at least linear + common easings).
+- [ ] Keep expression values safe during resolution (graceful fallback when unresolved).
+- [ ] Add unit tests for literal resolution, before/after keyframes, exact keyframes, interpolation, and easing.
 
-- [ ] Resolve `StyleProperty::Sequence` by frame/time with interpolation.
-- [ ] Resolve `StyleValue::Expression` against runtime expression context.
-- [ ] Define precedence rules when literal, sequence, and expression sources coexist.
-- [ ] Replace blur/shadow approximations with proper Skia image filter usage.
-- [ ] Expand transform model beyond scalar translate/scale as needed (rotation, per-axis transforms).
+### P0: Style/base API cleanup (report style conventions)
 
-### Text rendering
+- [ ] Move `resolve_base_style` free function onto `BaseStyle::resolve`.
+- [ ] Move `draw_with_base_style` free function onto `BaseStyle::draw`.
+- [ ] Convert shape drawing helpers into methods (`ShapeKind::draw` and/or per-style `draw` methods).
+- [ ] Update all clip modules to use method-based style APIs.
+- [ ] Add regression tests for base style resolution clamps/defaults.
 
-- [ ] Add actual text shaping and glyph rendering path.
-- [ ] Support font selection, font loading, and fallback fonts.
-- [ ] Support text layout details (line wrapping, alignment, overflow modes).
+### P1: Clip geometry and transforms
 
-### Media rendering
+- [ ] Add explicit clip geometry (x/y/width/height/anchor) instead of frame-relative debug placement.
+- [ ] Thread resolved geometry through clip draw implementations.
+- [ ] Replace scalar translate/scale with per-axis transform model plus rotation/skew/origin.
+- [ ] Add transform resolution + application ordering tests.
 
-- [ ] Decode image bytes and upload/blit into Skia image surfaces.
-- [ ] Decode video frames and draw actual pixel content (not placeholder geometry).
-- [ ] Add fit modes, crop, corner radius, and alpha compositing for media clips.
-- [ ] Add media frame caching and invalidation policy.
+### P1: Shape rendering fidelity
 
-### Layout rendering
+- [ ] Add fill model (solid first, gradients/images later).
+- [ ] Add stroke model (width/color/cap/join/dash).
+- [ ] Add rectangle corner radius (per-corner animatable).
+- [ ] Add clip radius support in `BaseStyle` for generic round clipping.
+- [ ] Replace shadow blur approximation with proper Skia blur mask filters.
+- [ ] Support multiple shadows and inset shadows.
 
-- [ ] Render actual Taffy layout tree outputs per node bounds/styles.
-- [ ] Bridge layout node identifiers to drawable clip/content nodes.
-- [ ] Define overflow and clipping behavior for layout nodes.
+### P1: Text rendering and measurement
 
-### Expressions and dependencies
+- [ ] Expand `TextStyle` with font, size, weight, color, spacing, alignment, wrapping fields.
+- [ ] Implement real text shaping/rendering via Skia `textlayout::Paragraph`.
+- [ ] Cache font collection / paragraph setup where appropriate.
+- [ ] Expose text measurement for layout integration.
+- [ ] Add text rendering and wrapping tests (metrics and/or pixel snapshots).
 
-- [ ] Implement parser and evaluator for expression sources.
-- [ ] Implement property resolution across clips and layout nodes.
-- [ ] Build dependency graph from expression references.
-- [ ] Implement topological evaluation order with cycle diagnostics.
-- [ ] Add frame-time aware expression caching/invalidation.
+### P1: Layout clip rendering
 
-### Testing and reliability
+- [ ] Add `LayoutContent` to layout nodes so nodes can render clips.
+- [ ] Store content in `LayoutNodeContext`.
+- [ ] Render Taffy-computed node bounds instead of debug outlines only.
+- [ ] Add text measure functions for layout text nodes.
+- [ ] Define overflow/clipping semantics for layout nodes.
+- [ ] Add layout integration tests (nested positions/sizes).
 
-- [ ] Add unit tests for style resolution (literal/sequence/expression).
-- [ ] Add tests for missing source and resolver error paths.
+### P1: Media rendering
+
+- [ ] Render decoded image pixels to Skia (`ImageClip`) instead of placeholders.
+- [ ] Add image fit modes (`cover`, `contain`, `fill`, `none`).
+- [ ] Add image/video Skia image caching to avoid per-frame conversions.
+- [ ] Render decoded video frames to Skia (`VideoClip`) instead of placeholders.
+- [ ] Implement `VideoClip` timeline mapping for trim/speed/loop.
+- [ ] Add media resolver tests for missing sources, frame mapping, and fallback behavior.
+
+### P2: FFmpeg decode pipeline (feature-gated)
+
+- [ ] Implement FFmpeg global one-time initialization.
+- [ ] Add feature-gated libav stream decoder with RGBA conversion.
+- [ ] Add bounded LRU frame cache and buffer recycling.
+- [ ] Implement seek/reopen fallback for reverse/random access.
+- [ ] Port optional hardware decode setup with graceful fallback.
+- [ ] Add decoder tests around PTS/frame mapping and cache behavior (behind feature gate).
+
+### P2: Threading and streaming asset pipeline
+
+- [ ] Add per-source video decode worker threads with bounded request queues.
+- [ ] Add forward/reverse prefetch behavior.
+- [ ] Add `FrameProvider` integration for streaming assets.
+- [ ] Add optional encoder thread path for MP4 pipelines (backpressure via sync channel).
+- [ ] Document thread-safety invariants (`LibavStreamDecoder`, `FrameImage`, Skia surfaces).
+
+### P2: Scene/layer model and render pipeline
+
+- [ ] Introduce explicit `Scene` / `Layer` model (z-order, blend, opacity, visibility).
+- [ ] Add structured render stages (dependencies -> layout -> draw -> composite -> readback).
+- [ ] Define mask semantics (shape, bitmap, clip masks) and implement base-style mask support.
+- [ ] Add layer compositing tests.
+
+### P2: Reliability, ergonomics, and auditability
+
+- [ ] Improve render errors with clip id/frame context where available.
+- [ ] Add tracing/log hooks for render phases and timings.
+- [ ] Add builder/constructor helpers for common clip/style setup.
 - [ ] Add backend contract tests (readback dimensions, alpha format, clear behavior).
-- [ ] Add snapshot tests for deterministic rendering output.
+- [ ] Add deterministic software-render snapshot tests.
 - [ ] Add fuzz/property tests for expression/dependency edge cases.
-
-### API/ergonomics
-
-- [ ] Add builder or constructor helpers for clips/styles/contexts.
-- [ ] Improve error messages with clip id and frame context.
-- [ ] Add tracing/log hooks for frame render phases and timing.
