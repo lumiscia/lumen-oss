@@ -75,7 +75,7 @@ This file tracks renderer work that is complete and remaining.
 
 - [ ] Add explicit clip geometry (x/y/width/height/anchor) instead of frame-relative debug placement.
 - [ ] Thread resolved geometry through clip draw implementations.
-- [ ] Replace scalar translate/scale with per-axis transform model plus rotation/skew/origin.
+- [x] Replace scalar translate/scale with per-axis transform model plus rotation/skew/origin.
 - [ ] Add transform resolution + application ordering tests.
 
 ### P1: Shape rendering fidelity

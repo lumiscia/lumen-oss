@@ -287,8 +287,11 @@ mod tests {
             blur: literal(0.0),
             shadow: None,
             transform: TransformStyle {
-                translate: literal(0.0),
-                scale: literal(1.0),
+                translate: [literal(0.0), literal(0.0)],
+                scale: [literal(1.0), literal(1.0)],
+                rotation: literal(0.0),
+                skew: [literal(0.0), literal(0.0)],
+                origin: [literal(0.0), literal(0.0)],
             },
             alignment: [literal(0.0), literal(0.0)],
         }
@@ -463,6 +466,49 @@ mod tests {
         let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
         let idx = (10usize + 10usize * 100) * 4;
         assert_eq!(&pixels[idx..idx + 4], &[110, 170, 255, 255]);
+    }
+
+    #[test]
+    fn image_clip_respects_per_axis_translation_transform() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.set_media_store(Box::new(TestMediaStore {
+            image: Some(TestImageResolver {
+                id: "img".to_owned(),
+                width: 1,
+                height: 1,
+                pixels: vec![200, 10, 20, 255],
+            }),
+            video: None,
+        }));
+        renderer_ctx.clear();
+
+        let mut style = base_style();
+        style.transform.translate = [literal(5.0), literal(7.0)];
+
+        let clip = ImageClip {
+            meta: ClipMeta {
+                id: Some("img".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            source: "img".to_owned(),
+            style,
+        };
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("translated image clip should draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+        assert_eq!(&pixels[idx(15, 17)..idx(15, 17) + 4], &[200, 10, 20, 255]);
     }
 
     #[test]

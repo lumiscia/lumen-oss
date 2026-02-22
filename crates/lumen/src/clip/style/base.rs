@@ -15,8 +15,11 @@ pub struct BaseStyle {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransformStyle {
-    pub translate: StyleProperty<f32>,
-    pub scale: StyleProperty<f32>,
+    pub translate: [StyleProperty<f32>; 2],
+    pub scale: [StyleProperty<f32>; 2],
+    pub rotation: StyleProperty<f32>,
+    pub skew: [StyleProperty<f32>; 2],
+    pub origin: [StyleProperty<f32>; 2],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,8 +36,15 @@ pub struct ResolvedBaseStyle {
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub blur: f32,
-    pub translate: f32,
-    pub scale: f32,
+    pub translate_x: f32,
+    pub translate_y: f32,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    pub rotation_degrees: f32,
+    pub skew_x_degrees: f32,
+    pub skew_y_degrees: f32,
+    pub origin_x: f32,
+    pub origin_y: f32,
     pub align_x: f32,
     pub align_y: f32,
     pub shadow: Option<ResolvedShadowStyle>,
@@ -67,8 +77,15 @@ impl BaseStyle {
             opacity: self.opacity.resolve_or(ctx, 1.0).clamp(0.0, 1.0),
             blend_mode: self.blend_mode,
             blur: self.blur.resolve_or(ctx, 0.0).max(0.0),
-            translate: self.transform.translate.resolve_or(ctx, 0.0),
-            scale: self.transform.scale.resolve_or(ctx, 1.0).max(0.0),
+            translate_x: self.transform.translate[0].resolve_or(ctx, 0.0),
+            translate_y: self.transform.translate[1].resolve_or(ctx, 0.0),
+            scale_x: self.transform.scale[0].resolve_or(ctx, 1.0),
+            scale_y: self.transform.scale[1].resolve_or(ctx, 1.0),
+            rotation_degrees: self.transform.rotation.resolve_or(ctx, 0.0),
+            skew_x_degrees: self.transform.skew[0].resolve_or(ctx, 0.0),
+            skew_y_degrees: self.transform.skew[1].resolve_or(ctx, 0.0),
+            origin_x: self.transform.origin[0].resolve_or(ctx, 0.0),
+            origin_y: self.transform.origin[1].resolve_or(ctx, 0.0),
             align_x: self.alignment[0].resolve_or(ctx, 0.0),
             align_y: self.alignment[1].resolve_or(ctx, 0.0),
             shadow,
@@ -96,8 +113,11 @@ mod tests {
             blur: literal(-4.0),
             shadow: None,
             transform: TransformStyle {
-                translate: literal(12.0),
-                scale: literal(-2.0),
+                translate: [literal(12.0), literal(-3.0)],
+                scale: [literal(-2.0), literal(0.5)],
+                rotation: literal(15.0),
+                skew: [literal(5.0), literal(-10.0)],
+                origin: [literal(0.25), literal(0.75)],
             },
             alignment: [literal(0.25), literal(0.75)],
         };
@@ -107,8 +127,15 @@ mod tests {
         assert!(resolved.visible);
         assert_eq!(resolved.opacity, 1.0);
         assert_eq!(resolved.blur, 0.0);
-        assert_eq!(resolved.translate, 12.0);
-        assert_eq!(resolved.scale, 0.0);
+        assert_eq!(resolved.translate_x, 12.0);
+        assert_eq!(resolved.translate_y, -3.0);
+        assert_eq!(resolved.scale_x, -2.0);
+        assert_eq!(resolved.scale_y, 0.5);
+        assert_eq!(resolved.rotation_degrees, 15.0);
+        assert_eq!(resolved.skew_x_degrees, 5.0);
+        assert_eq!(resolved.skew_y_degrees, -10.0);
+        assert_eq!(resolved.origin_x, 0.25);
+        assert_eq!(resolved.origin_y, 0.75);
         assert_eq!(resolved.align_x, 0.25);
         assert_eq!(resolved.align_y, 0.75);
     }
@@ -127,8 +154,11 @@ mod tests {
                 color: [literal(10), literal(20), literal(30), literal(40)],
             }),
             transform: TransformStyle {
-                translate: literal(0.0),
-                scale: literal(1.0),
+                translate: [literal(0.0), literal(0.0)],
+                scale: [literal(1.0), literal(1.0)],
+                rotation: literal(0.0),
+                skew: [literal(0.0), literal(0.0)],
+                origin: [literal(0.0), literal(0.0)],
             },
             alignment: [literal(0.0), literal(0.0)],
         };

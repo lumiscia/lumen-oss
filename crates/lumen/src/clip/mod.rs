@@ -100,11 +100,12 @@ impl BaseStyle {
         if let Some(shadow) = resolved.shadow {
             let canvas = renderer_ctx.canvas();
             canvas.save();
-            canvas.translate((
-                resolved.translate + frame_ctx.width as f32 * resolved.align_x + shadow.offset_x,
-                resolved.translate + frame_ctx.height as f32 * resolved.align_y + shadow.offset_y,
-            ));
-            canvas.scale((resolved.scale, resolved.scale));
+            apply_resolved_transform(
+                canvas,
+                frame_ctx,
+                &resolved,
+                (shadow.offset_x, shadow.offset_y),
+            );
 
             let mut shadow_layer = Paint::default();
             shadow_layer.set_blend_mode(resolved.blend_mode);
@@ -120,11 +121,7 @@ impl BaseStyle {
 
         let canvas = renderer_ctx.canvas();
         canvas.save();
-        canvas.translate((
-            resolved.translate + frame_ctx.width as f32 * resolved.align_x,
-            resolved.translate + frame_ctx.height as f32 * resolved.align_y,
-        ));
-        canvas.scale((resolved.scale, resolved.scale));
+        apply_resolved_transform(canvas, frame_ctx, &resolved, (0.0, 0.0));
 
         let mut layer = Paint::default();
         layer.set_blend_mode(resolved.blend_mode);
@@ -136,4 +133,33 @@ impl BaseStyle {
 
         Ok(())
     }
+}
+
+fn apply_resolved_transform(
+    canvas: &skia_safe::Canvas,
+    frame_ctx: &FrameContext,
+    resolved: &ResolvedBaseStyle,
+    extra_offset: (f32, f32),
+) {
+    let frame_width = frame_ctx.width as f32;
+    let frame_height = frame_ctx.height as f32;
+    let origin_x = frame_width * resolved.origin_x;
+    let origin_y = frame_height * resolved.origin_y;
+    let translate_x = frame_width * resolved.align_x + resolved.translate_x + extra_offset.0;
+    let translate_y = frame_height * resolved.align_y + resolved.translate_y + extra_offset.1;
+
+    canvas.translate((translate_x + origin_x, translate_y + origin_y));
+    if resolved.rotation_degrees != 0.0 {
+        canvas.rotate(resolved.rotation_degrees, None);
+    }
+    if resolved.scale_x != 1.0 || resolved.scale_y != 1.0 {
+        canvas.scale((resolved.scale_x, resolved.scale_y));
+    }
+    if resolved.skew_x_degrees != 0.0 || resolved.skew_y_degrees != 0.0 {
+        canvas.skew((
+            resolved.skew_x_degrees.to_radians().tan(),
+            resolved.skew_y_degrees.to_radians().tan(),
+        ));
+    }
+    canvas.translate((-origin_x, -origin_y));
 }
