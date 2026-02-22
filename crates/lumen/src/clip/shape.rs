@@ -121,8 +121,14 @@ impl RectStyle {
 
         let default_fill = (self.fill.is_none() && self.stroke.is_none())
             .then_some(Color::from_argb(255, 80, 180, 255));
-        let fill_paint = fill_paint(self.fill.as_ref(), &ctx, default_fill);
-        let stroke_paint = stroke_paint(self.stroke.as_ref(), &ctx);
+        let fill_paint = self.fill.as_ref().map(|f| f.to_paint(&ctx)).or_else(|| {
+            let color = default_fill?;
+            let mut paint = Paint::default();
+            paint.set_anti_alias(true);
+            paint.set_color(color);
+            Some(paint)
+        });
+        let stroke_paint = self.stroke.as_ref().and_then(|s| s.to_paint(&ctx));
 
         if let Some(fill_paint) = &fill_paint {
             if let Some(rrect) = rrect {
@@ -159,10 +165,17 @@ impl EllipseStyle {
 
         let default_fill = (self.fill.is_none() && self.stroke.is_none())
             .then_some(Color::from_argb(255, 255, 140, 90));
-        if let Some(fill_paint) = fill_paint(self.fill.as_ref(), &ctx, default_fill) {
+        let fill_paint = self.fill.as_ref().map(|f| f.to_paint(&ctx)).or_else(|| {
+            let color = default_fill?;
+            let mut paint = Paint::default();
+            paint.set_anti_alias(true);
+            paint.set_color(color);
+            Some(paint)
+        });
+        if let Some(fill_paint) = fill_paint {
             renderer_ctx.canvas().draw_oval(bounds, &fill_paint);
         }
-        if let Some(stroke_paint) = stroke_paint(self.stroke.as_ref(), &ctx) {
+        if let Some(stroke_paint) = self.stroke.as_ref().and_then(|s| s.to_paint(&ctx)) {
             renderer_ctx.canvas().draw_oval(bounds, &stroke_paint);
         }
 
@@ -204,10 +217,17 @@ impl PolygonStyle {
 
         let default_fill = (self.fill.is_none() && self.stroke.is_none())
             .then_some(Color::from_argb(255, 140, 255, 120));
-        if let Some(fill_paint) = fill_paint(self.fill.as_ref(), &ctx, default_fill) {
+        let fill_paint = self.fill.as_ref().map(|f| f.to_paint(&ctx)).or_else(|| {
+            let color = default_fill?;
+            let mut paint = Paint::default();
+            paint.set_anti_alias(true);
+            paint.set_color(color);
+            Some(paint)
+        });
+        if let Some(fill_paint) = fill_paint {
             renderer_ctx.canvas().draw_path(&path, &fill_paint);
         }
-        if let Some(stroke_paint) = stroke_paint(self.stroke.as_ref(), &ctx) {
+        if let Some(stroke_paint) = self.stroke.as_ref().and_then(|s| s.to_paint(&ctx)) {
             renderer_ctx.canvas().draw_path(&path, &stroke_paint);
         }
 
@@ -215,55 +235,49 @@ impl PolygonStyle {
     }
 }
 
-fn fill_paint(
-    fill: Option<&Fill>,
-    ctx: &StyleContext<'_>,
-    default: Option<Color>,
-) -> Option<Paint> {
-    let mut paint = Paint::default();
-    paint.set_anti_alias(true);
-    match fill {
-        Some(Fill::Solid { color }) => {
-            let [r, g, b, a] = resolve_rgba(color, ctx);
-            paint.set_color(Color::from_argb(a, r, g, b));
-            Some(paint)
+impl Fill {
+    fn to_paint(&self, ctx: &StyleContext<'_>) -> Paint {
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        match self {
+            Fill::Solid { color } => {
+                let [r, g, b, a] = resolve_rgba(color, ctx);
+                paint.set_color(Color::from_argb(a, r, g, b));
+            }
         }
-        None => {
-            let default = default?;
-            paint.set_color(default);
-            Some(paint)
-        }
+        paint
     }
 }
 
-fn stroke_paint(stroke: Option<&Stroke>, ctx: &StyleContext<'_>) -> Option<Paint> {
-    let stroke = stroke?;
-    let width = stroke.width.resolve_or(ctx, 1.0).max(0.0);
-    if width <= 0.0 {
-        return None;
-    }
-
-    let [r, g, b, a] = resolve_rgba(&stroke.color, ctx);
-    let mut paint = Paint::default();
-    paint.set_anti_alias(true);
-    paint.set_style(PaintStyle::Stroke);
-    paint.set_color(Color::from_argb(a, r, g, b));
-    paint.set_stroke_width(width);
-    paint.set_stroke_cap(stroke.line_cap);
-    paint.set_stroke_join(stroke.line_join);
-
-    if let Some(pattern) = &stroke.dash_pattern {
-        let intervals = pattern
-            .iter()
-            .copied()
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .collect::<Vec<_>>();
-        if intervals.len() >= 2 {
-            paint.set_path_effect(PathEffect::dash(intervals.as_slice(), 0.0));
+impl Stroke {
+    fn to_paint(&self, ctx: &StyleContext<'_>) -> Option<Paint> {
+        let width = self.width.resolve_or(ctx, 1.0).max(0.0);
+        if width <= 0.0 {
+            return None;
         }
-    }
 
-    Some(paint)
+        let [r, g, b, a] = resolve_rgba(&self.color, ctx);
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Stroke);
+        paint.set_color(Color::from_argb(a, r, g, b));
+        paint.set_stroke_width(width);
+        paint.set_stroke_cap(self.line_cap);
+        paint.set_stroke_join(self.line_join);
+
+        if let Some(pattern) = &self.dash_pattern {
+            let intervals = pattern
+                .iter()
+                .copied()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .collect::<Vec<_>>();
+            if intervals.len() >= 2 {
+                paint.set_path_effect(PathEffect::dash(intervals.as_slice(), 0.0));
+            }
+        }
+
+        Some(paint)
+    }
 }
 
 fn resolve_rgba(

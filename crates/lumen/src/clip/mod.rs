@@ -7,9 +7,7 @@ pub mod text;
 
 use skia_safe::{Paint, Point, RRect, Rect, canvas::SaveLayerRec};
 
-use crate::clip::style::{
-    BaseStyle, ResolvedBaseStyle, Sequence, StyleContext, StyleProperty,
-};
+use crate::clip::style::{BaseStyle, ResolvedBaseStyle, Sequence, StyleContext, StyleProperty};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 
@@ -191,13 +189,8 @@ impl BaseStyle {
         if let Some(shadow) = resolved.shadow {
             let canvas = renderer_ctx.canvas();
             canvas.save();
-            apply_resolved_transform(
-                canvas,
-                frame_ctx,
-                &resolved,
-                (shadow.offset_x, shadow.offset_y),
-            );
-            apply_clip_radius(canvas, frame_ctx, &resolved);
+            resolved.apply_transform(canvas, frame_ctx, (shadow.offset_x, shadow.offset_y));
+            resolved.apply_clip_radius(canvas, frame_ctx);
 
             let mut shadow_layer = Paint::default();
             shadow_layer.set_blend_mode(resolved.blend_mode);
@@ -213,8 +206,8 @@ impl BaseStyle {
 
         let canvas = renderer_ctx.canvas();
         canvas.save();
-        apply_resolved_transform(canvas, frame_ctx, &resolved, (0.0, 0.0));
-        apply_clip_radius(canvas, frame_ctx, &resolved);
+        resolved.apply_transform(canvas, frame_ctx, (0.0, 0.0));
+        resolved.apply_clip_radius(canvas, frame_ctx);
 
         let mut layer = Paint::default();
         layer.set_blend_mode(resolved.blend_mode);
@@ -228,66 +221,64 @@ impl BaseStyle {
     }
 }
 
-fn apply_resolved_transform(
-    canvas: &skia_safe::Canvas,
-    frame_ctx: &FrameContext,
-    resolved: &ResolvedBaseStyle,
-    extra_offset: (f32, f32),
-) {
-    let frame_width = frame_ctx.width as f32;
-    let frame_height = frame_ctx.height as f32;
-    let origin_x = frame_width * resolved.origin_x;
-    let origin_y = frame_height * resolved.origin_y;
-    let translate_x = frame_width * resolved.align_x + resolved.translate_x + extra_offset.0;
-    let translate_y = frame_height * resolved.align_y + resolved.translate_y + extra_offset.1;
+impl ResolvedBaseStyle {
+    fn apply_transform(
+        &self,
+        canvas: &skia_safe::Canvas,
+        frame_ctx: &FrameContext,
+        extra_offset: (f32, f32),
+    ) {
+        let frame_width = frame_ctx.width as f32;
+        let frame_height = frame_ctx.height as f32;
+        let origin_x = frame_width * self.origin_x;
+        let origin_y = frame_height * self.origin_y;
+        let translate_x = frame_width * self.align_x + self.translate_x + extra_offset.0;
+        let translate_y = frame_height * self.align_y + self.translate_y + extra_offset.1;
 
-    canvas.translate((translate_x + origin_x, translate_y + origin_y));
-    if resolved.rotation_degrees != 0.0 {
-        canvas.rotate(resolved.rotation_degrees, None);
-    }
-    if resolved.scale_x != 1.0 || resolved.scale_y != 1.0 {
-        canvas.scale((resolved.scale_x, resolved.scale_y));
-    }
-    if resolved.skew_x_degrees != 0.0 || resolved.skew_y_degrees != 0.0 {
-        canvas.skew((
-            resolved.skew_x_degrees.to_radians().tan(),
-            resolved.skew_y_degrees.to_radians().tan(),
-        ));
-    }
-    canvas.translate((-origin_x, -origin_y));
-}
-
-fn apply_clip_radius(
-    canvas: &skia_safe::Canvas,
-    frame_ctx: &FrameContext,
-    resolved: &ResolvedBaseStyle,
-) {
-    if !resolved.clip_radius.iter().any(|radius| *radius > 0.0) {
-        return;
+        canvas.translate((translate_x + origin_x, translate_y + origin_y));
+        if self.rotation_degrees != 0.0 {
+            canvas.rotate(self.rotation_degrees, None);
+        }
+        if self.scale_x != 1.0 || self.scale_y != 1.0 {
+            canvas.scale((self.scale_x, self.scale_y));
+        }
+        if self.skew_x_degrees != 0.0 || self.skew_y_degrees != 0.0 {
+            canvas.skew((
+                self.skew_x_degrees.to_radians().tan(),
+                self.skew_y_degrees.to_radians().tan(),
+            ));
+        }
+        canvas.translate((-origin_x, -origin_y));
     }
 
-    let rect = Rect::from_xywh(0.0, 0.0, frame_ctx.width as f32, frame_ctx.height as f32);
-    let max_radius = (frame_ctx.width.min(frame_ctx.height) as f32) * 0.5;
-    let radii = [
-        Point::new(
-            resolved.clip_radius[0].clamp(0.0, max_radius),
-            resolved.clip_radius[0].clamp(0.0, max_radius),
-        ),
-        Point::new(
-            resolved.clip_radius[1].clamp(0.0, max_radius),
-            resolved.clip_radius[1].clamp(0.0, max_radius),
-        ),
-        Point::new(
-            resolved.clip_radius[2].clamp(0.0, max_radius),
-            resolved.clip_radius[2].clamp(0.0, max_radius),
-        ),
-        Point::new(
-            resolved.clip_radius[3].clamp(0.0, max_radius),
-            resolved.clip_radius[3].clamp(0.0, max_radius),
-        ),
-    ];
-    let rrect = RRect::new_rect_radii(rect, &radii);
-    canvas.clip_rrect(rrect, None, true);
+    fn apply_clip_radius(&self, canvas: &skia_safe::Canvas, frame_ctx: &FrameContext) {
+        if !self.clip_radius.iter().any(|radius| *radius > 0.0) {
+            return;
+        }
+
+        let rect = Rect::from_xywh(0.0, 0.0, frame_ctx.width as f32, frame_ctx.height as f32);
+        let max_radius = (frame_ctx.width.min(frame_ctx.height) as f32) * 0.5;
+        let radii = [
+            Point::new(
+                self.clip_radius[0].clamp(0.0, max_radius),
+                self.clip_radius[0].clamp(0.0, max_radius),
+            ),
+            Point::new(
+                self.clip_radius[1].clamp(0.0, max_radius),
+                self.clip_radius[1].clamp(0.0, max_radius),
+            ),
+            Point::new(
+                self.clip_radius[2].clamp(0.0, max_radius),
+                self.clip_radius[2].clamp(0.0, max_radius),
+            ),
+            Point::new(
+                self.clip_radius[3].clamp(0.0, max_radius),
+                self.clip_radius[3].clamp(0.0, max_radius),
+            ),
+        ];
+        let rrect = RRect::new_rect_radii(rect, &radii);
+        canvas.clip_rrect(rrect, None, true);
+    }
 }
 
 #[cfg(test)]
