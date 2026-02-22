@@ -1,19 +1,7 @@
-pub mod backend;
-pub mod compile;
-pub mod expression;
-pub mod model;
-pub mod orchestrator;
+pub mod clip;
+pub mod dependency;
+#[cfg(feature = "ffmpeg")]
+pub mod ffmpeg;
+pub mod media;
+pub mod render;
 pub mod time;
-
-pub use backend::{FrameImage, FrameProvider, ProvidedFrame, ProviderError, RenderError, Renderer};
-pub use compile::{
-    CompileError, CompiledOperation, CompiledOperationKind, CompiledTimeline, RuntimeEvalError,
-    RuntimeFrameContext, compile_project, compile_project_with_scale,
-};
-pub use expression::{
-    BinOp, ExprEvalContext, ExprEvalError, ExprParseError, ExprRef, ParsedExpr, UnaryOp, eval_expr,
-    parse_expr,
-};
-pub use model::*;
-pub use orchestrator::RenderOrchestrator;
-pub use time::Rational;
