@@ -42,34 +42,34 @@ This file tracks renderer work that is complete and remaining.
 
 ### P0: Stubbed systems (highest leverage)
 
-- [ ] Replace `DependencyTree::topological_order` stub with Kahn topological sort.
-- [ ] Return cycle errors only when a real cycle exists (include deterministic behavior).
-- [ ] Replace `build_dependency_plan` free function with `DependencyPlan::build`.
-- [ ] Populate `DependencyPlan::evaluation_order` from the dependency tree.
-- [ ] Replace `parse_expression` / `evaluate_expression` free functions with `Expression::parse` / `Expression::evaluate`.
-- [ ] Parse expression references (`clip('id').property`, `layout('id').property`) and collect spans.
-- [ ] Implement expression AST + evaluator for literals, unary/binary ops, comparisons, logical ops.
-- [ ] Implement built-in math helpers (`min`, `max`, `abs`, `floor`, `ceil`, `round`, `clamp`, `lerp`, `sin`, `cos`).
-- [ ] Add expression error variants for parse, unknown function, type mismatch, and unresolved reference.
-- [ ] Add unit tests covering expression parsing/evaluation success paths and failures.
+- [x] Replace `DependencyTree::topological_order` stub with Kahn topological sort.
+- [x] Return cycle errors only when a real cycle exists (include deterministic behavior).
+- [x] Replace `build_dependency_plan` free function with `DependencyPlan::build`.
+- [x] Populate `DependencyPlan::evaluation_order` from the dependency tree.
+- [x] Replace `parse_expression` / `evaluate_expression` free functions with `Expression::parse` / `Expression::evaluate`.
+- [x] Parse expression references (`clip('id').property`, `layout('id').property`) and collect spans.
+- [x] Implement expression AST + evaluator for literals, unary/binary ops, comparisons, logical ops.
+- [x] Implement built-in math helpers (`min`, `max`, `abs`, `floor`, `ceil`, `round`, `clamp`, `lerp`, `sin`, `cos`).
+- [x] Add expression error variants for parse, unknown function, type mismatch, and unresolved reference.
+- [x] Add unit tests covering expression parsing/evaluation success paths and failures.
 
 ### P0: Style resolution correctness
 
-- [ ] Move `resolve_style_value` / `resolve_style_value_or` onto `StyleProperty<T>` as methods.
-- [ ] Make keyframe APIs constructible outside the module (`Keyframe`, `Sequence` helpers or public fields).
-- [ ] Add frame-aware resolution for sequences (`resolve(frame)` / `resolve_or(frame, fallback)`).
-- [ ] Add interpolation trait(s) for animatable property types used today (`f32`, `u8`, `u32`, `bool`).
-- [ ] Add easing support on keyframes (at least linear + common easings).
-- [ ] Keep expression values safe during resolution (graceful fallback when unresolved).
-- [ ] Add unit tests for literal resolution, before/after keyframes, exact keyframes, interpolation, and easing.
+- [x] Move `resolve_style_value` / `resolve_style_value_or` onto `StyleProperty<T>` as methods.
+- [x] Make keyframe APIs constructible outside the module (`Keyframe`, `Sequence` helpers or public fields).
+- [x] Add frame-aware resolution for sequences (`resolve(frame)` / `resolve_or(frame, fallback)`).
+- [x] Add interpolation trait(s) for animatable property types used today (`f32`, `u8`, `u32`, `bool`).
+- [x] Add easing support on keyframes (at least linear + common easings).
+- [x] Keep expression values safe during resolution (graceful fallback when unresolved).
+- [x] Add unit tests for literal resolution, before/after keyframes, exact keyframes, interpolation, and easing.
 
 ### P0: Style/base API cleanup (report style conventions)
 
-- [ ] Move `resolve_base_style` free function onto `BaseStyle::resolve`.
-- [ ] Move `draw_with_base_style` free function onto `BaseStyle::draw`.
-- [ ] Convert shape drawing helpers into methods (`ShapeKind::draw` and/or per-style `draw` methods).
-- [ ] Update all clip modules to use method-based style APIs.
-- [ ] Add regression tests for base style resolution clamps/defaults.
+- [x] Move `resolve_base_style` free function onto `BaseStyle::resolve`.
+- [x] Move `draw_with_base_style` free function onto `BaseStyle::draw`.
+- [x] Convert shape drawing helpers into methods (`ShapeKind::draw` and/or per-style `draw` methods).
+- [x] Update all clip modules to use method-based style APIs.
+- [x] Add regression tests for base style resolution clamps/defaults.
 
 ### P1: Clip geometry and transforms
 
