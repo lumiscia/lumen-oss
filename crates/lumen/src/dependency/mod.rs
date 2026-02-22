@@ -94,30 +94,14 @@ impl DependencyPlan {
 #[cfg(test)]
 mod tests {
     use super::DependencyPlan;
-    use crate::expr::{
-        Expression, ExpressionId, ExpressionProperty, ExpressionReference,
-        ExpressionReferenceTarget,
-    };
+    use crate::expr::{Expression, ExpressionId};
 
     #[test]
     fn build_collects_dependencies_and_orders_expressions() {
         let expressions = vec![
-            Expression {
-                id: ExpressionId("b".to_owned()),
-                source: "1".to_owned(),
-                references: vec![ExpressionReference {
-                    target: ExpressionReferenceTarget::ClipProperty {
-                        clip_id: "hero".to_owned(),
-                        property: ExpressionProperty::Width,
-                    },
-                    span: 0..18,
-                }],
-            },
-            Expression {
-                id: ExpressionId("a".to_owned()),
-                source: "2".to_owned(),
-                references: vec![],
-            },
+            Expression::parse(ExpressionId("b".to_owned()), "clip('hero').width")
+                .expect("should parse"),
+            Expression::parse(ExpressionId("a".to_owned()), "2").expect("should parse"),
         ];
 
         let plan = DependencyPlan::build(&expressions);
@@ -131,11 +115,9 @@ mod tests {
 
     #[test]
     fn try_build_matches_build_on_success() {
-        let expressions = vec![Expression {
-            id: ExpressionId("a".to_owned()),
-            source: "1".to_owned(),
-            references: vec![],
-        }];
+        let expressions = vec![
+            Expression::parse(ExpressionId("a".to_owned()), "1").expect("should parse"),
+        ];
 
         let plan = DependencyPlan::build(&expressions);
         let try_plan = DependencyPlan::try_build(&expressions).expect("plan should build");

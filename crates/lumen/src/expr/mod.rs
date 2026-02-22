@@ -11,6 +11,7 @@ pub struct Expression {
     pub id: ExpressionId,
     pub source: String,
     pub references: Vec<ExpressionReference>,
+    ast: ExprNode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -191,19 +192,18 @@ impl Expression {
     pub fn parse(id: ExpressionId, source: impl Into<String>) -> Result<Self, ExpressionError> {
         let source = source.into();
         let mut parser = Parser::new(&source);
-        let (_, references) = parser.parse_full()?;
+        let (ast, references) = parser.parse_full()?;
 
         Ok(Self {
             id,
             source,
             references,
+            ast,
         })
     }
 
     pub fn evaluate(&self, scope: &ExpressionScope) -> Result<ExpressionValue, ExpressionError> {
-        let mut parser = Parser::new(&self.source);
-        let (ast, _) = parser.parse_full()?;
-        ast.evaluate(scope)
+        self.ast.evaluate(scope)
     }
 }
 
