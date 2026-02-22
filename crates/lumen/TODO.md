@@ -142,6 +142,6 @@ This file tracks renderer work that is complete and remaining.
 - [x] Improve render errors with clip id/frame context where available.
 - [ ] Add tracing/log hooks for render phases and timings.
 - [ ] Add builder/constructor helpers for common clip/style setup.
-- [ ] Add backend contract tests (readback dimensions, alpha format, clear behavior).
+- [x] Add backend contract tests (readback dimensions, alpha format, clear behavior).
 - [ ] Add deterministic software-render snapshot tests.
 - [ ] Add fuzz/property tests for expression/dependency edge cases.
