@@ -8,7 +8,9 @@ use crate::expr::{Expression, ExpressionId, ExpressionScope, ExpressionValue};
 
 pub use base::{BaseStyle, ResolvedBaseStyle, ResolvedShadowStyle, ShadowStyle, TransformStyle};
 pub use shape::{EllipseStyle, Fill, PolygonStyle, RectStyle, Stroke};
-pub use text::TextStyle;
+pub use text::{
+    ResolvedTextPlaceholder, TextAlign, TextDecoration, TextOverflow, TextStyle, VerticalAlign,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StyleContext<'a> {

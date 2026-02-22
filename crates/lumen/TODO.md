@@ -89,7 +89,7 @@ This file tracks renderer work that is complete and remaining.
 
 ### P1: Text rendering and measurement
 
-- [ ] Expand `TextStyle` with font, size, weight, color, spacing, alignment, wrapping fields.
+- [x] Expand `TextStyle` with font, size, weight, color, spacing, alignment, wrapping fields.
 - [ ] Implement real text shaping/rendering via Skia `textlayout::Paragraph`.
 - [ ] Cache font collection / paragraph setup where appropriate.
 - [ ] Expose text measurement for layout integration.
