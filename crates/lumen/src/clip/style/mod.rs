@@ -4,7 +4,10 @@ mod text;
 
 use std::marker::PhantomData;
 
-pub use base::BaseStyle;
+pub use base::{
+    BaseStyle, ResolvedBaseStyle, ResolvedShadowStyle, ShadowStyle, TransformStyle,
+    resolve_base_style,
+};
 pub use shape::{EllipseStyle, PolygonStyle, RectStyle};
 pub use text::TextStyle;
 
@@ -53,4 +56,22 @@ where
     }
 }
 
-type OptionalStyleValue<T> = Option<StyleValue<T>>;
+pub fn resolve_style_value<T: Clone>(property: &StyleProperty<T>) -> Option<T> {
+    match property {
+        StyleProperty::Value(StyleValue::Literal(value)) => Some(value.clone()),
+        StyleProperty::Value(StyleValue::Expression(_)) => None,
+        StyleProperty::Sequence(Sequence(keyframes)) => {
+            keyframes
+                .iter()
+                .rev()
+                .find_map(|keyframe| match &keyframe.value {
+                    StyleValue::Literal(value) => Some(value.clone()),
+                    StyleValue::Expression(_) => None,
+                })
+        }
+    }
+}
+
+pub fn resolve_style_value_or<T: Clone>(property: &StyleProperty<T>, fallback: T) -> T {
+    resolve_style_value(property).unwrap_or(fallback)
+}

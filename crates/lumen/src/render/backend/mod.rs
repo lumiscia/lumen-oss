@@ -21,7 +21,7 @@ pub trait FrameProvider {
 pub trait RenderBackend {
     fn render_frame(
         &mut self,
-        renderer_ctx: &RendererContext,
+        renderer_ctx: &mut RendererContext,
         frame_ctx: &FrameContext,
         provider: &mut dyn FrameProvider,
     ) -> Result<Vec<u8>, RenderError>;

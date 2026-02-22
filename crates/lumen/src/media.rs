@@ -19,9 +19,9 @@ pub trait VideoResolver {
 }
 
 pub trait MediaStore {
-    fn get_image_resolver(&self, id: String) -> Option<impl ImageResolver>;
+    fn get_image_resolver(&mut self, id: &str) -> Option<Box<dyn ImageResolver>>;
 
-    fn get_video_resolver(&self, id: String) -> Option<impl VideoResolver>;
+    fn get_video_resolver(&mut self, id: &str) -> Option<Box<dyn VideoResolver>>;
 }
 
 // TODO: audio
