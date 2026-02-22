@@ -91,10 +91,6 @@ impl DependencyPlan {
     }
 }
 
-pub fn build_dependency_plan(expressions: &[Expression]) -> DependencyPlan {
-    DependencyPlan::build(expressions)
-}
-
 #[cfg(test)]
 mod tests {
     use super::DependencyPlan;

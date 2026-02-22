@@ -454,20 +454,6 @@ fn unary_math(
     Ok(ExpressionValue::Number(f(value)))
 }
 
-pub fn parse_expression(
-    id: ExpressionId,
-    source: impl Into<String>,
-) -> Result<Expression, ExpressionError> {
-    Expression::parse(id, source)
-}
-
-pub fn evaluate_expression(
-    expression: &Expression,
-    scope: &ExpressionScope,
-) -> Result<ExpressionValue, ExpressionError> {
-    expression.evaluate(scope)
-}
-
 #[derive(Debug, Clone, PartialEq)]
 enum TokenKind {
     Identifier(String),
@@ -1110,7 +1096,7 @@ impl ExprNode {
 mod tests {
     use super::{
         Expression, ExpressionError, ExpressionId, ExpressionProperty, ExpressionReferenceTarget,
-        ExpressionScope, ExpressionValue, evaluate_expression, parse_expression,
+        ExpressionScope, ExpressionValue,
     };
 
     fn parse(source: &str) -> Expression {
@@ -1196,7 +1182,7 @@ mod tests {
             ExpressionValue::Number(0.2),
         );
 
-        let value = evaluate_expression(&expression, &scope).expect("expression should evaluate");
+        let value = expression.evaluate(&scope).expect("expression should evaluate");
         assert_eq!(value, ExpressionValue::Number(100.0));
     }
 
@@ -1212,7 +1198,7 @@ mod tests {
 
     #[test]
     fn parse_errors_on_unknown_property() {
-        let err = parse_expression(ExpressionId("expr".to_owned()), "clip('a').depth")
+        let err = Expression::parse(ExpressionId("expr".to_owned()), "clip('a').depth")
             .expect_err("unknown property should fail");
 
         assert!(matches!(err, ExpressionError::Parse { .. }));
