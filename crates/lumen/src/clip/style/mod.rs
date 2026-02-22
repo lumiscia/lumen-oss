@@ -183,16 +183,26 @@ impl<T> Keyframe<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct StyleExpression<T> {
     pub expr: String,
+    parsed: Option<Expression>,
     pub value_type: PhantomData<T>,
+}
+
+impl<T> PartialEq for StyleExpression<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.expr == other.expr
+    }
 }
 
 impl<T> StyleExpression<T> {
     pub fn new(expr: impl Into<String>) -> Self {
+        let expr = expr.into();
+        let parsed = Expression::parse(ExpressionId("style".to_owned()), expr.as_str()).ok();
         Self {
-            expr: expr.into(),
+            expr,
+            parsed,
             value_type: PhantomData,
         }
     }
@@ -213,11 +223,7 @@ where
             Self::Literal(value) => Some(value.clone()),
             Self::Expression(expr) => {
                 let scope = ctx.scope?;
-                let parsed = Expression::parse(
-                    ExpressionId(format!("style@frame:{}", ctx.frame)),
-                    expr.expr.as_str(),
-                )
-                .ok()?;
+                let parsed = expr.parsed.as_ref()?;
                 let value = parsed.evaluate(scope).ok()?;
                 T::from_expression_value(value)
             }
