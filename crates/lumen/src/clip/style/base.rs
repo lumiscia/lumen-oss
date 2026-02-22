@@ -8,7 +8,7 @@ pub struct BaseStyle {
     pub opacity: StyleProperty<f32>,
     pub blend_mode: BlendMode,
     pub blur: StyleProperty<f32>,
-    pub shadow: Option<ShadowStyle>,
+    pub shadows: Vec<ShadowStyle>,
     pub clip_radius: [StyleProperty<f32>; 4],
     pub transform: TransformStyle,
     pub alignment: [StyleProperty<f32>; 2],
@@ -28,10 +28,12 @@ pub struct ShadowStyle {
     pub offset_x: StyleProperty<f32>,
     pub offset_y: StyleProperty<f32>,
     pub blur: StyleProperty<f32>,
+    pub spread: StyleProperty<f32>,
+    pub inset: bool,
     pub color: [StyleProperty<u8>; 4],
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ResolvedBaseStyle {
     pub visible: bool,
     pub opacity: f32,
@@ -49,7 +51,7 @@ pub struct ResolvedBaseStyle {
     pub origin_y: f32,
     pub align_x: f32,
     pub align_y: f32,
-    pub shadow: Option<ResolvedShadowStyle>,
+    pub shadows: Vec<ResolvedShadowStyle>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,22 +59,30 @@ pub struct ResolvedShadowStyle {
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur: f32,
+    pub spread: f32,
+    pub inset: bool,
     pub color: [u8; 4],
 }
 
 impl BaseStyle {
     pub fn resolve(&self, ctx: &StyleContext<'_>) -> ResolvedBaseStyle {
-        let shadow = self.shadow.as_ref().map(|shadow| ResolvedShadowStyle {
-            offset_x: shadow.offset_x.resolve_or(ctx, 0.0),
-            offset_y: shadow.offset_y.resolve_or(ctx, 0.0),
-            blur: shadow.blur.resolve_or(ctx, 0.0),
-            color: [
-                shadow.color[0].resolve_or(ctx, 0),
-                shadow.color[1].resolve_or(ctx, 0),
-                shadow.color[2].resolve_or(ctx, 0),
-                shadow.color[3].resolve_or(ctx, 0),
-            ],
-        });
+        let shadows = self
+            .shadows
+            .iter()
+            .map(|shadow| ResolvedShadowStyle {
+                offset_x: shadow.offset_x.resolve_or(ctx, 0.0),
+                offset_y: shadow.offset_y.resolve_or(ctx, 0.0),
+                blur: shadow.blur.resolve_or(ctx, 0.0).max(0.0),
+                spread: shadow.spread.resolve_or(ctx, 0.0),
+                inset: shadow.inset,
+                color: [
+                    shadow.color[0].resolve_or(ctx, 0),
+                    shadow.color[1].resolve_or(ctx, 0),
+                    shadow.color[2].resolve_or(ctx, 0),
+                    shadow.color[3].resolve_or(ctx, 0),
+                ],
+            })
+            .collect::<Vec<_>>();
 
         ResolvedBaseStyle {
             visible: self.visible.resolve_or(ctx, true),
@@ -96,7 +106,7 @@ impl BaseStyle {
             origin_y: self.transform.origin[1].resolve_or(ctx, 0.0),
             align_x: self.alignment[0].resolve_or(ctx, 0.0),
             align_y: self.alignment[1].resolve_or(ctx, 0.0),
-            shadow,
+            shadows,
         }
     }
 }
@@ -119,7 +129,7 @@ mod tests {
             opacity: literal(5.0),
             blend_mode: BlendMode::SrcOver,
             blur: literal(-4.0),
-            shadow: None,
+            shadows: Vec::new(),
             clip_radius: [literal(-1.0), literal(2.0), literal(3.0), literal(4.0)],
             transform: TransformStyle {
                 translate: [literal(12.0), literal(-3.0)],
@@ -157,12 +167,14 @@ mod tests {
             opacity: literal(1.0),
             blend_mode: BlendMode::SrcOver,
             blur: literal(0.0),
-            shadow: Some(ShadowStyle {
+            shadows: vec![ShadowStyle {
                 offset_x: literal(4.0),
                 offset_y: literal(6.0),
                 blur: literal(8.0),
+                spread: literal(2.0),
+                inset: true,
                 color: [literal(10), literal(20), literal(30), literal(40)],
-            }),
+            }],
             clip_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
             transform: TransformStyle {
                 translate: [literal(0.0), literal(0.0)],
@@ -175,11 +187,13 @@ mod tests {
         };
 
         let resolved = style.resolve(&StyleContext::new(0));
-        let shadow = resolved.shadow.expect("shadow should resolve");
+        let shadow = resolved.shadows.first().expect("shadow should resolve");
 
         assert_eq!(shadow.offset_x, 4.0);
         assert_eq!(shadow.offset_y, 6.0);
         assert_eq!(shadow.blur, 8.0);
+        assert_eq!(shadow.spread, 2.0);
+        assert!(shadow.inset);
         assert_eq!(shadow.color, [10, 20, 30, 40]);
     }
 }

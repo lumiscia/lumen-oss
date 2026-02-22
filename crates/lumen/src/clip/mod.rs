@@ -5,7 +5,9 @@ pub mod shape;
 pub mod style;
 pub mod text;
 
-use skia_safe::{Paint, Point, RRect, Rect, canvas::SaveLayerRec};
+use skia_safe::{
+    BlurStyle, Color, MaskFilter, Paint, Point, RRect, Rect, canvas::SaveLayerRec, color_filters,
+};
 
 use crate::clip::style::{BaseStyle, ResolvedBaseStyle, Sequence, StyleContext, StyleProperty};
 use crate::render::backend::RenderError;
@@ -186,18 +188,30 @@ impl BaseStyle {
             return Ok(());
         }
 
-        if let Some(shadow) = resolved.shadow {
+        for shadow in resolved.shadows.iter().filter(|shadow| !shadow.inset) {
             let canvas = renderer_ctx.canvas();
             canvas.save();
             resolved.apply_transform(canvas, frame_ctx, (shadow.offset_x, shadow.offset_y));
             resolved.apply_clip_radius(canvas, frame_ctx);
+            resolved.apply_shadow_spread(canvas, frame_ctx, shadow.spread);
 
             let mut shadow_layer = Paint::default();
             shadow_layer.set_blend_mode(resolved.blend_mode);
-            shadow_layer.set_alpha_f(
-                (resolved.opacity * (shadow.color[3] as f32 / 255.0) / (1.0 + shadow.blur * 0.1))
-                    .clamp(0.0, 1.0),
-            );
+            shadow_layer.set_alpha_f(resolved.opacity.clamp(0.0, 1.0));
+            shadow_layer.set_anti_alias(true);
+            shadow_layer.set_color_filter(color_filters::blend(
+                Color::from_argb(
+                    shadow.color[3],
+                    shadow.color[0],
+                    shadow.color[1],
+                    shadow.color[2],
+                ),
+                skia_safe::BlendMode::SrcIn,
+            ));
+            if let Some(mask_filter) = resolved.shadow_mask_filter(shadow) {
+                shadow_layer.set_mask_filter(mask_filter);
+            }
+
             canvas.save_layer(&SaveLayerRec::default().paint(&shadow_layer));
             draw(renderer_ctx, &resolved)?;
             renderer_ctx.canvas().restore();
@@ -216,6 +230,49 @@ impl BaseStyle {
         draw(renderer_ctx, &resolved)?;
         renderer_ctx.canvas().restore();
         renderer_ctx.canvas().restore();
+
+        for shadow in resolved.shadows.iter().filter(|shadow| shadow.inset) {
+            let mut inset_layer = Paint::default();
+            inset_layer.set_anti_alias(true);
+            inset_layer.set_color_filter(color_filters::blend(
+                Color::from_argb(
+                    shadow.color[3],
+                    shadow.color[0],
+                    shadow.color[1],
+                    shadow.color[2],
+                ),
+                skia_safe::BlendMode::SrcIn,
+            ));
+            if let Some(mask_filter) = resolved.shadow_mask_filter(shadow) {
+                inset_layer.set_mask_filter(mask_filter);
+            }
+
+            {
+                let canvas = renderer_ctx.canvas();
+                canvas.save();
+                resolved.apply_transform(canvas, frame_ctx, (0.0, 0.0));
+                resolved.apply_clip_radius(canvas, frame_ctx);
+                canvas.save_layer(&SaveLayerRec::default());
+                canvas.save();
+                resolved.apply_shadow_spread(canvas, frame_ctx, shadow.spread);
+                canvas.translate((shadow.offset_x, shadow.offset_y));
+                canvas.save_layer(&SaveLayerRec::default().paint(&inset_layer));
+            }
+
+            draw(renderer_ctx, &resolved)?;
+            renderer_ctx.canvas().restore();
+            renderer_ctx.canvas().restore();
+
+            let mut mask_layer = Paint::default();
+            mask_layer.set_blend_mode(skia_safe::BlendMode::DstIn);
+            renderer_ctx
+                .canvas()
+                .save_layer(&SaveLayerRec::default().paint(&mask_layer));
+            draw(renderer_ctx, &resolved)?;
+            renderer_ctx.canvas().restore();
+            renderer_ctx.canvas().restore();
+            renderer_ctx.canvas().restore();
+        }
 
         Ok(())
     }
@@ -278,6 +335,40 @@ impl ResolvedBaseStyle {
         ];
         let rrect = RRect::new_rect_radii(rect, &radii);
         canvas.clip_rrect(rrect, None, true);
+    }
+
+    fn apply_shadow_spread(
+        &self,
+        canvas: &skia_safe::Canvas,
+        frame_ctx: &FrameContext,
+        spread: f32,
+    ) {
+        if spread == 0.0 {
+            return;
+        }
+
+        let width = frame_ctx.width.max(1) as f32;
+        let height = frame_ctx.height.max(1) as f32;
+        let scale_x = ((width + spread * 2.0) / width).max(0.01);
+        let scale_y = ((height + spread * 2.0) / height).max(0.01);
+        let center_x = width * 0.5;
+        let center_y = height * 0.5;
+
+        canvas.translate((center_x, center_y));
+        canvas.scale((scale_x, scale_y));
+        canvas.translate((-center_x, -center_y));
+    }
+
+    fn shadow_mask_filter(
+        &self,
+        shadow: &crate::clip::style::ResolvedShadowStyle,
+    ) -> Option<MaskFilter> {
+        let sigma = ((shadow.blur + shadow.spread.abs() * 2.0) / 2.0).max(0.0);
+        if sigma == 0.0 {
+            return None;
+        }
+
+        MaskFilter::blur(BlurStyle::Normal, sigma, Some(false))
     }
 }
 

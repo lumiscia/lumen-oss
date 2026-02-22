@@ -318,7 +318,7 @@ mod tests {
             opacity: literal(1.0),
             blend_mode: BlendMode::SrcOver,
             blur: literal(0.0),
-            shadow: None,
+            shadows: Vec::new(),
             clip_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
             transform: TransformStyle {
                 translate: [literal(0.0), literal(0.0)],

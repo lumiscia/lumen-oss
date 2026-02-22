@@ -63,10 +63,10 @@
 
 ### Implementation
 
-- [ ] T011 [US16] Change `BaseStyle::shadow: Option<ShadowStyle>` to `shadows: Vec<ShadowStyle>` in `crates/lumen/src/clip/style/base.rs` — update `BaseStyle::resolve`, `BaseStyle::draw`, and all call sites to use the `Vec`
-- [ ] T012 [US16] Add `spread: StyleProperty<f32>` and `inset: bool` fields to `ShadowStyle` in `crates/lumen/src/clip/style/base.rs`
-- [ ] T013 [US16] Implement proper outer shadow rendering in `BaseStyle::draw` shadow pass in `crates/lumen/src/clip/style/base.rs` — for each shadow with `inset == false`: save canvas, create `Paint` with shadow color, set `paint.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, blur / 2.0, false))`, expand rect by `spread`, draw shadow shape offset by `(offset_x, offset_y)`, restore canvas
-- [ ] T014 [US16] Implement inset shadow rendering in `BaseStyle::draw` in `crates/lumen/src/clip/style/base.rs` — for each shadow with `inset == true`: clip canvas to element shape, draw large-rect-minus-element shape (contracted by `spread`) with blur paint and offset, restore
+- [X] T011 [US16] Change `BaseStyle::shadow: Option<ShadowStyle>` to `shadows: Vec<ShadowStyle>` in `crates/lumen/src/clip/style/base.rs` — update `BaseStyle::resolve`, `BaseStyle::draw`, and all call sites to use the `Vec`
+- [X] T012 [US16] Add `spread: StyleProperty<f32>` and `inset: bool` fields to `ShadowStyle` in `crates/lumen/src/clip/style/base.rs`
+- [X] T013 [US16] Implement proper outer shadow rendering in `BaseStyle::draw` shadow pass in `crates/lumen/src/clip/style/base.rs` — for each shadow with `inset == false`: save canvas, create `Paint` with shadow color, set `paint.set_mask_filter(MaskFilter::blur(BlurStyle::Normal, blur / 2.0, false))`, expand rect by `spread`, draw shadow shape offset by `(offset_x, offset_y)`, restore canvas
+- [X] T014 [US16] Implement inset shadow rendering in `BaseStyle::draw` in `crates/lumen/src/clip/style/base.rs` — for each shadow with `inset == true`: clip canvas to element shape, draw large-rect-minus-element shape (contracted by `spread`) with blur paint and offset, restore
 
 **Checkpoint**: Shadows render with real Gaussian blur; multiple shadows stack in declaration order; inset shadows appear inside the element.
 
