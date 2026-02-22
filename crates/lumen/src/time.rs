@@ -1,4 +1,3 @@
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rational {
     pub num: u32,
@@ -18,7 +17,6 @@ impl Rational {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::Rational;
@@ -28,5 +26,4 @@ mod tests {
         assert_eq!(Rational::new(10, 0).as_f32(), 0.0);
         assert!((Rational::new(30000, 1001).as_f32() - 29.97003).abs() < 0.0001);
     }
-
 }

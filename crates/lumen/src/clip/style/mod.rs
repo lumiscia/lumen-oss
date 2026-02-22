@@ -228,8 +228,9 @@ where
         match self {
             Self::Literal(value) => Some(value.clone()),
             Self::Expression(expr) => {
-                let scope = ctx.scope?;
                 let parsed = expr.parsed.as_ref()?;
+                let default_scope = ExpressionScope::default();
+                let scope = ctx.scope.unwrap_or(&default_scope);
                 let value = parsed.evaluate(scope).ok()?;
                 T::from_expression_value(value)
             }
@@ -400,6 +401,15 @@ mod tests {
         assert_eq!(property.resolve(&ctx), Some(160.0));
     }
 
+    #[test]
+    fn resolves_constant_expression_without_scope() {
+        let property = StyleProperty::Value(StyleValue::Expression(StyleExpression::<f32>::new(
+            "lerp(10, 30, 0.25)",
+        )));
+        let ctx = StyleContext::new(0);
+
+        assert_eq!(property.resolve(&ctx), Some(15.0));
+    }
     #[test]
     fn falls_back_when_expression_scope_is_missing() {
         let property = StyleProperty::Value(StyleValue::Expression(StyleExpression::<f32>::new(
