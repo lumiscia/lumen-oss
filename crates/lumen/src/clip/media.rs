@@ -270,7 +270,7 @@ mod tests {
     };
     use crate::media::{ImageResolver, MediaStore, VideoResolver};
     use crate::render::{
-        backend::read_surface_rgba,
+        backend::{RenderError, read_surface_rgba},
         context::{FrameContext, RendererContext},
     };
     use crate::time::Rational;
@@ -431,6 +431,41 @@ mod tests {
     }
 
     #[test]
+    fn image_clip_falls_back_to_placeholder_when_resolver_missing() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.set_media_store(Box::new(TestMediaStore {
+            image: None,
+            video: None,
+        }));
+        renderer_ctx.clear();
+
+        let clip = ImageClip {
+            meta: ClipMeta {
+                id: Some("img".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            source: "img".to_owned(),
+            style: base_style(),
+        };
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("placeholder image clip should draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = (10usize + 10usize * 100) * 4;
+        assert_eq!(&pixels[idx..idx + 4], &[110, 170, 255, 255]);
+    }
+
+    #[test]
     fn video_clip_draws_rgba_pixels_from_resolver() {
         let mut renderer_ctx =
             RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
@@ -479,6 +514,74 @@ mod tests {
 
         assert_eq!(tl, &[10, 20, 30, 255]);
         assert_eq!(br, &[100, 110, 120, 255]);
+    }
+
+    #[test]
+    fn video_clip_errors_when_media_store_missing() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.clear();
+
+        let clip = VideoClip {
+            meta: ClipMeta {
+                id: Some("video".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            source: "video".to_owned(),
+            style: base_style(),
+            trim: None,
+            speed: 1.0,
+            r#loop: LoopMode::None,
+        };
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        let err = clip
+            .draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect_err("missing media store should error");
+        assert!(matches!(err, RenderError::MissingSource(source) if source == "video:video"));
+    }
+
+    #[test]
+    fn video_clip_errors_when_resolver_missing() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.set_media_store(Box::new(TestMediaStore {
+            image: None,
+            video: None,
+        }));
+        renderer_ctx.clear();
+
+        let clip = VideoClip {
+            meta: ClipMeta {
+                id: Some("video".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            source: "video".to_owned(),
+            style: base_style(),
+            trim: None,
+            speed: 1.0,
+            r#loop: LoopMode::None,
+        };
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        let err = clip
+            .draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect_err("missing resolver should error");
+        assert!(matches!(err, RenderError::MissingSource(source) if source == "video:video"));
     }
 
     #[test]

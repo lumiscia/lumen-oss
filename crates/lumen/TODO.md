@@ -111,7 +111,7 @@ This file tracks renderer work that is complete and remaining.
 - [ ] Add image/video Skia image caching to avoid per-frame conversions.
 - [x] Render decoded video frames to Skia (`VideoClip`) instead of placeholders.
 - [x] Implement `VideoClip` timeline mapping for trim/speed/loop.
-- [ ] Add media resolver tests for missing sources, frame mapping, and fallback behavior.
+- [x] Add media resolver tests for missing sources, frame mapping, and fallback behavior.
 
 ### P2: FFmpeg decode pipeline (feature-gated)
 
