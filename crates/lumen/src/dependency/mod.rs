@@ -115,9 +115,8 @@ mod tests {
 
     #[test]
     fn try_build_matches_build_on_success() {
-        let expressions = vec![
-            Expression::parse(ExpressionId("a".to_owned()), "1").expect("should parse"),
-        ];
+        let expressions =
+            vec![Expression::parse(ExpressionId("a".to_owned()), "1").expect("should parse")];
 
         let plan = DependencyPlan::build(&expressions);
         let try_plan = DependencyPlan::try_build(&expressions).expect("plan should build");

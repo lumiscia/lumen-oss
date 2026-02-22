@@ -1182,7 +1182,9 @@ mod tests {
             ExpressionValue::Number(0.2),
         );
 
-        let value = expression.evaluate(&scope).expect("expression should evaluate");
+        let value = expression
+            .evaluate(&scope)
+            .expect("expression should evaluate");
         assert_eq!(value, ExpressionValue::Number(100.0));
     }
 

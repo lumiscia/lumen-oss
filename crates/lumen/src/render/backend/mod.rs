@@ -46,9 +46,7 @@ pub enum RenderError {
     PixelReadback,
     #[error("failed to create GPU surface")]
     GpuSurfaceCreation,
-    #[error(
-        "render failed at frame {frame} for clip {clip_id}: {source}"
-    )]
+    #[error("render failed at frame {frame} for clip {clip_id}: {source}")]
     ClipContext {
         clip_id: String,
         frame: u32,
