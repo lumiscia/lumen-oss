@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use skia_safe::{Color, Data, ImageInfo, Paint, Rect, images};
+use skia_safe::{Color, Data, Image, ImageInfo, Paint, Rect, images};
 
 use crate::clip::{Clip, ClipGeometry, ClipMeta, ResolvedClipGeometry, style::BaseStyle};
 use crate::render::backend::RenderError;
@@ -59,24 +59,34 @@ impl Clip for ImageClip {
                     0.0,
                 );
 
-                if let Some(media_store) = renderer_ctx.media_store_mut() {
+                if let Some((width, height, image)) =
+                    renderer_ctx.cached_image_by_source(self.source.as_str())
+                {
+                    let (dst_rect, clip_rect) = media_fit_rects(&geometry, width, height, self.fit);
+                    draw_image(renderer_ctx, dst_rect, clip_rect, &image);
+                    return Ok(());
+                }
+
+                let fetched = if let Some(media_store) = renderer_ctx.media_store_mut() {
                     if let Some(mut resolver) = media_store.get_image_resolver(self.source.as_str())
                     {
-                        let width = resolver.width();
-                        let height = resolver.height();
+                        let width = resolver.width().max(1);
+                        let height = resolver.height().max(1);
                         let pixels = resolver.resolve();
-                        let (dst_rect, clip_rect) =
-                            media_fit_rects(&geometry, width.max(1), height.max(1), self.fit);
-                        draw_rgba_image(
-                            renderer_ctx,
-                            dst_rect,
-                            clip_rect,
-                            width.max(1),
-                            height.max(1),
-                            pixels.as_slice(),
-                        )?;
-                        return Ok(());
+                        Some((width, height, pixels))
+                    } else {
+                        None
                     }
+                } else {
+                    None
+                };
+
+                if let Some((width, height, pixels)) = fetched {
+                    let image = raster_image_from_rgba(width, height, pixels.as_slice())?;
+                    renderer_ctx.cache_image(self.source.clone(), width, height, image.clone());
+                    let (dst_rect, clip_rect) = media_fit_rects(&geometry, width, height, self.fit);
+                    draw_image(renderer_ctx, dst_rect, clip_rect, &image);
+                    return Ok(());
                 }
 
                 let color = Color::from_argb(255, 110, 170, 255);
@@ -92,14 +102,7 @@ impl Clip for ImageClip {
     }
 }
 
-fn draw_rgba_image(
-    renderer_ctx: &mut RendererContext,
-    dst_rect: Rect,
-    clip_rect: Option<Rect>,
-    width: u32,
-    height: u32,
-    pixels: &[u8],
-) -> Result<(), RenderError> {
+fn raster_image_from_rgba(width: u32, height: u32, pixels: &[u8]) -> Result<Image, RenderError> {
     let expected_len = (width as usize)
         .saturating_mul(height as usize)
         .saturating_mul(4);
@@ -114,10 +117,17 @@ fn draw_rgba_image(
         None,
     );
     let data = Data::new_copy(pixels);
-    let image = images::raster_from_data(&info, data, width as usize * 4).ok_or(
-        RenderError::Unsupported("failed to create image from RGBA pixels"),
-    )?;
+    images::raster_from_data(&info, data, width as usize * 4).ok_or(RenderError::Unsupported(
+        "failed to create image from RGBA pixels",
+    ))
+}
 
+fn draw_image(
+    renderer_ctx: &mut RendererContext,
+    dst_rect: Rect,
+    clip_rect: Option<Rect>,
+    image: &Image,
+) {
     let mut paint = Paint::default();
     paint.set_anti_alias(false);
     if let Some(clip_rect) = clip_rect {
@@ -125,14 +135,13 @@ fn draw_rgba_image(
         renderer_ctx.canvas().clip_rect(clip_rect, None, true);
         renderer_ctx
             .canvas()
-            .draw_image_rect(image, None, dst_rect, &paint);
+            .draw_image_rect(image.clone(), None, dst_rect, &paint);
         renderer_ctx.canvas().restore();
     } else {
         renderer_ctx
             .canvas()
-            .draw_image_rect(image, None, dst_rect, &paint);
+            .draw_image_rect(image.clone(), None, dst_rect, &paint);
     }
-    Ok(())
 }
 
 fn media_fit_rects(
@@ -286,13 +295,6 @@ impl Clip for VideoClip {
                 let Some(mapped_frame) = mapped_frame else {
                     return Ok(());
                 };
-                let media_store = renderer_ctx
-                    .media_store_mut()
-                    .ok_or_else(|| RenderError::MissingSource(format!("video:{}", self.source)))?;
-                let mut resolver = media_store
-                    .get_video_resolver(self.source.as_str())
-                    .ok_or_else(|| RenderError::MissingSource(format!("video:{}", self.source)))?;
-
                 let geometry = self.geometry.resolve_with_defaults(
                     frame,
                     frame_ctx.width as f32 * 0.1,
@@ -302,18 +304,41 @@ impl Clip for VideoClip {
                     0.0,
                     0.0,
                 );
-                let width = resolver.width().max(1);
-                let height = resolver.height().max(1);
-                let pixels = resolver.resolve_frame(mapped_frame);
-                let (dst_rect, clip_rect) = media_fit_rects(&geometry, width, height, self.fit);
-                draw_rgba_image(
-                    renderer_ctx,
-                    dst_rect,
-                    clip_rect,
+
+                if let Some((width, height, image)) =
+                    renderer_ctx.cached_video_frame_by_source(self.source.as_str(), mapped_frame)
+                {
+                    let (dst_rect, clip_rect) = media_fit_rects(&geometry, width, height, self.fit);
+                    draw_image(renderer_ctx, dst_rect, clip_rect, &image);
+                    return Ok(());
+                }
+
+                let fetched = {
+                    let media_store = renderer_ctx.media_store_mut().ok_or_else(|| {
+                        RenderError::MissingSource(format!("video:{}", self.source))
+                    })?;
+                    let mut resolver = media_store
+                        .get_video_resolver(self.source.as_str())
+                        .ok_or_else(|| {
+                            RenderError::MissingSource(format!("video:{}", self.source))
+                        })?;
+                    let width = resolver.width().max(1);
+                    let height = resolver.height().max(1);
+                    let pixels = resolver.resolve_frame(mapped_frame);
+                    Ok::<_, RenderError>((width, height, pixels))
+                }?;
+
+                let (width, height, pixels) = fetched;
+                let image = raster_image_from_rgba(width, height, pixels.as_slice())?;
+                renderer_ctx.cache_video_frame(
+                    self.source.clone(),
+                    mapped_frame,
                     width,
                     height,
-                    pixels.as_slice(),
-                )?;
+                    image.clone(),
+                );
+                let (dst_rect, clip_rect) = media_fit_rects(&geometry, width, height, self.fit);
+                draw_image(renderer_ctx, dst_rect, clip_rect, &image);
 
                 Ok(())
             })
@@ -702,6 +727,51 @@ mod tests {
     }
 
     #[test]
+    fn image_clip_reuses_cached_skia_image_when_resolver_is_gone() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.set_media_store(Box::new(TestMediaStore {
+            image: Some(TestImageResolver {
+                id: "img".to_owned(),
+                width: 1,
+                height: 1,
+                pixels: vec![33, 44, 55, 255],
+            }),
+            video: None,
+        }));
+        renderer_ctx.clear();
+
+        let clip = ImageClip {
+            meta: ClipMeta {
+                id: Some("img".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            geometry: geometry(),
+            source: "img".to_owned(),
+            fit: ImageFit::None,
+            style: base_style(),
+        };
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("first draw should decode and cache");
+        renderer_ctx.clear();
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("second draw should use cache");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+        assert_eq!(&pixels[idx(10, 10)..idx(10, 10) + 4], &[33, 44, 55, 255]);
+    }
+
+    #[test]
     fn media_fit_none_uses_intrinsic_size_and_clip_bounds() {
         let geometry = resolved_geometry(10.0, 20.0, 30.0, 40.0, 0.0, 0.0);
         let (dst, clip) = media_fit_rects(&geometry, 8, 6, ImageFit::None);
@@ -788,6 +858,54 @@ mod tests {
 
         assert_eq!(tl, &[10, 20, 30, 255]);
         assert_eq!(br, &[100, 110, 120, 255]);
+    }
+
+    #[test]
+    fn video_clip_reuses_cached_skia_frame_when_resolver_is_gone() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.set_media_store(Box::new(TestMediaStore {
+            image: None,
+            video: Some(TestVideoResolver {
+                width: 1,
+                height: 1,
+                pixels: vec![90, 80, 70, 255],
+                last_requested_frame: None,
+            }),
+        }));
+        renderer_ctx.clear();
+
+        let clip = VideoClip {
+            meta: ClipMeta {
+                id: Some("video".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            geometry: geometry(),
+            source: "video".to_owned(),
+            fit: ImageFit::None,
+            style: base_style(),
+            trim: None,
+            speed: 1.0,
+            r#loop: LoopMode::None,
+        };
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("first draw should decode and cache");
+        renderer_ctx.clear();
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("second draw should use cache");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+        assert_eq!(&pixels[idx(10, 50)..idx(10, 50) + 4], &[90, 80, 70, 255]);
     }
 
     #[test]

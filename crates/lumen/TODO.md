@@ -108,7 +108,7 @@ This file tracks renderer work that is complete and remaining.
 
 - [x] Render decoded image pixels to Skia (`ImageClip`) instead of placeholders.
 - [x] Add image fit modes (`cover`, `contain`, `fill`, `none`).
-- [ ] Add image/video Skia image caching to avoid per-frame conversions.
+- [x] Add image/video Skia image caching to avoid per-frame conversions.
 - [x] Render decoded video frames to Skia (`VideoClip`) instead of placeholders.
 - [x] Implement `VideoClip` timeline mapping for trim/speed/loop.
 - [x] Add media resolver tests for missing sources, frame mapping, and fallback behavior.

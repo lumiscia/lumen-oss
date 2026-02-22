@@ -1,9 +1,26 @@
-use skia_safe::{Canvas, Color, Surface, surfaces};
+use std::collections::HashMap;
+
+use skia_safe::{Canvas, Color, Image, Surface, surfaces};
 use thiserror::Error;
 
 use crate::time::Rational;
 
 use crate::media::MediaStore;
+
+#[derive(Clone)]
+struct CachedImage {
+    width: u32,
+    height: u32,
+    image: Image,
+}
+
+#[derive(Clone)]
+struct CachedVideoFrame {
+    frame: u32,
+    width: u32,
+    height: u32,
+    image: Image,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameContext {
@@ -22,6 +39,8 @@ pub struct RendererContext {
     pub surface: Surface,
     pub overlay_surface: Surface,
     pub media_store: Option<Box<dyn MediaStore>>,
+    image_cache: HashMap<String, CachedImage>,
+    video_frame_cache: HashMap<String, CachedVideoFrame>,
 }
 
 #[derive(Debug, Error)]
@@ -49,6 +68,8 @@ impl RendererContext {
             surface,
             overlay_surface,
             media_store: None,
+            image_cache: HashMap::new(),
+            video_frame_cache: HashMap::new(),
         })
     }
 
@@ -73,5 +94,121 @@ impl RendererContext {
         self.overlay_surface
             .canvas()
             .clear(Color::from_argb(0, 0, 0, 0));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_image(&self, source: &str, width: u32, height: u32) -> Option<Image> {
+        let cached = self.image_cache.get(source)?;
+        (cached.width == width && cached.height == height).then(|| cached.image.clone())
+    }
+
+    pub(crate) fn cached_image_by_source(&self, source: &str) -> Option<(u32, u32, Image)> {
+        let cached = self.image_cache.get(source)?;
+        Some((cached.width, cached.height, cached.image.clone()))
+    }
+
+    pub(crate) fn cache_image(
+        &mut self,
+        source: impl Into<String>,
+        width: u32,
+        height: u32,
+        image: Image,
+    ) {
+        self.image_cache.insert(
+            source.into(),
+            CachedImage {
+                width,
+                height,
+                image,
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_video_frame(
+        &self,
+        source: &str,
+        frame: u32,
+        width: u32,
+        height: u32,
+    ) -> Option<Image> {
+        let cached = self.video_frame_cache.get(source)?;
+        (cached.frame == frame && cached.width == width && cached.height == height)
+            .then(|| cached.image.clone())
+    }
+
+    pub(crate) fn cached_video_frame_by_source(
+        &self,
+        source: &str,
+        frame: u32,
+    ) -> Option<(u32, u32, Image)> {
+        let cached = self.video_frame_cache.get(source)?;
+        (cached.frame == frame).then(|| (cached.width, cached.height, cached.image.clone()))
+    }
+
+    pub(crate) fn cache_video_frame(
+        &mut self,
+        source: impl Into<String>,
+        frame: u32,
+        width: u32,
+        height: u32,
+        image: Image,
+    ) {
+        self.video_frame_cache.insert(
+            source.into(),
+            CachedVideoFrame {
+                frame,
+                width,
+                height,
+                image,
+            },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use skia_safe::{Data, ImageInfo, images};
+
+    use super::RendererContext;
+    use crate::time::Rational;
+
+    fn tiny_image(rgba: [u8; 4]) -> skia_safe::Image {
+        let info = ImageInfo::new(
+            (1, 1),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Unpremul,
+            None,
+        );
+        let data = Data::new_copy(&rgba);
+        images::raster_from_data(&info, data, 4).expect("raster image")
+    }
+
+    #[test]
+    fn caches_static_images_by_source_and_dimensions() {
+        let mut ctx = RendererContext::new(16, 16, Rational::new(30, 1)).expect("context");
+        let image = tiny_image([1, 2, 3, 255]);
+
+        assert!(ctx.cached_image("img", 1, 1).is_none());
+        ctx.cache_image("img", 1, 1, image.clone());
+
+        assert!(ctx.cached_image("img", 1, 1).is_some());
+        assert!(ctx.cached_image("img", 2, 1).is_none());
+        assert!(ctx.cached_image("other", 1, 1).is_none());
+    }
+
+    #[test]
+    fn caches_last_video_frame_per_source() {
+        let mut ctx = RendererContext::new(16, 16, Rational::new(30, 1)).expect("context");
+        let frame0 = tiny_image([10, 20, 30, 255]);
+        let frame1 = tiny_image([40, 50, 60, 255]);
+
+        ctx.cache_video_frame("video", 0, 1, 1, frame0);
+        assert!(ctx.cached_video_frame("video", 0, 1, 1).is_some());
+        assert!(ctx.cached_video_frame("video", 1, 1, 1).is_none());
+
+        ctx.cache_video_frame("video", 1, 1, 1, frame1);
+        assert!(ctx.cached_video_frame("video", 0, 1, 1).is_none());
+        assert!(ctx.cached_video_frame("video", 1, 1, 1).is_some());
     }
 }
