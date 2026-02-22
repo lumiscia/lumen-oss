@@ -152,7 +152,8 @@ impl Easing {
 pub struct Sequence<T>(pub Vec<Keyframe<T>>);
 
 impl<T> Sequence<T> {
-    pub fn new(keyframes: Vec<Keyframe<T>>) -> Self {
+    pub fn new(mut keyframes: Vec<Keyframe<T>>) -> Self {
+        keyframes.sort_by_key(|keyframe| keyframe.frame);
         Self(keyframes)
     }
 
@@ -258,12 +259,10 @@ where
     T: Clone + Interpolate + FromExpressionValue,
 {
     fn resolve(&self, ctx: &StyleContext<'_>) -> Option<T> {
-        if self.0.is_empty() {
+        let keyframes = &self.0;
+        if keyframes.is_empty() {
             return None;
         }
-
-        let mut keyframes = self.0.iter().collect::<Vec<_>>();
-        keyframes.sort_by_key(|keyframe| keyframe.frame);
 
         if let Some(exact) = keyframes
             .iter()
