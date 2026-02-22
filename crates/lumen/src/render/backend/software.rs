@@ -42,8 +42,11 @@ mod tests {
         }
     }
 
+    const EXPECTED_RGBA_2X2_CLEAR_010203: [u8; 16] =
+        [1, 2, 3, 255, 1, 2, 3, 255, 1, 2, 3, 255, 1, 2, 3, 255];
+
     #[test]
-    fn software_backend_returns_rgba_pixels_with_expected_length() {
+    fn software_backend_matches_embedded_snapshot_for_clear_color() {
         let mut backend = SoftwareRenderBackend;
         let mut renderer_ctx =
             RendererContext::new(2, 2, Rational::new(30, 1)).expect("renderer context");
@@ -62,9 +65,37 @@ mod tests {
             .render_frame(&mut renderer_ctx, &frame_ctx, &mut provider)
             .expect("software render");
 
-        assert_eq!(pixels.len(), 2 * 2 * 4);
-        for chunk in pixels.chunks_exact(4) {
-            assert_eq!(chunk, &[1, 2, 3, 255]);
+        assert_eq!(pixels, EXPECTED_RGBA_2X2_CLEAR_010203);
+    }
+
+    #[test]
+    fn software_backend_output_has_expected_rgba_invariants() {
+        let mut backend = SoftwareRenderBackend;
+        let mut renderer_ctx =
+            RendererContext::new(2, 2, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.clear_color = skia_safe::Color::from_argb(255, 1, 2, 3);
+
+        let frame_ctx = FrameContext {
+            frame: 1,
+            time_seconds: 1.0 / 30.0,
+            width: 2,
+            height: 2,
+            device_scale: 1.0,
+        };
+        let mut provider = NoopProvider;
+
+        let first = backend
+            .render_frame(&mut renderer_ctx, &frame_ctx, &mut provider)
+            .expect("first software render");
+        let second = backend
+            .render_frame(&mut renderer_ctx, &frame_ctx, &mut provider)
+            .expect("second software render");
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 2 * 2 * 4);
+        assert_eq!(first.len() % 4, 0);
+        for px in first.chunks_exact(4) {
+            assert_eq!(px, &[1, 2, 3, 255]);
         }
     }
 }

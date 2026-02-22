@@ -6,3 +6,7 @@ pub mod ffmpeg;
 pub mod media;
 pub mod render;
 pub mod time;
+
+pub mod scene;
+
+pub use scene::{Layer, Scene};
