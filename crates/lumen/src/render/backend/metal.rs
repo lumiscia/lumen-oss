@@ -26,7 +26,7 @@ impl RenderBackend for MetalRenderBackend {
     ) -> Result<Vec<u8>, RenderError> {
         self.ensure_gpu_surface(renderer_ctx)?;
         renderer_ctx.clear();
-        return super::read_surface_rgba(renderer_ctx);
+        super::read_surface_rgba(renderer_ctx)
     }
 }
 

@@ -13,10 +13,7 @@ pub struct VulkanRenderBackend {
 
 impl Default for VulkanRenderBackend {
     fn default() -> Self {
-        Self {
-            #[cfg(feature = "gpu-vulkan")]
-            gpu: None,
-        }
+        Self { gpu: None }
     }
 }
 
@@ -29,7 +26,7 @@ impl RenderBackend for VulkanRenderBackend {
     ) -> Result<Vec<u8>, RenderError> {
         self.ensure_gpu_surface(renderer_ctx)?;
         renderer_ctx.clear();
-        return super::read_surface_rgba(renderer_ctx);
+        super::read_surface_rgba(renderer_ctx)
     }
 }
 
