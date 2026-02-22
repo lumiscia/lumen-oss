@@ -233,20 +233,12 @@ impl Clip for VideoClip {
                     .get_video_resolver(self.source.as_str())
                     .ok_or_else(|| RenderError::MissingSource(format!("video:{}", self.source)))?;
 
-                let _ = resolver.resolve_frame(mapped_frame);
-                let width = resolver.width() as f32;
-                let height = resolver.height() as f32;
-
-                let mut body = Paint::default();
-                body.set_anti_alias(true);
-                body.set_color(Color::from_argb(255, 180, 120, 255));
-
                 let x = frame_ctx.width as f32 * 0.1;
                 let y = frame_ctx.height as f32 * 0.5;
-                renderer_ctx.canvas().draw_rect(
-                    Rect::from_xywh(x, y, width.max(1.0), height.max(1.0)),
-                    &body,
-                );
+                let width = resolver.width().max(1);
+                let height = resolver.height().max(1);
+                let pixels = resolver.resolve_frame(mapped_frame);
+                draw_rgba_image(renderer_ctx, x, y, width, height, pixels.as_slice())?;
 
                 let progress = if self.end() > self.start() {
                     (frame.saturating_sub(self.start()) as f32 / (self.end() - self.start()) as f32)
@@ -258,7 +250,7 @@ impl Clip for VideoClip {
                 let mut progress_paint = Paint::default();
                 progress_paint.set_color(Color::from_argb(255, 240, 80, 80));
                 renderer_ctx.canvas().draw_rect(
-                    Rect::from_xywh(x, y + height.max(1.0) - 8.0, width.max(1.0) * progress, 8.0),
+                    Rect::from_xywh(x, y + height as f32 - 8.0, width as f32 * progress, 8.0),
                     &progress_paint,
                 );
 
@@ -342,28 +334,35 @@ mod tests {
         }
     }
 
-    struct EmptyVideoResolver;
+    struct TestVideoResolver {
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        last_requested_frame: Option<u32>,
+    }
 
-    impl VideoResolver for EmptyVideoResolver {
+    impl VideoResolver for TestVideoResolver {
         fn id(&self) -> String {
             "video".to_owned()
         }
 
         fn width(&self) -> u32 {
-            1
+            self.width
         }
 
         fn height(&self) -> u32 {
-            1
+            self.height
         }
 
-        fn resolve_frame(&mut self, _frame: u32) -> Vec<u8> {
-            vec![0, 0, 0, 0]
+        fn resolve_frame(&mut self, frame: u32) -> Vec<u8> {
+            self.last_requested_frame = Some(frame);
+            self.pixels.clone()
         }
     }
 
     struct TestMediaStore {
         image: Option<TestImageResolver>,
+        video: Option<TestVideoResolver>,
     }
 
     impl MediaStore for TestMediaStore {
@@ -377,7 +376,9 @@ mod tests {
         }
 
         fn get_video_resolver(&mut self, _id: &str) -> Option<Box<dyn VideoResolver>> {
-            Some(Box::new(EmptyVideoResolver))
+            self.video
+                .take()
+                .map(|resolver| Box::new(resolver) as Box<dyn VideoResolver>)
         }
     }
 
@@ -395,6 +396,7 @@ mod tests {
                     0, 0, 255, 255, 255, 255, 255, 255, // row 1
                 ],
             }),
+            video: None,
         }));
         renderer_ctx.clear();
 
@@ -426,6 +428,57 @@ mod tests {
 
         assert_eq!(tl, &[255, 0, 0, 255]);
         assert_eq!(br, &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn video_clip_draws_rgba_pixels_from_resolver() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.set_media_store(Box::new(TestMediaStore {
+            image: None,
+            video: Some(TestVideoResolver {
+                width: 2,
+                height: 2,
+                pixels: vec![
+                    10, 20, 30, 255, 40, 50, 60, 255, // row 0
+                    70, 80, 90, 255, 100, 110, 120, 255, // row 1
+                ],
+                last_requested_frame: None,
+            }),
+        }));
+        renderer_ctx.clear();
+
+        let clip = VideoClip {
+            meta: ClipMeta {
+                id: Some("video".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            source: "video".to_owned(),
+            style: base_style(),
+            trim: None,
+            speed: 1.0,
+            r#loop: LoopMode::None,
+        };
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("video clip should draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+
+        let tl = &pixels[idx(10, 50)..idx(10, 50) + 4];
+        let br = &pixels[idx(11, 51)..idx(11, 51) + 4];
+
+        assert_eq!(tl, &[10, 20, 30, 255]);
+        assert_eq!(br, &[100, 110, 120, 255]);
     }
 
     #[test]
