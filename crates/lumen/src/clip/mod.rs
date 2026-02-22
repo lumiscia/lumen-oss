@@ -127,7 +127,7 @@ impl BaseStyle {
 
         let mut layer = Paint::default();
         layer.set_blend_mode(resolved.blend_mode);
-        layer.set_alpha_f((resolved.opacity / (1.0 + resolved.blur * 0.05)).clamp(0.0, 1.0));
+        layer.set_alpha_f(resolved.opacity);
         canvas.save_layer(&SaveLayerRec::default().paint(&layer));
         draw(renderer_ctx, &resolved)?;
         renderer_ctx.canvas().restore();
