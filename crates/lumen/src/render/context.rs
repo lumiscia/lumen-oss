@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use skia_safe::{Canvas, Color, Image, Surface, surfaces};
+use skia_safe::{Canvas, Color, FontMgr, Image, Surface, surfaces, textlayout::FontCollection};
 use thiserror::Error;
 
 use crate::time::Rational;
@@ -41,6 +41,7 @@ pub struct RendererContext {
     pub media_store: Option<Box<dyn MediaStore>>,
     image_cache: HashMap<String, CachedImage>,
     video_frame_cache: HashMap<String, CachedVideoFrame>,
+    font_collection: FontCollection,
 }
 
 #[derive(Debug, Error)]
@@ -60,6 +61,9 @@ impl RendererContext {
         let overlay_surface = surfaces::raster_n32_premul((width as i32, height as i32))
             .ok_or(RendererContextError::SurfaceCreation)?;
 
+        let mut font_collection = FontCollection::new();
+        font_collection.set_default_font_manager(FontMgr::default(), None);
+
         Ok(Self {
             width,
             height,
@@ -70,6 +74,7 @@ impl RendererContext {
             media_store: None,
             image_cache: HashMap::new(),
             video_frame_cache: HashMap::new(),
+            font_collection,
         })
     }
 
@@ -87,6 +92,10 @@ impl RendererContext {
 
     pub fn media_store_mut(&mut self) -> Option<&mut (dyn MediaStore + 'static)> {
         self.media_store.as_deref_mut()
+    }
+
+    pub(crate) fn font_collection(&self) -> FontCollection {
+        self.font_collection.clone()
     }
 
     pub fn clear(&mut self) {

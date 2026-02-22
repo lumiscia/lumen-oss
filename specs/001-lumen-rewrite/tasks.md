@@ -12,7 +12,7 @@
 
 **Purpose**: These items are prerequisites that don't belong to a single user story but unblock P1 text, layout, and shadow work.
 
-- [ ] T001 Add `FontCollection` cache field to `RendererContext` in `crates/lumen/src/render/context.rs` — construct once with `FontCollection::new()` + `set_default_font_manager(FontMgr::default(), None)`, store as `Arc<Mutex<FontCollection>>` or plain field
+- [X] T001 Add `FontCollection` cache field to `RendererContext` in `crates/lumen/src/render/context.rs` — construct once with `FontCollection::new()` + `set_default_font_manager(FontMgr::default(), None)`, store as `Arc<Mutex<FontCollection>>` or plain field
 
 **Checkpoint**: `RendererContext` exposes a shared `FontCollection` — text clips can now build paragraphs without re-creating the collection per frame.
 
@@ -26,12 +26,12 @@
 
 ### Implementation
 
-- [ ] T002 [US7] Implement `TextClip::draw` using `ParagraphBuilder` + `ParagraphStyle` + `SkTextStyle` in `crates/lumen/src/clip/text.rs` — resolve all `TextStyle` fields via `StyleContext`, call `paragraph.layout(max_width.unwrap_or(f32::MAX))`, call `paragraph.paint(canvas, (0.0, offset_y))`
-- [ ] T003 [US7] Apply `vertical_align` offset in `TextClip::draw` in `crates/lumen/src/clip/text.rs` — `Top`→0, `Middle`→`(height - paragraph.height()) / 2`, `Bottom`→`height - paragraph.height()`
-- [ ] T004 [US7] Handle `max_lines` + `TextOverflow::Ellipsis` in `ParagraphStyle` setup in `crates/lumen/src/clip/text.rs` — `para_style.set_max_lines(n)`, `para_style.set_ellipsis("…")`
-- [ ] T005 [US7] Add `TextClip::measure(available_width: f32, ctx: &StyleContext) -> (f32, f32)` in `crates/lumen/src/clip/text.rs` — builds paragraph, calls `layout(available_width)`, returns `(longest_line(), height())`
-- [ ] T006 [US7] Add font family fallback handling in `TextClip::draw` in `crates/lumen/src/clip/text.rs` — if resolved `font_family` is empty or unknown, rely on `FontMgr::default()` fallback already registered on `FontCollection`; document behavior in a code comment
-- [ ] T007 [P] [US7] Add text rendering tests in `crates/lumen/src/clip/text.rs` — test: non-transparent pixels in rendered output, `measure()` returns positive dimensions, wrapping produces height > single-line height, `max_lines: 1` + `Ellipsis` clips at one line
+- [X] T002 [US7] Implement `TextClip::draw` using `ParagraphBuilder` + `ParagraphStyle` + `SkTextStyle` in `crates/lumen/src/clip/text.rs` — resolve all `TextStyle` fields via `StyleContext`, call `paragraph.layout(max_width.unwrap_or(f32::MAX))`, call `paragraph.paint(canvas, (0.0, offset_y))`
+- [X] T003 [US7] Apply `vertical_align` offset in `TextClip::draw` in `crates/lumen/src/clip/text.rs` — `Top`→0, `Middle`→`(height - paragraph.height()) / 2`, `Bottom`→`height - paragraph.height()`
+- [X] T004 [US7] Handle `max_lines` + `TextOverflow::Ellipsis` in `ParagraphStyle` setup in `crates/lumen/src/clip/text.rs` — `para_style.set_max_lines(n)`, `para_style.set_ellipsis("…")`
+- [X] T005 [US7] Add `TextClip::measure(available_width: f32, ctx: &StyleContext) -> (f32, f32)` in `crates/lumen/src/clip/text.rs` — builds paragraph, calls `layout(available_width)`, returns `(longest_line(), height())`
+- [X] T006 [US7] Add font family fallback handling in `TextClip::draw` in `crates/lumen/src/clip/text.rs` — if resolved `font_family` is empty or unknown, rely on `FontMgr::default()` fallback already registered on `FontCollection`; document behavior in a code comment
+- [X] T007 [P] [US7] Add text rendering tests in `crates/lumen/src/clip/text.rs` — test: non-transparent pixels in rendered output, `measure()` returns positive dimensions, wrapping produces height > single-line height, `max_lines: 1` + `Ellipsis` clips at one line
 
 **Checkpoint**: `TextClip` renders real glyphs; `measure()` returns correct intrinsic dimensions.
 
@@ -47,9 +47,9 @@
 
 ### Implementation
 
-- [ ] T008 [US4] Register Taffy `MeasureFunc` for `LayoutContent::Text` nodes in `crates/lumen/src/clip/layout.rs` — after inserting each Taffy node, if `content == Some(LayoutContent::Text(clip))`, call `tree.set_measure_func(node_id, MeasureFunc::Boxed(...))` that delegates to `clip.measure(available_width, ctx)`
-- [ ] T009 [US4] Implement `overflow: Hidden` clipping in layout node render traversal in `crates/lumen/src/clip/layout.rs` — after translating canvas to computed position, if `node.style.overflow == Overflow::Hidden`, call `canvas.clip_rect(Rect::from_wh(w, h), ClipOp::Intersect, true)` before drawing content and children
-- [ ] T010 [P] [US4] Add layout integration tests in `crates/lumen/src/clip/layout.rs` — test: two `flex_grow: 1` shapes fill parent width equally; text node sized by intrinsic measure; `overflow: Hidden` clips out-of-bounds child; absolute-positioned child renders at inset offset
+- [X] T008 [US4] Register Taffy `MeasureFunc` for `LayoutContent::Text` nodes in `crates/lumen/src/clip/layout.rs` — after inserting each Taffy node, if `content == Some(LayoutContent::Text(clip))`, call `tree.set_measure_func(node_id, MeasureFunc::Boxed(...))` that delegates to `clip.measure(available_width, ctx)`
+- [X] T009 [US4] Implement `overflow: Hidden` clipping in layout node render traversal in `crates/lumen/src/clip/layout.rs` — after translating canvas to computed position, if `node.style.overflow == Overflow::Hidden`, call `canvas.clip_rect(Rect::from_wh(w, h), ClipOp::Intersect, true)` before drawing content and children
+- [X] T010 [P] [US4] Add layout integration tests in `crates/lumen/src/clip/layout.rs` — test: two `flex_grow: 1` shapes fill parent width equally; text node sized by intrinsic measure; `overflow: Hidden` clips out-of-bounds child; absolute-positioned child renders at inset offset
 
 **Checkpoint**: Layout clips correctly size text via Taffy measurement; overflow clipping works.
 
