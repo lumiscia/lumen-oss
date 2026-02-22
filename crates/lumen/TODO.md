@@ -106,7 +106,7 @@ This file tracks renderer work that is complete and remaining.
 
 ### P1: Media rendering
 
-- [ ] Render decoded image pixels to Skia (`ImageClip`) instead of placeholders.
+- [x] Render decoded image pixels to Skia (`ImageClip`) instead of placeholders.
 - [ ] Add image fit modes (`cover`, `contain`, `fill`, `none`).
 - [ ] Add image/video Skia image caching to avoid per-frame conversions.
 - [ ] Render decoded video frames to Skia (`VideoClip`) instead of placeholders.

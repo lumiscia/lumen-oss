@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use skia_safe::{Color, Paint, Rect};
+use skia_safe::{Color, Data, ImageInfo, Paint, Rect, images};
 
 use crate::clip::{Clip, ClipMeta, style::BaseStyle};
 use crate::render::backend::RenderError;
@@ -38,44 +38,80 @@ impl Clip for ImageClip {
 
         self.style
             .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
-                let (width, height, color) = match renderer_ctx.media_store_mut() {
-                    Some(media_store) => match media_store.get_image_resolver(self.source.as_str())
+                let x = frame_ctx.width as f32 * 0.1;
+                let y = frame_ctx.height as f32 * 0.1;
+
+                if let Some(media_store) = renderer_ctx.media_store_mut() {
+                    if let Some(mut resolver) = media_store.get_image_resolver(self.source.as_str())
                     {
-                        Some(resolver) => (
-                            resolver.width() as f32,
-                            resolver.height() as f32,
-                            Color::from_argb(255, 90, 220, 140),
-                        ),
-                        None => (
-                            frame_ctx.width as f32 * 0.4,
-                            frame_ctx.height as f32 * 0.3,
-                            Color::from_argb(255, 110, 170, 255),
-                        ),
-                    },
-                    None => (
-                        frame_ctx.width as f32 * 0.4,
-                        frame_ctx.height as f32 * 0.3,
-                        Color::from_argb(255, 110, 170, 255),
-                    ),
-                };
+                        let width = resolver.width();
+                        let height = resolver.height();
+                        let pixels = resolver.resolve();
+                        draw_rgba_image(
+                            renderer_ctx,
+                            x,
+                            y,
+                            width.max(1),
+                            height.max(1),
+                            pixels.as_slice(),
+                        )?;
+                        return Ok(());
+                    }
+                }
+
+                let width = frame_ctx.width as f32 * 0.4;
+                let height = frame_ctx.height as f32 * 0.3;
+                let color = Color::from_argb(255, 110, 170, 255);
 
                 let mut paint = Paint::default();
                 paint.set_anti_alias(true);
                 paint.set_color(color);
 
                 renderer_ctx.canvas().draw_rect(
-                    Rect::from_xywh(
-                        frame_ctx.width as f32 * 0.1,
-                        frame_ctx.height as f32 * 0.1,
-                        width.max(1.0),
-                        height.max(1.0),
-                    ),
+                    Rect::from_xywh(x, y, width.max(1.0), height.max(1.0)),
                     &paint,
                 );
 
                 Ok(())
             })
     }
+}
+
+fn draw_rgba_image(
+    renderer_ctx: &mut RendererContext,
+    x: f32,
+    y: f32,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Result<(), RenderError> {
+    let expected_len = (width as usize)
+        .saturating_mul(height as usize)
+        .saturating_mul(4);
+    if pixels.len() != expected_len {
+        return Err(RenderError::Unsupported("invalid image buffer length"));
+    }
+
+    let info = ImageInfo::new(
+        (width as i32, height as i32),
+        skia_safe::ColorType::RGBA8888,
+        skia_safe::AlphaType::Unpremul,
+        None,
+    );
+    let data = Data::new_copy(pixels);
+    let image = images::raster_from_data(&info, data, width as usize * 4).ok_or(
+        RenderError::Unsupported("failed to create image from RGBA pixels"),
+    )?;
+
+    let mut paint = Paint::default();
+    paint.set_anti_alias(false);
+    renderer_ctx.canvas().draw_image_rect(
+        image,
+        None,
+        Rect::from_xywh(x, y, width as f32, height as f32),
+        &paint,
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -235,10 +271,15 @@ impl Clip for VideoClip {
 mod tests {
     use skia_safe::BlendMode;
 
-    use super::{LoopMode, VideoClip};
+    use super::{ImageClip, LoopMode, VideoClip};
     use crate::clip::{
-        ClipMeta,
+        Clip, ClipMeta,
         style::{BaseStyle, StyleProperty, StyleValue, TransformStyle},
+    };
+    use crate::media::{ImageResolver, MediaStore, VideoResolver};
+    use crate::render::{
+        backend::read_surface_rgba,
+        context::{FrameContext, RendererContext},
     };
     use crate::time::Rational;
 
@@ -274,6 +315,117 @@ mod tests {
             speed: 1.0,
             r#loop: LoopMode::None,
         }
+    }
+
+    struct TestImageResolver {
+        id: String,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    }
+
+    impl ImageResolver for TestImageResolver {
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+
+        fn width(&self) -> u32 {
+            self.width
+        }
+
+        fn height(&self) -> u32 {
+            self.height
+        }
+
+        fn resolve(&mut self) -> Vec<u8> {
+            self.pixels.clone()
+        }
+    }
+
+    struct EmptyVideoResolver;
+
+    impl VideoResolver for EmptyVideoResolver {
+        fn id(&self) -> String {
+            "video".to_owned()
+        }
+
+        fn width(&self) -> u32 {
+            1
+        }
+
+        fn height(&self) -> u32 {
+            1
+        }
+
+        fn resolve_frame(&mut self, _frame: u32) -> Vec<u8> {
+            vec![0, 0, 0, 0]
+        }
+    }
+
+    struct TestMediaStore {
+        image: Option<TestImageResolver>,
+    }
+
+    impl MediaStore for TestMediaStore {
+        fn get_image_resolver(&mut self, id: &str) -> Option<Box<dyn ImageResolver>> {
+            let resolver = self.image.take()?;
+            if resolver.id == id {
+                Some(Box::new(resolver))
+            } else {
+                None
+            }
+        }
+
+        fn get_video_resolver(&mut self, _id: &str) -> Option<Box<dyn VideoResolver>> {
+            Some(Box::new(EmptyVideoResolver))
+        }
+    }
+
+    #[test]
+    fn image_clip_draws_rgba_pixels_from_resolver() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.set_media_store(Box::new(TestMediaStore {
+            image: Some(TestImageResolver {
+                id: "img".to_owned(),
+                width: 2,
+                height: 2,
+                pixels: vec![
+                    255, 0, 0, 255, 0, 255, 0, 255, // row 0
+                    0, 0, 255, 255, 255, 255, 255, 255, // row 1
+                ],
+            }),
+        }));
+        renderer_ctx.clear();
+
+        let clip = ImageClip {
+            meta: ClipMeta {
+                id: Some("img".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            source: "img".to_owned(),
+            style: base_style(),
+        };
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("image clip should draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+
+        let tl = &pixels[idx(10, 10)..idx(10, 10) + 4];
+        let br = &pixels[idx(11, 11)..idx(11, 11) + 4];
+
+        assert_eq!(tl, &[255, 0, 0, 255]);
+        assert_eq!(br, &[255, 255, 255, 255]);
     }
 
     #[test]
