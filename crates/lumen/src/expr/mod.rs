@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExpressionId(pub String);
 
 #[derive(Debug, Clone)]
@@ -13,7 +13,7 @@ pub struct Expression {
     pub references: Vec<ExpressionReference>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ExpressionProperty {
     X,
     Y,
