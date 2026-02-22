@@ -16,6 +16,25 @@ pub struct DependencyPlan {
 
 impl DependencyPlan {
     pub fn build(expressions: &[Expression]) -> Self {
+        Self::try_build(expressions).unwrap_or_else(|_| Self {
+            dependencies: expressions
+                .iter()
+                .flat_map(|expression| {
+                    expression
+                        .references
+                        .iter()
+                        .cloned()
+                        .map(|reference| ExpressionDependency {
+                            expression_id: expression.id.clone(),
+                            target: reference.target,
+                        })
+                })
+                .collect(),
+            evaluation_order: expressions.iter().map(|expr| expr.id.clone()).collect(),
+        })
+    }
+
+    pub fn try_build(expressions: &[Expression]) -> Result<Self, tree::DependencyTreeError> {
         let dependencies = expressions
             .iter()
             .flat_map(|expression| {
@@ -39,13 +58,13 @@ impl DependencyPlan {
                 ExpressionReferenceTarget::ClipProperty { clip_id, property } => {
                     tree::DependencyNode::ClipProperty {
                         clip_id: clip_id.clone(),
-                        property: format!("{property:?}"),
+                        property: property.as_str().to_owned(),
                     }
                 }
                 ExpressionReferenceTarget::LayoutNodeProperty { node_id, property } => {
                     tree::DependencyNode::LayoutProperty {
                         node_id: node_id.clone(),
-                        property: format!("{property:?}"),
+                        property: property.as_str().to_owned(),
                     }
                 }
             };
@@ -56,8 +75,7 @@ impl DependencyPlan {
         }
 
         let evaluation_order = tree
-            .topological_order()
-            .unwrap_or_default()
+            .topological_order()?
             .into_iter()
             .filter_map(|node| match node {
                 tree::DependencyNode::Expression(id) => Some(id),
@@ -66,10 +84,10 @@ impl DependencyPlan {
             })
             .collect();
 
-        Self {
+        Ok(Self {
             dependencies,
             evaluation_order,
-        }
+        })
     }
 }
 
@@ -113,5 +131,20 @@ mod tests {
             plan.evaluation_order,
             vec![ExpressionId("a".to_owned()), ExpressionId("b".to_owned())]
         );
+    }
+
+    #[test]
+    fn try_build_matches_build_on_success() {
+        let expressions = vec![Expression {
+            id: ExpressionId("a".to_owned()),
+            source: "1".to_owned(),
+            references: vec![],
+        }];
+
+        let plan = DependencyPlan::build(&expressions);
+        let try_plan = DependencyPlan::try_build(&expressions).expect("plan should build");
+
+        assert_eq!(plan.evaluation_order, try_plan.evaluation_order);
+        assert_eq!(plan.dependencies.len(), try_plan.dependencies.len());
     }
 }

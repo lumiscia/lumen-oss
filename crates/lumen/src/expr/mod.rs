@@ -23,6 +23,16 @@ pub enum ExpressionProperty {
 }
 
 impl ExpressionProperty {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::X => "x",
+            Self::Y => "y",
+            Self::Width => "width",
+            Self::Height => "height",
+            Self::Opacity => "opacity",
+        }
+    }
+
     fn parse(name: &str) -> Option<Self> {
         match name {
             "x" => Some(Self::X),

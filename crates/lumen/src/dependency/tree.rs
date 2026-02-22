@@ -19,8 +19,11 @@ pub struct DependencyTree {
 
 #[derive(Debug, Error)]
 pub enum DependencyTreeError {
-    #[error("dependency cycle detected")]
-    Cycle,
+    #[error("dependency cycle detected involving {nodes_len} node(s)")]
+    Cycle {
+        nodes: Vec<DependencyNode>,
+        nodes_len: usize,
+    },
 }
 
 impl DependencyTree {
@@ -88,7 +91,16 @@ impl DependencyTree {
         }
 
         if order.len() != in_degree.len() {
-            return Err(DependencyTreeError::Cycle);
+            let mut remaining = in_degree
+                .into_iter()
+                .filter_map(|(node, degree)| if degree > 0 { Some(node) } else { None })
+                .collect::<Vec<_>>();
+            remaining.sort();
+            let nodes_len = remaining.len();
+            return Err(DependencyTreeError::Cycle {
+                nodes: remaining,
+                nodes_len,
+            });
         }
 
         Ok(order)
@@ -148,6 +160,6 @@ mod tests {
         tree.add_edge(expr("b"), expr("a"));
 
         let err = tree.topological_order().expect_err("cycle should error");
-        assert!(matches!(err, DependencyTreeError::Cycle));
+        assert!(matches!(err, DependencyTreeError::Cycle { .. }));
     }
 }
