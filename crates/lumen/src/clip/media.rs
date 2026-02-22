@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use skia_safe::{Color, Data, ImageInfo, Paint, Rect, images};
 
-use crate::clip::{Clip, ClipMeta, style::BaseStyle};
+use crate::clip::{Clip, ClipGeometry, ClipMeta, ResolvedClipGeometry, style::BaseStyle};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 use crate::time::Rational;
@@ -14,10 +14,21 @@ pub enum LoopMode {
     PingPong,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImageFit {
+    Cover,
+    Contain,
+    Fill,
+    #[default]
+    None,
+}
+
 #[derive(Debug, Clone)]
 pub struct ImageClip {
     pub meta: ClipMeta,
+    pub geometry: ClipGeometry,
     pub source: String,
+    pub fit: ImageFit,
     pub style: BaseStyle,
 }
 
@@ -38,8 +49,15 @@ impl Clip for ImageClip {
 
         self.style
             .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
-                let x = frame_ctx.width as f32 * 0.1;
-                let y = frame_ctx.height as f32 * 0.1;
+                let geometry = self.geometry.resolve_with_defaults(
+                    frame,
+                    frame_ctx.width as f32 * 0.1,
+                    frame_ctx.height as f32 * 0.1,
+                    frame_ctx.width as f32 * 0.4,
+                    frame_ctx.height as f32 * 0.3,
+                    0.0,
+                    0.0,
+                );
 
                 if let Some(media_store) = renderer_ctx.media_store_mut() {
                     if let Some(mut resolver) = media_store.get_image_resolver(self.source.as_str())
@@ -47,10 +65,12 @@ impl Clip for ImageClip {
                         let width = resolver.width();
                         let height = resolver.height();
                         let pixels = resolver.resolve();
+                        let (dst_rect, clip_rect) =
+                            media_fit_rects(&geometry, width.max(1), height.max(1), self.fit);
                         draw_rgba_image(
                             renderer_ctx,
-                            x,
-                            y,
+                            dst_rect,
+                            clip_rect,
                             width.max(1),
                             height.max(1),
                             pixels.as_slice(),
@@ -59,18 +79,13 @@ impl Clip for ImageClip {
                     }
                 }
 
-                let width = frame_ctx.width as f32 * 0.4;
-                let height = frame_ctx.height as f32 * 0.3;
                 let color = Color::from_argb(255, 110, 170, 255);
 
                 let mut paint = Paint::default();
                 paint.set_anti_alias(true);
                 paint.set_color(color);
 
-                renderer_ctx.canvas().draw_rect(
-                    Rect::from_xywh(x, y, width.max(1.0), height.max(1.0)),
-                    &paint,
-                );
+                renderer_ctx.canvas().draw_rect(geometry.rect(), &paint);
 
                 Ok(())
             })
@@ -79,8 +94,8 @@ impl Clip for ImageClip {
 
 fn draw_rgba_image(
     renderer_ctx: &mut RendererContext,
-    x: f32,
-    y: f32,
+    dst_rect: Rect,
+    clip_rect: Option<Rect>,
     width: u32,
     height: u32,
     pixels: &[u8],
@@ -105,19 +120,64 @@ fn draw_rgba_image(
 
     let mut paint = Paint::default();
     paint.set_anti_alias(false);
-    renderer_ctx.canvas().draw_image_rect(
-        image,
-        None,
-        Rect::from_xywh(x, y, width as f32, height as f32),
-        &paint,
-    );
+    if let Some(clip_rect) = clip_rect {
+        renderer_ctx.canvas().save();
+        renderer_ctx.canvas().clip_rect(clip_rect, None, true);
+        renderer_ctx
+            .canvas()
+            .draw_image_rect(image, None, dst_rect, &paint);
+        renderer_ctx.canvas().restore();
+    } else {
+        renderer_ctx
+            .canvas()
+            .draw_image_rect(image, None, dst_rect, &paint);
+    }
     Ok(())
+}
+
+fn media_fit_rects(
+    geometry: &ResolvedClipGeometry,
+    source_width: u32,
+    source_height: u32,
+    fit: ImageFit,
+) -> (Rect, Option<Rect>) {
+    let source_width = source_width.max(1) as f32;
+    let source_height = source_height.max(1) as f32;
+    let bounds = geometry.rect();
+    let bounds_left = geometry.left();
+    let bounds_top = geometry.top();
+    let bounds_width = geometry.width.max(1.0);
+    let bounds_height = geometry.height.max(1.0);
+
+    match fit {
+        ImageFit::Fill => (bounds, Some(bounds)),
+        ImageFit::None => (geometry.rect_for(source_width, source_height), Some(bounds)),
+        ImageFit::Contain | ImageFit::Cover => {
+            let scale_x = bounds_width / source_width;
+            let scale_y = bounds_height / source_height;
+            let scale = match fit {
+                ImageFit::Contain => scale_x.min(scale_y),
+                ImageFit::Cover => scale_x.max(scale_y),
+                ImageFit::Fill | ImageFit::None => unreachable!(),
+            }
+            .max(0.0);
+            let draw_width = (source_width * scale).max(1.0);
+            let draw_height = (source_height * scale).max(1.0);
+            let draw_left = bounds_left + (bounds_width - draw_width) * 0.5;
+            let draw_top = bounds_top + (bounds_height - draw_height) * 0.5;
+            let dst_rect = Rect::from_xywh(draw_left, draw_top, draw_width, draw_height);
+            let clip_rect = matches!(fit, ImageFit::Cover).then_some(bounds);
+            (dst_rect, clip_rect)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct VideoClip {
     pub meta: ClipMeta,
+    pub geometry: ClipGeometry,
     pub source: String,
+    pub fit: ImageFit,
     pub style: BaseStyle,
     pub trim: Option<Range<f32>>,
     pub speed: f32,
@@ -233,26 +293,27 @@ impl Clip for VideoClip {
                     .get_video_resolver(self.source.as_str())
                     .ok_or_else(|| RenderError::MissingSource(format!("video:{}", self.source)))?;
 
-                let x = frame_ctx.width as f32 * 0.1;
-                let y = frame_ctx.height as f32 * 0.5;
+                let geometry = self.geometry.resolve_with_defaults(
+                    frame,
+                    frame_ctx.width as f32 * 0.1,
+                    frame_ctx.height as f32 * 0.5,
+                    frame_ctx.width as f32 * 0.4,
+                    frame_ctx.height as f32 * 0.3,
+                    0.0,
+                    0.0,
+                );
                 let width = resolver.width().max(1);
                 let height = resolver.height().max(1);
                 let pixels = resolver.resolve_frame(mapped_frame);
-                draw_rgba_image(renderer_ctx, x, y, width, height, pixels.as_slice())?;
-
-                let progress = if self.end() > self.start() {
-                    (frame.saturating_sub(self.start()) as f32 / (self.end() - self.start()) as f32)
-                        .clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-
-                let mut progress_paint = Paint::default();
-                progress_paint.set_color(Color::from_argb(255, 240, 80, 80));
-                renderer_ctx.canvas().draw_rect(
-                    Rect::from_xywh(x, y + height as f32 - 8.0, width as f32 * progress, 8.0),
-                    &progress_paint,
-                );
+                let (dst_rect, clip_rect) = media_fit_rects(&geometry, width, height, self.fit);
+                draw_rgba_image(
+                    renderer_ctx,
+                    dst_rect,
+                    clip_rect,
+                    width,
+                    height,
+                    pixels.as_slice(),
+                )?;
 
                 Ok(())
             })
@@ -261,11 +322,11 @@ impl Clip for VideoClip {
 
 #[cfg(test)]
 mod tests {
-    use skia_safe::BlendMode;
+    use skia_safe::{BlendMode, Rect};
 
-    use super::{ImageClip, LoopMode, VideoClip};
+    use super::{ImageClip, ImageFit, LoopMode, VideoClip, media_fit_rects};
     use crate::clip::{
-        Clip, ClipMeta,
+        Clip, ClipGeometry, ClipMeta, ResolvedClipGeometry,
         style::{BaseStyle, StyleProperty, StyleValue, TransformStyle},
     };
     use crate::media::{ImageResolver, MediaStore, VideoResolver};
@@ -298,6 +359,28 @@ mod tests {
         }
     }
 
+    fn geometry() -> ClipGeometry {
+        ClipGeometry::default()
+    }
+
+    fn resolved_geometry(
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        anchor_x: f32,
+        anchor_y: f32,
+    ) -> ResolvedClipGeometry {
+        ResolvedClipGeometry {
+            x,
+            y,
+            width,
+            height,
+            anchor_x,
+            anchor_y,
+        }
+    }
+
     fn video_clip() -> VideoClip {
         VideoClip {
             meta: ClipMeta {
@@ -305,7 +388,9 @@ mod tests {
                 start_frame: 10,
                 end_frame: 19,
             },
+            geometry: geometry(),
             source: "video".to_owned(),
+            fit: ImageFit::None,
             style: base_style(),
             trim: None,
             speed: 1.0,
@@ -410,7 +495,9 @@ mod tests {
                 start_frame: 0,
                 end_frame: 10,
             },
+            geometry: geometry(),
             source: "img".to_owned(),
+            fit: ImageFit::None,
             style: base_style(),
         };
         let frame_ctx = FrameContext {
@@ -450,7 +537,9 @@ mod tests {
                 start_frame: 0,
                 end_frame: 10,
             },
+            geometry: geometry(),
             source: "img".to_owned(),
+            fit: ImageFit::None,
             style: base_style(),
         };
         let frame_ctx = FrameContext {
@@ -493,7 +582,9 @@ mod tests {
                 start_frame: 0,
                 end_frame: 10,
             },
+            geometry: geometry(),
             source: "img".to_owned(),
+            fit: ImageFit::None,
             style,
         };
         let frame_ctx = FrameContext {
@@ -537,7 +628,9 @@ mod tests {
                 start_frame: 0,
                 end_frame: 10,
             },
+            geometry: geometry(),
             source: "img".to_owned(),
+            fit: ImageFit::None,
             style,
         };
         let frame_ctx = FrameContext {
@@ -585,7 +678,9 @@ mod tests {
                 start_frame: 0,
                 end_frame: 10,
             },
+            geometry: geometry(),
             source: 'i'.to_string(),
+            fit: ImageFit::None,
             style,
         };
         let frame_ctx = FrameContext {
@@ -604,6 +699,42 @@ mod tests {
 
         assert_eq!(pixels[idx(10, 10) + 3], 0);
         assert_eq!(&pixels[idx(30, 30)..idx(30, 30) + 4], &[150, 60, 30, 255]);
+    }
+
+    #[test]
+    fn media_fit_none_uses_intrinsic_size_and_clip_bounds() {
+        let geometry = resolved_geometry(10.0, 20.0, 30.0, 40.0, 0.0, 0.0);
+        let (dst, clip) = media_fit_rects(&geometry, 8, 6, ImageFit::None);
+
+        assert_eq!(dst, Rect::from_xywh(10.0, 20.0, 8.0, 6.0));
+        assert_eq!(clip, Some(Rect::from_xywh(10.0, 20.0, 30.0, 40.0)));
+    }
+
+    #[test]
+    fn media_fit_contain_preserves_aspect_and_centers() {
+        let geometry = resolved_geometry(0.0, 0.0, 100.0, 50.0, 0.0, 0.0);
+        let (dst, clip) = media_fit_rects(&geometry, 100, 100, ImageFit::Contain);
+
+        assert_eq!(dst, Rect::from_xywh(25.0, 0.0, 50.0, 50.0));
+        assert_eq!(clip, None);
+    }
+
+    #[test]
+    fn media_fit_cover_preserves_aspect_and_clips_overflow() {
+        let geometry = resolved_geometry(0.0, 0.0, 100.0, 50.0, 0.0, 0.0);
+        let (dst, clip) = media_fit_rects(&geometry, 100, 100, ImageFit::Cover);
+
+        assert_eq!(dst, Rect::from_xywh(0.0, -25.0, 100.0, 100.0));
+        assert_eq!(clip, Some(Rect::from_xywh(0.0, 0.0, 100.0, 50.0)));
+    }
+
+    #[test]
+    fn media_fit_fill_stretches_to_bounds() {
+        let geometry = resolved_geometry(5.0, 6.0, 20.0, 30.0, 0.0, 0.0);
+        let (dst, clip) = media_fit_rects(&geometry, 200, 100, ImageFit::Fill);
+
+        assert_eq!(dst, Rect::from_xywh(5.0, 6.0, 20.0, 30.0));
+        assert_eq!(clip, Some(Rect::from_xywh(5.0, 6.0, 20.0, 30.0)));
     }
 
     #[test]
@@ -630,7 +761,9 @@ mod tests {
                 start_frame: 0,
                 end_frame: 10,
             },
+            geometry: geometry(),
             source: "video".to_owned(),
+            fit: ImageFit::None,
             style: base_style(),
             trim: None,
             speed: 1.0,
@@ -669,7 +802,9 @@ mod tests {
                 start_frame: 0,
                 end_frame: 10,
             },
+            geometry: geometry(),
             source: "video".to_owned(),
+            fit: ImageFit::None,
             style: base_style(),
             trim: None,
             speed: 1.0,
@@ -705,7 +840,9 @@ mod tests {
                 start_frame: 0,
                 end_frame: 10,
             },
+            geometry: geometry(),
             source: "video".to_owned(),
+            fit: ImageFit::None,
             style: base_style(),
             trim: None,
             speed: 1.0,
