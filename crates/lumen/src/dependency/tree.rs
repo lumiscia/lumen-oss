@@ -9,6 +9,7 @@ pub enum DependencyNode {
     Expression(ExpressionId),
     ClipProperty { clip_id: String, property: String },
     LayoutProperty { node_id: String, property: String },
+    ClipRender(String),
 }
 
 #[derive(Debug, Clone, Default)]

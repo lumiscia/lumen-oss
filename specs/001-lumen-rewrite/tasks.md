@@ -82,12 +82,12 @@
 
 ### Implementation
 
-- [ ] T015 [US8] Define `MaskSource`, `MaskShape`, and `Mask` types in `crates/lumen/src/clip/style/base.rs` — `MaskSource`: `Shape(MaskShape)`, `Bitmap { source: String }`, `Clip { clip_id: String }`; `MaskShape`: `Rectangle { x, y, width, height, corner_radius: [StyleProperty<f32>; 4] }`, `Ellipse { cx, cy, rx, ry }`, `Path { data: Vec<PathCommand> }`; `Mask`: `source: MaskSource`, `inverted: bool`
-- [ ] T016 [US8] Add `mask: Option<Mask>` to `BaseStyle` struct in `crates/lumen/src/clip/style/base.rs` — add field, update `Default`, update `BaseStyle::resolve`
-- [ ] T017 [US8] Implement `MaskSource::Shape` rendering in `BaseStyle::draw` in `crates/lumen/src/clip/style/base.rs` — build Skia `Path` from resolved `MaskShape` geometry, call `canvas.clip_path(&path, if inverted { ClipOp::Difference } else { ClipOp::Intersect }, true)` before the draw callback
-- [ ] T018 [US8] Implement `MaskSource::Bitmap` rendering in `BaseStyle::draw` in `crates/lumen/src/clip/style/base.rs` — render clip content to temp surface, decode mask image to another surface, composite using `BlendMode::DstIn` (or `DstOut` if inverted), draw result onto main canvas
-- [ ] T019 [US8] Implement `MaskSource::Clip` rendering in `BaseStyle::draw` in `crates/lumen/src/clip/style/base.rs` — same as Bitmap but render the referenced clip to the mask surface instead of decoding an image; clip must have been rendered before this call (dependency edge ensures ordering)
-- [ ] T020 [US8] Add dependency edge for `MaskSource::Clip` in `crates/lumen/src/dependency/mod.rs` — when scanning a clip's `BaseStyle`, if `mask.source == MaskSource::Clip { clip_id }`, insert edge `DependencyNode::ClipRender(clip_id) → DependencyNode::ClipRender(current_clip_id)`
+- [X] T015 [US8] Define `MaskSource`, `MaskShape`, and `Mask` types in `crates/lumen/src/clip/style/base.rs` — `MaskSource`: `Shape(MaskShape)`, `Bitmap { source: String }`, `Clip { clip_id: String }`; `MaskShape`: `Rectangle { x, y, width, height, corner_radius: [StyleProperty<f32>; 4] }`, `Ellipse { cx, cy, rx, ry }`, `Path { data: Vec<PathCommand> }`; `Mask`: `source: MaskSource`, `inverted: bool`
+- [X] T016 [US8] Add `mask: Option<Mask>` to `BaseStyle` struct in `crates/lumen/src/clip/style/base.rs` — add field, update `Default`, update `BaseStyle::resolve`
+- [X] T017 [US8] Implement `MaskSource::Shape` rendering in `BaseStyle::draw` in `crates/lumen/src/clip/style/base.rs` — build Skia `Path` from resolved `MaskShape` geometry, call `canvas.clip_path(&path, if inverted { ClipOp::Difference } else { ClipOp::Intersect }, true)` before the draw callback
+- [X] T018 [US8] Implement `MaskSource::Bitmap` rendering in `BaseStyle::draw` in `crates/lumen/src/clip/style/base.rs` — render clip content to temp surface, decode mask image to another surface, composite using `BlendMode::DstIn` (or `DstOut` if inverted), draw result onto main canvas
+- [X] T019 [US8] Implement `MaskSource::Clip` rendering in `BaseStyle::draw` in `crates/lumen/src/clip/style/base.rs` — same as Bitmap but render the referenced clip to the mask surface instead of decoding an image; clip must have been rendered before this call (dependency edge ensures ordering)
+- [X] T020 [US8] Add dependency edge for `MaskSource::Clip` in `crates/lumen/src/dependency/mod.rs` — when scanning a clip's `BaseStyle`, if `mask.source == MaskSource::Clip { clip_id }`, insert edge `DependencyNode::ClipRender(clip_id) → DependencyNode::ClipRender(current_clip_id)`
 
 **Checkpoint**: All three mask types work; clip mask dependency ordering is enforced by the resolver.
 

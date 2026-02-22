@@ -328,6 +328,7 @@ mod tests {
                 origin: [literal(0.0), literal(0.0)],
             },
             alignment: [literal(0.0), literal(0.0)],
+            mask: None,
         }
     }
 

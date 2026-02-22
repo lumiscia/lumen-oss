@@ -6,7 +6,10 @@ use std::marker::PhantomData;
 
 use crate::expr::{Expression, ExpressionId, ExpressionScope, ExpressionValue};
 
-pub use base::{BaseStyle, ResolvedBaseStyle, ResolvedShadowStyle, ShadowStyle, TransformStyle};
+pub use base::{
+    BaseStyle, Mask, MaskShape, MaskSource, PathCommand, ResolvedBaseStyle, ResolvedMask,
+    ResolvedMaskShape, ResolvedMaskSource, ResolvedShadowStyle, ShadowStyle, TransformStyle,
+};
 pub use shape::{EllipseStyle, Fill, PolygonStyle, RectStyle, Stroke};
 pub use text::{
     ResolvedTextPlaceholder, TextAlign, TextDecoration, TextOverflow, TextStyle, VerticalAlign,
