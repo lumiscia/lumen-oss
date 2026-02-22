@@ -9,6 +9,7 @@ pub struct BaseStyle {
     pub blend_mode: BlendMode,
     pub blur: StyleProperty<f32>,
     pub shadow: Option<ShadowStyle>,
+    pub clip_radius: [StyleProperty<f32>; 4],
     pub transform: TransformStyle,
     pub alignment: [StyleProperty<f32>; 2],
 }
@@ -36,6 +37,7 @@ pub struct ResolvedBaseStyle {
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub blur: f32,
+    pub clip_radius: [f32; 4],
     pub translate_x: f32,
     pub translate_y: f32,
     pub scale_x: f32,
@@ -77,6 +79,12 @@ impl BaseStyle {
             opacity: self.opacity.resolve_or(ctx, 1.0).clamp(0.0, 1.0),
             blend_mode: self.blend_mode,
             blur: self.blur.resolve_or(ctx, 0.0).max(0.0),
+            clip_radius: [
+                self.clip_radius[0].resolve_or(ctx, 0.0),
+                self.clip_radius[1].resolve_or(ctx, 0.0),
+                self.clip_radius[2].resolve_or(ctx, 0.0),
+                self.clip_radius[3].resolve_or(ctx, 0.0),
+            ],
             translate_x: self.transform.translate[0].resolve_or(ctx, 0.0),
             translate_y: self.transform.translate[1].resolve_or(ctx, 0.0),
             scale_x: self.transform.scale[0].resolve_or(ctx, 1.0),
@@ -112,6 +120,7 @@ mod tests {
             blend_mode: BlendMode::SrcOver,
             blur: literal(-4.0),
             shadow: None,
+            clip_radius: [literal(-1.0), literal(2.0), literal(3.0), literal(4.0)],
             transform: TransformStyle {
                 translate: [literal(12.0), literal(-3.0)],
                 scale: [literal(-2.0), literal(0.5)],
@@ -127,6 +136,7 @@ mod tests {
         assert!(resolved.visible);
         assert_eq!(resolved.opacity, 1.0);
         assert_eq!(resolved.blur, 0.0);
+        assert_eq!(resolved.clip_radius, [-1.0, 2.0, 3.0, 4.0]);
         assert_eq!(resolved.translate_x, 12.0);
         assert_eq!(resolved.translate_y, -3.0);
         assert_eq!(resolved.scale_x, -2.0);
@@ -153,6 +163,7 @@ mod tests {
                 blur: literal(8.0),
                 color: [literal(10), literal(20), literal(30), literal(40)],
             }),
+            clip_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
             transform: TransformStyle {
                 translate: [literal(0.0), literal(0.0)],
                 scale: [literal(1.0), literal(1.0)],

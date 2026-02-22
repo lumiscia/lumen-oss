@@ -286,6 +286,7 @@ mod tests {
             blend_mode: BlendMode::SrcOver,
             blur: literal(0.0),
             shadow: None,
+            clip_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
             transform: TransformStyle {
                 translate: [literal(0.0), literal(0.0)],
                 scale: [literal(1.0), literal(1.0)],
@@ -554,6 +555,55 @@ mod tests {
         let idx = |x: usize, y: usize| (y * 100 + x) * 4;
 
         assert_eq!(&pixels[idx(9, 10)..idx(9, 10) + 4], &[25, 200, 50, 255]);
+    }
+
+    #[test]
+    fn image_clip_base_style_clip_radius_clips_frame_corner() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.set_media_store(Box::new(TestMediaStore {
+            image: Some(TestImageResolver {
+                id: 'i'.to_string(),
+                width: 40,
+                height: 40,
+                pixels: vec![150, 60, 30, 255]
+                    .into_iter()
+                    .cycle()
+                    .take(40 * 40 * 4)
+                    .collect(),
+            }),
+            video: None,
+        }));
+        renderer_ctx.clear();
+
+        let mut style = base_style();
+        style.clip_radius = [literal(40.0), literal(0.0), literal(0.0), literal(0.0)];
+
+        let clip = ImageClip {
+            meta: ClipMeta {
+                id: Some('i'.to_string()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            source: 'i'.to_string(),
+            style,
+        };
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("clipped image clip should draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+
+        assert_eq!(pixels[idx(10, 10) + 3], 0);
+        assert_eq!(&pixels[idx(30, 30)..idx(30, 30) + 4], &[150, 60, 30, 255]);
     }
 
     #[test]

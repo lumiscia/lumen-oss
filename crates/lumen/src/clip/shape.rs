@@ -315,6 +315,7 @@ mod tests {
             blend_mode: BlendMode::SrcOver,
             blur: literal(0.0),
             shadow: None,
+            clip_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
             transform: TransformStyle {
                 translate: [literal(0.0), literal(0.0)],
                 scale: [literal(1.0), literal(1.0)],
