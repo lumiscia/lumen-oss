@@ -73,8 +73,8 @@ This file tracks renderer work that is complete and remaining.
 
 ### P1: Clip geometry and transforms
 
-- [ ] Add explicit clip geometry (x/y/width/height/anchor) instead of frame-relative debug placement.
-- [ ] Thread resolved geometry through clip draw implementations.
+- [x] Add explicit clip geometry (x/y/width/height/anchor) instead of frame-relative debug placement.
+- [x] Thread resolved geometry through clip draw implementations.
 - [x] Replace scalar translate/scale with per-axis transform model plus rotation/skew/origin.
 - [x] Add transform resolution + application ordering tests.
 
@@ -107,7 +107,7 @@ This file tracks renderer work that is complete and remaining.
 ### P1: Media rendering
 
 - [x] Render decoded image pixels to Skia (`ImageClip`) instead of placeholders.
-- [ ] Add image fit modes (`cover`, `contain`, `fill`, `none`).
+- [x] Add image fit modes (`cover`, `contain`, `fill`, `none`).
 - [ ] Add image/video Skia image caching to avoid per-frame conversions.
 - [x] Render decoded video frames to Skia (`VideoClip`) instead of placeholders.
 - [x] Implement `VideoClip` timeline mapping for trim/speed/loop.
