@@ -97,7 +97,7 @@ This file tracks renderer work that is complete and remaining.
 
 ### P1: Layout clip rendering
 
-- [ ] Add `LayoutContent` to layout nodes so nodes can render clips.
+- [x] Add `LayoutContent` to layout nodes so nodes can render clips.
 - [x] Store content in `LayoutNodeContext`.
 - [x] Render Taffy-computed node bounds instead of debug outlines only.
 - [ ] Add text measure functions for layout text nodes.

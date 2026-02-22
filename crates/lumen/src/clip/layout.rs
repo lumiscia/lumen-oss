@@ -53,6 +53,8 @@ impl LayoutClip {
     fn draw_node_bounds(
         &self,
         node: NodeId,
+        frame: u32,
+        frame_ctx: &FrameContext,
         parent_offset: (f32, f32),
         depth: usize,
         renderer_ctx: &mut RendererContext,
@@ -66,15 +68,12 @@ impl LayoutClip {
         let width = layout.size.width.max(1.0);
         let height = layout.size.height.max(1.0);
         let rect = skia_safe::Rect::from_xywh(x, y, width, height);
+        let context = self.tree.get_node_context(node).cloned();
 
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
         fill.set_color(
-            match self
-                .tree
-                .get_node_context(node)
-                .and_then(|ctx| ctx.content.as_ref())
-            {
+            match context.as_ref().and_then(|ctx| ctx.content.as_ref()) {
                 Some(LayoutContent::Shape(_)) => Color::from_argb(64, 70, 160, 255),
                 Some(LayoutContent::Text(_)) => Color::from_argb(64, 80, 220, 120),
                 Some(LayoutContent::Image(_)) => Color::from_argb(64, 240, 170, 80),
@@ -97,12 +96,16 @@ impl LayoutClip {
         ));
         renderer_ctx.canvas().draw_rect(rect, &stroke);
 
+        if let Some(content) = context.and_then(|ctx| ctx.content) {
+            draw_layout_content(&content, rect, frame, frame_ctx, renderer_ctx)?;
+        }
+
         for child in self
             .tree
             .children(node)
             .map_err(|_| RenderError::Unsupported("taffy tree traversal failed"))?
         {
-            self.draw_node_bounds(child, (x, y), depth + 1, renderer_ctx)?;
+            self.draw_node_bounds(child, frame, frame_ctx, (x, y), depth + 1, renderer_ctx)?;
         }
 
         Ok(())
@@ -148,6 +151,8 @@ impl Clip for LayoutClip {
                 if let Some(root_node) = self.root_node {
                     self.draw_node_bounds(
                         root_node,
+                        frame,
+                        frame_ctx,
                         (geometry.left(), geometry.top()),
                         0,
                         renderer_ctx,
@@ -159,15 +164,64 @@ impl Clip for LayoutClip {
     }
 }
 
+fn literal_f32(value: f32) -> crate::clip::style::StyleProperty<f32> {
+    crate::clip::style::StyleProperty::Value(crate::clip::style::StyleValue::Literal(value))
+}
+
+fn geometry_from_rect(rect: skia_safe::Rect) -> ClipGeometry {
+    ClipGeometry {
+        x: literal_f32(rect.left),
+        y: literal_f32(rect.top),
+        width: literal_f32(rect.width()),
+        height: literal_f32(rect.height()),
+        anchor_x: literal_f32(0.0),
+        anchor_y: literal_f32(0.0),
+    }
+}
+
+fn draw_layout_content(
+    content: &LayoutContent,
+    rect: skia_safe::Rect,
+    frame: u32,
+    frame_ctx: &FrameContext,
+    renderer_ctx: &mut RendererContext,
+) -> Result<(), RenderError> {
+    match content {
+        LayoutContent::Shape(clip) => {
+            let mut clip = clip.clone();
+            clip.geometry = geometry_from_rect(rect);
+            clip.draw(frame, frame_ctx, renderer_ctx)
+        }
+        LayoutContent::Text(clip) => {
+            let mut clip = clip.clone();
+            clip.geometry = geometry_from_rect(rect);
+            clip.draw(frame, frame_ctx, renderer_ctx)
+        }
+        LayoutContent::Image(clip) => {
+            let mut clip = clip.clone();
+            clip.geometry = geometry_from_rect(rect);
+            clip.draw(frame, frame_ctx, renderer_ctx)
+        }
+        LayoutContent::Video(clip) => {
+            let mut clip = clip.clone();
+            clip.geometry = geometry_from_rect(rect);
+            clip.draw(frame, frame_ctx, renderer_ctx)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use skia_safe::BlendMode;
     use taffy::prelude::{AvailableSpace, Size, Style, TaffyTree, length};
 
-    use super::{LayoutClip, LayoutNodeContext};
+    use super::{LayoutClip, LayoutContent, LayoutNodeContext};
     use crate::clip::{
         Clip, ClipGeometry, ClipMeta,
-        style::{BaseStyle, StyleProperty, StyleValue, TransformStyle},
+        shape::{ShapeClip, ShapeKind},
+        style::{
+            BaseStyle, Fill, RectStyle, StyleProperty, StyleValue, TransformStyle,
+        },
     };
     use crate::render::{
         backend::read_surface_rgba,
@@ -198,6 +252,27 @@ mod tests {
         }
     }
 
+    fn shape_content() -> LayoutContent {
+        LayoutContent::Shape(ShapeClip {
+            meta: ClipMeta {
+                id: Some("node-shape".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            geometry: ClipGeometry::default(),
+            kind: ShapeKind::Rectangle(RectStyle {
+                base: base_style(),
+                width: literal(20.0),
+                height: literal(10.0),
+                corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+                fill: Some(Fill::Solid {
+                    color: [literal(5), literal(150), literal(220), literal(255)],
+                }),
+                stroke: None,
+            }),
+        })
+    }
+
     #[test]
     fn layout_clip_draws_taffy_computed_child_bounds() {
         let mut tree = TaffyTree::new();
@@ -212,7 +287,7 @@ mod tests {
                 },
                 LayoutNodeContext {
                     id: Some("child".to_owned()),
-                    content: None,
+                    content: Some(shape_content()),
                 },
             )
             .expect("child");
@@ -278,7 +353,7 @@ mod tests {
         let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
         let idx = |x: usize, y: usize| (y * 120 + x) * 4;
 
-        assert!(pixels[idx(10, 10) + 3] > 0);
+        assert_eq!(&pixels[idx(15, 15)..idx(15, 15) + 4], &[5, 150, 220, 255]);
         assert!(pixels[idx(11, 11) + 3] > 0);
     }
 }
