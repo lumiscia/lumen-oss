@@ -82,7 +82,7 @@ This file tracks renderer work that is complete and remaining.
 
 - [ ] Add fill model (solid first, gradients/images later).
 - [ ] Add stroke model (width/color/cap/join/dash).
-- [ ] Add rectangle corner radius (per-corner animatable).
+- [x] Add rectangle corner radius (per-corner animatable).
 - [ ] Add clip radius support in `BaseStyle` for generic round clipping.
 - [ ] Replace shadow blur approximation with proper Skia blur mask filters.
 - [ ] Support multiple shadows and inset shadows.

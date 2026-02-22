@@ -12,6 +12,7 @@ pub struct RectStyle {
     pub base: BaseStyle,
     pub width: StyleProperty<f32>,
     pub height: StyleProperty<f32>,
+    pub corner_radius: [StyleProperty<f32>; 4],
 }
 
 #[derive(Debug, Clone)]

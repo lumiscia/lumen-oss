@@ -1,6 +1,6 @@
 use std::f32::consts::TAU;
 
-use skia_safe::{Color, Paint, PathBuilder, Rect};
+use skia_safe::{Color, Paint, PathBuilder, Point, RRect, Rect};
 
 use crate::clip::style::{BaseStyle, EllipseStyle, PolygonStyle, RectStyle, StyleContext};
 use crate::clip::{Clip, ClipMeta};
@@ -85,14 +85,41 @@ impl RectStyle {
 
         let x = (frame_ctx.width as f32 - width) * 0.5;
         let y = (frame_ctx.height as f32 - height) * 0.5;
+        let rect = Rect::from_xywh(x, y, width, height);
+        let max_radius = width.min(height) * 0.5;
+        let corner_radii = [
+            self.corner_radius[0]
+                .resolve_or(&ctx, 0.0)
+                .clamp(0.0, max_radius),
+            self.corner_radius[1]
+                .resolve_or(&ctx, 0.0)
+                .clamp(0.0, max_radius),
+            self.corner_radius[2]
+                .resolve_or(&ctx, 0.0)
+                .clamp(0.0, max_radius),
+            self.corner_radius[3]
+                .resolve_or(&ctx, 0.0)
+                .clamp(0.0, max_radius),
+        ];
 
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
         paint.set_color(Color::from_argb(255, 80, 180, 255));
 
-        renderer_ctx
-            .canvas()
-            .draw_rect(Rect::from_xywh(x, y, width, height), &paint);
+        if corner_radii.iter().any(|radius| *radius > 0.0) {
+            let rrect = RRect::new_rect_radii(
+                rect,
+                &[
+                    Point::new(corner_radii[0], corner_radii[0]),
+                    Point::new(corner_radii[1], corner_radii[1]),
+                    Point::new(corner_radii[2], corner_radii[2]),
+                    Point::new(corner_radii[3], corner_radii[3]),
+                ],
+            );
+            renderer_ctx.canvas().draw_rrect(rrect, &paint);
+        } else {
+            renderer_ctx.canvas().draw_rect(rect, &paint);
+        }
 
         Ok(())
     }
@@ -174,5 +201,84 @@ impl PolygonStyle {
         renderer_ctx.canvas().draw_path(&path, &paint);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use skia_safe::BlendMode;
+
+    use super::{ShapeClip, ShapeKind};
+    use crate::clip::{
+        Clip, ClipMeta,
+        style::{BaseStyle, RectStyle, StyleProperty, StyleValue, TransformStyle},
+    };
+    use crate::render::{
+        backend::read_surface_rgba,
+        context::{FrameContext, RendererContext},
+    };
+    use crate::time::Rational;
+
+    fn literal<T>(value: T) -> StyleProperty<T> {
+        StyleProperty::Value(StyleValue::Literal(value))
+    }
+
+    fn base_style() -> BaseStyle {
+        BaseStyle {
+            visible: literal(true),
+            opacity: literal(1.0),
+            blend_mode: BlendMode::SrcOver,
+            blur: literal(0.0),
+            shadow: None,
+            transform: TransformStyle {
+                translate: [literal(0.0), literal(0.0)],
+                scale: [literal(1.0), literal(1.0)],
+                rotation: literal(0.0),
+                skew: [literal(0.0), literal(0.0)],
+                origin: [literal(0.0), literal(0.0)],
+            },
+            alignment: [literal(0.0), literal(0.0)],
+        }
+    }
+
+    #[test]
+    fn rectangle_corner_radius_rounds_corners() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.clear();
+
+        let clip = ShapeClip {
+            meta: ClipMeta {
+                id: Some("rect".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            kind: ShapeKind::Rectangle(RectStyle {
+                base: base_style(),
+                width: literal(20.0),
+                height: literal(20.0),
+                corner_radius: [literal(10.0), literal(10.0), literal(10.0), literal(10.0)],
+            }),
+        };
+
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("shape should draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+
+        let outside_rounded_corner = &pixels[idx(41, 41)..idx(41, 41) + 4];
+        let inside_fill = &pixels[idx(45, 45)..idx(45, 45) + 4];
+
+        assert_eq!(outside_rounded_corner[3], 0);
+        assert_eq!(inside_fill, &[80, 180, 255, 255]);
     }
 }
