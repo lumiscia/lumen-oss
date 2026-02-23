@@ -1,4 +1,4 @@
-#![cfg(feature = "decode-libav")]
+#![cfg(feature = "legacy-decode-tests")]
 
 use std::{path::PathBuf, process::Command, sync::Arc};
 

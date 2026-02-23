@@ -1,59 +1,46 @@
-use lumen::{
-    Rational,
-    model::{
-        BaseStyle, Canvas, ClipContent, ClipItem, ClipStyle, Layer, LayerItem, Project, StyleValue,
-        Timeline, TransformStyle,
-    },
-};
 use serde_json::json;
 
 use crate::runpod::{RunpodJobRequest, handle_runpod_request};
 
 fn valid_project_value() -> serde_json::Value {
-    let mut style = ClipStyle::default();
-    style.base = BaseStyle {
-        transform: TransformStyle {
-            x: StyleValue::Value(20.0),
-            y: StyleValue::Value(20.0),
-            width: StyleValue::Value(280.0),
-            height: StyleValue::Value(80.0),
-            ..Default::default()
+    json!({
+        "version": "1",
+        "canvas": {
+            "width": 320,
+            "height": 180,
+            "background": [0, 0, 0, 255]
         },
-        ..Default::default()
-    };
-    style.font_size = Some(StyleValue::Value(24.0));
-    style.color = Some([255, 255, 255, 255]);
-    style.align = Some(lumen::model::TextAlign::Center);
-
-    let project = Project {
-        version: "1".to_string(),
-        canvas: Canvas {
-            width: 320,
-            height: 180,
-            background: [0, 0, 0, 255],
+        "timeline": {
+            "fps": { "num": 30, "den": 1 },
+            "duration_frames": 2
         },
-        timeline: Timeline {
-            fps: Rational::new(30, 1),
-            duration_frames: 2,
-        },
-        sources: Vec::new(),
-        layers: vec![Layer {
-            id: "layer_text".to_string(),
-            items: vec![LayerItem::Clip(ClipItem {
-                id: "clip_text_1".to_string(),
-                start_frame: 0,
-                duration_frames: 2,
-                content: ClipContent::Text {
-                    content: "Hello".to_string(),
+        "sources": [],
+        "layers": [{
+            "id": "layer_text",
+            "items": [{
+                "type": "clip",
+                "id": "clip_text_1",
+                "start_frame": 0,
+                "duration_frames": 2,
+                "content": {
+                    "type": "text",
+                    "content": "Hello"
                 },
-                style,
-                mask: None,
-            })],
+                "style": {
+                    "transform": {
+                        "x": 20.0,
+                        "y": 20.0,
+                        "width": 280.0,
+                        "height": 80.0
+                    },
+                    "font_size": 24.0,
+                    "color": [255, 255, 255, 255],
+                    "align": "center"
+                }
+            }]
         }],
-        audio: Default::default(),
-    };
-
-    serde_json::to_value(project).expect("serialize project")
+        "audio": { "tracks": [] }
+    })
 }
 
 #[tokio::test]

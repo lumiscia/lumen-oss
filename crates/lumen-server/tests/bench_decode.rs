@@ -1,3 +1,5 @@
+#![cfg(feature = "legacy-decode-tests")]
+
 //! Video decode backend throughput benchmark.
 //!
 //! Measures frame decode + render performance for the currently enabled decode

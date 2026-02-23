@@ -284,10 +284,8 @@ pub async fn get_frame(
     let cached = match state.preview_cache.get_project(&project_cache_key).await {
         Some(cached) => cached,
         None => {
-            let bundle = convert_project_payload(&job.payload)
-                .map_err(|err| ApiError::bad_request(err.message))?;
             let cached = Arc::new(CachedProject {
-                bundle: Arc::new(bundle),
+                payload: Arc::new(job.payload),
             });
             state
                 .preview_cache
@@ -297,15 +295,24 @@ pub async fn get_frame(
         }
     };
 
-    let total_frames = cached.bundle.project.duration_frames;
-    if frame_index >= u64::from(total_frames) {
-        return Err(ApiError::bad_request("requested frame is out of range"));
-    }
-
-    let frame_index = u32::try_from(frame_index)
+    let frame_index_u32 = u32::try_from(frame_index)
         .map_err(|_| ApiError::bad_request("requested frame is out of range"))?;
 
-    let png = render_project_frame_png(&cached.bundle, frame_index).map_err(ApiError::internal)?;
+    let payload = cached.payload.clone();
+    let png = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        let bundle =
+            convert_project_payload(&payload).map_err(|err| err.message)?;
+
+        if frame_index_u32 >= bundle.project.duration_frames {
+            return Err("requested frame is out of range".to_string());
+        }
+
+        render_project_frame_png(&bundle, frame_index_u32)
+            .map_err(|err| err.message)
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .map_err(|msg| ApiError::bad_request(msg))?;
 
     let png_bytes = axum::body::Bytes::from(png);
     state

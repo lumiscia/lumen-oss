@@ -7,7 +7,6 @@ use std::{
 
 use axum::body::Bytes;
 use lru::LruCache;
-use lumen::json::ProjectBundle;
 use tokio::sync::Mutex;
 
 const DEFAULT_PLAN_CACHE_ITEMS: usize = 128;
@@ -15,7 +14,7 @@ const DEFAULT_FRAME_CACHE_ITEMS: usize = 1_024;
 const DEFAULT_CACHE_TTL_MS: u64 = 5 * 60 * 1_000;
 
 pub struct CachedProject {
-    pub bundle: Arc<ProjectBundle>,
+    pub payload: Arc<serde_json::Value>,
 }
 
 struct CachedFrame {
