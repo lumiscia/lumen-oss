@@ -13,9 +13,9 @@ use crate::{
     capability::RuntimeCapabilityProfile,
     composition::Composition,
     error::{GraphValidationError, LumenError, RenderError},
-    graph::InputPort,
+    graph::{Connection, InputPort},
     media::{MediaStore, VideoFrameResolver},
-    node::{NodeId, NodeInputs, PortValue},
+    node::{NodeId, NodeInputs, NodeKind, PortValue},
     raster::RasterFrame,
     surface_pool::SurfacePool,
 };
@@ -47,7 +47,7 @@ pub struct RenderContext {
     pub duration_frames: u32,
     pub surface_pool: Arc<SurfacePool>,
     pub asset_cache: Arc<RwLock<AssetCache>>,
-    pub node_output_cache: HashMap<NodeId, PortValue>,
+    pub node_output_cache: HashMap<(NodeId, u32), PortValue>,
     pub media_store: Arc<dyn MediaStore>,
     pub capability_profile: RuntimeCapabilityProfile,
     pub cancellation: CancellationToken,
@@ -102,94 +102,174 @@ impl Composition {
             return Err(RenderError::Cancelled { frame }.into());
         }
 
-        let media_output_nodes: Vec<NodeId> = self
-            .graph
-            .nodes
-            .values()
-            .filter(|node| matches!(node.kind, crate::node::NodeKind::MediaOutput(_)))
-            .map(|node| node.id)
-            .collect();
-
-        let target = match media_output_nodes.as_slice() {
-            [target] => *target,
-            [] => return Err(GraphValidationError::MissingMediaOutput.into()),
-            outputs => {
-                return Err(GraphValidationError::MultipleMediaOutputs {
-                    count: outputs.len(),
-                }
-                .into());
-            }
-        };
-
-        let order = self.graph.evaluation_order(target)?;
-        for node_id in order {
-            if ctx.cancellation.is_cancelled() {
-                return Err(RenderError::Cancelled { frame }.into());
-            }
-
-            let node = self
-                .graph
-                .nodes
-                .get(&node_id)
-                .ok_or(GraphValidationError::InvalidEvaluationTarget { node_id })?;
-            let mut inputs = NodeInputs::new();
-
-            let mut resolved_kind = node.kind.clone();
-            self.apply_animated_properties(node_id, frame, &mut resolved_kind)?;
-
-            for input_def in resolved_kind.input_port_defs() {
-                let upstream_edge = self.graph.connections.iter().find(|edge| {
-                    edge.to_node == node_id && input_port_matches(&edge.to_port, input_def.name)
-                });
-
-                if let Some(connection) = upstream_edge {
-                    let output = ctx
-                        .node_output_cache
-                        .get(&connection.from_node)
-                        .ok_or(RenderError::MissingNodeOutput {
-                            frame,
-                            node_id: connection.from_node,
-                        })?
-                        .clone();
-                    inputs.insert(input_def.name, output);
-                } else if !input_def.optional {
-                    return Err(GraphValidationError::MissingRequiredInput {
-                        node_id,
-                        node_kind: resolved_kind.kind_name(),
-                        port: input_def.name.to_string(),
-                    }
-                    .into());
-                }
-            }
-
-            let output = resolved_kind
-                .evaluate(&inputs, ctx)
-                .map_err(|err| RenderError::NodeEvaluation {
-                    frame,
-                    node_id,
-                    node_kind: resolved_kind.kind_name(),
-                    details: err.to_string(),
-                })?;
-
-            ctx.node_output_cache.insert(node_id, output);
-        }
-
-        let final_output =
-            ctx.node_output_cache
-                .get(&target)
-                .ok_or(RenderError::MissingNodeOutput {
-                    frame,
-                    node_id: target,
-                })?;
+        let target = self.media_output_target()?;
+        let final_output = self.evaluate_node_at_frame(target, frame, ctx)?;
 
         match final_output {
-            PortValue::RasterFrame(frame_data) => Ok(frame_data.clone()),
+            PortValue::RasterFrame(frame_data) => Ok(frame_data),
             _ => Err(RenderError::InvalidMediaOutputType {
                 frame,
                 node_id: target,
             }
             .into()),
         }
+    }
+
+    fn media_output_target(&self) -> Result<NodeId, LumenError> {
+        let media_output_nodes: Vec<NodeId> = self
+            .graph
+            .nodes
+            .values()
+            .filter(|node| matches!(node.kind, NodeKind::MediaOutput(_)))
+            .map(|node| node.id)
+            .collect();
+
+        match media_output_nodes.as_slice() {
+            [target] => Ok(*target),
+            [] => Err(GraphValidationError::MissingMediaOutput.into()),
+            outputs => Err(GraphValidationError::MultipleMediaOutputs {
+                count: outputs.len(),
+            }
+            .into()),
+        }
+    }
+
+    fn evaluate_node_at_frame(
+        &self,
+        node_id: NodeId,
+        frame: u32,
+        ctx: &mut RenderContext,
+    ) -> Result<PortValue, LumenError> {
+        if let Some(cached) = ctx.node_output_cache.get(&(node_id, frame)).cloned() {
+            return Ok(cached);
+        }
+
+        if ctx.cancellation.is_cancelled() {
+            return Err(RenderError::Cancelled { frame }.into());
+        }
+
+        let node = self
+            .graph
+            .nodes
+            .get(&node_id)
+            .ok_or(GraphValidationError::InvalidEvaluationTarget { node_id })?;
+        let mut resolved_kind = node.kind.clone();
+        self.apply_animated_properties(node_id, frame, &mut resolved_kind)?;
+
+        if let Some(short_circuit) = self.try_short_circuit(node_id, frame, &resolved_kind, ctx)? {
+            ctx.node_output_cache
+                .insert((node_id, frame), short_circuit.clone());
+            return Ok(short_circuit);
+        }
+
+        let mut inputs = NodeInputs::new();
+        match &resolved_kind {
+            NodeKind::Switch(switch_node) => {
+                let selected = switch_node
+                    .map
+                    .iter()
+                    .find_map(|(index, range)| range.contains(&frame).then_some(*index));
+                if let Some(index) = selected {
+                    let input_name = format!("input_{index}");
+                    if let Some(connection) = self.find_input_connection(node_id, &input_name) {
+                        let output =
+                            self.evaluate_node_at_frame(connection.from_node, frame, ctx)?;
+                        inputs.insert(input_name, output);
+                    }
+                }
+            }
+            _ => {
+                for input_def in resolved_kind.input_port_defs() {
+                    let upstream = self.find_input_connection(node_id, input_def.name);
+                    if let Some(connection) = upstream {
+                        let output =
+                            self.evaluate_node_at_frame(connection.from_node, frame, ctx)?;
+                        inputs.insert(input_def.name, output);
+                    } else if !input_def.optional {
+                        return Err(GraphValidationError::MissingRequiredInput {
+                            node_id,
+                            node_kind: resolved_kind.kind_name(),
+                            port: input_def.name.to_string(),
+                        }
+                        .into());
+                    }
+                }
+            }
+        }
+
+        let previous_frame = ctx.frame;
+        ctx.frame = frame;
+        let output =
+            resolved_kind
+                .evaluate(&inputs, ctx)
+                .map_err(|err| RenderError::NodeEvaluation {
+                    frame,
+                    node_id,
+                    node_kind: resolved_kind.kind_name(),
+                    details: err.to_string(),
+                });
+        ctx.frame = previous_frame;
+        let output = output?;
+
+        ctx.node_output_cache
+            .insert((node_id, frame), output.clone());
+        Ok(output)
+    }
+
+    fn try_short_circuit(
+        &self,
+        node_id: NodeId,
+        frame: u32,
+        node_kind: &NodeKind,
+        ctx: &mut RenderContext,
+    ) -> Result<Option<PortValue>, LumenError> {
+        match node_kind {
+            NodeKind::FrameHold(frame_hold) => {
+                let held_frame = frame_hold
+                    .hold_frame
+                    .min(self.timeline.duration_frames.saturating_sub(1));
+                self.resolve_required_input(
+                    node_id,
+                    node_kind.kind_name(),
+                    "source",
+                    held_frame,
+                    ctx,
+                )
+                .map(Some)
+            }
+            NodeKind::Transform(transform) if transform.is_identity() => self
+                .resolve_required_input(node_id, node_kind.kind_name(), "source", frame, ctx)
+                .map(Some),
+            NodeKind::Blur(blur) if blur.is_noop() => self
+                .resolve_required_input(node_id, node_kind.kind_name(), "source", frame, ctx)
+                .map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    fn resolve_required_input(
+        &self,
+        node_id: NodeId,
+        node_kind: &'static str,
+        input_name: &str,
+        frame: u32,
+        ctx: &mut RenderContext,
+    ) -> Result<PortValue, LumenError> {
+        let connection = self.find_input_connection(node_id, input_name).ok_or(
+            GraphValidationError::MissingRequiredInput {
+                node_id,
+                node_kind,
+                port: input_name.to_string(),
+            },
+        )?;
+        self.evaluate_node_at_frame(connection.from_node, frame, ctx)
+    }
+
+    fn find_input_connection(&self, node_id: NodeId, input_name: &str) -> Option<&Connection> {
+        self.graph
+            .connections
+            .iter()
+            .find(|edge| edge.to_node == node_id && input_port_matches(&edge.to_port, input_name))
     }
 }
 

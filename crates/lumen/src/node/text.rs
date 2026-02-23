@@ -1,5 +1,15 @@
 use std::sync::Arc;
 
+use skia_safe::{
+    AlphaType, Color, ColorType, FontMgr, FontStyle, ImageInfo,
+    font_style::Weight,
+    surfaces,
+    textlayout::{
+        FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as ParagraphTextAlign,
+        TextStyle as ParagraphTextStyle,
+    },
+};
+
 use crate::{
     error::LumenError,
     node::{InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue},
@@ -7,23 +17,66 @@ use crate::{
     render::RenderContext,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextFontStyle {
+    Normal,
+    Italic,
+    Oblique,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextAlignmentHorizontal {
+    Left,
+    Center,
+    Right,
+    Justify,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextAlignmentVertical {
+    Top,
+    Middle,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextAlignment {
+    pub horizontal: TextAlignmentHorizontal,
+    pub vertical: TextAlignmentVertical,
+}
+
+impl Default for TextAlignment {
+    fn default() -> Self {
+        Self {
+            horizontal: TextAlignmentHorizontal::Left,
+            vertical: TextAlignmentVertical::Top,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Text {
     pub content: String,
+    pub font_family: String,
     pub font_size: f32,
+    pub font_weight: u16,
+    pub font_style: TextFontStyle,
+    pub max_width: Option<f32>,
     pub color: [u8; 4],
-    pub width: Option<u32>,
-    pub height: Option<u32>,
+    pub alignment: TextAlignment,
 }
 
 impl Default for Text {
     fn default() -> Self {
         Self {
             content: String::new(),
+            font_family: "sans-serif".to_string(),
             font_size: 16.0,
+            font_weight: 400,
+            font_style: TextFontStyle::Normal,
+            max_width: None,
             color: [255, 255, 255, 255],
-            width: None,
-            height: None,
+            alignment: TextAlignment::default(),
         }
     }
 }
@@ -45,18 +98,62 @@ impl NodeEval for Text {
         _inputs: &NodeInputs,
         ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
-        let mut width = self.width.unwrap_or(ctx.width).max(1);
-        let mut height = self.height.unwrap_or(ctx.height).max(1);
-        let byte_len = match rgba_byte_len(width, height) {
-            Some(len) => len,
-            None => {
-                width = 1;
-                height = 1;
-                4
-            }
+        let layout_width = self
+            .max_width
+            .unwrap_or(ctx.width as f32)
+            .clamp(1.0, u32::MAX as f32);
+
+        let mut paragraph_style = ParagraphStyle::new();
+        paragraph_style.set_text_align(match self.alignment.horizontal {
+            TextAlignmentHorizontal::Left => ParagraphTextAlign::Left,
+            TextAlignmentHorizontal::Center => ParagraphTextAlign::Center,
+            TextAlignmentHorizontal::Right => ParagraphTextAlign::Right,
+            TextAlignmentHorizontal::Justify => ParagraphTextAlign::Justify,
+        });
+
+        let mut text_style = ParagraphTextStyle::new();
+        text_style.set_font_size(self.font_size.max(1.0));
+        text_style.set_color(to_color(self.color));
+        text_style.set_font_style(FontStyle::new(
+            Weight::from(i32::from(self.font_weight.clamp(100, 900))),
+            skia_safe::font_style::Width::NORMAL,
+            to_slant(self.font_style),
+        ));
+        if !self.font_family.trim().is_empty() {
+            text_style.set_font_families(&[self.font_family.as_str()]);
+        }
+
+        paragraph_style.set_text_style(&text_style);
+
+        let mut font_collection = FontCollection::new();
+        font_collection.set_default_font_manager(FontMgr::default(), None);
+
+        let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
+        builder.push_style(&text_style);
+        builder.add_text(&self.content);
+        let mut paragraph = builder.build();
+        paragraph.layout(layout_width);
+
+        let width = layout_width.ceil().max(1.0) as u32;
+        let height = paragraph.height().ceil().max(1.0) as u32;
+        let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
+            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                Arc::new(vec![0_u8; 4]),
+                1,
+                1,
+            )));
         };
 
-        let bytes = vec![0_u8; byte_len];
+        let canvas = surface.canvas();
+        canvas.clear(Color::TRANSPARENT);
+        let vertical_offset = match self.alignment.vertical {
+            TextAlignmentVertical::Top => 0.0,
+            TextAlignmentVertical::Middle => (height as f32 - paragraph.height()).max(0.0) * 0.5,
+            TextAlignmentVertical::Bottom => (height as f32 - paragraph.height()).max(0.0),
+        };
+        paragraph.paint(canvas, (0.0, vertical_offset));
+
+        let bytes = read_surface_rgba(&mut surface, width, height);
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
             Arc::new(bytes),
             width,
@@ -65,8 +162,36 @@ impl NodeEval for Text {
     }
 }
 
+fn read_surface_rgba(surface: &mut skia_safe::Surface, width: u32, height: u32) -> Vec<u8> {
+    let byte_len = rgba_byte_len(width, height).unwrap_or(4);
+    let mut bytes = vec![0_u8; byte_len];
+    let info = ImageInfo::new(
+        (width as i32, height as i32),
+        ColorType::RGBA8888,
+        AlphaType::Premul,
+        None,
+    );
+    if surface.read_pixels(&info, bytes.as_mut_slice(), (width * 4) as usize, (0, 0)) {
+        bytes
+    } else {
+        vec![0_u8; byte_len]
+    }
+}
+
 fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
     let pixels = u64::from(width).checked_mul(u64::from(height))?;
     let bytes = pixels.checked_mul(4)?;
     usize::try_from(bytes).ok()
+}
+
+fn to_color(color: [u8; 4]) -> Color {
+    Color::from_argb(color[3], color[0], color[1], color[2])
+}
+
+fn to_slant(style: TextFontStyle) -> skia_safe::font_style::Slant {
+    match style {
+        TextFontStyle::Normal => skia_safe::font_style::Slant::Upright,
+        TextFontStyle::Italic => skia_safe::font_style::Slant::Italic,
+        TextFontStyle::Oblique => skia_safe::font_style::Slant::Oblique,
+    }
 }
