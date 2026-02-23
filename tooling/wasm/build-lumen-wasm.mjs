@@ -18,6 +18,11 @@ if (!existsSync(staticLib)) {
 const exportedFunctions = [
 	'_malloc',
 	'_free',
+	'_lumen_contract_metadata_ptr',
+	'_lumen_contract_metadata_len',
+	'_lumen_last_status_ptr',
+	'_lumen_last_status_len',
+	'_lumen_renderer_handshake',
 	'_lumen_renderer_create',
 	'_lumen_renderer_destroy',
 	'_lumen_renderer_width',
@@ -31,8 +36,12 @@ const exportedFunctions = [
 	'_lumen_media_create',
 	'_lumen_media_destroy',
 	'_lumen_media_clear',
+	'_lumen_media_clear_videos',
+	'_lumen_media_has_image',
 	'_lumen_media_set_image',
 	'_lumen_media_set_video_frame',
+	'_lumen_media_set_image_owned',
+	'_lumen_media_set_video_frame_owned',
 ]
 
 const exportArg = `EXPORTED_FUNCTIONS=[${exportedFunctions.map((fn) => `'${fn}'`).join(',')}]`

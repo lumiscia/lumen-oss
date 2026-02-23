@@ -608,7 +608,13 @@ fn normalize_sources(project: &mut serde_json::Map<String, serde_json::Value>) {
             continue;
         };
         if let Some(kind_type) = kind_obj.get("type").cloned() {
-            source_obj.insert("kind".to_string(), kind_type);
+            let normalized_kind = match kind_type {
+                serde_json::Value::String(kind) if kind == "path" => {
+                    serde_json::Value::String("file".to_string())
+                }
+                other => other,
+            };
+            source_obj.insert("kind".to_string(), normalized_kind);
         }
         for key in ["path", "url", "filter"] {
             if source_obj.contains_key(key) {

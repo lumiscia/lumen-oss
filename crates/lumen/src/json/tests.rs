@@ -72,6 +72,20 @@ fn converts_valid_payload_when_feature_is_on() {
     assert!(result.project_bundle.is_some());
     assert!(result.errors.is_empty());
 }
+#[cfg(feature = "json")]
+#[test]
+fn converts_shared_sample_fixture_when_feature_is_on() {
+    let raw = include_str!("../../tests/fixtures/json_delegate/sample_project.json");
+    let result = convert_json_delegate(&request(raw));
+
+    assert!(matches!(result.status, JsonDelegateStatus::Success));
+    assert_eq!(
+        json_delegate_observability_code(result.status),
+        OBS_CODE_JSON_DELEGATE_SUCCESS
+    );
+    assert!(result.project_bundle.is_some());
+    assert!(result.errors.is_empty());
+}
 
 #[cfg(feature = "json")]
 #[test]
@@ -95,6 +109,66 @@ fn returns_validation_error_for_invalid_json_payload_without_echoing_secrets() {
             .first()
             .map(|issue| issue.observability_code.as_str()),
         Some(OBS_CODE_JSON_DELEGATE_VALIDATION_ERROR)
+    );
+    assert_eq!(
+        result.errors.first().map(|issue| issue.message.as_str()),
+        Some("input payload is not valid JSON")
+    );
+    assert!(
+        result
+            .errors
+            .first()
+            .map(|issue| !issue.message.contains(secret))
+            .unwrap_or(false)
+    );
+    assert!(
+        result
+            .errors
+            .first()
+            .and_then(|issue| issue.hint.as_ref())
+            .map(|hint| !hint.contains(secret))
+            .unwrap_or(false)
+    );
+    assert!(result.project_bundle.is_none());
+}
+
+#[cfg(feature = "json")]
+#[test]
+fn returns_validation_error_for_schema_mismatch_without_echoing_payload() {
+    let secret = "LEGACY_SOURCE_URL_SECRET";
+    let raw = format!(
+        r#"{{
+            "canvas": {{ "width": "{secret}", "height": 180, "background": [0, 0, 0, 255] }},
+            "timeline": {{ "fps": {{ "num": 30, "den": 1 }}, "total_frames": 10 }},
+            "sources": [],
+            "layers": []
+        }}"#
+    );
+    let result = convert_json_delegate(&request(raw.as_str()));
+
+    assert!(matches!(result.status, JsonDelegateStatus::ValidationError));
+    assert_eq!(
+        json_delegate_observability_code(result.status),
+        OBS_CODE_JSON_DELEGATE_VALIDATION_ERROR
+    );
+    assert_eq!(
+        result.errors.first().map(|issue| issue.code.as_str()),
+        Some("validation_error")
+    );
+    assert_eq!(
+        result
+            .errors
+            .first()
+            .map(|issue| issue.observability_code.as_str()),
+        Some(OBS_CODE_JSON_DELEGATE_VALIDATION_ERROR)
+    );
+    assert_eq!(
+        result.errors.first().map(|issue| issue.message.as_str()),
+        Some("input payload does not match `chat_story_v1` schema")
+    );
+    assert_ne!(
+        result.errors.first().map(|issue| issue.message.as_str()),
+        Some("input payload is not valid JSON")
     );
     assert!(
         result
