@@ -8,8 +8,9 @@ use std::sync::Arc;
 use skia_safe::{Color, Paint, surfaces};
 use thiserror::Error;
 
-use crate::clip::Clip;
+use crate::clip::shape::ShapeKind;
 use crate::clip::style::{StyleContext, StyleProperty, StyleValue};
+use crate::clip::{Clip, ClipType};
 use crate::dependency::DependencyPlan;
 use crate::expr::{Expression, ExpressionId, ExpressionScope, ExpressionValue};
 use crate::render::backend::{RenderError as BackendRenderError, read_surface_rgba};
@@ -140,9 +141,11 @@ pub fn render_scene_with_tracer(
         collect_expressions(scene)?
     };
     let dependency_plan = DependencyPlan::build(&expressions);
+    let expression_scope = build_expression_scope(scene, frame);
+    renderer_ctx.set_expression_scope(expression_scope.clone());
     {
         let _scope = tracer.stage_scope(frame, RenderPipelineStage::EvaluateExpressions);
-        let _results = evaluate_expressions(&expressions, &dependency_plan)?;
+        let _results = evaluate_expressions(&expressions, &dependency_plan, &expression_scope)?;
     }
 
     {
@@ -233,6 +236,7 @@ fn collect_style_property_expressions(
 fn evaluate_expressions(
     expressions: &[Expression],
     dependency_plan: &DependencyPlan,
+    scope: &ExpressionScope,
 ) -> Result<ResultMap, RenderError> {
     if expressions.is_empty() {
         return Ok(ResultMap::new());
@@ -242,7 +246,6 @@ fn evaluate_expressions(
         .iter()
         .map(|expression| (expression.id.clone(), expression))
         .collect::<HashMap<_, _>>();
-    let scope = ExpressionScope::default();
     let mut results = ResultMap::new();
 
     for expression_id in &dependency_plan.evaluation_order {
@@ -250,12 +253,174 @@ fn evaluate_expressions(
             continue;
         };
         let value = expression
-            .evaluate(&scope)
+            .evaluate(scope)
             .map_err(|_| BackendRenderError::Unsupported("failed to evaluate expression"))?;
         results.insert(expression_id.clone(), value);
     }
 
     Ok(results)
+}
+
+fn build_expression_scope(scene: &Scene, frame: u32) -> ExpressionScope {
+    let mut scope = ExpressionScope::default();
+    let style_ctx = StyleContext::new(frame);
+
+    for layer in &scene.layers {
+        for clip in &layer.clips {
+            insert_clip_scope_properties(scene, clip, frame, &style_ctx, &mut scope);
+        }
+    }
+
+    scope
+}
+
+fn insert_clip_scope_properties(
+    scene: &Scene,
+    clip: &ClipType,
+    frame: u32,
+    style_ctx: &StyleContext<'_>,
+    scope: &mut ExpressionScope,
+) {
+    if !clip.contains_frame(frame) {
+        return;
+    }
+
+    let Some(clip_id) = clip.id().map(ToOwned::to_owned) else {
+        return;
+    };
+
+    let scene_width = scene.width as f32;
+    let scene_height = scene.height as f32;
+
+    let (x, y, width, height, opacity) = match clip {
+        ClipType::Group(group) => (
+            0.0,
+            0.0,
+            scene_width,
+            scene_height,
+            group.style.opacity.resolve_or(style_ctx, 1.0),
+        ),
+        ClipType::Layout(layout) => {
+            let geometry = layout.geometry.resolve_with_context(
+                style_ctx,
+                scene_width * 0.05,
+                scene_height * 0.05,
+                scene_width * 0.9,
+                scene_height * 0.9,
+                0.0,
+                0.0,
+            );
+            (
+                geometry.x,
+                geometry.y,
+                geometry.width,
+                geometry.height,
+                layout.style.opacity.resolve_or(style_ctx, 1.0),
+            )
+        }
+        ClipType::Image(image) => {
+            let geometry = image.geometry.resolve_with_context(
+                style_ctx,
+                scene_width * 0.1,
+                scene_height * 0.1,
+                scene_width * 0.4,
+                scene_height * 0.3,
+                0.0,
+                0.0,
+            );
+            (
+                geometry.x,
+                geometry.y,
+                geometry.width,
+                geometry.height,
+                image.style.opacity.resolve_or(style_ctx, 1.0),
+            )
+        }
+        ClipType::Video(video) => {
+            let geometry = video.geometry.resolve_with_context(
+                style_ctx,
+                scene_width * 0.1,
+                scene_height * 0.5,
+                scene_width * 0.4,
+                scene_height * 0.3,
+                0.0,
+                0.0,
+            );
+            (
+                geometry.x,
+                geometry.y,
+                geometry.width,
+                geometry.height,
+                video.style.opacity.resolve_or(style_ctx, 1.0),
+            )
+        }
+        ClipType::Shape(shape) => {
+            let geometry = shape.geometry.resolve_with_context(
+                style_ctx,
+                scene_width * 0.5,
+                scene_height * 0.5,
+                scene_width * 0.25,
+                scene_height * 0.25,
+                0.5,
+                0.5,
+            );
+            let opacity = match &shape.kind {
+                ShapeKind::Rectangle(style) => style.base.opacity.resolve_or(style_ctx, 1.0),
+                ShapeKind::Ellipse(style) => style.base.opacity.resolve_or(style_ctx, 1.0),
+                ShapeKind::Polygon(style) => style.base.opacity.resolve_or(style_ctx, 1.0),
+            };
+            (
+                geometry.x,
+                geometry.y,
+                geometry.width,
+                geometry.height,
+                opacity,
+            )
+        }
+        ClipType::Text(text) => {
+            let (default_width, default_height) = text
+                .style
+                .resolve_placeholder(frame, text.content.as_str())
+                .bounds();
+            let geometry = text.geometry.resolve_with_context(
+                style_ctx,
+                scene_width * 0.15,
+                scene_height * 0.15,
+                default_width,
+                default_height,
+                0.0,
+                0.0,
+            );
+            (
+                geometry.x,
+                geometry.y,
+                geometry.width,
+                geometry.height,
+                text.style.base.opacity.resolve_or(style_ctx, 1.0),
+            )
+        }
+    };
+
+    scope.clip_properties.insert(
+        (clip_id.clone(), crate::expr::ExpressionProperty::X),
+        ExpressionValue::Number(x),
+    );
+    scope.clip_properties.insert(
+        (clip_id.clone(), crate::expr::ExpressionProperty::Y),
+        ExpressionValue::Number(y),
+    );
+    scope.clip_properties.insert(
+        (clip_id.clone(), crate::expr::ExpressionProperty::Width),
+        ExpressionValue::Number(width),
+    );
+    scope.clip_properties.insert(
+        (clip_id.clone(), crate::expr::ExpressionProperty::Height),
+        ExpressionValue::Number(height),
+    );
+    scope.clip_properties.insert(
+        (clip_id, crate::expr::ExpressionProperty::Opacity),
+        ExpressionValue::Number(opacity),
+    );
 }
 
 fn composite_layers(
@@ -269,10 +434,9 @@ fn composite_layers(
             continue;
         }
 
-        let opacity = layer
-            .opacity
-            .resolve_or(&StyleContext::new(frame), 1.0)
-            .clamp(0.0, 1.0);
+        let expression_scope = renderer_ctx.expression_scope().clone();
+        let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+        let opacity = layer.opacity.resolve_or(&style_ctx, 1.0).clamp(0.0, 1.0);
         if opacity <= 0.0 {
             continue;
         }
@@ -318,8 +482,8 @@ fn composite_layers(
 mod tests {
     use crate::clip::shape::{ShapeClip, ShapeKind};
     use crate::clip::style::{
-        BaseStyle, Fill, Keyframe, RectStyle, Sequence, ShadowStyle, StyleProperty, StyleValue,
-        TransformStyle,
+        BaseStyle, Fill, Keyframe, RectStyle, Sequence, ShadowStyle, StyleExpression,
+        StyleProperty, StyleValue, TransformStyle,
     };
     use crate::clip::{ClipGeometry, ClipMeta, ClipType};
     use crate::render::context::RendererContext;
@@ -523,6 +687,23 @@ mod tests {
         assert_eq!(px[3], 255);
     }
 
+    #[test]
+    fn layer_opacity_expression_can_reference_clip_properties() {
+        let opacity = StyleProperty::Value(StyleValue::Expression(StyleExpression::new(
+            "clip('bg').opacity * 0.5",
+        )));
+        let scene = scene_with_overlay(opacity, true);
+        let mut renderer_ctx = RendererContext::new(scene.width, scene.height, scene.frame_rate)
+            .expect("renderer context");
+
+        let pixels = render_scene(&scene, 0, &mut renderer_ctx).expect("render frame");
+        let px = pixel_at(&pixels, scene.width, 0, 0);
+
+        assert!((126..=129).contains(&px[0]));
+        assert_eq!(px[1], 0);
+        assert!((126..=129).contains(&px[2]));
+        assert_eq!(px[3], 255);
+    }
     #[test]
     fn layer_opacity_keyframes_animate_across_frames() {
         let opacity = StyleProperty::Sequence(Sequence::new(vec![

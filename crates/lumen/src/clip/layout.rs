@@ -45,7 +45,7 @@ impl LayoutClip {
     /// the tree with the synthetic root node.
     fn build_layout(
         &self,
-        frame: u32,
+        style_ctx: &StyleContext<'_>,
         available_width: f32,
         available_height: f32,
     ) -> Result<(TaffyTree<LayoutNodeContext>, NodeId), RenderError> {
@@ -84,7 +84,7 @@ impl LayoutClip {
                     return known_dimensions.unwrap_or(Size::ZERO);
                 };
 
-                let style_ctx = StyleContext::new(frame);
+                let style_ctx = *style_ctx;
                 let available_width =
                     known_dimensions
                         .width
@@ -122,8 +122,10 @@ impl Clip for LayoutClip {
 
         self.style
             .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
-                let geometry = self.geometry.resolve_with_defaults(
-                    frame,
+                let expression_scope = renderer_ctx.expression_scope().clone();
+                let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+                let geometry = self.geometry.resolve_with_context(
+                    &style_ctx,
                     frame_ctx.width as f32 * 0.05,
                     frame_ctx.height as f32 * 0.05,
                     frame_ctx.width as f32 * 0.9,
@@ -135,7 +137,8 @@ impl Clip for LayoutClip {
                     return Ok(());
                 }
 
-                let (tree, root) = self.build_layout(frame, geometry.width, geometry.height)?;
+                let (tree, root) =
+                    self.build_layout(&style_ctx, geometry.width, geometry.height)?;
 
                 for child in tree
                     .children(root)
@@ -297,8 +300,8 @@ mod tests {
         Clip, ClipGeometry, ClipMeta,
         shape::{ShapeClip, ShapeKind},
         style::{
-            BaseStyle, Fill, RectStyle, StyleProperty, StyleValue, TextAlign, TextDecoration,
-            TextOverflow, TextStyle, TransformStyle, VerticalAlign,
+            BaseStyle, Fill, RectStyle, StyleContext, StyleProperty, StyleValue, TextAlign,
+            TextDecoration, TextOverflow, TextStyle, TransformStyle, VerticalAlign,
         },
         text::TextClip,
     };
@@ -477,7 +480,10 @@ mod tests {
             }],
         };
 
-        let (tree, root) = clip.build_layout(0, 240.0, 120.0).expect("layout build");
+        let style_ctx = StyleContext::new(0);
+        let (tree, root) = clip
+            .build_layout(&style_ctx, 240.0, 120.0)
+            .expect("layout build");
         let child = tree
             .children(root)
             .expect("children")

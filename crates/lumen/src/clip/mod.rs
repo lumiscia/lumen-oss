@@ -81,6 +81,27 @@ impl ClipGeometry {
         default_anchor_y: f32,
     ) -> ResolvedClipGeometry {
         let ctx = StyleContext::new(frame);
+        self.resolve_with_context(
+            &ctx,
+            default_x,
+            default_y,
+            default_width,
+            default_height,
+            default_anchor_x,
+            default_anchor_y,
+        )
+    }
+
+    pub fn resolve_with_context(
+        &self,
+        ctx: &StyleContext<'_>,
+        default_x: f32,
+        default_y: f32,
+        default_width: f32,
+        default_height: f32,
+        default_anchor_x: f32,
+        default_anchor_y: f32,
+    ) -> ResolvedClipGeometry {
         ResolvedClipGeometry {
             x: self.x.resolve_or(&ctx, default_x),
             y: self.y.resolve_or(&ctx, default_y),
@@ -187,7 +208,9 @@ impl BaseStyle {
         renderer_ctx: &mut RendererContext,
         draw: impl Fn(&mut RendererContext, &ResolvedBaseStyle) -> Result<(), RenderError>,
     ) -> Result<(), RenderError> {
-        let resolved = self.resolve(&StyleContext::new(frame));
+        let expression_scope = renderer_ctx.expression_scope().clone();
+        let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+        let resolved = self.resolve(&style_ctx);
         if !resolved.visible {
             return Ok(());
         }

@@ -2,7 +2,10 @@ use std::ops::Range;
 
 use skia_safe::{Color, Data, Image, ImageInfo, Paint, Rect, images};
 
-use crate::clip::{Clip, ClipGeometry, ClipMeta, ResolvedClipGeometry, style::BaseStyle};
+use crate::clip::{
+    Clip, ClipGeometry, ClipMeta, ResolvedClipGeometry,
+    style::{BaseStyle, StyleContext},
+};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 use crate::time::Rational;
@@ -66,8 +69,10 @@ impl Clip for ImageClip {
 
         self.style
             .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
-                let geometry = self.geometry.resolve_with_defaults(
-                    frame,
+                let expression_scope = renderer_ctx.expression_scope().clone();
+                let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+                let geometry = self.geometry.resolve_with_context(
+                    &style_ctx,
                     frame_ctx.width as f32 * 0.1,
                     frame_ctx.height as f32 * 0.1,
                     frame_ctx.width as f32 * 0.4,
@@ -345,8 +350,10 @@ impl Clip for VideoClip {
                 let Some(mapped_frame) = mapped_frame else {
                     return Ok(());
                 };
-                let geometry = self.geometry.resolve_with_defaults(
-                    frame,
+                let expression_scope = renderer_ctx.expression_scope().clone();
+                let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+                let geometry = self.geometry.resolve_with_context(
+                    &style_ctx,
                     frame_ctx.width as f32 * 0.1,
                     frame_ctx.height as f32 * 0.5,
                     frame_ctx.width as f32 * 0.4,

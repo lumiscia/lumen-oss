@@ -169,12 +169,13 @@ impl Clip for TextClip {
         self.style
             .base
             .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
-                let style_ctx = StyleContext::new(frame);
+                let expression_scope = renderer_ctx.expression_scope().clone();
+                let style_ctx = StyleContext::with_scope(frame, &expression_scope);
                 let resolved_placeholder =
                     self.style.resolve_placeholder(frame, self.content.as_str());
                 let (default_width, default_height) = resolved_placeholder.bounds();
-                let geometry = self.geometry.resolve_with_defaults(
-                    frame,
+                let geometry = self.geometry.resolve_with_context(
+                    &style_ctx,
                     frame_ctx.width as f32 * 0.15,
                     frame_ctx.height as f32 * 0.15,
                     default_width,

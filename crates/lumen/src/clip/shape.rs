@@ -84,8 +84,10 @@ impl Clip for ShapeClip {
             return Ok(());
         }
 
-        let geometry = self.geometry.resolve_with_defaults(
-            frame,
+        let expression_scope = renderer_ctx.expression_scope().clone();
+        let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+        let geometry = self.geometry.resolve_with_context(
+            &style_ctx,
             frame_ctx.width as f32 * 0.5,
             frame_ctx.height as f32 * 0.5,
             frame_ctx.width as f32 * 0.25,

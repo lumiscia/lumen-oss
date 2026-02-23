@@ -738,7 +738,10 @@ impl TryFrom<JsonProject> for ProjectBundle {
 
 #[cfg(test)]
 mod tests {
-    use lumen::clip::{ClipType, style::{StyleProperty, StyleValue}};
+    use lumen::clip::{
+        ClipType,
+        style::{StyleProperty, StyleValue},
+    };
 
     use super::{JsonProject, ProjectBundle};
 

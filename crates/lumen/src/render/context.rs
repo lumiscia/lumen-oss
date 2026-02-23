@@ -5,6 +5,7 @@ use thiserror::Error;
 
 use crate::time::Rational;
 
+use crate::expr::ExpressionScope;
 use crate::media::MediaStore;
 
 #[derive(Clone)]
@@ -42,6 +43,7 @@ pub struct RendererContext {
     image_cache: HashMap<String, CachedImage>,
     video_frame_cache: HashMap<String, CachedVideoFrame>,
     font_collection: FontCollection,
+    expression_scope: ExpressionScope,
 }
 
 #[derive(Debug, Error)]
@@ -75,6 +77,7 @@ impl RendererContext {
             image_cache: HashMap::new(),
             video_frame_cache: HashMap::new(),
             font_collection,
+            expression_scope: ExpressionScope::default(),
         })
     }
 
@@ -98,6 +101,13 @@ impl RendererContext {
         self.font_collection.clone()
     }
 
+    pub(crate) fn set_expression_scope(&mut self, scope: ExpressionScope) {
+        self.expression_scope = scope;
+    }
+
+    pub(crate) fn expression_scope(&self) -> &ExpressionScope {
+        &self.expression_scope
+    }
     pub fn clear(&mut self) {
         self.surface.canvas().clear(self.clear_color);
         self.overlay_surface
