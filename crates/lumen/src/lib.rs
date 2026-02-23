@@ -4,6 +4,7 @@ pub mod expr;
 #[cfg(feature = "ffmpeg")]
 pub mod ffmpeg;
 pub mod media;
+pub mod json;
 pub mod render;
 pub mod time;
 
