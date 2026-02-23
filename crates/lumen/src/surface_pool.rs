@@ -20,15 +20,15 @@ impl SurfacePool {
     }
 
     pub fn acquire(self: &Arc<Self>, width: u32, height: u32) -> Result<SurfaceRef, LumenError> {
-        if let Ok(mut pool) = self.available.lock() {
-            if let Some(surface) = pool.get_mut(&(width, height)).and_then(std::vec::Vec::pop) {
-                return Ok(SurfaceRef {
-                    surface: Some(surface),
-                    pool: Arc::clone(self),
-                    width,
-                    height,
-                });
-            }
+        if let Ok(mut pool) = self.available.lock()
+            && let Some(surface) = pool.get_mut(&(width, height)).and_then(std::vec::Vec::pop)
+        {
+            return Ok(SurfaceRef {
+                surface: Some(surface),
+                pool: Arc::clone(self),
+                width,
+                height,
+            });
         }
 
         let surface = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))

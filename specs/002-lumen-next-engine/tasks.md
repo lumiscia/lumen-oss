@@ -216,9 +216,9 @@
 
 **Purpose**: Update all consumers of the `lumen` crate to the new API
 
-- [ ] T053 [P] Update `crates/lumen-wasm` to new `Composition` + `Composition::render_frame()` API. Replace `Scene`/`render_scene` calls. Update JSON delegate to `Composition::from_json()`. Implement or adapt canvas sink for wasm output. Verify `cargo check -p lumen-wasm` passes.
-- [ ] T054 [P] Update `crates/lumen-local` to new API. Replace `Scene`/`render_scene` calls with `Composition::render_frame()`. Update FFmpeg integration to use new `FfmpegMediaStore`. Support optional multithreaded render path via `Composition::render_sequence()` (feature: threading). Verify `cargo check -p lumen-local` passes.
-- [ ] T055 [P] Update `crates/lumen-server` to new API. Replace `Scene`/`render_scene` calls with `Composition::render_frame()` or `render_sequence()`. Update FFmpeg sink integration. Verify `cargo check -p lumen-server` passes.
+- [X] T053 [P] Update `crates/lumen-wasm` to new `Composition` + `Composition::render_frame()` API. Replace `Scene`/`render_scene` calls. Update JSON delegate to `Composition::from_json()`. Implement or adapt canvas sink for wasm output. Verify `cargo check -p lumen-wasm` passes.
+- [X] T054 [P] Update `crates/lumen-local` to new API. Replace `Scene`/`render_scene` calls with `Composition::render_frame()`. Update FFmpeg integration to use new `FfmpegMediaStore`. Support optional multithreaded render path via `Composition::render_sequence()` (feature: threading). Verify `cargo check -p lumen-local` passes.
+- [X] T055 [P] Update `crates/lumen-server` to new API. Replace `Scene`/`render_scene` calls with `Composition::render_frame()` or `render_sequence()`. Update FFmpeg sink integration. Verify `cargo check -p lumen-server` passes.
 
 **Checkpoint**: All workspace crates compile. `cargo check --workspace` passes.
 
@@ -228,11 +228,11 @@
 
 **Purpose**: Final verification across all stories
 
-- [ ] T056 [P] Run `cargo test -p lumen --all-features` and fix any failures
-- [ ] T057 [P] Run `cargo clippy -p lumen --all-features` and resolve all warnings
-- [ ] T058 [P] Verify `cargo check --workspace` passes (all dependent crates)
-- [ ] T059 Validate quickstart.md code example compiles and runs correctly against the implemented API
-- [ ] T060 Final review: confirm no legacy code remains (no references to `Scene`, `Layer`, `ClipType`, `StyleProperty`, `chat_story_v1`, `RenderBackend`, `StreamingAssets` anywhere in `crates/lumen/src/`)
+- [X] T056 [P] Run `cargo test -p lumen --all-features` and fix any failures
+- [X] T057 [P] Run `cargo clippy -p lumen --all-features` and resolve all warnings
+- [X] T058 [P] Verify `cargo check --workspace` passes (all dependent crates)
+- [X] T059 Validate quickstart.md code example compiles and runs correctly against the implemented API
+- [X] T060 Final review: confirm no legacy code remains (no references to `Scene`, `Layer`, `ClipType`, `StyleProperty`, `chat_story_v1`, `RenderBackend`, `StreamingAssets` anywhere in `crates/lumen/src/`)
 
 ---
 

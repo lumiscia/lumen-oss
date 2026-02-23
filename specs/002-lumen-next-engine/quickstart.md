@@ -41,27 +41,32 @@ cargo test -p lumen --all-features
 ## Usage Example (Library Consumer)
 
 ```rust
+use std::sync::{Arc, RwLock};
+
 use lumen::{
-    Composition, Graph, Node, NodeKind, NodeId, Connection,
-    TimelineSettings, RenderSettings, RenderContext, SurfacePool,
-    RuntimeCapabilityProfile,
-    node::{solid_color::SolidColor, media_output::MediaOutput},
+    node::{media_output::MediaOutput, solid_color::SolidColor, Node},
+    AssetCache, Composition, Connection, Graph, InputPort, NodeId, NodeKind, NullMediaStore,
+    OutputPort, RasterFrame, RenderContext, RenderSettings, RuntimeCapabilityProfile, SurfacePool,
+    TimelineSettings,
 };
 
 // 1. Build a graph
 let mut graph = Graph::new();
-let solid = graph.add_node(Node::new(NodeKind::SolidColor(SolidColor {
-    color: [255, 0, 0, 255],
-    width: None,  // defaults to composition width
-    height: None,
-})));
-let output = graph.add_node(Node::new(NodeKind::MediaOutput(MediaOutput)));
+let solid = graph.add_node(Node::new(
+    NodeId(0),
+    NodeKind::SolidColor(SolidColor {
+        color: [255, 0, 0, 255],
+        width: None,
+        height: None,
+    }),
+));
+let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
 graph.connect(Connection {
     from_node: solid,
     from_port: OutputPort::default(),
     to_node: output,
     to_port: InputPort::named("source"),
-}).unwrap();
+})?;
 
 // 2. Create composition
 let composition = Composition::new(
@@ -72,13 +77,21 @@ let composition = Composition::new(
 
 // 3. Validate
 let profile = RuntimeCapabilityProfile::cpu_only();
-composition.validate(&profile).unwrap();
+composition.validate(&profile)?;
 
-// 4. Render a frame — method on Composition, not a free function
-let pool = SurfacePool::new();
-let mut ctx = RenderContext::new(&composition, &pool, &profile);
-let frame = composition.render_frame(0, &mut ctx).unwrap();
-let pixels: &[u8] = frame.as_bitmap_bytes();
+// 4. Render a frame
+let mut ctx = RenderContext::new(
+    &composition,
+    Arc::new(SurfacePool::new()),
+    Arc::new(RwLock::new(AssetCache::new())),
+    Arc::new(NullMediaStore),
+    profile,
+);
+let frame = composition.render_frame(0, &mut ctx)?;
+let pixels: Arc<Vec<u8>> = match frame {
+    RasterFrame::Bitmap(bytes, ..) => bytes,
+    RasterFrame::Surface(_) => Arc::new(Vec::new()),
+};
 ```
 
 ## Module Map

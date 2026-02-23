@@ -89,10 +89,10 @@ fn ellipse_bitmap(width: u32, height: u32, color: [u8; 4]) -> RasterFrame {
             let dy = ((y as f32) + 0.5 - cy) / ry.max(f32::EPSILON);
             if dx * dx + dy * dy <= 1.0 {
                 let pixel_offset = (u64::from(y) * u64::from(width) + u64::from(x)) * 4;
-                if let Ok(index) = usize::try_from(pixel_offset) {
-                    if index + 4 <= bytes.len() {
-                        bytes[index..index + 4].copy_from_slice(&color);
-                    }
+                if let Ok(index) = usize::try_from(pixel_offset)
+                    && index + 4 <= bytes.len()
+                {
+                    bytes[index..index + 4].copy_from_slice(&color);
                 }
             }
         }

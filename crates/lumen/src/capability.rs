@@ -41,22 +41,18 @@ impl Composition {
         let mut errors = Vec::new();
 
         for node in self.graph.nodes.values() {
-            match &node.kind {
-                NodeKind::MediaIn(_) => {
-                    if !profile.has_image_resolver && !profile.has_video_resolver {
-                        errors.push(
-                            RenderError::NodeEvaluation {
-                                frame: 0,
-                                node_id: node.id,
-                                node_kind: node.kind.kind_name(),
-                                details: "media node requires an image or video resolver"
-                                    .to_string(),
-                            }
-                            .into(),
-                        )
+            if let NodeKind::MediaIn(_) = &node.kind
+                && !profile.has_image_resolver && !profile.has_video_resolver
+            {
+                errors.push(
+                    RenderError::NodeEvaluation {
+                        frame: 0,
+                        node_id: node.id,
+                        node_kind: node.kind.kind_name(),
+                        details: "media node requires an image or video resolver".to_string(),
                     }
-                }
-                _ => {}
+                    .into(),
+                )
             }
         }
 

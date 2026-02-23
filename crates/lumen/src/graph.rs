@@ -37,15 +37,18 @@ impl OutputPort {
         Self::Named(name.into())
     }
 
-    pub fn default() -> Self {
-        Self::Named("output".to_string())
-    }
 
     fn matches(&self, def: &OutputPortDef, index: usize) -> bool {
         match self {
             Self::Named(name) => def.name == name,
             Self::Indexed(port_index) => usize::from(*port_index) == index,
         }
+    }
+}
+
+impl Default for OutputPort {
+    fn default() -> Self {
+        Self::Named("output".to_string())
     }
 }
 
@@ -247,17 +250,17 @@ impl Graph {
                 ranges.sort_by_key(|range| (range.start, range.end));
 
                 for pair in ranges.windows(2) {
-                    if let [first, second] = pair {
-                        if first.end > second.start {
-                            errors.push(
-                                GraphValidationError::SwitchRangeOverlap {
-                                    node_id: node.id,
-                                    first: first.clone(),
-                                    second: second.clone(),
-                                }
-                                .into(),
-                            );
-                        }
+                    if let [first, second] = pair
+                        && first.end > second.start
+                    {
+                        errors.push(
+                            GraphValidationError::SwitchRangeOverlap {
+                                node_id: node.id,
+                                first: first.clone(),
+                                second: second.clone(),
+                            }
+                            .into(),
+                        );
                     }
                 }
             }
