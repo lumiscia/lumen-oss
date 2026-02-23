@@ -134,7 +134,10 @@ impl Composition {
                 .ok_or(GraphValidationError::InvalidEvaluationTarget { node_id })?;
             let mut inputs = NodeInputs::new();
 
-            for input_def in node.kind.input_port_defs() {
+            let mut resolved_kind = node.kind.clone();
+            self.apply_animated_properties(node_id, frame, &mut resolved_kind)?;
+
+            for input_def in resolved_kind.input_port_defs() {
                 let upstream_edge = self.graph.connections.iter().find(|edge| {
                     edge.to_node == node_id && input_port_matches(&edge.to_port, input_def.name)
                 });
@@ -152,22 +155,21 @@ impl Composition {
                 } else if !input_def.optional {
                     return Err(GraphValidationError::MissingRequiredInput {
                         node_id,
-                        node_kind: node.kind.kind_name(),
+                        node_kind: resolved_kind.kind_name(),
                         port: input_def.name.to_string(),
                     }
                     .into());
                 }
             }
 
-            let output =
-                node.kind
-                    .evaluate(&inputs, ctx)
-                    .map_err(|err| RenderError::NodeEvaluation {
-                        frame,
-                        node_id,
-                        node_kind: node.kind.kind_name(),
-                        details: err.to_string(),
-                    })?;
+            let output = resolved_kind
+                .evaluate(&inputs, ctx)
+                .map_err(|err| RenderError::NodeEvaluation {
+                    frame,
+                    node_id,
+                    node_kind: resolved_kind.kind_name(),
+                    details: err.to_string(),
+                })?;
 
             ctx.node_output_cache.insert(node_id, output);
         }

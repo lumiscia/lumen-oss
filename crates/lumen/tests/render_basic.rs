@@ -91,10 +91,13 @@ fn transform_translate_shifts_pixels() {
 	let transform = graph.add_node(Node::new(
 		NodeId(0),
 		NodeKind::Transform(Transform {
-			scale: (1.0, 1.0),
-			translate: (1.0, 0.0),
-			rotate_degrees: 0.0,
-			pivot: (0.0, 0.0),
+			scale_x: 1.0,
+			scale_y: 1.0,
+			translate_x: 1.0,
+			translate_y: 0.0,
+			rotate: 0.0,
+			pivot_x: 0.0,
+			pivot_y: 0.0,
 		}),
 	));
 	let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
