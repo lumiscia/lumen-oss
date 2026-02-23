@@ -1,0 +1,403 @@
+{
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "background": [6, 8, 14, 255]
+  },
+  "timeline": {
+    "fps": { "num": 30, "den": 1 },
+    "total_frames": 240
+  },
+  "sources": [
+    {
+      "id": "img_file",
+      "media": "image",
+      "kind": "file",
+      "path": "docs/bench/fixtures/assets/checker.png"
+    },
+    {
+      "id": "img_url",
+      "media": "image",
+      "kind": "url",
+      "url": "https://images.unsplash.com/photo-1469474968028-56623f02e42e"
+    },
+    {
+      "id": "img_generator",
+      "media": "image",
+      "kind": "generator",
+      "filter": "testsrc=size=640x360:rate=30"
+    },
+    {
+      "id": "vid_file",
+      "media": "video",
+      "kind": "file",
+      "path": "media/demo.mp4"
+    },
+    {
+      "id": "vid_url",
+      "media": "video",
+      "kind": "url",
+      "url": "https://cdn.example.com/video.mp4"
+    }
+  ],
+  "layers": [
+    {
+      "id": "layer_backdrop",
+      "z_index": 0,
+      "opacity": {
+        "keyframes": [
+          { "frame": 0, "value": 0.95 },
+          { "frame": 120, "value": 1.0, "easing": "ease_in_out" },
+          { "frame": 239, "value": 0.92, "easing": "ease_out" }
+        ]
+      },
+      "items": [
+        {
+          "id": "bg_rect",
+          "start_frame": 0,
+          "duration_frames": 240,
+          "opacity": 1,
+          "transform": {
+            "x": 0,
+            "y": 0,
+            "width": 1920,
+            "height": 1080,
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [20, 26, 44, 255],
+            "radius": 0
+          }
+        },
+        {
+          "id": "bg_orb",
+          "start_frame": 0,
+          "duration_frames": 240,
+          "opacity": "clamp(clip('bg_rect').opacity * 0.75, 0.0, 1.0)",
+          "transform": {
+            "x": "clip('bg_rect').width * 0.28",
+            "y": "clip('bg_rect').height * 0.24",
+            "width": {
+              "keyframes": [
+                { "frame": 0, "value": 360 },
+                { "frame": 80, "value": 520, "easing": "ease_in_out" },
+                { "frame": 239, "value": 400, "easing": "ease_out" }
+              ]
+            },
+            "height": {
+              "keyframes": [
+                { "frame": 0, "value": 360 },
+                { "frame": 80, "value": 520, "easing": "ease_in_out" },
+                { "frame": 239, "value": 400, "easing": "ease_out" }
+              ]
+            },
+            "rotation_degrees": {
+              "keyframes": [
+                { "frame": 0, "value": -8 },
+                { "frame": 120, "value": 16, "easing": "ease_in_out" },
+                { "frame": 239, "value": -4, "easing": "ease_out" }
+              ]
+            }
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [88, 130, 255, 200]
+          }
+        }
+      ]
+    },
+    {
+      "id": "layer_panels",
+      "z_index": 1,
+      "opacity": "clamp(clip('bg_rect').opacity * 0.98, 0.0, 1.0)",
+      "items": [
+        {
+          "id": "hero_rect",
+          "start_frame": 0,
+          "duration_frames": 240,
+          "opacity": {
+            "keyframes": [
+              { "frame": 0, "value": 0.2 },
+              { "frame": 36, "value": 0.95, "easing": "ease_out" },
+              { "frame": 239, "value": 0.9 }
+            ]
+          },
+          "transform": {
+            "x": {
+              "keyframes": [
+                { "frame": 0, "value": 120 },
+                { "frame": 72, "value": 210, "easing": "ease_in_out" },
+                { "frame": 239, "value": 180, "easing": "ease_out" }
+              ]
+            },
+            "y": {
+              "keyframes": [
+                { "frame": 0, "value": 300 },
+                { "frame": 80, "value": 250, "easing": "ease_out" },
+                { "frame": 239, "value": 280, "easing": "ease_in" }
+              ]
+            },
+            "width": {
+              "keyframes": [
+                { "frame": 0, "value": 980 },
+                { "frame": 90, "value": 1160, "easing": "ease_in_out" },
+                { "frame": 239, "value": 1060, "easing": "ease_out" }
+              ]
+            },
+            "height": {
+              "keyframes": [
+                { "frame": 0, "value": 440 },
+                { "frame": 90, "value": 520, "easing": "ease_in_out" },
+                { "frame": 239, "value": 470, "easing": "ease_out" }
+              ]
+            },
+            "rotation_degrees": {
+              "keyframes": [
+                { "frame": 0, "value": -6 },
+                { "frame": 120, "value": 3, "easing": "ease_in_out" },
+                { "frame": 239, "value": -2 }
+              ]
+            }
+          },
+          "content": {
+            "type": "shape",
+            "shape": "rectangle",
+            "fill": [30, 38, 66, 236],
+            "radius": {
+              "keyframes": [
+                { "frame": 0, "value": 18 },
+                { "frame": 90, "value": 42, "easing": "ease_out" },
+                { "frame": 239, "value": 28, "easing": "ease_in" }
+              ]
+            }
+          }
+        },
+        {
+          "id": "accent_orb",
+          "start_frame": 0,
+          "duration_frames": 240,
+          "opacity": "clamp(clip('hero_rect').opacity * 0.8 + 0.1, 0.0, 1.0)",
+          "transform": {
+            "x": "clip('hero_rect').x + clip('hero_rect').width * 0.82",
+            "y": "clip('hero_rect').y + clip('hero_rect').height * 0.18",
+            "width": {
+              "keyframes": [
+                { "frame": 0, "value": 170 },
+                { "frame": 120, "value": 290, "easing": "ease_in_out" },
+                { "frame": 239, "value": 210, "easing": "ease_out" }
+              ]
+            },
+            "height": {
+              "keyframes": [
+                { "frame": 0, "value": 170 },
+                { "frame": 120, "value": 290, "easing": "ease_in_out" },
+                { "frame": 239, "value": 210, "easing": "ease_out" }
+              ]
+            },
+            "rotation_degrees": "lerp(-12, 24, 0.65)"
+          },
+          "content": {
+            "type": "shape",
+            "shape": "ellipse",
+            "fill": [244, 126, 92, 230]
+          }
+        }
+      ]
+    },
+    {
+      "id": "layer_images",
+      "z_index": 2,
+      "opacity": "min(1.0, clip('hero_rect').opacity + 0.1)",
+      "items": [
+        {
+          "id": "img_cover",
+          "start_frame": 0,
+          "duration_frames": 240,
+          "opacity": "clip('hero_rect').opacity",
+          "transform": {
+            "x": "clip('hero_rect').x + 40",
+            "y": "clip('hero_rect').y + 40",
+            "width": "clip('hero_rect').width * 0.42",
+            "height": "clip('hero_rect').height * 0.42",
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "image",
+            "source": "img_file",
+            "fit": "cover"
+          }
+        },
+        {
+          "id": "img_contain",
+          "start_frame": 0,
+          "duration_frames": 240,
+          "opacity": "clamp(clip('hero_rect').opacity * 0.9, 0.0, 1.0)",
+          "transform": {
+            "x": "clip('hero_rect').x + clip('hero_rect').width * 0.5",
+            "y": "clip('hero_rect').y + 50",
+            "width": "clip('hero_rect').width * 0.46",
+            "height": "clip('hero_rect').height * 0.36",
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "image",
+            "source": "img_url",
+            "fit": "contain"
+          }
+        },
+        {
+          "id": "img_fill",
+          "start_frame": 0,
+          "duration_frames": 240,
+          "opacity": {
+            "keyframes": [
+              { "frame": 0, "value": 0.0 },
+              { "frame": 90, "value": 0.72, "easing": "ease_in" },
+              { "frame": 239, "value": 0.72 }
+            ]
+          },
+          "transform": {
+            "x": "clip('hero_rect').x + 80",
+            "y": "clip('hero_rect').y + clip('hero_rect').height * 0.55",
+            "width": "clip('hero_rect').width * 0.34",
+            "height": "clip('hero_rect').height * 0.34",
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "image",
+            "source": "img_file",
+            "fit": "fill"
+          }
+        },
+        {
+          "id": "img_none",
+          "start_frame": 0,
+          "duration_frames": 240,
+          "opacity": "max(0.3, clip('hero_rect').opacity * 0.5)",
+          "transform": {
+            "x": "clip('hero_rect').x + clip('hero_rect').width * 0.58",
+            "y": "clip('hero_rect').y + clip('hero_rect').height * 0.57",
+            "width": "clip('hero_rect').width * 0.34",
+            "height": "clip('hero_rect').height * 0.32",
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "image",
+            "source": "img_file",
+            "fit": "none"
+          }
+        }
+      ]
+    },
+    {
+      "id": "layer_text",
+      "z_index": 3,
+      "opacity": "clamp(clip('hero_rect').opacity, 0.0, 1.0)",
+      "items": [
+        {
+          "id": "headline",
+          "start_frame": 0,
+          "duration_frames": 240,
+          "opacity": "clip('hero_rect').opacity",
+          "transform": {
+            "x": "clip('hero_rect').x + 48",
+            "y": "clip('hero_rect').y + 42",
+            "width": "clip('hero_rect').width * 0.88",
+            "height": 120,
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "text",
+            "text": "Ultimate Feature Matrix",
+            "font_size": {
+              "keyframes": [
+                { "frame": 0, "value": 54 },
+                { "frame": 70, "value": 76, "easing": "ease_out" },
+                { "frame": 239, "value": 64, "easing": "ease_in" }
+              ]
+            },
+            "font_weight": { "expr": "max(600, 720)" },
+            "align": "left",
+            "line_height": "clamp(1.08, 1.0, 1.4)",
+            "color": [246, 249, 255, 255]
+          }
+        },
+        {
+          "id": "subline",
+          "start_frame": 18,
+          "duration_frames": 222,
+          "opacity": {
+            "keyframes": [
+              { "frame": 18, "value": 0.0 },
+              { "frame": 48, "value": 0.9, "easing": "ease_out" },
+              { "frame": 239, "value": 0.9 }
+            ]
+          },
+          "transform": {
+            "x": "clip('headline').x",
+            "y": "clip('headline').y + 112",
+            "width": "clip('headline').width",
+            "height": 100,
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "text",
+            "text": "shapes, images, keyframes, expressions, references",
+            "font_size": "lerp(28, 36, 0.6)",
+            "font_weight": {
+              "keyframes": [
+                { "frame": 0, "value": 420 },
+                { "frame": 120, "value": 560, "easing": "ease_in_out" },
+                { "frame": 239, "value": 520 }
+              ]
+            },
+            "align": "left",
+            "line_height": 1.22,
+            "color": [196, 214, 255, 255]
+          }
+        }
+      ]
+    },
+    {
+      "id": "layer_video_feature_coverage",
+      "z_index": 99,
+      "opacity": 1,
+      "items": [
+        {
+          "id": "video_feature_clip",
+          "start_frame": 400,
+          "duration_frames": 60,
+          "opacity": 1,
+          "transform": {
+            "x": 100,
+            "y": 100,
+            "width": 800,
+            "height": 450,
+            "rotation_degrees": 0
+          },
+          "content": {
+            "type": "video",
+            "source": "vid_file",
+            "fit": "cover",
+            "pipeline": {
+              "speed": 1.25,
+              "reverse": true,
+              "trim": {
+                "start_frame": 30,
+                "end_frame": 240
+              },
+              "looping": {
+                "mode": "repeat",
+                "count": 3
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "audio": { "tracks": [] }
+}
