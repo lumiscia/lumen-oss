@@ -154,7 +154,7 @@ impl Composition {
             .get(&node_id)
             .ok_or(GraphValidationError::InvalidEvaluationTarget { node_id })?;
         let mut resolved_kind = node.kind.clone();
-        self.apply_animated_properties(node_id, frame, &mut resolved_kind)?;
+        self.apply_animated_properties(node_id, frame, &mut resolved_kind, ctx)?;
 
         if let Some(short_circuit) = self.try_short_circuit(node_id, frame, &resolved_kind, ctx)? {
             ctx.node_output_cache

@@ -28,7 +28,10 @@ pub use cache::{AssetCache, NodeOutputCache, SharedAssetCache, VideoMetadata};
 pub use capability::{RuntimeCapabilityProfile, SinkType};
 pub use composition::{Composition, CompositionMetadata, RenderSettings, TimelineSettings};
 pub use error::{LumenError, Warning};
-pub use expr::{ExprNode, Expression, ExpressionId, ExpressionValue};
+pub use expr::{
+    BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionId, ExpressionReference, ExpressionValue,
+    GlobalVar, UnaryOp,
+};
 pub use graph::{Connection, Graph, InputPort, OutputPort};
 pub use media::{ImageResolver, MediaStore, VideoFrameResolver};
 pub use node::{
