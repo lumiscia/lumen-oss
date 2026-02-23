@@ -1,0 +1,15 @@
+{
+	"version": "1",
+	"canvas": {
+		"width": 640,
+		"height": 360,
+		"background": [0, 0, 0, 255]
+	},
+	"timeline": {
+		"fps": { "num": 30, "den": 1 },
+		"duration_frames": 60
+	},
+	"sources": [],
+	"layers": [],
+	"audio": { "tracks": [] }
+}
