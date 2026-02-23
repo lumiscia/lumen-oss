@@ -4,9 +4,9 @@ pub mod endpoint;
 pub mod jobs;
 pub mod middleware;
 pub mod preview_cache;
+pub mod render;
 pub mod runpod;
 pub mod server;
-pub mod render;
 pub mod worker;
 
 #[cfg(test)]
