@@ -5,9 +5,15 @@ pub mod shape;
 pub mod style;
 pub mod text;
 
-use skia_safe::{Paint, Point, RRect, Rect, canvas::SaveLayerRec};
+use skia_safe::{
+    BlurStyle, ClipOp, Color, Data, Image, ImageInfo, MaskFilter, Paint, PathBuilder,
+    PathDirection, Point, RRect, Rect, canvas::SaveLayerRec, color_filters, images,
+};
 
-use crate::clip::style::{BaseStyle, ResolvedBaseStyle, Sequence, StyleContext, StyleProperty};
+use crate::clip::style::{
+    BaseStyle, ResolvedBaseStyle, ResolvedMask, ResolvedMaskShape, ResolvedMaskSource, Sequence,
+    StyleContext, StyleProperty,
+};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 
@@ -75,6 +81,27 @@ impl ClipGeometry {
         default_anchor_y: f32,
     ) -> ResolvedClipGeometry {
         let ctx = StyleContext::new(frame);
+        self.resolve_with_context(
+            &ctx,
+            default_x,
+            default_y,
+            default_width,
+            default_height,
+            default_anchor_x,
+            default_anchor_y,
+        )
+    }
+
+    pub fn resolve_with_context(
+        &self,
+        ctx: &StyleContext<'_>,
+        default_x: f32,
+        default_y: f32,
+        default_width: f32,
+        default_height: f32,
+        default_anchor_x: f32,
+        default_anchor_y: f32,
+    ) -> ResolvedClipGeometry {
         ResolvedClipGeometry {
             x: self.x.resolve_or(&ctx, default_x),
             y: self.y.resolve_or(&ctx, default_y),
@@ -181,41 +208,107 @@ impl BaseStyle {
         renderer_ctx: &mut RendererContext,
         draw: impl Fn(&mut RendererContext, &ResolvedBaseStyle) -> Result<(), RenderError>,
     ) -> Result<(), RenderError> {
-        let resolved = self.resolve(&StyleContext::new(frame));
+        let expression_scope = renderer_ctx.expression_scope().clone();
+        let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+        let resolved = self.resolve(&style_ctx);
         if !resolved.visible {
             return Ok(());
         }
 
-        if let Some(shadow) = resolved.shadow {
+        for shadow in resolved.shadows.iter().filter(|shadow| !shadow.inset) {
             let canvas = renderer_ctx.canvas();
             canvas.save();
             resolved.apply_transform(canvas, frame_ctx, (shadow.offset_x, shadow.offset_y));
             resolved.apply_clip_radius(canvas, frame_ctx);
+            resolved.apply_shadow_spread(canvas, frame_ctx, shadow.spread);
 
             let mut shadow_layer = Paint::default();
             shadow_layer.set_blend_mode(resolved.blend_mode);
-            shadow_layer.set_alpha_f(
-                (resolved.opacity * (shadow.color[3] as f32 / 255.0) / (1.0 + shadow.blur * 0.1))
-                    .clamp(0.0, 1.0),
-            );
+            shadow_layer.set_alpha_f(resolved.opacity.clamp(0.0, 1.0));
+            shadow_layer.set_anti_alias(true);
+            shadow_layer.set_color_filter(color_filters::blend(
+                Color::from_argb(
+                    shadow.color[3],
+                    shadow.color[0],
+                    shadow.color[1],
+                    shadow.color[2],
+                ),
+                skia_safe::BlendMode::SrcIn,
+            ));
+            if let Some(mask_filter) = resolved.shadow_mask_filter(shadow) {
+                shadow_layer.set_mask_filter(mask_filter);
+            }
+
             canvas.save_layer(&SaveLayerRec::default().paint(&shadow_layer));
             draw(renderer_ctx, &resolved)?;
             renderer_ctx.canvas().restore();
             renderer_ctx.canvas().restore();
         }
 
-        let canvas = renderer_ctx.canvas();
-        canvas.save();
-        resolved.apply_transform(canvas, frame_ctx, (0.0, 0.0));
-        resolved.apply_clip_radius(canvas, frame_ctx);
+        {
+            let canvas = renderer_ctx.canvas();
+            canvas.save();
+            resolved.apply_transform(canvas, frame_ctx, (0.0, 0.0));
+            resolved.apply_clip_radius(canvas, frame_ctx);
+            if let Some(mask) = resolved.mask.as_ref() {
+                resolved.apply_shape_mask(canvas, frame_ctx, mask);
+            }
 
-        let mut layer = Paint::default();
-        layer.set_blend_mode(resolved.blend_mode);
-        layer.set_alpha_f(resolved.opacity);
-        canvas.save_layer(&SaveLayerRec::default().paint(&layer));
+            let mut layer = Paint::default();
+            layer.set_blend_mode(resolved.blend_mode);
+            layer.set_alpha_f(resolved.opacity);
+            canvas.save_layer(&SaveLayerRec::default().paint(&layer));
+        }
+
         draw(renderer_ctx, &resolved)?;
+        if let Some(mask) = resolved.mask.as_ref() {
+            resolved.apply_alpha_mask(renderer_ctx, frame_ctx, mask)?;
+        }
         renderer_ctx.canvas().restore();
         renderer_ctx.canvas().restore();
+
+        for shadow in resolved.shadows.iter().filter(|shadow| shadow.inset) {
+            let mut inset_layer = Paint::default();
+            inset_layer.set_anti_alias(true);
+            inset_layer.set_color_filter(color_filters::blend(
+                Color::from_argb(
+                    shadow.color[3],
+                    shadow.color[0],
+                    shadow.color[1],
+                    shadow.color[2],
+                ),
+                skia_safe::BlendMode::SrcIn,
+            ));
+            if let Some(mask_filter) = resolved.shadow_mask_filter(shadow) {
+                inset_layer.set_mask_filter(mask_filter);
+            }
+
+            {
+                let canvas = renderer_ctx.canvas();
+                canvas.save();
+                resolved.apply_transform(canvas, frame_ctx, (0.0, 0.0));
+                resolved.apply_clip_radius(canvas, frame_ctx);
+                canvas.save_layer(&SaveLayerRec::default());
+                canvas.save();
+                resolved.apply_shadow_spread(canvas, frame_ctx, shadow.spread);
+                canvas.translate((shadow.offset_x, shadow.offset_y));
+                canvas.save_layer(&SaveLayerRec::default().paint(&inset_layer));
+            }
+
+            draw(renderer_ctx, &resolved)?;
+            renderer_ctx.canvas().restore();
+            renderer_ctx.canvas().restore();
+
+            let mut mask_layer = Paint::default();
+            mask_layer.set_blend_mode(skia_safe::BlendMode::DstIn);
+            renderer_ctx
+                .canvas()
+                .save_layer(&SaveLayerRec::default().paint(&mask_layer));
+            draw(renderer_ctx, &resolved)?;
+            renderer_ctx.canvas().restore();
+            renderer_ctx.canvas().restore();
+            renderer_ctx.canvas().restore();
+        }
 
         Ok(())
     }
@@ -279,6 +372,224 @@ impl ResolvedBaseStyle {
         let rrect = RRect::new_rect_radii(rect, &radii);
         canvas.clip_rrect(rrect, None, true);
     }
+
+    fn apply_shape_mask(
+        &self,
+        canvas: &skia_safe::Canvas,
+        frame_ctx: &FrameContext,
+        mask: &ResolvedMask,
+    ) {
+        let ResolvedMaskSource::Shape(shape) = &mask.source else {
+            return;
+        };
+
+        let mut builder = PathBuilder::new();
+        match shape {
+            ResolvedMaskShape::Rectangle {
+                x,
+                y,
+                width,
+                height,
+                corner_radius,
+            } => {
+                let rect = Rect::from_xywh(*x, *y, width.max(0.0), height.max(0.0));
+                if corner_radius.iter().any(|radius| *radius > 0.0) {
+                    let max_radius = width.min(*height) * 0.5;
+                    let radii = [
+                        Point::new(
+                            corner_radius[0].clamp(0.0, max_radius),
+                            corner_radius[0].clamp(0.0, max_radius),
+                        ),
+                        Point::new(
+                            corner_radius[1].clamp(0.0, max_radius),
+                            corner_radius[1].clamp(0.0, max_radius),
+                        ),
+                        Point::new(
+                            corner_radius[2].clamp(0.0, max_radius),
+                            corner_radius[2].clamp(0.0, max_radius),
+                        ),
+                        Point::new(
+                            corner_radius[3].clamp(0.0, max_radius),
+                            corner_radius[3].clamp(0.0, max_radius),
+                        ),
+                    ];
+                    let rrect = RRect::new_rect_radii(rect, &radii);
+                    builder.add_rrect(rrect, Some(PathDirection::CW), Some(0));
+                } else {
+                    builder.add_rect(rect, Some(PathDirection::CW), Some(0));
+                }
+            }
+            ResolvedMaskShape::Ellipse { cx, cy, rx, ry } => {
+                let rect = Rect::from_xywh(*cx - *rx, *cy - *ry, *rx * 2.0, *ry * 2.0);
+                builder.add_oval(rect, Some(PathDirection::CW), Some(0));
+            }
+            ResolvedMaskShape::Path { data } => {
+                for command in data {
+                    match command {
+                        crate::clip::style::PathCommand::MoveTo { x, y } => {
+                            builder.move_to((*x, *y));
+                        }
+                        crate::clip::style::PathCommand::LineTo { x, y } => {
+                            builder.line_to((*x, *y));
+                        }
+                        crate::clip::style::PathCommand::QuadTo { x1, y1, x, y } => {
+                            builder.quad_to((*x1, *y1), (*x, *y));
+                        }
+                        crate::clip::style::PathCommand::CubicTo {
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            x,
+                            y,
+                        } => {
+                            builder.cubic_to((*x1, *y1), (*x2, *y2), (*x, *y));
+                        }
+                        crate::clip::style::PathCommand::Close => {
+                            builder.close();
+                        }
+                    }
+                }
+            }
+        }
+
+        let path = builder.detach();
+        let op = if mask.inverted {
+            ClipOp::Difference
+        } else {
+            ClipOp::Intersect
+        };
+        canvas.clip_path(&path, Some(op), Some(true));
+
+        if let ResolvedMaskShape::Rectangle { width, height, .. } = shape {
+            if *width == 0.0 || *height == 0.0 {
+                canvas.clip_rect(Rect::new_empty(), Some(ClipOp::Intersect), Some(false));
+            }
+        }
+
+        if let ResolvedMaskShape::Ellipse { rx, ry, .. } = shape {
+            if *rx == 0.0 || *ry == 0.0 {
+                canvas.clip_rect(Rect::new_empty(), Some(ClipOp::Intersect), Some(false));
+            }
+        }
+
+        let _ = frame_ctx;
+    }
+
+    fn apply_alpha_mask(
+        &self,
+        renderer_ctx: &mut RendererContext,
+        frame_ctx: &FrameContext,
+        mask: &ResolvedMask,
+    ) -> Result<(), RenderError> {
+        let source = match &mask.source {
+            ResolvedMaskSource::Bitmap { source } => source.as_str(),
+            ResolvedMaskSource::Clip { clip_id } => clip_id.as_str(),
+            ResolvedMaskSource::Shape(_) => return Ok(()),
+        };
+        let Some((_, _, image)) = resolve_mask_image(renderer_ctx, source)? else {
+            return Err(RenderError::MissingSource(source.to_owned()));
+        };
+
+        let mut paint = Paint::default();
+        paint.set_anti_alias(false);
+        paint.set_blend_mode(if mask.inverted {
+            skia_safe::BlendMode::DstOut
+        } else {
+            skia_safe::BlendMode::DstIn
+        });
+        renderer_ctx.canvas().draw_image_rect(
+            image,
+            None,
+            Rect::from_xywh(0.0, 0.0, frame_ctx.width as f32, frame_ctx.height as f32),
+            &paint,
+        );
+
+        Ok(())
+    }
+    fn apply_shadow_spread(
+        &self,
+        canvas: &skia_safe::Canvas,
+        frame_ctx: &FrameContext,
+        spread: f32,
+    ) {
+        if spread == 0.0 {
+            return;
+        }
+
+        let width = frame_ctx.width.max(1) as f32;
+        let height = frame_ctx.height.max(1) as f32;
+        let scale_x = ((width + spread * 2.0) / width).max(0.01);
+        let scale_y = ((height + spread * 2.0) / height).max(0.01);
+        let center_x = width * 0.5;
+        let center_y = height * 0.5;
+
+        canvas.translate((center_x, center_y));
+        canvas.scale((scale_x, scale_y));
+        canvas.translate((-center_x, -center_y));
+    }
+
+    fn shadow_mask_filter(
+        &self,
+        shadow: &crate::clip::style::ResolvedShadowStyle,
+    ) -> Option<MaskFilter> {
+        let sigma = ((shadow.blur + shadow.spread.abs() * 2.0) / 2.0).max(0.0);
+        if sigma == 0.0 {
+            return None;
+        }
+
+        MaskFilter::blur(BlurStyle::Normal, sigma, Some(false))
+    }
+}
+
+fn resolve_mask_image(
+    renderer_ctx: &mut RendererContext,
+    source: &str,
+) -> Result<Option<(u32, u32, Image)>, RenderError> {
+    if let Some((width, height, image)) = renderer_ctx.cached_image_by_source(source) {
+        return Ok(Some((width, height, image)));
+    }
+
+    let fetched = if let Some(media_store) = renderer_ctx.media_store_mut() {
+        if let Some(mut resolver) = media_store.get_image_resolver(source) {
+            let width = resolver.width().max(1);
+            let height = resolver.height().max(1);
+            let pixels = resolver.resolve();
+            Some((width, height, pixels))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some((width, height, pixels)) = fetched {
+        let image = raster_image_from_rgba(width, height, pixels.as_slice())?;
+        renderer_ctx.cache_image(source.to_owned(), width, height, image.clone());
+        return Ok(Some((width, height, image)));
+    }
+
+    Ok(None)
+}
+
+fn raster_image_from_rgba(width: u32, height: u32, pixels: &[u8]) -> Result<Image, RenderError> {
+    let expected_len = (width as usize)
+        .saturating_mul(height as usize)
+        .saturating_mul(4);
+    if pixels.len() != expected_len {
+        return Err(RenderError::Unsupported("invalid image buffer length"));
+    }
+
+    let info = ImageInfo::new(
+        (width as i32, height as i32),
+        skia_safe::ColorType::RGBA8888,
+        skia_safe::AlphaType::Unpremul,
+        None,
+    );
+    let data = Data::new_copy(pixels);
+    images::raster_from_data(&info, data, width as usize * 4).ok_or(RenderError::Unsupported(
+        "failed to create image from RGBA pixels",
+    ))
 }
 
 #[cfg(test)]

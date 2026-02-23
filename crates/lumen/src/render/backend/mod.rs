@@ -4,25 +4,67 @@ pub mod software;
 #[cfg(feature = "gpu-vulkan")]
 pub mod vulkan;
 
+use std::sync::Arc;
+
 use skia_safe::{ColorType, IPoint, ImageInfo};
+#[cfg(feature = "ffmpeg")]
+use std::collections::HashMap;
 use thiserror::Error;
 
+#[cfg(feature = "ffmpeg")]
+use crate::ffmpeg::worker::VideoDecodeWorker;
 use crate::render::context::{FrameContext, RendererContext};
 
 #[derive(Debug, Clone)]
 pub struct FrameImage {
     pub width: u32,
     pub height: u32,
-    pub pixels_rgba: Vec<u8>,
+    pub pixels_rgba: Arc<Vec<u8>>,
 }
 
-pub trait FrameProvider {
-    fn image(&mut self, source_id: &str) -> Result<Option<FrameImage>, RenderError>;
-    fn video_frame(
-        &mut self,
-        source_id: &str,
-        frame: u64,
-    ) -> Result<Option<FrameImage>, RenderError>;
+#[derive(Debug, Clone)]
+pub enum ProvidedFrame {
+    Ready(FrameImage),
+    EndOfStream,
+    Missing,
+}
+
+pub trait FrameProvider<T = Option<FrameImage>> {
+    fn image(&mut self, source_id: &str) -> Result<T, RenderError>;
+    fn video_frame(&mut self, source_id: &str, frame: u64) -> Result<T, RenderError>;
+}
+
+#[cfg(feature = "ffmpeg")]
+pub struct StreamingAssets {
+    pub images: HashMap<String, FrameImage>,
+    pub video_workers: HashMap<String, VideoDecodeWorker>,
+}
+
+#[cfg(feature = "ffmpeg")]
+impl FrameProvider<ProvidedFrame> for StreamingAssets {
+    fn image(&mut self, source_id: &str) -> Result<ProvidedFrame, RenderError> {
+        Ok(self
+            .images
+            .get(source_id)
+            .cloned()
+            .map(ProvidedFrame::Ready)
+            .unwrap_or(ProvidedFrame::Missing))
+    }
+
+    fn video_frame(&mut self, source_id: &str, frame: u64) -> Result<ProvidedFrame, RenderError> {
+        let worker = self
+            .video_workers
+            .get_mut(source_id)
+            .ok_or_else(|| RenderError::MissingSource(source_id.to_owned()))?;
+        worker
+            .get_frame(frame)
+            .map(|value| {
+                value
+                    .map(ProvidedFrame::Ready)
+                    .unwrap_or(ProvidedFrame::EndOfStream)
+            })
+            .map_err(|err| RenderError::Provider(err.to_string()))
+    }
 }
 
 pub trait RenderBackend {
@@ -42,6 +84,8 @@ pub enum RenderError {
     MissingSource(String),
     #[error("render backend not initialized")]
     NotInitialized,
+    #[error("frame provider failed: {0}")]
+    Provider(String),
     #[error("failed to read surface pixels")]
     PixelReadback,
     #[error("failed to create GPU surface")]

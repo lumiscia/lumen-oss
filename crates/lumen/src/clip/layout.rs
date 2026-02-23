@@ -1,8 +1,10 @@
-use skia_safe::{Color, Paint, paint::Style as PaintStyle};
+use skia_safe::ClipOp;
+use taffy::Overflow;
 use taffy::prelude::{AvailableSpace, Size, Style, TaffyTree, length};
 use taffy::tree::NodeId;
 
 use crate::clip::style::BaseStyle;
+use crate::clip::style::StyleContext;
 use crate::clip::{Clip, ClipGeometry, ClipMeta};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
@@ -43,6 +45,7 @@ impl LayoutClip {
     /// the tree with the synthetic root node.
     fn build_layout(
         &self,
+        style_ctx: &StyleContext<'_>,
         available_width: f32,
         available_height: f32,
     ) -> Result<(TaffyTree<LayoutNodeContext>, NodeId), RenderError> {
@@ -67,11 +70,33 @@ impl LayoutClip {
             )
             .map_err(|_| RenderError::Unsupported("taffy root creation failed"))?;
 
-        tree.compute_layout(
+        tree.compute_layout_with_measure(
             root,
             Size {
                 width: AvailableSpace::Definite(available_width),
                 height: AvailableSpace::Definite(available_height),
+            },
+            |known_dimensions, available_space, _node_id, node_context, _style| {
+                let Some(node_context) = node_context else {
+                    return known_dimensions.unwrap_or(Size::ZERO);
+                };
+                let Some(LayoutContent::Text(clip)) = node_context.content.as_ref() else {
+                    return known_dimensions.unwrap_or(Size::ZERO);
+                };
+
+                let style_ctx = *style_ctx;
+                let available_width =
+                    known_dimensions
+                        .width
+                        .unwrap_or_else(|| match available_space.width {
+                            AvailableSpace::Definite(value) => value,
+                            AvailableSpace::MinContent | AvailableSpace::MaxContent => f32::MAX,
+                        });
+                let (measured_width, measured_height) = clip.measure(available_width, &style_ctx);
+                Size {
+                    width: known_dimensions.width.unwrap_or(measured_width),
+                    height: known_dimensions.height.unwrap_or(measured_height),
+                }
             },
         )
         .map_err(|_| RenderError::Unsupported("taffy layout computation failed"))?;
@@ -97,8 +122,10 @@ impl Clip for LayoutClip {
 
         self.style
             .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
-                let geometry = self.geometry.resolve_with_defaults(
-                    frame,
+                let expression_scope = renderer_ctx.expression_scope().clone();
+                let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+                let geometry = self.geometry.resolve_with_context(
+                    &style_ctx,
                     frame_ctx.width as f32 * 0.05,
                     frame_ctx.height as f32 * 0.05,
                     frame_ctx.width as f32 * 0.9,
@@ -106,20 +133,12 @@ impl Clip for LayoutClip {
                     0.0,
                     0.0,
                 );
-                let bounds = geometry.rect();
-
-                let mut paint = Paint::default();
-                paint.set_anti_alias(true);
-                paint.set_style(PaintStyle::Stroke);
-                paint.set_stroke_width(2.0);
-                paint.set_color(Color::from_argb(180, 120, 220, 255));
-                renderer_ctx.canvas().draw_rect(bounds, &paint);
-
                 if self.children.is_empty() {
                     return Ok(());
                 }
 
-                let (tree, root) = self.build_layout(geometry.width, geometry.height)?;
+                let (tree, root) =
+                    self.build_layout(&style_ctx, geometry.width, geometry.height)?;
 
                 for child in tree
                     .children(root)
@@ -131,7 +150,6 @@ impl Clip for LayoutClip {
                         frame,
                         frame_ctx,
                         (geometry.left(), geometry.top()),
-                        0,
                         renderer_ctx,
                     )?;
                 }
@@ -167,14 +185,13 @@ fn insert_node(
     Ok(node_id)
 }
 
-/// Walk a computed taffy node, draw debug bounds and content.
+/// Walk a computed taffy node, draw content, and recurse into children.
 fn draw_node_bounds(
     tree: &TaffyTree<LayoutNodeContext>,
     node: NodeId,
     frame: u32,
     frame_ctx: &FrameContext,
     parent_offset: (f32, f32),
-    depth: usize,
     renderer_ctx: &mut RendererContext,
 ) -> Result<(), RenderError> {
     let layout = tree
@@ -182,37 +199,22 @@ fn draw_node_bounds(
         .map_err(|_| RenderError::Unsupported("taffy layout not computed"))?;
     let x = parent_offset.0 + layout.location.x;
     let y = parent_offset.1 + layout.location.y;
-    let width = layout.size.width.max(1.0);
-    let height = layout.size.height.max(1.0);
+    let width = layout.size.width.max(0.0);
+    let height = layout.size.height.max(0.0);
     let rect = skia_safe::Rect::from_xywh(x, y, width, height);
     let context = tree.get_node_context(node).cloned();
+    let style = tree
+        .style(node)
+        .map_err(|_| RenderError::Unsupported("taffy style lookup failed"))?;
 
-    let mut fill = Paint::default();
-    fill.set_anti_alias(true);
-    fill.set_color(
-        match context.as_ref().and_then(|ctx| ctx.content.as_ref()) {
-            Some(LayoutContent::Shape(_)) => Color::from_argb(64, 70, 160, 255),
-            Some(LayoutContent::Text(_)) => Color::from_argb(64, 80, 220, 120),
-            Some(LayoutContent::Image(_)) => Color::from_argb(64, 240, 170, 80),
-            Some(LayoutContent::Video(_)) => Color::from_argb(64, 240, 90, 90),
-            Some(LayoutContent::Layout(_)) => Color::from_argb(64, 180, 120, 255),
-            None => Color::from_argb(32, 120, 220, 255),
-        },
-    );
-    renderer_ctx.canvas().draw_rect(rect, &fill);
-
-    let mut stroke = Paint::default();
-    stroke.set_anti_alias(true);
-    stroke.set_style(PaintStyle::Stroke);
-    stroke.set_stroke_width(1.0 + depth.min(3) as f32);
-    let depth_tint = (depth as u8).saturating_mul(24);
-    stroke.set_color(Color::from_argb(
-        220,
-        120,
-        220u8.saturating_sub(depth_tint / 2),
-        255u8.saturating_sub(depth_tint),
-    ));
-    renderer_ctx.canvas().draw_rect(rect, &stroke);
+    let is_overflow_hidden =
+        style.overflow.x == Overflow::Hidden || style.overflow.y == Overflow::Hidden;
+    if is_overflow_hidden {
+        renderer_ctx.canvas().save();
+        renderer_ctx
+            .canvas()
+            .clip_rect(rect, ClipOp::Intersect, true);
+    }
 
     if let Some(content) = context.and_then(|ctx| ctx.content) {
         content.draw(rect, frame, frame_ctx, renderer_ctx)?;
@@ -222,15 +224,10 @@ fn draw_node_bounds(
         .children(node)
         .map_err(|_| RenderError::Unsupported("taffy tree traversal failed"))?
     {
-        draw_node_bounds(
-            tree,
-            child,
-            frame,
-            frame_ctx,
-            (x, y),
-            depth + 1,
-            renderer_ctx,
-        )?;
+        draw_node_bounds(tree, child, frame, frame_ctx, (x, y), renderer_ctx)?;
+    }
+    if is_overflow_hidden {
+        renderer_ctx.canvas().restore();
     }
 
     Ok(())
@@ -291,14 +288,22 @@ impl LayoutContent {
 
 #[cfg(test)]
 mod tests {
-    use skia_safe::BlendMode;
-    use taffy::prelude::{Size, Style, length};
+    use skia_safe::{BlendMode, font_style::Slant as FontSlant};
+    use taffy::{
+        Overflow,
+        geometry::{Point, Rect},
+        prelude::{Display, FlexDirection, LengthPercentageAuto, Position, Size, Style, length},
+    };
 
     use super::{LayoutClip, LayoutContent, LayoutNode};
     use crate::clip::{
         Clip, ClipGeometry, ClipMeta,
         shape::{ShapeClip, ShapeKind},
-        style::{BaseStyle, Fill, RectStyle, StyleProperty, StyleValue, TransformStyle},
+        style::{
+            BaseStyle, Fill, RectStyle, StyleContext, StyleProperty, StyleValue, TextAlign,
+            TextDecoration, TextOverflow, TextStyle, TransformStyle, VerticalAlign,
+        },
+        text::TextClip,
     };
     use crate::render::{
         backend::read_surface_rgba,
@@ -316,7 +321,7 @@ mod tests {
             opacity: literal(1.0),
             blend_mode: BlendMode::SrcOver,
             blur: literal(0.0),
-            shadow: None,
+            shadows: Vec::new(),
             clip_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
             transform: TransformStyle {
                 translate: [literal(0.0), literal(0.0)],
@@ -326,10 +331,11 @@ mod tests {
                 origin: [literal(0.0), literal(0.0)],
             },
             alignment: [literal(0.0), literal(0.0)],
+            mask: None,
         }
     }
 
-    fn shape_content() -> LayoutContent {
+    fn shape_content(color: [u8; 4]) -> LayoutContent {
         LayoutContent::Shape(ShapeClip {
             meta: ClipMeta {
                 id: Some("node-shape".to_owned()),
@@ -343,11 +349,64 @@ mod tests {
                 height: literal(10.0),
                 corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
                 fill: Some(Fill::Solid {
-                    color: [literal(5), literal(150), literal(220), literal(255)],
+                    color: [
+                        literal(color[0]),
+                        literal(color[1]),
+                        literal(color[2]),
+                        literal(color[3]),
+                    ],
                 }),
                 stroke: None,
             }),
         })
+    }
+
+    fn text_content(content: &str) -> LayoutContent {
+        LayoutContent::Text(TextClip {
+            meta: ClipMeta {
+                id: Some("node-text".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            geometry: ClipGeometry::default(),
+            content: content.to_owned(),
+            style: TextStyle {
+                base: base_style(),
+                font_family: "sans-serif".to_owned(),
+                font_size: literal(16.0),
+                font_weight: literal(600),
+                font_style: FontSlant::Upright,
+                color: [literal(220), literal(30), literal(40), literal(255)],
+                line_height: literal(1.2),
+                letter_spacing: literal(0.0),
+                text_align: TextAlign::Left,
+                vertical_align: VerticalAlign::Top,
+                max_width: None,
+                max_lines: None,
+                overflow: TextOverflow::Clip,
+                decoration: TextDecoration::None,
+            },
+        })
+    }
+
+    fn frame_context() -> FrameContext {
+        FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 140,
+            height: 120,
+            device_scale: 1.0,
+        }
+    }
+
+    fn rgba_at(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
+        let idx = (y * width + x) * 4;
+        [
+            pixels[idx],
+            pixels[idx + 1],
+            pixels[idx + 2],
+            pixels[idx + 3],
+        ]
     }
 
     #[test]
@@ -386,30 +445,239 @@ mod tests {
                         },
                         ..Default::default()
                     },
-                    content: Some(shape_content()),
+                    content: Some(shape_content([5, 150, 220, 255])),
                     children: vec![],
                 }],
             }],
         };
 
         let mut renderer_ctx =
-            RendererContext::new(120, 120, Rational::new(30, 1)).expect("renderer");
+            RendererContext::new(140, 120, Rational::new(30, 1)).expect("renderer");
         renderer_ctx.clear();
-        let frame_ctx = FrameContext {
-            frame: 0,
-            time_seconds: 0.0,
-            width: 120,
-            height: 120,
-            device_scale: 1.0,
-        };
 
-        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+        clip.draw(0, &frame_context(), &mut renderer_ctx)
             .expect("layout draw");
 
         let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
-        let idx = |x: usize, y: usize| (y * 120 + x) * 4;
+        assert_eq!(rgba_at(&pixels, 140, 15, 15), [5, 150, 220, 255]);
+    }
 
-        assert_eq!(&pixels[idx(15, 15)..idx(15, 15) + 4], &[5, 150, 220, 255]);
-        assert!(pixels[idx(11, 11) + 3] > 0);
+    #[test]
+    fn layout_uses_text_measure_for_intrinsic_size() {
+        let clip = LayoutClip {
+            meta: ClipMeta {
+                id: Some("layout".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            geometry: ClipGeometry::default(),
+            style: base_style(),
+            children: vec![LayoutNode {
+                id: Some("text".to_owned()),
+                style: Style::default(),
+                content: Some(text_content("Hello measured world")),
+                children: vec![],
+            }],
+        };
+
+        let style_ctx = StyleContext::new(0);
+        let (tree, root) = clip
+            .build_layout(&style_ctx, 240.0, 120.0)
+            .expect("layout build");
+        let child = tree
+            .children(root)
+            .expect("children")
+            .first()
+            .copied()
+            .expect("text child");
+        let layout = tree.layout(child).expect("layout");
+        assert!(layout.size.width > 0.0);
+        assert!(layout.size.height > 0.0);
+    }
+
+    #[test]
+    fn overflow_hidden_clips_out_of_bounds_children() {
+        let clip = LayoutClip {
+            meta: ClipMeta {
+                id: Some("layout".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            geometry: ClipGeometry {
+                x: literal(10.0),
+                y: literal(10.0),
+                width: literal(80.0),
+                height: literal(60.0),
+                anchor_x: literal(0.0),
+                anchor_y: literal(0.0),
+            },
+            style: base_style(),
+            children: vec![LayoutNode {
+                id: Some("clipped-parent".to_owned()),
+                style: Style {
+                    size: Size {
+                        width: length(30.0),
+                        height: length(20.0),
+                    },
+                    overflow: Point {
+                        x: Overflow::Hidden,
+                        y: Overflow::Hidden,
+                    },
+                    ..Default::default()
+                },
+                content: None,
+                children: vec![LayoutNode {
+                    id: Some("wide-child".to_owned()),
+                    style: Style {
+                        size: Size {
+                            width: length(60.0),
+                            height: length(20.0),
+                        },
+                        ..Default::default()
+                    },
+                    content: Some(shape_content([200, 20, 20, 255])),
+                    children: vec![],
+                }],
+            }],
+        };
+
+        let mut renderer_ctx =
+            RendererContext::new(140, 120, Rational::new(30, 1)).expect("renderer");
+        renderer_ctx.clear();
+
+        clip.draw(0, &frame_context(), &mut renderer_ctx)
+            .expect("layout draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        assert_eq!(rgba_at(&pixels, 140, 22, 18), [200, 20, 20, 255]);
+        assert_eq!(rgba_at(&pixels, 140, 50, 18)[3], 0);
+    }
+
+    #[test]
+    fn absolute_positioned_child_renders_at_inset_offset() {
+        let clip = LayoutClip {
+            meta: ClipMeta {
+                id: Some("layout".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            geometry: ClipGeometry {
+                x: literal(10.0),
+                y: literal(10.0),
+                width: literal(100.0),
+                height: literal(70.0),
+                anchor_x: literal(0.0),
+                anchor_y: literal(0.0),
+            },
+            style: base_style(),
+            children: vec![LayoutNode {
+                id: Some("root".to_owned()),
+                style: Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Row,
+                    size: Size {
+                        width: length(80.0),
+                        height: length(50.0),
+                    },
+                    ..Default::default()
+                },
+                content: None,
+                children: vec![LayoutNode {
+                    id: Some("absolute-child".to_owned()),
+                    style: Style {
+                        position: Position::Absolute,
+                        inset: Rect {
+                            left: LengthPercentageAuto::length(12.0),
+                            right: LengthPercentageAuto::auto(),
+                            top: LengthPercentageAuto::length(8.0),
+                            bottom: LengthPercentageAuto::auto(),
+                        },
+                        size: Size {
+                            width: length(20.0),
+                            height: length(10.0),
+                        },
+                        ..Default::default()
+                    },
+                    content: Some(shape_content([20, 180, 60, 255])),
+                    children: vec![],
+                }],
+            }],
+        };
+
+        let mut renderer_ctx =
+            RendererContext::new(140, 120, Rational::new(30, 1)).expect("renderer");
+        renderer_ctx.clear();
+
+        clip.draw(0, &frame_context(), &mut renderer_ctx)
+            .expect("layout draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        assert_eq!(rgba_at(&pixels, 140, 24, 19), [20, 180, 60, 255]);
+    }
+
+    #[test]
+    fn flex_grow_children_split_parent_width_evenly() {
+        let clip = LayoutClip {
+            meta: ClipMeta {
+                id: Some("layout".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            geometry: ClipGeometry {
+                x: literal(10.0),
+                y: literal(10.0),
+                width: literal(100.0),
+                height: literal(60.0),
+                anchor_x: literal(0.0),
+                anchor_y: literal(0.0),
+            },
+            style: base_style(),
+            children: vec![LayoutNode {
+                id: Some("flex-root".to_owned()),
+                style: Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Row,
+                    size: Size {
+                        width: length(80.0),
+                        height: length(20.0),
+                    },
+                    ..Default::default()
+                },
+                content: None,
+                children: vec![
+                    LayoutNode {
+                        id: Some("left".to_owned()),
+                        style: Style {
+                            flex_grow: 1.0,
+                            flex_basis: length(0.0),
+                            ..Default::default()
+                        },
+                        content: Some(shape_content([220, 30, 30, 255])),
+                        children: vec![],
+                    },
+                    LayoutNode {
+                        id: Some("right".to_owned()),
+                        style: Style {
+                            flex_grow: 1.0,
+                            flex_basis: length(0.0),
+                            ..Default::default()
+                        },
+                        content: Some(shape_content([30, 30, 220, 255])),
+                        children: vec![],
+                    },
+                ],
+            }],
+        };
+
+        let mut renderer_ctx =
+            RendererContext::new(140, 120, Rational::new(30, 1)).expect("renderer");
+        renderer_ctx.clear();
+
+        clip.draw(0, &frame_context(), &mut renderer_ctx)
+            .expect("layout draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        assert_eq!(rgba_at(&pixels, 140, 24, 18), [220, 30, 30, 255]);
+        assert_eq!(rgba_at(&pixels, 140, 64, 18), [30, 30, 220, 255]);
     }
 }

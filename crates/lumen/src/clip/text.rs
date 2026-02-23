@@ -1,8 +1,16 @@
-use skia_safe::{Color, Paint, paint::Style as PaintStyle};
+use skia_safe::{
+    Color, FontMgr, FontStyle,
+    font_style::{Weight, Width},
+    textlayout::{
+        FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as ParagraphTextAlign,
+        TextDecoration as ParagraphTextDecoration,
+        TextDecorationStyle as ParagraphTextDecorationStyle, TextStyle as ParagraphTextStyle,
+    },
+};
 
 use crate::clip::{
     Clip, ClipGeometry, ClipMeta,
-    style::{TextAlign, TextDecoration, TextOverflow, TextStyle, VerticalAlign},
+    style::{StyleContext, TextAlign, TextDecoration, TextOverflow, TextStyle, VerticalAlign},
 };
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
@@ -13,6 +21,134 @@ pub struct TextClip {
     pub geometry: ClipGeometry,
     pub content: String,
     pub style: TextStyle,
+}
+
+impl TextClip {
+    pub fn new(
+        meta: ClipMeta,
+        geometry: ClipGeometry,
+        content: impl Into<String>,
+        style: TextStyle,
+    ) -> Self {
+        Self {
+            meta,
+            geometry,
+            content: content.into(),
+            style,
+        }
+    }
+
+    pub fn with_default_geometry(
+        meta: ClipMeta,
+        content: impl Into<String>,
+        style: TextStyle,
+    ) -> Self {
+        Self::new(meta, ClipGeometry::default(), content, style)
+    }
+
+    pub fn with_geometry(mut self, geometry: ClipGeometry) -> Self {
+        self.geometry = geometry;
+        self
+    }
+}
+
+impl TextClip {
+    fn build_paragraph(
+        &self,
+        style_ctx: &StyleContext,
+        font_collection: FontCollection,
+        layout_width: f32,
+    ) -> skia_safe::textlayout::Paragraph {
+        let mut para_style = ParagraphStyle::new();
+        para_style.set_text_align(match self.style.text_align {
+            TextAlign::Left => ParagraphTextAlign::Left,
+            TextAlign::Center => ParagraphTextAlign::Center,
+            TextAlign::Right => ParagraphTextAlign::Right,
+            TextAlign::Justify => ParagraphTextAlign::Justify,
+        });
+
+        para_style.set_max_lines(self.style.max_lines.map(|lines| lines.max(1) as usize));
+        if matches!(self.style.overflow, TextOverflow::Ellipsis) {
+            para_style.set_ellipsis("…");
+        }
+
+        let mut text_style = ParagraphTextStyle::new();
+        let font_size = self.style.font_size.resolve_or(style_ctx, 16.0).max(1.0);
+        let font_weight = self
+            .style
+            .font_weight
+            .resolve_or(style_ctx, 400)
+            .clamp(100, 900);
+        let line_height = self.style.line_height.resolve_or(style_ctx, 1.2).max(0.5);
+        let letter_spacing = self.style.letter_spacing.resolve_or(style_ctx, 0.0);
+
+        text_style.set_font_size(font_size);
+        text_style.set_color(Color::from_argb(
+            self.style.color[3].resolve_or(style_ctx, 255),
+            self.style.color[0].resolve_or(style_ctx, 0),
+            self.style.color[1].resolve_or(style_ctx, 0),
+            self.style.color[2].resolve_or(style_ctx, 0),
+        ));
+
+        if !self.style.font_family.trim().is_empty() {
+            // Unknown families gracefully fall back via FontCollection's default FontMgr.
+            text_style.set_font_families(&[self.style.font_family.as_str()]);
+        }
+        text_style.set_font_style(FontStyle::new(
+            Weight::from(font_weight as i32),
+            Width::NORMAL,
+            self.style.font_style,
+        ));
+        text_style.set_height(line_height);
+        text_style.set_height_override(true);
+        text_style.set_letter_spacing(letter_spacing);
+
+        let mut decorations = ParagraphTextDecoration::NO_DECORATION;
+        if matches!(
+            self.style.decoration,
+            TextDecoration::Underline | TextDecoration::UnderlineStrikethrough
+        ) {
+            decorations |= ParagraphTextDecoration::UNDERLINE;
+        }
+        if matches!(
+            self.style.decoration,
+            TextDecoration::Strikethrough | TextDecoration::UnderlineStrikethrough
+        ) {
+            decorations |= ParagraphTextDecoration::LINE_THROUGH;
+        }
+        text_style.set_decoration_type(decorations);
+        text_style.set_decoration_style(ParagraphTextDecorationStyle::Solid);
+
+        para_style.set_text_style(&text_style);
+
+        let mut builder = ParagraphBuilder::new(&para_style, font_collection);
+        builder.push_style(&text_style);
+        builder.add_text(&self.content);
+        let mut paragraph = builder.build();
+        paragraph.layout(layout_width);
+        paragraph
+    }
+
+    fn resolved_max_width(&self, style_ctx: &StyleContext) -> Option<f32> {
+        self.style
+            .max_width
+            .as_ref()
+            .map(|max_width| max_width.resolve_or(style_ctx, f32::MAX))
+            .filter(|width| width.is_finite() && *width > 0.0)
+    }
+
+    pub fn measure(&self, available_width: f32, ctx: &StyleContext) -> (f32, f32) {
+        let width = if available_width.is_finite() && available_width > 0.0 {
+            available_width
+        } else {
+            f32::MAX
+        };
+        let mut font_collection = FontCollection::new();
+        font_collection.set_default_font_manager(FontMgr::default(), None);
+
+        let paragraph = self.build_paragraph(ctx, font_collection, width);
+        (paragraph.longest_line(), paragraph.height())
+    }
 }
 
 impl Clip for TextClip {
@@ -33,10 +169,13 @@ impl Clip for TextClip {
         self.style
             .base
             .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
-                let resolved_text = self.style.resolve_placeholder(frame, self.content.as_str());
-                let (default_width, default_height) = resolved_text.bounds();
-                let geometry = self.geometry.resolve_with_defaults(
-                    frame,
+                let expression_scope = renderer_ctx.expression_scope().clone();
+                let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+                let resolved_placeholder =
+                    self.style.resolve_placeholder(frame, self.content.as_str());
+                let (default_width, default_height) = resolved_placeholder.bounds();
+                let geometry = self.geometry.resolve_with_context(
+                    &style_ctx,
                     frame_ctx.width as f32 * 0.15,
                     frame_ctx.height as f32 * 0.15,
                     default_width,
@@ -44,105 +183,21 @@ impl Clip for TextClip {
                     0.0,
                     0.0,
                 );
-                let bounds = geometry.rect();
 
-                let mut box_paint = Paint::default();
-                box_paint.set_anti_alias(true);
-                box_paint.set_color(Color::from_argb(160, 255, 255, 255));
-                renderer_ctx.canvas().draw_rect(bounds, &box_paint);
+                let layout_width = self.resolved_max_width(&style_ctx).unwrap_or(f32::MAX);
+                let paragraph =
+                    self.build_paragraph(&style_ctx, renderer_ctx.font_collection(), layout_width);
 
-                let mut baseline_paint = Paint::default();
-                baseline_paint.set_style(PaintStyle::Stroke);
-                baseline_paint.set_stroke_width(match resolved_text.font_weight {
-                    700.. => 3.0,
-                    500..=699 => 2.0,
-                    _ => 1.5,
-                });
-                baseline_paint.set_color(Color::from_argb(
-                    resolved_text.color[3],
-                    resolved_text.color[0],
-                    resolved_text.color[1],
-                    resolved_text.color[2],
-                ));
-
-                let content_width =
-                    (resolved_text.content_width).min((geometry.width - 8.0).max(1.0));
-                let content_height =
-                    resolved_text.line_box_height * resolved_text.line_count as f32;
-                let start_y = match self.style.vertical_align {
-                    VerticalAlign::Top => geometry.top() + 4.0,
-                    VerticalAlign::Middle => {
-                        geometry.top() + (geometry.height - content_height).max(0.0) * 0.5
-                    }
-                    VerticalAlign::Bottom => {
-                        geometry.top() + (geometry.height - content_height - 4.0).max(0.0)
-                    }
+                let offset_y = match self.style.vertical_align {
+                    VerticalAlign::Top => 0.0,
+                    VerticalAlign::Middle => (geometry.height - paragraph.height()) * 0.5,
+                    VerticalAlign::Bottom => geometry.height - paragraph.height(),
                 };
 
-                for line_index in 0..resolved_text.line_count {
-                    let baseline_y = start_y
-                        + line_index as f32 * resolved_text.line_box_height
-                        + resolved_text.font_size * 0.8;
-                    let (line_x0, line_x1) = match self.style.text_align {
-                        TextAlign::Left | TextAlign::Justify => {
-                            (geometry.left() + 4.0, geometry.left() + 4.0 + content_width)
-                        }
-                        TextAlign::Center => {
-                            let x0 = geometry.left() + (geometry.width - content_width) * 0.5;
-                            (x0, x0 + content_width)
-                        }
-                        TextAlign::Right => {
-                            let x1 = geometry.left() + geometry.width - 4.0;
-                            (x1 - content_width, x1)
-                        }
-                    };
-
-                    renderer_ctx.canvas().draw_line(
-                        (line_x0, baseline_y),
-                        (line_x1, baseline_y),
-                        &baseline_paint,
-                    );
-
-                    if matches!(
-                        self.style.decoration,
-                        TextDecoration::Underline | TextDecoration::UnderlineStrikethrough
-                    ) {
-                        renderer_ctx.canvas().draw_line(
-                            (line_x0, baseline_y + resolved_text.font_size * 0.12),
-                            (line_x1, baseline_y + resolved_text.font_size * 0.12),
-                            &baseline_paint,
-                        );
-                    }
-                    if matches!(
-                        self.style.decoration,
-                        TextDecoration::Strikethrough | TextDecoration::UnderlineStrikethrough
-                    ) {
-                        renderer_ctx.canvas().draw_line(
-                            (line_x0, baseline_y - resolved_text.font_size * 0.28),
-                            (line_x1, baseline_y - resolved_text.font_size * 0.28),
-                            &baseline_paint,
-                        );
-                    }
-                }
-
-                if resolved_text.truncated
-                    && matches!(self.style.overflow, TextOverflow::Ellipsis)
-                    && resolved_text.line_count > 0
-                {
-                    let dot_radius = (resolved_text.font_size * 0.06).max(1.0);
-                    let y = start_y
-                        + (resolved_text.line_count - 1) as f32 * resolved_text.line_box_height
-                        + resolved_text.font_size * 0.8;
-                    let x_end = geometry.left() + geometry.width - 6.0;
-                    for i in 0..3 {
-                        renderer_ctx.canvas().draw_circle(
-                            (x_end - (i as f32 * dot_radius * 3.0), y),
-                            dot_radius,
-                            &baseline_paint,
-                        );
-                    }
-                }
-
+                paragraph.paint(
+                    renderer_ctx.canvas(),
+                    (geometry.left(), geometry.top() + offset_y.max(0.0)),
+                );
                 Ok(())
             })
     }
@@ -156,8 +211,8 @@ mod tests {
     use crate::clip::{
         Clip, ClipGeometry, ClipMeta,
         style::{
-            BaseStyle, StyleProperty, StyleValue, TextAlign, TextDecoration, TextOverflow,
-            TextStyle, TransformStyle, VerticalAlign,
+            BaseStyle, StyleContext, StyleProperty, StyleValue, TextAlign, TextDecoration,
+            TextOverflow, TextStyle, TransformStyle, VerticalAlign,
         },
     };
     use crate::render::{
@@ -176,7 +231,7 @@ mod tests {
             opacity: literal(1.0),
             blend_mode: BlendMode::SrcOver,
             blur: literal(0.0),
-            shadow: None,
+            shadows: Vec::new(),
             clip_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
             transform: TransformStyle {
                 translate: [literal(0.0), literal(0.0)],
@@ -186,6 +241,7 @@ mod tests {
                 origin: [literal(0.0), literal(0.0)],
             },
             alignment: [literal(0.0), literal(0.0)],
+            mask: None,
         }
     }
 
@@ -208,13 +264,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn text_clip_uses_text_style_color_for_placeholder_lines() {
-        let mut renderer_ctx =
-            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
-        renderer_ctx.clear();
-
-        let clip = TextClip {
+    fn clip_with_style(content: &str, style: TextStyle) -> TextClip {
+        TextClip {
             meta: ClipMeta {
                 id: Some("txt".to_owned()),
                 start_frame: 0,
@@ -223,74 +274,123 @@ mod tests {
             geometry: ClipGeometry {
                 x: literal(10.0),
                 y: literal(10.0),
-                width: literal(50.0),
-                height: literal(30.0),
+                width: literal(120.0),
+                height: literal(64.0),
                 anchor_x: literal(0.0),
                 anchor_y: literal(0.0),
             },
-            content: "hello".to_owned(),
-            style: text_style(),
-        };
-        let frame_ctx = FrameContext {
-            frame: 0,
-            time_seconds: 0.0,
-            width: 100,
-            height: 100,
-            device_scale: 1.0,
-        };
-
-        clip.draw(0, &frame_ctx, &mut renderer_ctx)
-            .expect("text clip should draw");
-
-        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
-        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
-        let sample = &pixels[idx(14, 26)..idx(14, 26) + 4];
-        assert_eq!(sample, &[220, 30, 40, 255]);
+            content: content.to_owned(),
+            style,
+        }
     }
 
     #[test]
-    fn text_clip_supports_wrapping_and_ellipsis_placeholder_markers() {
-        let mut renderer_ctx =
-            RendererContext::new(120, 120, Rational::new(30, 1)).expect("renderer context");
-        renderer_ctx.clear();
+    fn text_clip_new_sets_fields() {
+        let style = text_style();
+        let clip = TextClip::new(
+            ClipMeta {
+                id: Some("txt".to_owned()),
+                start_frame: 3,
+                end_frame: 9,
+            },
+            ClipGeometry::default(),
+            "hello",
+            style.clone(),
+        );
 
-        let mut style = text_style();
-        style.max_width = Some(literal(24.0));
-        style.max_lines = Some(2);
-        style.overflow = TextOverflow::Ellipsis;
-        style.decoration = TextDecoration::Underline;
+        assert_eq!(clip.meta.id.as_deref(), Some("txt"));
+        assert_eq!(clip.meta.start_frame, 3);
+        assert_eq!(clip.meta.end_frame, 9);
+        assert_eq!(clip.content, "hello");
+        assert_eq!(clip.style.font_family, style.font_family);
+    }
 
-        let clip = TextClip {
-            meta: ClipMeta {
+    #[test]
+    fn text_clip_with_default_geometry_starts_from_default() {
+        let clip = TextClip::with_default_geometry(
+            ClipMeta {
                 id: Some("txt".to_owned()),
                 start_frame: 0,
                 end_frame: 0,
             },
-            geometry: ClipGeometry {
-                x: literal(20.0),
-                y: literal(20.0),
-                width: literal(36.0),
-                height: literal(48.0),
-                anchor_x: literal(0.0),
-                anchor_y: literal(0.0),
-            },
-            content: "wrap me over many chars".to_owned(),
-            style,
-        };
-        let frame_ctx = FrameContext {
+            "hello",
+            text_style(),
+        );
+
+        assert_eq!(clip.geometry, ClipGeometry::default());
+    }
+
+    fn frame_context() -> FrameContext {
+        FrameContext {
             frame: 0,
             time_seconds: 0.0,
-            width: 120,
+            width: 160,
             height: 120,
             device_scale: 1.0,
-        };
+        }
+    }
 
-        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+    #[test]
+    fn text_clip_draws_non_transparent_pixels() {
+        let mut renderer_ctx =
+            RendererContext::new(160, 120, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.clear();
+
+        let clip = clip_with_style("Hello", text_style());
+        clip.draw(0, &frame_context(), &mut renderer_ctx)
             .expect("text clip should draw");
 
         let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
-        let idx = |x: usize, y: usize| (y * 120 + x) * 4;
-        let ellipsis_alpha = pixels[idx(50, 56) + 3];
-        assert!(ellipsis_alpha > 0);
+        let mut alpha_pixels = 0usize;
+        for y in 10..74 {
+            for x in 10..130 {
+                let idx = (y * 160 + x) * 4 + 3;
+                if pixels[idx] > 0 {
+                    alpha_pixels += 1;
+                }
+            }
+        }
+        assert!(alpha_pixels > 0);
+    }
+
+    #[test]
+    fn text_measure_returns_positive_dimensions() {
+        let clip = clip_with_style("Hello", text_style());
+        let style_ctx = StyleContext::new(0);
+
+        let (width, height) = clip.measure(200.0, &style_ctx);
+        assert!(width > 0.0);
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn text_measure_wrapping_increases_height() {
+        let mut style = text_style();
+        style.max_width = Some(literal(48.0));
+        let clip = clip_with_style("wrap me over many characters", style);
+        let style_ctx = StyleContext::new(0);
+
+        let (_, wrapped_height) = clip.measure(48.0, &style_ctx);
+        let (_, single_line_height) = clip.measure(1_000.0, &style_ctx);
+        assert!(wrapped_height > single_line_height);
+    }
+
+    #[test]
+    fn text_measure_max_lines_one_with_ellipsis_limits_height() {
+        let style_ctx = StyleContext::new(0);
+
+        let mut ellipsized_style = text_style();
+        ellipsized_style.max_width = Some(literal(48.0));
+        ellipsized_style.max_lines = Some(1);
+        ellipsized_style.overflow = TextOverflow::Ellipsis;
+        let ellipsized = clip_with_style("this is a long line that should wrap", ellipsized_style);
+
+        let mut unlimited_style = text_style();
+        unlimited_style.max_width = Some(literal(48.0));
+        let unlimited = clip_with_style("this is a long line that should wrap", unlimited_style);
+
+        let (_, ellipsized_height) = ellipsized.measure(48.0, &style_ctx);
+        let (_, unlimited_height) = unlimited.measure(48.0, &style_ctx);
+        assert!(ellipsized_height < unlimited_height);
     }
 }

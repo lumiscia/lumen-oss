@@ -47,6 +47,28 @@ pub struct ShapeClip {
     pub kind: ShapeKind,
 }
 
+impl ShapeClip {
+    pub fn new(meta: ClipMeta, geometry: ClipGeometry, kind: ShapeKind) -> Self {
+        Self {
+            meta,
+            geometry,
+            kind,
+        }
+    }
+
+    pub fn rectangle(meta: ClipMeta, geometry: ClipGeometry, style: RectStyle) -> Self {
+        Self::new(meta, geometry, ShapeKind::Rectangle(style))
+    }
+
+    pub fn ellipse(meta: ClipMeta, geometry: ClipGeometry, style: EllipseStyle) -> Self {
+        Self::new(meta, geometry, ShapeKind::Ellipse(style))
+    }
+
+    pub fn polygon(meta: ClipMeta, geometry: ClipGeometry, style: PolygonStyle) -> Self {
+        Self::new(meta, geometry, ShapeKind::Polygon(style))
+    }
+}
+
 impl Clip for ShapeClip {
     fn meta(&self) -> &ClipMeta {
         &self.meta
@@ -62,8 +84,10 @@ impl Clip for ShapeClip {
             return Ok(());
         }
 
-        let geometry = self.geometry.resolve_with_defaults(
-            frame,
+        let expression_scope = renderer_ctx.expression_scope().clone();
+        let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+        let geometry = self.geometry.resolve_with_context(
+            &style_ctx,
             frame_ctx.width as f32 * 0.5,
             frame_ctx.height as f32 * 0.5,
             frame_ctx.width as f32 * 0.25,
@@ -294,13 +318,19 @@ fn resolve_rgba(
 
 #[cfg(test)]
 mod tests {
-    use skia_safe::{BlendMode, paint};
+    use std::collections::HashMap;
+
+    use skia_safe::{BlendMode, Data, ImageInfo, paint};
 
     use super::{ShapeClip, ShapeKind};
     use crate::clip::{
         Clip, ClipGeometry, ClipMeta,
-        style::{BaseStyle, Fill, RectStyle, Stroke, StyleProperty, StyleValue, TransformStyle},
+        style::{
+            BaseStyle, Fill, Mask, MaskShape, MaskSource, RectStyle, ShadowStyle, Stroke,
+            StyleProperty, StyleValue, TransformStyle,
+        },
     };
+    use crate::media::{ImageResolver, MediaStore, VideoResolver};
     use crate::render::{
         backend::read_surface_rgba,
         context::{FrameContext, RendererContext},
@@ -317,7 +347,7 @@ mod tests {
             opacity: literal(1.0),
             blend_mode: BlendMode::SrcOver,
             blur: literal(0.0),
-            shadow: None,
+            shadows: Vec::new(),
             clip_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
             transform: TransformStyle {
                 translate: [literal(0.0), literal(0.0)],
@@ -327,9 +357,138 @@ mod tests {
                 origin: [literal(0.0), literal(0.0)],
             },
             alignment: [literal(0.0), literal(0.0)],
+            mask: None,
         }
     }
 
+    #[test]
+    fn shape_clip_new_keeps_supplied_fields() {
+        let meta = ClipMeta {
+            id: Some("shape".to_owned()),
+            start_frame: 2,
+            end_frame: 4,
+        };
+        let geometry = ClipGeometry::default();
+        let clip = ShapeClip::new(
+            meta.clone(),
+            geometry.clone(),
+            ShapeKind::Rectangle(RectStyle {
+                base: base_style(),
+                width: literal(10.0),
+                height: literal(8.0),
+                corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+                fill: None,
+                stroke: None,
+            }),
+        );
+
+        assert_eq!(clip.meta.id.as_deref(), Some("shape"));
+        assert_eq!(clip.meta.start_frame, 2);
+        assert_eq!(clip.meta.end_frame, 4);
+        assert_eq!(clip.geometry, geometry);
+    }
+
+    #[test]
+    fn shape_clip_rectangle_wraps_rect_style() {
+        let clip = ShapeClip::rectangle(
+            ClipMeta {
+                id: Some("rect".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            ClipGeometry::default(),
+            RectStyle {
+                base: base_style(),
+                width: literal(12.0),
+                height: literal(14.0),
+                corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+                fill: None,
+                stroke: None,
+            },
+        );
+
+        match clip.kind {
+            ShapeKind::Rectangle(_) => {}
+            ShapeKind::Ellipse(_) | ShapeKind::Polygon(_) => panic!("expected rectangle kind"),
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestImageResolver {
+        id: String,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    }
+
+    impl ImageResolver for TestImageResolver {
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+
+        fn width(&self) -> u32 {
+            self.width
+        }
+
+        fn height(&self) -> u32 {
+            self.height
+        }
+
+        fn resolve(&mut self) -> Vec<u8> {
+            self.pixels.clone()
+        }
+    }
+
+    #[derive(Default)]
+    struct TestMediaStore {
+        images: HashMap<String, (u32, u32, Vec<u8>)>,
+    }
+
+    impl MediaStore for TestMediaStore {
+        fn get_image_resolver(&mut self, id: &str) -> Option<Box<dyn ImageResolver>> {
+            let (width, height, pixels) = self.images.get(id)?.clone();
+            Some(Box::new(TestImageResolver {
+                id: id.to_owned(),
+                width,
+                height,
+                pixels,
+            }))
+        }
+
+        fn get_video_resolver(&mut self, _id: &str) -> Option<Box<dyn VideoResolver>> {
+            None
+        }
+    }
+
+    fn full_alpha_mask(width: usize, height: usize, keep_left_half: bool) -> Vec<u8> {
+        let mut pixels = vec![0_u8; width * height * 4];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y * width + x) * 4;
+                let keep = if keep_left_half {
+                    x < width / 2
+                } else {
+                    x >= width / 2
+                };
+                pixels[idx] = 255;
+                pixels[idx + 1] = 255;
+                pixels[idx + 2] = 255;
+                pixels[idx + 3] = if keep { 255 } else { 0 };
+            }
+        }
+        pixels
+    }
+
+    fn raster_image(width: u32, height: u32, rgba: &[u8]) -> skia_safe::Image {
+        let info = ImageInfo::new(
+            (width as i32, height as i32),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Unpremul,
+            None,
+        );
+        let data = Data::new_copy(rgba);
+        skia_safe::images::raster_from_data(&info, data, width as usize * 4).expect("raster image")
+    }
     #[test]
     fn rectangle_corner_radius_rounds_corners() {
         let mut renderer_ctx =
@@ -511,5 +670,302 @@ mod tests {
 
         assert_eq!(&pixels[idx(20, 30)..idx(20, 30) + 4], &[9, 8, 7, 255]);
         assert_eq!(pixels[idx(50, 50) + 3], 0);
+    }
+
+    #[test]
+    fn rectangle_shape_mask_keeps_pixels_inside_ellipse() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.clear();
+
+        let mut style = base_style();
+        style.mask = Some(Mask {
+            source: MaskSource::Shape(MaskShape::Ellipse {
+                cx: literal(50.0),
+                cy: literal(50.0),
+                rx: literal(6.0),
+                ry: literal(6.0),
+            }),
+            inverted: false,
+        });
+
+        let clip = ShapeClip {
+            meta: ClipMeta {
+                id: Some("shape-mask".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            geometry: ClipGeometry::default(),
+            kind: ShapeKind::Rectangle(RectStyle {
+                base: style,
+                width: literal(20.0),
+                height: literal(20.0),
+                corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+                fill: Some(Fill::Solid {
+                    color: [literal(255), literal(0), literal(0), literal(255)],
+                }),
+                stroke: None,
+            }),
+        };
+
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("shape should draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+
+        assert!(pixels[idx(50, 50) + 3] > 0);
+        assert_eq!(pixels[idx(42, 42) + 3], 0);
+    }
+
+    #[test]
+    fn rectangle_bitmap_mask_uses_media_alpha() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.clear();
+
+        let mut media_store = TestMediaStore::default();
+        media_store.images.insert(
+            "bitmap-mask".to_owned(),
+            (100, 100, full_alpha_mask(100, 100, true)),
+        );
+        renderer_ctx.set_media_store(Box::new(media_store));
+
+        let mut style = base_style();
+        style.mask = Some(Mask {
+            source: MaskSource::Bitmap {
+                source: "bitmap-mask".to_owned(),
+            },
+            inverted: false,
+        });
+
+        let clip = ShapeClip {
+            meta: ClipMeta {
+                id: Some("bitmap-mask-target".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            geometry: ClipGeometry::default(),
+            kind: ShapeKind::Rectangle(RectStyle {
+                base: style,
+                width: literal(20.0),
+                height: literal(20.0),
+                corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+                fill: Some(Fill::Solid {
+                    color: [literal(255), literal(255), literal(255), literal(255)],
+                }),
+                stroke: None,
+            }),
+        };
+
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("shape should draw with bitmap mask");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+
+        assert!(pixels[idx(45, 50) + 3] > 0);
+        assert_eq!(pixels[idx(55, 50) + 3], 0);
+    }
+
+    #[test]
+    fn rectangle_clip_mask_uses_cached_clip_alpha() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.clear();
+
+        let cached_mask = raster_image(100, 100, &full_alpha_mask(100, 100, true));
+        renderer_ctx.cache_image("mask-clip".to_owned(), 100, 100, cached_mask);
+
+        let mut style = base_style();
+        style.mask = Some(Mask {
+            source: MaskSource::Clip {
+                clip_id: "mask-clip".to_owned(),
+            },
+            inverted: false,
+        });
+
+        let clip = ShapeClip {
+            meta: ClipMeta {
+                id: Some("clip-mask-target".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            geometry: ClipGeometry::default(),
+            kind: ShapeKind::Rectangle(RectStyle {
+                base: style,
+                width: literal(20.0),
+                height: literal(20.0),
+                corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+                fill: Some(Fill::Solid {
+                    color: [literal(255), literal(255), literal(255), literal(255)],
+                }),
+                stroke: None,
+            }),
+        };
+
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("shape should draw with clip mask");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+
+        assert!(pixels[idx(45, 50) + 3] > 0);
+        assert_eq!(pixels[idx(55, 50) + 3], 0);
+    }
+
+    #[test]
+    fn rectangle_outer_shadow_darkens_pixels_below_shape() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.clear();
+
+        let mut style = base_style();
+        style.shadows.push(ShadowStyle {
+            offset_x: literal(0.0),
+            offset_y: literal(6.0),
+            blur: literal(8.0),
+            spread: literal(0.0),
+            inset: false,
+            color: [literal(0), literal(0), literal(0), literal(220)],
+        });
+
+        let clip = ShapeClip {
+            meta: ClipMeta {
+                id: Some("outer-shadow".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            geometry: ClipGeometry::default(),
+            kind: ShapeKind::Rectangle(RectStyle {
+                base: style,
+                width: literal(20.0),
+                height: literal(20.0),
+                corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+                fill: Some(Fill::Solid {
+                    color: [literal(255), literal(255), literal(255), literal(255)],
+                }),
+                stroke: None,
+            }),
+        };
+
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("shape should draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+        let shadow_pixel_found = (38..=62).any(|x| {
+            (61..=78).any(|y| {
+                let alpha = pixels[idx(x, y) + 3];
+                alpha > 0
+            })
+        });
+
+        assert!(
+            shadow_pixel_found,
+            "expected visible shadow alpha below shape"
+        );
+    }
+
+    #[test]
+    fn rectangle_inset_shadow_darkens_pixels_inside_top_edge() {
+        let mut renderer_ctx =
+            RendererContext::new(100, 100, Rational::new(30, 1)).expect("renderer context");
+        renderer_ctx.clear();
+
+        let mut style = base_style();
+        style.shadows.push(ShadowStyle {
+            offset_x: literal(0.0),
+            offset_y: literal(-12.0),
+            blur: literal(6.0),
+            spread: literal(0.0),
+            inset: true,
+            color: [literal(0), literal(0), literal(0), literal(220)],
+        });
+
+        let clip = ShapeClip {
+            meta: ClipMeta {
+                id: Some("inset-shadow".to_owned()),
+                start_frame: 0,
+                end_frame: 0,
+            },
+            geometry: ClipGeometry::default(),
+            kind: ShapeKind::Rectangle(RectStyle {
+                base: style,
+                width: literal(20.0),
+                height: literal(20.0),
+                corner_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+                fill: Some(Fill::Solid {
+                    color: [literal(255), literal(255), literal(255), literal(255)],
+                }),
+                stroke: None,
+            }),
+        };
+
+        let frame_ctx = FrameContext {
+            frame: 0,
+            time_seconds: 0.0,
+            width: 100,
+            height: 100,
+            device_scale: 1.0,
+        };
+
+        clip.draw(0, &frame_ctx, &mut renderer_ctx)
+            .expect("shape should draw");
+
+        let pixels = read_surface_rgba(&mut renderer_ctx).expect("readback");
+        let idx = |x: usize, y: usize| (y * 100 + x) * 4;
+        let center_inside = &pixels[idx(50, 50)..idx(50, 50) + 4];
+
+        let mut min_top_band = [u8::MAX; 3];
+        let top_band_darker = (44..=56).any(|x| {
+            (40..=46).any(|y| {
+                let sample = &pixels[idx(x, y)..idx(x, y) + 4];
+                min_top_band[0] = min_top_band[0].min(sample[0]);
+                min_top_band[1] = min_top_band[1].min(sample[1]);
+                min_top_band[2] = min_top_band[2].min(sample[2]);
+                sample[0] < center_inside[0]
+                    || sample[1] < center_inside[1]
+                    || sample[2] < center_inside[2]
+            })
+        });
+
+        assert!(
+            top_band_darker,
+            "expected inset shadow near top interior edge, center={center_inside:?}, min_top={min_top_band:?}"
+        );
+        assert!(center_inside[3] > 0);
     }
 }

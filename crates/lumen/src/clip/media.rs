@@ -2,7 +2,10 @@ use std::ops::Range;
 
 use skia_safe::{Color, Data, Image, ImageInfo, Paint, Rect, images};
 
-use crate::clip::{Clip, ClipGeometry, ClipMeta, ResolvedClipGeometry, style::BaseStyle};
+use crate::clip::{
+    Clip, ClipGeometry, ClipMeta, ResolvedClipGeometry,
+    style::{BaseStyle, StyleContext},
+};
 use crate::render::backend::RenderError;
 use crate::render::context::{FrameContext, RendererContext};
 use crate::time::Rational;
@@ -32,6 +35,23 @@ pub struct ImageClip {
     pub style: BaseStyle,
 }
 
+impl ImageClip {
+    pub fn new(meta: ClipMeta, source: impl Into<String>, fit: ImageFit, style: BaseStyle) -> Self {
+        Self {
+            meta,
+            geometry: ClipGeometry::default(),
+            source: source.into(),
+            fit,
+            style,
+        }
+    }
+
+    pub fn with_geometry(mut self, geometry: ClipGeometry) -> Self {
+        self.geometry = geometry;
+        self
+    }
+}
+
 impl Clip for ImageClip {
     fn meta(&self) -> &ClipMeta {
         &self.meta
@@ -49,8 +69,10 @@ impl Clip for ImageClip {
 
         self.style
             .draw(frame, frame_ctx, renderer_ctx, |renderer_ctx, _resolved| {
-                let geometry = self.geometry.resolve_with_defaults(
-                    frame,
+                let expression_scope = renderer_ctx.expression_scope().clone();
+                let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+                let geometry = self.geometry.resolve_with_context(
+                    &style_ctx,
                     frame_ctx.width as f32 * 0.1,
                     frame_ctx.height as f32 * 0.1,
                     frame_ctx.width as f32 * 0.4,
@@ -194,6 +216,39 @@ pub struct VideoClip {
 }
 
 impl VideoClip {
+    pub fn new(meta: ClipMeta, source: impl Into<String>, fit: ImageFit, style: BaseStyle) -> Self {
+        Self {
+            meta,
+            geometry: ClipGeometry::default(),
+            source: source.into(),
+            fit,
+            style,
+            trim: None,
+            speed: 1.0,
+            r#loop: LoopMode::None,
+        }
+    }
+
+    pub fn with_geometry(mut self, geometry: ClipGeometry) -> Self {
+        self.geometry = geometry;
+        self
+    }
+
+    pub fn with_trim(mut self, trim: Option<Range<f32>>) -> Self {
+        self.trim = trim;
+        self
+    }
+
+    pub fn with_speed(mut self, speed: f32) -> Self {
+        self.speed = speed;
+        self
+    }
+
+    pub fn with_loop_mode(mut self, loop_mode: LoopMode) -> Self {
+        self.r#loop = loop_mode;
+        self
+    }
+
     fn visible_duration_frames(&self) -> u64 {
         u64::from(self.end().saturating_sub(self.start()).saturating_add(1))
     }
@@ -295,8 +350,10 @@ impl Clip for VideoClip {
                 let Some(mapped_frame) = mapped_frame else {
                     return Ok(());
                 };
-                let geometry = self.geometry.resolve_with_defaults(
-                    frame,
+                let expression_scope = renderer_ctx.expression_scope().clone();
+                let style_ctx = StyleContext::with_scope(frame, &expression_scope);
+                let geometry = self.geometry.resolve_with_context(
+                    &style_ctx,
                     frame_ctx.width as f32 * 0.1,
                     frame_ctx.height as f32 * 0.5,
                     frame_ctx.width as f32 * 0.4,
@@ -371,7 +428,7 @@ mod tests {
             opacity: literal(1.0),
             blend_mode: BlendMode::SrcOver,
             blur: literal(0.0),
-            shadow: None,
+            shadows: Vec::new(),
             clip_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
             transform: TransformStyle {
                 translate: [literal(0.0), literal(0.0)],
@@ -381,6 +438,7 @@ mod tests {
                 origin: [literal(0.0), literal(0.0)],
             },
             alignment: [literal(0.0), literal(0.0)],
+            mask: None,
         }
     }
 
@@ -421,6 +479,48 @@ mod tests {
             speed: 1.0,
             r#loop: LoopMode::None,
         }
+    }
+
+    #[test]
+    fn image_clip_new_sets_defaults() {
+        let clip = ImageClip::new(
+            ClipMeta {
+                id: Some("img".to_owned()),
+                start_frame: 0,
+                end_frame: 10,
+            },
+            "img",
+            ImageFit::Contain,
+            base_style(),
+        );
+
+        assert_eq!(clip.meta.id.as_deref(), Some("img"));
+        assert_eq!(clip.source, "img");
+        assert_eq!(clip.fit, ImageFit::Contain);
+        assert_eq!(clip.geometry, ClipGeometry::default());
+    }
+
+    #[test]
+    fn video_clip_builder_helpers_set_optional_fields() {
+        let clip = VideoClip::new(
+            ClipMeta {
+                id: Some("video".to_owned()),
+                start_frame: 10,
+                end_frame: 19,
+            },
+            "video",
+            ImageFit::None,
+            base_style(),
+        )
+        .with_trim(Some(1.0..2.0))
+        .with_speed(1.5)
+        .with_loop_mode(LoopMode::Repeat)
+        .with_geometry(ClipGeometry::default());
+
+        assert_eq!(clip.source, "video");
+        assert_eq!(clip.trim, Some(1.0..2.0));
+        assert_eq!(clip.speed, 1.5);
+        assert_eq!(clip.r#loop, LoopMode::Repeat);
     }
 
     struct TestImageResolver {

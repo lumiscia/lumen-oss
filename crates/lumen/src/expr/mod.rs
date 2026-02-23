@@ -1099,8 +1099,73 @@ mod tests {
         ExpressionScope, ExpressionValue,
     };
 
+    use std::panic::catch_unwind;
+
     fn parse(source: &str) -> Expression {
         Expression::parse(ExpressionId("expr".to_owned()), source).expect("expression should parse")
+    }
+
+    fn next_seed(seed: &mut u64) -> u64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        *seed
+    }
+
+    fn random_sources(seed: u64, count: usize, max_len: usize) -> Vec<String> {
+        const ALPHABET: &[char] = &[
+            'a', 'b', 'c', 'x', 'y', 'z', '0', '1', '2', ' ', '\'', '"', '(', ')', '[', ']', '{',
+            '}', '.', ',', '+', '-', '*', '/', '%', '!', '=', '<', '>', '&', '|', '_', '\n', '\t',
+        ];
+
+        let mut state = seed;
+        let mut sources = Vec::with_capacity(count);
+        for _ in 0..count {
+            let len = (next_seed(&mut state) as usize) % (max_len + 1);
+            let mut source = String::with_capacity(len);
+            for _ in 0..len {
+                let index = (next_seed(&mut state) as usize) % ALPHABET.len();
+                source.push(ALPHABET[index]);
+            }
+            sources.push(source);
+        }
+        sources
+    }
+
+    #[test]
+    fn parse_malformed_and_random_inputs_never_panics() {
+        let mut inputs = vec![
+            String::new(),
+            " ".to_owned(),
+            "clip(".to_owned(),
+            "clip('a')".to_owned(),
+            "clip('a').".to_owned(),
+            "layout(\"nav\")..x".to_owned(),
+            "if(".to_owned(),
+            "if(true, 1)".to_owned(),
+            "max(,)".to_owned(),
+            "clip('a').width + )".to_owned(),
+            "(((((".to_owned(),
+            "💥".to_owned(),
+        ];
+        inputs.extend(random_sources(0xC0FFEE_u64, 256, 64));
+
+        for (index, source) in inputs.into_iter().enumerate() {
+            let parse_attempt = catch_unwind(|| {
+                Expression::parse(ExpressionId(format!("fuzz-{index}")), source.clone())
+            });
+            assert!(
+                parse_attempt.is_ok(),
+                "parser panicked for input: {source:?}"
+            );
+
+            if let Ok(Ok(expression)) = parse_attempt {
+                let evaluate_attempt =
+                    catch_unwind(|| expression.evaluate(&ExpressionScope::default()));
+                assert!(
+                    evaluate_attempt.is_ok(),
+                    "evaluation panicked for parsed input: {source:?}"
+                );
+            }
+        }
     }
 
     #[test]

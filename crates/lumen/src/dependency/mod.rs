@@ -1,5 +1,6 @@
 pub mod tree;
 
+use crate::clip::style::{BaseStyle, MaskSource};
 use crate::expr::{Expression, ExpressionId, ExpressionReferenceTarget};
 
 #[derive(Debug, Clone)]
@@ -14,6 +15,22 @@ pub struct DependencyPlan {
     pub evaluation_order: Vec<ExpressionId>,
 }
 
+pub fn add_mask_clip_dependency_edges(
+    tree: &mut tree::DependencyTree,
+    current_clip_id: &str,
+    style: &BaseStyle,
+) {
+    let Some(mask) = style.mask.as_ref() else {
+        return;
+    };
+    let MaskSource::Clip { clip_id } = &mask.source else {
+        return;
+    };
+    tree.add_edge(
+        tree::DependencyNode::ClipRender(clip_id.clone()),
+        tree::DependencyNode::ClipRender(current_clip_id.to_owned()),
+    );
+}
 impl DependencyPlan {
     pub fn build(expressions: &[Expression]) -> Self {
         Self::try_build(expressions).unwrap_or_else(|_| Self {
@@ -80,7 +97,8 @@ impl DependencyPlan {
             .filter_map(|node| match node {
                 tree::DependencyNode::Expression(id) => Some(id),
                 tree::DependencyNode::ClipProperty { .. }
-                | tree::DependencyNode::LayoutProperty { .. } => None,
+                | tree::DependencyNode::LayoutProperty { .. }
+                | tree::DependencyNode::ClipRender(_) => None,
             })
             .collect();
 
@@ -123,5 +141,56 @@ mod tests {
 
         assert_eq!(plan.evaluation_order, try_plan.evaluation_order);
         assert_eq!(plan.dependencies.len(), try_plan.dependencies.len());
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::add_mask_clip_dependency_edges;
+    use crate::clip::style::{
+        BaseStyle, Mask, MaskSource, ShadowStyle, StyleProperty, StyleValue, TransformStyle,
+    };
+
+    fn literal<T>(value: T) -> StyleProperty<T> {
+        StyleProperty::Value(StyleValue::Literal(value))
+    }
+
+    #[test]
+    fn add_mask_clip_dependency_edges_adds_clip_render_ordering() {
+        let style = BaseStyle {
+            visible: literal(true),
+            opacity: literal(1.0),
+            blend_mode: skia_safe::BlendMode::SrcOver,
+            blur: literal(0.0),
+            shadows: Vec::<ShadowStyle>::new(),
+            clip_radius: [literal(0.0), literal(0.0), literal(0.0), literal(0.0)],
+            transform: TransformStyle {
+                translate: [literal(0.0), literal(0.0)],
+                scale: [literal(1.0), literal(1.0)],
+                rotation: literal(0.0),
+                skew: [literal(0.0), literal(0.0)],
+                origin: [literal(0.0), literal(0.0)],
+            },
+            alignment: [literal(0.0), literal(0.0)],
+            mask: Some(Mask {
+                source: MaskSource::Clip {
+                    clip_id: "mask-source".to_owned(),
+                },
+                inverted: false,
+            }),
+        };
+
+        let mut tree = crate::dependency::tree::DependencyTree::default();
+        add_mask_clip_dependency_edges(&mut tree, "masked-clip", &style);
+
+        assert!(
+            tree.outgoing
+                .get(&crate::dependency::tree::DependencyNode::ClipRender(
+                    "mask-source".to_owned(),
+                ))
+                .is_some_and(|dependents| dependents.contains(
+                    &crate::dependency::tree::DependencyNode::ClipRender("masked-clip".to_owned(),)
+                ))
+        );
     }
 }

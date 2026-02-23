@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
-use skia_safe::{Canvas, Color, Image, Surface, surfaces};
+use skia_safe::{Canvas, Color, FontMgr, Image, Surface, surfaces, textlayout::FontCollection};
 use thiserror::Error;
 
 use crate::time::Rational;
 
+use crate::expr::ExpressionScope;
 use crate::media::MediaStore;
 
 #[derive(Clone)]
@@ -41,6 +42,8 @@ pub struct RendererContext {
     pub media_store: Option<Box<dyn MediaStore>>,
     image_cache: HashMap<String, CachedImage>,
     video_frame_cache: HashMap<String, CachedVideoFrame>,
+    font_collection: FontCollection,
+    expression_scope: ExpressionScope,
 }
 
 #[derive(Debug, Error)]
@@ -60,6 +63,9 @@ impl RendererContext {
         let overlay_surface = surfaces::raster_n32_premul((width as i32, height as i32))
             .ok_or(RendererContextError::SurfaceCreation)?;
 
+        let mut font_collection = FontCollection::new();
+        font_collection.set_default_font_manager(FontMgr::default(), None);
+
         Ok(Self {
             width,
             height,
@@ -70,6 +76,8 @@ impl RendererContext {
             media_store: None,
             image_cache: HashMap::new(),
             video_frame_cache: HashMap::new(),
+            font_collection,
+            expression_scope: ExpressionScope::default(),
         })
     }
 
@@ -89,6 +97,17 @@ impl RendererContext {
         self.media_store.as_deref_mut()
     }
 
+    pub(crate) fn font_collection(&self) -> FontCollection {
+        self.font_collection.clone()
+    }
+
+    pub(crate) fn set_expression_scope(&mut self, scope: ExpressionScope) {
+        self.expression_scope = scope;
+    }
+
+    pub(crate) fn expression_scope(&self) -> &ExpressionScope {
+        &self.expression_scope
+    }
     pub fn clear(&mut self) {
         self.surface.canvas().clear(self.clear_color);
         self.overlay_surface
