@@ -4,13 +4,14 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result, anyhow};
 use image::ImageReader;
 use lumen::{
-    Project,
+    Project, Rational,
+    ffmpeg::{LibavStreamDecoder, worker::VideoDecodeWorker},
     json::{JsonDelegateRequest, JsonDelegateStatus, ProjectBundle, convert_json_delegate},
     media::{ImageResolver, MediaStore, VideoResolver},
     render::{context::RendererContext, render_scene},
@@ -26,7 +27,6 @@ struct CliArgs {
     frame: Option<u32>,
 }
 
-#[derive(Debug)]
 struct LocalMediaStore {
     image_sources: HashMap<String, PathBuf>,
     image_cache: HashMap<String, ImageFrame>,
@@ -40,12 +40,12 @@ struct ImageFrame {
     pixels_rgba: Arc<Vec<u8>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct VideoSource {
     id: String,
-    path: PathBuf,
     width: u32,
     height: u32,
+    worker: Arc<Mutex<VideoDecodeWorker>>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ struct StaticImageResolver {
     frame: ImageFrame,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct StaticVideoResolver {
     source: VideoSource,
 }
@@ -97,17 +97,21 @@ impl VideoResolver for StaticVideoResolver {
     }
 
     fn resolve_frame(&mut self, frame: u32) -> Vec<u8> {
-        decode_video_frame_rgba(
-            &self.source.path,
-            self.source.width,
-            self.source.height,
-            frame,
-        )
-        .unwrap_or_else(|_| {
-            rgba_byte_len(self.source.width, self.source.height)
-                .map(|len| vec![0; len])
-                .unwrap_or_default()
-        })
+        let decoded = self
+            .source
+            .worker
+            .lock()
+            .ok()
+            .and_then(|worker| worker.get_frame(u64::from(frame)).ok())
+            .flatten();
+
+        if let Some(frame_image) = decoded {
+            return (*frame_image.pixels_rgba).clone();
+        }
+
+        rgba_byte_len(self.source.width, self.source.height)
+            .map(|len| vec![0; len])
+            .unwrap_or_default()
     }
 }
 
@@ -239,7 +243,8 @@ fn run() -> Result<()> {
     let media_root = media_root(args.media_root.as_deref())?;
     let image_sources = resolve_image_sources(&bundle.image_sources, &media_root)?;
     let video_source_specs = extract_video_sources(&normalized_payload)?;
-    let video_sources = resolve_video_sources(&video_source_specs, &media_root)?;
+    let video_sources =
+        resolve_video_sources(&video_source_specs, &media_root, bundle.project.frame_rate)?;
 
     let mut renderer_ctx = RendererContext::new(
         bundle.project.width,
@@ -872,7 +877,9 @@ fn extract_video_sources(payload: &str) -> Result<HashMap<String, String>> {
 fn resolve_video_sources(
     sources: &HashMap<String, String>,
     root: &Path,
+    frame_rate: Rational,
 ) -> Result<HashMap<String, VideoSource>> {
+    let cache_frames = local_video_cache_frames();
     let mut resolved = HashMap::new();
     for (id, source) in sources {
         if is_http_url(source) {
@@ -882,17 +889,32 @@ fn resolve_video_sources(
             .with_context(|| format!("failed resolving video source `{id}` -> `{source}`"))?;
         let (width, height) = probe_video_dimensions(&path)
             .with_context(|| format!("failed to read video dimensions for `{}`", path.display()))?;
+        let decoder =
+            LibavStreamDecoder::new(&path, frame_rate, cache_frames).with_context(|| {
+                format!(
+                    "failed to initialize libav decoder for `{}`",
+                    path.display()
+                )
+            })?;
+        let worker = VideoDecodeWorker::spawn(id.as_str(), decoder);
         resolved.insert(
             id.clone(),
             VideoSource {
                 id: id.clone(),
-                path,
                 width,
                 height,
+                worker: Arc::new(Mutex::new(worker)),
             },
         );
     }
     Ok(resolved)
+}
+
+fn local_video_cache_frames() -> usize {
+    env::var("LUMEN_LOCAL_VIDEO_CACHE_FRAMES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
 }
 
 fn probe_video_dimensions(path: &Path) -> Result<(u32, u32)> {
@@ -930,44 +952,6 @@ fn probe_video_dimensions(path: &Path) -> Result<(u32, u32)> {
         .parse::<u32>()
         .context("invalid height in ffprobe output")?;
     Ok((width.max(1), height.max(1)))
-}
-
-fn decode_video_frame_rgba(path: &Path, width: u32, height: u32, frame: u32) -> Result<Vec<u8>> {
-    let filter = format!("select=eq(n\\,{frame})");
-    let output = Command::new("ffmpeg")
-        .arg("-v")
-        .arg("error")
-        .arg("-i")
-        .arg(path)
-        .arg("-vf")
-        .arg(filter)
-        .arg("-frames:v")
-        .arg("1")
-        .arg("-f")
-        .arg("rawvideo")
-        .arg("-pix_fmt")
-        .arg("rgba")
-        .arg("pipe:1")
-        .output()
-        .with_context(|| format!("failed to run ffmpeg decoder for `{}`", path.display()))?;
-
-    if !output.status.success() {
-        return Err(anyhow!(
-            "ffmpeg frame decode failed for `{}`: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let expected = rgba_byte_len(width, height).ok_or_else(|| anyhow!("video frame too large"))?;
-    if output.stdout.len() < expected {
-        return Err(anyhow!(
-            "ffmpeg returned {} bytes for frame {frame}, expected at least {expected}",
-            output.stdout.len()
-        ));
-    }
-
-    Ok(output.stdout[..expected].to_vec())
 }
 
 fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
