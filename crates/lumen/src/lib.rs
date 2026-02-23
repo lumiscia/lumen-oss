@@ -32,8 +32,8 @@ pub use expr::{ExprNode, Expression, ExpressionId, ExpressionValue};
 pub use graph::{Connection, Graph, InputPort, OutputPort};
 pub use media::{ImageResolver, MediaStore, VideoFrameResolver};
 pub use node::{
-	BlendMode, InputPortDef, Node, NodeEval, NodeId, NodeInputs, NodeKind, OutputPortDef,
-	PortKind, PortValue, PropertyValue, TrackId, VectorData,
+    BlendMode, InputPortDef, Node, NodeEval, NodeId, NodeInputs, NodeKind, OutputPortDef, PortKind,
+    PortValue, PropertyValue, TrackId, VectorData,
 };
 pub use raster::RasterFrame;
 pub use render::{CancellationToken, NullMediaStore, RenderContext};
