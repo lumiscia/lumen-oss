@@ -1,5 +1,3 @@
-mod json_delegate;
-
 use std::{
     env, fs,
     io::Write,
@@ -10,9 +8,9 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use image::ImageReader;
-use json_delegate::{JsonProject, ProjectBundle};
 use lumen::{
     Project,
+    json::{JsonDelegateRequest, JsonDelegateStatus, ProjectBundle, convert_json_delegate},
     media::{ImageResolver, MediaStore, VideoResolver},
     render::{context::RendererContext, render_scene},
 };
@@ -166,9 +164,30 @@ fn run() -> Result<()> {
     let args = parse_args().inspect_err(|_| print_usage())?;
     let raw = fs::read_to_string(&args.project)
         .with_context(|| format!("failed to read project file {}", args.project.display()))?;
-    let delegate: JsonProject =
-        serde_json::from_str(raw.as_str()).context("failed to parse project JSON delegate")?;
-    let bundle: ProjectBundle = delegate.try_into().context("failed to convert project")?;
+    let delegate_request = JsonDelegateRequest {
+        input_payload: raw,
+        input_schema_revision: "chat_story_v1".to_string(),
+        caller_context: "lumen-local".to_string(),
+    };
+    let delegate_result = convert_json_delegate(&delegate_request);
+    let bundle: ProjectBundle = match delegate_result.status {
+        JsonDelegateStatus::Success => delegate_result
+            .project_bundle
+            .ok_or_else(|| anyhow!("delegate returned success without project bundle"))?,
+        JsonDelegateStatus::CapabilityDisabled => {
+            return Err(anyhow!(
+                "json delegate capability is disabled; rebuild lumen with the `json` feature"
+            ));
+        }
+        JsonDelegateStatus::ValidationError | JsonDelegateStatus::ConversionError => {
+            let detail = delegate_result
+                .errors
+                .first()
+                .map(|issue| format!("{}: {}", issue.code, issue.message))
+                .unwrap_or_else(|| "unknown conversion failure".to_string());
+            return Err(anyhow!("failed to convert project JSON delegate: {detail}"));
+        }
+    };
 
     let media_root = media_root(args.media_root.as_deref())?;
     let image_sources = resolve_image_sources(&bundle.image_sources, &media_root)?;

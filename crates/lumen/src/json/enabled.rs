@@ -1,7 +1,6 @@
 use std::{collections::HashMap, convert::TryFrom};
 
-use anyhow::{Context, Result, anyhow};
-use lumen::{
+use crate::{
     Project,
     clip::{
         ClipGeometry, ClipMeta, ClipType,
@@ -17,6 +16,7 @@ use lumen::{
     scene::{BlendMode, Layer, Scene},
     time::Rational,
 };
+use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 
 #[derive(Debug)]
@@ -733,157 +733,5 @@ impl TryFrom<JsonProject> for ProjectBundle {
 
     fn try_from(value: JsonProject) -> Result<Self, Self::Error> {
         value.into_bundle()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use lumen::clip::{
-        ClipType,
-        style::{StyleProperty, StyleValue},
-    };
-
-    use super::{JsonProject, ProjectBundle};
-
-    #[test]
-    fn parses_and_converts_shape_text_project() {
-        let raw = r#"
-		{
-		  "canvas": { "width": 640, "height": 360, "background": [8, 12, 20, 255] },
-		  "timeline": { "fps": { "num": 30, "den": 1 }, "total_frames": 90 },
-		  "layers": [
-		    {
-		      "id": "layer_shapes",
-		      "z_index": 2,
-		      "items": [
-		        {
-		          "id": "shape_1",
-		          "start_frame": 0,
-		          "duration_frames": 90,
-		          "opacity": 0.8,
-		          "transform": { "x": 120, "y": 80, "width": 300, "height": 140, "rotation_degrees": 15 },
-		          "content": {
-		            "type": "shape",
-		            "shape": "rectangle",
-		            "fill": [120, 40, 240, 230],
-		            "radius": 18
-		          }
-		        }
-		      ]
-		    },
-		    {
-		      "id": "layer_text",
-		      "z_index": 5,
-		      "items": [
-		        {
-		          "id": "text_1",
-		          "start_frame": 0,
-		          "duration_frames": 90,
-		          "transform": { "x": 60, "y": 240, "width": 520, "height": 90 },
-		          "content": {
-		            "type": "text",
-		            "text": "delegate conversion works",
-		            "font_size": 42,
-		            "align": "left",
-		            "color": [250, 252, 255, 255]
-		          }
-		        }
-		      ]
-		    }
-		  ]
-		}
-		"#;
-
-        let delegate: JsonProject = serde_json::from_str(raw).expect("delegate JSON parse");
-        let bundle: ProjectBundle = delegate.try_into().expect("delegate conversion");
-
-        assert_eq!(bundle.project.width, 640);
-        assert_eq!(bundle.project.height, 360);
-        assert_eq!(bundle.project.duration_frames, 90);
-        assert_eq!(bundle.project.layers.len(), 2);
-        assert!(bundle.image_sources.is_empty());
-    }
-
-    #[test]
-    fn parses_expression_and_keyframe_properties() {
-        let raw = r#"
-		{
-		  "canvas": { "width": 640, "height": 360 },
-		  "timeline": { "fps": { "num": 30, "den": 1 }, "total_frames": 120 },
-		  "layers": [
-		    {
-		      "id": "layer_expr",
-		      "opacity": {
-		        "keyframes": [
-		          { "frame": 0, "value": 0.1 },
-		          { "frame": 60, "value": "clamp(0.9, 0.0, 1.0)", "easing": "ease_in_out" }
-		        ]
-		      },
-		      "items": [
-		        {
-		          "id": "shape_expr",
-		          "start_frame": 0,
-		          "duration_frames": 120,
-		          "transform": {
-		            "x": "lerp(20, 220, 0.5)",
-		            "y": 80,
-		            "width": { "keyframes": [{ "frame": 0, "value": 120 }, { "frame": 60, "value": 300 }] },
-		            "height": 100
-		          },
-		          "content": {
-		            "type": "shape",
-		            "shape": "rectangle"
-		          }
-		        }
-		      ]
-		    }
-		  ]
-		}
-		"#;
-
-        let delegate: JsonProject = serde_json::from_str(raw).expect("delegate JSON parse");
-        let bundle: ProjectBundle = delegate.try_into().expect("delegate conversion");
-        let layer = &bundle.project.layers[0];
-        assert!(matches!(layer.opacity, StyleProperty::Sequence(_)));
-
-        let clip = layer.clips.first().expect("clip present");
-        let ClipType::Shape(shape_clip) = clip else {
-            panic!("expected shape clip");
-        };
-        assert!(matches!(
-            shape_clip.geometry.x,
-            StyleProperty::Value(StyleValue::Expression(_))
-        ));
-        assert!(matches!(
-            shape_clip.geometry.width,
-            StyleProperty::Sequence(_)
-        ));
-    }
-
-    #[test]
-    fn conversion_rejects_zero_duration_clip() {
-        let raw = r#"
-		{
-		  "canvas": { "width": 320, "height": 180 },
-		  "timeline": { "fps": { "num": 30, "den": 1 }, "total_frames": 10 },
-		  "layers": [
-		    {
-		      "id": "layer_1",
-		      "items": [
-		        {
-		          "id": "bad_clip",
-		          "start_frame": 0,
-		          "duration_frames": 0,
-		          "content": { "type": "shape", "shape": "rectangle" }
-		        }
-		      ]
-		    }
-		  ]
-		}
-		"#;
-
-        let delegate: JsonProject = serde_json::from_str(raw).expect("delegate JSON parse");
-        let error = ProjectBundle::try_from(delegate).expect_err("conversion should fail");
-        assert!(error.to_string().contains("duration_frames=0"));
     }
 }

@@ -3,8 +3,8 @@ pub mod dependency;
 pub mod expr;
 #[cfg(feature = "ffmpeg")]
 pub mod ffmpeg;
-pub mod media;
 pub mod json;
+pub mod media;
 pub mod render;
 pub mod time;
 

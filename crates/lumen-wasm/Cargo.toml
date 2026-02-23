@@ -7,6 +7,10 @@ build = "build.rs"
 [lib]
 crate-type = ["staticlib"]
 
+[features]
+default = ["json"]
+json = ["lumen/json"]
+
 [dependencies]
 lumen = { path = "../lumen" }
 serde = { version = "1.0.228", features = ["derive"] }
