@@ -330,14 +330,33 @@ fn normalize_sources(project: &mut Map<String, Value>) {
         };
 
         if let Some(kind_type) = kind_obj.get("type").cloned() {
-            source_obj.insert("kind".to_string(), kind_type);
+            let normalized_kind = match kind_type {
+                Value::String(kind_type) if kind_type == "path" => {
+                    Value::String("file".to_string())
+                }
+                other => other,
+            };
+            source_obj.insert("kind".to_string(), normalized_kind);
         }
+
         for key in ["path", "url", "filter"] {
             if source_obj.contains_key(key) {
                 continue;
             }
             if let Some(value) = kind_obj.get(key).cloned() {
                 source_obj.insert(key.to_string(), value);
+            }
+        }
+
+        let is_file_kind = matches!(source_obj.get("kind").and_then(Value::as_str), Some("file"));
+        if is_file_kind && !source_obj.contains_key("path") {
+            let legacy_path = kind_obj
+                .get("path")
+                .cloned()
+                .or_else(|| kind_obj.get("url").cloned())
+                .or_else(|| source_obj.get("url").cloned());
+            if let Some(path) = legacy_path {
+                source_obj.insert("path".to_string(), path);
             }
         }
     }
@@ -1188,6 +1207,46 @@ mod tests {
         assert!(!sources.contains_key("image_1"));
     }
 
+    #[test]
+    fn normalize_payload_maps_legacy_path_kind_to_file_and_backfills_path() {
+        let raw = r#"{
+            "canvas": { "width": 360, "height": 640 },
+            "timeline": { "fps": { "num": 30, "den": 1 }, "duration_frames": 1 },
+            "layers": [],
+            "sources": [{
+                "id": "video_1",
+                "media": "video",
+                "kind": { "type": "path", "url": "chat-bg.mp4" }
+            }]
+        }"#;
+
+        let normalized = normalize_delegate_payload(raw).expect("normalize");
+        let payload: serde_json::Value = serde_json::from_str(&normalized).expect("json");
+        let source = payload
+            .get("sources")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|sources| sources.first())
+            .expect("source");
+
+        assert_eq!(
+            source.get("kind").and_then(serde_json::Value::as_str),
+            Some("file")
+        );
+        assert_eq!(
+            source.get("path").and_then(serde_json::Value::as_str),
+            Some("chat-bg.mp4")
+        );
+        assert_eq!(
+            source.get("url").and_then(serde_json::Value::as_str),
+            Some("chat-bg.mp4")
+        );
+
+        let parse_result = serde_json::from_str::<lumen::json::JsonProject>(&normalized);
+        assert!(
+            parse_result.is_ok(),
+            "normalized payload should be delegate-parseable"
+        );
+    }
     #[test]
     fn normalized_generated_fixture_converts_with_delegate() {
         let generated_path = Path::new("../..").join("generated.json");

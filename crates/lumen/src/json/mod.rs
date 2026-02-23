@@ -104,9 +104,8 @@ pub fn convert_json_delegate(request: &JsonDelegateRequest) -> JsonDelegateResul
 
     #[cfg(feature = "json")]
     {
-        let parsed = serde_json::from_str::<JsonProject>(&request.input_payload);
-        let parsed = match parsed {
-            Ok(parsed) => parsed,
+        let raw_json = match serde_json::from_str::<serde_json::Value>(&request.input_payload) {
+            Ok(raw_json) => raw_json,
             Err(_) => {
                 return JsonDelegateResult {
                     status: JsonDelegateStatus::ValidationError,
@@ -115,6 +114,24 @@ pub fn convert_json_delegate(request: &JsonDelegateRequest) -> JsonDelegateResul
                         JsonDelegateStatus::ValidationError,
                         "validation_error",
                         "input payload is not valid JSON",
+                        Some("$"),
+                        Some("Provide JSON payload matching `chat_story_v1`"),
+                    )],
+                    warnings: Vec::new(),
+                };
+            }
+        };
+
+        let parsed = match serde_json::from_value::<JsonProject>(raw_json) {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                return JsonDelegateResult {
+                    status: JsonDelegateStatus::ValidationError,
+                    project_bundle: None,
+                    errors: vec![build_issue(
+                        JsonDelegateStatus::ValidationError,
+                        "validation_error",
+                        "input payload does not match `chat_story_v1` schema",
                         Some("$"),
                         Some("Provide JSON payload matching `chat_story_v1`"),
                     )],
