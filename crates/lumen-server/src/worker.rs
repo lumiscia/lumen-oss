@@ -3,9 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::anyhow;
 use axum::body::Bytes;
-use lumen::{Project, compile_project};
 use serde::Serialize;
 use tokio::{sync::mpsc, task::spawn_blocking, time::timeout};
 use tracing::{error, info, instrument, warn};
@@ -13,7 +11,9 @@ use tracing::{error, info, instrument, warn};
 use crate::{
     app_state::AppState,
     jobs::{ObjectBlob, RenderJobState, StorageError},
-    video::FfmpegRenderBackend,
+    render::{
+        RenderMetrics, RenderOptions, RenderProgress, convert_project_payload, render_project_mp4,
+    },
 };
 
 const DEFAULT_RENDER_TIMEOUT_SECS: u64 = 900;
@@ -102,46 +102,41 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
 
     let result = timeout(
         render_timeout,
-        spawn_blocking(move || -> anyhow::Result<RenderOutput> {
-            let project: Project = serde_json::from_value(record.payload)
-                .map_err(|err| anyhow!("failed to deserialize project payload: {err}"))?;
+        spawn_blocking(
+            move || -> Result<RenderOutput, crate::render::RenderError> {
+                let emit = |progress: f32, stage: &str| {
+                    let _ = progress_tx.send(ProgressUpdate {
+                        progress,
+                        stage: stage.to_string(),
+                    });
+                };
 
-            let emit = |progress: f32, stage: &str| {
-                let _ = progress_tx.send(ProgressUpdate {
-                    progress,
-                    stage: stage.to_string(),
-                });
-            };
+                emit(0.10, "converting");
+                let convert_started = Instant::now();
+                let bundle = convert_project_payload(&record.payload)?;
+                let convert_ms = convert_started.elapsed().as_millis();
 
-            emit(0.10, "compiling");
-            let compile_started = Instant::now();
-            let timeline = compile_project(&project)?;
-            let compile_ms = compile_started.elapsed().as_millis();
+                emit(0.16, "rendering");
+                let render_started = Instant::now();
+                let options = RenderOptions::default();
+                let bytes =
+                    render_project_mp4(&bundle, &options, &mut |update: RenderProgress| {
+                        let progress = 0.16 + (0.78 * update.ratio.clamp(0.0, 1.0));
+                        emit(progress, update.stage);
+                    })?;
+                let render_ms = render_started.elapsed().as_millis();
 
-            emit(0.16, "rendering");
-            let render_started = Instant::now();
-            let mut backend = FfmpegRenderBackend::new(timeline.clone());
-            let bytes = backend.render_to_mp4(&mut |frame, total| {
-                if total == 0 {
-                    return;
-                }
-                let ratio = (frame as f32 / total as f32).clamp(0.0, 1.0);
-                let progress = 0.16 + (0.78 * ratio);
-                emit(progress, "rendering");
-            })?;
-            let render_ms = render_started.elapsed().as_millis();
-
-            emit(0.95, "storing_artifact");
-            Ok(RenderOutput {
-                bytes,
-                metrics: RenderMetrics {
-                    compile_ms,
-                    render_ms,
-                    pipeline_ms: compile_started.elapsed().as_millis(),
-                    total_frames: timeline.total_frames(),
-                },
-            })
-        }),
+                emit(0.95, "storing_artifact");
+                Ok(RenderOutput {
+                    bytes,
+                    metrics: RenderMetrics {
+                        convert_ms,
+                        render_ms,
+                        total_frames: bundle.project.duration_frames,
+                    },
+                })
+            },
+        ),
     )
     .await;
 
@@ -174,11 +169,10 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
                 .await?;
             info!(
                 job_id,
-                compile_ms = output.metrics.compile_ms,
+                convert_ms = output.metrics.convert_ms,
                 render_ms = output.metrics.render_ms,
                 total_frames = output.metrics.total_frames,
                 store_ms,
-                pipeline_ms = output.metrics.pipeline_ms,
                 total_job_ms = job_started.elapsed().as_millis(),
                 "render job completed"
             );
@@ -187,7 +181,7 @@ async fn process_job(state: AppState, job_id: String) -> anyhow::Result<()> {
         Ok(Ok(Err(err))) => {
             state
                 .job_store
-                .mark_failed(&job_id, "render_failed", err.to_string())
+                .mark_failed(&job_id, err.code, err.message)
                 .await?;
             error!(
                 job_id,
@@ -237,13 +231,6 @@ struct ProgressUpdate {
 struct RenderOutput {
     bytes: Vec<u8>,
     metrics: RenderMetrics,
-}
-
-struct RenderMetrics {
-    compile_ms: u128,
-    render_ms: u128,
-    pipeline_ms: u128,
-    total_frames: u64,
 }
 
 #[derive(Serialize)]

@@ -11,19 +11,17 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
-use lumen::{LayerItem, Project, compile_project};
 use serde::{Deserialize, Serialize};
-use tokio::task::spawn_blocking;
+use serde_json::Value;
 
 use crate::{
     api_error::ApiError,
     app_state::AppState,
     jobs::{ObjectBlob, RenderJobState, RenderJobStatus},
-    preview_cache::{CompiledPreview, PreviewCache},
-    video::FfmpegRenderBackend,
+    preview_cache::{CachedProject, PreviewCache},
+    render::{convert_project_payload, render_project_frame_png},
 };
 
-const MAX_SOURCES: usize = 512;
 const MAX_LAYERS: usize = 256;
 const MAX_TOTAL_CLIPS: usize = 8_192;
 const MAX_TOTAL_FRAMES: u64 = 216_000;
@@ -91,13 +89,13 @@ pub async fn list_renders(
 
 pub async fn create_render(
     State(state): State<AppState>,
-    Json(project): Json<Project>,
+    Json(payload): Json<Value>,
 ) -> Result<(StatusCode, Json<crate::jobs::RenderJobStatus>), ApiError> {
-    let timeline =
-        compile_project(&project).map_err(|err| ApiError::bad_request(err.to_string()))?;
-    validate_project_limits(&project, timeline.total_frames())?;
-
-    let payload = serde_json::to_value(project).map_err(ApiError::internal)?;
+    {
+        let bundle =
+            convert_project_payload(&payload).map_err(|err| ApiError::bad_request(err.message))?;
+        validate_project_limits(&bundle.project)?;
+    }
 
     let status = state
         .job_store
@@ -282,36 +280,32 @@ pub async fn get_frame(
         return png_response(png);
     }
 
-    let compiled_cache_key = PreviewCache::compiled_key(&job_id, version);
-    let compiled = match state.preview_cache.get_compiled(&compiled_cache_key).await {
-        Some(compiled) => compiled,
+    let project_cache_key = PreviewCache::project_key(&job_id, version);
+    let cached = match state.preview_cache.get_project(&project_cache_key).await {
+        Some(cached) => cached,
         None => {
-            let project: Project =
-                serde_json::from_value(job.payload).map_err(ApiError::internal)?;
-            let timeline =
-                compile_project(&project).map_err(|err| ApiError::bad_request(err.to_string()))?;
-            let compiled = Arc::new(CompiledPreview { timeline });
+            let bundle = convert_project_payload(&job.payload)
+                .map_err(|err| ApiError::bad_request(err.message))?;
+            let cached = Arc::new(CachedProject {
+                bundle: Arc::new(bundle),
+            });
             state
                 .preview_cache
-                .put_compiled(compiled_cache_key, compiled.clone())
+                .put_project(project_cache_key, cached.clone())
                 .await;
-            compiled
+            cached
         }
     };
 
-    if frame_index >= compiled.timeline.total_frames() {
+    let total_frames = cached.bundle.project.duration_frames;
+    if frame_index >= u64::from(total_frames) {
         return Err(ApiError::bad_request("requested frame is out of range"));
     }
 
-    let timeline = compiled.timeline.clone();
-    let png = spawn_blocking(move || -> Result<Vec<u8>, ApiError> {
-        let mut backend = FfmpegRenderBackend::new(timeline);
-        backend
-            .render_frame_png(frame_index)
-            .map_err(ApiError::internal)
-    })
-    .await
-    .map_err(ApiError::internal)??;
+    let frame_index = u32::try_from(frame_index)
+        .map_err(|_| ApiError::bad_request("requested frame is out of range"))?;
+
+    let png = render_project_frame_png(&cached.bundle, frame_index).map_err(ApiError::internal)?;
 
     let png_bytes = axum::body::Bytes::from(png);
     state
@@ -322,14 +316,7 @@ pub async fn get_frame(
     png_response(png_bytes)
 }
 
-fn validate_project_limits(project: &Project, total_frames: u64) -> Result<(), ApiError> {
-    if project.sources.len() > MAX_SOURCES {
-        return Err(ApiError::bad_request(format!(
-            "project has {} sources, limit is {MAX_SOURCES}",
-            project.sources.len()
-        )));
-    }
-
+fn validate_project_limits(project: &lumen::Project) -> Result<(), ApiError> {
     if project.layers.len() > MAX_LAYERS {
         return Err(ApiError::bad_request(format!(
             "project has {} layers, limit is {MAX_LAYERS}",
@@ -340,13 +327,7 @@ fn validate_project_limits(project: &Project, total_frames: u64) -> Result<(), A
     let total_clips: usize = project
         .layers
         .iter()
-        .map(|layer| {
-            layer
-                .items
-                .iter()
-                .map(count_layer_item_nodes)
-                .sum::<usize>()
-        })
+        .map(|layer| layer.clips.iter().map(count_clip_nodes).sum::<usize>())
         .sum();
     if total_clips > MAX_TOTAL_CLIPS {
         return Err(ApiError::bad_request(format!(
@@ -354,42 +335,25 @@ fn validate_project_limits(project: &Project, total_frames: u64) -> Result<(), A
         )));
     }
 
+    let total_frames = u64::from(project.duration_frames);
     if total_frames > MAX_TOTAL_FRAMES {
         return Err(ApiError::bad_request(format!(
             "timeline resolves to {total_frames} frames, limit is {MAX_TOTAL_FRAMES}"
         )));
     }
 
-    if project.canvas.width > MAX_CANVAS_DIMENSION || project.canvas.height > MAX_CANVAS_DIMENSION {
+    if project.width > MAX_CANVAS_DIMENSION || project.height > MAX_CANVAS_DIMENSION {
         return Err(ApiError::bad_request(format!(
             "canvas dimensions {}x{} exceed limit {MAX_CANVAS_DIMENSION}",
-            project.canvas.width, project.canvas.height
+            project.width, project.height
         )));
     }
 
     Ok(())
 }
 
-fn count_layer_item_nodes(item: &LayerItem) -> usize {
-    match item {
-        LayerItem::Clip(clip) => {
-            let mask_count = clip
-                .mask
-                .as_deref()
-                .map(count_layer_item_nodes)
-                .unwrap_or(0);
-            1 + mask_count
-        }
-        LayerItem::Group(group) => {
-            let child_count: usize = group.items.iter().map(count_layer_item_nodes).sum();
-            let mask_count = group
-                .mask
-                .as_deref()
-                .map(count_layer_item_nodes)
-                .unwrap_or(0);
-            1 + child_count + mask_count
-        }
-    }
+fn count_clip_nodes(_clip: &lumen::clip::ClipType) -> usize {
+    1
 }
 
 fn to_progress_event(status: &RenderJobStatus) -> RenderProgressEvent {
