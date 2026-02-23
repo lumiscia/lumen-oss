@@ -1,182 +1,162 @@
 {
-  "canvas": {
-    "width": 1920,
-    "height": 1080,
-    "background": [
-      0,
-      0,
-      0,
-      255
-    ]
-  },
-  "timeline": {
-    "fps": {
-      "num": 30,
-      "den": 1
-    },
-    "total_frames": 240
-  },
-  "sources": [
-    {
-      "id": "mixed_video",
-      "kind": "generator",
-      "media": "video",
-      "filter": "testsrc=size=1280x720:rate=30,scale=1920:1080:flags=bicubic"
-    },
-    {
-      "id": "mixed_image",
-      "kind": "file",
-      "media": "image",
-      "path": "docs/bench/fixtures/assets/checker.png"
-    }
-  ],
-  "layers": [
-    {
-      "id": "mixed_bg",
-      "z_index": 0,
-      "items": [
-        {
-          "kind": "clip",
-          "id": "mixed_video_clip",
-          "start_frame": 0,
-          "duration_frames": 240,
-          "opacity": 1,
-          "transform": {
-            "x": 0,
-            "y": 0,
-            "width": 1920,
-            "height": 1080,
-            "rotation_degrees": 0
-          },
-          "content": {
-            "type": "video",
-            "source": "mixed_video",
-            "fit": "cover",
-            "pipeline": {
-              "speed": 1,
-              "reverse": false,
-              "looping": {
-                "mode": "none"
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": "mixed_image_layer",
-      "z_index": 1,
-      "items": [
-        {
-          "kind": "clip",
-          "id": "mixed_image_clip",
-          "start_frame": 20,
-          "duration_frames": 200,
-          "opacity": 0.92,
-          "transform": {
-            "x": 180,
-            "y": 170,
-            "width": 640,
-            "height": 360,
-            "rotation_degrees": -8
-          },
-          "content": {
-            "type": "image",
-            "source": "mixed_image",
-            "fit": "cover"
-          }
-        }
-      ]
-    },
-    {
-      "id": "mixed_graphics",
-      "z_index": 2,
-      "items": [
-        {
-          "kind": "clip",
-          "id": "mixed_shape_0",
-          "start_frame": 0,
-          "duration_frames": 240,
-          "opacity": 0.55,
-          "transform": {
-            "x": 1200,
-            "y": 130,
-            "width": 520,
-            "height": 520,
-            "rotation_degrees": 0
-          },
-          "content": {
-            "type": "shape",
-            "shape": "ellipse",
-            "fill": [
-              22,
-              152,
-              255,
-              220
-            ]
-          }
-        },
-        {
-          "kind": "clip",
-          "id": "mixed_shape_1",
-          "start_frame": 60,
-          "duration_frames": 160,
-          "opacity": 0.72,
-          "transform": {
-            "x": 1080,
-            "y": 520,
-            "width": 680,
-            "height": 420,
-            "rotation_degrees": 12
-          },
-          "content": {
-            "type": "shape",
-            "shape": "rectangle",
-            "fill": [
-              255,
-              120,
-              20,
-              180
-            ],
-            "radius": 36
-          }
-        }
-      ]
-    },
-    {
-      "id": "mixed_text",
-      "z_index": 3,
-      "items": [
-        {
-          "kind": "clip",
-          "id": "mixed_text_clip",
-          "start_frame": 0,
-          "duration_frames": 240,
-          "opacity": 1,
-          "transform": {
-            "x": 160,
-            "y": 620,
-            "width": 1600,
-            "height": 320,
-            "rotation_degrees": 0
-          },
-          "content": {
-            "type": "text",
-            "text": "Mixed media fixture\\nvideo + image + vector + text",
-            "font_size": 68,
-            "align": "left",
-            "color": [
-              250,
-              252,
-              255,
-              255
-            ]
-          }
-        }
-      ]
-    }
-  ],
-  "audio": {
-    "tracks": []
-  }
+	"canvas": {
+		"width": 1920,
+		"height": 1080,
+		"background": [0, 0, 0, 255]
+	},
+	"timeline": {
+		"fps": {
+			"num": 30,
+			"den": 1
+		},
+		"total_frames": 240
+	},
+	"sources": [
+		{
+			"id": "mixed_video",
+			"kind": "generator",
+			"media": "video",
+			"filter": "testsrc=size=1280x720:rate=30,scale=1920:1080:flags=bicubic"
+		},
+		{
+			"id": "mixed_image",
+			"kind": "file",
+			"media": "image",
+			"path": "docs/bench/fixtures/assets/checker.png"
+		}
+	],
+	"layers": [
+		{
+			"id": "mixed_bg",
+			"z_index": 0,
+			"items": [
+				{
+					"kind": "clip",
+					"id": "mixed_video_clip",
+					"start_frame": 0,
+					"duration_frames": 240,
+					"opacity": 1,
+					"transform": {
+						"x": 0,
+						"y": 0,
+						"width": 1920,
+						"height": 1080,
+						"rotation_degrees": 0
+					},
+					"content": {
+						"type": "video",
+						"source": "mixed_video",
+						"fit": "cover",
+						"pipeline": {
+							"speed": 1,
+							"reverse": false,
+							"looping": {
+								"mode": "none"
+							}
+						}
+					}
+				}
+			]
+		},
+		{
+			"id": "mixed_image_layer",
+			"z_index": 1,
+			"items": [
+				{
+					"kind": "clip",
+					"id": "mixed_image_clip",
+					"start_frame": 20,
+					"duration_frames": 200,
+					"opacity": 0.92,
+					"transform": {
+						"x": 180,
+						"y": 170,
+						"width": 640,
+						"height": 360,
+						"rotation_degrees": -8
+					},
+					"content": {
+						"type": "image",
+						"source": "mixed_image",
+						"fit": "cover"
+					}
+				}
+			]
+		},
+		{
+			"id": "mixed_graphics",
+			"z_index": 2,
+			"items": [
+				{
+					"kind": "clip",
+					"id": "mixed_shape_0",
+					"start_frame": 0,
+					"duration_frames": 240,
+					"opacity": 0.55,
+					"transform": {
+						"x": 1200,
+						"y": 130,
+						"width": 520,
+						"height": 520,
+						"rotation_degrees": 0
+					},
+					"content": {
+						"type": "shape",
+						"shape": "ellipse",
+						"fill": [22, 152, 255, 220]
+					}
+				},
+				{
+					"kind": "clip",
+					"id": "mixed_shape_1",
+					"start_frame": 60,
+					"duration_frames": 160,
+					"opacity": 0.72,
+					"transform": {
+						"x": 1080,
+						"y": 520,
+						"width": 680,
+						"height": 420,
+						"rotation_degrees": 12
+					},
+					"content": {
+						"type": "shape",
+						"shape": "rectangle",
+						"fill": [255, 120, 20, 180],
+						"radius": 36
+					}
+				}
+			]
+		},
+		{
+			"id": "mixed_text",
+			"z_index": 3,
+			"items": [
+				{
+					"kind": "clip",
+					"id": "mixed_text_clip",
+					"start_frame": 0,
+					"duration_frames": 240,
+					"opacity": 1,
+					"transform": {
+						"x": 160,
+						"y": 620,
+						"width": 1600,
+						"height": 320,
+						"rotation_degrees": 0
+					},
+					"content": {
+						"type": "text",
+						"text": "Mixed media fixture\\nvideo + image + vector + text",
+						"font_size": 68,
+						"align": "left",
+						"color": [250, 252, 255, 255]
+					}
+				}
+			]
+		}
+	],
+	"audio": {
+		"tracks": []
+	}
 }

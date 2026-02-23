@@ -1,127 +1,162 @@
 {
-  "canvas": {
-    "width": 1080,
-    "height": 1080,
-    "background": [7, 9, 16, 255]
-  },
-  "timeline": {
-    "fps": { "num": 24, "den": 1 },
-    "total_frames": 144
-  },
-  "layers": [
-    {
-      "id": "stagger_grid",
-      "z_index": 1,
-      "items": [
-        {
-          "id": "tile_1",
-          "start_frame": 0,
-          "duration_frames": 144,
-          "opacity": {
-            "keyframes": [
-              { "frame": 0, "value": 0.2 },
-              { "frame": 32, "value": 0.95, "easing": "ease_in" },
-              { "frame": 144, "value": 0.95 }
-            ]
-          },
-          "transform": {
-            "x": "120 + 0",
-            "y": "120 + 0",
-            "width": { "keyframes": [{ "frame": 0, "value": 120 }, { "frame": 52, "value": 240, "easing": "ease_out" }] },
-            "height": { "keyframes": [{ "frame": 0, "value": 120 }, { "frame": 52, "value": 240, "easing": "ease_out" }] },
-            "rotation_degrees": "lerp(-10, 8, 0.6)"
-          },
-          "content": {
-            "type": "shape",
-            "shape": "rectangle",
-            "fill": [90, 124, 255, 220],
-            "radius": { "expr": "max(10, 18)" }
-          }
-        },
-        {
-          "id": "tile_2",
-          "start_frame": 0,
-          "duration_frames": 144,
-          "opacity": {
-            "keyframes": [
-              { "frame": 16, "value": 0.18 },
-              { "frame": 52, "value": 0.92, "easing": "ease_in_out" },
-              { "frame": 144, "value": 0.92 }
-            ]
-          },
-          "transform": {
-            "x": "120 + 300",
-            "y": "120 + 40",
-            "width": { "keyframes": [{ "frame": 0, "value": 110 }, { "frame": 64, "value": 260, "easing": "ease_out" }] },
-            "height": { "keyframes": [{ "frame": 0, "value": 110 }, { "frame": 64, "value": 260, "easing": "ease_out" }] },
-            "rotation_degrees": "lerp(14, -6, 0.7)"
-          },
-          "content": {
-            "type": "shape",
-            "shape": "rectangle",
-            "fill": [246, 125, 92, 210],
-            "radius": 22
-          }
-        },
-        {
-          "id": "tile_3",
-          "start_frame": 0,
-          "duration_frames": 144,
-          "opacity": {
-            "keyframes": [
-              { "frame": 28, "value": 0.12 },
-              { "frame": 70, "value": 0.9, "easing": "ease_in_out" },
-              { "frame": 144, "value": 0.9 }
-            ]
-          },
-          "transform": {
-            "x": "120 + 180",
-            "y": "120 + 360",
-            "width": { "keyframes": [{ "frame": 0, "value": 130 }, { "frame": 86, "value": 300, "easing": "ease_in" }] },
-            "height": { "keyframes": [{ "frame": 0, "value": 130 }, { "frame": 86, "value": 300, "easing": "ease_in" }] },
-            "rotation_degrees": {
-              "keyframes": [
-                { "frame": 0, "value": -18 },
-                { "frame": 86, "value": 6, "easing": "ease_out" },
-                { "frame": 144, "value": 2 }
-              ]
-            }
-          },
-          "content": {
-            "type": "shape",
-            "shape": "ellipse",
-            "fill": [120, 226, 190, 210]
-          }
-        }
-      ]
-    },
-    {
-      "id": "caption_layer",
-      "z_index": 4,
-      "opacity": 1,
-      "items": [
-        {
-          "id": "caption",
-          "start_frame": 0,
-          "duration_frames": 144,
-          "transform": {
-            "x": 120,
-            "y": 840,
-            "width": 860,
-            "height": 160
-          },
-          "content": {
-            "type": "text",
-            "text": "staggered keyframes + expression literals",
-            "font_size": { "keyframes": [{ "frame": 0, "value": 42 }, { "frame": 90, "value": 56, "easing": "ease_in_out" }] },
-            "font_weight": "max(500, 640)",
-            "line_height": { "expr": "clamp(1.15, 1.0, 1.4)" },
-            "align": "left",
-            "color": [241, 246, 255, 255]
-          }
-        }
-      ]
-    }
-  ],
-  "audio": { "tracks": [] }
+	"canvas": {
+		"width": 1080,
+		"height": 1080,
+		"background": [7, 9, 16, 255]
+	},
+	"timeline": {
+		"fps": { "num": 24, "den": 1 },
+		"total_frames": 144
+	},
+	"layers": [
+		{
+			"id": "stagger_grid",
+			"z_index": 1,
+			"items": [
+				{
+					"id": "tile_1",
+					"start_frame": 0,
+					"duration_frames": 144,
+					"opacity": {
+						"keyframes": [
+							{ "frame": 0, "value": 0.2 },
+							{ "frame": 32, "value": 0.95, "easing": "ease_in" },
+							{ "frame": 144, "value": 0.95 }
+						]
+					},
+					"transform": {
+						"x": "120 + 0",
+						"y": "120 + 0",
+						"width": {
+							"keyframes": [
+								{ "frame": 0, "value": 120 },
+								{ "frame": 52, "value": 240, "easing": "ease_out" }
+							]
+						},
+						"height": {
+							"keyframes": [
+								{ "frame": 0, "value": 120 },
+								{ "frame": 52, "value": 240, "easing": "ease_out" }
+							]
+						},
+						"rotation_degrees": "lerp(-10, 8, 0.6)"
+					},
+					"content": {
+						"type": "shape",
+						"shape": "rectangle",
+						"fill": [90, 124, 255, 220],
+						"radius": { "expr": "max(10, 18)" }
+					}
+				},
+				{
+					"id": "tile_2",
+					"start_frame": 0,
+					"duration_frames": 144,
+					"opacity": {
+						"keyframes": [
+							{ "frame": 16, "value": 0.18 },
+							{ "frame": 52, "value": 0.92, "easing": "ease_in_out" },
+							{ "frame": 144, "value": 0.92 }
+						]
+					},
+					"transform": {
+						"x": "120 + 300",
+						"y": "120 + 40",
+						"width": {
+							"keyframes": [
+								{ "frame": 0, "value": 110 },
+								{ "frame": 64, "value": 260, "easing": "ease_out" }
+							]
+						},
+						"height": {
+							"keyframes": [
+								{ "frame": 0, "value": 110 },
+								{ "frame": 64, "value": 260, "easing": "ease_out" }
+							]
+						},
+						"rotation_degrees": "lerp(14, -6, 0.7)"
+					},
+					"content": {
+						"type": "shape",
+						"shape": "rectangle",
+						"fill": [246, 125, 92, 210],
+						"radius": 22
+					}
+				},
+				{
+					"id": "tile_3",
+					"start_frame": 0,
+					"duration_frames": 144,
+					"opacity": {
+						"keyframes": [
+							{ "frame": 28, "value": 0.12 },
+							{ "frame": 70, "value": 0.9, "easing": "ease_in_out" },
+							{ "frame": 144, "value": 0.9 }
+						]
+					},
+					"transform": {
+						"x": "120 + 180",
+						"y": "120 + 360",
+						"width": {
+							"keyframes": [
+								{ "frame": 0, "value": 130 },
+								{ "frame": 86, "value": 300, "easing": "ease_in" }
+							]
+						},
+						"height": {
+							"keyframes": [
+								{ "frame": 0, "value": 130 },
+								{ "frame": 86, "value": 300, "easing": "ease_in" }
+							]
+						},
+						"rotation_degrees": {
+							"keyframes": [
+								{ "frame": 0, "value": -18 },
+								{ "frame": 86, "value": 6, "easing": "ease_out" },
+								{ "frame": 144, "value": 2 }
+							]
+						}
+					},
+					"content": {
+						"type": "shape",
+						"shape": "ellipse",
+						"fill": [120, 226, 190, 210]
+					}
+				}
+			]
+		},
+		{
+			"id": "caption_layer",
+			"z_index": 4,
+			"opacity": 1,
+			"items": [
+				{
+					"id": "caption",
+					"start_frame": 0,
+					"duration_frames": 144,
+					"transform": {
+						"x": 120,
+						"y": 840,
+						"width": 860,
+						"height": 160
+					},
+					"content": {
+						"type": "text",
+						"text": "staggered keyframes + expression literals",
+						"font_size": {
+							"keyframes": [
+								{ "frame": 0, "value": 42 },
+								{ "frame": 90, "value": 56, "easing": "ease_in_out" }
+							]
+						},
+						"font_weight": "max(500, 640)",
+						"line_height": { "expr": "clamp(1.15, 1.0, 1.4)" },
+						"align": "left",
+						"color": [241, 246, 255, 255]
+					}
+				}
+			]
+		}
+	],
+	"audio": { "tracks": [] }
 }
