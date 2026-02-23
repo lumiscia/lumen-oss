@@ -72,6 +72,21 @@ fn converts_valid_payload_when_feature_is_on() {
     assert!(result.project_bundle.is_some());
     assert!(result.errors.is_empty());
 }
+#[cfg(feature = "json")]
+#[test]
+fn converts_shared_sample_fixture_when_feature_is_on() {
+    let raw = include_str!("../../tests/fixtures/json_delegate/sample_project.json");
+    let result = convert_json_delegate(&request(raw));
+
+    assert!(matches!(result.status, JsonDelegateStatus::Success));
+    assert_eq!(
+        json_delegate_observability_code(result.status),
+        OBS_CODE_JSON_DELEGATE_SUCCESS
+    );
+    assert!(result.project_bundle.is_some());
+    assert!(result.errors.is_empty());
+}
+
 
 #[cfg(feature = "json")]
 #[test]
