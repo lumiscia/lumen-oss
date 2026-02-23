@@ -49,18 +49,18 @@
 
 ### Tests for User Story 1
 
-- [ ] T011 [P] [US1] Add producer contract parity test for delegate payload shape in packages/lumen/src/compile.parity.test.ts
-- [ ] T012 [P] [US1] Add editor export contract test for canonical payload shape in apps/editor/src/preview/project-schema.ts
-- [ ] T013 [P] [US1] Add templates preset output contract test for canonical payload shape in packages/templates/src/presets/chat-story-v1/chat-story.contract.test.ts
-- [ ] T014 [P] [US1] Add Rust delegate conformance tests for valid canonical payload and schema revision mismatch in crates/lumen/src/json/tests.rs
+- [X] T011 [P] [US1] Add producer contract parity test for delegate payload shape in packages/lumen/src/compile.parity.test.ts
+- [X] T012 [P] [US1] Add editor export contract test for canonical payload shape in apps/editor/src/preview/project-schema.ts
+- [X] T013 [P] [US1] Add templates preset output contract test for canonical payload shape in packages/templates/src/presets/chat-story-v1/chat-story.contract.test.ts
+- [X] T014 [P] [US1] Add Rust delegate conformance tests for valid canonical payload and schema revision mismatch in crates/lumen/src/json/tests.rs
 
 ### Implementation for User Story 1
 
-- [ ] T015 [US1] Update editor payload serialization to emit delegate-aligned canonical fields in apps/editor/src/preview/project-schema.ts
-- [ ] T016 [US1] Update lumen compile contract output to canonical delegate payload structure in packages/lumen/src/compile.ts
-- [ ] T017 [US1] Update JSX serialization output mapping to delegate payload structure in packages/lumen-jsx/src/jsx.ts
-- [ ] T018 [US1] Update templates preset builder output to delegate payload structure in packages/templates/src/presets/chat-story-v1/source-builder.ts
-- [ ] T019 [US1] Wire canonical payload submission path through editor client request envelope in apps/editor/src/lib/lumen-client.ts
+- [X] T015 [US1] Update editor payload serialization to emit delegate-aligned canonical fields in apps/editor/src/preview/project-schema.ts
+- [X] T016 [US1] Update lumen compile contract output to canonical delegate payload structure in packages/lumen/src/compile.ts
+- [X] T017 [US1] Update JSX serialization output mapping to delegate payload structure in packages/lumen-jsx/src/jsx.ts
+- [X] T018 [US1] Update templates preset builder output to delegate payload structure in packages/templates/src/presets/chat-story-v1/source-builder.ts
+- [X] T019 [US1] Wire canonical payload submission path through editor client request envelope in apps/editor/src/lib/lumen-client.ts
 
 **Checkpoint**: US1 independently delivers canonical payload publishing across all workflows.
 
@@ -74,16 +74,16 @@
 
 ### Tests for User Story 2
 
-- [ ] T020 [P] [US2] Add invalid legacy payload rejection test in packages/lumen/src/compile.parity.test.ts
-- [ ] T021 [P] [US2] Add mixed payload rejection test in apps/editor/src/preview/project-schema.ts
-- [ ] T022 [P] [US2] Add unauthorized renderer-submission rejection test in apps/editor/src/lib/lumen-client.test.ts
+- [X] T020 [P] [US2] Add invalid legacy payload rejection test in packages/lumen/src/compile.parity.test.ts
+- [X] T021 [P] [US2] Add mixed payload rejection test in apps/editor/src/preview/project-schema.ts
+- [X] T022 [P] [US2] Add unauthorized renderer-submission rejection test in apps/editor/src/lib/lumen-client.test.ts
 
 ### Implementation for User Story 2
 
-- [ ] T023 [US2] Remove legacy versioned compatibility branching in editor preview schema handling in apps/editor/src/preview/use-preview-helpers.ts
-- [ ] T024 [US2] Remove legacy format handling branches in lumen compile pipeline in packages/lumen/src/pipeline.ts
-- [ ] T025 [US2] Enforce strict mixed/legacy rejection in template validation path in packages/templates/src/presets/chat-story-v1/validation.ts
-- [ ] T026 [US2] Enforce authorization checks and sanitized invalid payload failures on submission path in apps/editor/src/lib/lumen-client.ts
+- [X] T023 [US2] Remove legacy versioned compatibility branching in editor preview schema handling in apps/editor/src/preview/use-preview-helpers.ts
+- [X] T024 [US2] Remove legacy format handling branches in lumen compile pipeline in packages/lumen/src/pipeline.ts
+- [X] T025 [US2] Enforce strict mixed/legacy rejection in template validation path in packages/templates/src/presets/chat-story-v1/validation.ts
+- [X] T026 [US2] Enforce authorization checks and sanitized invalid payload failures on submission path in apps/editor/src/lib/lumen-client.ts
 
 **Checkpoint**: US2 independently enforces full cutover away from legacy versioned format.
 
@@ -97,17 +97,17 @@
 
 ### Tests for User Story 3
 
-- [ ] T027 [P] [US3] Add supported primitive/component fixture coverage in packages/lumen-jsx/src/jsx.contract.test.ts
-- [ ] T028 [US3] Add unsupported primitive/component diagnostic coverage in packages/lumen-jsx/src/jsx.contract.test.ts
-- [ ] T029 [P] [US3] Add deterministic output parity test for equivalent JSX inputs in packages/lumen/src/compile.parity.test.ts
+- [X] T027 [P] [US3] Add supported primitive/component fixture coverage in packages/lumen-jsx/src/jsx.contract.test.ts
+- [X] T028 [US3] Add unsupported primitive/component diagnostic coverage in packages/lumen-jsx/src/jsx.contract.test.ts
+- [X] T029 [P] [US3] Add deterministic output parity test for equivalent JSX inputs in packages/lumen/src/compile.parity.test.ts
 
 ### Implementation for User Story 3
 
-- [ ] T030 [US3] Implement required primitive mapping and composition constraint enforcement in packages/lumen-jsx/src/jsx.ts
-- [ ] T031 [US3] Update exported JSX components/primitives contract surface in packages/lumen-jsx/src/components/index.ts
-- [ ] T032 [US3] Implement typed compile diagnostic envelope and failure classes in packages/lumen-jsx/src/jsx.ts
-- [ ] T033 [US3] Align JSX runtime emission with deterministic canonical output ordering in packages/lumen-jsx/src/jsx-runtime.ts
-- [ ] T034 [US3] Update template JSX usage to conform to rewritten primitive/component contracts in packages/templates/src/presets/chat-story-v1/index.tsx
+- [X] T030 [US3] Implement required primitive mapping and composition constraint enforcement in packages/lumen-jsx/src/jsx.ts
+- [X] T031 [US3] Update exported JSX components/primitives contract surface in packages/lumen-jsx/src/components/index.ts
+- [X] T032 [US3] Implement typed compile diagnostic envelope and failure classes in packages/lumen-jsx/src/jsx.ts
+- [X] T033 [US3] Align JSX runtime emission with deterministic canonical output ordering in packages/lumen-jsx/src/jsx-runtime.ts
+- [X] T034 [US3] Update template JSX usage to conform to rewritten primitive/component contracts in packages/templates/src/presets/chat-story-v1/index.tsx
 
 **Checkpoint**: US3 independently delivers JSX rewrite parity, diagnostics, and determinism.
 
@@ -117,9 +117,9 @@
 
 **Purpose**: Final cross-story hardening and validation.
 
-- [ ] T035 [P] Add export latency regression assertion (p95 within 5% baseline) in packages/lumen/src/compile.parity.test.ts
-- [ ] T036 Map SC-001..SC-006 success criteria to concrete test evidence in specs/001-lumen-json-migration/quickstart.md
-- [ ] T037 Run targeted workspace test commands from quickstart in specs/001-lumen-json-migration/quickstart.md
+- [X] T035 [P] Add export latency regression assertion (p95 within 5% baseline) in packages/lumen/src/compile.parity.test.ts
+- [X] T036 Map SC-001..SC-006 success criteria to concrete test evidence in specs/001-lumen-json-migration/quickstart.md
+- [X] T037 Run targeted workspace test commands from quickstart in specs/001-lumen-json-migration/quickstart.md
 
 ---
 
