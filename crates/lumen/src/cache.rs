@@ -100,7 +100,9 @@ impl AssetCache {
 
 #[derive(Debug, Default)]
 pub struct MemoCache {
-    entries: HashMap<(String, u32, u32, u64, u64), CachedBitmap>,
+    /// Two-level map: cache_id -> (width, height, request_hash, signature_hash) -> bitmap.
+    /// This avoids allocating a String on every `get` lookup.
+    entries: HashMap<String, HashMap<(u32, u32, u64, u64), CachedBitmap>>,
 }
 
 impl MemoCache {
@@ -117,13 +119,8 @@ impl MemoCache {
         signature_hash: u64,
     ) -> Option<CachedBitmap> {
         self.entries
-            .get(&(
-                cache_id.to_string(),
-                width,
-                height,
-                request_hash,
-                signature_hash,
-            ))
+            .get(cache_id)?
+            .get(&(width, height, request_hash, signature_hash))
             .cloned()
     }
 
@@ -136,10 +133,10 @@ impl MemoCache {
         signature_hash: u64,
         bitmap: CachedBitmap,
     ) {
-        self.entries.insert(
-            (cache_id, width, height, request_hash, signature_hash),
-            bitmap,
-        );
+        self.entries
+            .entry(cache_id)
+            .or_default()
+            .insert((width, height, request_hash, signature_hash), bitmap);
     }
 }
 
