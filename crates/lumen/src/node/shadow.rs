@@ -44,6 +44,10 @@ impl NodeEval for Shadow {
         inputs: &NodeInputs,
         _ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
+        if self.color[3] == 0 {
+            return Ok(PortValue::RasterFrame(inputs.get_raster("source")?.clone()));
+        }
+
         let (bytes, width, height) = inputs.get_raster("source")?.clone().into_parts();
 
         if width == 0 || height == 0 {

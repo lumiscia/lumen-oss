@@ -48,9 +48,13 @@ impl NodeEval for Blur {
         inputs: &NodeInputs,
         _ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
+        if self.is_noop() {
+            return Ok(PortValue::RasterFrame(inputs.get_raster("source")?.clone()));
+        }
+
         let (bytes, width, height) = inputs.get_raster("source")?.clone().into_parts();
 
-        if self.is_noop() || width == 0 || height == 0 {
+        if width == 0 || height == 0 {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(bytes, width, height)));
         }
 

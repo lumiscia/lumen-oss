@@ -70,13 +70,13 @@ impl NodeEval for Transform {
         inputs: &NodeInputs,
         _ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
+        if self.is_identity() {
+            return Ok(PortValue::RasterFrame(inputs.get_raster("source")?.clone()));
+        }
+
         let (bytes, width, height) = inputs.get_raster("source")?.clone().into_parts();
 
         if width == 0 || height == 0 {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(bytes, width, height)));
-        }
-
-        if self.is_identity() {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(bytes, width, height)));
         }
 

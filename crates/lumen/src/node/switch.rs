@@ -104,11 +104,11 @@ impl NodeEval for Switch {
         inputs: &NodeInputs,
         ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
-        let selected_index = self.sorted_indices().into_iter().find(|index| {
-            self.map
-                .get(index)
-                .is_some_and(|frame_range| frame_range.contains(&ctx.frame))
-        });
+        let selected_index = self
+            .map
+            .iter()
+            .filter_map(|(index, frame_range)| frame_range.contains(&ctx.frame).then_some(*index))
+            .min();
 
         let Some(index) = selected_index else {
             return Self::transparent_output(ctx);

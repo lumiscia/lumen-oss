@@ -64,6 +64,10 @@ impl NodeEval for Merge {
         inputs: &NodeInputs,
         _ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
+        if self.opacity <= 0.0 {
+            return Ok(PortValue::RasterFrame(inputs.get_raster("base")?.clone()));
+        }
+
         let (base_bytes, base_w, base_h) = inputs.get_raster("base")?.clone().into_parts();
         let (overlay_bytes, overlay_w, overlay_h) =
             inputs.get_raster("overlay")?.clone().into_parts();

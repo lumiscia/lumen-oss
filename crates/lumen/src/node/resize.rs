@@ -58,10 +58,16 @@ impl NodeEval for Resize {
         inputs: &NodeInputs,
         _ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
-        let (bytes, src_w, src_h) = inputs.get_raster("source")?.clone().into_parts();
-
+        let source = inputs.get_raster("source")?;
+        let (src_w, src_h) = source.dimensions();
         let dst_w = self.width.max(1);
         let dst_h = self.height.max(1);
+
+        if src_w == dst_w && src_h == dst_h {
+            return Ok(PortValue::RasterFrame(source.clone()));
+        }
+
+        let (bytes, src_w, src_h) = source.clone().into_parts();
 
         if src_w == 0 || src_h == 0 {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(

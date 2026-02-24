@@ -45,12 +45,25 @@ impl NodeEval for Crop {
         inputs: &NodeInputs,
         _ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
-        let (bytes, src_w, src_h) = inputs.get_raster("source")?.clone().into_parts();
+        let source = inputs.get_raster("source")?;
+        let (src_w, src_h) = source.dimensions();
 
         let x0 = (self.x as i64).clamp(0, src_w as i64) as i32;
         let y0 = (self.y as i64).clamp(0, src_h as i64) as i32;
         let x1 = ((self.x as i64) + (self.width as i64)).clamp(0, src_w as i64) as i32;
         let y1 = ((self.y as i64) + (self.height as i64)).clamp(0, src_h as i64) as i32;
+
+        if x1 > x0
+            && y1 > y0
+            && x0 == 0
+            && y0 == 0
+            && x1 == src_w as i32
+            && y1 == src_h as i32
+        {
+            return Ok(PortValue::RasterFrame(source.clone()));
+        }
+
+        let (bytes, src_w, src_h) = source.clone().into_parts();
 
         if x1 <= x0 || y1 <= y0 {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
