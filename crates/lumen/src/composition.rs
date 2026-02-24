@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    animation::KeyframeTrack,
+    animation::{AnimatableType, Extrapolation, InterpolationMode, KeyframeTrack},
     capability::RuntimeCapabilityProfile,
     error::{LumenError, PropertyError, Warning},
     expr::{Expression, expression_value_to_property_value},
@@ -158,7 +158,23 @@ impl Composition {
             }
 
             let mut seen_frames = HashSet::new();
+            let mut previous_frame = None;
             for key in &track.keys {
+                if let Some(previous) = previous_frame
+                    && key.time_frame < previous
+                {
+                    errors.push(
+                        PropertyError::InvalidType {
+                            node_id: track.node_id,
+                            property_path: track.property_path.0.clone(),
+                            expected: "sorted ascending frame times",
+                            actual: "unsorted frame time",
+                        }
+                        .into(),
+                    );
+                }
+                previous_frame = Some(key.time_frame);
+
                 if !seen_frames.insert(key.time_frame) {
                     errors.push(
                         PropertyError::InvalidType {
@@ -166,6 +182,23 @@ impl Composition {
                             property_path: track.property_path.0.clone(),
                             expected: "unique frame times",
                             actual: "duplicate frame time",
+                        }
+                        .into(),
+                    );
+                }
+
+                if matches!(key.interpolation, InterpolationMode::Linear)
+                    && !matches!(
+                        track.value_type,
+                        AnimatableType::Float | AnimatableType::Int | AnimatableType::Color
+                    )
+                {
+                    errors.push(
+                        PropertyError::InvalidType {
+                            node_id: track.node_id,
+                            property_path: track.property_path.0.clone(),
+                            expected: "linear interpolation on Float, Int, or Color track",
+                            actual: "unsupported linear interpolation type",
                         }
                         .into(),
                     );
@@ -242,6 +275,33 @@ impl Composition {
             .iter()
             .find(|track| track.node_id == node_id && track.property_path.0 == property_path)
         {
+            if track.keys.len() > 1 {
+                let node =
+                    self.graph
+                        .nodes
+                        .get(&node_id)
+                        .ok_or(PropertyError::MissingProperty {
+                            node_id,
+                            property_path: property_path.to_string(),
+                        })?;
+
+                if let Some(first_key) = track.keys.first()
+                    && frame <= first_key.time_frame
+                    && matches!(track.before_extrapolation, Extrapolation::DefaultValue)
+                    && let Some(default_value) = static_property_value(&node.kind, property_path)
+                {
+                    return Ok(default_value);
+                }
+
+                if let Some(last_key) = track.keys.last()
+                    && frame >= last_key.time_frame
+                    && matches!(track.after_extrapolation, Extrapolation::DefaultValue)
+                    && let Some(default_value) = static_property_value(&node.kind, property_path)
+                {
+                    return Ok(default_value);
+                }
+            }
+
             return track.sample(frame);
         }
 

@@ -107,11 +107,17 @@ impl KeyframeTrack {
         }
 
         if frame <= self.keys[0].time_frame {
-            return Ok(self.keys[0].value.clone());
+            return Ok(match self.before_extrapolation {
+                Extrapolation::Hold => self.keys[0].value.clone(),
+                Extrapolation::DefaultValue => self.default_value(),
+            });
         }
 
         if frame >= self.keys[self.keys.len() - 1].time_frame {
-            return Ok(self.keys[self.keys.len() - 1].value.clone());
+            return Ok(match self.after_extrapolation {
+                Extrapolation::Hold => self.keys[self.keys.len() - 1].value.clone(),
+                Extrapolation::DefaultValue => self.default_value(),
+            });
         }
 
         let mut right_index = 1usize;
@@ -132,6 +138,17 @@ impl KeyframeTrack {
             (frame - left.time_frame) as f64 / range
         };
         Ok(interpolate_property_value(&left.value, &right.value, t))
+    }
+
+    fn default_value(&self) -> PropertyValue {
+        match self.value_type {
+            AnimatableType::Float => PropertyValue::Float(0.0),
+            AnimatableType::Int => PropertyValue::Int(0),
+            AnimatableType::Boolean => PropertyValue::Bool(false),
+            AnimatableType::Color => PropertyValue::Color([0, 0, 0, 0]),
+            AnimatableType::Vector2 => PropertyValue::Vector2(0.0, 0.0),
+            AnimatableType::String => PropertyValue::String(String::new()),
+        }
     }
 }
 

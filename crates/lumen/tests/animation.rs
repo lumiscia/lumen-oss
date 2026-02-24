@@ -99,6 +99,36 @@ fn hold_extrapolation_before_and_after_key_range() {
 }
 
 #[test]
+fn default_value_extrapolation_uses_property_static_default() {
+    let (mut composition, transform) = base_composition();
+
+    let mut track = KeyframeTrack::new(
+        TrackId(31),
+        transform,
+        PropertyPath::new("translate_x"),
+        AnimatableType::Float,
+    );
+    track.before_extrapolation = Extrapolation::DefaultValue;
+    track.after_extrapolation = Extrapolation::DefaultValue;
+    track.set_key(10, PropertyValue::Float(10.0), InterpolationMode::Linear);
+    track.set_key(20, PropertyValue::Float(20.0), InterpolationMode::Linear);
+    composition.add_track(track);
+
+    assert_eq!(
+        composition
+            .sample_property_without_expressions(transform, "translate_x", 0)
+            .expect("before range sample"),
+        PropertyValue::Float(0.0)
+    );
+    assert_eq!(
+        composition
+            .sample_property_without_expressions(transform, "translate_x", 30)
+            .expect("after range sample"),
+        PropertyValue::Float(0.0)
+    );
+}
+
+#[test]
 fn single_key_track_returns_same_value_for_all_frames() {
     let mut track = KeyframeTrack::new(
         TrackId(4),
@@ -119,6 +149,67 @@ fn single_key_track_returns_same_value_for_all_frames() {
     assert_eq!(
         track.sample(90).expect("sample 90"),
         PropertyValue::Float(0.25)
+    );
+}
+
+#[test]
+fn unsorted_keys_and_invalid_linear_boolean_tracks_are_rejected() {
+    let (mut composition, transform) = base_composition();
+
+    let unsorted_track = KeyframeTrack {
+        id: TrackId(40),
+        node_id: transform,
+        property_path: PropertyPath::new("translate_x"),
+        value_type: AnimatableType::Float,
+        keys: vec![
+            Keyframe {
+                time_frame: 10,
+                value: PropertyValue::Float(10.0),
+                interpolation: InterpolationMode::Linear,
+            },
+            Keyframe {
+                time_frame: 5,
+                value: PropertyValue::Float(5.0),
+                interpolation: InterpolationMode::Linear,
+            },
+        ],
+        before_extrapolation: Extrapolation::Hold,
+        after_extrapolation: Extrapolation::Hold,
+    };
+    composition.add_track(unsorted_track);
+
+    let mut invalid_interpolation_track = KeyframeTrack::new(
+        TrackId(41),
+        transform,
+        PropertyPath::new("translate_y"),
+        AnimatableType::Boolean,
+    );
+    invalid_interpolation_track.set_key(0, PropertyValue::Bool(false), InterpolationMode::Linear);
+    invalid_interpolation_track.set_key(10, PropertyValue::Bool(true), InterpolationMode::Linear);
+    composition.add_track(invalid_interpolation_track);
+
+    let errors = composition
+        .validate_structure()
+        .expect_err("validation should reject unsorted keys and invalid interpolation");
+    let has_unsorted = errors.iter().any(|error| {
+        matches!(
+            error,
+            lumen::LumenError::Property(lumen::error::PropertyError::InvalidType { actual, .. })
+                if *actual == "unsorted frame time"
+        )
+    });
+    let has_invalid_linear_type = errors.iter().any(|error| {
+        matches!(
+            error,
+            lumen::LumenError::Property(lumen::error::PropertyError::InvalidType { actual, .. })
+                if *actual == "unsupported linear interpolation type"
+        )
+    });
+
+    assert!(has_unsorted, "expected unsorted-frame validation error");
+    assert!(
+        has_invalid_linear_type,
+        "expected invalid-linear-interpolation validation error"
     );
 }
 
