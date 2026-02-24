@@ -14,6 +14,8 @@ pub mod render;
 pub mod sink;
 pub mod surface_pool;
 
+pub(crate) mod backend;
+
 #[cfg(feature = "ffmpeg")]
 pub mod ffmpeg;
 

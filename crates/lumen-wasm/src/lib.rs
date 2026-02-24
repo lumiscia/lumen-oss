@@ -70,6 +70,7 @@ impl Default for Registry {
 struct RendererSession {
     composition: Composition,
     asset_cache: SharedAssetCache,
+    surface_pool: Arc<SurfacePool>,
     last_frame: Vec<u8>,
     last_frame_requirements: Vec<u8>,
     last_error: Vec<u8>,
@@ -81,6 +82,7 @@ impl RendererSession {
             composition,
             asset_cache: Arc::new(RwLock::new(AssetCache::new())),
             last_frame: Vec::new(),
+            surface_pool: Arc::new(SurfacePool::new()),
             last_frame_requirements: EMPTY_FRAME_REQUIREMENTS.to_vec(),
             last_error: Vec::new(),
         }
@@ -404,11 +406,10 @@ fn render_into_session(
         has_threading: false,
         sink_types: vec![lumen::SinkType::Bitmap],
     };
-    let surface_pool = Arc::new(SurfacePool::new());
     let media_store: Arc<dyn MediaStore> = media_store;
     let mut ctx = RenderContext::new(
         &session.composition,
-        Arc::clone(&surface_pool),
+        Arc::clone(&session.surface_pool),
         Arc::clone(&session.asset_cache),
         media_store,
         capability_profile,

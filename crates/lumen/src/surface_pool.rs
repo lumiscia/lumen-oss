@@ -5,7 +5,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::error::{LumenError, RenderError};
+use crate::{
+    backend::SurfaceFactory,
+    error::{LumenError, RenderError},
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SurfacePoolStats {
@@ -47,6 +50,7 @@ impl SurfacePoolStats {
 pub struct SurfacePool {
     available: Mutex<HashMap<(u32, u32), Vec<skia_safe::Surface>>>,
     stats: Mutex<SurfacePoolStats>,
+    backend: Mutex<SurfaceFactory>,
 }
 
 impl SurfacePool {
@@ -54,6 +58,7 @@ impl SurfacePool {
         Self {
             available: Mutex::new(HashMap::new()),
             stats: Mutex::new(SurfacePoolStats::default()),
+            backend: Mutex::new(SurfaceFactory::new()),
         }
     }
 
@@ -78,9 +83,7 @@ impl SurfacePool {
             });
         }
 
-        let surface = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))
-            .ok_or(RenderError::SurfaceAllocation { width, height })?;
-
+        let surface = self.allocate_surface(width, height)?;
         if let Ok(mut stats) = self.stats.lock() {
             stats.fresh_allocations = stats.fresh_allocations.saturating_add(1);
             let bytes = u64::from(width)
@@ -95,6 +98,14 @@ impl SurfacePool {
             width,
             height,
         })
+    }
+
+    fn allocate_surface(&self, width: u32, height: u32) -> Result<skia_safe::Surface, LumenError> {
+        self.backend
+            .lock()
+            .ok()
+            .and_then(|mut backend| backend.create_surface(width, height).ok())
+            .ok_or(RenderError::SurfaceAllocation { width, height }.into())
     }
 
     pub fn stats(&self) -> SurfacePoolStats {
