@@ -130,7 +130,7 @@
 
 ### Tests for User Story 4 (REQUIRED for behavior changes) ⚠️
 
-- [ ] T031 [P] [US4] Unit test in `apps/editor/tests/serialization.test.ts` — test `serializeComposition(store)` produces valid `JsonComposition` with all required fields, test round-trip: serialize → deserialize → re-serialize produces identical JSON
+- [x] T031 [P] [US4] Unit test in `apps/editor/tests/serialization.test.ts` — test `serializeComposition(store)` produces valid `JsonComposition` with all required fields, test round-trip: serialize → deserialize → re-serialize produces identical JSON
 
 ### Implementation for User Story 4
 
@@ -140,7 +140,7 @@
 - [ ] T035 [US4] Create preview Zustand store in `apps/editor/src/store/preview.ts` — state: `workerReady`, `isLoading`, `lastRenderTime`, `resolution`, `error`. Updated by `usePreview` hook from worker messages.
 - [ ] T036 [US4] Create preview panel component in `apps/editor/src/components/preview-panel.tsx` — canvas element (receives OffscreenCanvas transfer), play/pause button, frame counter, render time display, resolution display. Uses `usePreview` hook.
 - [ ] T037 [US4] Create timeline bar component in `apps/editor/src/components/timeline-bar.tsx` — frame scrubber (range input or draggable playhead), current frame / total frames display. Wired to timeline store.
-- [ ] T038 [US4] Create serialization utilities in `apps/editor/src/lib/serialization.ts` — `serializeComposition(store)`: reads composition store, converts React Flow nodes/edges to `JsonComposition` format. `deserializeComposition(json)`: parses JSON, populates composition store with nodes/edges/properties. `importFromFile()` / `exportToFile()` for file I/O.
+- [x] T038 [US4] Create serialization utilities in `apps/editor/src/lib/serialization.ts` — `serializeComposition(store)`: reads composition store, converts React Flow nodes/edges to `JsonComposition` format. `deserializeComposition(json)`: parses JSON, populates composition store with nodes/edges/properties. `importFromFile()` / `exportToFile()` for file I/O.
 - [ ] T039 [US4] Wire preview into `apps/editor/src/App.tsx` — add preview panel and timeline bar to layout, connect composition store changes to preview worker updates (version-stamped to avoid stale renders).
 
 **Checkpoint**: Full interactive loop: edit graph → preview updates automatically → play/pause works → timeline scrubbing shows frames → stats displayed
