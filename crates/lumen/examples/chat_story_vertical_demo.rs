@@ -536,6 +536,7 @@ fn build_chat_story_composition() -> Result<Composition> {
         NodeKind::Shadow(Shadow {
             offset_x: 0,
             offset_y: 10,
+            blur_radius: 0.0,
             color: [0, 0, 0, 70],
         }),
     ));

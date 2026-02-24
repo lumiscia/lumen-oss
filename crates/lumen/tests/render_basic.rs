@@ -572,6 +572,7 @@ fn shadow_preserves_source_domain_metadata() {
     let output = Shadow {
         offset_x: 1,
         offset_y: 1,
+        blur_radius: 0.0,
         color: [0, 0, 0, 255],
     }
     .evaluate(&inputs, &mut ctx)
@@ -583,6 +584,98 @@ fn shadow_preserves_source_domain_metadata() {
     assert_eq!(frame.format_rect, RectI::new(-10, -2, 2, 1));
     assert_eq!(frame.data_rect, RectI::new(-10, -2, 2, 1));
     assert_eq!(frame.alpha_mode, AlphaMode::Unpremultiplied);
+}
+
+#[test]
+fn shadow_blur_radius_changes_shadow_spread() {
+    let mut pixels = vec![0u8; 5 * 5 * 4];
+    let center = ((2 * 5) + 2) * 4;
+    pixels[center..center + 4].copy_from_slice(&[255, 255, 255, 255]);
+
+    let mut inputs = NodeInputs::new();
+    inputs.insert(
+        "source",
+        PortValue::RasterFrame(RasterFrame::Bitmap(BitmapFrame::with_domain(
+            Arc::new(pixels),
+            5,
+            5,
+            RectI::from_size(5, 5),
+            RectI::from_size(5, 5),
+        ))),
+    );
+
+    let mut sharp_ctx = test_context(5, 5);
+    let sharp = Shadow {
+        offset_x: 0,
+        offset_y: 0,
+        blur_radius: 0.0,
+        color: [0, 0, 0, 255],
+    }
+    .evaluate(&inputs, &mut sharp_ctx)
+    .expect("sharp shadow should evaluate");
+
+    let mut blurred_ctx = test_context(5, 5);
+    let blurred = Shadow {
+        offset_x: 0,
+        offset_y: 0,
+        blur_radius: 2.0,
+        color: [0, 0, 0, 255],
+    }
+    .evaluate(&inputs, &mut blurred_ctx)
+    .expect("blurred shadow should evaluate");
+
+    let PortValue::RasterFrame(RasterFrame::Bitmap(sharp_frame)) = sharp else {
+        panic!("expected bitmap from sharp shadow");
+    };
+    let PortValue::RasterFrame(RasterFrame::Bitmap(blurred_frame)) = blurred else {
+        panic!("expected bitmap from blurred shadow");
+    };
+
+    let sharp_covered = sharp_frame
+        .pixels
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] > 0)
+        .count();
+    let blurred_covered = blurred_frame
+        .pixels
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] > 0)
+        .count();
+
+    assert!(
+        blurred_covered > sharp_covered,
+        "blur radius should increase non-transparent shadow coverage"
+    );
+}
+
+#[test]
+fn resize_upscale_fills_requested_output_space() {
+    let mut graph = Graph::new();
+    let source = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::SolidColor(SolidColor {
+            color: [220, 30, 40, 255],
+            width: Some(320),
+            height: Some(180),
+        }),
+    ));
+    let resize = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::Resize(Resize {
+            width: 640,
+            height: 360,
+            mode: ResizeMode::Stretch,
+            sampling: ResizeSampling::Nearest,
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    connect(&mut graph, source, resize, "source");
+    connect(&mut graph, resize, output, "source");
+
+    let (bytes, width, height) = expect_bitmap(render_single(graph, 640, 360));
+    assert_eq!((width, height), (640, 360));
+    let sample_idx = ((100usize * width as usize) + 500usize) * 4;
+    assert_eq!(&bytes[sample_idx..sample_idx + 4], &[220, 30, 40, 255]);
 }
 
 #[test]

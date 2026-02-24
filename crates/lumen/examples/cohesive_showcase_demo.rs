@@ -794,6 +794,7 @@ fn build_feature_composition() -> Result<(Composition, Vec<&'static str>)> {
         NodeKind::Shadow(Shadow {
             offset_x: 18,
             offset_y: 14,
+            blur_radius: 0.0,
             color: [0, 0, 0, 120],
         }),
     );
@@ -1058,6 +1059,7 @@ fn build_feature_composition() -> Result<(Composition, Vec<&'static str>)> {
         NodeKind::Shadow(Shadow {
             offset_x: -10,
             offset_y: 10,
+            blur_radius: 0.0,
             color: [0, 0, 0, 90],
         }),
     );

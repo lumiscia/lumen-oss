@@ -28,6 +28,7 @@ pub struct Shadow {
     pub offset_x: i32,
     pub offset_y: i32,
     pub color: [u8; 4],
+    pub blur_radius: f32,
 }
 
 impl NodeEval for Shadow {
@@ -74,10 +75,11 @@ impl NodeEval for Shadow {
         let dx = self.offset_x as f32;
         let dy = self.offset_y as f32;
 
+        let sigma = self.blur_radius.max(0.0);
         let output = render_with_skia(width, height, Some(ctx), |canvas| {
             let filter = image_filters::drop_shadow_only(
                 (dx, dy),
-                (0.0, 0.0),
+                (sigma, sigma),
                 shadow_color,
                 None,
                 None,
