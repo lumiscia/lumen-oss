@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    cache::{AssetCache, NodeOutputCache},
+    cache::{AssetCache, CachedBitmap, NodeOutputCache},
     capability::RuntimeCapabilityProfile,
     composition::Composition,
     error::{GraphValidationError, LumenError, PropertyError, RenderError},
@@ -298,7 +298,9 @@ impl Composition {
             && let Some(cached) = cache.memo_get(&memo.cache_id, ctx.width, ctx.height, signature)
         {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                cached, ctx.width, ctx.height,
+                cached.pixels,
+                cached.width,
+                cached.height,
             )));
         }
 
@@ -323,7 +325,11 @@ impl Composition {
                 width,
                 height,
                 signature,
-                Arc::clone(&pixels),
+                CachedBitmap {
+                    pixels: Arc::clone(&pixels),
+                    width,
+                    height,
+                },
             );
         }
 

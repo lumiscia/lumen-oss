@@ -76,8 +76,8 @@ impl NodeEval for Merge {
             None => None,
         };
 
-        let out_w = base_w.min(overlay_w);
-        let out_h = base_h.min(overlay_h);
+        let out_w = base_w;
+        let out_h = base_h;
         if out_w == 0 || out_h == 0 {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
                 Arc::new(Vec::new()),
@@ -89,21 +89,26 @@ impl NodeEval for Merge {
         let base_image = make_skia_image(&base_bytes, base_w, base_h);
         let overlay_image = make_skia_image(&overlay_bytes, overlay_w, overlay_h);
 
-        let (base_image, overlay_image) = match (base_image, overlay_image) {
-            (Some(b), Some(o)) => (b, o),
-            _ => {
-                return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                    Arc::new(vec![0u8; (out_w as usize) * (out_h as usize) * 4]),
-                    out_w,
-                    out_h,
-                )));
-            }
+        let Some(base_image) = base_image else {
+            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                Arc::new(vec![0u8; (out_w as usize) * (out_h as usize) * 4]),
+                out_w,
+                out_h,
+            )));
+        };
+        let Some(overlay_image) = overlay_image else {
+            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                base_bytes, base_w, base_h,
+            )));
         };
 
         let opacity = self.opacity.clamp(0.0, 1.0);
         let skia_blend: skia_safe::BlendMode = self.blend_mode.into();
 
-        let mask_image = mask.and_then(|(mb, mw, mh)| make_skia_image(&mb, mw, mh));
+        let mask_image = match mask {
+            Some((mb, mw, mh)) => make_skia_image(&mb, mw, mh),
+            None => None,
+        };
 
         let merged = render_with_skia(out_w, out_h, |canvas| {
             canvas.draw_image(&base_image, (0.0, 0.0), None);

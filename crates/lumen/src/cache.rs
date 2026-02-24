@@ -25,6 +25,13 @@ pub struct VideoMetadata {
     pub frame_count: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct CachedBitmap {
+    pub pixels: Arc<Vec<u8>>,
+    pub width: u32,
+    pub height: u32,
+}
+
 impl AssetCache {
     pub fn new() -> Self {
         Self::default()
@@ -65,7 +72,7 @@ impl AssetCache {
         width: u32,
         height: u32,
         signature_hash: u64,
-    ) -> Option<Arc<Vec<u8>>> {
+    ) -> Option<CachedBitmap> {
         self.memo_cache.get(cache_id, width, height, signature_hash)
     }
 
@@ -75,7 +82,7 @@ impl AssetCache {
         width: u32,
         height: u32,
         signature_hash: u64,
-        bitmap: Arc<Vec<u8>>,
+        bitmap: CachedBitmap,
     ) {
         self.memo_cache
             .insert(cache_id.into(), width, height, signature_hash, bitmap);
@@ -84,7 +91,7 @@ impl AssetCache {
 
 #[derive(Debug, Default)]
 pub struct MemoCache {
-    entries: HashMap<(String, u32, u32, u64), Arc<Vec<u8>>>,
+    entries: HashMap<(String, u32, u32, u64), CachedBitmap>,
 }
 
 impl MemoCache {
@@ -98,7 +105,7 @@ impl MemoCache {
         width: u32,
         height: u32,
         signature_hash: u64,
-    ) -> Option<Arc<Vec<u8>>> {
+    ) -> Option<CachedBitmap> {
         self.entries
             .get(&(cache_id.to_string(), width, height, signature_hash))
             .cloned()
@@ -110,7 +117,7 @@ impl MemoCache {
         width: u32,
         height: u32,
         signature_hash: u64,
-        bitmap: Arc<Vec<u8>>,
+        bitmap: CachedBitmap,
     ) {
         self.entries
             .insert((cache_id, width, height, signature_hash), bitmap);

@@ -86,8 +86,8 @@ impl NodeEval for Boolean {
             )));
         };
 
-        let out_w = source_w.min(mask_w);
-        let out_h = source_h.min(mask_h);
+        let out_w = source_w;
+        let out_h = source_h;
         if out_w == 0 || out_h == 0 {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
                 Arc::new(Vec::new()),

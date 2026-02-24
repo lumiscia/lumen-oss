@@ -9,10 +9,10 @@ use lumen::{
     RuntimeCapabilityProfile, SurfacePool, TimelineSettings, Warning,
     media::{MediaStore, MockImageResolver, MockMediaStore, MockVideoResolver},
     node::{
-        Node, ShapeGeometry, blur::Blur, frame_hold::FrameHold, media_in::LoopMode,
-        media_in::MediaIn, media_in::MediaInKind, media_output::MediaOutput, merge::Merge,
-        shape::Shape, shape_renderer::ShapeRenderer, solid_color::SolidColor, switch::Switch,
-        transform::Transform,
+        Node, ShapeGeometry, blur::Blur, boolean::Boolean, frame_hold::FrameHold,
+        media_in::LoopMode, media_in::MediaIn, media_in::MediaInKind, media_output::MediaOutput,
+        merge::Merge, shape::Shape, shape_renderer::ShapeRenderer, solid_color::SolidColor,
+        switch::Switch, transform::Transform,
     },
 };
 
@@ -199,6 +199,93 @@ fn merge_with_half_opacity_blends_base_and_overlay() {
         assert_eq!(chunk[1], 0);
         assert!((120..=135).contains(&chunk[2]));
         assert_eq!(chunk[3], 255);
+    }
+}
+
+#[test]
+fn merge_with_smaller_overlay_preserves_base_dimensions() {
+    let mut graph = Graph::new();
+    let base = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::SolidColor(SolidColor {
+            color: [255, 0, 0, 255],
+            width: Some(2),
+            height: Some(2),
+        }),
+    ));
+    let overlay = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::SolidColor(SolidColor {
+            color: [0, 255, 0, 255],
+            width: Some(1),
+            height: Some(1),
+        }),
+    ));
+    let merge = graph.add_node(Node::new(NodeId(0), NodeKind::Merge(Merge::default())));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+
+    connect(&mut graph, base, merge, "base");
+    connect(&mut graph, overlay, merge, "overlay");
+    connect(&mut graph, merge, output, "source");
+
+    let (bytes, width, height) = expect_bitmap(render_single(graph, 2, 2));
+    assert_eq!((width, height), (2, 2));
+    assert_eq!(&bytes[0..4], &[0, 255, 0, 255]);
+    assert_eq!(&bytes[4..8], &[255, 0, 0, 255]);
+    assert_eq!(&bytes[8..12], &[255, 0, 0, 255]);
+    assert_eq!(&bytes[12..16], &[255, 0, 0, 255]);
+}
+
+#[test]
+fn boolean_with_smaller_mask_preserves_source_dimensions() {
+    let mut graph = Graph::new();
+    let source = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::SolidColor(SolidColor {
+            color: [10, 20, 30, 255],
+            width: Some(2),
+            height: Some(1),
+        }),
+    ));
+    let mask = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::SolidColor(SolidColor {
+            color: [255, 255, 255, 255],
+            width: Some(1),
+            height: Some(1),
+        }),
+    ));
+    let boolean = graph.add_node(Node::new(NodeId(0), NodeKind::Boolean(Boolean::default())));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+
+    connect(&mut graph, source, boolean, "source");
+    connect(&mut graph, mask, boolean, "mask");
+    connect(&mut graph, boolean, output, "source");
+
+    let (bytes, width, height) = expect_bitmap(render_single(graph, 2, 1));
+    assert_eq!((width, height), (2, 1));
+    assert_eq!(&bytes[0..4], &[10, 20, 30, 255]);
+}
+
+#[test]
+fn media_output_pads_smaller_source_to_render_dimensions() {
+    let mut graph = Graph::new();
+    let source = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::SolidColor(SolidColor {
+            color: [12, 34, 56, 255],
+            width: Some(1),
+            height: Some(1),
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    connect(&mut graph, source, output, "source");
+
+    let (bytes, width, height) = expect_bitmap(render_single(graph, 2, 2));
+    assert_eq!((width, height), (2, 2));
+    assert_eq!(&bytes[0..4], &[12, 34, 56, 255]);
+    for chunk in bytes[4..].chunks_exact(4) {
+        assert_eq!(chunk, &[0, 0, 0, 0]);
     }
 }
 
