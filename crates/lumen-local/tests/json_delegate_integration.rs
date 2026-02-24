@@ -1,21 +1,50 @@
-use lumen::json::{
-    JsonDelegateRequest, JsonDelegateStatus, convert_json_delegate, json_delegate_enabled,
+use lumen::{
+    Composition,
+    json::{JsonDelegateStatus, SCHEMA_REVISION},
 };
 
 #[test]
-fn lumen_local_uses_lumen_json_delegate_capability() {
-    assert!(json_delegate_enabled());
+fn lumen_local_parses_composition_json_delegate_payload() {
+    let payload = format!(
+        r#"{{
+  "schema_revision": "{SCHEMA_REVISION}",
+  "timeline": {{ "fps": 30.0, "duration_frames": 2 }},
+  "render_settings": {{
+    "width": 2,
+    "height": 1,
+    "background_color": [0, 0, 0, 0]
+  }},
+  "graph": {{
+    "nodes": [
+      {{
+        "id": 1,
+        "kind": {{
+          "type": "solid_color",
+          "color": [255, 0, 0, 255],
+          "width": 2,
+          "height": 1
+        }}
+      }},
+      {{
+        "id": 2,
+        "kind": {{ "type": "media_output" }}
+      }}
+    ],
+    "connections": [
+      {{
+        "from_node": 1,
+        "from_port": "output",
+        "to_node": 2,
+        "to_port": "source"
+      }}
+    ]
+  }}
+}}"#
+    );
 
-    let fixture =
-        std::fs::read_to_string("../lumen/tests/fixtures/json_delegate/sample_project.json")
-            .expect("read json delegate fixture");
+    let result = Composition::from_json(payload.as_str());
 
-    let result = convert_json_delegate(&JsonDelegateRequest {
-        input_payload: fixture,
-        input_schema_revision: "lumen_graph_v1".to_string(),
-        caller_context: "lumen-local-tests".to_string(),
-    });
-
-    assert!(matches!(result.status, JsonDelegateStatus::Success));
-    assert!(result.project_bundle.is_some());
+    assert_eq!(result.status, JsonDelegateStatus::Success);
+    assert!(result.errors.is_empty());
+    assert!(result.composition.is_some());
 }
