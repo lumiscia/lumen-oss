@@ -134,14 +134,14 @@
 
 ### Implementation for User Story 4
 
-- [ ] T032 [US4] Create preview Web Worker in `apps/editor/src/preview/worker.ts` — handles `WorkerInMessage` types: `init` (receive OffscreenCanvas), `loadComposition` (serialize JsonComposition, load into WASM renderer), `render` (render frame, return timing stats), `dispose`. Uses `LumenPreviewRenderer` from `@lumiscia/lumen`. Based on existing `apps/editor/src/preview-worker.ts` patterns.
-- [ ] T033 [US4] Create `usePreview` hook in `apps/editor/src/preview/use-preview.ts` — manages Worker lifecycle, sends composition updates (debounced), handles play/pause/scrub, tracks render stats. Subscribes to composition store changes.
-- [ ] T034 [US4] Create timeline Zustand store in `apps/editor/src/store/timeline.ts` — state: `currentFrame`, `isPlaying`, `fps` (from composition), `totalFrames` (from composition). Actions: `play`, `pause`, `setFrame`, `tick` (advance frame, loop at end).
-- [ ] T035 [US4] Create preview Zustand store in `apps/editor/src/store/preview.ts` — state: `workerReady`, `isLoading`, `lastRenderTime`, `resolution`, `error`. Updated by `usePreview` hook from worker messages.
-- [ ] T036 [US4] Create preview panel component in `apps/editor/src/components/preview-panel.tsx` — canvas element (receives OffscreenCanvas transfer), play/pause button, frame counter, render time display, resolution display. Uses `usePreview` hook.
-- [ ] T037 [US4] Create timeline bar component in `apps/editor/src/components/timeline-bar.tsx` — frame scrubber (range input or draggable playhead), current frame / total frames display. Wired to timeline store.
+- [x] T032 [US4] Create preview Web Worker in `apps/editor/src/preview/worker.ts` — handles `WorkerInMessage` types: `init` (receive OffscreenCanvas), `loadComposition` (serialize JsonComposition, load into WASM renderer), `render` (render frame, return timing stats), `dispose`. Uses `LumenPreviewRenderer` from `@lumiscia/lumen`. Based on existing `apps/editor/src/preview-worker.ts` patterns.
+- [x] T033 [US4] Create `usePreview` hook in `apps/editor/src/preview/use-preview.ts` — manages Worker lifecycle, sends composition updates (debounced), handles play/pause/scrub, tracks render stats. Subscribes to composition store changes.
+- [x] T034 [US4] Create timeline Zustand store in `apps/editor/src/store/timeline.ts` — state: `currentFrame`, `isPlaying`, `fps` (from composition), `totalFrames` (from composition). Actions: `play`, `pause`, `setFrame`, `tick` (advance frame, loop at end).
+- [x] T035 [US4] Create preview Zustand store in `apps/editor/src/store/preview.ts` — state: `workerReady`, `isLoading`, `lastRenderTime`, `resolution`, `error`. Updated by `usePreview` hook from worker messages.
+- [x] T036 [US4] Create preview panel component in `apps/editor/src/components/preview-panel.tsx` — canvas element (receives OffscreenCanvas transfer), play/pause button, frame counter, render time display, resolution display. Uses `usePreview` hook.
+- [x] T037 [US4] Create timeline bar component in `apps/editor/src/components/timeline-bar.tsx` — frame scrubber (range input or draggable playhead), current frame / total frames display. Wired to timeline store.
 - [x] T038 [US4] Create serialization utilities in `apps/editor/src/lib/serialization.ts` — `serializeComposition(store)`: reads composition store, converts React Flow nodes/edges to `JsonComposition` format. `deserializeComposition(json)`: parses JSON, populates composition store with nodes/edges/properties. `importFromFile()` / `exportToFile()` for file I/O.
-- [ ] T039 [US4] Wire preview into `apps/editor/src/App.tsx` — add preview panel and timeline bar to layout, connect composition store changes to preview worker updates (version-stamped to avoid stale renders).
+- [x] T039 [US4] Wire preview into `apps/editor/src/App.tsx` — add preview panel and timeline bar to layout, connect composition store changes to preview worker updates (version-stamped to avoid stale renders).
 
 **Checkpoint**: Full interactive loop: edit graph → preview updates automatically → play/pause works → timeline scrubbing shows frames → stats displayed
 
