@@ -159,7 +159,7 @@ impl NodeEval for Text {
         };
         paragraph.paint(canvas, (0.0, vertical_offset));
 
-        let bytes = read_surface_rgba(&mut surface, width, height);
+        let bytes = read_surface_rgba(&mut surface, width, height, Some(ctx));
         Ok(PortValue::RasterFrame(RasterFrame::bitmap(
             Arc::new(bytes),
             width,

@@ -43,7 +43,7 @@ impl NodeEval for Crop {
     fn evaluate(
         &self,
         inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
+        ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
         let source = inputs.get_raster("source")?;
         let (src_w, src_h) = source.dimensions();
@@ -103,9 +103,10 @@ impl NodeEval for Crop {
         }
 
         // Fallback: draw via canvas
-        let output = crate::node::pixel_utils::render_with_skia(out_w, out_h, |canvas| {
-            canvas.draw_image(&image, (-x0 as f32, -y0 as f32), None);
-        });
+        let output =
+            crate::node::pixel_utils::render_with_skia(out_w, out_h, Some(ctx), |canvas| {
+                canvas.draw_image(&image, (-x0 as f32, -y0 as f32), None);
+            });
 
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
             BitmapFrame::with_domain(Arc::new(output), out_w, out_h, output_rect, output_rect)

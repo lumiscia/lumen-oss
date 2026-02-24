@@ -42,7 +42,7 @@ impl NodeEval for Shadow {
     fn evaluate(
         &self,
         inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
+        ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
         if self.color[3] == 0 {
             return Ok(PortValue::RasterFrame(inputs.get_raster("source")?.clone()));
@@ -74,7 +74,7 @@ impl NodeEval for Shadow {
         let dx = self.offset_x as f32;
         let dy = self.offset_y as f32;
 
-        let output = render_with_skia(width, height, |canvas| {
+        let output = render_with_skia(width, height, Some(ctx), |canvas| {
             let filter = image_filters::drop_shadow_only(
                 (dx, dy),
                 (0.0, 0.0),

@@ -62,7 +62,7 @@ impl NodeEval for Merge {
     fn evaluate(
         &self,
         inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
+        ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
         if self.opacity <= 0.0 {
             return Ok(PortValue::RasterFrame(inputs.get_raster("base")?.clone()));
@@ -128,7 +128,7 @@ impl NodeEval for Merge {
             None => None,
         };
 
-        let merged = render_with_skia(out_w, out_h, |canvas| {
+        let merged = render_with_skia(out_w, out_h, Some(ctx), |canvas| {
             canvas.draw_image(&base_image, (0.0, 0.0), None);
 
             if let Some(ref mask_img) = mask_image {

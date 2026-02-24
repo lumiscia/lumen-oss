@@ -56,7 +56,7 @@ impl NodeEval for Resize {
     fn evaluate(
         &self,
         inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
+        ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
         let source = inputs.get_raster("source")?;
         let (src_w, src_h) = source.dimensions();
@@ -105,7 +105,7 @@ impl NodeEval for Resize {
             ResizeSampling::Linear => SamplingOptions::from(CubicResampler::catmull_rom()),
         };
 
-        let resized = render_with_skia(dst_w, dst_h, |canvas| {
+        let resized = render_with_skia(dst_w, dst_h, Some(ctx), |canvas| {
             canvas.draw_image_rect_with_sampling_options(
                 &image,
                 Some((&src_rect, skia_safe::canvas::SrcRectConstraint::Fast)),

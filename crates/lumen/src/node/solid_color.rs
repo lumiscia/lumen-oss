@@ -52,7 +52,7 @@ impl NodeEval for SolidColor {
         }
 
         let color = to_skia_color(self.color);
-        let bytes = render_with_skia(width, height, |canvas| {
+        let bytes = render_with_skia(width, height, Some(ctx), |canvas| {
             canvas.clear(color);
         });
 

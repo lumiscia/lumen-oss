@@ -69,7 +69,7 @@ impl NodeEval for Boolean {
     fn evaluate(
         &self,
         inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
+        ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
         let source = inputs.get_raster("source")?;
         let (source_bytes, source_w, source_h) = source.clone().into_parts();
@@ -128,7 +128,7 @@ impl NodeEval for Boolean {
         let mask_kind = self.mask_kind;
         let invert = self.invert;
 
-        let output = render_with_skia(out_w, out_h, |canvas| {
+        let output = render_with_skia(out_w, out_h, Some(ctx), |canvas| {
             canvas.draw_image(&source_image, (0.0, 0.0), None);
 
             // For luma masking, we need to convert the mask to a grayscale alpha.

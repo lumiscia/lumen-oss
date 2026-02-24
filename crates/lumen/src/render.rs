@@ -1,7 +1,7 @@
 //! Frame render orchestration and per-frame render context state.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     hash::{DefaultHasher, Hash, Hasher},
     sync::{
         Arc, RwLock,
@@ -19,7 +19,7 @@ use crate::{
     media::{MediaStore, VideoFrameResolver},
     node::{NodeId, NodeInputs, NodeKind, PortValue},
     raster::{RasterFrame, RectI},
-    surface_pool::SurfacePool,
+    surface_pool::{SurfacePool, SurfacePoolStats},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -58,6 +58,21 @@ impl RenderRequest {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RenderInstrumentation {
+    pub node_evaluations: u64,
+    pub node_output_cache_hits: u64,
+    pub node_output_cache_misses: u64,
+    pub memo_cache_hits: u64,
+    pub memo_cache_misses: u64,
+    pub pixel_allocation_bytes: u64,
+    pub surface_acquires: u64,
+    pub surface_reuses: u64,
+    pub surface_fresh_allocations: u64,
+    pub surface_fresh_allocation_bytes: u64,
+    pub surface_acquires_by_size: HashMap<(u32, u32), u64>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
@@ -88,6 +103,8 @@ pub struct RenderContext {
     pub capability_profile: RuntimeCapabilityProfile,
     pub cancellation: CancellationToken,
     pub graph_revision: u64,
+    pub instrumentation: RenderInstrumentation,
+    surface_pool_baseline: SurfacePoolStats,
 }
 
 impl RenderContext {
@@ -106,14 +123,42 @@ impl RenderContext {
             ),
             fps: composition.timeline.fps,
             duration_frames: composition.timeline.duration_frames,
-            surface_pool,
+            surface_pool: Arc::clone(&surface_pool),
             asset_cache,
             node_output_cache: NodeOutputCache::new(),
             media_store,
             capability_profile,
             cancellation: CancellationToken::new(),
             graph_revision: compute_graph_revision(composition),
+            instrumentation: RenderInstrumentation::default(),
+            surface_pool_baseline: surface_pool.stats(),
         }
+    }
+
+    pub fn reset_instrumentation(&mut self) {
+        self.instrumentation = RenderInstrumentation::default();
+        self.surface_pool_baseline = self.surface_pool.stats();
+    }
+
+    pub fn instrumentation_snapshot(&self) -> RenderInstrumentation {
+        let mut snapshot = self.instrumentation.clone();
+        let surface_delta = self
+            .surface_pool
+            .stats()
+            .delta_from(&self.surface_pool_baseline);
+        snapshot.surface_acquires = surface_delta.total_acquires;
+        snapshot.surface_reuses = surface_delta.reused_acquires;
+        snapshot.surface_fresh_allocations = surface_delta.fresh_allocations;
+        snapshot.surface_fresh_allocation_bytes = surface_delta.fresh_allocation_bytes;
+        snapshot.surface_acquires_by_size = surface_delta.acquires_by_size;
+        snapshot
+    }
+
+    pub fn record_pixel_allocation_bytes(&mut self, bytes: usize) {
+        self.instrumentation.pixel_allocation_bytes = self
+            .instrumentation
+            .pixel_allocation_bytes
+            .saturating_add(bytes as u64);
     }
 
     fn request_cache_key(&self) -> u64 {
@@ -140,6 +185,7 @@ impl Composition {
             .into());
         }
 
+        ctx.reset_instrumentation();
         ctx.request = RenderRequest::full_frame(
             frame,
             self.render_settings.width,
@@ -197,8 +243,14 @@ impl Composition {
             .get(node_id, frame, ctx.request_cache_key(), ctx.graph_revision)
             .cloned()
         {
+            ctx.instrumentation.node_output_cache_hits =
+                ctx.instrumentation.node_output_cache_hits.saturating_add(1);
             return Ok(cached);
         }
+        ctx.instrumentation.node_output_cache_misses = ctx
+            .instrumentation
+            .node_output_cache_misses
+            .saturating_add(1);
 
         if ctx.cancellation.is_cancelled() {
             return Err(RenderError::Cancelled { frame }.into());
@@ -260,6 +312,8 @@ impl Composition {
 
         let previous_frame = ctx.request.frame;
         ctx.request.frame = frame;
+        ctx.instrumentation.node_evaluations =
+            ctx.instrumentation.node_evaluations.saturating_add(1);
         let output =
             resolved_kind
                 .evaluate(&inputs, ctx)
@@ -347,12 +401,16 @@ impl Composition {
                 signature,
             )
         {
+            ctx.instrumentation.memo_cache_hits =
+                ctx.instrumentation.memo_cache_hits.saturating_add(1);
             return Ok(PortValue::RasterFrame(RasterFrame::bitmap(
                 cached.pixels,
                 cached.width,
                 cached.height,
             )));
         }
+        ctx.instrumentation.memo_cache_misses =
+            ctx.instrumentation.memo_cache_misses.saturating_add(1);
 
         let source = self.resolve_required_input(node_id, "Memo", "source", frame, ctx)?;
         let PortValue::RasterFrame(source) = source else {

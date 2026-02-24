@@ -46,7 +46,7 @@ impl NodeEval for Blur {
     fn evaluate(
         &self,
         inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
+        ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
         if self.is_noop() {
             return Ok(PortValue::RasterFrame(inputs.get_raster("source")?.clone()));
@@ -75,7 +75,7 @@ impl NodeEval for Blur {
         };
 
         let sigma = self.radius.max(0.5);
-        let blurred = render_with_skia(width, height, |canvas| {
+        let blurred = render_with_skia(width, height, Some(ctx), |canvas| {
             if let Some(filter) = image_filters::blur((sigma, sigma), None, None, None) {
                 let mut paint = Paint::default();
                 paint.set_image_filter(filter);

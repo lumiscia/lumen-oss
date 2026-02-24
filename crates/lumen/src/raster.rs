@@ -276,7 +276,7 @@ impl RasterFrame {
                 let width = surface_frame.surface.width();
                 let height = surface_frame.surface.height();
                 let bytes = match surface_frame.surface.surface_mut() {
-                    Some(surface) => read_surface_rgba(surface, width, height),
+                    Some(surface) => read_surface_rgba(surface, width, height, None),
                     None => {
                         let byte_len = rgba_byte_len(width, height).unwrap_or(4);
                         vec![0; byte_len]

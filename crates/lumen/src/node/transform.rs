@@ -68,7 +68,7 @@ impl NodeEval for Transform {
     fn evaluate(
         &self,
         inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
+        ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
         let source = inputs.get_raster("source")?;
         let source_alpha = source.alpha_mode();
@@ -108,7 +108,7 @@ impl NodeEval for Transform {
             TransformSampling::Linear => SamplingOptions::from(CubicResampler::catmull_rom()),
         };
 
-        let transformed = render_with_skia(width, height, |canvas| {
+        let transformed = render_with_skia(width, height, Some(ctx), |canvas| {
             canvas.concat(&matrix);
             canvas.draw_image_with_sampling_options(&image, (0.0, 0.0), sampling, None);
         });

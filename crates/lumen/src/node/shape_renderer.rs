@@ -53,17 +53,21 @@ impl NodeEval for ShapeRenderer {
     fn evaluate(
         &self,
         inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
+        ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
         let vector = inputs.get_vector("vector")?;
         let raster = match vector {
-            VectorData::Shape(geometry) => rasterize_geometry(geometry, self),
+            VectorData::Shape(geometry) => rasterize_geometry(geometry, self, ctx),
         };
         Ok(PortValue::RasterFrame(raster))
     }
 }
 
-fn rasterize_geometry(geometry: &ShapeGeometry, renderer: &ShapeRenderer) -> RasterFrame {
+fn rasterize_geometry(
+    geometry: &ShapeGeometry,
+    renderer: &ShapeRenderer,
+    ctx: &mut RenderContext,
+) -> RasterFrame {
     let (path, width, height) = build_path(geometry);
     let width = width.max(1);
     let height = height.max(1);
@@ -93,7 +97,7 @@ fn rasterize_geometry(geometry: &ShapeGeometry, renderer: &ShapeRenderer) -> Ras
     }
 
     RasterFrame::bitmap(
-        Arc::new(read_surface_rgba(&mut surface, width, height)),
+        Arc::new(read_surface_rgba(&mut surface, width, height, Some(ctx))),
         width,
         height,
     )

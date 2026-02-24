@@ -76,7 +76,7 @@ impl NodeEval for MediaOutput {
             )));
         };
 
-        let output = render_with_skia(target_w, target_h, |canvas| {
+        let output = render_with_skia(target_w, target_h, Some(ctx), |canvas| {
             canvas.draw_image(&image, (0.0, 0.0), None);
         });
 
