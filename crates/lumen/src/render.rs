@@ -349,6 +349,16 @@ impl Composition {
         }
 
         for upstream_node_id in &upstream {
+            if let Some(expressions) = self.expressions.get(upstream_node_id)
+                && expressions
+                    .values()
+                    .any(|expression| expression_depends_on_frame(&expression.ast))
+            {
+                return false;
+            }
+        }
+
+        for upstream_node_id in &upstream {
             let Some(node) = self.graph.nodes.get(upstream_node_id) else {
                 continue;
             };
@@ -379,7 +389,10 @@ impl Composition {
                 format!("{:?}", node.kind).hash(&mut hasher);
             }
             if let Some(expressions) = self.expressions.get(upstream_node_id) {
-                for (path, expression) in expressions {
+                let mut expression_entries: Vec<_> = expressions.iter().collect();
+                expression_entries
+                    .sort_by(|(left_path, _), (right_path, _)| left_path.cmp(right_path));
+                for (path, expression) in expression_entries {
                     path.hash(&mut hasher);
                     expression.source.hash(&mut hasher);
                     if expression_depends_on_frame(&expression.ast) {
@@ -388,13 +401,33 @@ impl Composition {
                 }
             }
         }
-        for connection in &self.graph.connections {
-            if upstream.contains(&connection.from_node) || upstream.contains(&connection.to_node) {
-                connection.from_node.hash(&mut hasher);
-                connection.to_node.hash(&mut hasher);
-                hash_output_port(&connection.from_port, &mut hasher);
-                hash_input_port(&connection.to_port, &mut hasher);
-            }
+        let mut upstream_connections: Vec<_> = self
+            .graph
+            .connections
+            .iter()
+            .filter(|connection| {
+                upstream.contains(&connection.from_node) || upstream.contains(&connection.to_node)
+            })
+            .collect();
+        upstream_connections.sort_by(|left, right| {
+            (
+                left.from_node,
+                left.to_node,
+                sortable_output_port_key(&left.from_port),
+                sortable_input_port_key(&left.to_port),
+            )
+                .cmp(&(
+                    right.from_node,
+                    right.to_node,
+                    sortable_output_port_key(&right.from_port),
+                    sortable_input_port_key(&right.to_port),
+                ))
+        });
+        for connection in upstream_connections {
+            connection.from_node.hash(&mut hasher);
+            connection.to_node.hash(&mut hasher);
+            hash_output_port(&connection.from_port, &mut hasher);
+            hash_input_port(&connection.to_port, &mut hasher);
         }
         hasher.finish()
     }
@@ -480,15 +513,39 @@ fn compute_graph_revision(composition: &Composition) -> u64 {
         }
     }
 
-    for connection in &composition.graph.connections {
+    let mut connections: Vec<_> = composition.graph.connections.iter().collect();
+    connections.sort_by(|left, right| {
+        (
+            left.from_node,
+            left.to_node,
+            sortable_output_port_key(&left.from_port),
+            sortable_input_port_key(&left.to_port),
+        )
+            .cmp(&(
+                right.from_node,
+                right.to_node,
+                sortable_output_port_key(&right.from_port),
+                sortable_input_port_key(&right.to_port),
+            ))
+    });
+    for connection in connections {
         connection.from_node.hash(&mut hasher);
         connection.to_node.hash(&mut hasher);
         hash_output_port(&connection.from_port, &mut hasher);
         hash_input_port(&connection.to_port, &mut hasher);
     }
 
-    for track in &composition.tracks {
+    let mut tracks: Vec<_> = composition.tracks.iter().collect();
+    tracks.sort_by(|left, right| {
+        (left.id, left.node_id, left.property_path.0.as_str()).cmp(&(
+            right.id,
+            right.node_id,
+            right.property_path.0.as_str(),
+        ))
+    });
+    for track in tracks {
         track.node_id.hash(&mut hasher);
+        track.id.hash(&mut hasher);
         track.property_path.0.hash(&mut hasher);
         for key in &track.keys {
             key.time_frame.hash(&mut hasher);
@@ -496,11 +553,17 @@ fn compute_graph_revision(composition: &Composition) -> u64 {
         }
     }
 
-    for (node_id, expressions) in &composition.expressions {
+    let mut expression_node_ids: Vec<_> = composition.expressions.keys().copied().collect();
+    expression_node_ids.sort_unstable();
+    for node_id in expression_node_ids {
         node_id.hash(&mut hasher);
-        for (path, expression) in expressions {
-            path.hash(&mut hasher);
-            expression.source.hash(&mut hasher);
+        if let Some(expressions) = composition.expressions.get(&node_id) {
+            let mut entries: Vec<_> = expressions.iter().collect();
+            entries.sort_by(|(left_path, _), (right_path, _)| left_path.cmp(right_path));
+            for (path, expression) in entries {
+                path.hash(&mut hasher);
+                expression.source.hash(&mut hasher);
+            }
         }
     }
 
@@ -530,6 +593,20 @@ fn hash_output_port(port: &OutputPort, hasher: &mut DefaultHasher) {
             "indexed".hash(hasher);
             index.hash(hasher);
         }
+    }
+}
+
+fn sortable_input_port_key(port: &InputPort) -> (u8, String) {
+    match port {
+        InputPort::Named(name) => (0, name.clone()),
+        InputPort::Indexed(index) => (1, index.to_string()),
+    }
+}
+
+fn sortable_output_port_key(port: &OutputPort) -> (u8, String) {
+    match port {
+        OutputPort::Named(name) => (0, name.clone()),
+        OutputPort::Indexed(index) => (1, index.to_string()),
     }
 }
 
