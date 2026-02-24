@@ -110,6 +110,8 @@ pub enum JsonNodeKind {
         pivot_x: f32,
         #[serde(default)]
         pivot_y: f32,
+        #[serde(default = "default_transform_sampling")]
+        sampling: JsonTransformSampling,
     },
     Crop {
         x: u32,
@@ -249,6 +251,13 @@ pub enum JsonResizeMode {
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum JsonResizeSampling {
+    Nearest,
+    Bilinear,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum JsonTransformSampling {
     Nearest,
     Bilinear,
 }
@@ -395,6 +404,10 @@ fn default_text_vertical() -> JsonTextAlignmentVertical {
 
 fn default_blend_mode() -> JsonBlendMode {
     JsonBlendMode::Normal
+}
+
+fn default_transform_sampling() -> JsonTransformSampling {
+    JsonTransformSampling::Bilinear
 }
 
 fn default_extrapolation() -> JsonExtrapolation {

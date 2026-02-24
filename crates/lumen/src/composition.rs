@@ -431,6 +431,7 @@ fn static_property_value(node_kind: &NodeKind, property_path: &str) -> Option<Pr
             rotate,
             pivot_x,
             pivot_y,
+            ..
         }) => match property_path {
             "scale_x" => Some(PropertyValue::Float(f64::from(*scale_x))),
             "scale_y" => Some(PropertyValue::Float(f64::from(*scale_y))),

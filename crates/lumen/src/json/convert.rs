@@ -25,6 +25,7 @@ use crate::{
             Text, TextAlignment, TextAlignmentHorizontal, TextAlignmentVertical, TextFontStyle,
         },
         transform::Transform,
+        transform::TransformSampling,
         {PropertyValue::Bool, PropertyValue::Color as PropertyColor, PropertyValue::Float},
     },
 };
@@ -34,6 +35,7 @@ use super::schema::{
     JsonInterpolationMode, JsonKeyframeTrack, JsonLoopMode, JsonMaskKind, JsonMediaInKind,
     JsonNodeKind, JsonPort, JsonResizeMode, JsonResizeSampling, JsonShapeGeometry,
     JsonTextAlignmentHorizontal, JsonTextAlignmentVertical, JsonTextFontStyle,
+    JsonTransformSampling,
 };
 
 pub fn convert_json_composition(payload: JsonComposition) -> Result<Composition, Vec<LumenError>> {
@@ -254,6 +256,7 @@ fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
             rotate,
             pivot_x,
             pivot_y,
+            sampling,
         } => NodeKind::Transform(Transform {
             scale_x,
             scale_y,
@@ -262,6 +265,10 @@ fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
             rotate,
             pivot_x,
             pivot_y,
+            sampling: match sampling {
+                JsonTransformSampling::Nearest => TransformSampling::Nearest,
+                JsonTransformSampling::Bilinear => TransformSampling::Linear,
+            },
         }),
         JsonNodeKind::Crop {
             x,

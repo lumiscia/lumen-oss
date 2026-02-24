@@ -7,6 +7,12 @@ use crate::{
     render::RenderContext,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformSampling {
+    Nearest,
+    Linear,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Transform {
     pub scale_x: f32,
@@ -16,6 +22,7 @@ pub struct Transform {
     pub rotate: f32,
     pub pivot_x: f32,
     pub pivot_y: f32,
+    pub sampling: TransformSampling,
 }
 
 impl Default for Transform {
@@ -28,6 +35,7 @@ impl Default for Transform {
             rotate: 0.0,
             pivot_x: 0.0,
             pivot_y: 0.0,
+            sampling: TransformSampling::Linear,
         }
     }
 }
@@ -117,8 +125,14 @@ impl NodeEval for Transform {
 
                 let src_cx = scaled_x + pivot_x;
                 let src_cy = scaled_y + pivot_y;
-                let sample =
-                    sample_bilinear(&source_bytes, width, height, src_cx - 0.5, src_cy - 0.5);
+                let sample = match self.sampling {
+                    TransformSampling::Nearest => {
+                        sample_nearest(&source_bytes, width, height, src_cx - 0.5, src_cy - 0.5)
+                    }
+                    TransformSampling::Linear => {
+                        sample_bilinear(&source_bytes, width, height, src_cx - 0.5, src_cy - 0.5)
+                    }
+                };
 
                 if let Some(dst_idx) = pixel_index(width, x, y) {
                     output[dst_idx..dst_idx + 4].copy_from_slice(&sample);
@@ -180,6 +194,18 @@ fn sample_bilinear(bytes: &[u8], width: u32, height: u32, x: f32, y: f32) -> [u8
         out[channel] = value.round().clamp(0.0, 255.0) as u8;
     }
     out
+}
+
+fn sample_nearest(bytes: &[u8], width: u32, height: u32, x: f32, y: f32) -> [u8; 4] {
+    let max_x = width as f32 - 1.0;
+    let max_y = height as f32 - 1.0;
+    if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 || x > max_x || y > max_y {
+        return [0, 0, 0, 0];
+    }
+
+    let xi = x.round().clamp(0.0, max_x) as u32;
+    let yi = y.round().clamp(0.0, max_y) as u32;
+    pixel_at(bytes, width, xi, yi)
 }
 
 fn pixel_at(bytes: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {

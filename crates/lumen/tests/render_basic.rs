@@ -145,6 +145,7 @@ fn transform_translate_shifts_pixels() {
             rotate: 0.0,
             pivot_x: 0.0,
             pivot_y: 0.0,
+            sampling: lumen::node::transform::TransformSampling::Linear,
         }),
     ));
     let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
