@@ -12,7 +12,7 @@ fn lumen_local_uses_lumen_json_delegate_capability() {
 
     let result = convert_json_delegate(&JsonDelegateRequest {
         input_payload: fixture,
-        input_schema_revision: "chat_story_v1".to_string(),
+        input_schema_revision: "lumen_graph_v1".to_string(),
         caller_context: "lumen-local-tests".to_string(),
     });
 
