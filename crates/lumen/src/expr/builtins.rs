@@ -1,8 +1,74 @@
+use std::cell::RefCell;
+
+use skia_safe::{
+    Color, FontMgr, FontStyle,
+    font_style::Weight,
+    textlayout::{
+        FontCollection, ParagraphBuilder, ParagraphStyle, TextStyle as ParagraphTextStyle,
+    },
+};
+
 use crate::{
     error::{ExpressionError, LumenError},
     expr::ast::{BuiltinFn, ExpressionValue},
     render::RenderContext,
 };
+
+thread_local! {
+    static EXPR_TEXT_FONT_MGR: RefCell<Option<FontMgr>> = const { RefCell::new(None) };
+}
+
+fn with_expr_font_mgr<R>(f: impl FnOnce(&FontMgr) -> R) -> R {
+    EXPR_TEXT_FONT_MGR.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let mgr = borrow.get_or_insert_with(FontMgr::default);
+        f(mgr)
+    })
+}
+
+fn measure_text_with_skia(
+    text: &str,
+    font_size: f64,
+    wrap_width: Option<f64>,
+    fallback_width: u32,
+) -> (f64, f64) {
+    let mut paragraph_style = ParagraphStyle::new();
+    let mut text_style = ParagraphTextStyle::new();
+    text_style.set_font_size(font_size.max(1.0) as f32);
+    text_style.set_color(Color::WHITE);
+    text_style.set_font_style(FontStyle::new(
+        Weight::from(500),
+        skia_safe::font_style::Width::NORMAL,
+        skia_safe::font_style::Slant::Upright,
+    ));
+    text_style.set_font_families(&["Helvetica"]);
+    paragraph_style.set_text_style(&text_style);
+
+    let layout_width = wrap_width
+        .unwrap_or(16_384.0)
+        .max(1.0)
+        .min(f64::from(u32::MAX)) as f32;
+
+    with_expr_font_mgr(|font_mgr| {
+        let mut font_collection = FontCollection::new();
+        font_collection.set_default_font_manager(font_mgr.clone(), None);
+        let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
+        builder.push_style(&text_style);
+        builder.add_text(text);
+        let mut paragraph = builder.build();
+        paragraph.layout(layout_width);
+
+        let width = if wrap_width.is_some() {
+            paragraph.longest_line()
+        } else {
+            paragraph.max_intrinsic_width()
+        }
+        .max(1.0)
+        .min(fallback_width.max(1) as f32);
+        let height = paragraph.height().max(1.0);
+        (f64::from(width), f64::from(height))
+    })
+}
 
 pub fn evaluate_builtin(
     builtin: BuiltinFn,
@@ -142,8 +208,8 @@ pub fn evaluate_builtin(
             Ok(ExpressionValue::Number(t * t * (3.0 - 2.0 * t)))
         }
         BuiltinFn::TextHeight => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(error("text_height expects 1 or 2 arguments".to_string()));
+            if args.is_empty() || args.len() > 3 {
+                return Err(error("text_height expects 1 to 3 arguments".to_string()));
             }
             let text = to_string(
                 &args[0],
@@ -154,17 +220,28 @@ pub fn evaluate_builtin(
                     &args[1],
                     error("text_height optional second arg must be numeric font size".to_string()),
                 )?
+            } else if args.len() == 3 {
+                to_number(
+                    &args[1],
+                    error("text_height optional second arg must be numeric font size".to_string()),
+                )?
             } else {
                 16.0
             };
-            let line_count = text.lines().count().max(1) as f64;
-            Ok(ExpressionValue::Number(
-                line_count * font_size.max(1.0) * 1.2,
-            ))
+            let wrap_width = if args.len() == 3 {
+                Some(to_number(
+                    &args[2],
+                    error("text_height optional third arg must be numeric max width".to_string()),
+                )?)
+            } else {
+                None
+            };
+            let (_, height) = measure_text_with_skia(&text, font_size, wrap_width, ctx.width);
+            Ok(ExpressionValue::Number(height))
         }
         BuiltinFn::TextWidth => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(error("text_width expects 1 or 2 arguments".to_string()));
+            if args.is_empty() || args.len() > 3 {
+                return Err(error("text_width expects 1 to 3 arguments".to_string()));
             }
             let text = to_string(
                 &args[0],
@@ -175,12 +252,23 @@ pub fn evaluate_builtin(
                     &args[1],
                     error("text_width optional second arg must be numeric font size".to_string()),
                 )?
+            } else if args.len() == 3 {
+                to_number(
+                    &args[1],
+                    error("text_width optional second arg must be numeric font size".to_string()),
+                )?
             } else {
                 16.0
             };
-            let avg_glyph_width = font_size.max(1.0) * 0.6;
-            let char_count = text.chars().count().max(1) as f64;
-            let width = (char_count * avg_glyph_width).clamp(0.0, f64::from(ctx.width));
+            let wrap_width = if args.len() == 3 {
+                Some(to_number(
+                    &args[2],
+                    error("text_width optional third arg must be numeric max width".to_string()),
+                )?)
+            } else {
+                None
+            };
+            let (width, _) = measure_text_with_skia(&text, font_size, wrap_width, ctx.width);
             Ok(ExpressionValue::Number(width))
         }
         BuiltinFn::Uppercase => {
