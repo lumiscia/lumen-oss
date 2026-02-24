@@ -315,14 +315,12 @@ fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
             blur_radius,
             offset_x,
             offset_y,
-        } => {
-            let _ = blur_radius;
-            NodeKind::Shadow(Shadow {
-                color,
-                offset_x: offset_x.round() as i32,
-                offset_y: offset_y.round() as i32,
-            })
-        }
+        } => NodeKind::Shadow(Shadow {
+            color,
+            blur_radius,
+            offset_x: offset_x.round() as i32,
+            offset_y: offset_y.round() as i32,
+        }),
         JsonNodeKind::Boolean { mask_kind, invert } => NodeKind::Boolean(Boolean {
             mask_kind: match mask_kind {
                 JsonMaskKind::Alpha => MaskKind::Alpha,

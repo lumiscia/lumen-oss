@@ -1,7 +1,7 @@
 //! Frame render orchestration and per-frame render context state.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     hash::{DefaultHasher, Hash, Hasher},
     sync::{
         Arc, RwLock,
@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    cache::{AssetCache, NodeOutputCache},
+    cache::{AssetCache, CachedBitmap, NodeOutputCache},
     capability::RuntimeCapabilityProfile,
     composition::Composition,
     error::{GraphValidationError, LumenError, PropertyError, RenderError},
@@ -18,9 +18,60 @@ use crate::{
     graph::{Connection, InputPort, OutputPort},
     media::{MediaStore, VideoFrameResolver},
     node::{NodeId, NodeInputs, NodeKind, PortValue},
-    raster::RasterFrame,
-    surface_pool::SurfacePool,
+    raster::{RasterFrame, RectI},
+    surface_pool::{SurfacePool, SurfacePoolStats},
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum RenderQuality {
+    Draft,
+    #[default]
+    Final,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderRequest {
+    pub frame: u32,
+    pub output_rect: RectI,
+    pub roi: Option<RectI>,
+    pub proxy_scale: u32,
+    pub quality: RenderQuality,
+}
+
+impl RenderRequest {
+    pub fn full_frame(frame: u32, width: u32, height: u32) -> Self {
+        Self {
+            frame,
+            output_rect: RectI::from_size(width, height),
+            roi: None,
+            proxy_scale: 1,
+            quality: RenderQuality::Final,
+        }
+    }
+
+    pub const fn width(&self) -> u32 {
+        self.output_rect.width
+    }
+
+    pub const fn height(&self) -> u32 {
+        self.output_rect.height
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RenderInstrumentation {
+    pub node_evaluations: u64,
+    pub node_output_cache_hits: u64,
+    pub node_output_cache_misses: u64,
+    pub memo_cache_hits: u64,
+    pub memo_cache_misses: u64,
+    pub pixel_allocation_bytes: u64,
+    pub surface_acquires: u64,
+    pub surface_reuses: u64,
+    pub surface_fresh_allocations: u64,
+    pub surface_fresh_allocation_bytes: u64,
+    pub surface_acquires_by_size: HashMap<(u32, u32), u64>,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct CancellationToken {
@@ -42,10 +93,8 @@ impl CancellationToken {
 }
 
 pub struct RenderContext {
-    pub frame: u32,
+    pub request: RenderRequest,
     pub fps: f32,
-    pub width: u32,
-    pub height: u32,
     pub duration_frames: u32,
     pub surface_pool: Arc<SurfacePool>,
     pub asset_cache: Arc<RwLock<AssetCache>>,
@@ -54,6 +103,8 @@ pub struct RenderContext {
     pub capability_profile: RuntimeCapabilityProfile,
     pub cancellation: CancellationToken,
     pub graph_revision: u64,
+    pub instrumentation: RenderInstrumentation,
+    surface_pool_baseline: SurfacePoolStats,
 }
 
 impl RenderContext {
@@ -65,23 +116,58 @@ impl RenderContext {
         capability_profile: RuntimeCapabilityProfile,
     ) -> Self {
         Self {
-            frame: 0,
+            request: RenderRequest::full_frame(
+                0,
+                composition.render_settings.width,
+                composition.render_settings.height,
+            ),
             fps: composition.timeline.fps,
-            width: composition.render_settings.width,
-            height: composition.render_settings.height,
             duration_frames: composition.timeline.duration_frames,
-            surface_pool,
+            surface_pool: Arc::clone(&surface_pool),
             asset_cache,
             node_output_cache: NodeOutputCache::new(),
             media_store,
             capability_profile,
             cancellation: CancellationToken::new(),
             graph_revision: compute_graph_revision(composition),
+            instrumentation: RenderInstrumentation::default(),
+            surface_pool_baseline: surface_pool.stats(),
         }
     }
 
-    fn resolution_key(&self) -> u32 {
-        self.width.saturating_mul(self.height)
+    pub fn reset_instrumentation(&mut self) {
+        self.instrumentation = RenderInstrumentation::default();
+        self.surface_pool_baseline = self.surface_pool.stats();
+    }
+
+    pub fn instrumentation_snapshot(&self) -> RenderInstrumentation {
+        let mut snapshot = self.instrumentation.clone();
+        let surface_delta = self
+            .surface_pool
+            .stats()
+            .delta_from(&self.surface_pool_baseline);
+        snapshot.surface_acquires = surface_delta.total_acquires;
+        snapshot.surface_reuses = surface_delta.reused_acquires;
+        snapshot.surface_fresh_allocations = surface_delta.fresh_allocations;
+        snapshot.surface_fresh_allocation_bytes = surface_delta.fresh_allocation_bytes;
+        snapshot.surface_acquires_by_size = surface_delta.acquires_by_size;
+        snapshot
+    }
+
+    pub fn record_pixel_allocation_bytes(&mut self, bytes: usize) {
+        self.instrumentation.pixel_allocation_bytes = self
+            .instrumentation
+            .pixel_allocation_bytes
+            .saturating_add(bytes as u64);
+    }
+
+    fn request_cache_key(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.request.output_rect.hash(&mut hasher);
+        self.request.roi.hash(&mut hasher);
+        self.request.proxy_scale.hash(&mut hasher);
+        self.request.quality.hash(&mut hasher);
+        hasher.finish()
     }
 }
 
@@ -99,10 +185,13 @@ impl Composition {
             .into());
         }
 
-        ctx.frame = frame;
+        ctx.reset_instrumentation();
+        ctx.request = RenderRequest::full_frame(
+            frame,
+            self.render_settings.width,
+            self.render_settings.height,
+        );
         ctx.fps = self.timeline.fps;
-        ctx.width = self.render_settings.width;
-        ctx.height = self.render_settings.height;
         ctx.duration_frames = self.timeline.duration_frames;
         ctx.graph_revision = compute_graph_revision(self);
         ctx.node_output_cache.clear();
@@ -151,11 +240,17 @@ impl Composition {
     ) -> Result<PortValue, LumenError> {
         if let Some(cached) = ctx
             .node_output_cache
-            .get(node_id, frame, ctx.resolution_key(), ctx.graph_revision)
+            .get(node_id, frame, ctx.request_cache_key(), ctx.graph_revision)
             .cloned()
         {
+            ctx.instrumentation.node_output_cache_hits =
+                ctx.instrumentation.node_output_cache_hits.saturating_add(1);
             return Ok(cached);
         }
+        ctx.instrumentation.node_output_cache_misses = ctx
+            .instrumentation
+            .node_output_cache_misses
+            .saturating_add(1);
 
         if ctx.cancellation.is_cancelled() {
             return Err(RenderError::Cancelled { frame }.into());
@@ -173,7 +268,7 @@ impl Composition {
             ctx.node_output_cache.insert(
                 node_id,
                 frame,
-                ctx.resolution_key(),
+                ctx.request_cache_key(),
                 ctx.graph_revision,
                 short_circuit.clone(),
             );
@@ -215,8 +310,10 @@ impl Composition {
             }
         }
 
-        let previous_frame = ctx.frame;
-        ctx.frame = frame;
+        let previous_frame = ctx.request.frame;
+        ctx.request.frame = frame;
+        ctx.instrumentation.node_evaluations =
+            ctx.instrumentation.node_evaluations.saturating_add(1);
         let output =
             resolved_kind
                 .evaluate(&inputs, ctx)
@@ -226,13 +323,13 @@ impl Composition {
                     node_kind: resolved_kind.kind_name(),
                     details: err.to_string(),
                 });
-        ctx.frame = previous_frame;
+        ctx.request.frame = previous_frame;
         let output = output?;
 
         ctx.node_output_cache.insert(
             node_id,
             frame,
-            ctx.resolution_key(),
+            ctx.request_cache_key(),
             ctx.graph_revision,
             output.clone(),
         );
@@ -294,13 +391,26 @@ impl Composition {
         }
 
         let signature = self.memo_signature(node_id, memo.allow_expressions, frame);
+        let request_hash = ctx.request_cache_key();
         if let Ok(cache) = ctx.asset_cache.read()
-            && let Some(cached) = cache.memo_get(&memo.cache_id, ctx.width, ctx.height, signature)
+            && let Some(cached) = cache.memo_get(
+                &memo.cache_id,
+                ctx.request.width(),
+                ctx.request.height(),
+                request_hash,
+                signature,
+            )
         {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                cached, ctx.width, ctx.height,
+            ctx.instrumentation.memo_cache_hits =
+                ctx.instrumentation.memo_cache_hits.saturating_add(1);
+            return Ok(PortValue::RasterFrame(RasterFrame::bitmap(
+                cached.pixels,
+                cached.width,
+                cached.height,
             )));
         }
+        ctx.instrumentation.memo_cache_misses =
+            ctx.instrumentation.memo_cache_misses.saturating_add(1);
 
         let source = self.resolve_required_input(node_id, "Memo", "source", frame, ctx)?;
         let PortValue::RasterFrame(source) = source else {
@@ -312,22 +422,27 @@ impl Composition {
             }
             .into());
         };
-        let raster = source.to_bitmap()?;
-        let RasterFrame::Bitmap(pixels, width, height) = raster else {
-            return Err(RenderError::InvalidMediaOutputType { frame, node_id }.into());
-        };
+        let bitmap = source.into_bitmap_frame()?;
+        let pixels = bitmap.pixels;
+        let width = bitmap.storage_width;
+        let height = bitmap.storage_height;
 
         if let Ok(mut cache) = ctx.asset_cache.write() {
             cache.memo_insert(
                 memo.cache_id.clone(),
                 width,
                 height,
+                request_hash,
                 signature,
-                Arc::clone(&pixels),
+                CachedBitmap {
+                    pixels: Arc::clone(&pixels),
+                    width,
+                    height,
+                },
             );
         }
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
             pixels, width, height,
         )))
     }

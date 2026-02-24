@@ -14,6 +14,8 @@ pub mod render;
 pub mod sink;
 pub mod surface_pool;
 
+pub(crate) mod backend;
+
 #[cfg(feature = "ffmpeg")]
 pub mod ffmpeg;
 
@@ -39,9 +41,12 @@ pub use node::{
     PortValue, PropertyValue, TrackId, VectorData,
 };
 pub use raster::RasterFrame;
-pub use render::{CancellationToken, NullMediaStore, RenderContext};
+pub use render::{
+    CancellationToken, NullMediaStore, RenderContext, RenderInstrumentation, RenderQuality,
+    RenderRequest,
+};
 pub use sink::Sink;
-pub use surface_pool::{SurfacePool, SurfaceRef};
+pub use surface_pool::{SurfacePool, SurfacePoolStats, SurfaceRef};
 
 #[cfg(feature = "json")]
 pub use json::{JsonDelegate, JsonDelegateResult};

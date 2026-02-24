@@ -236,7 +236,8 @@ pub fn evaluate_builtin(
             } else {
                 None
             };
-            let (_, height) = measure_text_with_skia(&text, font_size, wrap_width, ctx.width);
+            let (_, height) =
+                measure_text_with_skia(&text, font_size, wrap_width, ctx.request.width());
             Ok(ExpressionValue::Number(height))
         }
         BuiltinFn::TextWidth => {
@@ -268,7 +269,8 @@ pub fn evaluate_builtin(
             } else {
                 None
             };
-            let (width, _) = measure_text_with_skia(&text, font_size, wrap_width, ctx.width);
+            let (width, _) =
+                measure_text_with_skia(&text, font_size, wrap_width, ctx.request.width());
             Ok(ExpressionValue::Number(width))
         }
         BuiltinFn::Uppercase => {

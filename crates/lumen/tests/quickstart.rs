@@ -57,7 +57,7 @@ fn quickstart_example_compiles_and_renders() {
         .render_frame(0, &mut ctx)
         .expect("quickstart render should succeed");
     let bytes = match frame {
-        RasterFrame::Bitmap(bytes, ..) => bytes,
+        RasterFrame::Bitmap(bitmap) => bitmap.pixels,
         RasterFrame::Surface(_) => Arc::new(Vec::new()),
     };
     assert_eq!(bytes.len(), 16 * 16 * 4);

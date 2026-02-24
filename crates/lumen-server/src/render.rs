@@ -81,7 +81,7 @@ pub fn convert_project_payload(payload: &serde_json::Value) -> Result<ProjectBun
 
     let request = JsonDelegateRequest {
         input_payload: normalized,
-        input_schema_revision: "chat_story_v1".to_string(),
+        input_schema_revision: "lumen_graph_v1".to_string(),
         caller_context: "lumen-server".to_string(),
     };
 

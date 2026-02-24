@@ -433,11 +433,11 @@ fn keyframed_transform_affects_rendered_frame_positions() {
         .expect("frame 30 render");
 
     let start_bytes = match start {
-        RasterFrame::Bitmap(bytes, _, _) => bytes,
+        RasterFrame::Bitmap(bitmap) => bitmap.pixels,
         RasterFrame::Surface(_) => panic!("expected bitmap"),
     };
     let end_bytes = match end {
-        RasterFrame::Bitmap(bytes, _, _) => bytes,
+        RasterFrame::Bitmap(bitmap) => bitmap.pixels,
         RasterFrame::Surface(_) => panic!("expected bitmap"),
     };
 

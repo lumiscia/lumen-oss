@@ -56,7 +56,7 @@ fn expect_number(value: lumen::ExpressionValue) -> f64 {
 #[test]
 fn globals_resolve_from_render_context() {
     let (_composition, mut context, _transform) = expression_context();
-    context.frame = 30;
+    context.request.frame = 30;
 
     let frame = expect_number(
         lumen::Expression::parse("frame")

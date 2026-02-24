@@ -72,13 +72,13 @@ impl RenderOrchestrator {
                     }
                     match composition.render_frame(frame, &mut context) {
                         Ok(rendered) => match rendered.to_bitmap() {
-                            Ok(RasterFrame::Bitmap(pixels, width, height)) => {
+                            Ok(RasterFrame::Bitmap(bitmap)) => {
                                 if result_tx
                                     .send(WorkerResult::Frame {
                                         frame,
-                                        pixels,
-                                        width,
-                                        height,
+                                        pixels: bitmap.pixels,
+                                        width: bitmap.storage_width,
+                                        height: bitmap.storage_height,
                                     })
                                     .is_err()
                                 {
@@ -180,7 +180,7 @@ impl Composition {
                     if frame == next_frame {
                         if let Err(error) = sink.write_frame(
                             frame,
-                            &RasterFrame::Bitmap(Arc::clone(&pixels), width, height),
+                            &RasterFrame::bitmap(Arc::clone(&pixels), width, height),
                         ) {
                             context.cancellation.cancel();
                             sink_error = Some(error.into());
@@ -194,7 +194,7 @@ impl Composition {
                         while let Some(buffered) = reorder_buffer.remove(&next_frame) {
                             if let Err(error) = sink.write_frame(
                                 next_frame,
-                                &RasterFrame::Bitmap(
+                                &RasterFrame::bitmap(
                                     Arc::clone(&buffered.pixels),
                                     buffered.width,
                                     buffered.height,

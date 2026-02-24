@@ -43,12 +43,12 @@ impl Sink for BitmapSink {
                 details: err.to_string(),
             })?;
 
-        if let RasterFrame::Bitmap(pixels, width, height) = bitmap {
+        if let RasterFrame::Bitmap(bitmap) = bitmap {
             self.frames.push(CollectedBitmapFrame {
                 frame,
-                width,
-                height,
-                pixels,
+                width: bitmap.storage_width,
+                height: bitmap.storage_height,
+                pixels: bitmap.pixels,
             });
         }
 

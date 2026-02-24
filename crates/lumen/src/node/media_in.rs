@@ -1,4 +1,4 @@
-use std::{ops::Range, sync::Arc};
+use std::ops::Range;
 
 use crate::{
     error::{LumenError, MediaError},
@@ -84,9 +84,8 @@ fn evaluate_image(source: &str, ctx: &mut RenderContext) -> Result<RasterFrame, 
         cache.get_or_insert_image(source, resolver.as_ref())?
     };
 
-    validate_rgba_len(source, width, height, &decoded)?;
-    let premultiplied = Arc::new(premultiply_rgba(decoded.as_ref()));
-    Ok(RasterFrame::Bitmap(premultiplied, width, height))
+    validate_rgba_len(source, width, height, decoded.as_ref())?;
+    Ok(RasterFrame::bitmap(decoded, width, height))
 }
 
 fn evaluate_video(
@@ -121,18 +120,16 @@ fn evaluate_video(
         );
     }
 
-    let source_frame = map_to_source_frame(ctx.frame, frame_count, range, speed, loop_mode).ok_or(
-        MediaError::FrameOutOfRange {
+    let source_frame = map_to_source_frame(ctx.request.frame, frame_count, range, speed, loop_mode)
+        .ok_or(MediaError::FrameOutOfRange {
             media_source: source.to_string(),
-            frame: ctx.frame,
+            frame: ctx.request.frame,
             frame_count,
-        },
-    )?;
+        })?;
 
     let decoded = resolver.resolve_frame(source_frame)?;
-    validate_rgba_len(source, width, height, &decoded)?;
-    let premultiplied = Arc::new(premultiply_rgba(&decoded));
-    Ok(RasterFrame::Bitmap(premultiplied, width, height))
+    validate_rgba_len(source, width, height, decoded.as_ref())?;
+    Ok(RasterFrame::bitmap(decoded, width, height))
 }
 
 fn map_to_source_frame(
@@ -212,15 +209,4 @@ fn validate_rgba_len(
             ),
         })
     }
-}
-
-fn premultiply_rgba(source: &[u8]) -> Vec<u8> {
-    let mut premultiplied = source.to_vec();
-    for pixel in premultiplied.chunks_exact_mut(4) {
-        let alpha = f32::from(pixel[3]) / 255.0;
-        pixel[0] = (f32::from(pixel[0]) * alpha).round().clamp(0.0, 255.0) as u8;
-        pixel[1] = (f32::from(pixel[1]) * alpha).round().clamp(0.0, 255.0) as u8;
-        pixel[2] = (f32::from(pixel[2]) * alpha).round().clamp(0.0, 255.0) as u8;
-    }
-    premultiplied
 }

@@ -16,6 +16,7 @@ pub mod media_in;
 pub mod media_output;
 pub mod memo;
 pub mod merge;
+pub mod pixel_utils;
 pub mod resize;
 pub mod shadow;
 pub mod shape;

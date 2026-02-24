@@ -60,10 +60,10 @@ mod tests {
         let frame = composition
             .render_frame(0, &mut context)
             .expect("frame should render");
-        let RasterFrame::Bitmap(bytes, width, height) = frame else {
+        let RasterFrame::Bitmap(bitmap) = frame else {
             panic!("expected bitmap frame");
         };
-        assert_eq!((width, height), (2, 1));
-        assert_eq!(bytes.as_slice(), &[255, 0, 0, 255, 255, 0, 0, 255]);
+        assert_eq!((bitmap.storage_width, bitmap.storage_height), (2, 1));
+        assert_eq!(bitmap.pixels.as_slice(), &[255, 0, 0, 255, 255, 0, 0, 255]);
     }
 }

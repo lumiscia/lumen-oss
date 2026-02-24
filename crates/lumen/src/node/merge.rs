@@ -1,9 +1,14 @@
 use std::sync::Arc;
 
+use skia_safe::Paint;
+
 use crate::{
     error::LumenError,
-    node::{BlendMode, InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue},
-    raster::RasterFrame,
+    node::{
+        BlendMode, InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        pixel_utils::{make_skia_image, render_with_skia},
+    },
+    raster::{BitmapFrame, RasterFrame},
     render::RenderContext,
 };
 
@@ -57,198 +62,99 @@ impl NodeEval for Merge {
     fn evaluate(
         &self,
         inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
+        ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
-        let (base_bytes, base_w, base_h) =
-            into_bitmap_parts(inputs.get_raster("base")?.clone().to_bitmap()?);
-        let (overlay_bytes, overlay_w, overlay_h) =
-            into_bitmap_parts(inputs.get_raster("overlay")?.clone().to_bitmap()?);
+        if self.opacity <= 0.0 {
+            return Ok(PortValue::RasterFrame(inputs.get_raster("base")?.clone()));
+        }
+
+        let base = inputs.get_raster("base")?;
+        let overlay = inputs.get_raster("overlay")?;
+        let (base_bytes, base_w, base_h) = base.clone().into_parts();
+        let (overlay_bytes, overlay_w, overlay_h) = overlay.clone().into_parts();
+        let base_alpha = base.alpha_mode();
+        let overlay_alpha = overlay.alpha_mode();
+        let base_format = base.format_rect();
+        let base_data = base.data_rect();
         let mask = match inputs.get_raster_optional("mask")? {
-            Some(raster) => Some(into_bitmap_parts(raster.clone().to_bitmap()?)),
+            Some(raster) => Some((raster.clone().into_parts(), raster.alpha_mode())),
             None => None,
         };
 
-        let out_w = base_w.min(overlay_w);
-        let out_h = base_h.min(overlay_h);
-        let Some(byte_len) = rgba_len(out_w, out_h) else {
+        let out_w = base_w;
+        let out_h = base_h;
+        if out_w == 0 || out_h == 0 {
+            return Ok(PortValue::RasterFrame(base.clone()));
+        }
+
+        let base_image = make_skia_image(
+            &base_bytes,
+            base_w,
+            base_h,
+            (base_w as usize) * 4,
+            base_alpha,
+        );
+        let overlay_image = make_skia_image(
+            &overlay_bytes,
+            overlay_w,
+            overlay_h,
+            (overlay_w as usize) * 4,
+            overlay_alpha,
+        );
+
+        let Some(base_image) = base_image else {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                Arc::new(Vec::new()),
-                0,
-                0,
+                BitmapFrame::with_domain(
+                    Arc::new(vec![0u8; (out_w as usize) * (out_h as usize) * 4]),
+                    out_w,
+                    out_h,
+                    base_format,
+                    base_data,
+                )
+                .with_alpha_mode(base_alpha),
             )));
+        };
+        let Some(overlay_image) = overlay_image else {
+            return Ok(PortValue::RasterFrame(base.clone()));
         };
 
         let opacity = self.opacity.clamp(0.0, 1.0);
-        let mut out = vec![0_u8; byte_len];
+        let skia_blend: skia_safe::BlendMode = self.blend_mode.into();
 
-        for y in 0..out_h {
-            for x in 0..out_w {
-                let Some(out_idx) = pixel_index(out_w, x, y) else {
-                    continue;
-                };
-                let Some(base_idx) = pixel_index(base_w, x, y) else {
-                    continue;
-                };
-                let Some(overlay_idx) = pixel_index(overlay_w, x, y) else {
-                    continue;
-                };
-
-                let base_px = read_rgba(&base_bytes, base_idx);
-                let overlay_px = read_rgba(&overlay_bytes, overlay_idx);
-
-                let mask_alpha = match &mask {
-                    Some((mask_bytes, mask_w, mask_h)) if x < *mask_w && y < *mask_h => {
-                        match pixel_index(*mask_w, x, y) {
-                            Some(mask_idx) => f32::from(read_rgba(mask_bytes, mask_idx)[3]) / 255.0,
-                            None => 0.0,
-                        }
-                    }
-                    Some(_) => 0.0,
-                    None => 1.0,
-                };
-
-                let merged =
-                    merge_pixel(base_px, overlay_px, self.blend_mode, opacity * mask_alpha);
-                write_rgba(&mut out, out_idx, merged);
+        let mask_image = match mask {
+            Some(((mb, mw, mh), alpha_mode)) => {
+                make_skia_image(&mb, mw, mh, (mw as usize) * 4, alpha_mode)
             }
-        }
+            None => None,
+        };
+
+        let merged = render_with_skia(out_w, out_h, Some(ctx), |canvas| {
+            canvas.draw_image(&base_image, (0.0, 0.0), None);
+
+            if let Some(ref mask_img) = mask_image {
+                canvas.save_layer_alpha(None, 255);
+
+                let mut overlay_paint = Paint::default();
+                overlay_paint.set_blend_mode(skia_blend);
+                overlay_paint.set_alpha_f(opacity);
+                canvas.draw_image(&overlay_image, (0.0, 0.0), Some(&overlay_paint));
+
+                let mut mask_paint = Paint::default();
+                mask_paint.set_blend_mode(skia_safe::BlendMode::DstIn);
+                canvas.draw_image(mask_img, (0.0, 0.0), Some(&mask_paint));
+
+                canvas.restore();
+            } else {
+                let mut overlay_paint = Paint::default();
+                overlay_paint.set_blend_mode(skia_blend);
+                overlay_paint.set_alpha_f(opacity);
+                canvas.draw_image(&overlay_image, (0.0, 0.0), Some(&overlay_paint));
+            }
+        });
 
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-            Arc::new(out),
-            out_w,
-            out_h,
+            BitmapFrame::with_domain(Arc::new(merged), out_w, out_h, base_format, base_format)
+                .with_alpha_mode(base_alpha),
         )))
     }
-}
-
-fn into_bitmap_parts(raster: RasterFrame) -> (Arc<Vec<u8>>, u32, u32) {
-    match raster {
-        RasterFrame::Bitmap(bytes, width, height) => (bytes, width, height),
-        RasterFrame::Surface(surface) => {
-            let width = surface.width();
-            let height = surface.height();
-            let bytes = rgba_len(width, height).map_or_else(Vec::new, |len| vec![0; len]);
-            (Arc::new(bytes), width, height)
-        }
-    }
-}
-
-fn merge_pixel(base: [u8; 4], overlay: [u8; 4], blend_mode: BlendMode, factor: f32) -> [u8; 4] {
-    let src = rgba_to_premul(overlay);
-    let dst = rgba_to_premul(base);
-
-    let src_a = (src[3] * factor).clamp(0.0, 1.0);
-    let src_rgb_premul = [src[0] * factor, src[1] * factor, src[2] * factor];
-
-    let src_rgb = unpremul_rgb(src_rgb_premul, src_a);
-    let dst_rgb = unpremul_rgb([dst[0], dst[1], dst[2]], dst[3]);
-
-    let blended_rgb = [
-        blend_channel(dst_rgb[0], src_rgb[0], blend_mode),
-        blend_channel(dst_rgb[1], src_rgb[1], blend_mode),
-        blend_channel(dst_rgb[2], src_rgb[2], blend_mode),
-    ];
-    let blended_rgb_premul = [
-        blended_rgb[0] * src_a,
-        blended_rgb[1] * src_a,
-        blended_rgb[2] * src_a,
-    ];
-
-    let out_a = src_a + dst[3] * (1.0 - src_a);
-    let out_rgb = [
-        blended_rgb_premul[0] + dst[0] * (1.0 - src_a),
-        blended_rgb_premul[1] + dst[1] * (1.0 - src_a),
-        blended_rgb_premul[2] + dst[2] * (1.0 - src_a),
-    ];
-
-    premul_to_rgba([out_rgb[0], out_rgb[1], out_rgb[2], out_a])
-}
-
-fn blend_channel(base: f32, overlay: f32, mode: BlendMode) -> f32 {
-    let value = match mode {
-        BlendMode::Normal => overlay,
-        BlendMode::Multiply => base * overlay,
-        BlendMode::Screen => base + overlay - (base * overlay),
-        BlendMode::Overlay => {
-            if base <= 0.5 {
-                2.0 * base * overlay
-            } else {
-                1.0 - 2.0 * (1.0 - base) * (1.0 - overlay)
-            }
-        }
-        BlendMode::Darken => base.min(overlay),
-        BlendMode::Lighten => base.max(overlay),
-    };
-    value.clamp(0.0, 1.0)
-}
-
-fn rgba_len(width: u32, height: u32) -> Option<usize> {
-    let pixels = u64::from(width).checked_mul(u64::from(height))?;
-    let bytes = pixels.checked_mul(4)?;
-    usize::try_from(bytes).ok()
-}
-
-fn pixel_index(width: u32, x: u32, y: u32) -> Option<usize> {
-    let row = u64::from(y).checked_mul(u64::from(width))?;
-    let offset = row.checked_add(u64::from(x))?;
-    let bytes = offset.checked_mul(4)?;
-    usize::try_from(bytes).ok()
-}
-
-fn read_rgba(bytes: &[u8], index: usize) -> [u8; 4] {
-    let i1 = index.checked_add(1);
-    let i2 = index.checked_add(2);
-    let i3 = index.checked_add(3);
-    [
-        bytes.get(index).copied().unwrap_or(0),
-        i1.and_then(|idx| bytes.get(idx).copied()).unwrap_or(0),
-        i2.and_then(|idx| bytes.get(idx).copied()).unwrap_or(0),
-        i3.and_then(|idx| bytes.get(idx).copied()).unwrap_or(0),
-    ]
-}
-
-fn write_rgba(bytes: &mut [u8], index: usize, rgba: [u8; 4]) {
-    let Some(last) = index.checked_add(3) else {
-        return;
-    };
-    if last >= bytes.len() {
-        return;
-    }
-    bytes[index] = rgba[0];
-    bytes[index + 1] = rgba[1];
-    bytes[index + 2] = rgba[2];
-    bytes[index + 3] = rgba[3];
-}
-
-fn rgba_to_premul(rgba: [u8; 4]) -> [f32; 4] {
-    [
-        f32::from(rgba[0]) / 255.0,
-        f32::from(rgba[1]) / 255.0,
-        f32::from(rgba[2]) / 255.0,
-        f32::from(rgba[3]) / 255.0,
-    ]
-}
-
-fn unpremul_rgb(rgb_premul: [f32; 3], alpha: f32) -> [f32; 3] {
-    if alpha <= f32::EPSILON {
-        return [0.0, 0.0, 0.0];
-    }
-    [
-        (rgb_premul[0] / alpha).clamp(0.0, 1.0),
-        (rgb_premul[1] / alpha).clamp(0.0, 1.0),
-        (rgb_premul[2] / alpha).clamp(0.0, 1.0),
-    ]
-}
-
-fn premul_to_rgba(premul: [f32; 4]) -> [u8; 4] {
-    [
-        float_unit_to_u8(premul[0]),
-        float_unit_to_u8(premul[1]),
-        float_unit_to_u8(premul[2]),
-        float_unit_to_u8(premul[3]),
-    ]
-}
-
-fn float_unit_to_u8(value: f32) -> u8 {
-    (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }

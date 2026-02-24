@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use skia_safe::{
-    AlphaType, Color, ColorType, FontMgr, FontStyle, ImageInfo,
+    Color, FontMgr, FontStyle,
     font_style::Weight,
     surfaces,
     textlayout::{
@@ -12,7 +12,10 @@ use skia_safe::{
 
 use crate::{
     error::LumenError,
-    node::{InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue},
+    node::{
+        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        pixel_utils::{read_surface_rgba, to_skia_color},
+    },
     raster::RasterFrame,
     render::RenderContext,
 };
@@ -100,7 +103,7 @@ impl NodeEval for Text {
     ) -> Result<PortValue, LumenError> {
         let layout_width = self
             .max_width
-            .unwrap_or(ctx.width as f32)
+            .unwrap_or(ctx.request.width() as f32)
             .clamp(1.0, u32::MAX as f32);
 
         let mut paragraph_style = ParagraphStyle::new();
@@ -113,14 +116,17 @@ impl NodeEval for Text {
 
         let mut text_style = ParagraphTextStyle::new();
         text_style.set_font_size(self.font_size.max(1.0));
-        text_style.set_color(to_color(self.color));
+        text_style.set_color(to_skia_color(self.color));
         text_style.set_font_style(FontStyle::new(
             Weight::from(i32::from(self.font_weight.clamp(100, 900))),
             skia_safe::font_style::Width::NORMAL,
             to_slant(self.font_style),
         ));
-        if !self.font_family.trim().is_empty() {
-            text_style.set_font_families(&[self.font_family.as_str()]);
+        let requested_font_family = self.font_family.trim();
+        if requested_font_family.is_empty() {
+            text_style.set_font_families(&["sans-serif"]);
+        } else {
+            text_style.set_font_families(&[requested_font_family, "sans-serif"]);
         }
 
         paragraph_style.set_text_style(&text_style);
@@ -137,7 +143,7 @@ impl NodeEval for Text {
         let width = layout_width.ceil().max(1.0) as u32;
         let height = paragraph.height().ceil().max(1.0) as u32;
         let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            return Ok(PortValue::RasterFrame(RasterFrame::bitmap(
                 Arc::new(vec![0_u8; 4]),
                 1,
                 1,
@@ -153,39 +159,13 @@ impl NodeEval for Text {
         };
         paragraph.paint(canvas, (0.0, vertical_offset));
 
-        let bytes = read_surface_rgba(&mut surface, width, height);
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        let bytes = read_surface_rgba(&mut surface, width, height, Some(ctx));
+        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
             Arc::new(bytes),
             width,
             height,
         )))
     }
-}
-
-fn read_surface_rgba(surface: &mut skia_safe::Surface, width: u32, height: u32) -> Vec<u8> {
-    let byte_len = rgba_byte_len(width, height).unwrap_or(4);
-    let mut bytes = vec![0_u8; byte_len];
-    let info = ImageInfo::new(
-        (width as i32, height as i32),
-        ColorType::RGBA8888,
-        AlphaType::Premul,
-        None,
-    );
-    if surface.read_pixels(&info, bytes.as_mut_slice(), (width * 4) as usize, (0, 0)) {
-        bytes
-    } else {
-        vec![0_u8; byte_len]
-    }
-}
-
-fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
-    let pixels = u64::from(width).checked_mul(u64::from(height))?;
-    let bytes = pixels.checked_mul(4)?;
-    usize::try_from(bytes).ok()
-}
-
-fn to_color(color: [u8; 4]) -> Color {
-    Color::from_argb(color[3], color[0], color[1], color[2])
 }
 
 fn to_slant(style: TextFontStyle) -> skia_safe::font_style::Slant {

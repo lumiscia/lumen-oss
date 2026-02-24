@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use crate::{
     error::LumenError,
-    node::{InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue},
+    node::{
+        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        pixel_utils::{render_with_skia, rgba_byte_len, to_skia_color},
+    },
     raster::RasterFrame,
     render::RenderContext,
 };
@@ -41,32 +44,22 @@ impl NodeEval for SolidColor {
         _inputs: &NodeInputs,
         ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
-        let mut width = self.width.unwrap_or(ctx.width).max(1);
-        let mut height = self.height.unwrap_or(ctx.height).max(1);
-        let byte_len = match rgba_byte_len(width, height) {
-            Some(len) => len,
-            None => {
-                width = 1;
-                height = 1;
-                4
-            }
-        };
-
-        let mut bytes = vec![0_u8; byte_len];
-        for pixel in bytes.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&self.color);
+        let mut width = self.width.unwrap_or(ctx.request.width()).max(1);
+        let mut height = self.height.unwrap_or(ctx.request.height()).max(1);
+        if rgba_byte_len(width, height).is_none() {
+            width = 1;
+            height = 1;
         }
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        let color = to_skia_color(self.color);
+        let bytes = render_with_skia(width, height, Some(ctx), |canvas| {
+            canvas.clear(color);
+        });
+
+        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
             Arc::new(bytes),
             width,
             height,
         )))
     }
-}
-
-fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
-    let pixels = u64::from(width).checked_mul(u64::from(height))?;
-    let bytes = pixels.checked_mul(4)?;
-    usize::try_from(bytes).ok()
 }

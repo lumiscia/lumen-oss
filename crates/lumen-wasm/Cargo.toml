@@ -11,6 +11,11 @@ crate-type = ["staticlib"]
 default = ["json"]
 json = ["lumen/json"]
 
+webgl = ["lumen/webgl"]
+
+metal = ["lumen/metal"]
+vulkan = ["lumen/vulkan"]
+
 [dependencies]
 lumen = { path = "../lumen" }
 serde = { version = "1.0.228", features = ["derive"] }

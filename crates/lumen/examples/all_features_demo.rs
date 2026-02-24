@@ -16,7 +16,7 @@ use lumen::{
     TrackId, Warning,
     animation::PropertyPath,
     error::SinkError,
-    media::{ImageResolver, MediaStore, VideoFrameResolver},
+    media::{ImageResolver, MediaStore, VideoFrameResolver, premultiply_rgba_in_place_if_needed},
     node::{
         Node, PropertyValue, ShapeGeometry,
         blur::Blur,
@@ -74,6 +74,8 @@ impl DemoImageResolver {
         pixels: Vec<u8>,
         stats: Arc<Mutex<ImageResolveStats>>,
     ) -> Self {
+        let mut pixels = pixels;
+        premultiply_rgba_in_place_if_needed(&mut pixels);
         Self {
             id: id.into(),
             width,
@@ -97,11 +99,11 @@ impl ImageResolver for DemoImageResolver {
         self.height
     }
 
-    fn resolve(&self) -> Result<Vec<u8>, lumen::error::MediaError> {
+    fn resolve(&self) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
         if let Ok(mut stats) = self.stats.lock() {
             stats.calls += 1;
         }
-        Ok(self.pixels.as_ref().clone())
+        Ok(Arc::clone(&self.pixels))
     }
 }
 
@@ -149,7 +151,7 @@ impl VideoFrameResolver for DemoVideoResolver {
         self.frame_count
     }
 
-    fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, lumen::error::MediaError> {
+    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
         if frame >= self.frame_count {
             return Err(lumen::error::MediaError::FrameOutOfRange {
                 media_source: self.id.clone(),
@@ -161,7 +163,9 @@ impl VideoFrameResolver for DemoVideoResolver {
             stats.calls += 1;
             stats.requested_frames.push(frame);
         }
-        Ok(procedural_video_frame(self.width, self.height, frame))
+        let mut pixels = procedural_video_frame(self.width, self.height, frame);
+        premultiply_rgba_in_place_if_needed(&mut pixels);
+        Ok(Arc::new(pixels))
     }
 }
 
@@ -224,24 +228,24 @@ impl Sink for RawRgbaSink {
                 frame,
                 details: error.to_string(),
             })?;
-        let RasterFrame::Bitmap(bytes, width, height) = bitmap else {
+        let RasterFrame::Bitmap(bitmap) = bitmap else {
             return Err(SinkError::WriteFrame {
                 frame,
                 details: "expected bitmap frame".to_string(),
             });
         };
-        if width != self.width || height != self.height {
+        if bitmap.storage_width != self.width || bitmap.storage_height != self.height {
             return Err(SinkError::WriteFrame {
                 frame,
                 details: format!(
-                    "unexpected frame dimensions {width}x{height}, expected {}x{}",
-                    self.width, self.height
+                    "unexpected frame dimensions {}x{}, expected {}x{}",
+                    bitmap.storage_width, bitmap.storage_height, self.width, self.height
                 ),
             });
         }
 
         self.writer
-            .write_all(bytes.as_slice())
+            .write_all(bitmap.pixels.as_slice())
             .map_err(|error| SinkError::WriteFrame {
                 frame,
                 details: error.to_string(),
@@ -251,12 +255,16 @@ impl Sink for RawRgbaSink {
             stats.frames_written += 1;
             stats.bytes_written = stats
                 .bytes_written
-                .saturating_add(u64::try_from(bytes.len()).unwrap_or(0));
+                .saturating_add(u64::try_from(bitmap.pixels.len()).unwrap_or(0));
             stats.first_frame.get_or_insert(frame);
             stats.last_frame = Some(frame);
-            stats.frame_checksum = stats
-                .frame_checksum
-                .wrapping_add(bytes.iter().map(|byte| u64::from(*byte)).sum::<u64>());
+            stats.frame_checksum = stats.frame_checksum.wrapping_add(
+                bitmap
+                    .pixels
+                    .iter()
+                    .map(|byte| u64::from(*byte))
+                    .sum::<u64>(),
+            );
         }
 
         Ok(())
@@ -780,6 +788,7 @@ fn build_feature_composition() -> Result<(Composition, Vec<&'static str>)> {
         NodeKind::Shadow(Shadow {
             offset_x: 8,
             offset_y: 6,
+            blur_radius: 0.0,
             color: [0, 0, 0, 140],
         }),
     );
@@ -996,6 +1005,7 @@ fn build_feature_composition() -> Result<(Composition, Vec<&'static str>)> {
         NodeKind::Shadow(Shadow {
             offset_x: -5,
             offset_y: 4,
+            blur_radius: 0.0,
             color: [0, 0, 0, 100],
         }),
     );
@@ -1307,7 +1317,7 @@ fn run_json_delegate_smoke() -> Result<&'static str> {
 
 fn run_surface_pool_smoke() -> Result<&'static str> {
     let pool = Arc::new(SurfacePool::new());
-    let raster = RasterFrame::Bitmap(Arc::new(vec![255, 0, 0, 255]), 1, 1);
+    let raster = RasterFrame::bitmap(Arc::new(vec![255, 0, 0, 255]), 1, 1);
     let promoted = raster.promote_to_surface(&pool)?;
     let _roundtrip = promoted.to_bitmap()?;
     Ok("ok")

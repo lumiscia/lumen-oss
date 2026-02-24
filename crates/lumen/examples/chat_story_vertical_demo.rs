@@ -104,11 +104,11 @@ impl ImageResolver for StaticImageResolver {
         self.height
     }
 
-    fn resolve(&self) -> Result<Vec<u8>, lumen::error::MediaError> {
+    fn resolve(&self) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
         if let Ok(mut stats) = self.stats.lock() {
             stats.calls += 1;
         }
-        Ok(self.pixels.as_ref().clone())
+        Ok(Arc::clone(&self.pixels))
     }
 }
 
@@ -139,7 +139,7 @@ impl VideoFrameResolver for ProceduralVideoResolver {
         self.frame_count
     }
 
-    fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, lumen::error::MediaError> {
+    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
         if frame >= self.frame_count {
             return Err(lumen::error::MediaError::FrameOutOfRange {
                 media_source: self.id.clone(),
@@ -151,7 +151,7 @@ impl VideoFrameResolver for ProceduralVideoResolver {
             stats.calls += 1;
             stats.frames.push(frame);
         }
-        Ok((self.renderer)(self.width, self.height, frame))
+        Ok(Arc::new((self.renderer)(self.width, self.height, frame)))
     }
 }
 
@@ -216,30 +216,32 @@ impl Sink for RawRgbaSink {
                 frame,
                 details: error.to_string(),
             })?;
-        let RasterFrame::Bitmap(bytes, width, height) = bitmap else {
+        let RasterFrame::Bitmap(bitmap) = bitmap else {
             return Err(SinkError::WriteFrame {
                 frame,
                 details: "expected bitmap".to_string(),
             });
         };
-        if width != self.width || height != self.height {
+        if bitmap.storage_width != self.width || bitmap.storage_height != self.height {
             return Err(SinkError::WriteFrame {
                 frame,
                 details: format!(
-                    "unexpected dimensions {width}x{height}, expected {}x{}",
-                    self.width, self.height
+                    "unexpected dimensions {}x{}, expected {}x{}",
+                    bitmap.storage_width, bitmap.storage_height, self.width, self.height
                 ),
             });
         }
         self.writer
-            .write_all(bytes.as_slice())
+            .write_all(bitmap.pixels.as_slice())
             .map_err(|error| SinkError::WriteFrame {
                 frame,
                 details: error.to_string(),
             })?;
         if let Ok(mut stats) = self.stats.lock() {
             stats.frames_written += 1;
-            stats.bytes_written = stats.bytes_written.saturating_add(bytes.len() as u64);
+            stats.bytes_written = stats
+                .bytes_written
+                .saturating_add(bitmap.pixels.len() as u64);
         }
         Ok(())
     }
@@ -534,6 +536,7 @@ fn build_chat_story_composition() -> Result<Composition> {
         NodeKind::Shadow(Shadow {
             offset_x: 0,
             offset_y: 10,
+            blur_radius: 0.0,
             color: [0, 0, 0, 70],
         }),
     ));

@@ -15,6 +15,12 @@ if (!existsSync(staticLib)) {
 	process.exit(1)
 }
 
+if (!process.env.EMSDK) {
+	console.warn(
+		'[lumen-wasm] EMSDK is not set; ensure your emscripten toolchain is discoverable (asdf-managed emsdk is also supported).',
+	)
+}
+
 const exportedFunctions = [
 	'_malloc',
 	'_free',
@@ -54,7 +60,11 @@ execFileSync(
 		'-s',
 		exportArg,
 		'-s',
-		"EXPORTED_RUNTIME_METHODS=['HEAPU8']",
+		"EXPORTED_RUNTIME_METHODS=['HEAPU8','GL']",
+		'-s',
+		'ERROR_ON_UNDEFINED_SYMBOLS=0',
+		'-s',
+		'MAX_WEBGL_VERSION=2',
 		'-s',
 		'MODULARIZE=1',
 		'-s',

@@ -19,7 +19,7 @@ use ffmpeg_next as ffmpeg;
 
 use crate::{
     error::MediaError,
-    media::{ImageResolver, MediaStore, VideoFrameResolver},
+    media::{ImageResolver, MediaStore, VideoFrameResolver, premultiply_rgba_in_place_if_needed},
 };
 
 const DEFAULT_LRU_CAPACITY: usize = 48;
@@ -126,7 +126,9 @@ impl VideoDecodeWorker {
             return Ok(cached);
         }
 
-        let decoded = Arc::new(self.decoder.decode_frame(frame)?);
+        let mut decoded = self.decoder.decode_frame(frame)?;
+        premultiply_rgba_in_place_if_needed(&mut decoded);
+        let decoded = Arc::new(decoded);
         self.cache.insert(frame, Arc::clone(&decoded));
         self.prefetch_after(frame);
         Ok(decoded)
@@ -145,9 +147,10 @@ impl VideoDecodeWorker {
             if self.cache.contains(candidate) {
                 continue;
             }
-            let Ok(decoded) = self.decoder.decode_frame(candidate) else {
+            let Ok(mut decoded) = self.decoder.decode_frame(candidate) else {
                 break;
             };
+            premultiply_rgba_in_place_if_needed(&mut decoded);
             self.cache.insert(candidate, Arc::new(decoded));
         }
     }
@@ -546,7 +549,7 @@ impl VideoFrameResolver for FfmpegVideoResolver {
         self.frame_count
     }
 
-    fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, MediaError> {
+    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError> {
         if frame >= self.frame_count {
             return Err(MediaError::FrameOutOfRange {
                 media_source: self.id.clone(),
@@ -563,13 +566,10 @@ impl VideoFrameResolver for FfmpegVideoResolver {
                 details: "video decode worker is unavailable".to_string(),
             })?;
 
-        response_rx
-            .recv()
-            .map_err(|_| MediaError::Decode {
-                media_source: self.id.clone(),
-                details: "video decode worker did not return a frame".to_string(),
-            })?
-            .map(|buffer| buffer.as_ref().clone())
+        response_rx.recv().map_err(|_| MediaError::Decode {
+            media_source: self.id.clone(),
+            details: "video decode worker did not return a frame".to_string(),
+        })?
     }
 }
 
@@ -595,7 +595,7 @@ impl VideoFrameResolver for SharedVideoResolver {
         self.inner.frame_count()
     }
 
-    fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, MediaError> {
+    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError> {
         self.inner.resolve_frame(frame)
     }
 }
@@ -618,7 +618,7 @@ impl ImageResolver for SharedImageResolver {
         self.inner.height()
     }
 
-    fn resolve(&self) -> Result<Vec<u8>, MediaError> {
+    fn resolve(&self) -> Result<Arc<Vec<u8>>, MediaError> {
         self.inner.resolve_frame(0)
     }
 }
