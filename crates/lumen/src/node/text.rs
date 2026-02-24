@@ -103,7 +103,7 @@ impl NodeEval for Text {
     ) -> Result<PortValue, LumenError> {
         let layout_width = self
             .max_width
-            .unwrap_or(ctx.width as f32)
+            .unwrap_or(ctx.request.width() as f32)
             .clamp(1.0, u32::MAX as f32);
 
         let mut paragraph_style = ParagraphStyle::new();

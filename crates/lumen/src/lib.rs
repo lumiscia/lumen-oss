@@ -39,7 +39,7 @@ pub use node::{
     PortValue, PropertyValue, TrackId, VectorData,
 };
 pub use raster::RasterFrame;
-pub use render::{CancellationToken, NullMediaStore, RenderContext};
+pub use render::{CancellationToken, NullMediaStore, RenderContext, RenderQuality, RenderRequest};
 pub use sink::Sink;
 pub use surface_pool::{SurfacePool, SurfaceRef};
 

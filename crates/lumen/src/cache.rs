@@ -71,9 +71,11 @@ impl AssetCache {
         cache_id: &str,
         width: u32,
         height: u32,
+        request_hash: u64,
         signature_hash: u64,
     ) -> Option<CachedBitmap> {
-        self.memo_cache.get(cache_id, width, height, signature_hash)
+        self.memo_cache
+            .get(cache_id, width, height, request_hash, signature_hash)
     }
 
     pub fn memo_insert(
@@ -81,17 +83,24 @@ impl AssetCache {
         cache_id: impl Into<String>,
         width: u32,
         height: u32,
+        request_hash: u64,
         signature_hash: u64,
         bitmap: CachedBitmap,
     ) {
-        self.memo_cache
-            .insert(cache_id.into(), width, height, signature_hash, bitmap);
+        self.memo_cache.insert(
+            cache_id.into(),
+            width,
+            height,
+            request_hash,
+            signature_hash,
+            bitmap,
+        );
     }
 }
 
 #[derive(Debug, Default)]
 pub struct MemoCache {
-    entries: HashMap<(String, u32, u32, u64), CachedBitmap>,
+    entries: HashMap<(String, u32, u32, u64, u64), CachedBitmap>,
 }
 
 impl MemoCache {
@@ -104,10 +113,17 @@ impl MemoCache {
         cache_id: &str,
         width: u32,
         height: u32,
+        request_hash: u64,
         signature_hash: u64,
     ) -> Option<CachedBitmap> {
         self.entries
-            .get(&(cache_id.to_string(), width, height, signature_hash))
+            .get(&(
+                cache_id.to_string(),
+                width,
+                height,
+                request_hash,
+                signature_hash,
+            ))
             .cloned()
     }
 
@@ -116,11 +132,14 @@ impl MemoCache {
         cache_id: String,
         width: u32,
         height: u32,
+        request_hash: u64,
         signature_hash: u64,
         bitmap: CachedBitmap,
     ) {
-        self.entries
-            .insert((cache_id, width, height, signature_hash), bitmap);
+        self.entries.insert(
+            (cache_id, width, height, request_hash, signature_hash),
+            bitmap,
+        );
     }
 }
 
@@ -128,7 +147,7 @@ impl MemoCache {
 pub struct NodeOutputCacheKey {
     pub node_id: NodeId,
     pub frame: u32,
-    pub resolution_key: u32,
+    pub request_key: u64,
     pub graph_revision: u64,
 }
 
@@ -146,7 +165,7 @@ impl NodeOutputCache {
         &mut self,
         node_id: NodeId,
         frame: u32,
-        resolution_key: u32,
+        request_key: u64,
         graph_revision: u64,
         value: PortValue,
     ) {
@@ -154,7 +173,7 @@ impl NodeOutputCache {
             NodeOutputCacheKey {
                 node_id,
                 frame,
-                resolution_key,
+                request_key,
                 graph_revision,
             },
             value,
@@ -165,13 +184,13 @@ impl NodeOutputCache {
         &self,
         node_id: NodeId,
         frame: u32,
-        resolution_key: u32,
+        request_key: u64,
         graph_revision: u64,
     ) -> Option<&PortValue> {
         self.outputs.get(&NodeOutputCacheKey {
             node_id,
             frame,
-            resolution_key,
+            request_key,
             graph_revision,
         })
     }

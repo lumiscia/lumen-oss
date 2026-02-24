@@ -18,9 +18,45 @@ use crate::{
     graph::{Connection, InputPort, OutputPort},
     media::{MediaStore, VideoFrameResolver},
     node::{NodeId, NodeInputs, NodeKind, PortValue},
-    raster::RasterFrame,
+    raster::{RasterFrame, RectI},
     surface_pool::SurfacePool,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum RenderQuality {
+    Draft,
+    #[default]
+    Final,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderRequest {
+    pub frame: u32,
+    pub output_rect: RectI,
+    pub roi: Option<RectI>,
+    pub proxy_scale: u32,
+    pub quality: RenderQuality,
+}
+
+impl RenderRequest {
+    pub fn full_frame(frame: u32, width: u32, height: u32) -> Self {
+        Self {
+            frame,
+            output_rect: RectI::from_size(width, height),
+            roi: None,
+            proxy_scale: 1,
+            quality: RenderQuality::Final,
+        }
+    }
+
+    pub const fn width(&self) -> u32 {
+        self.output_rect.width
+    }
+
+    pub const fn height(&self) -> u32 {
+        self.output_rect.height
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct CancellationToken {
@@ -42,10 +78,8 @@ impl CancellationToken {
 }
 
 pub struct RenderContext {
-    pub frame: u32,
+    pub request: RenderRequest,
     pub fps: f32,
-    pub width: u32,
-    pub height: u32,
     pub duration_frames: u32,
     pub surface_pool: Arc<SurfacePool>,
     pub asset_cache: Arc<RwLock<AssetCache>>,
@@ -65,10 +99,12 @@ impl RenderContext {
         capability_profile: RuntimeCapabilityProfile,
     ) -> Self {
         Self {
-            frame: 0,
+            request: RenderRequest::full_frame(
+                0,
+                composition.render_settings.width,
+                composition.render_settings.height,
+            ),
             fps: composition.timeline.fps,
-            width: composition.render_settings.width,
-            height: composition.render_settings.height,
             duration_frames: composition.timeline.duration_frames,
             surface_pool,
             asset_cache,
@@ -80,8 +116,13 @@ impl RenderContext {
         }
     }
 
-    fn resolution_key(&self) -> u32 {
-        self.width.saturating_mul(self.height)
+    fn request_cache_key(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.request.output_rect.hash(&mut hasher);
+        self.request.roi.hash(&mut hasher);
+        self.request.proxy_scale.hash(&mut hasher);
+        self.request.quality.hash(&mut hasher);
+        hasher.finish()
     }
 }
 
@@ -99,10 +140,12 @@ impl Composition {
             .into());
         }
 
-        ctx.frame = frame;
+        ctx.request = RenderRequest::full_frame(
+            frame,
+            self.render_settings.width,
+            self.render_settings.height,
+        );
         ctx.fps = self.timeline.fps;
-        ctx.width = self.render_settings.width;
-        ctx.height = self.render_settings.height;
         ctx.duration_frames = self.timeline.duration_frames;
         ctx.graph_revision = compute_graph_revision(self);
         ctx.node_output_cache.clear();
@@ -151,7 +194,7 @@ impl Composition {
     ) -> Result<PortValue, LumenError> {
         if let Some(cached) = ctx
             .node_output_cache
-            .get(node_id, frame, ctx.resolution_key(), ctx.graph_revision)
+            .get(node_id, frame, ctx.request_cache_key(), ctx.graph_revision)
             .cloned()
         {
             return Ok(cached);
@@ -173,7 +216,7 @@ impl Composition {
             ctx.node_output_cache.insert(
                 node_id,
                 frame,
-                ctx.resolution_key(),
+                ctx.request_cache_key(),
                 ctx.graph_revision,
                 short_circuit.clone(),
             );
@@ -215,8 +258,8 @@ impl Composition {
             }
         }
 
-        let previous_frame = ctx.frame;
-        ctx.frame = frame;
+        let previous_frame = ctx.request.frame;
+        ctx.request.frame = frame;
         let output =
             resolved_kind
                 .evaluate(&inputs, ctx)
@@ -226,13 +269,13 @@ impl Composition {
                     node_kind: resolved_kind.kind_name(),
                     details: err.to_string(),
                 });
-        ctx.frame = previous_frame;
+        ctx.request.frame = previous_frame;
         let output = output?;
 
         ctx.node_output_cache.insert(
             node_id,
             frame,
-            ctx.resolution_key(),
+            ctx.request_cache_key(),
             ctx.graph_revision,
             output.clone(),
         );
@@ -294,8 +337,15 @@ impl Composition {
         }
 
         let signature = self.memo_signature(node_id, memo.allow_expressions, frame);
+        let request_hash = ctx.request_cache_key();
         if let Ok(cache) = ctx.asset_cache.read()
-            && let Some(cached) = cache.memo_get(&memo.cache_id, ctx.width, ctx.height, signature)
+            && let Some(cached) = cache.memo_get(
+                &memo.cache_id,
+                ctx.request.width(),
+                ctx.request.height(),
+                request_hash,
+                signature,
+            )
         {
             return Ok(PortValue::RasterFrame(RasterFrame::bitmap(
                 cached.pixels,
@@ -324,6 +374,7 @@ impl Composition {
                 memo.cache_id.clone(),
                 width,
                 height,
+                request_hash,
                 signature,
                 CachedBitmap {
                     pixels: Arc::clone(&pixels),

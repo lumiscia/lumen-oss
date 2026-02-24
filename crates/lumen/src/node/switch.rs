@@ -41,18 +41,19 @@ impl Switch {
 
     fn transparent_output(ctx: &RenderContext) -> Result<PortValue, LumenError> {
         let pixel_count = ctx
-            .width
-            .checked_mul(ctx.height)
+            .request
+            .width()
+            .checked_mul(ctx.request.height())
             .and_then(|count| count.checked_mul(4))
             .ok_or(RenderError::SurfaceAllocation {
-                width: ctx.width,
-                height: ctx.height,
+                width: ctx.request.width(),
+                height: ctx.request.height(),
             })?;
 
         Ok(PortValue::RasterFrame(RasterFrame::bitmap(
             Arc::new(vec![0; pixel_count as usize]),
-            ctx.width,
-            ctx.height,
+            ctx.request.width(),
+            ctx.request.height(),
         )))
     }
 
@@ -107,7 +108,9 @@ impl NodeEval for Switch {
         let selected_index = self
             .map
             .iter()
-            .filter_map(|(index, frame_range)| frame_range.contains(&ctx.frame).then_some(*index))
+            .filter_map(|(index, frame_range)| {
+                frame_range.contains(&ctx.request.frame).then_some(*index)
+            })
             .min();
 
         let Some(index) = selected_index else {

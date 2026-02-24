@@ -120,13 +120,12 @@ fn evaluate_video(
         );
     }
 
-    let source_frame = map_to_source_frame(ctx.frame, frame_count, range, speed, loop_mode).ok_or(
-        MediaError::FrameOutOfRange {
+    let source_frame = map_to_source_frame(ctx.request.frame, frame_count, range, speed, loop_mode)
+        .ok_or(MediaError::FrameOutOfRange {
             media_source: source.to_string(),
-            frame: ctx.frame,
+            frame: ctx.request.frame,
             frame_count,
-        },
-    )?;
+        })?;
 
     let decoded = resolver.resolve_frame(source_frame)?;
     validate_rgba_len(source, width, height, decoded.as_ref())?;

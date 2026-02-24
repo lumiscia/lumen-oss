@@ -152,19 +152,19 @@ fn evaluate_expr(
             )
         }
         ExprNode::Global(global) => match global {
-            GlobalVar::Frame => Ok(ExpressionValue::Number(f64::from(ctx.frame))),
+            GlobalVar::Frame => Ok(ExpressionValue::Number(f64::from(ctx.request.frame))),
             GlobalVar::Time => {
                 if ctx.fps <= 0.0 {
                     Ok(ExpressionValue::Number(0.0))
                 } else {
                     Ok(ExpressionValue::Number(
-                        f64::from(ctx.frame) / f64::from(ctx.fps),
+                        f64::from(ctx.request.frame) / f64::from(ctx.fps),
                     ))
                 }
             }
             GlobalVar::Fps => Ok(ExpressionValue::Number(f64::from(ctx.fps))),
-            GlobalVar::Width => Ok(ExpressionValue::Number(f64::from(ctx.width))),
-            GlobalVar::Height => Ok(ExpressionValue::Number(f64::from(ctx.height))),
+            GlobalVar::Width => Ok(ExpressionValue::Number(f64::from(ctx.request.width()))),
+            GlobalVar::Height => Ok(ExpressionValue::Number(f64::from(ctx.request.height()))),
             GlobalVar::Custom(name) => {
                 Err(LumenError::Expression(ExpressionError::UndefinedVariable {
                     node_id,
@@ -184,7 +184,7 @@ fn evaluate_expr(
             let value = composition.sample_property_without_expressions(
                 *target_node_id,
                 &target_path.0,
-                ctx.frame,
+                ctx.request.frame,
             )?;
             property_value_to_expression_value(&value)
         }

@@ -24,7 +24,7 @@ pub enum ColorSpaceTag {
     Srgb,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RectI {
     pub x: i32,
     pub y: i32,

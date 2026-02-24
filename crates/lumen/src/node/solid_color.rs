@@ -44,8 +44,8 @@ impl NodeEval for SolidColor {
         _inputs: &NodeInputs,
         ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
-        let mut width = self.width.unwrap_or(ctx.width).max(1);
-        let mut height = self.height.unwrap_or(ctx.height).max(1);
+        let mut width = self.width.unwrap_or(ctx.request.width()).max(1);
+        let mut height = self.height.unwrap_or(ctx.request.height()).max(1);
         if rgba_byte_len(width, height).is_none() {
             width = 1;
             height = 1;

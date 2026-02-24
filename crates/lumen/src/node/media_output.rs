@@ -6,7 +6,7 @@ use crate::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
         pixel_utils::{make_skia_image, render_with_skia},
     },
-    raster::{BitmapFrame, RasterFrame, RectI},
+    raster::{BitmapFrame, RasterFrame},
     render::RenderContext,
 };
 
@@ -35,8 +35,8 @@ impl NodeEval for MediaOutput {
         ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
         let source = inputs.get_raster("source")?;
-        let (target_w, target_h) = (ctx.width, ctx.height);
-        let output_rect = RectI::from_size(target_w, target_h);
+        let output_rect = ctx.request.output_rect;
+        let (target_w, target_h) = (output_rect.width, output_rect.height);
         let (source_w, source_h) = source.dimensions();
 
         if source_w == target_w && source_h == target_h {
