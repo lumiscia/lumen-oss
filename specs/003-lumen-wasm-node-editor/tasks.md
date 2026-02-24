@@ -58,14 +58,14 @@
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T009 [P] [US1] Unit test in `packages/lumen/tests/json-delegate.test.ts` — test `createDefaultComposition()` produces valid structure, test JSON.stringify/parse round-trip preserves all fields
-- [ ] T010 [P] [US1] Integration test concept in `packages/lumen/tests/wasm-render.test.ts` — test that `LumenPreviewRenderer.loadComposition(solidColorComposition)` + `renderFrame(0)` succeeds (requires WASM binary; mark as integration test)
+- [x] T009 [P] [US1] Unit test in `packages/lumen/tests/json-delegate.test.ts` — test `createDefaultComposition()` produces valid structure, test JSON.stringify/parse round-trip preserves all fields
+- [x] T010 [P] [US1] Integration test concept in `packages/lumen/tests/wasm-render.test.ts` — test that `LumenPreviewRenderer.loadComposition(solidColorComposition)` + `renderFrame(0)` succeeds (requires WASM binary; mark as integration test)
 
 ### Implementation for User Story 1
 
-- [ ] T011 [US1] Adapt `packages/lumen/src/canvas/renderer.ts` — modify `LumenPreviewRenderer` to accept `JsonComposition` (from `json-delegate/types.ts`) instead of old `Project` type. Update `loadProject` → `loadComposition` to serialize `JsonComposition` to JSON string and pass to `lumen_wasm_load_project`. Update frame render loop to use JSON delegate timeline settings.
-- [ ] T012 [US1] Adapt `packages/lumen/src/canvas/wasm.ts` — update `LumenWasmBindings` type annotations to document that `lumen_wasm_load_project` accepts JSON delegate string. Update `getFrameRequirements` return type to use source IDs from JSON delegate format (media_in node source fields).
-- [ ] T013 [US1] Update `packages/lumen/src/canvas/types.ts` — add `CompositionLoadResult`, `FrameRenderResult`, `RenderStats` types aligned with JSON delegate format. Remove/replace old `Project`-based types if present.
+- [x] T011 [US1] Adapt `packages/lumen/src/canvas/renderer.ts` — modify `LumenPreviewRenderer` to accept `JsonComposition` (from `json-delegate/types.ts`) instead of old `Project` type. Update `loadProject` → `loadComposition` to serialize `JsonComposition` to JSON string and pass to `lumen_wasm_load_project`. Update frame render loop to use JSON delegate timeline settings.
+- [x] T012 [US1] Adapt `packages/lumen/src/canvas/wasm.ts` — update `LumenWasmBindings` type annotations to document that `lumen_wasm_load_project` accepts JSON delegate string. Update `getFrameRequirements` return type to use source IDs from JSON delegate format (media_in node source fields).
+- [x] T013 [US1] Update `packages/lumen/src/canvas/types.ts` — add `CompositionLoadResult`, `FrameRenderResult`, `RenderStats` types aligned with JSON delegate format. Remove/replace old `Project`-based types if present.
 
 **Checkpoint**: WASM renderer accepts JSON delegate compositions and renders frames. Library layer is functional.
 
