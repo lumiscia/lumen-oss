@@ -176,15 +176,15 @@
 
 ### Tests for User Story 6 (REQUIRED for behavior changes) ⚠️
 
-- [ ] T045 [P] [US6] Unit test in `apps/editor/tests/nodes.test.ts` — for each of 16 node types: verify registry entry has all expected properties from data-model, verify default values produce valid `JsonNodeKind`, verify all ports match Rust definitions from research.md R3
+- [x] T045 [P] [US6] Unit test in `apps/editor/tests/nodes.test.ts` — for each of 16 node types: verify registry entry has all expected properties from data-model, verify default values produce valid `JsonNodeKind`, verify all ports match Rust definitions from research.md R3
 
 ### Implementation for User Story 6
 
-- [ ] T046 [US6] Implement geometry sub-editor for Shape node in `apps/editor/src/components/inspector/property-fields.tsx` — geometry type selector (rectangle/ellipse/polygon), dimension fields for rect/ellipse, point list editor for polygon
-- [ ] T047 [US6] Implement media kind sub-editor for MediaIn node in `apps/editor/src/components/inspector/property-fields.tsx` — media type toggle (image/video), source ID input, conditional video fields: range (start/end), speed (number), loop mode (none/repeat/ping_pong)
-- [ ] T048 [US6] Implement switch map editor for Switch node in `apps/editor/src/components/inspector/property-fields.tsx` — dynamic list of entries (key string + range start/end), add/remove entry buttons
-- [ ] T049 [US6] Implement text property editor for Text node in `apps/editor/src/components/inspector/property-fields.tsx` — content textarea, font family input, font size/weight numeric inputs, font style dropdown, optional max_width, color picker, alignment dropdowns (horizontal + vertical)
-- [ ] T050 [US6] Verify all remaining node property editors in `apps/editor/src/components/inspector/property-fields.tsx` — ensure every property for Transform (7 fields + sampling), ShapeRenderer (5 fields), Crop (4 fields), Resize (4 fields), Blur (1), Shadow (4), Boolean (2), Merge (2), FrameHold (1), Memo (2), SolidColor (3) all have correct input controls from T028
+- [x] T046 [US6] Implement geometry sub-editor for Shape node in `apps/editor/src/components/inspector/property-fields.tsx` — geometry type selector (rectangle/ellipse/polygon), dimension fields for rect/ellipse, point list editor for polygon
+- [x] T047 [US6] Implement media kind sub-editor for MediaIn node in `apps/editor/src/components/inspector/property-fields.tsx` — media type toggle (image/video), source ID input, conditional video fields: range (start/end), speed (number), loop mode (none/repeat/ping_pong)
+- [x] T048 [US6] Implement switch map editor for Switch node in `apps/editor/src/components/inspector/property-fields.tsx` — dynamic list of entries (key string + range start/end), add/remove entry buttons
+- [x] T049 [US6] Implement text property editor for Text node in `apps/editor/src/components/inspector/property-fields.tsx` — content textarea, font family input, font size/weight numeric inputs, font style dropdown, optional max_width, color picker, alignment dropdowns (horizontal + vertical)
+- [x] T050 [US6] Verify all remaining node property editors in `apps/editor/src/components/inspector/property-fields.tsx` — ensure every property for Transform (7 fields + sampling), ShapeRenderer (5 fields), Crop (4 fields), Resize (4 fields), Blur (1), Shadow (4), Boolean (2), Merge (2), FrameHold (1), Memo (2), SolidColor (3) all have correct input controls from T028
 
 **Checkpoint**: All 16 node types fully configurable in the inspector. No stubbed properties. Every property serializes correctly.
 
@@ -201,7 +201,7 @@
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
 - [x] T051 [P] [US7] Unit test in `packages/lumen/tests/validate.test.ts` — test `validateComposition`: missing MediaOutput → error, duplicate node IDs → error, connection references nonexistent node → error, cycle → error, incompatible port types → error, orphaned keyframe track → warning, valid composition → pass
-- [ ] T052 [P] [US7] Unit test in `apps/editor/tests/serialization.test.ts` — full round-trip: build complex graph (10+ nodes, connections, keyframes, expressions), export JSON string, parse, reimport, assert all nodes/edges/properties/tracks/expressions identical
+- [x] T052 [P] [US7] Unit test in `apps/editor/tests/serialization.test.ts` — full round-trip: build complex graph (10+ nodes, connections, keyframes, expressions), export JSON string, parse, reimport, assert all nodes/edges/properties/tracks/expressions identical
 
 ### Implementation for User Story 7
 
@@ -241,10 +241,10 @@
 
 **Purpose**: Quality improvements affecting multiple user stories
 
-- [ ] T065 [P] Add editor styles in `apps/editor/src/styles/globals.css` — Tailwind v4 setup, React Flow theme overrides, node color coding by category, handle styling by port type (RasterFrame vs Vector)
-- [ ] T066 [P] Add error boundary and loading states to `apps/editor/src/App.tsx` — WASM load failure message, composition parse error display, graceful degradation when WebCodecs unavailable
-- [ ] T067 Run `pnpm lint --write` across all modified files
-- [ ] T068 Run quickstart.md validation — follow `specs/003-lumen-wasm-node-editor/quickstart.md` steps on a clean checkout and confirm they work
+- [x] T065 [P] Add editor styles in `apps/editor/src/styles/globals.css` — Tailwind v4 setup, React Flow theme overrides, node color coding by category, handle styling by port type (RasterFrame vs Vector)
+- [x] T066 [P] Add error boundary and loading states to `apps/editor/src/App.tsx` — WASM load failure message, composition parse error display, graceful degradation when WebCodecs unavailable
+- [x] T067 Run `pnpm lint --write` across all modified files
+- [x] T068 Run quickstart.md validation — follow `specs/003-lumen-wasm-node-editor/quickstart.md` steps on a clean checkout and confirm they work
 
 ---
 
