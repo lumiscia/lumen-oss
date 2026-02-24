@@ -37,7 +37,6 @@ impl OutputPort {
         Self::Named(name.into())
     }
 
-
     fn matches(&self, def: &OutputPortDef, index: usize) -> bool {
         match self {
             Self::Named(name) => def.name == name,
@@ -242,7 +241,6 @@ impl Graph {
                 }
             }
         }
-
 
         for node in self.nodes.values() {
             if let NodeKind::Switch(switch_node) = &node.kind {
