@@ -1,13 +1,17 @@
 //! Composition root model holding graph, timeline, render settings, animation tracks, and expressions.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::{DefaultHasher, Hash, Hasher},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use crate::{
     animation::{AnimatableType, Extrapolation, InterpolationMode, KeyframeTrack},
     capability::RuntimeCapabilityProfile,
     error::{LumenError, PropertyError, Warning},
     expr::{Expression, expression_value_to_property_value},
-    graph::Graph,
+    graph::{Graph, InputPort, OutputPort},
     node::{
         NodeId, NodeKind, PropertyValue, merge::Merge, solid_color::SolidColor,
         transform::Transform,
@@ -50,6 +54,10 @@ pub struct Composition {
     pub tracks: Vec<KeyframeTrack>,
     pub expressions: HashMap<NodeId, HashMap<String, Expression>>,
     pub metadata: Option<CompositionMetadata>,
+    /// Cached graph revision. 0 means not computed yet.
+    cached_graph_revision: std::sync::Arc<AtomicU64>,
+    /// Cached media output node ID. 0 means not computed yet.
+    pub(crate) cached_media_output: std::sync::Arc<AtomicU64>,
 }
 
 impl Composition {
@@ -61,10 +69,13 @@ impl Composition {
             tracks: Vec::new(),
             expressions: HashMap::new(),
             metadata: None,
+            cached_graph_revision: std::sync::Arc::new(AtomicU64::new(0)),
+            cached_media_output: std::sync::Arc::new(AtomicU64::new(0)),
         }
     }
 
     pub fn add_track(&mut self, track: KeyframeTrack) {
+        self.cached_graph_revision.store(0, Ordering::Relaxed);
         self.tracks.push(track)
     }
 
@@ -74,10 +85,30 @@ impl Composition {
         property_path: impl Into<String>,
         expression: Expression,
     ) {
+        self.cached_graph_revision.store(0, Ordering::Relaxed);
         self.expressions
             .entry(node_id)
             .or_default()
             .insert(property_path.into(), expression);
+    }
+
+    /// Invalidate the cached graph revision. Call after mutating the graph directly.
+    pub fn invalidate_revision(&self) {
+        self.cached_graph_revision.store(0, Ordering::Relaxed);
+    }
+
+    /// Get the graph revision hash, computing and caching it if needed.
+    pub fn graph_revision(&self) -> u64 {
+        let cached = self.cached_graph_revision.load(Ordering::Relaxed);
+        if cached != 0 {
+            return cached;
+        }
+        let revision = self.compute_graph_revision();
+        // Avoid storing 0 (sentinel) as a valid revision
+        let revision = if revision == 0 { 1 } else { revision };
+        self.cached_graph_revision
+            .store(revision, Ordering::Relaxed);
+        revision
     }
 
     pub fn validate(
@@ -366,6 +397,116 @@ impl Composition {
             apply_property(node_kind, &property_path, sampled);
         }
         Ok(())
+    }
+
+    fn compute_graph_revision(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+
+        let mut node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+        node_ids.sort_unstable();
+        for node_id in node_ids {
+            node_id.hash(&mut hasher);
+            if let Some(node) = self.graph.nodes.get(&node_id) {
+                node.kind.kind_name().hash(&mut hasher);
+                node.kind.hash_content(&mut hasher);
+            }
+        }
+
+        let mut connections: Vec<_> = self.graph.connections.iter().collect();
+        connections.sort_by(|left, right| {
+            (
+                left.from_node,
+                left.to_node,
+                sortable_output_port_key(&left.from_port),
+                sortable_input_port_key(&left.to_port),
+            )
+                .cmp(&(
+                    right.from_node,
+                    right.to_node,
+                    sortable_output_port_key(&right.from_port),
+                    sortable_input_port_key(&right.to_port),
+                ))
+        });
+        for connection in connections {
+            connection.from_node.hash(&mut hasher);
+            connection.to_node.hash(&mut hasher);
+            hash_output_port(&connection.from_port, &mut hasher);
+            hash_input_port(&connection.to_port, &mut hasher);
+        }
+
+        let mut tracks: Vec<_> = self.tracks.iter().collect();
+        tracks.sort_by(|left, right| {
+            (left.id, left.node_id, left.property_path.0.as_str()).cmp(&(
+                right.id,
+                right.node_id,
+                right.property_path.0.as_str(),
+            ))
+        });
+        for track in tracks {
+            track.node_id.hash(&mut hasher);
+            track.id.hash(&mut hasher);
+            track.property_path.0.hash(&mut hasher);
+            for key in &track.keys {
+                key.time_frame.hash(&mut hasher);
+                format!("{:?}", key.value).hash(&mut hasher);
+            }
+        }
+
+        let mut expression_node_ids: Vec<_> = self.expressions.keys().copied().collect();
+        expression_node_ids.sort_unstable();
+        for node_id in expression_node_ids {
+            node_id.hash(&mut hasher);
+            if let Some(expressions) = self.expressions.get(&node_id) {
+                let mut entries: Vec<_> = expressions.iter().collect();
+                entries.sort_by(|(left_path, _), (right_path, _)| left_path.cmp(right_path));
+                for (path, expression) in entries {
+                    path.hash(&mut hasher);
+                    expression.source.hash(&mut hasher);
+                }
+            }
+        }
+
+        hasher.finish()
+    }
+}
+
+pub(crate) fn hash_input_port(port: &InputPort, hasher: &mut DefaultHasher) {
+    match port {
+        InputPort::Named(name) => {
+            "named".hash(hasher);
+            name.hash(hasher);
+        }
+        InputPort::Indexed(index) => {
+            "indexed".hash(hasher);
+            index.hash(hasher);
+        }
+    }
+}
+
+pub(crate) fn hash_output_port(port: &OutputPort, hasher: &mut DefaultHasher) {
+    match port {
+        OutputPort::Named(name) => {
+            "named".hash(hasher);
+            name.hash(hasher);
+        }
+        OutputPort::Indexed(index) => {
+            "indexed".hash(hasher);
+            index.hash(hasher);
+        }
+    }
+}
+
+pub(crate) fn sortable_input_port_key(port: &InputPort) -> (u8, String) {
+    match port {
+        InputPort::Named(name) => (0, name.clone()),
+        InputPort::Indexed(index) => (1, index.to_string()),
+    }
+}
+
+pub(crate) fn sortable_output_port_key(port: &OutputPort) -> (u8, String) {
+    match port {
+        OutputPort::Named(name) => (0, name.clone()),
+        OutputPort::Indexed(index) => (1, index.to_string()),
     }
 }
 

@@ -64,6 +64,8 @@ pub struct Graph {
     pub nodes: HashMap<NodeId, Node>,
     pub connections: Vec<Connection>,
     next_node_id: u64,
+    /// Index from `to_node` -> list of indices into `connections`.
+    connections_by_target: HashMap<NodeId, Vec<usize>>,
 }
 
 impl Graph {
@@ -72,6 +74,7 @@ impl Graph {
             nodes: HashMap::new(),
             connections: Vec::new(),
             next_node_id: 1,
+            connections_by_target: HashMap::new(),
         }
     }
 
@@ -103,8 +106,22 @@ impl Graph {
             .into());
         }
 
+        let index = self.connections.len();
+        let to_node = connection.to_node;
         self.connections.push(connection);
+        self.connections_by_target
+            .entry(to_node)
+            .or_default()
+            .push(index);
         Ok(())
+    }
+
+    /// Look up connections targeting a given node. O(1) by node, O(k) for k inputs.
+    pub fn connections_to(&self, node_id: NodeId) -> impl Iterator<Item = &Connection> {
+        self.connections_by_target
+            .get(&node_id)
+            .into_iter()
+            .flat_map(|indices| indices.iter().map(|&i| &self.connections[i]))
     }
 
     pub fn remove_node(&mut self, id: NodeId) -> Result<Node, LumenError> {
@@ -114,6 +131,7 @@ impl Graph {
             .ok_or(GraphValidationError::MissingTargetNode { node_id: id })?;
         self.connections
             .retain(|edge| edge.from_node != id && edge.to_node != id);
+        self.rebuild_connection_index();
         Ok(node)
     }
 
@@ -134,7 +152,18 @@ impl Graph {
             return Err(GraphValidationError::InvalidEvaluationTarget { node_id: from.0 }.into());
         }
 
+        self.rebuild_connection_index();
         Ok(())
+    }
+
+    fn rebuild_connection_index(&mut self) {
+        self.connections_by_target.clear();
+        for (index, connection) in self.connections.iter().enumerate() {
+            self.connections_by_target
+                .entry(connection.to_node)
+                .or_default()
+                .push(index);
+        }
     }
 
     pub fn validate(&self) -> Result<Vec<Warning>, Vec<LumenError>> {

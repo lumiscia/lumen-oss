@@ -1,6 +1,6 @@
 //! Node type system, shared value types, and enum-based node dispatch.
 
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, hash::Hasher};
 
 use crate::{
     error::{LumenError, PropertyError},
@@ -262,6 +262,132 @@ impl NodeKind {
             Self::FrameHold(_) => "FrameHold",
             Self::MediaOutput(_) => "MediaOutput",
             Self::Memo(_) => "Memo",
+        }
+    }
+
+    /// Hash the structural content of this node kind into the given hasher,
+    /// without allocating (replaces the prior `format!("{:?}")` approach).
+    pub fn hash_content(&self, hasher: &mut impl Hasher) {
+        use std::hash::Hash;
+        // Discriminant tag
+        std::mem::discriminant(self).hash(hasher);
+        match self {
+            Self::Shape(s) => match &s.geometry {
+                ShapeGeometry::Rectangle { width, height } => {
+                    0u8.hash(hasher);
+                    width.hash(hasher);
+                    height.hash(hasher);
+                }
+                ShapeGeometry::Ellipse { width, height } => {
+                    1u8.hash(hasher);
+                    width.hash(hasher);
+                    height.hash(hasher);
+                }
+                ShapeGeometry::Polygon { points } => {
+                    2u8.hash(hasher);
+                    for (x, y) in points {
+                        x.to_bits().hash(hasher);
+                        y.to_bits().hash(hasher);
+                    }
+                }
+            },
+            Self::ShapeRenderer(r) => {
+                r.fill_color.hash(hasher);
+                r.stroke_color.hash(hasher);
+                r.stroke_width.to_bits().hash(hasher);
+                r.fill_enabled.hash(hasher);
+                r.stroke_enabled.hash(hasher);
+            }
+            Self::MediaIn(m) => match &m.kind {
+                media_in::MediaInKind::Image { source } => {
+                    0u8.hash(hasher);
+                    source.hash(hasher);
+                }
+                media_in::MediaInKind::Video {
+                    source,
+                    range,
+                    speed,
+                    loop_mode,
+                } => {
+                    1u8.hash(hasher);
+                    source.hash(hasher);
+                    range.hash(hasher);
+                    speed.to_bits().hash(hasher);
+                    std::mem::discriminant(loop_mode).hash(hasher);
+                }
+            },
+            Self::SolidColor(c) => {
+                c.color.hash(hasher);
+                c.width.hash(hasher);
+                c.height.hash(hasher);
+            }
+            Self::Text(t) => {
+                t.content.hash(hasher);
+                t.font_family.hash(hasher);
+                t.font_size.to_bits().hash(hasher);
+                t.font_weight.hash(hasher);
+                std::mem::discriminant(&t.font_style).hash(hasher);
+                t.max_width.map(|v| v.to_bits()).hash(hasher);
+                t.color.hash(hasher);
+                std::mem::discriminant(&t.alignment.horizontal).hash(hasher);
+                std::mem::discriminant(&t.alignment.vertical).hash(hasher);
+            }
+            Self::Transform(t) => {
+                t.scale_x.to_bits().hash(hasher);
+                t.scale_y.to_bits().hash(hasher);
+                t.translate_x.to_bits().hash(hasher);
+                t.translate_y.to_bits().hash(hasher);
+                t.rotate.to_bits().hash(hasher);
+                t.pivot_x.to_bits().hash(hasher);
+                t.pivot_y.to_bits().hash(hasher);
+                std::mem::discriminant(&t.sampling).hash(hasher);
+            }
+            Self::Crop(c) => {
+                c.x.hash(hasher);
+                c.y.hash(hasher);
+                c.width.hash(hasher);
+                c.height.hash(hasher);
+            }
+            Self::Resize(r) => {
+                r.width.hash(hasher);
+                r.height.hash(hasher);
+                std::mem::discriminant(&r.mode).hash(hasher);
+                std::mem::discriminant(&r.sampling).hash(hasher);
+            }
+            Self::Blur(b) => {
+                b.radius.to_bits().hash(hasher);
+            }
+            Self::Shadow(s) => {
+                s.offset_x.hash(hasher);
+                s.offset_y.hash(hasher);
+                s.color.hash(hasher);
+                s.blur_radius.to_bits().hash(hasher);
+            }
+            Self::Boolean(b) => {
+                std::mem::discriminant(&b.mask_kind).hash(hasher);
+                b.invert.hash(hasher);
+            }
+            Self::Merge(m) => {
+                std::mem::discriminant(&m.blend_mode).hash(hasher);
+                m.opacity.to_bits().hash(hasher);
+            }
+            Self::Switch(s) => {
+                let mut entries: Vec<_> = s.map.iter().collect();
+                entries.sort_by_key(|(k, _)| *k);
+                for (k, range) in entries {
+                    k.hash(hasher);
+                    range.start.hash(hasher);
+                    range.end.hash(hasher);
+                }
+            }
+            Self::FrameHold(f) => {
+                f.hold_frame.hash(hasher);
+            }
+            Self::MediaOutput(_) => {}
+            Self::Memo(m) => {
+                m.cache_id.hash(hasher);
+                m.allow_expressions.hash(hasher);
+            }
         }
     }
 

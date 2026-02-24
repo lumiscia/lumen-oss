@@ -1,6 +1,7 @@
 //! Frame render orchestration and per-frame render context state.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     hash::{DefaultHasher, Hash, Hasher},
     sync::{
@@ -12,10 +13,13 @@ use std::{
 use crate::{
     cache::{AssetCache, CachedBitmap, NodeOutputCache},
     capability::RuntimeCapabilityProfile,
-    composition::Composition,
+    composition::{
+        Composition, hash_input_port, hash_output_port, sortable_input_port_key,
+        sortable_output_port_key,
+    },
     error::{GraphValidationError, LumenError, PropertyError, RenderError},
     expr::{ExprNode, GlobalVar},
-    graph::{Connection, InputPort, OutputPort},
+    graph::{Connection, InputPort},
     media::{MediaStore, VideoFrameResolver},
     node::{NodeId, NodeInputs, NodeKind, PortValue},
     raster::{RasterFrame, RectI},
@@ -129,7 +133,7 @@ impl RenderContext {
             media_store,
             capability_profile,
             cancellation: CancellationToken::new(),
-            graph_revision: compute_graph_revision(composition),
+            graph_revision: composition.graph_revision(),
             instrumentation: RenderInstrumentation::default(),
             surface_pool_baseline: surface_pool.stats(),
         }
@@ -193,7 +197,7 @@ impl Composition {
         );
         ctx.fps = self.timeline.fps;
         ctx.duration_frames = self.timeline.duration_frames;
-        ctx.graph_revision = compute_graph_revision(self);
+        ctx.graph_revision = self.graph_revision();
         ctx.node_output_cache.clear();
 
         if ctx.cancellation.is_cancelled() {
@@ -214,6 +218,11 @@ impl Composition {
     }
 
     fn media_output_target(&self) -> Result<NodeId, LumenError> {
+        let cached = self.cached_media_output.load(std::sync::atomic::Ordering::Relaxed);
+        if cached != 0 {
+            return Ok(NodeId(cached));
+        }
+
         let media_output_nodes: Vec<NodeId> = self
             .graph
             .nodes
@@ -223,7 +232,11 @@ impl Composition {
             .collect();
 
         match media_output_nodes.as_slice() {
-            [target] => Ok(*target),
+            [target] => {
+                self.cached_media_output
+                    .store(target.0, std::sync::atomic::Ordering::Relaxed);
+                Ok(*target)
+            }
             [] => Err(GraphValidationError::MissingMediaOutput.into()),
             outputs => Err(GraphValidationError::MultipleMediaOutputs {
                 count: outputs.len(),
@@ -261,8 +274,17 @@ impl Composition {
             .nodes
             .get(&node_id)
             .ok_or(GraphValidationError::InvalidEvaluationTarget { node_id })?;
-        let mut resolved_kind = node.kind.clone();
-        self.apply_animated_properties(node_id, frame, &mut resolved_kind, ctx)?;
+
+        let has_animations = self.tracks.iter().any(|t| t.node_id == node_id)
+            || self.expressions.contains_key(&node_id);
+
+        let resolved_kind: Cow<'_, NodeKind> = if has_animations {
+            let mut cloned = node.kind.clone();
+            self.apply_animated_properties(node_id, frame, &mut cloned, ctx)?;
+            Cow::Owned(cloned)
+        } else {
+            Cow::Borrowed(&node.kind)
+        };
 
         if let Some(short_circuit) = self.try_short_circuit(node_id, frame, &resolved_kind, ctx)? {
             ctx.node_output_cache.insert(
@@ -276,7 +298,7 @@ impl Composition {
         }
 
         let mut inputs = NodeInputs::new();
-        match &resolved_kind {
+        match resolved_kind.as_ref() {
             NodeKind::Switch(switch_node) => {
                 let selected = switch_node
                     .map
@@ -497,7 +519,7 @@ impl Composition {
             upstream_node_id.hash(&mut hasher);
             if let Some(node) = self.graph.nodes.get(upstream_node_id) {
                 node.kind.kind_name().hash(&mut hasher);
-                format!("{:?}", node.kind).hash(&mut hasher);
+                node.kind.hash_content(&mut hasher);
             }
             if let Some(expressions) = self.expressions.get(upstream_node_id) {
                 let mut expression_entries: Vec<_> = expressions.iter().collect();
@@ -547,12 +569,7 @@ impl Composition {
         let mut visited = HashSet::new();
         let mut stack = vec![node_id];
         while let Some(current) = stack.pop() {
-            for edge in self
-                .graph
-                .connections
-                .iter()
-                .filter(|edge| edge.to_node == current)
-            {
+            for edge in self.graph.connections_to(current) {
                 if visited.insert(edge.from_node) {
                     stack.push(edge.from_node);
                 }
@@ -581,16 +598,21 @@ impl Composition {
 
     fn find_input_connection(&self, node_id: NodeId, input_name: &str) -> Option<&Connection> {
         self.graph
-            .connections
-            .iter()
-            .find(|edge| edge.to_node == node_id && input_port_matches(&edge.to_port, input_name))
+            .connections_to(node_id)
+            .find(|edge| input_port_matches(&edge.to_port, input_name))
     }
 }
 
 fn input_port_matches(port: &InputPort, expected_name: &str) -> bool {
     match port {
         InputPort::Named(name) => name == expected_name,
-        InputPort::Indexed(index) => expected_name == format!("input_{index}"),
+        InputPort::Indexed(index) => {
+            // Parse "input_N" without allocating
+            expected_name
+                .strip_prefix("input_")
+                .and_then(|suffix| suffix.parse::<u16>().ok())
+                .is_some_and(|parsed| parsed == *index)
+        }
     }
 }
 
@@ -611,115 +633,6 @@ fn expression_depends_on_frame(ast: &ExprNode) -> bool {
     }
 }
 
-fn compute_graph_revision(composition: &Composition) -> u64 {
-    let mut hasher = DefaultHasher::new();
-
-    let mut node_ids: Vec<NodeId> = composition.graph.nodes.keys().copied().collect();
-    node_ids.sort_unstable();
-    for node_id in node_ids {
-        node_id.hash(&mut hasher);
-        if let Some(node) = composition.graph.nodes.get(&node_id) {
-            node.kind.kind_name().hash(&mut hasher);
-            format!("{:?}", node.kind).hash(&mut hasher);
-        }
-    }
-
-    let mut connections: Vec<_> = composition.graph.connections.iter().collect();
-    connections.sort_by(|left, right| {
-        (
-            left.from_node,
-            left.to_node,
-            sortable_output_port_key(&left.from_port),
-            sortable_input_port_key(&left.to_port),
-        )
-            .cmp(&(
-                right.from_node,
-                right.to_node,
-                sortable_output_port_key(&right.from_port),
-                sortable_input_port_key(&right.to_port),
-            ))
-    });
-    for connection in connections {
-        connection.from_node.hash(&mut hasher);
-        connection.to_node.hash(&mut hasher);
-        hash_output_port(&connection.from_port, &mut hasher);
-        hash_input_port(&connection.to_port, &mut hasher);
-    }
-
-    let mut tracks: Vec<_> = composition.tracks.iter().collect();
-    tracks.sort_by(|left, right| {
-        (left.id, left.node_id, left.property_path.0.as_str()).cmp(&(
-            right.id,
-            right.node_id,
-            right.property_path.0.as_str(),
-        ))
-    });
-    for track in tracks {
-        track.node_id.hash(&mut hasher);
-        track.id.hash(&mut hasher);
-        track.property_path.0.hash(&mut hasher);
-        for key in &track.keys {
-            key.time_frame.hash(&mut hasher);
-            format!("{:?}", key.value).hash(&mut hasher);
-        }
-    }
-
-    let mut expression_node_ids: Vec<_> = composition.expressions.keys().copied().collect();
-    expression_node_ids.sort_unstable();
-    for node_id in expression_node_ids {
-        node_id.hash(&mut hasher);
-        if let Some(expressions) = composition.expressions.get(&node_id) {
-            let mut entries: Vec<_> = expressions.iter().collect();
-            entries.sort_by(|(left_path, _), (right_path, _)| left_path.cmp(right_path));
-            for (path, expression) in entries {
-                path.hash(&mut hasher);
-                expression.source.hash(&mut hasher);
-            }
-        }
-    }
-
-    hasher.finish()
-}
-
-fn hash_input_port(port: &InputPort, hasher: &mut DefaultHasher) {
-    match port {
-        InputPort::Named(name) => {
-            "named".hash(hasher);
-            name.hash(hasher);
-        }
-        InputPort::Indexed(index) => {
-            "indexed".hash(hasher);
-            index.hash(hasher);
-        }
-    }
-}
-
-fn hash_output_port(port: &OutputPort, hasher: &mut DefaultHasher) {
-    match port {
-        OutputPort::Named(name) => {
-            "named".hash(hasher);
-            name.hash(hasher);
-        }
-        OutputPort::Indexed(index) => {
-            "indexed".hash(hasher);
-            index.hash(hasher);
-        }
-    }
-}
-
-fn sortable_input_port_key(port: &InputPort) -> (u8, String) {
-    match port {
-        InputPort::Named(name) => (0, name.clone()),
-        InputPort::Indexed(index) => (1, index.to_string()),
-    }
-}
-
-fn sortable_output_port_key(port: &OutputPort) -> (u8, String) {
-    match port {
-        OutputPort::Named(name) => (0, name.clone()),
-        OutputPort::Indexed(index) => (1, index.to_string()),
-    }
-}
 
 pub struct NullMediaStore;
 
