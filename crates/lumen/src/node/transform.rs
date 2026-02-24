@@ -78,25 +78,44 @@ impl NodeEval for Transform {
             return Ok(PortValue::RasterFrame(source.clone()));
         }
 
-        let (bytes, width, height) = source.clone().into_parts();
+        let (bytes, source_width, source_height) = source.clone().into_parts();
 
-        if width == 0 || height == 0 {
+        if source_width == 0 || source_height == 0 {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(bytes, width, height, source_format, source_data)
-                    .with_alpha_mode(source_alpha),
+                BitmapFrame::with_domain(
+                    bytes,
+                    source_width,
+                    source_height,
+                    source_format,
+                    source_data,
+                )
+                .with_alpha_mode(source_alpha),
             )));
         }
 
-        let Some(image) =
-            make_skia_image(&bytes, width, height, (width as usize) * 4, source_alpha)
-        else {
+        let render_width = source_width.max(ctx.request.width());
+        let render_height = source_height.max(ctx.request.height());
+
+        let Some(image) = make_skia_image(
+            &bytes,
+            source_width,
+            source_height,
+            (source_width as usize) * 4,
+            source_alpha,
+        ) else {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(bytes, width, height, source_format, source_data)
-                    .with_alpha_mode(source_alpha),
+                BitmapFrame::with_domain(
+                    bytes,
+                    source_width,
+                    source_height,
+                    source_format,
+                    source_data,
+                )
+                .with_alpha_mode(source_alpha),
             )));
         };
 
-        let (pivot_x, pivot_y) = self.resolved_pivot(width, height);
+        let (pivot_x, pivot_y) = self.resolved_pivot(source_width, source_height);
         let mut matrix = Matrix::new_identity();
         matrix.pre_translate((pivot_x + self.translate_x, pivot_y + self.translate_y));
         matrix.pre_rotate(self.rotate, None);
@@ -108,7 +127,7 @@ impl NodeEval for Transform {
             TransformSampling::Linear => SamplingOptions::from(CubicResampler::catmull_rom()),
         };
 
-        let transformed = render_with_skia(width, height, Some(ctx), |canvas| {
+        let transformed = render_with_skia(render_width, render_height, Some(ctx), |canvas| {
             canvas.concat(&matrix);
             canvas.draw_image_with_sampling_options(&image, (0.0, 0.0), sampling, None);
         });
@@ -116,8 +135,8 @@ impl NodeEval for Transform {
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
             BitmapFrame::with_domain(
                 Arc::new(transformed),
-                width,
-                height,
+                render_width,
+                render_height,
                 source_format,
                 source_data,
             )

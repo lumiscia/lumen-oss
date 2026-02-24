@@ -823,6 +823,50 @@ fn identity_transform_is_passthrough() {
 }
 
 #[test]
+fn transform_translation_is_not_clipped_to_source_dimensions() {
+    let mut graph = Graph::new();
+    let source = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::SolidColor(SolidColor {
+            color: [255, 0, 0, 255],
+            width: Some(320),
+            height: Some(180),
+        }),
+    ));
+    let transform = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::Transform(Transform {
+            scale_x: 1.0,
+            scale_y: 1.0,
+            translate_x: 200.0,
+            translate_y: 0.0,
+            rotate: 0.0,
+            pivot_x: 0.0,
+            pivot_y: 0.0,
+            sampling: TransformSampling::Nearest,
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    connect(&mut graph, source, transform, "source");
+    connect(&mut graph, transform, output, "source");
+
+    let (bytes, width, height) = expect_bitmap(render_single(graph, 640, 360));
+    assert_eq!((width, height), (640, 360));
+
+    let sample_y = 20usize;
+    let pre_translate_x = 100usize;
+    let translated_x = 350usize;
+    let pre_idx = ((sample_y * width as usize) + pre_translate_x) * 4;
+    let translated_idx = ((sample_y * width as usize) + translated_x) * 4;
+
+    assert_eq!(&bytes[pre_idx..pre_idx + 4], &[0, 0, 0, 0]);
+    assert_eq!(
+        &bytes[translated_idx..translated_idx + 4],
+        &[255, 0, 0, 255]
+    );
+}
+
+#[test]
 fn media_in_image_uses_image_resolver_and_renders_bitmap() {
     let mut graph = Graph::new();
     let media_in = graph.add_node(Node::new(
