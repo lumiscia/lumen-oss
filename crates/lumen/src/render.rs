@@ -339,22 +339,15 @@ impl Composition {
             return false;
         }
 
-        if !allow_expressions
-            && self
-                .expressions
-                .keys()
-                .any(|expression_node| upstream.contains(expression_node))
-        {
-            return false;
-        }
-
-        for upstream_node_id in &upstream {
-            if let Some(expressions) = self.expressions.get(upstream_node_id)
-                && expressions
-                    .values()
-                    .any(|expression| expression_depends_on_frame(&expression.ast))
-            {
-                return false;
+        if !allow_expressions {
+            for upstream_node_id in &upstream {
+                if let Some(expressions) = self.expressions.get(upstream_node_id)
+                    && expressions
+                        .values()
+                        .any(|expression| expression_depends_on_frame(&expression.ast))
+                {
+                    return false;
+                }
             }
         }
 
