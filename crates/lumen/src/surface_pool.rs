@@ -49,6 +49,8 @@ impl SurfacePoolStats {
 #[derive(Default)]
 pub struct SurfacePool {
     available: Mutex<HashMap<(u32, u32), Vec<skia_safe::Surface>>>,
+    /// CPU-only raster surfaces for pixel read-back operations.
+    raster_available: Mutex<HashMap<(u32, u32), Vec<skia_safe::Surface>>>,
     stats: Mutex<SurfacePoolStats>,
     backend: Mutex<SurfaceFactory>,
 }
@@ -57,6 +59,7 @@ impl SurfacePool {
     pub fn new() -> Self {
         Self {
             available: Mutex::new(HashMap::new()),
+            raster_available: Mutex::new(HashMap::new()),
             stats: Mutex::new(SurfacePoolStats::default()),
             backend: Mutex::new(SurfaceFactory::new()),
         }
@@ -100,6 +103,60 @@ impl SurfacePool {
         })
     }
 
+    /// Acquire a CPU-only raster surface suitable for pixel read-back.
+    /// Unlike `acquire`, this always creates software-rasterized surfaces.
+    pub fn acquire_raster(
+        self: &Arc<Self>,
+        width: u32,
+        height: u32,
+    ) -> Result<RasterSurfaceRef, LumenError> {
+        if let Ok(mut stats) = self.stats.lock() {
+            stats.total_acquires = stats.total_acquires.saturating_add(1);
+            let entry = stats.acquires_by_size.entry((width, height)).or_default();
+            *entry = entry.saturating_add(1);
+        }
+
+        if let Ok(mut pool) = self.raster_available.lock()
+            && let Some(surface) = pool.get_mut(&(width, height)).and_then(std::vec::Vec::pop)
+        {
+            if let Ok(mut stats) = self.stats.lock() {
+                stats.reused_acquires = stats.reused_acquires.saturating_add(1);
+            }
+            return Ok(RasterSurfaceRef {
+                surface: Some(surface),
+                pool: Arc::clone(self),
+                width,
+                height,
+            });
+        }
+
+        let surface = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))
+            .ok_or(LumenError::from(RenderError::SurfaceAllocation {
+                width,
+                height,
+            }))?;
+        if let Ok(mut stats) = self.stats.lock() {
+            stats.fresh_allocations = stats.fresh_allocations.saturating_add(1);
+            let bytes = u64::from(width)
+                .saturating_mul(u64::from(height))
+                .saturating_mul(4);
+            stats.fresh_allocation_bytes = stats.fresh_allocation_bytes.saturating_add(bytes);
+        }
+
+        Ok(RasterSurfaceRef {
+            surface: Some(surface),
+            pool: Arc::clone(self),
+            width,
+            height,
+        })
+    }
+
+    fn release_raster(&self, width: u32, height: u32, surface: skia_safe::Surface) {
+        if let Ok(mut pool) = self.raster_available.lock() {
+            pool.entry((width, height)).or_default().push(surface);
+        }
+    }
+
     fn allocate_surface(&self, width: u32, height: u32) -> Result<skia_safe::Surface, LumenError> {
         self.backend
             .lock()
@@ -114,8 +171,7 @@ impl SurfacePool {
             .map_or_else(|_| SurfacePoolStats::default(), |stats| stats.clone())
     }
 
-    fn release(&self, width: u32, height: u32, mut surface: skia_safe::Surface) {
-        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
+    fn release(&self, width: u32, height: u32, surface: skia_safe::Surface) {
         if let Ok(mut pool) = self.available.lock() {
             pool.entry((width, height)).or_default().push(surface);
         }
@@ -160,6 +216,28 @@ impl Drop for SurfaceRef {
     fn drop(&mut self) {
         if let Some(surface) = self.surface.take() {
             self.pool.release(self.width, self.height, surface);
+        }
+    }
+}
+
+/// A CPU-only raster surface reference for pixel read-back operations.
+pub struct RasterSurfaceRef {
+    surface: Option<skia_safe::Surface>,
+    pool: Arc<SurfacePool>,
+    width: u32,
+    height: u32,
+}
+
+impl RasterSurfaceRef {
+    pub fn surface_mut(&mut self) -> Option<&mut skia_safe::Surface> {
+        self.surface.as_mut()
+    }
+}
+
+impl Drop for RasterSurfaceRef {
+    fn drop(&mut self) {
+        if let Some(surface) = self.surface.take() {
+            self.pool.release_raster(self.width, self.height, surface);
         }
     }
 }

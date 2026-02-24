@@ -7,6 +7,7 @@ use skia_safe::{AlphaType, ColorType, Data, ImageInfo, images, surfaces};
 use crate::{
     raster::{AlphaMode, BitmapFrame, RasterFrame},
     render::RenderContext,
+    surface_pool::SurfacePool,
 };
 pub fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
     let pixels = u64::from(width).checked_mul(u64::from(height))?;
@@ -96,6 +97,21 @@ pub fn render_with_skia(
     mut ctx: Option<&mut RenderContext>,
     draw: impl FnOnce(&skia_safe::Canvas),
 ) -> Vec<u8> {
+    // Try to acquire a CPU raster surface from pool
+    if let Some(pool) = ctx.as_ref().map(|c| Arc::clone(&c.surface_pool)) {
+        if let Ok(mut surface_ref) = pool.acquire_raster(width, height) {
+            if let Some(surface) = surface_ref.surface_mut() {
+                let canvas = surface.canvas();
+                canvas.restore_to_count(1);
+                canvas.reset_matrix();
+                canvas.clear(skia_safe::Color::TRANSPARENT);
+                draw(canvas);
+                return read_surface_rgba(surface, width, height, ctx);
+            }
+        }
+    }
+
+    // Fallback: allocate a fresh surface
     let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
         let fallback = rgba_byte_len(width, height)
             .map(|len| vec![0u8; len])

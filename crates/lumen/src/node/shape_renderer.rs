@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use skia_safe::{Color, Paint, PaintStyle, Path, Rect, surfaces};
+use skia_safe::{Color, Paint, PaintStyle, Path, Rect};
 
 use crate::{
     error::LumenError,
@@ -72,19 +72,42 @@ fn rasterize_geometry(
     let width = width.max(1);
     let height = height.max(1);
 
-    let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
+    let pool = Arc::clone(&ctx.surface_pool);
+    if let Ok(mut surface_ref) = pool.acquire_raster(width, height) {
+        if let Some(surface) = surface_ref.surface_mut() {
+            let canvas = surface.canvas();
+            canvas.restore_to_count(1);
+            canvas.reset_matrix();
+            canvas.clear(Color::TRANSPARENT);
+            draw_shape(canvas, &path, renderer);
+            let bytes = read_surface_rgba(surface, width, height, Some(ctx));
+            return RasterFrame::bitmap(Arc::new(bytes), width, height);
+        }
+    }
+
+    // Fallback: allocate a fresh surface
+    let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))
+    else {
         return RasterFrame::bitmap(Arc::new(vec![0; 4]), 1, 1);
     };
 
-    let canvas = surface.canvas();
-    canvas.clear(Color::TRANSPARENT);
+    surface.canvas().clear(Color::TRANSPARENT);
+    draw_shape(surface.canvas(), &path, renderer);
 
+    RasterFrame::bitmap(
+        Arc::new(read_surface_rgba(&mut surface, width, height, Some(ctx))),
+        width,
+        height,
+    )
+}
+
+fn draw_shape(canvas: &skia_safe::Canvas, path: &Path, renderer: &ShapeRenderer) {
     if renderer.fill_enabled {
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
         fill.set_style(PaintStyle::Fill);
         fill.set_color(to_skia_color(renderer.fill_color));
-        canvas.draw_path(&path, &fill);
+        canvas.draw_path(path, &fill);
     }
 
     if renderer.stroke_enabled && renderer.stroke_width > 0.0 {
@@ -93,14 +116,8 @@ fn rasterize_geometry(
         stroke.set_style(PaintStyle::Stroke);
         stroke.set_stroke_width(renderer.stroke_width);
         stroke.set_color(to_skia_color(renderer.stroke_color));
-        canvas.draw_path(&path, &stroke);
+        canvas.draw_path(path, &stroke);
     }
-
-    RasterFrame::bitmap(
-        Arc::new(read_surface_rgba(&mut surface, width, height, Some(ctx))),
-        width,
-        height,
-    )
 }
 
 fn build_path(geometry: &ShapeGeometry) -> (Path, u32, u32) {
