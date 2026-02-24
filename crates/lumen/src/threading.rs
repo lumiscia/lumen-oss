@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, ops::Range, sync::Arc, thread};
 
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
 
 use crate::{
     composition::Composition,
@@ -133,7 +133,7 @@ impl Composition {
         let orchestrator = RenderOrchestrator::new(worker_count.min(frames.len()));
         let composition = Arc::new(self.clone());
         let (job_tx, job_rx) = bounded::<u32>(orchestrator.workers.worker_count * 2);
-        let (result_tx, result_rx) = unbounded::<WorkerResult>();
+        let (result_tx, result_rx) = bounded::<WorkerResult>(orchestrator.workers.worker_count * 2);
 
         let handles = orchestrator.spawn_workers(
             Arc::clone(&composition),
@@ -143,15 +143,18 @@ impl Composition {
         );
         drop(result_tx);
 
-        for frame in &frames {
-            if context.cancellation.is_cancelled() {
-                break;
+        let scheduled_frames = frames.clone();
+        let producer_cancellation = context.cancellation.clone();
+        let producer = thread::spawn(move || {
+            for frame in scheduled_frames {
+                if producer_cancellation.is_cancelled() {
+                    break;
+                }
+                if job_tx.send(frame).is_err() {
+                    break;
+                }
             }
-            if job_tx.send(*frame).is_err() {
-                break;
-            }
-        }
-        drop(job_tx);
+        });
 
         let mut written = 0usize;
         let mut next_frame = *frames.first().unwrap_or(&0);
@@ -159,7 +162,9 @@ impl Composition {
         let mut reorder_buffer: BTreeMap<u32, BufferedFrame> = BTreeMap::new();
         let mut first_error: Option<LumenError> = None;
 
-        while written < frames.len() {
+        let mut sink_error: Option<LumenError> = None;
+
+        'results: while written < frames.len() {
             let result = match result_rx.recv() {
                 Ok(result) => result,
                 Err(_) => break,
@@ -173,24 +178,32 @@ impl Composition {
                     height,
                 } => {
                     if frame == next_frame {
-                        sink.write_frame(
+                        if let Err(error) = sink.write_frame(
                             frame,
                             &RasterFrame::Bitmap(Arc::clone(&pixels), width, height),
-                        )?;
+                        ) {
+                            context.cancellation.cancel();
+                            sink_error = Some(error.into());
+                            break 'results;
+                        }
                         written += 1;
                         if next_frame >= last_frame {
                             break;
                         }
                         next_frame += 1;
                         while let Some(buffered) = reorder_buffer.remove(&next_frame) {
-                            sink.write_frame(
+                            if let Err(error) = sink.write_frame(
                                 next_frame,
                                 &RasterFrame::Bitmap(
                                     Arc::clone(&buffered.pixels),
                                     buffered.width,
                                     buffered.height,
                                 ),
-                            )?;
+                            ) {
+                                context.cancellation.cancel();
+                                sink_error = Some(error.into());
+                                break 'results;
+                            }
                             written += 1;
                             if next_frame >= last_frame {
                                 break;
@@ -221,16 +234,25 @@ impl Composition {
             }
         }
 
+        drop(result_rx);
+        let _ = producer.join();
         for handle in handles {
             let _ = handle.join();
         }
 
-        sink.finalize()?;
-        if let Some(error) = first_error {
+        let finalize_result = sink.finalize();
+
+        if let Some(error) = sink_error {
+            let _ = finalize_result;
+            Err(error)
+        } else if let Some(error) = first_error {
+            let _ = finalize_result;
             Err(error)
         } else if context.cancellation.is_cancelled() {
+            let _ = finalize_result;
             Err(RenderError::Cancelled { frame: next_frame }.into())
         } else {
+            finalize_result?;
             Ok(())
         }
     }
