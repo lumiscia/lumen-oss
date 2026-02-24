@@ -546,7 +546,7 @@ impl VideoFrameResolver for FfmpegVideoResolver {
         self.frame_count
     }
 
-    fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, MediaError> {
+    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError> {
         if frame >= self.frame_count {
             return Err(MediaError::FrameOutOfRange {
                 media_source: self.id.clone(),
@@ -569,7 +569,6 @@ impl VideoFrameResolver for FfmpegVideoResolver {
                 media_source: self.id.clone(),
                 details: "video decode worker did not return a frame".to_string(),
             })?
-            .map(|buffer| buffer.as_ref().clone())
     }
 }
 
@@ -595,7 +594,7 @@ impl VideoFrameResolver for SharedVideoResolver {
         self.inner.frame_count()
     }
 
-    fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, MediaError> {
+    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError> {
         self.inner.resolve_frame(frame)
     }
 }
@@ -618,7 +617,7 @@ impl ImageResolver for SharedImageResolver {
         self.inner.height()
     }
 
-    fn resolve(&self) -> Result<Vec<u8>, MediaError> {
+    fn resolve(&self) -> Result<Arc<Vec<u8>>, MediaError> {
         self.inner.resolve_frame(0)
     }
 }

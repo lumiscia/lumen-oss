@@ -123,11 +123,11 @@ mod app {
             self.height
         }
 
-        fn resolve(&self) -> Result<Vec<u8>, lumen::error::MediaError> {
+        fn resolve(&self) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
             if let Ok(mut stats) = self.stats.lock() {
                 stats.calls += 1;
             }
-            Ok(self.pixels.as_ref().clone())
+            Ok(Arc::clone(&self.pixels))
         }
     }
 

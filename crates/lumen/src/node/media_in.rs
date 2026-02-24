@@ -135,8 +135,8 @@ fn evaluate_video(
     )?;
 
     let decoded = resolver.resolve_frame(source_frame)?;
-    validate_rgba_len(source, width, height, &decoded)?;
-    let premultiplied = Arc::new(premultiply_rgba(&decoded, width, height));
+    validate_rgba_len(source, width, height, decoded.as_ref())?;
+    let premultiplied = Arc::new(premultiply_rgba(decoded.as_ref(), width, height));
     Ok(RasterFrame::Bitmap(premultiplied, width, height))
 }
 

@@ -43,7 +43,7 @@ impl AssetCache {
             return Ok(pixels);
         }
 
-        let decoded = Arc::new(resolver.resolve()?);
+        let decoded = resolver.resolve()?;
         self.insert_image(source.to_string(), Arc::clone(&decoded));
         Ok(decoded)
     }

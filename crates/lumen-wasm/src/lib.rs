@@ -140,8 +140,8 @@ impl ImageResolver for WasmImageResolver {
 		self.entry.height
 	}
 
-	fn resolve(&self) -> Result<Vec<u8>, lumen::error::MediaError> {
-		Ok(self.entry.pixels.as_ref().clone())
+	fn resolve(&self) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
+		Ok(Arc::clone(&self.entry.pixels))
 	}
 }
 
@@ -167,7 +167,7 @@ impl VideoFrameResolver for WasmVideoResolver {
 			.unwrap_or(0)
 	}
 
-	fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, lumen::error::MediaError> {
+	fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
 		let Some(bytes) = self.entry.frames.get(&frame) else {
 			return Err(lumen::error::MediaError::FrameOutOfRange {
 				media_source: self.id.clone(),
@@ -175,7 +175,7 @@ impl VideoFrameResolver for WasmVideoResolver {
 				frame_count: self.frame_count(),
 			});
 		};
-		Ok(bytes.as_ref().clone())
+		Ok(Arc::clone(bytes))
 	}
 }
 

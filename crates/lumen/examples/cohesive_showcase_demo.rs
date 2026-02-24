@@ -97,11 +97,11 @@ impl ImageResolver for DemoImageResolver {
         self.height
     }
 
-    fn resolve(&self) -> Result<Vec<u8>, lumen::error::MediaError> {
+    fn resolve(&self) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
         if let Ok(mut stats) = self.stats.lock() {
             stats.calls += 1;
         }
-        Ok(self.pixels.as_ref().clone())
+        Ok(Arc::clone(&self.pixels))
     }
 }
 
@@ -149,7 +149,7 @@ impl VideoFrameResolver for DemoVideoResolver {
         self.frame_count
     }
 
-    fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, lumen::error::MediaError> {
+    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
         if frame >= self.frame_count {
             return Err(lumen::error::MediaError::FrameOutOfRange {
                 media_source: self.id.clone(),
@@ -161,7 +161,7 @@ impl VideoFrameResolver for DemoVideoResolver {
             stats.calls += 1;
             stats.requested_frames.push(frame);
         }
-        Ok(procedural_video_frame(self.width, self.height, frame))
+        Ok(Arc::new(procedural_video_frame(self.width, self.height, frame)))
     }
 }
 

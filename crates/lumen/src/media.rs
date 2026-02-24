@@ -11,7 +11,7 @@ pub trait ImageResolver: Send + Sync {
     fn id(&self) -> &str;
     fn width(&self) -> u32;
     fn height(&self) -> u32;
-    fn resolve(&self) -> Result<Vec<u8>, MediaError>;
+    fn resolve(&self) -> Result<Arc<Vec<u8>>, MediaError>;
 }
 
 pub trait VideoFrameResolver: Send + Sync {
@@ -19,7 +19,7 @@ pub trait VideoFrameResolver: Send + Sync {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn frame_count(&self) -> u32;
-    fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, MediaError>;
+    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError>;
 }
 
 pub trait MediaStore: Send + Sync {
@@ -59,8 +59,8 @@ impl ImageResolver for MockImageResolver {
         self.height
     }
 
-    fn resolve(&self) -> Result<Vec<u8>, MediaError> {
-        Ok(self.pixels.as_ref().clone())
+    fn resolve(&self) -> Result<Arc<Vec<u8>>, MediaError> {
+        Ok(Arc::clone(&self.pixels))
     }
 }
 
@@ -114,7 +114,7 @@ impl VideoFrameResolver for MockVideoResolver {
         self.frame_count
     }
 
-    fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, MediaError> {
+    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError> {
         if let Ok(mut requested) = self.requested_frames.lock() {
             requested.push(frame);
         }
@@ -125,7 +125,7 @@ impl VideoFrameResolver for MockVideoResolver {
                 frame_count: self.frame_count,
             });
         }
-        Ok(self.pixels.as_ref().clone())
+        Ok(Arc::clone(&self.pixels))
     }
 }
 
