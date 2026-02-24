@@ -79,13 +79,13 @@
 
 ### Tests for User Story 2 (REQUIRED for behavior changes) ⚠️
 
-- [ ] T014 [P] [US2] Unit test in `packages/lumen/tests/media-store.test.ts` — test `MediaStore` LRU cache eviction at capacity limit, test `extractMediaSources(composition)` correctly finds all `media_in` nodes and returns source IDs
+- [x] T014 [P] [US2] Unit test in `packages/lumen/tests/media-store.test.ts` — test `MediaStore` LRU cache eviction at capacity limit, test `extractMediaSources(composition)` correctly finds all `media_in` nodes and returns source IDs
 
 ### Implementation for User Story 2
 
-- [ ] T015 [US2] Add `extractMediaSources()` utility in `packages/lumen/src/canvas/media.ts` — given a `JsonComposition`, walk the graph and return all unique media source IDs (image sources + video sources with their ranges/speeds/loop modes)
-- [ ] T016 [US2] Adapt media store coordination in `packages/lumen/src/canvas/renderer.ts` — update the render loop (query frame requirements → decode → upload → render) to derive media source metadata from `JsonComposition.graph.nodes` filtered to `media_in` kind, replacing old layers/clips format
-- [ ] T017 [US2] Verify `packages/lumen/src/canvas/media.ts` — confirm `MediaStore` and `VideoFrameDecoder` classes work with source ID strings from JSON delegate format. Minimal changes expected (existing classes are source-ID-based). Ensure LRU cache limits are configurable via constructor.
+- [x] T015 [US2] Add `extractMediaSources()` utility in `packages/lumen/src/canvas/media.ts` — given a `JsonComposition`, walk the graph and return all unique media source IDs (image sources + video sources with their ranges/speeds/loop modes)
+- [x] T016 [US2] Adapt media store coordination in `packages/lumen/src/canvas/renderer.ts` — update the render loop (query frame requirements → decode → upload → render) to derive media source metadata from `JsonComposition.graph.nodes` filtered to `media_in` kind, replacing old layers/clips format
+- [x] T017 [US2] Verify `packages/lumen/src/canvas/media.ts` — confirm `MediaStore` and `VideoFrameDecoder` classes work with source ID strings from JSON delegate format. Minimal changes expected (existing classes are source-ID-based). Ensure LRU cache limits are configurable via constructor.
 
 **Checkpoint**: Full render pipeline works: JSON delegate → WASM renderer → media store supplies decoded video/image frames → rendered output
 
