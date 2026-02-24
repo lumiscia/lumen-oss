@@ -1,7 +1,8 @@
 //! Frame render orchestration and per-frame render context state.
 
 use std::{
-    collections::HashMap,
+    collections::HashSet,
+    hash::{DefaultHasher, Hash, Hasher},
     sync::{
         Arc, RwLock,
         atomic::{AtomicBool, Ordering},
@@ -9,11 +10,12 @@ use std::{
 };
 
 use crate::{
-    cache::AssetCache,
+    cache::{AssetCache, NodeOutputCache},
     capability::RuntimeCapabilityProfile,
     composition::Composition,
-    error::{GraphValidationError, LumenError, RenderError},
-    graph::{Connection, InputPort},
+    error::{GraphValidationError, LumenError, PropertyError, RenderError},
+    expr::{ExprNode, GlobalVar},
+    graph::{Connection, InputPort, OutputPort},
     media::{MediaStore, VideoFrameResolver},
     node::{NodeId, NodeInputs, NodeKind, PortValue},
     raster::RasterFrame,
@@ -31,7 +33,7 @@ impl CancellationToken {
     }
 
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Relaxed);
+        self.cancelled.store(true, Ordering::Relaxed)
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -47,10 +49,11 @@ pub struct RenderContext {
     pub duration_frames: u32,
     pub surface_pool: Arc<SurfacePool>,
     pub asset_cache: Arc<RwLock<AssetCache>>,
-    pub node_output_cache: HashMap<(NodeId, u32), PortValue>,
+    pub node_output_cache: NodeOutputCache,
     pub media_store: Arc<dyn MediaStore>,
     pub capability_profile: RuntimeCapabilityProfile,
     pub cancellation: CancellationToken,
+    pub graph_revision: u64,
 }
 
 impl RenderContext {
@@ -69,11 +72,16 @@ impl RenderContext {
             duration_frames: composition.timeline.duration_frames,
             surface_pool,
             asset_cache,
-            node_output_cache: HashMap::new(),
+            node_output_cache: NodeOutputCache::new(),
             media_store,
             capability_profile,
             cancellation: CancellationToken::new(),
+            graph_revision: compute_graph_revision(composition),
         }
+    }
+
+    fn resolution_key(&self) -> u32 {
+        self.width.saturating_mul(self.height)
     }
 }
 
@@ -96,6 +104,7 @@ impl Composition {
         ctx.width = self.render_settings.width;
         ctx.height = self.render_settings.height;
         ctx.duration_frames = self.timeline.duration_frames;
+        ctx.graph_revision = compute_graph_revision(self);
         ctx.node_output_cache.clear();
 
         if ctx.cancellation.is_cancelled() {
@@ -140,7 +149,11 @@ impl Composition {
         frame: u32,
         ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
-        if let Some(cached) = ctx.node_output_cache.get(&(node_id, frame)).cloned() {
+        if let Some(cached) = ctx
+            .node_output_cache
+            .get(node_id, frame, ctx.resolution_key(), ctx.graph_revision)
+            .cloned()
+        {
             return Ok(cached);
         }
 
@@ -157,8 +170,13 @@ impl Composition {
         self.apply_animated_properties(node_id, frame, &mut resolved_kind, ctx)?;
 
         if let Some(short_circuit) = self.try_short_circuit(node_id, frame, &resolved_kind, ctx)? {
-            ctx.node_output_cache
-                .insert((node_id, frame), short_circuit.clone());
+            ctx.node_output_cache.insert(
+                node_id,
+                frame,
+                ctx.resolution_key(),
+                ctx.graph_revision,
+                short_circuit.clone(),
+            );
             return Ok(short_circuit);
         }
 
@@ -211,8 +229,13 @@ impl Composition {
         ctx.frame = previous_frame;
         let output = output?;
 
-        ctx.node_output_cache
-            .insert((node_id, frame), output.clone());
+        ctx.node_output_cache.insert(
+            node_id,
+            frame,
+            ctx.resolution_key(),
+            ctx.graph_revision,
+            output.clone(),
+        );
         Ok(output)
     }
 
@@ -243,8 +266,155 @@ impl Composition {
             NodeKind::Blur(blur) if blur.is_noop() => self
                 .resolve_required_input(node_id, node_kind.kind_name(), "source", frame, ctx)
                 .map(Some),
+            NodeKind::Memo(memo) => self.resolve_memo_node(node_id, memo, frame, ctx).map(Some),
             _ => Ok(None),
         }
+    }
+
+    fn resolve_memo_node(
+        &self,
+        node_id: NodeId,
+        memo: &crate::node::memo::Memo,
+        frame: u32,
+        ctx: &mut RenderContext,
+    ) -> Result<PortValue, LumenError> {
+        if memo.cache_id.trim().is_empty() {
+            return Err(PropertyError::MissingProperty {
+                node_id,
+                property_path: "cache_id".to_string(),
+            }
+            .into());
+        }
+
+        if !self.memo_is_eligible(node_id, memo.allow_expressions) {
+            return self.resolve_required_input(node_id, "Memo", "source", frame, ctx);
+        }
+
+        let signature = self.memo_signature(node_id, memo.allow_expressions, frame);
+        if let Ok(cache) = ctx.asset_cache.read()
+            && let Some(cached) = cache.memo_get(&memo.cache_id, ctx.width, ctx.height, signature)
+        {
+            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                cached, ctx.width, ctx.height,
+            )));
+        }
+
+        let source = self.resolve_required_input(node_id, "Memo", "source", frame, ctx)?;
+        let PortValue::RasterFrame(source) = source else {
+            return Err(PropertyError::InvalidType {
+                node_id,
+                property_path: "source".to_string(),
+                expected: "RasterFrame",
+                actual: "non-raster",
+            }
+            .into());
+        };
+        let raster = source.to_bitmap()?;
+        let RasterFrame::Bitmap(pixels, width, height) = raster else {
+            return Err(RenderError::InvalidMediaOutputType { frame, node_id }.into());
+        };
+
+        if let Ok(mut cache) = ctx.asset_cache.write() {
+            cache.memo_insert(
+                memo.cache_id.clone(),
+                width,
+                height,
+                signature,
+                Arc::clone(&pixels),
+            );
+        }
+
+        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            pixels, width, height,
+        )))
+    }
+
+    fn memo_is_eligible(&self, node_id: NodeId, allow_expressions: bool) -> bool {
+        let upstream = self.upstream_nodes(node_id);
+        if self
+            .tracks
+            .iter()
+            .any(|track| upstream.contains(&track.node_id))
+        {
+            return false;
+        }
+
+        if !allow_expressions
+            && self
+                .expressions
+                .keys()
+                .any(|expression_node| upstream.contains(expression_node))
+        {
+            return false;
+        }
+
+        for upstream_node_id in &upstream {
+            let Some(node) = self.graph.nodes.get(upstream_node_id) else {
+                continue;
+            };
+            match &node.kind {
+                NodeKind::MediaIn(crate::node::media_in::MediaIn {
+                    kind: crate::node::media_in::MediaInKind::Video { .. },
+                })
+                | NodeKind::Switch(_)
+                | NodeKind::FrameHold(_) => return false,
+                _ => {}
+            }
+        }
+
+        true
+    }
+
+    fn memo_signature(&self, node_id: NodeId, allow_expressions: bool, frame: u32) -> u64 {
+        let upstream = self.upstream_nodes(node_id);
+        let mut ordered_nodes: Vec<NodeId> = upstream.iter().copied().collect();
+        ordered_nodes.sort_unstable();
+        let mut hasher = DefaultHasher::new();
+        node_id.hash(&mut hasher);
+        allow_expressions.hash(&mut hasher);
+        for upstream_node_id in &ordered_nodes {
+            upstream_node_id.hash(&mut hasher);
+            if let Some(node) = self.graph.nodes.get(upstream_node_id) {
+                node.kind.kind_name().hash(&mut hasher);
+                format!("{:?}", node.kind).hash(&mut hasher);
+            }
+            if let Some(expressions) = self.expressions.get(upstream_node_id) {
+                for (path, expression) in expressions {
+                    path.hash(&mut hasher);
+                    expression.source.hash(&mut hasher);
+                    if expression_depends_on_frame(&expression.ast) {
+                        frame.hash(&mut hasher);
+                    }
+                }
+            }
+        }
+        for connection in &self.graph.connections {
+            if upstream.contains(&connection.from_node) || upstream.contains(&connection.to_node) {
+                connection.from_node.hash(&mut hasher);
+                connection.to_node.hash(&mut hasher);
+                hash_output_port(&connection.from_port, &mut hasher);
+                hash_input_port(&connection.to_port, &mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    fn upstream_nodes(&self, node_id: NodeId) -> HashSet<NodeId> {
+        let mut visited = HashSet::new();
+        let mut stack = vec![node_id];
+        while let Some(current) = stack.pop() {
+            for edge in self
+                .graph
+                .connections
+                .iter()
+                .filter(|edge| edge.to_node == current)
+            {
+                if visited.insert(edge.from_node) {
+                    stack.push(edge.from_node);
+                }
+            }
+        }
+        visited
     }
 
     fn resolve_required_input(
@@ -277,6 +447,89 @@ fn input_port_matches(port: &InputPort, expected_name: &str) -> bool {
     match port {
         InputPort::Named(name) => name == expected_name,
         InputPort::Indexed(index) => expected_name == format!("input_{index}"),
+    }
+}
+
+fn expression_depends_on_frame(ast: &ExprNode) -> bool {
+    match ast {
+        ExprNode::Global(GlobalVar::Frame | GlobalVar::Time) => true,
+        ExprNode::Literal(_) | ExprNode::Global(_) | ExprNode::NodeProperty(_, _) => false,
+        ExprNode::Unary(_, inner) => expression_depends_on_frame(inner),
+        ExprNode::Binary(left, _, right) => {
+            expression_depends_on_frame(left) || expression_depends_on_frame(right)
+        }
+        ExprNode::Builtin(_, args) => args.iter().any(expression_depends_on_frame),
+        ExprNode::Conditional(condition, when_true, when_false) => {
+            expression_depends_on_frame(condition)
+                || expression_depends_on_frame(when_true)
+                || expression_depends_on_frame(when_false)
+        }
+    }
+}
+
+fn compute_graph_revision(composition: &Composition) -> u64 {
+    let mut hasher = DefaultHasher::new();
+
+    let mut node_ids: Vec<NodeId> = composition.graph.nodes.keys().copied().collect();
+    node_ids.sort_unstable();
+    for node_id in node_ids {
+        node_id.hash(&mut hasher);
+        if let Some(node) = composition.graph.nodes.get(&node_id) {
+            node.kind.kind_name().hash(&mut hasher);
+            format!("{:?}", node.kind).hash(&mut hasher);
+        }
+    }
+
+    for connection in &composition.graph.connections {
+        connection.from_node.hash(&mut hasher);
+        connection.to_node.hash(&mut hasher);
+        hash_output_port(&connection.from_port, &mut hasher);
+        hash_input_port(&connection.to_port, &mut hasher);
+    }
+
+    for track in &composition.tracks {
+        track.node_id.hash(&mut hasher);
+        track.property_path.0.hash(&mut hasher);
+        for key in &track.keys {
+            key.time_frame.hash(&mut hasher);
+            format!("{:?}", key.value).hash(&mut hasher);
+        }
+    }
+
+    for (node_id, expressions) in &composition.expressions {
+        node_id.hash(&mut hasher);
+        for (path, expression) in expressions {
+            path.hash(&mut hasher);
+            expression.source.hash(&mut hasher);
+        }
+    }
+
+    hasher.finish()
+}
+
+fn hash_input_port(port: &InputPort, hasher: &mut DefaultHasher) {
+    match port {
+        InputPort::Named(name) => {
+            "named".hash(hasher);
+            name.hash(hasher);
+        }
+        InputPort::Indexed(index) => {
+            "indexed".hash(hasher);
+            index.hash(hasher);
+        }
+    }
+}
+
+fn hash_output_port(port: &OutputPort, hasher: &mut DefaultHasher) {
+    match port {
+        OutputPort::Named(name) => {
+            "named".hash(hasher);
+            name.hash(hasher);
+        }
+        OutputPort::Indexed(index) => {
+            "indexed".hash(hasher);
+            index.hash(hasher);
+        }
     }
 }
 

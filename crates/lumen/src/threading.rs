@@ -1,8 +1,16 @@
-//! Threaded render orchestration placeholders.
+//! Multithreaded frame-parallel render orchestration.
 
-use std::ops::Range;
+use std::{collections::BTreeMap, ops::Range, sync::Arc, thread};
 
-use crate::{composition::Composition, error::LumenError, render::RenderContext, sink::Sink};
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+
+use crate::{
+    composition::Composition,
+    error::{LumenError, RenderError},
+    raster::RasterFrame,
+    render::RenderContext,
+    sink::Sink,
+};
 
 #[derive(Debug, Clone)]
 pub struct RenderWorkerPool {
@@ -28,22 +36,218 @@ impl RenderOrchestrator {
             workers: RenderWorkerPool::new(worker_count),
         }
     }
+
+    fn spawn_workers(
+        &self,
+        composition: Arc<Composition>,
+        template_context: &RenderContext,
+        job_rx: Receiver<u32>,
+        result_tx: Sender<WorkerResult>,
+    ) -> Vec<thread::JoinHandle<()>> {
+        let mut handles = Vec::with_capacity(self.workers.worker_count);
+        for _ in 0..self.workers.worker_count {
+            let composition = Arc::clone(&composition);
+            let job_rx = job_rx.clone();
+            let result_tx = result_tx.clone();
+            let asset_cache = Arc::clone(&template_context.asset_cache);
+            let media_store = Arc::clone(&template_context.media_store);
+            let capability_profile = template_context.capability_profile.clone();
+            let cancellation = template_context.cancellation.clone();
+
+            handles.push(thread::spawn(move || {
+                #[allow(clippy::arc_with_non_send_sync)]
+                let surface_pool = Arc::new(crate::surface_pool::SurfacePool::new());
+                let mut context = RenderContext::new(
+                    &composition,
+                    surface_pool,
+                    asset_cache,
+                    media_store,
+                    capability_profile,
+                );
+                context.cancellation = cancellation.clone();
+
+                while let Ok(frame) = job_rx.recv() {
+                    if cancellation.is_cancelled() {
+                        break;
+                    }
+                    match composition.render_frame(frame, &mut context) {
+                        Ok(rendered) => match rendered.to_bitmap() {
+                            Ok(RasterFrame::Bitmap(pixels, width, height)) => {
+                                if result_tx
+                                    .send(WorkerResult::Frame {
+                                        frame,
+                                        pixels,
+                                        width,
+                                        height,
+                                    })
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(RasterFrame::Surface(_)) => {
+                                cancellation.cancel();
+                                let _ = result_tx.send(WorkerResult::Error(
+                                    frame,
+                                    RenderError::InvalidMediaOutputType {
+                                        frame,
+                                        node_id: crate::node::NodeId(0),
+                                    }
+                                    .into(),
+                                ));
+                                break;
+                            }
+                            Err(error) => {
+                                cancellation.cancel();
+                                let _ = result_tx.send(WorkerResult::Error(frame, error));
+                                break;
+                            }
+                        },
+                        Err(error) => {
+                            cancellation.cancel();
+                            let _ = result_tx.send(WorkerResult::Error(frame, error));
+                            break;
+                        }
+                    }
+                }
+            }));
+        }
+        handles
+    }
 }
 
 impl Composition {
     pub fn render_sequence(
         &self,
         frame_range: Range<u32>,
-        mut context: RenderContext,
+        context: RenderContext,
         mut sink: Box<dyn Sink>,
         worker_count: usize,
     ) -> Result<(), LumenError> {
-        let _orchestrator = RenderOrchestrator::new(worker_count);
-        for frame in frame_range {
-            let bitmap = self.render_frame(frame, &mut context)?;
-            sink.write_frame(frame, &bitmap)?;
+        let frames: Vec<u32> = frame_range.collect();
+        if frames.is_empty() {
+            sink.finalize()?;
+            return Ok(());
         }
+
+        let orchestrator = RenderOrchestrator::new(worker_count.min(frames.len()));
+        let composition = Arc::new(self.clone());
+        let (job_tx, job_rx) = bounded::<u32>(orchestrator.workers.worker_count * 2);
+        let (result_tx, result_rx) = unbounded::<WorkerResult>();
+
+        let handles = orchestrator.spawn_workers(
+            Arc::clone(&composition),
+            &context,
+            job_rx,
+            result_tx.clone(),
+        );
+        drop(result_tx);
+
+        for frame in &frames {
+            if context.cancellation.is_cancelled() {
+                break;
+            }
+            if job_tx.send(*frame).is_err() {
+                break;
+            }
+        }
+        drop(job_tx);
+
+        let mut written = 0usize;
+        let mut next_frame = *frames.first().unwrap_or(&0);
+        let last_frame = *frames.last().unwrap_or(&0);
+        let mut reorder_buffer: BTreeMap<u32, BufferedFrame> = BTreeMap::new();
+        let mut first_error: Option<LumenError> = None;
+
+        while written < frames.len() {
+            let result = match result_rx.recv() {
+                Ok(result) => result,
+                Err(_) => break,
+            };
+
+            match result {
+                WorkerResult::Frame {
+                    frame,
+                    pixels,
+                    width,
+                    height,
+                } => {
+                    if frame == next_frame {
+                        sink.write_frame(
+                            frame,
+                            &RasterFrame::Bitmap(Arc::clone(&pixels), width, height),
+                        )?;
+                        written += 1;
+                        if next_frame >= last_frame {
+                            break;
+                        }
+                        next_frame += 1;
+                        while let Some(buffered) = reorder_buffer.remove(&next_frame) {
+                            sink.write_frame(
+                                next_frame,
+                                &RasterFrame::Bitmap(
+                                    Arc::clone(&buffered.pixels),
+                                    buffered.width,
+                                    buffered.height,
+                                ),
+                            )?;
+                            written += 1;
+                            if next_frame >= last_frame {
+                                break;
+                            }
+                            next_frame += 1;
+                        }
+                    } else {
+                        reorder_buffer.insert(
+                            frame,
+                            BufferedFrame {
+                                pixels,
+                                width,
+                                height,
+                            },
+                        );
+                    }
+                }
+                WorkerResult::Error(frame, error) => {
+                    context.cancellation.cancel();
+                    first_error.get_or_insert(match error {
+                        LumenError::Render(RenderError::Cancelled { .. }) => {
+                            RenderError::Cancelled { frame }.into()
+                        }
+                        other => other,
+                    });
+                    break;
+                }
+            }
+        }
+
+        for handle in handles {
+            let _ = handle.join();
+        }
+
         sink.finalize()?;
-        Ok(())
+        if let Some(error) = first_error {
+            Err(error)
+        } else if context.cancellation.is_cancelled() {
+            Err(RenderError::Cancelled { frame: next_frame }.into())
+        } else {
+            Ok(())
+        }
     }
+}
+
+struct BufferedFrame {
+    pixels: Arc<Vec<u8>>,
+    width: u32,
+    height: u32,
+}
+
+enum WorkerResult {
+    Frame {
+        frame: u32,
+        pixels: Arc<Vec<u8>>,
+        width: u32,
+        height: u32,
+    },
+    Error(u32, LumenError),
 }
