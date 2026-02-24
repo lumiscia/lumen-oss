@@ -38,11 +38,11 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 [US-ALL] Define JSON delegate TypeScript types in `packages/lumen/src/json-delegate/types.ts` — all interfaces/types from `contracts/json-delegate-types.md`: `JsonComposition`, `JsonGraph`, `JsonNode`, `JsonNodeKind` (16 variants), `JsonConnection`, `JsonPort`, all supporting enums, `JsonKeyframeTrack`, `JsonKeyframe`, `JsonExpression`, `JsonTimelineSettings`, `JsonRenderSettings`
-- [ ] T005 [US-ALL] Define schema constants and default values in `packages/lumen/src/json-delegate/schema.ts` — `SCHEMA_REVISION` constant, `createDefaultComposition()`, `createDefaultRenderSettings()`, `createDefaultTimelineSettings()`
-- [ ] T006 [P] [US-ALL] Define `NodeTypeDef` registry in `apps/editor/src/nodes/registry.ts` — all 16 node type definitions with labels, categories, input/output port definitions (from research.md R3), and default property values
-- [ ] T007 [P] [US-ALL] Define editor graph types in `apps/editor/src/lib/graph-utils.ts` — `EditorNode` (extends React Flow `Node` with `JsonNodeKind` data + port info), `EditorEdge` (extends React Flow `Edge` with port metadata), cycle detection via `getOutgoers`, port type compatibility check, `isValidConnection` callback
-- [ ] T008 [US-ALL] Create `packages/lumen/src/json-delegate/index.ts` barrel export and add `json-delegate` to `packages/lumen/src/index.ts` package exports
+- [x] T004 [US-ALL] Define JSON delegate TypeScript types in `packages/lumen/src/json-delegate/types.ts` — all interfaces/types from `contracts/json-delegate-types.md`: `JsonComposition`, `JsonGraph`, `JsonNode`, `JsonNodeKind` (16 variants), `JsonConnection`, `JsonPort`, all supporting enums, `JsonKeyframeTrack`, `JsonKeyframe`, `JsonExpression`, `JsonTimelineSettings`, `JsonRenderSettings`
+- [x] T005 [US-ALL] Define schema constants and default values in `packages/lumen/src/json-delegate/schema.ts` — `SCHEMA_REVISION` constant, `createDefaultComposition()`, `createDefaultRenderSettings()`, `createDefaultTimelineSettings()
+- [x] T006 [P] [US-ALL] Define `NodeTypeDef` registry in `apps/editor/src/nodes/registry.ts` — all 16 node type definitions with labels, categories, input/output port definitions (from research.md R3), and default property values
+- [x] T007 [P] [US-ALL] Define editor graph types in `apps/editor/src/lib/graph-utils.ts` — `EditorNode` (extends React Flow `Node` with `JsonNodeKind` data + port info), `EditorEdge` (extends React Flow `Edge` with port metadata), cycle detection via `getOutgoers`, port type compatibility check, `isValidConnection` callback
+- [x] T008 [US-ALL] Create `packages/lumen/src/json-delegate/index.ts` barrel export and add `json-delegate` to `packages/lumen/src/index.ts` package exports
 
 **Checkpoint**: Foundation ready — JSON delegate types, node registry, and graph utilities are available. User story implementation can now begin.
 
