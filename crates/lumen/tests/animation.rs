@@ -271,6 +271,37 @@ fn duplicate_track_targets_and_value_type_mismatches_are_rejected() {
 }
 
 #[test]
+fn dotted_property_paths_are_accepted_for_validation_and_sampling() {
+    let (mut composition, transform) = base_composition();
+
+    let mut track = KeyframeTrack::new(
+        TrackId(60),
+        transform,
+        PropertyPath::new("transform.translate_x"),
+        AnimatableType::Float,
+    );
+    track.set_key(0, PropertyValue::Float(3.0), InterpolationMode::Linear);
+    composition.add_track(track);
+
+    let validation_errors = composition
+        .validate_structure()
+        .expect_err("base test graph is intentionally incomplete");
+    assert!(
+        !validation_errors.iter().any(|error| matches!(
+            error,
+            lumen::LumenError::Property(lumen::error::PropertyError::InvalidType { actual, .. })
+                if *actual == "unsupported property path"
+        )),
+        "dotted property path should not be rejected"
+    );
+
+    let sampled = composition
+        .sample_property_without_expressions(transform, "transform.translate_x", 0)
+        .expect("dotted path sample should succeed");
+    assert_eq!(sampled, PropertyValue::Float(3.0));
+}
+
+#[test]
 fn empty_keys_duplicate_times_and_invalid_targets_are_rejected_by_composition_validation() {
     let (mut composition, transform) = base_composition();
 

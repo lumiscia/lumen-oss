@@ -158,7 +158,9 @@ impl Composition {
                 );
             }
 
-            if !seen_track_targets.insert((track.node_id, track.property_path.0.clone())) {
+            let canonical_track_path =
+                canonical_property_path(&node.kind, &track.property_path.0).to_string();
+            if !seen_track_targets.insert((track.node_id, canonical_track_path)) {
                 errors.push(
                     PropertyError::InvalidType {
                         node_id: track.node_id,
@@ -298,41 +300,6 @@ impl Composition {
         property_path: &str,
         frame: u32,
     ) -> Result<PropertyValue, LumenError> {
-        if let Some(track) = self
-            .tracks
-            .iter()
-            .find(|track| track.node_id == node_id && track.property_path.0 == property_path)
-        {
-            if track.keys.len() > 1 {
-                let node =
-                    self.graph
-                        .nodes
-                        .get(&node_id)
-                        .ok_or(PropertyError::MissingProperty {
-                            node_id,
-                            property_path: property_path.to_string(),
-                        })?;
-
-                if let Some(first_key) = track.keys.first()
-                    && frame <= first_key.time_frame
-                    && matches!(track.before_extrapolation, Extrapolation::DefaultValue)
-                    && let Some(default_value) = static_property_value(&node.kind, property_path)
-                {
-                    return Ok(default_value);
-                }
-
-                if let Some(last_key) = track.keys.last()
-                    && frame >= last_key.time_frame
-                    && matches!(track.after_extrapolation, Extrapolation::DefaultValue)
-                    && let Some(default_value) = static_property_value(&node.kind, property_path)
-                {
-                    return Ok(default_value);
-                }
-            }
-
-            return track.sample(frame);
-        }
-
         let node = self
             .graph
             .nodes
@@ -341,8 +308,34 @@ impl Composition {
                 node_id,
                 property_path: property_path.to_string(),
             })?;
+        let canonical_path = canonical_property_path(&node.kind, property_path);
 
-        static_property_value(&node.kind, property_path).ok_or(
+        if let Some(track) = self.tracks.iter().find(|track| {
+            track.node_id == node_id
+                && canonical_property_path(&node.kind, &track.property_path.0) == canonical_path
+        }) {
+            if track.keys.len() > 1 {
+                if let Some(first_key) = track.keys.first()
+                    && frame <= first_key.time_frame
+                    && matches!(track.before_extrapolation, Extrapolation::DefaultValue)
+                    && let Some(default_value) = static_property_value(&node.kind, canonical_path)
+                {
+                    return Ok(default_value);
+                }
+
+                if let Some(last_key) = track.keys.last()
+                    && frame >= last_key.time_frame
+                    && matches!(track.after_extrapolation, Extrapolation::DefaultValue)
+                    && let Some(default_value) = static_property_value(&node.kind, canonical_path)
+                {
+                    return Ok(default_value);
+                }
+            }
+
+            return track.sample(frame);
+        }
+
+        static_property_value(&node.kind, canonical_path).ok_or(
             PropertyError::MissingProperty {
                 node_id,
                 property_path: property_path.to_string(),
@@ -377,6 +370,7 @@ impl Composition {
 }
 
 fn is_valid_property_path(node_kind: &NodeKind, property_path: &str) -> bool {
+    let property_path = canonical_property_path(node_kind, property_path);
     match node_kind {
         NodeKind::Transform(_) => matches!(
             property_path,
@@ -395,6 +389,7 @@ fn is_valid_property_path(node_kind: &NodeKind, property_path: &str) -> bool {
 }
 
 fn expected_animatable_type(node_kind: &NodeKind, property_path: &str) -> Option<AnimatableType> {
+    let property_path = canonical_property_path(node_kind, property_path);
     match node_kind {
         NodeKind::Transform(_) => match property_path {
             "scale_x" | "scale_y" | "translate_x" | "translate_y" | "rotate" | "pivot_x"
@@ -426,6 +421,7 @@ fn expected_animatable_type_name(value_type: AnimatableType) -> &'static str {
 }
 
 fn static_property_value(node_kind: &NodeKind, property_path: &str) -> Option<PropertyValue> {
+    let property_path = canonical_property_path(node_kind, property_path);
     match node_kind {
         NodeKind::Transform(Transform {
             scale_x,
@@ -458,6 +454,7 @@ fn static_property_value(node_kind: &NodeKind, property_path: &str) -> Option<Pr
 }
 
 fn apply_property(node_kind: &mut NodeKind, property_path: &str, value: PropertyValue) {
+    let property_path = canonical_property_path(node_kind, property_path);
     match node_kind {
         NodeKind::Transform(transform) => {
             if let PropertyValue::Float(number) = value {
@@ -480,5 +477,21 @@ fn apply_property(node_kind: &mut NodeKind, property_path: &str, value: Property
             }
         }
         _ => {}
+    }
+}
+
+fn canonical_property_path<'a>(node_kind: &NodeKind, property_path: &'a str) -> &'a str {
+    match node_kind {
+        NodeKind::Transform(_) => property_path
+            .strip_prefix("transform.")
+            .unwrap_or(property_path),
+        NodeKind::SolidColor(_) => property_path
+            .strip_prefix("solid_color.")
+            .or_else(|| property_path.strip_prefix("solidColor."))
+            .unwrap_or(property_path),
+        NodeKind::Merge(_) => property_path
+            .strip_prefix("merge.")
+            .unwrap_or(property_path),
+        _ => property_path,
     }
 }
