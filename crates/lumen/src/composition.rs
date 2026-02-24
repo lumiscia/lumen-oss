@@ -107,6 +107,7 @@ impl Composition {
     pub fn validate_structure(&self) -> Result<Vec<Warning>, Vec<LumenError>> {
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
+        let mut seen_track_targets: HashSet<(NodeId, String)> = HashSet::new();
 
         match self.graph.validate() {
             Ok(graph_warnings) => warnings.extend(graph_warnings),
@@ -152,6 +153,33 @@ impl Composition {
                         property_path: track.property_path.0.clone(),
                         expected: "known animatable property",
                         actual: "unsupported property path",
+                    }
+                    .into(),
+                );
+            }
+
+            if !seen_track_targets.insert((track.node_id, track.property_path.0.clone())) {
+                errors.push(
+                    PropertyError::InvalidType {
+                        node_id: track.node_id,
+                        property_path: track.property_path.0.clone(),
+                        expected: "single track per node/property target",
+                        actual: "duplicate track target",
+                    }
+                    .into(),
+                );
+            }
+
+            if let Some(expected_type) =
+                expected_animatable_type(&node.kind, &track.property_path.0)
+                && track.value_type != expected_type
+            {
+                errors.push(
+                    PropertyError::InvalidType {
+                        node_id: track.node_id,
+                        property_path: track.property_path.0.clone(),
+                        expected: expected_animatable_type_name(expected_type),
+                        actual: animatable_type_name(track.value_type),
                     }
                     .into(),
                 );
@@ -364,6 +392,37 @@ fn is_valid_property_path(node_kind: &NodeKind, property_path: &str) -> bool {
         NodeKind::Merge(_) => matches!(property_path, "opacity"),
         _ => false,
     }
+}
+
+fn expected_animatable_type(node_kind: &NodeKind, property_path: &str) -> Option<AnimatableType> {
+    match node_kind {
+        NodeKind::Transform(_) => match property_path {
+            "scale_x" | "scale_y" | "translate_x" | "translate_y" | "rotate" | "pivot_x"
+            | "pivot_y" => Some(AnimatableType::Float),
+            _ => None,
+        },
+        NodeKind::SolidColor(_) => match property_path {
+            "width" | "height" => Some(AnimatableType::Int),
+            _ => None,
+        },
+        NodeKind::Merge(_) if property_path == "opacity" => Some(AnimatableType::Float),
+        _ => None,
+    }
+}
+
+fn animatable_type_name(value_type: AnimatableType) -> &'static str {
+    match value_type {
+        AnimatableType::Float => "Float",
+        AnimatableType::Int => "Int",
+        AnimatableType::Boolean => "Boolean",
+        AnimatableType::Color => "Color",
+        AnimatableType::Vector2 => "Vector2",
+        AnimatableType::String => "String",
+    }
+}
+
+fn expected_animatable_type_name(value_type: AnimatableType) -> &'static str {
+    animatable_type_name(value_type)
 }
 
 fn static_property_value(node_kind: &NodeKind, property_path: &str) -> Option<PropertyValue> {

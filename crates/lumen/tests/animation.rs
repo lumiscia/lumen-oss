@@ -214,6 +214,63 @@ fn unsorted_keys_and_invalid_linear_boolean_tracks_are_rejected() {
 }
 
 #[test]
+fn duplicate_track_targets_and_value_type_mismatches_are_rejected() {
+    let (mut composition, transform) = base_composition();
+
+    let mut track_a = KeyframeTrack::new(
+        TrackId(50),
+        transform,
+        PropertyPath::new("translate_x"),
+        AnimatableType::Float,
+    );
+    track_a.set_key(0, PropertyValue::Float(1.0), InterpolationMode::Linear);
+    composition.add_track(track_a);
+
+    let mut duplicate_target = KeyframeTrack::new(
+        TrackId(51),
+        transform,
+        PropertyPath::new("translate_x"),
+        AnimatableType::Float,
+    );
+    duplicate_target.set_key(10, PropertyValue::Float(2.0), InterpolationMode::Linear);
+    composition.add_track(duplicate_target);
+
+    let mut wrong_type = KeyframeTrack::new(
+        TrackId(52),
+        transform,
+        PropertyPath::new("translate_y"),
+        AnimatableType::Int,
+    );
+    wrong_type.set_key(0, PropertyValue::Int(1), InterpolationMode::Step);
+    composition.add_track(wrong_type);
+
+    let errors = composition
+        .validate_structure()
+        .expect_err("validation should reject duplicate tracks and type mismatches");
+
+    let has_duplicate_target = errors.iter().any(|error| {
+        matches!(
+            error,
+            lumen::LumenError::Property(lumen::error::PropertyError::InvalidType { actual, .. })
+                if *actual == "duplicate track target"
+        )
+    });
+    let has_type_mismatch = errors.iter().any(|error| {
+        matches!(
+            error,
+            lumen::LumenError::Property(lumen::error::PropertyError::InvalidType { expected, actual, .. })
+                if *expected == "Float" && *actual == "Int"
+        )
+    });
+
+    assert!(
+        has_duplicate_target,
+        "expected duplicate track target error"
+    );
+    assert!(has_type_mismatch, "expected value type mismatch error");
+}
+
+#[test]
 fn empty_keys_duplicate_times_and_invalid_targets_are_rejected_by_composition_validation() {
     let (mut composition, transform) = base_composition();
 
