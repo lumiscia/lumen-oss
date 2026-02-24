@@ -226,12 +226,12 @@
 
 *No new tests required — this is a cleanup story. Verification is successful workspace build.*
 
-- [ ] T059 [P] [US8] Delete `packages/lumen-jsx/` directory entirely
-- [ ] T060 [P] [US8] Delete `packages/editor/` directory entirely
-- [ ] T061 [P] [US8] Delete `packages/templates/` directory entirely
-- [ ] T062 [US8] Clean workspace references — remove entries from `pnpm-workspace.yaml` (if listed), remove from `turbo.json` pipeline (if listed), remove from any `tsconfig.json` `references` arrays
-- [ ] T063 [US8] Clean import references — remove from `apps/editor/package.json` deps, remove `jsxImportSource` from `apps/editor/tsconfig.json` and `apps/render/tsconfig.json`, remove from `packages/lumen/src/index.ts` capability manifest requires, remove from `packages/lumen/src/contracts/fixtures/package-capability-manifest.v1.json`
-- [ ] T064 [US8] Verify clean build — run `pnpm install`, `pnpm build`, `pnpm typecheck` from workspace root, confirm no errors referencing removed packages. Grep for `lumen-jsx`, `@lumiscia/editor`, `@lumiscia/templates` across workspace to confirm zero matches.
+- [x] T059 [P] [US8] Delete `packages/lumen-jsx/` directory entirely
+- [x] T060 [P] [US8] Delete `packages/editor/` directory entirely
+- [x] T061 [P] [US8] Delete `packages/templates/` directory entirely
+- [x] T062 [US8] Clean workspace references — remove entries from `pnpm-workspace.yaml` (if listed), remove from `turbo.json` pipeline (if listed), remove from any `tsconfig.json` `references` arrays
+- [x] T063 [US8] Clean import references — remove from `apps/editor/package.json` deps, remove `jsxImportSource` from `apps/editor/tsconfig.json` and `apps/render/tsconfig.json`, remove from `packages/lumen/src/index.ts` capability manifest requires, remove from `packages/lumen/src/contracts/fixtures/package-capability-manifest.v1.json
+- [x] T064 [US8] Verify clean build — run `pnpm install`, `pnpm build`, `pnpm typecheck` from workspace root, confirm no errors referencing removed packages. Grep for `lumen-jsx`, `@lumiscia/editor`, `@lumiscia/templates` across workspace to confirm zero matches.
 
 **Checkpoint**: Deprecated packages fully removed. Workspace builds cleanly.
 
