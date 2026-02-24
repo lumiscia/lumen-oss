@@ -228,24 +228,24 @@ impl Sink for RawRgbaSink {
                 frame,
                 details: error.to_string(),
             })?;
-        let RasterFrame::Bitmap(bytes, width, height) = bitmap else {
+        let RasterFrame::Bitmap(bitmap) = bitmap else {
             return Err(SinkError::WriteFrame {
                 frame,
                 details: "expected bitmap frame".to_string(),
             });
         };
-        if width != self.width || height != self.height {
+        if bitmap.storage_width != self.width || bitmap.storage_height != self.height {
             return Err(SinkError::WriteFrame {
                 frame,
                 details: format!(
-                    "unexpected frame dimensions {width}x{height}, expected {}x{}",
-                    self.width, self.height
+                    "unexpected frame dimensions {}x{}, expected {}x{}",
+                    bitmap.storage_width, bitmap.storage_height, self.width, self.height
                 ),
             });
         }
 
         self.writer
-            .write_all(bytes.as_slice())
+            .write_all(bitmap.pixels.as_slice())
             .map_err(|error| SinkError::WriteFrame {
                 frame,
                 details: error.to_string(),
@@ -255,12 +255,16 @@ impl Sink for RawRgbaSink {
             stats.frames_written += 1;
             stats.bytes_written = stats
                 .bytes_written
-                .saturating_add(u64::try_from(bytes.len()).unwrap_or(0));
+                .saturating_add(u64::try_from(bitmap.pixels.len()).unwrap_or(0));
             stats.first_frame.get_or_insert(frame);
             stats.last_frame = Some(frame);
-            stats.frame_checksum = stats
-                .frame_checksum
-                .wrapping_add(bytes.iter().map(|byte| u64::from(*byte)).sum::<u64>());
+            stats.frame_checksum = stats.frame_checksum.wrapping_add(
+                bitmap
+                    .pixels
+                    .iter()
+                    .map(|byte| u64::from(*byte))
+                    .sum::<u64>(),
+            );
         }
 
         Ok(())
@@ -1311,7 +1315,7 @@ fn run_json_delegate_smoke() -> Result<&'static str> {
 
 fn run_surface_pool_smoke() -> Result<&'static str> {
     let pool = Arc::new(SurfacePool::new());
-    let raster = RasterFrame::Bitmap(Arc::new(vec![255, 0, 0, 255]), 1, 1);
+    let raster = RasterFrame::bitmap(Arc::new(vec![255, 0, 0, 255]), 1, 1);
     let promoted = raster.promote_to_surface(&pool)?;
     let _roundtrip = promoted.to_bitmap()?;
     Ok("ok")

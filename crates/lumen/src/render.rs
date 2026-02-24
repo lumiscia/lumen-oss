@@ -297,7 +297,7 @@ impl Composition {
         if let Ok(cache) = ctx.asset_cache.read()
             && let Some(cached) = cache.memo_get(&memo.cache_id, ctx.width, ctx.height, signature)
         {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            return Ok(PortValue::RasterFrame(RasterFrame::bitmap(
                 cached.pixels,
                 cached.width,
                 cached.height,
@@ -314,10 +314,10 @@ impl Composition {
             }
             .into());
         };
-        let raster = source.to_bitmap()?;
-        let RasterFrame::Bitmap(pixels, width, height) = raster else {
-            return Err(RenderError::InvalidMediaOutputType { frame, node_id }.into());
-        };
+        let bitmap = source.into_bitmap_frame()?;
+        let pixels = bitmap.pixels;
+        let width = bitmap.storage_width;
+        let height = bitmap.storage_height;
 
         if let Ok(mut cache) = ctx.asset_cache.write() {
             cache.memo_insert(
@@ -333,7 +333,7 @@ impl Composition {
             );
         }
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
             pixels, width, height,
         )))
     }

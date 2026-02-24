@@ -56,7 +56,7 @@ impl NodeEval for SolidColor {
             canvas.clear(color);
         });
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
             Arc::new(bytes),
             width,
             height,

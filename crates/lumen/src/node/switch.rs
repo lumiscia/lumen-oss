@@ -49,7 +49,7 @@ impl Switch {
                 height: ctx.height,
             })?;
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
             Arc::new(vec![0; pixel_count as usize]),
             ctx.width,
             ctx.height,

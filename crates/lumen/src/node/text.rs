@@ -143,7 +143,7 @@ impl NodeEval for Text {
         let width = layout_width.ceil().max(1.0) as u32;
         let height = paragraph.height().ceil().max(1.0) as u32;
         let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            return Ok(PortValue::RasterFrame(RasterFrame::bitmap(
                 Arc::new(vec![0_u8; 4]),
                 1,
                 1,
@@ -160,7 +160,7 @@ impl NodeEval for Text {
         paragraph.paint(canvas, (0.0, vertical_offset));
 
         let bytes = read_surface_rgba(&mut surface, width, height);
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
             Arc::new(bytes),
             width,
             height,

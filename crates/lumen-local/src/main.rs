@@ -49,7 +49,7 @@ fn main() -> Result<()> {
 
     let frame = composition.render_frame(0, &mut context)?;
     let bytes = match frame {
-        RasterFrame::Bitmap(bytes, ..) => bytes,
+        RasterFrame::Bitmap(bitmap) => bitmap.pixels,
         RasterFrame::Surface(_) => Arc::new(Vec::new()),
     };
 

@@ -69,7 +69,7 @@ fn rasterize_geometry(geometry: &ShapeGeometry, renderer: &ShapeRenderer) -> Ras
     let height = height.max(1);
 
     let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
-        return RasterFrame::Bitmap(Arc::new(vec![0; 4]), 1, 1);
+        return RasterFrame::bitmap(Arc::new(vec![0; 4]), 1, 1);
     };
 
     let canvas = surface.canvas();
@@ -92,7 +92,7 @@ fn rasterize_geometry(geometry: &ShapeGeometry, renderer: &ShapeRenderer) -> Ras
         canvas.draw_path(&path, &stroke);
     }
 
-    RasterFrame::Bitmap(
+    RasterFrame::bitmap(
         Arc::new(read_surface_rgba(&mut surface, width, height)),
         width,
         height,

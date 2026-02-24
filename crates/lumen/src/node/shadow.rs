@@ -8,7 +8,7 @@ use crate::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
         pixel_utils::{make_skia_image, render_with_skia, to_skia_color},
     },
-    raster::RasterFrame,
+    raster::{BitmapFrame, RasterFrame},
     render::RenderContext,
 };
 
@@ -48,14 +48,26 @@ impl NodeEval for Shadow {
             return Ok(PortValue::RasterFrame(inputs.get_raster("source")?.clone()));
         }
 
-        let (bytes, width, height) = inputs.get_raster("source")?.clone().into_parts();
+        let source = inputs.get_raster("source")?;
+        let source_alpha = source.alpha_mode();
+        let source_format = source.format_rect();
+        let source_data = source.data_rect();
+        let (bytes, width, height) = source.clone().into_parts();
 
         if width == 0 || height == 0 {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(bytes, width, height)));
+            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                BitmapFrame::with_domain(bytes, width, height, source_format, source_data)
+                    .with_alpha_mode(source_alpha),
+            )));
         }
 
-        let Some(image) = make_skia_image(&bytes, width, height) else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(bytes, width, height)));
+        let Some(image) =
+            make_skia_image(&bytes, width, height, (width as usize) * 4, source_alpha)
+        else {
+            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                BitmapFrame::with_domain(bytes, width, height, source_format, source_data)
+                    .with_alpha_mode(source_alpha),
+            )));
         };
 
         let shadow_color = to_skia_color(self.color);
@@ -80,9 +92,8 @@ impl NodeEval for Shadow {
         });
 
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-            Arc::new(output),
-            width,
-            height,
+            BitmapFrame::with_domain(Arc::new(output), width, height, source_format, source_data)
+                .with_alpha_mode(source_alpha),
         )))
     }
 }

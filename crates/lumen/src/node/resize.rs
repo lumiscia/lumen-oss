@@ -8,7 +8,7 @@ use crate::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
         pixel_utils::{make_skia_image, render_with_skia},
     },
-    raster::RasterFrame,
+    raster::{BitmapFrame, RasterFrame, RectI},
     render::RenderContext,
 };
 
@@ -60,6 +60,8 @@ impl NodeEval for Resize {
     ) -> Result<PortValue, LumenError> {
         let source = inputs.get_raster("source")?;
         let (src_w, src_h) = source.dimensions();
+        let source_alpha = source.alpha_mode();
+        let source_format = source.format_rect();
         let dst_w = self.width.max(1);
         let dst_h = self.height.max(1);
 
@@ -67,21 +69,33 @@ impl NodeEval for Resize {
             return Ok(PortValue::RasterFrame(source.clone()));
         }
 
+        let output_rect = RectI::new(source_format.x, source_format.y, dst_w, dst_h);
         let (bytes, src_w, src_h) = source.clone().into_parts();
 
         if src_w == 0 || src_h == 0 {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                Arc::new(vec![0u8; (dst_w as usize) * (dst_h as usize) * 4]),
-                dst_w,
-                dst_h,
+                BitmapFrame::with_domain(
+                    Arc::new(vec![0u8; (dst_w as usize) * (dst_h as usize) * 4]),
+                    dst_w,
+                    dst_h,
+                    output_rect,
+                    output_rect,
+                )
+                .with_alpha_mode(source_alpha),
             )));
         }
 
-        let Some(image) = make_skia_image(&bytes, src_w, src_h) else {
+        let Some(image) = make_skia_image(&bytes, src_w, src_h, (src_w as usize) * 4, source_alpha)
+        else {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                Arc::new(vec![0u8; (dst_w as usize) * (dst_h as usize) * 4]),
-                dst_w,
-                dst_h,
+                BitmapFrame::with_domain(
+                    Arc::new(vec![0u8; (dst_w as usize) * (dst_h as usize) * 4]),
+                    dst_w,
+                    dst_h,
+                    output_rect,
+                    output_rect,
+                )
+                .with_alpha_mode(source_alpha),
             )));
         };
 
@@ -102,9 +116,8 @@ impl NodeEval for Resize {
         });
 
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-            Arc::new(resized),
-            dst_w,
-            dst_h,
+            BitmapFrame::with_domain(Arc::new(resized), dst_w, dst_h, output_rect, output_rect)
+                .with_alpha_mode(source_alpha),
         )))
     }
 }

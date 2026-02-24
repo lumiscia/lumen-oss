@@ -6,7 +6,7 @@ use crate::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
         pixel_utils::{make_skia_image, render_with_skia},
     },
-    raster::RasterFrame,
+    raster::{BitmapFrame, RasterFrame, RectI},
     render::RenderContext,
 };
 
@@ -36,26 +36,43 @@ impl NodeEval for MediaOutput {
     ) -> Result<PortValue, LumenError> {
         let source = inputs.get_raster("source")?;
         let (target_w, target_h) = (ctx.width, ctx.height);
+        let output_rect = RectI::from_size(target_w, target_h);
         let (source_w, source_h) = source.dimensions();
 
         if source_w == target_w && source_h == target_h {
-            return Ok(PortValue::RasterFrame(source.clone().to_bitmap()?));
+            let bitmap = source.clone().into_bitmap_frame()?;
+            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                BitmapFrame::with_domain(
+                    bitmap.pixels,
+                    bitmap.storage_width,
+                    bitmap.storage_height,
+                    output_rect,
+                    output_rect,
+                )
+                .with_alpha_mode(bitmap.alpha_mode),
+            )));
         }
 
         if target_w == 0 || target_h == 0 {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                Arc::new(Vec::new()),
-                0,
-                0,
+                BitmapFrame::with_domain(Arc::new(Vec::new()), 0, 0, output_rect, output_rect),
             )));
         }
 
         let (bytes, width, height) = source.clone().into_parts();
-        let Some(image) = make_skia_image(&bytes, width, height) else {
+        let source_alpha = source.alpha_mode();
+        let Some(image) =
+            make_skia_image(&bytes, width, height, (width as usize) * 4, source_alpha)
+        else {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                Arc::new(vec![0u8; (target_w as usize) * (target_h as usize) * 4]),
-                target_w,
-                target_h,
+                BitmapFrame::with_domain(
+                    Arc::new(vec![0u8; (target_w as usize) * (target_h as usize) * 4]),
+                    target_w,
+                    target_h,
+                    output_rect,
+                    output_rect,
+                )
+                .with_alpha_mode(source_alpha),
             )));
         };
 
@@ -64,9 +81,14 @@ impl NodeEval for MediaOutput {
         });
 
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-            Arc::new(output),
-            target_w,
-            target_h,
+            BitmapFrame::with_domain(
+                Arc::new(output),
+                target_w,
+                target_h,
+                output_rect,
+                output_rect,
+            )
+            .with_alpha_mode(source_alpha),
         )))
     }
 }

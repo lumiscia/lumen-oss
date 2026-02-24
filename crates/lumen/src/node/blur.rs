@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use skia_safe::{image_filters, Paint};
+use skia_safe::{Paint, image_filters};
 
 use crate::{
     error::LumenError,
@@ -8,7 +8,7 @@ use crate::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
         pixel_utils::{make_skia_image, render_with_skia},
     },
-    raster::RasterFrame,
+    raster::{BitmapFrame, RasterFrame},
     render::RenderContext,
 };
 
@@ -52,29 +52,42 @@ impl NodeEval for Blur {
             return Ok(PortValue::RasterFrame(inputs.get_raster("source")?.clone()));
         }
 
-        let (bytes, width, height) = inputs.get_raster("source")?.clone().into_parts();
+        let source = inputs.get_raster("source")?;
+        let source_alpha = source.alpha_mode();
+        let source_format = source.format_rect();
+        let source_data = source.data_rect();
+        let (bytes, width, height) = source.clone().into_parts();
 
         if width == 0 || height == 0 {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(bytes, width, height)));
+            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                BitmapFrame::with_domain(bytes, width, height, source_format, source_data)
+                    .with_alpha_mode(source_alpha),
+            )));
         }
 
-        let Some(image) = make_skia_image(&bytes, width, height) else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(bytes, width, height)));
+        let Some(image) =
+            make_skia_image(&bytes, width, height, (width as usize) * 4, source_alpha)
+        else {
+            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                BitmapFrame::with_domain(bytes, width, height, source_format, source_data)
+                    .with_alpha_mode(source_alpha),
+            )));
         };
 
         let sigma = self.radius.max(0.5);
         let blurred = render_with_skia(width, height, |canvas| {
-            let filter = image_filters::blur((sigma, sigma), None, None, None)
-                .expect("blur filter creation");
-            let mut paint = Paint::default();
-            paint.set_image_filter(filter);
-            canvas.draw_image(&image, (0.0, 0.0), Some(&paint));
+            if let Some(filter) = image_filters::blur((sigma, sigma), None, None, None) {
+                let mut paint = Paint::default();
+                paint.set_image_filter(filter);
+                canvas.draw_image(&image, (0.0, 0.0), Some(&paint));
+            } else {
+                canvas.draw_image(&image, (0.0, 0.0), None);
+            }
         });
 
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-            Arc::new(blurred),
-            width,
-            height,
+            BitmapFrame::with_domain(Arc::new(blurred), width, height, source_format, source_data)
+                .with_alpha_mode(source_alpha),
         )))
     }
 }

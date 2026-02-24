@@ -3,16 +3,18 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use lumen::raster::{AlphaMode, BitmapFrame, RectI, SurfaceFrame};
 use lumen::{
-    AssetCache, Composition, Connection, Graph, InputPort, LumenError, NodeId, NodeKind,
-    NullMediaStore, OutputPort, RasterFrame, RenderContext, RenderSettings,
-    RuntimeCapabilityProfile, SurfacePool, TimelineSettings, Warning,
+    AssetCache, Composition, Connection, Graph, InputPort, LumenError, NodeEval, NodeId,
+    NodeInputs, NodeKind, NullMediaStore, OutputPort, PortValue, RasterFrame, RenderContext,
+    RenderSettings, RuntimeCapabilityProfile, SurfacePool, TimelineSettings, Warning,
     media::{MediaStore, MockImageResolver, MockMediaStore, MockVideoResolver},
     node::{
-        Node, ShapeGeometry, blur::Blur, boolean::Boolean, frame_hold::FrameHold,
+        Node, ShapeGeometry, blur::Blur, boolean::Boolean, crop::Crop, frame_hold::FrameHold,
         media_in::LoopMode, media_in::MediaIn, media_in::MediaInKind, media_output::MediaOutput,
-        merge::Merge, shape::Shape, shape_renderer::ShapeRenderer, solid_color::SolidColor,
-        switch::Switch, transform::Transform,
+        merge::Merge, resize::Resize, resize::ResizeMode, resize::ResizeSampling, shadow::Shadow,
+        shape::Shape, shape_renderer::ShapeRenderer, solid_color::SolidColor, switch::Switch,
+        transform::Transform, transform::TransformSampling,
     },
 };
 
@@ -97,9 +99,39 @@ fn render_with_store(
 
 fn expect_bitmap(frame: RasterFrame) -> (Arc<Vec<u8>>, u32, u32) {
     match frame {
-        RasterFrame::Bitmap(bytes, width, height) => (bytes, width, height),
+        RasterFrame::Bitmap(bitmap) => (bitmap.pixels, bitmap.storage_width, bitmap.storage_height),
         RasterFrame::Surface(_) => panic!("expected bitmap output"),
     }
+}
+
+fn test_context(width: u32, height: u32) -> RenderContext {
+    let composition = Composition::new(
+        Graph::new(),
+        TimelineSettings {
+            fps: 30.0,
+            duration_frames: 1,
+        },
+        RenderSettings {
+            width,
+            height,
+            background_color: [0, 0, 0, 0],
+        },
+    );
+    RenderContext::new(
+        &composition,
+        Arc::new(SurfacePool::new()),
+        Arc::new(RwLock::new(AssetCache::new())),
+        Arc::new(NullMediaStore),
+        RuntimeCapabilityProfile::cpu_only(),
+    )
+}
+
+fn rgba_fill(width: u32, height: u32, rgba: [u8; 4]) -> Arc<Vec<u8>> {
+    let mut out = Vec::with_capacity((width as usize) * (height as usize) * 4);
+    for _ in 0..(width as usize * height as usize) {
+        out.extend_from_slice(&rgba);
+    }
+    Arc::new(out)
 }
 
 #[test]
@@ -287,6 +319,299 @@ fn media_output_pads_smaller_source_to_render_dimensions() {
     for chunk in bytes[4..].chunks_exact(4) {
         assert_eq!(chunk, &[0, 0, 0, 0]);
     }
+}
+
+#[test]
+fn merge_preserves_base_domain_metadata() {
+    let mut inputs = NodeInputs::new();
+    let base_format = RectI::new(8, 12, 4, 4);
+    let base_data = RectI::new(8, 12, 2, 2);
+    inputs.insert(
+        "base",
+        PortValue::RasterFrame(RasterFrame::Bitmap(BitmapFrame::with_domain(
+            rgba_fill(2, 2, [255, 0, 0, 255]),
+            2,
+            2,
+            base_format,
+            base_data,
+        ))),
+    );
+    inputs.insert(
+        "overlay",
+        PortValue::RasterFrame(RasterFrame::bitmap(rgba_fill(1, 1, [0, 255, 0, 255]), 1, 1)),
+    );
+
+    let mut ctx = test_context(4, 4);
+    let output = Merge::default()
+        .evaluate(&inputs, &mut ctx)
+        .expect("merge evaluation should succeed");
+    let PortValue::RasterFrame(RasterFrame::Bitmap(frame)) = output else {
+        panic!("expected bitmap frame output");
+    };
+
+    assert_eq!(frame.format_rect, base_format);
+    assert_eq!(frame.data_rect, base_format);
+}
+
+#[test]
+fn boolean_preserves_source_domain_metadata() {
+    let mut inputs = NodeInputs::new();
+    let source_format = RectI::new(-2, 3, 3, 2);
+    let source_data = RectI::new(-1, 3, 2, 1);
+    inputs.insert(
+        "source",
+        PortValue::RasterFrame(RasterFrame::Bitmap(BitmapFrame::with_domain(
+            rgba_fill(3, 2, [5, 6, 7, 255]),
+            3,
+            2,
+            source_format,
+            source_data,
+        ))),
+    );
+    inputs.insert(
+        "mask",
+        PortValue::RasterFrame(RasterFrame::bitmap(
+            rgba_fill(1, 1, [255, 255, 255, 255]),
+            1,
+            1,
+        )),
+    );
+
+    let mut ctx = test_context(3, 2);
+    let output = Boolean::default()
+        .evaluate(&inputs, &mut ctx)
+        .expect("boolean evaluation should succeed");
+    let PortValue::RasterFrame(RasterFrame::Bitmap(frame)) = output else {
+        panic!("expected bitmap frame output");
+    };
+
+    assert_eq!(frame.format_rect, source_format);
+    assert_eq!(frame.data_rect, source_data);
+}
+
+#[test]
+fn media_output_normalizes_domain_to_render_rect() {
+    let mut inputs = NodeInputs::new();
+    inputs.insert(
+        "source",
+        PortValue::RasterFrame(RasterFrame::Bitmap(BitmapFrame::with_domain(
+            rgba_fill(2, 2, [1, 2, 3, 255]),
+            2,
+            2,
+            RectI::new(100, 200, 2, 2),
+            RectI::new(100, 200, 1, 1),
+        ))),
+    );
+
+    let mut ctx = test_context(3, 2);
+    let output = MediaOutput
+        .evaluate(&inputs, &mut ctx)
+        .expect("media output evaluation should succeed");
+    let PortValue::RasterFrame(RasterFrame::Bitmap(frame)) = output else {
+        panic!("expected bitmap frame output");
+    };
+
+    let expected = RectI::from_size(3, 2);
+    assert_eq!(frame.format_rect, expected);
+    assert_eq!(frame.data_rect, expected);
+}
+
+#[test]
+fn crop_preserves_shifted_domain_metadata() {
+    let mut inputs = NodeInputs::new();
+    inputs.insert(
+        "source",
+        PortValue::RasterFrame(RasterFrame::Bitmap(BitmapFrame::with_domain(
+            rgba_fill(4, 3, [90, 40, 10, 255]),
+            4,
+            3,
+            RectI::new(100, 200, 4, 3),
+            RectI::new(101, 201, 2, 2),
+        ))),
+    );
+
+    let mut ctx = test_context(4, 3);
+    let output = Crop {
+        x: 1,
+        y: 1,
+        width: 2,
+        height: 1,
+    }
+    .evaluate(&inputs, &mut ctx)
+    .expect("crop evaluation should succeed");
+    let PortValue::RasterFrame(RasterFrame::Bitmap(frame)) = output else {
+        panic!("expected bitmap frame output");
+    };
+
+    assert_eq!(frame.format_rect, RectI::new(101, 201, 2, 1));
+    assert_eq!(frame.data_rect, RectI::new(101, 201, 2, 1));
+}
+
+#[test]
+fn resize_updates_format_rect_size_and_preserves_origin() {
+    let mut inputs = NodeInputs::new();
+    inputs.insert(
+        "source",
+        PortValue::RasterFrame(RasterFrame::Bitmap(
+            BitmapFrame::with_domain(
+                rgba_fill(2, 2, [11, 22, 33, 200]),
+                2,
+                2,
+                RectI::new(-5, 7, 2, 2),
+                RectI::new(-5, 7, 2, 2),
+            )
+            .with_alpha_mode(AlphaMode::Unpremultiplied),
+        )),
+    );
+
+    let mut ctx = test_context(5, 4);
+    let output = Resize {
+        width: 5,
+        height: 4,
+        mode: ResizeMode::Stretch,
+        sampling: ResizeSampling::Nearest,
+    }
+    .evaluate(&inputs, &mut ctx)
+    .expect("resize evaluation should succeed");
+    let PortValue::RasterFrame(RasterFrame::Bitmap(frame)) = output else {
+        panic!("expected bitmap frame output");
+    };
+
+    assert_eq!(frame.format_rect, RectI::new(-5, 7, 5, 4));
+    assert_eq!(frame.data_rect, RectI::new(-5, 7, 5, 4));
+    assert_eq!(frame.alpha_mode, AlphaMode::Unpremultiplied);
+}
+
+#[test]
+fn transform_preserves_source_domain_metadata() {
+    let mut inputs = NodeInputs::new();
+    inputs.insert(
+        "source",
+        PortValue::RasterFrame(RasterFrame::Bitmap(
+            BitmapFrame::with_domain(
+                rgba_fill(3, 2, [44, 55, 66, 255]),
+                3,
+                2,
+                RectI::new(20, 30, 3, 2),
+                RectI::new(21, 30, 2, 1),
+            )
+            .with_alpha_mode(AlphaMode::Unpremultiplied),
+        )),
+    );
+
+    let mut ctx = test_context(3, 2);
+    let output = Transform {
+        scale_x: 1.0,
+        scale_y: 1.0,
+        translate_x: 1.0,
+        translate_y: 0.0,
+        rotate: 0.0,
+        pivot_x: 0.0,
+        pivot_y: 0.0,
+        sampling: TransformSampling::Nearest,
+    }
+    .evaluate(&inputs, &mut ctx)
+    .expect("transform evaluation should succeed");
+    let PortValue::RasterFrame(RasterFrame::Bitmap(frame)) = output else {
+        panic!("expected bitmap frame output");
+    };
+
+    assert_eq!(frame.format_rect, RectI::new(20, 30, 3, 2));
+    assert_eq!(frame.data_rect, RectI::new(21, 30, 2, 1));
+    assert_eq!(frame.alpha_mode, AlphaMode::Unpremultiplied);
+}
+
+#[test]
+fn blur_preserves_source_domain_metadata() {
+    let mut inputs = NodeInputs::new();
+    inputs.insert(
+        "source",
+        PortValue::RasterFrame(RasterFrame::Bitmap(
+            BitmapFrame::with_domain(
+                rgba_fill(2, 2, [120, 10, 80, 180]),
+                2,
+                2,
+                RectI::new(3, 4, 2, 2),
+                RectI::new(3, 4, 1, 1),
+            )
+            .with_alpha_mode(AlphaMode::Unpremultiplied),
+        )),
+    );
+
+    let mut ctx = test_context(2, 2);
+    let output = Blur { radius: 1.0 }
+        .evaluate(&inputs, &mut ctx)
+        .expect("blur evaluation should succeed");
+    let PortValue::RasterFrame(RasterFrame::Bitmap(frame)) = output else {
+        panic!("expected bitmap frame output");
+    };
+
+    assert_eq!(frame.format_rect, RectI::new(3, 4, 2, 2));
+    assert_eq!(frame.data_rect, RectI::new(3, 4, 1, 1));
+    assert_eq!(frame.alpha_mode, AlphaMode::Unpremultiplied);
+}
+
+#[test]
+fn shadow_preserves_source_domain_metadata() {
+    let mut inputs = NodeInputs::new();
+    inputs.insert(
+        "source",
+        PortValue::RasterFrame(RasterFrame::Bitmap(
+            BitmapFrame::with_domain(
+                rgba_fill(2, 1, [10, 200, 30, 255]),
+                2,
+                1,
+                RectI::new(-10, -2, 2, 1),
+                RectI::new(-10, -2, 2, 1),
+            )
+            .with_alpha_mode(AlphaMode::Unpremultiplied),
+        )),
+    );
+
+    let mut ctx = test_context(2, 1);
+    let output = Shadow {
+        offset_x: 1,
+        offset_y: 1,
+        color: [0, 0, 0, 255],
+    }
+    .evaluate(&inputs, &mut ctx)
+    .expect("shadow evaluation should succeed");
+    let PortValue::RasterFrame(RasterFrame::Bitmap(frame)) = output else {
+        panic!("expected bitmap frame output");
+    };
+
+    assert_eq!(frame.format_rect, RectI::new(-10, -2, 2, 1));
+    assert_eq!(frame.data_rect, RectI::new(-10, -2, 2, 1));
+    assert_eq!(frame.alpha_mode, AlphaMode::Unpremultiplied);
+}
+
+#[test]
+fn raster_surface_clone_preserves_pixels_and_metadata() {
+    let pool = Arc::new(SurfacePool::new());
+    let mut surface_ref = pool
+        .acquire(2, 1)
+        .expect("surface allocation should succeed");
+    surface_ref
+        .surface_mut()
+        .expect("surface should be available")
+        .canvas()
+        .clear(skia_safe::Color::from_argb(255, 11, 22, 33));
+
+    let mut surface_frame = SurfaceFrame::new(surface_ref);
+    surface_frame.format_rect = RectI::new(9, 8, 2, 1);
+    surface_frame.data_rect = RectI::new(9, 8, 1, 1);
+    surface_frame.alpha_mode = AlphaMode::Unpremultiplied;
+
+    let cloned = RasterFrame::Surface(surface_frame).clone();
+    let RasterFrame::Bitmap(bitmap) = cloned else {
+        panic!("expected bitmap clone from surface frame");
+    };
+
+    assert_eq!(&bitmap.pixels[0..4], &[11, 22, 33, 255]);
+    assert_eq!(&bitmap.pixels[4..8], &[11, 22, 33, 255]);
+    assert_eq!(bitmap.format_rect, RectI::new(9, 8, 2, 1));
+    assert_eq!(bitmap.data_rect, RectI::new(9, 8, 1, 1));
+    assert_eq!(bitmap.alpha_mode, AlphaMode::Unpremultiplied);
 }
 
 #[test]

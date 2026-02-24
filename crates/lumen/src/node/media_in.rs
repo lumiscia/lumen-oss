@@ -85,7 +85,7 @@ fn evaluate_image(source: &str, ctx: &mut RenderContext) -> Result<RasterFrame, 
     };
 
     validate_rgba_len(source, width, height, decoded.as_ref())?;
-    Ok(RasterFrame::Bitmap(decoded, width, height))
+    Ok(RasterFrame::bitmap(decoded, width, height))
 }
 
 fn evaluate_video(
@@ -130,7 +130,7 @@ fn evaluate_video(
 
     let decoded = resolver.resolve_frame(source_frame)?;
     validate_rgba_len(source, width, height, decoded.as_ref())?;
-    Ok(RasterFrame::Bitmap(decoded, width, height))
+    Ok(RasterFrame::bitmap(decoded, width, height))
 }
 
 fn map_to_source_frame(

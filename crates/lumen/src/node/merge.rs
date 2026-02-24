@@ -8,7 +8,7 @@ use crate::{
         BlendMode, InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
         pixel_utils::{make_skia_image, render_with_skia},
     },
-    raster::RasterFrame,
+    raster::{BitmapFrame, RasterFrame},
     render::RenderContext,
 };
 
@@ -68,45 +68,63 @@ impl NodeEval for Merge {
             return Ok(PortValue::RasterFrame(inputs.get_raster("base")?.clone()));
         }
 
-        let (base_bytes, base_w, base_h) = inputs.get_raster("base")?.clone().into_parts();
-        let (overlay_bytes, overlay_w, overlay_h) =
-            inputs.get_raster("overlay")?.clone().into_parts();
+        let base = inputs.get_raster("base")?;
+        let overlay = inputs.get_raster("overlay")?;
+        let (base_bytes, base_w, base_h) = base.clone().into_parts();
+        let (overlay_bytes, overlay_w, overlay_h) = overlay.clone().into_parts();
+        let base_alpha = base.alpha_mode();
+        let overlay_alpha = overlay.alpha_mode();
+        let base_format = base.format_rect();
+        let base_data = base.data_rect();
         let mask = match inputs.get_raster_optional("mask")? {
-            Some(raster) => Some(raster.clone().into_parts()),
+            Some(raster) => Some((raster.clone().into_parts(), raster.alpha_mode())),
             None => None,
         };
 
         let out_w = base_w;
         let out_h = base_h;
         if out_w == 0 || out_h == 0 {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                Arc::new(Vec::new()),
-                0,
-                0,
-            )));
+            return Ok(PortValue::RasterFrame(base.clone()));
         }
 
-        let base_image = make_skia_image(&base_bytes, base_w, base_h);
-        let overlay_image = make_skia_image(&overlay_bytes, overlay_w, overlay_h);
+        let base_image = make_skia_image(
+            &base_bytes,
+            base_w,
+            base_h,
+            (base_w as usize) * 4,
+            base_alpha,
+        );
+        let overlay_image = make_skia_image(
+            &overlay_bytes,
+            overlay_w,
+            overlay_h,
+            (overlay_w as usize) * 4,
+            overlay_alpha,
+        );
 
         let Some(base_image) = base_image else {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                Arc::new(vec![0u8; (out_w as usize) * (out_h as usize) * 4]),
-                out_w,
-                out_h,
+                BitmapFrame::with_domain(
+                    Arc::new(vec![0u8; (out_w as usize) * (out_h as usize) * 4]),
+                    out_w,
+                    out_h,
+                    base_format,
+                    base_data,
+                )
+                .with_alpha_mode(base_alpha),
             )));
         };
         let Some(overlay_image) = overlay_image else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                base_bytes, base_w, base_h,
-            )));
+            return Ok(PortValue::RasterFrame(base.clone()));
         };
 
         let opacity = self.opacity.clamp(0.0, 1.0);
         let skia_blend: skia_safe::BlendMode = self.blend_mode.into();
 
         let mask_image = match mask {
-            Some((mb, mw, mh)) => make_skia_image(&mb, mw, mh),
+            Some(((mb, mw, mh), alpha_mode)) => {
+                make_skia_image(&mb, mw, mh, (mw as usize) * 4, alpha_mode)
+            }
             None => None,
         };
 
@@ -135,9 +153,8 @@ impl NodeEval for Merge {
         });
 
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-            Arc::new(merged),
-            out_w,
-            out_h,
+            BitmapFrame::with_domain(Arc::new(merged), out_w, out_h, base_format, base_format)
+                .with_alpha_mode(base_alpha),
         )))
     }
 }

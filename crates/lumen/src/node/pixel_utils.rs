@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use skia_safe::{AlphaType, ColorType, Data, ImageInfo, images, surfaces};
 
-use crate::raster::RasterFrame;
-
+use crate::raster::{AlphaMode, BitmapFrame, RasterFrame};
 pub fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
     let pixels = u64::from(width).checked_mul(u64::from(height))?;
     let bytes = pixels.checked_mul(4)?;
@@ -14,11 +13,11 @@ pub fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
 
 pub fn into_bitmap_parts(raster: RasterFrame) -> (Arc<Vec<u8>>, u32, u32) {
     match raster {
-        RasterFrame::Bitmap(bytes, width, height) => (bytes, width, height),
-        RasterFrame::Surface(mut surface_ref) => {
-            let width = surface_ref.width();
-            let height = surface_ref.height();
-            let bytes = match surface_ref.surface_mut() {
+        RasterFrame::Bitmap(frame) => (frame.pixels, frame.storage_width, frame.storage_height),
+        RasterFrame::Surface(mut surface_frame) => {
+            let width = surface_frame.surface.width();
+            let height = surface_frame.surface.height();
+            let bytes = match surface_frame.surface.surface_mut() {
                 Some(surface) => read_surface_rgba(surface, width, height),
                 None => rgba_byte_len(width, height)
                     .map(|len| vec![0u8; len])
@@ -45,27 +44,41 @@ pub fn read_surface_rgba(surface: &mut skia_safe::Surface, width: u32, height: u
     }
 }
 
-pub fn make_skia_image(bytes: &[u8], width: u32, height: u32) -> Option<skia_safe::Image> {
+pub fn make_skia_image_frame(frame: &BitmapFrame) -> Option<skia_safe::Image> {
+    make_skia_image(
+        frame.pixels.as_slice(),
+        frame.storage_width,
+        frame.storage_height,
+        frame.row_bytes,
+        frame.alpha_mode,
+    )
+}
+
+pub fn make_skia_image(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    row_bytes: usize,
+    alpha_mode: AlphaMode,
+) -> Option<skia_safe::Image> {
     let expected = rgba_byte_len(width, height)?;
-    if bytes.len() != expected {
+    if bytes.len() < expected || row_bytes < (width as usize).saturating_mul(4) {
         return None;
     }
     let info = ImageInfo::new(
         (width as i32, height as i32),
         ColorType::RGBA8888,
-        AlphaType::Premul,
+        match alpha_mode {
+            AlphaMode::Premultiplied => AlphaType::Premul,
+            AlphaMode::Unpremultiplied => AlphaType::Unpremul,
+        },
         None,
     );
-    let row_bytes = (width * 4) as usize;
     let data = unsafe { Data::new_bytes(bytes) };
     images::raster_from_data(&info, data, row_bytes)
 }
 
-pub fn render_with_skia(
-    width: u32,
-    height: u32,
-    draw: impl FnOnce(&skia_safe::Canvas),
-) -> Vec<u8> {
+pub fn render_with_skia(width: u32, height: u32, draw: impl FnOnce(&skia_safe::Canvas)) -> Vec<u8> {
     let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
         return rgba_byte_len(width, height)
             .map(|len| vec![0u8; len])

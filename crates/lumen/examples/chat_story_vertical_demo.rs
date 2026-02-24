@@ -216,30 +216,32 @@ impl Sink for RawRgbaSink {
                 frame,
                 details: error.to_string(),
             })?;
-        let RasterFrame::Bitmap(bytes, width, height) = bitmap else {
+        let RasterFrame::Bitmap(bitmap) = bitmap else {
             return Err(SinkError::WriteFrame {
                 frame,
                 details: "expected bitmap".to_string(),
             });
         };
-        if width != self.width || height != self.height {
+        if bitmap.storage_width != self.width || bitmap.storage_height != self.height {
             return Err(SinkError::WriteFrame {
                 frame,
                 details: format!(
-                    "unexpected dimensions {width}x{height}, expected {}x{}",
-                    self.width, self.height
+                    "unexpected dimensions {}x{}, expected {}x{}",
+                    bitmap.storage_width, bitmap.storage_height, self.width, self.height
                 ),
             });
         }
         self.writer
-            .write_all(bytes.as_slice())
+            .write_all(bitmap.pixels.as_slice())
             .map_err(|error| SinkError::WriteFrame {
                 frame,
                 details: error.to_string(),
             })?;
         if let Ok(mut stats) = self.stats.lock() {
             stats.frames_written += 1;
-            stats.bytes_written = stats.bytes_written.saturating_add(bytes.len() as u64);
+            stats.bytes_written = stats
+                .bytes_written
+                .saturating_add(bitmap.pixels.len() as u64);
         }
         Ok(())
     }

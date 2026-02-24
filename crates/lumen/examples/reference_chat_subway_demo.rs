@@ -187,30 +187,32 @@ mod app {
                     frame,
                     details: error.to_string(),
                 })?;
-            let RasterFrame::Bitmap(bytes, width, height) = bitmap else {
+            let RasterFrame::Bitmap(bitmap) = bitmap else {
                 return Err(SinkError::WriteFrame {
                     frame,
                     details: "expected bitmap".to_string(),
                 });
             };
-            if width != self.width || height != self.height {
+            if bitmap.storage_width != self.width || bitmap.storage_height != self.height {
                 return Err(SinkError::WriteFrame {
                     frame,
                     details: format!(
-                        "unexpected dimensions {width}x{height}, expected {}x{}",
-                        self.width, self.height
+                        "unexpected dimensions {}x{}, expected {}x{}",
+                        bitmap.storage_width, bitmap.storage_height, self.width, self.height
                     ),
                 });
             }
             self.writer
-                .write_all(bytes.as_slice())
+                .write_all(bitmap.pixels.as_slice())
                 .map_err(|error| SinkError::WriteFrame {
                     frame,
                     details: error.to_string(),
                 })?;
             if let Ok(mut stats) = self.stats.lock() {
                 stats.frames_written += 1;
-                stats.bytes_written = stats.bytes_written.saturating_add(bytes.len() as u64);
+                stats.bytes_written = stats
+                    .bytes_written
+                    .saturating_add(bitmap.pixels.len() as u64);
             }
             Ok(())
         }
@@ -315,9 +317,13 @@ mod app {
             };
             let (wrapped_text_w, text_h) =
                 measure_text_paragraph(spec.text, spec.font_size, wrap_width);
-            let bubble_text_w = if needs_wrap { wrapped_text_w } else { intrinsic_w };
-            let bubble_w = (bubble_text_w + TEXT_PAD_X * 2.0)
-                .clamp(116.0, max_wrap_width + TEXT_PAD_X * 2.0);
+            let bubble_text_w = if needs_wrap {
+                wrapped_text_w
+            } else {
+                intrinsic_w
+            };
+            let bubble_w =
+                (bubble_text_w + TEXT_PAD_X * 2.0).clamp(116.0, max_wrap_width + TEXT_PAD_X * 2.0);
             let bubble_h = (text_h + TEXT_PAD_Y * 2.0).max(44.0);
             let bubble_x = if spec.outgoing {
                 inner.right - 6.0 - bubble_w

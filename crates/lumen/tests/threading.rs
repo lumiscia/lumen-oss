@@ -32,7 +32,7 @@ mod tests {
                 }
             }
 
-            let RasterFrame::Bitmap(bytes, ..) =
+            let RasterFrame::Bitmap(bitmap) =
                 data.clone()
                     .to_bitmap()
                     .map_err(|error| SinkError::WriteFrame {
@@ -47,7 +47,7 @@ mod tests {
             };
 
             if let Ok(mut state) = self.state.lock() {
-                state.frames.push((frame, bytes));
+                state.frames.push((frame, bitmap.pixels));
             }
             Ok(())
         }
@@ -113,9 +113,10 @@ mod tests {
             let rendered = composition
                 .render_frame(frame, &mut single_context)
                 .expect("single-thread render should succeed");
-            let RasterFrame::Bitmap(bytes, ..) = rendered else {
+            let RasterFrame::Bitmap(bitmap) = rendered else {
                 panic!("expected bitmap frame");
             };
+            single_thread_frames.push((frame, bitmap.pixels));
             single_thread_frames.push((frame, bytes));
         }
 

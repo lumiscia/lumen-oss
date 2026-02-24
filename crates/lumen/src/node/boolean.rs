@@ -8,7 +8,7 @@ use crate::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
         pixel_utils::{make_skia_image, render_with_skia},
     },
-    raster::RasterFrame,
+    raster::{AlphaMode, BitmapFrame, RasterFrame},
     render::RenderContext,
 };
 
@@ -71,41 +71,56 @@ impl NodeEval for Boolean {
         inputs: &NodeInputs,
         _ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
-        let (source_bytes, source_w, source_h) =
-            inputs.get_raster("source")?.clone().into_parts();
+        let source = inputs.get_raster("source")?;
+        let (source_bytes, source_w, source_h) = source.clone().into_parts();
+        let source_alpha = source.alpha_mode();
+        let source_format = source.format_rect();
+        let source_data = source.data_rect();
         let mask = match inputs.get_raster_optional("mask")? {
             Some(frame) => Some(frame.clone().into_parts()),
             None => None,
         };
 
         let Some((mask_bytes, mask_w, mask_h)) = mask else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                source_bytes,
-                source_w,
-                source_h,
-            )));
+            return Ok(PortValue::RasterFrame(source.clone()));
         };
 
         let out_w = source_w;
         let out_h = source_h;
         if out_w == 0 || out_h == 0 {
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                Arc::new(Vec::new()),
-                0,
-                0,
+                BitmapFrame::with_domain(Arc::new(Vec::new()), 0, 0, source_format, source_data)
+                    .with_alpha_mode(source_alpha),
             )));
         }
 
-        let source_image = make_skia_image(&source_bytes, source_w, source_h);
-        let mask_image = make_skia_image(&mask_bytes, mask_w, mask_h);
+        let source_image = make_skia_image(
+            &source_bytes,
+            source_w,
+            source_h,
+            (source_w as usize) * 4,
+            source_alpha,
+        );
+        let mask_image = make_skia_image(
+            &mask_bytes,
+            mask_w,
+            mask_h,
+            (mask_w as usize) * 4,
+            AlphaMode::Premultiplied,
+        );
 
         let (source_image, mask_image) = match (source_image, mask_image) {
             (Some(s), Some(m)) => (s, m),
             _ => {
                 return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                    Arc::new(vec![0u8; (out_w as usize) * (out_h as usize) * 4]),
-                    out_w,
-                    out_h,
+                    BitmapFrame::with_domain(
+                        Arc::new(vec![0u8; (out_w as usize) * (out_h as usize) * 4]),
+                        out_w,
+                        out_h,
+                        source_format,
+                        source_data,
+                    )
+                    .with_alpha_mode(source_alpha),
                 )));
             }
         };
@@ -143,9 +158,8 @@ impl NodeEval for Boolean {
         });
 
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-            Arc::new(output),
-            out_w,
-            out_h,
+            BitmapFrame::with_domain(Arc::new(output), out_w, out_h, source_format, source_data)
+                .with_alpha_mode(source_alpha),
         )))
     }
 }
