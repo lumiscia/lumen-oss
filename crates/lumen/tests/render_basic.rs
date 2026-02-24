@@ -12,9 +12,9 @@ use lumen::{
     node::{
         Node, ShapeGeometry, blur::Blur, boolean::Boolean, crop::Crop, frame_hold::FrameHold,
         media_in::LoopMode, media_in::MediaIn, media_in::MediaInKind, media_output::MediaOutput,
-        merge::Merge, resize::Resize, resize::ResizeMode, resize::ResizeSampling, shadow::Shadow,
-        shape::Shape, shape_renderer::ShapeRenderer, solid_color::SolidColor, switch::Switch,
-        transform::Transform, transform::TransformSampling,
+        memo::Memo, merge::Merge, resize::Resize, resize::ResizeMode, resize::ResizeSampling,
+        shadow::Shadow, shape::Shape, shape_renderer::ShapeRenderer, solid_color::SolidColor,
+        switch::Switch, transform::Transform, transform::TransformSampling,
     },
 };
 
@@ -997,4 +997,143 @@ fn composition_validate_reports_fps_mismatch_warning_for_video_speed_change() {
             source_fps,
         } if *node_id == media_in && (*composition_fps - 30.0).abs() < f32::EPSILON && (*source_fps - 60.0).abs() < f32::EPSILON
     )));
+}
+
+#[test]
+fn instrumentation_tracks_node_cache_behavior() {
+    let mut graph = Graph::new();
+    let source = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::SolidColor(SolidColor {
+            color: [200, 10, 20, 255],
+            width: Some(2),
+            height: Some(1),
+        }),
+    ));
+    let merge = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::Merge(Merge {
+            opacity: 0.5,
+            ..Merge::default()
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    connect(&mut graph, source, merge, "base");
+    connect(&mut graph, source, merge, "overlay");
+    connect(&mut graph, merge, output, "source");
+
+    let composition = Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 30.0,
+            duration_frames: 60,
+        },
+        RenderSettings {
+            width: 2,
+            height: 1,
+            background_color: [0, 0, 0, 0],
+        },
+    );
+    let mut context = RenderContext::new(
+        &composition,
+        Arc::new(SurfacePool::new()),
+        Arc::new(RwLock::new(AssetCache::new())),
+        Arc::new(NullMediaStore),
+        RuntimeCapabilityProfile::cpu_only(),
+    );
+
+    composition
+        .render_frame(0, &mut context)
+        .expect("render should succeed");
+    let stats = context.instrumentation_snapshot();
+    assert_eq!(stats.node_evaluations, 3);
+    assert_eq!(stats.node_output_cache_misses, 3);
+    assert_eq!(stats.node_output_cache_hits, 1);
+    assert!(stats.pixel_allocation_bytes >= 8);
+}
+
+#[test]
+fn instrumentation_tracks_memo_hits_and_misses_per_render() {
+    let mut graph = Graph::new();
+    let source = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::SolidColor(SolidColor {
+            color: [25, 50, 75, 255],
+            width: Some(2),
+            height: Some(2),
+        }),
+    ));
+    let memo = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::Memo(Memo {
+            cache_id: "stats-memo".to_string(),
+            allow_expressions: false,
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    connect(&mut graph, source, memo, "source");
+    connect(&mut graph, memo, output, "source");
+
+    let composition = Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 30.0,
+            duration_frames: 60,
+        },
+        RenderSettings {
+            width: 2,
+            height: 2,
+            background_color: [0, 0, 0, 0],
+        },
+    );
+    let mut context = RenderContext::new(
+        &composition,
+        Arc::new(SurfacePool::new()),
+        Arc::new(RwLock::new(AssetCache::new())),
+        Arc::new(NullMediaStore),
+        RuntimeCapabilityProfile::cpu_only(),
+    );
+
+    composition
+        .render_frame(0, &mut context)
+        .expect("initial render should succeed");
+    let first = context.instrumentation_snapshot();
+    assert_eq!(first.memo_cache_misses, 1);
+    assert_eq!(first.memo_cache_hits, 0);
+
+    composition
+        .render_frame(0, &mut context)
+        .expect("second render should succeed");
+    let second = context.instrumentation_snapshot();
+    assert_eq!(second.memo_cache_hits, 1);
+    assert_eq!(second.memo_cache_misses, 0);
+}
+
+#[test]
+fn instrumentation_snapshots_surface_pool_acquires() {
+    let mut context = test_context(1, 1);
+    context.reset_instrumentation();
+
+    {
+        let _surface = context
+            .surface_pool
+            .acquire(3, 2)
+            .expect("initial acquire should allocate");
+    }
+    {
+        let _surface = context
+            .surface_pool
+            .acquire(3, 2)
+            .expect("second acquire should reuse pooled surface");
+    }
+
+    let stats = context.instrumentation_snapshot();
+    assert_eq!(stats.surface_acquires, 2);
+    assert_eq!(stats.surface_fresh_allocations, 1);
+    assert_eq!(stats.surface_reuses, 1);
+    assert_eq!(stats.surface_fresh_allocation_bytes, 24);
+    assert_eq!(
+        stats.surface_acquires_by_size.get(&(3, 2)).copied(),
+        Some(2)
+    );
 }

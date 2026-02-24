@@ -39,9 +39,12 @@ pub use node::{
     PortValue, PropertyValue, TrackId, VectorData,
 };
 pub use raster::RasterFrame;
-pub use render::{CancellationToken, NullMediaStore, RenderContext, RenderQuality, RenderRequest};
+pub use render::{
+    CancellationToken, NullMediaStore, RenderContext, RenderInstrumentation, RenderQuality,
+    RenderRequest,
+};
 pub use sink::Sink;
-pub use surface_pool::{SurfacePool, SurfaceRef};
+pub use surface_pool::{SurfacePool, SurfacePoolStats, SurfaceRef};
 
 #[cfg(feature = "json")]
 pub use json::{JsonDelegate, JsonDelegateResult};
