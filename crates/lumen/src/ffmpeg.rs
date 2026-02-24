@@ -19,7 +19,7 @@ use ffmpeg_next as ffmpeg;
 
 use crate::{
     error::MediaError,
-    media::{ImageResolver, MediaStore, VideoFrameResolver},
+    media::{ImageResolver, MediaStore, VideoFrameResolver, premultiply_rgba_in_place_if_needed},
 };
 
 const DEFAULT_LRU_CAPACITY: usize = 48;
@@ -126,7 +126,9 @@ impl VideoDecodeWorker {
             return Ok(cached);
         }
 
-        let decoded = Arc::new(self.decoder.decode_frame(frame)?);
+        let mut decoded = self.decoder.decode_frame(frame)?;
+        premultiply_rgba_in_place_if_needed(&mut decoded);
+        let decoded = Arc::new(decoded);
         self.cache.insert(frame, Arc::clone(&decoded));
         self.prefetch_after(frame);
         Ok(decoded)
@@ -145,9 +147,10 @@ impl VideoDecodeWorker {
             if self.cache.contains(candidate) {
                 continue;
             }
-            let Ok(decoded) = self.decoder.decode_frame(candidate) else {
+            let Ok(mut decoded) = self.decoder.decode_frame(candidate) else {
                 break;
             };
+            premultiply_rgba_in_place_if_needed(&mut decoded);
             self.cache.insert(candidate, Arc::new(decoded));
         }
     }
@@ -563,12 +566,10 @@ impl VideoFrameResolver for FfmpegVideoResolver {
                 details: "video decode worker is unavailable".to_string(),
             })?;
 
-        response_rx
-            .recv()
-            .map_err(|_| MediaError::Decode {
-                media_source: self.id.clone(),
-                details: "video decode worker did not return a frame".to_string(),
-            })?
+        response_rx.recv().map_err(|_| MediaError::Decode {
+            media_source: self.id.clone(),
+            details: "video decode worker did not return a frame".to_string(),
+        })?
     }
 }
 

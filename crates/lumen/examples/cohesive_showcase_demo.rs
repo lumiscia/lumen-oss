@@ -16,7 +16,7 @@ use lumen::{
     TrackId, Warning,
     animation::PropertyPath,
     error::SinkError,
-    media::{ImageResolver, MediaStore, VideoFrameResolver},
+    media::{ImageResolver, MediaStore, VideoFrameResolver, premultiply_rgba_in_place_if_needed},
     node::{
         Node, PropertyValue, ShapeGeometry,
         blur::Blur,
@@ -74,6 +74,8 @@ impl DemoImageResolver {
         pixels: Vec<u8>,
         stats: Arc<Mutex<ImageResolveStats>>,
     ) -> Self {
+        let mut pixels = pixels;
+        premultiply_rgba_in_place_if_needed(&mut pixels);
         Self {
             id: id.into(),
             width,
@@ -161,7 +163,9 @@ impl VideoFrameResolver for DemoVideoResolver {
             stats.calls += 1;
             stats.requested_frames.push(frame);
         }
-        Ok(Arc::new(procedural_video_frame(self.width, self.height, frame)))
+        let mut pixels = procedural_video_frame(self.width, self.height, frame);
+        premultiply_rgba_in_place_if_needed(&mut pixels);
+        Ok(Arc::new(pixels))
     }
 }
 

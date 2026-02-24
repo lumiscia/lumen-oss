@@ -37,6 +37,8 @@ pub struct MockImageResolver {
 
 impl MockImageResolver {
     pub fn new(id: impl Into<String>, width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        let mut pixels = pixels;
+        premultiply_rgba_in_place_if_needed(&mut pixels);
         Self {
             id: id.into(),
             width,
@@ -82,6 +84,8 @@ impl MockVideoResolver {
         frame_count: u32,
         pixels: Vec<u8>,
     ) -> Self {
+        let mut pixels = pixels;
+        premultiply_rgba_in_place_if_needed(&mut pixels);
         Self {
             id: id.into(),
             width,
@@ -158,5 +162,29 @@ impl MediaStore for MockMediaStore {
             .get(source)
             .cloned()
             .map(|resolver| Box::new(resolver) as Box<dyn VideoFrameResolver>)
+    }
+}
+
+pub fn premultiply_rgba_in_place_if_needed(bytes: &mut [u8]) {
+    if bytes.chunks_exact(4).all(|pixel| pixel[3] == 255) {
+        return;
+    }
+
+    for pixel in bytes.chunks_exact_mut(4) {
+        let alpha = pixel[3];
+        if alpha == 255 {
+            continue;
+        }
+        if alpha == 0 {
+            pixel[0] = 0;
+            pixel[1] = 0;
+            pixel[2] = 0;
+            continue;
+        }
+
+        let alpha = f32::from(alpha) / 255.0;
+        pixel[0] = (f32::from(pixel[0]) * alpha).round().clamp(0.0, 255.0) as u8;
+        pixel[1] = (f32::from(pixel[1]) * alpha).round().clamp(0.0, 255.0) as u8;
+        pixel[2] = (f32::from(pixel[2]) * alpha).round().clamp(0.0, 255.0) as u8;
     }
 }

@@ -10,7 +10,7 @@ use lumen::{
 	AssetCache, Composition, Connection, Graph, InputPort, MediaStore, NodeId, NodeKind, OutputPort,
 	RenderContext, RenderSettings, RuntimeCapabilityProfile, SharedAssetCache, SurfacePool,
 	TimelineSettings,
-	media::{ImageResolver, VideoFrameResolver},
+	media::{ImageResolver, VideoFrameResolver, premultiply_rgba_in_place_if_needed},
 	node::{Node, media_output::MediaOutput, solid_color::SolidColor},
 };
 use serde::{Deserialize, Serialize};
@@ -708,7 +708,7 @@ fn insert_image(
 	source_len: usize,
 	width: u32,
 	height: u32,
-	rgba: Vec<u8>,
+	mut rgba: Vec<u8>,
 ) -> i32 {
 	if width == 0 || height == 0 {
 		REGISTRY.with(|registry| {
@@ -751,6 +751,7 @@ fn insert_image(
 			registry.set_status("error", "invalid_input", "media store handle not found");
 			return 0;
 		};
+		premultiply_rgba_in_place_if_needed(&mut rgba);
 		let result = store.images.write().map(|mut images| {
 			images.insert(
 				source,
@@ -778,7 +779,7 @@ fn insert_video_frame(
 	frame: u64,
 	width: u32,
 	height: u32,
-	rgba: Vec<u8>,
+	mut rgba: Vec<u8>,
 ) -> i32 {
 	let frame = match u32::try_from(frame) {
 		Ok(frame) => frame,
@@ -832,6 +833,7 @@ fn insert_video_frame(
 			registry.set_status("error", "invalid_input", "media store handle not found");
 			return 0;
 		};
+		premultiply_rgba_in_place_if_needed(&mut rgba);
 		let result = store.videos.write().map(|mut videos| {
 			let entry = videos.entry(source).or_default();
 			entry.width = width;
