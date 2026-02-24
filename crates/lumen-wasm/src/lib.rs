@@ -1,1078 +1,931 @@
 use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    slice, str,
-    sync::Arc,
+	cell::RefCell,
+	collections::{BTreeMap, HashMap},
+	ffi::{c_char, c_void},
+	ptr,
+	sync::{Arc, RwLock},
 };
 
 use lumen::{
-    Layer, Project, Rational,
-    clip::{
-        Clip, ClipType,
-        layout::{LayoutContent, LayoutNode},
-    },
-    json::{JsonDelegateRequest, JsonDelegateStatus, convert_json_delegate, json_delegate_enabled},
-    media::{ImageResolver, MediaStore, VideoResolver},
-    render::{backend::pixel_len, context::RendererContext, render_scene},
+	AssetCache, Composition, Connection, Graph, InputPort, MediaStore, NodeId, NodeKind, OutputPort,
+	RenderContext, RenderSettings, RuntimeCapabilityProfile, SharedAssetCache, SurfacePool,
+	TimelineSettings,
+	media::{ImageResolver, VideoFrameResolver},
+	node::{Node, media_output::MediaOutput, solid_color::SolidColor},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-const ABI_MAJOR: u32 = 1;
-const ABI_MINOR: u32 = 0;
-const RENDERER_CONTRACT_ID: &str = "lumiscia.renderer";
-const SCHEMA_REVISION: &str = "chat_story_v1";
+static VERSION: &[u8] = b"lumen-wasm-next\0";
+static EMPTY_FRAME_REQUIREMENTS: &[u8] = br#"{"images":[],"videos":[]}"#;
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WasmContractMetadata {
-    abi_major: u32,
-    abi_minor: u32,
-    renderer_contract: &'static str,
-    schema_revision: &'static str,
-    capabilities: Vec<&'static str>,
-    limits: WasmContractLimits,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WasmContractLimits {
-    max_layers: u32,
-    max_items_per_layer: u32,
-    max_timeline_frames: u32,
-}
-
-#[derive(Serialize)]
-struct StatusPayload {
-    status: &'static str,
-    code: &'static str,
-    message: String,
+unsafe extern "C" {
+	fn free(ptr: *mut c_void);
 }
 
 thread_local! {
-    static LAST_STATUS_PAYLOAD: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    static LAST_CONTRACT_METADATA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+	static REGISTRY: RefCell<Registry> = RefCell::new(Registry::default());
 }
 
-fn set_status_payload(status: &'static str, code: &'static str, message: impl Into<String>) {
-    let payload = StatusPayload {
-        status,
-        code,
-        message: message.into(),
-    };
-    let bytes = serde_json::to_vec(&payload).unwrap_or_default();
-    LAST_STATUS_PAYLOAD.with(|buffer| {
-        *buffer.borrow_mut() = bytes;
-    });
+struct Registry {
+	next_handle: u32,
+	last_status: Vec<u8>,
+	renderers: HashMap<u32, RendererSession>,
+	media_stores: HashMap<u32, Arc<InMemoryMediaStore>>,
 }
 
-fn contract_capabilities() -> Vec<&'static str> {
-    let mut capabilities = vec!["media_owned_upload"];
-    if json_delegate_enabled() {
-        capabilities.insert(0, "json_delegate");
-    }
-    capabilities
+impl Registry {
+	fn alloc_handle(&mut self) -> u32 {
+		if self.next_handle == 0 {
+			self.next_handle = 1;
+		}
+		for _ in 0..u32::MAX {
+			let handle = self.next_handle;
+			self.next_handle = self.next_handle.wrapping_add(1);
+			if handle != 0
+				&& !self.renderers.contains_key(&handle)
+				&& !self.media_stores.contains_key(&handle)
+			{
+				return handle;
+			}
+		}
+		0
+	}
+
+	fn set_status(&mut self, status: &str, code: &str, message: &str) {
+		self.last_status = encode_status(status, code, message);
+	}
 }
 
-fn ensure_contract_metadata() {
-    LAST_CONTRACT_METADATA.with(|buffer| {
-        if !buffer.borrow().is_empty() {
-            return;
-        }
-        let metadata = WasmContractMetadata {
-            abi_major: ABI_MAJOR,
-            abi_minor: ABI_MINOR,
-            renderer_contract: RENDERER_CONTRACT_ID,
-            schema_revision: SCHEMA_REVISION,
-            capabilities: contract_capabilities(),
-            limits: WasmContractLimits {
-                max_layers: 128,
-                max_items_per_layer: 2048,
-                max_timeline_frames: 259_200,
-            },
-        };
-        let bytes = serde_json::to_vec(&metadata).unwrap_or_default();
-        *buffer.borrow_mut() = bytes;
-    });
+impl Default for Registry {
+	fn default() -> Self {
+		Self {
+			next_handle: 1,
+			last_status: encode_status("ok", "ready", "ready"),
+			renderers: HashMap::new(),
+			media_stores: HashMap::new(),
+		}
+	}
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn lumen_contract_metadata_ptr() -> *const u8 {
-    ensure_contract_metadata();
-    LAST_CONTRACT_METADATA.with(|buffer| {
-        let borrowed = buffer.borrow();
-        if borrowed.is_empty() {
-            std::ptr::null()
-        } else {
-            borrowed.as_ptr()
-        }
-    })
+struct RendererSession {
+	composition: Composition,
+	asset_cache: SharedAssetCache,
+	last_frame: Vec<u8>,
+	last_frame_requirements: Vec<u8>,
+	last_error: Vec<u8>,
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn lumen_contract_metadata_len() -> usize {
-    ensure_contract_metadata();
-    LAST_CONTRACT_METADATA.with(|buffer| buffer.borrow().len())
+impl RendererSession {
+	fn new(composition: Composition) -> Self {
+		Self {
+			composition,
+			asset_cache: Arc::new(RwLock::new(AssetCache::new())),
+			last_frame: Vec::new(),
+			last_frame_requirements: EMPTY_FRAME_REQUIREMENTS.to_vec(),
+			last_error: Vec::new(),
+		}
+	}
+
+	fn width(&self) -> u32 {
+		self.composition.render_settings.width
+	}
+
+	fn height(&self) -> u32 {
+		self.composition.render_settings.height
+	}
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn lumen_last_status_ptr() -> *const u8 {
-    LAST_STATUS_PAYLOAD.with(|buffer| {
-        let borrowed = buffer.borrow();
-        if borrowed.is_empty() {
-            std::ptr::null()
-        } else {
-            borrowed.as_ptr()
-        }
-    })
+#[derive(Default)]
+struct InMemoryMediaStore {
+	images: RwLock<HashMap<String, StoredImage>>,
+	videos: RwLock<HashMap<String, StoredVideo>>,
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn lumen_last_status_len() -> usize {
-    LAST_STATUS_PAYLOAD.with(|buffer| buffer.borrow().len())
+#[derive(Clone)]
+struct StoredImage {
+	width: u32,
+	height: u32,
+	pixels: Arc<Vec<u8>>,
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_handshake(expected_abi_major: u32) -> u32 {
-    ensure_contract_metadata();
-    if expected_abi_major != ABI_MAJOR {
-        set_status_payload(
-            "rejected",
-            "contract_mismatch",
-            format!(
-                "expected abi_major={}, got {}",
-                expected_abi_major, ABI_MAJOR
-            ),
-        );
-        return 2;
-    }
-    set_status_payload("ok", "ok", "handshake successful");
-    0
+#[derive(Clone, Default)]
+struct StoredVideo {
+	width: u32,
+	height: u32,
+	frames: BTreeMap<u32, Arc<Vec<u8>>>,
 }
 
-#[derive(Debug, Clone)]
-struct FrameData {
-    width: u32,
-    height: u32,
-    pixels_rgba: Arc<Vec<u8>>,
+#[derive(Clone)]
+struct WasmImageResolver {
+	id: String,
+	entry: StoredImage,
 }
 
-#[derive(Debug, Clone)]
-struct VideoSourceFrames {
-    width: u32,
-    height: u32,
-    frames: HashMap<u64, FrameData>,
+#[derive(Clone)]
+struct WasmVideoResolver {
+	id: String,
+	entry: StoredVideo,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct WasmMediaStore {
-    images: HashMap<String, FrameData>,
-    videos: HashMap<String, VideoSourceFrames>,
+impl ImageResolver for WasmImageResolver {
+	fn id(&self) -> &str {
+		&self.id
+	}
+
+	fn width(&self) -> u32 {
+		self.entry.width
+	}
+
+	fn height(&self) -> u32 {
+		self.entry.height
+	}
+
+	fn resolve(&self) -> Result<Vec<u8>, lumen::error::MediaError> {
+		Ok(self.entry.pixels.as_ref().clone())
+	}
 }
 
-impl WasmMediaStore {
-    fn clear(&mut self) {
-        self.images.clear();
-        self.videos.clear();
-    }
+impl VideoFrameResolver for WasmVideoResolver {
+	fn id(&self) -> &str {
+		&self.id
+	}
+
+	fn width(&self) -> u32 {
+		self.entry.width
+	}
+
+	fn height(&self) -> u32 {
+		self.entry.height
+	}
+
+	fn frame_count(&self) -> u32 {
+		self.entry
+			.frames
+			.keys()
+			.next_back()
+			.and_then(|frame| frame.checked_add(1))
+			.unwrap_or(0)
+	}
+
+	fn resolve_frame(&self, frame: u32) -> Result<Vec<u8>, lumen::error::MediaError> {
+		let Some(bytes) = self.entry.frames.get(&frame) else {
+			return Err(lumen::error::MediaError::FrameOutOfRange {
+				media_source: self.id.clone(),
+				frame,
+				frame_count: self.frame_count(),
+			});
+		};
+		Ok(bytes.as_ref().clone())
+	}
 }
 
-#[derive(Debug, Clone)]
-struct StaticImageResolver {
-    id: String,
-    frame: FrameData,
+impl MediaStore for InMemoryMediaStore {
+	fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+		let images = self.images.read().ok()?;
+		let entry = images.get(source)?.clone();
+		Some(Box::new(WasmImageResolver {
+			id: source.to_string(),
+			entry,
+		}))
+	}
+
+	fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
+		let videos = self.videos.read().ok()?;
+		let entry = videos.get(source)?.clone();
+		Some(Box::new(WasmVideoResolver {
+			id: source.to_string(),
+			entry,
+		}))
+	}
 }
 
-impl ImageResolver for StaticImageResolver {
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-
-    fn width(&self) -> u32 {
-        self.frame.width
-    }
-
-    fn height(&self) -> u32 {
-        self.frame.height
-    }
-
-    fn resolve(&mut self) -> Vec<u8> {
-        (*self.frame.pixels_rgba).clone()
-    }
+#[derive(Serialize)]
+struct StatusPayload<'a> {
+	status: &'a str,
+	code: &'a str,
+	message: &'a str,
 }
 
-#[derive(Debug, Clone)]
-struct StaticVideoResolver {
-    id: String,
-    width: u32,
-    height: u32,
-    frames: HashMap<u64, FrameData>,
+#[derive(Deserialize)]
+struct PreviewProjectInput {
+	canvas: PreviewCanvasInput,
+	timeline: PreviewTimelineInput,
+	#[serde(default)]
+	sources: Vec<serde_json::Value>,
+	#[serde(default)]
+	layers: Vec<serde_json::Value>,
 }
 
-impl StaticVideoResolver {
-    fn zero_frame(&self) -> Vec<u8> {
-        pixel_len(self.width, self.height)
-            .map(|len| vec![0; len])
-            .unwrap_or_default()
-    }
+#[derive(Deserialize)]
+struct PreviewCanvasInput {
+	width: u32,
+	height: u32,
+	#[serde(default = "default_background")]
+	background: [u8; 4],
 }
 
-impl VideoResolver for StaticVideoResolver {
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-
-    fn width(&self) -> u32 {
-        self.width
-    }
-
-    fn height(&self) -> u32 {
-        self.height
-    }
-
-    fn resolve_frame(&mut self, frame: u32) -> Vec<u8> {
-        if let Some(exact) = self.frames.get(&(frame as u64)) {
-            return (*exact.pixels_rgba).clone();
-        }
-
-        let mut before: Option<(u64, &FrameData)> = None;
-        let mut after: Option<(u64, &FrameData)> = None;
-        for (candidate_idx, candidate) in &self.frames {
-            if *candidate_idx <= frame as u64 {
-                match before {
-                    Some((prev_idx, _)) if prev_idx >= *candidate_idx => {}
-                    _ => before = Some((*candidate_idx, candidate)),
-                }
-            }
-            if *candidate_idx > frame as u64 {
-                match after {
-                    Some((next_idx, _)) if next_idx <= *candidate_idx => {}
-                    _ => after = Some((*candidate_idx, candidate)),
-                }
-            }
-        }
-
-        if let Some((_, nearest)) = before.or(after) {
-            return (*nearest.pixels_rgba).clone();
-        }
-
-        self.zero_frame()
-    }
+#[derive(Deserialize)]
+struct PreviewTimelineInput {
+	fps: PreviewFpsInput,
+	total_frames: Option<u32>,
+	duration_frames: Option<u32>,
 }
 
-impl MediaStore for WasmMediaStore {
-    fn get_image_resolver(&mut self, id: &str) -> Option<Box<dyn ImageResolver>> {
-        let frame = self.images.get(id)?.clone();
-        Some(Box::new(StaticImageResolver {
-            id: id.to_string(),
-            frame,
-        }))
-    }
-
-    fn get_video_resolver(&mut self, id: &str) -> Option<Box<dyn VideoResolver>> {
-        let source = self.videos.get(id)?.clone();
-        Some(Box::new(StaticVideoResolver {
-            id: id.to_string(),
-            width: source.width,
-            height: source.height,
-            frames: source.frames,
-        }))
-    }
+#[derive(Deserialize)]
+struct PreviewFpsInput {
+	num: u32,
+	den: u32,
 }
 
-pub struct WasmRenderer {
-    project: Arc<Project>,
-    renderer_ctx: RendererContext,
-    last_frame: Vec<u8>,
-    last_requirements: Vec<u8>,
-    last_error: Option<String>,
+const fn default_background() -> [u8; 4] {
+	[0, 0, 0, 255]
 }
 
-impl WasmRenderer {
-    fn set_error(&mut self, error: impl Into<String>) {
-        self.last_error = Some(error.into());
-    }
-
-    fn clear_error(&mut self) {
-        self.last_error = None;
-    }
+fn encode_status(status: &str, code: &str, message: &str) -> Vec<u8> {
+	serde_json::to_vec(&StatusPayload {
+		status,
+		code,
+		message,
+	})
+	.unwrap_or_else(|_| {
+		format!(
+			r#"{{"status":"{}","code":"{}","message":"{}"}}"#,
+			escape_json(status),
+			escape_json(code),
+			escape_json(message)
+		)
+		.into_bytes()
+	})
 }
 
-#[derive(Debug, Serialize)]
-struct FrameRequirementsPayload {
-    images: Vec<String>,
-    videos: Vec<VideoRequirementsPayload>,
+fn escape_json(value: &str) -> String {
+	let mut out = String::with_capacity(value.len());
+	for ch in value.chars() {
+		match ch {
+			'\\' => out.push_str("\\\\"),
+			'"' => out.push_str("\\\""),
+			'\n' => out.push_str("\\n"),
+			'\r' => out.push_str("\\r"),
+			'\t' => out.push_str("\\t"),
+			_ => out.push(ch),
+		}
+	}
+	out
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VideoRequirementsPayload {
-    source_id: String,
-    frames: Vec<u64>,
+unsafe fn read_bytes(ptr_in: *const u8, len: usize) -> Result<Vec<u8>, &'static str> {
+	if len == 0 {
+		return Ok(Vec::new());
+	}
+	if ptr_in.is_null() {
+		return Err("null pointer for non-empty buffer");
+	}
+	let slice = unsafe { std::slice::from_raw_parts(ptr_in, len) };
+	Ok(slice.to_vec())
 }
 
-fn collect_frame_requirements(
-    project: &Project,
-    frame: u32,
-) -> Result<FrameRequirementsPayload, String> {
-    if frame >= project.duration_frames {
-        return Err(format!(
-            "frame {frame} is out of range for duration {}",
-            project.duration_frames
-        ));
-    }
-
-    let mut images = HashSet::new();
-    let mut videos: HashMap<String, HashSet<u64>> = HashMap::new();
-
-    for layer in &project.layers {
-        collect_layer_requirements(layer, frame, project.frame_rate, &mut images, &mut videos);
-    }
-
-    let mut images: Vec<String> = images.into_iter().collect();
-    images.sort();
-
-    let mut videos: Vec<VideoRequirementsPayload> = videos
-        .into_iter()
-        .map(|(source_id, frames)| {
-            let mut frames: Vec<u64> = frames.into_iter().collect();
-            frames.sort();
-            VideoRequirementsPayload { source_id, frames }
-        })
-        .collect();
-    videos.sort_by(|left, right| left.source_id.cmp(&right.source_id));
-
-    Ok(FrameRequirementsPayload { images, videos })
+unsafe fn read_string(ptr_in: *const u8, len: usize) -> Result<String, &'static str> {
+	let bytes = unsafe { read_bytes(ptr_in, len)? };
+	String::from_utf8(bytes).map_err(|_| "input is not valid utf-8")
 }
 
-fn collect_layer_requirements(
-    layer: &Layer,
-    frame: u32,
-    fps: Rational,
-    images: &mut HashSet<String>,
-    videos: &mut HashMap<String, HashSet<u64>>,
-) {
-    for clip in &layer.clips {
-        collect_clip_requirements(clip, frame, fps, images, videos);
-    }
+unsafe fn take_owned_bytes(ptr_in: *mut u8, len: usize) -> Result<Vec<u8>, &'static str> {
+	let bytes = unsafe { read_bytes(ptr_in.cast_const(), len)? };
+	if !ptr_in.is_null() {
+		unsafe { free(ptr_in.cast()) };
+	}
+	Ok(bytes)
 }
 
-fn collect_clip_requirements(
-    clip: &ClipType,
-    frame: u32,
-    fps: Rational,
-    images: &mut HashSet<String>,
-    videos: &mut HashMap<String, HashSet<u64>>,
-) {
-    if !clip.contains_frame(frame) {
-        return;
-    }
-
-    match clip {
-        ClipType::Group(group) => {
-            for child in &group.children {
-                collect_clip_requirements(child, frame, fps, images, videos);
-            }
-        }
-        ClipType::Layout(layout) => {
-            for node in &layout.children {
-                collect_layout_node_requirements(node, frame, fps, images, videos);
-            }
-        }
-        ClipType::Image(image) => {
-            images.insert(image.source.clone());
-        }
-        ClipType::Video(video) => {
-            if let Some(source_frame) = video.map_to_source_frame(frame, fps, None) {
-                videos
-                    .entry(video.source.clone())
-                    .or_default()
-                    .insert(source_frame as u64);
-            }
-        }
-        ClipType::Shape(_) | ClipType::Text(_) => {}
-    }
+fn scaled_dimension(value: u32, scale: f32) -> Result<u32, String> {
+	let scaled = (value as f32) * scale;
+	if !scaled.is_finite() || scaled <= 0.0 {
+		return Err("scaled dimension must be > 0".to_string());
+	}
+	Ok(scaled.round().max(1.0) as u32)
 }
 
-fn collect_layout_node_requirements(
-    node: &LayoutNode,
-    frame: u32,
-    fps: Rational,
-    images: &mut HashSet<String>,
-    videos: &mut HashMap<String, HashSet<u64>>,
-) {
-    if let Some(content) = &node.content {
-        match content {
-            LayoutContent::Shape(_) | LayoutContent::Text(_) => {}
-            LayoutContent::Image(image) => {
-                if image.contains_frame(frame) {
-                    images.insert(image.source.clone());
-                }
-            }
-            LayoutContent::Video(video) => {
-                if video.contains_frame(frame) {
-                    if let Some(source_frame) = video.map_to_source_frame(frame, fps, None) {
-                        videos
-                            .entry(video.source.clone())
-                            .or_default()
-                            .insert(source_frame as u64);
-                    }
-                }
-            }
-            LayoutContent::Layout(layout) => {
-                if layout.contains_frame(frame) {
-                    for child in &layout.children {
-                        collect_layout_node_requirements(child, frame, fps, images, videos);
-                    }
-                }
-            }
-        }
-    }
+fn preview_project_to_composition(project: PreviewProjectInput, scale: f32) -> Result<Composition, String> {
+	if !(scale.is_finite() && scale > 0.0) {
+		return Err("scale must be finite and > 0".to_string());
+	}
+	if project.timeline.fps.num == 0 || project.timeline.fps.den == 0 {
+		return Err("timeline fps num/den must be > 0".to_string());
+	}
+	let total_frames = match (project.timeline.total_frames, project.timeline.duration_frames) {
+		(Some(value), _) if value > 0 => value,
+		(None, Some(value)) if value > 0 => value,
+		_ => return Err("timeline.total_frames must be > 0".to_string()),
+	};
+	if !project.sources.is_empty() || !project.layers.is_empty() {
+		return Err(
+			"preview project conversion is not implemented for sources/layers yet".to_string(),
+		);
+	}
 
-    for child in &node.children {
-        collect_layout_node_requirements(child, frame, fps, images, videos);
-    }
+	let width = scaled_dimension(project.canvas.width, scale)?;
+	let height = scaled_dimension(project.canvas.height, scale)?;
+	let fps = (project.timeline.fps.num as f32) / (project.timeline.fps.den as f32);
+
+	let mut graph = Graph::new();
+	let solid = graph.add_node(Node::new(
+		NodeId(0),
+		NodeKind::SolidColor(SolidColor {
+			color: project.canvas.background,
+			width: Some(width),
+			height: Some(height),
+		}),
+	));
+	let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+	graph
+		.connect(Connection {
+			from_node: solid,
+			from_port: OutputPort::default(),
+			to_node: output,
+			to_port: InputPort::named("source"),
+		})
+		.map_err(|error| error.to_string())?;
+
+	Ok(Composition::new(
+		graph,
+		TimelineSettings {
+			fps,
+			duration_frames: total_frames,
+		},
+		RenderSettings {
+			width,
+			height,
+			background_color: project.canvas.background,
+		},
+	))
 }
 
-unsafe fn read_bytes(ptr: *const u8, len: usize) -> Result<Vec<u8>, String> {
-    if ptr.is_null() && len > 0 {
-        return Err("null pointer".to_string());
-    }
-    let slice = if len == 0 {
-        &[]
-    } else {
-        unsafe { slice::from_raw_parts(ptr, len) }
-    };
-    Ok(slice.to_vec())
+fn renderer_from_json(bytes: &[u8], scale: f32) -> Result<RendererSession, String> {
+	if let Ok(project) = serde_json::from_slice::<PreviewProjectInput>(bytes) {
+		return preview_project_to_composition(project, scale).map(RendererSession::new);
+	}
+
+	let payload = std::str::from_utf8(bytes).map_err(|_| "project payload is not valid utf-8".to_string())?;
+	let result = Composition::from_json(payload);
+	if let Some(composition) = result.composition {
+		return Ok(RendererSession::new(composition));
+	}
+	let message = result
+		.errors
+		.first()
+		.map(ToString::to_string)
+		.unwrap_or_else(|| "failed to parse composition json".to_string());
+	Err(message)
 }
 
-unsafe fn read_string(ptr: *const u8, len: usize) -> Result<String, String> {
-    let bytes = unsafe { read_bytes(ptr, len)? };
-    String::from_utf8(bytes).map_err(|_| "invalid utf-8 string".to_string())
+fn validate_rgba_len(width: u32, height: u32, len: usize) -> bool {
+	u64::from(width)
+		.checked_mul(u64::from(height))
+		.and_then(|px| px.checked_mul(4))
+		.and_then(|bytes| usize::try_from(bytes).ok())
+		.is_some_and(|expected| expected == len)
 }
 
-fn validate_rgba_shape(width: u32, height: u32, len: usize) -> bool {
-    match pixel_len(width, height) {
-        Ok(expected) => expected == len,
-        Err(_) => false,
-    }
-}
-
-unsafe fn adopt_owned_bytes(ptr: *mut u8, len: usize) -> Result<Vec<u8>, String> {
-    if ptr.is_null() && len > 0 {
-        return Err("null pointer".to_string());
-    }
-    if len == 0 {
-        return Ok(Vec::new());
-    }
-    Ok(unsafe { Vec::from_raw_parts(ptr, len, len) })
+fn render_into_session(
+	session: &mut RendererSession,
+	frame: u32,
+	media_store: Arc<InMemoryMediaStore>,
+) -> Result<*const u8, String> {
+	let capability_profile = RuntimeCapabilityProfile {
+		has_image_resolver: true,
+		has_video_resolver: true,
+		has_threading: false,
+		sink_types: vec![lumen::SinkType::Bitmap],
+	};
+	let surface_pool = Arc::new(SurfacePool::new());
+	let media_store: Arc<dyn MediaStore> = media_store;
+	let mut ctx = RenderContext::new(
+		&session.composition,
+		Arc::clone(&surface_pool),
+		Arc::clone(&session.asset_cache),
+		media_store,
+		capability_profile,
+	);
+	let raster = session
+		.composition
+		.render_frame(frame, &mut ctx)
+		.map_err(|error| error.to_string())?;
+	let bitmap = raster.to_bitmap().map_err(|error| error.to_string())?;
+	let Some(bytes) = bitmap.as_bitmap_bytes() else {
+		return Err("render did not produce bitmap bytes".to_string());
+	};
+	session.last_frame.clear();
+	session.last_frame.extend_from_slice(bytes);
+	session.last_error.clear();
+	Ok(session.last_frame.as_ptr())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_create(
-    project_ptr: *const u8,
-    project_len: usize,
-    _scale: f32,
-) -> *mut WasmRenderer {
-    ensure_contract_metadata();
-    let project_bytes = unsafe { read_bytes(project_ptr, project_len) };
-    let project_bytes = match project_bytes {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            set_status_payload("error", "invalid_input", error);
-            return std::ptr::null_mut();
-        }
-    };
-
-    let input_payload = match str::from_utf8(project_bytes.as_slice()) {
-        Ok(value) => value.to_string(),
-        Err(error) => {
-            set_status_payload(
-                "error",
-                "invalid_input",
-                format!("project payload must be UTF-8 JSON: {error}"),
-            );
-            return std::ptr::null_mut();
-        }
-    };
-
-    let delegate_result = convert_json_delegate(&JsonDelegateRequest {
-        input_payload,
-        input_schema_revision: SCHEMA_REVISION.to_string(),
-        caller_context: "lumen-wasm".to_string(),
-    });
-
-    let bundle = match delegate_result.status {
-        JsonDelegateStatus::Success => match delegate_result.project_bundle {
-            Some(bundle) => bundle,
-            None => {
-                set_status_payload(
-                    "error",
-                    "internal_error",
-                    "delegate returned success without project bundle",
-                );
-                return std::ptr::null_mut();
-            }
-        },
-        JsonDelegateStatus::CapabilityDisabled => {
-            let detail = delegate_result
-                .errors
-                .first()
-                .map(|issue| issue.message.as_str())
-                .unwrap_or("json delegate capability is disabled in this build");
-            set_status_payload("error", "capability_disabled", detail);
-            return std::ptr::null_mut();
-        }
-        JsonDelegateStatus::ValidationError => {
-            let detail = delegate_result
-                .errors
-                .first()
-                .map(|issue| issue.message.as_str())
-                .unwrap_or("project payload failed validation");
-            set_status_payload("error", "invalid_input", detail);
-            return std::ptr::null_mut();
-        }
-        JsonDelegateStatus::ConversionError => {
-            let detail = delegate_result
-                .errors
-                .first()
-                .map(|issue| issue.message.as_str())
-                .unwrap_or("project conversion failed");
-            set_status_payload("error", "contract_mismatch", detail);
-            return std::ptr::null_mut();
-        }
-    };
-
-    let mut renderer_ctx = match RendererContext::new(
-        bundle.project.width,
-        bundle.project.height,
-        bundle.project.frame_rate,
-    ) {
-        Ok(context) => context,
-        Err(error) => {
-            set_status_payload(
-                "error",
-                "internal_error",
-                format!("renderer initialization failed: {error}"),
-            );
-            return std::ptr::null_mut();
-        }
-    };
-    renderer_ctx.clear_color = ((u32::from(bundle.background[3]) << 24)
-        | (u32::from(bundle.background[0]) << 16)
-        | (u32::from(bundle.background[1]) << 8)
-        | u32::from(bundle.background[2]))
-    .into();
-
-    let instance = WasmRenderer {
-        project: Arc::new(bundle.project),
-        renderer_ctx,
-        last_frame: Vec::new(),
-        last_requirements: Vec::new(),
-        last_error: None,
-    };
-    set_status_payload("ok", "ok", "renderer created");
-
-    Box::into_raw(Box::new(instance))
+pub extern "C" fn lumen_wasm_version() -> *const c_char {
+	VERSION.as_ptr() as *const c_char
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_destroy(renderer_ptr: *mut WasmRenderer) {
-    if renderer_ptr.is_null() {
-        return;
-    }
-    unsafe {
-        drop(Box::from_raw(renderer_ptr));
-    }
+pub extern "C" fn lumen_wasm_last_status_ptr() -> *const u8 {
+	REGISTRY.with(|registry| registry.borrow().last_status.as_ptr())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_width(renderer_ptr: *mut WasmRenderer) -> u32 {
-    let renderer = unsafe { renderer_ptr.as_ref() };
-    renderer.map(|value| value.project.width).unwrap_or(0)
+pub extern "C" fn lumen_wasm_last_status_len() -> usize {
+	REGISTRY.with(|registry| registry.borrow().last_status.len())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_height(renderer_ptr: *mut WasmRenderer) -> u32 {
-    let renderer = unsafe { renderer_ptr.as_ref() };
-    renderer.map(|value| value.project.height).unwrap_or(0)
+pub extern "C" fn lumen_wasm_load_project(project_ptr: *const u8, project_len: usize, scale: f32) -> u32 {
+	let bytes = unsafe { read_bytes(project_ptr, project_len) };
+	let bytes = match bytes {
+		Ok(bytes) => bytes,
+		Err(message) => {
+			REGISTRY.with(|registry| registry.borrow_mut().set_status("error", "invalid_input", message));
+			return 0;
+		}
+	};
+	let session = match renderer_from_json(&bytes, scale) {
+		Ok(session) => session,
+		Err(message) => {
+			REGISTRY.with(|registry| registry.borrow_mut().set_status("error", "invalid_input", &message));
+			return 0;
+		}
+	};
+
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let handle = registry.alloc_handle();
+		if handle == 0 {
+			registry.set_status("error", "internal_error", "unable to allocate renderer handle");
+			return 0;
+		}
+		registry.renderers.insert(handle, session);
+		registry.set_status("ok", "ok", "project loaded");
+		handle
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_last_frame_len(renderer_ptr: *mut WasmRenderer) -> usize {
-    let renderer = unsafe { renderer_ptr.as_ref() };
-    renderer.map(|value| value.last_frame.len()).unwrap_or(0)
+pub extern "C" fn lumen_wasm_unload_project(renderer: u32) {
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		if registry.renderers.remove(&renderer).is_some() {
+			registry.set_status("ok", "ok", "renderer destroyed")
+		} else {
+			registry.set_status("error", "invalid_input", "renderer handle not found")
+		}
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_render_frame(
-    renderer_ptr: *mut WasmRenderer,
-    frame: u64,
-    media_ptr: *mut WasmMediaStore,
-) -> *const u8 {
-    let renderer = match unsafe { renderer_ptr.as_mut() } {
-        Some(renderer) => renderer,
-        None => {
-            set_status_payload("error", "invalid_input", "renderer pointer is null");
-            return std::ptr::null();
-        }
-    };
-    let media = match unsafe { media_ptr.as_ref() } {
-        Some(media) => media,
-        None => {
-            renderer.set_error("missing media store");
-            set_status_payload("error", "invalid_input", "missing media store");
-            return std::ptr::null();
-        }
-    };
-
-    let frame = match u32::try_from(frame) {
-        Ok(frame) => frame,
-        Err(_) => {
-            renderer.set_error("frame index exceeds u32 range");
-            set_status_payload("error", "invalid_input", "frame index exceeds u32 range");
-            return std::ptr::null();
-        }
-    };
-
-    if frame >= renderer.project.duration_frames {
-        renderer.set_error(format!(
-            "frame {frame} is out of range for duration {}",
-            renderer.project.duration_frames
-        ));
-        set_status_payload("error", "invalid_input", "frame is out of range");
-        return std::ptr::null();
-    }
-
-    renderer
-        .renderer_ctx
-        .set_media_store(Box::new(media.clone()));
-
-    match render_scene(renderer.project.as_ref(), frame, &mut renderer.renderer_ctx) {
-        Ok(pixels) => {
-            renderer.clear_error();
-            renderer.last_frame = pixels;
-            set_status_payload("ok", "ok", "frame rendered");
-            renderer.last_frame.as_ptr()
-        }
-        Err(err) => {
-            renderer.set_error(err.to_string());
-            set_status_payload("error", "internal_error", format!("render failed: {err}"));
-            std::ptr::null()
-        }
-    }
+pub extern "C" fn lumen_wasm_project_width(renderer: u32) -> u32 {
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let width = registry.renderers.get(&renderer).map(RendererSession::width).unwrap_or(0);
+		if width == 0 {
+			registry.set_status("error", "invalid_input", "renderer handle not found")
+		}
+		width
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_frame_requirements(
-    renderer_ptr: *mut WasmRenderer,
-    frame: u64,
-) -> *const u8 {
-    let renderer = match unsafe { renderer_ptr.as_mut() } {
-        Some(renderer) => renderer,
-        None => {
-            set_status_payload("error", "invalid_input", "renderer pointer is null");
-            return std::ptr::null();
-        }
-    };
-
-    let frame = match u32::try_from(frame) {
-        Ok(frame) => frame,
-        Err(_) => {
-            renderer.set_error("frame index exceeds u32 range");
-            set_status_payload("error", "invalid_input", "frame index exceeds u32 range");
-            return std::ptr::null();
-        }
-    };
-
-    let payload = match collect_frame_requirements(renderer.project.as_ref(), frame) {
-        Ok(payload) => payload,
-        Err(err) => {
-            renderer.set_error(err.clone());
-            set_status_payload(
-                "error",
-                "invalid_input",
-                format!("frame requirements failed: {err}"),
-            );
-            return std::ptr::null();
-        }
-    };
-
-    match serde_json::to_vec(&payload) {
-        Ok(data) => {
-            renderer.clear_error();
-            renderer.last_requirements = data;
-            set_status_payload("ok", "ok", "frame requirements ready");
-            renderer.last_requirements.as_ptr()
-        }
-        Err(_) => {
-            renderer.set_error("failed to serialize frame requirements");
-            set_status_payload(
-                "error",
-                "internal_error",
-                "failed to serialize frame requirements",
-            );
-            std::ptr::null()
-        }
-    }
+pub extern "C" fn lumen_wasm_project_height(renderer: u32) -> u32 {
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let height = registry.renderers.get(&renderer).map(RendererSession::height).unwrap_or(0);
+		if height == 0 {
+			registry.set_status("error", "invalid_input", "renderer handle not found")
+		}
+		height
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_frame_requirements_len(renderer_ptr: *mut WasmRenderer) -> usize {
-    let renderer = unsafe { renderer_ptr.as_ref() };
-    renderer
-        .map(|value| value.last_requirements.len())
-        .unwrap_or(0)
+pub extern "C" fn lumen_wasm_request_frame(renderer: u32, frame: u64, media: u32) -> *const u8 {
+	let frame = match u32::try_from(frame) {
+		Ok(value) => value,
+		Err(_) => {
+			REGISTRY.with(|registry| {
+				registry
+					.borrow_mut()
+					.set_status("error", "invalid_input", "frame index out of range")
+			});
+			return ptr::null();
+		}
+	};
+
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let Some(media_store) = registry.media_stores.get(&media).cloned() else {
+			registry.set_status("error", "invalid_input", "media store handle not found");
+			return ptr::null();
+		};
+		let render_result = {
+			let Some(session) = registry.renderers.get_mut(&renderer) else {
+				registry.set_status("error", "invalid_input", "renderer handle not found");
+				return ptr::null();
+			};
+			render_into_session(session, frame, media_store)
+		};
+		match render_result {
+			Ok(ptr_out) => {
+				registry.set_status("ok", "ok", "frame rendered");
+				ptr_out
+			}
+			Err(message) => {
+				if let Some(session) = registry.renderers.get_mut(&renderer) {
+					session.last_error = message.as_bytes().to_vec();
+				}
+				registry.set_status("error", "internal_error", &message);
+				ptr::null()
+			}
+		}
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_last_error_ptr(renderer_ptr: *mut WasmRenderer) -> *const u8 {
-    let renderer = unsafe { renderer_ptr.as_ref() };
-    let Some(renderer) = renderer else {
-        return std::ptr::null();
-    };
-    renderer
-        .last_error
-        .as_ref()
-        .map(|err| err.as_ptr())
-        .unwrap_or(std::ptr::null())
+pub extern "C" fn lumen_wasm_request_frame_len(renderer: u32) -> usize {
+	REGISTRY.with(|registry| {
+		registry
+			.borrow()
+			.renderers
+			.get(&renderer)
+			.map(|session| session.last_frame.len())
+			.unwrap_or(0)
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_renderer_last_error_len(renderer_ptr: *mut WasmRenderer) -> usize {
-    let renderer = unsafe { renderer_ptr.as_ref() };
-    let Some(renderer) = renderer else {
-        return 0;
-    };
-    renderer
-        .last_error
-        .as_ref()
-        .map(|err| err.len())
-        .unwrap_or(0)
+pub extern "C" fn lumen_wasm_request_frame_requirements(renderer: u32, _frame: u64) -> *const u8 {
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let ptr_out = {
+			let Some(session) = registry.renderers.get_mut(&renderer) else {
+				registry.set_status("error", "invalid_input", "renderer handle not found");
+				return ptr::null();
+			};
+			session.last_frame_requirements.as_ptr()
+		};
+		registry.set_status("ok", "ok", "frame requirements ready");
+		ptr_out
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_media_create() -> *mut WasmMediaStore {
-    Box::into_raw(Box::new(WasmMediaStore::default()))
+pub extern "C" fn lumen_wasm_request_frame_requirements_len(renderer: u32) -> usize {
+	REGISTRY.with(|registry| {
+		registry
+			.borrow()
+			.renderers
+			.get(&renderer)
+			.map(|session| session.last_frame_requirements.len())
+			.unwrap_or(0)
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_media_destroy(media_ptr: *mut WasmMediaStore) {
-    if media_ptr.is_null() {
-        return;
-    }
-    unsafe {
-        drop(Box::from_raw(media_ptr));
-    }
+pub extern "C" fn lumen_wasm_last_error_ptr(renderer: u32) -> *const u8 {
+	REGISTRY.with(|registry| {
+		registry
+			.borrow()
+			.renderers
+			.get(&renderer)
+			.map(|session| session.last_error.as_ptr())
+			.unwrap_or(ptr::null())
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_media_clear(media_ptr: *mut WasmMediaStore) {
-    let Some(media) = (unsafe { media_ptr.as_mut() }) else {
-        return;
-    };
-    media.clear();
+pub extern "C" fn lumen_wasm_last_error_len(renderer: u32) -> usize {
+	REGISTRY.with(|registry| {
+		registry
+			.borrow()
+			.renderers
+			.get(&renderer)
+			.map(|session| session.last_error.len())
+			.unwrap_or(0)
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_media_clear_videos(media_ptr: *mut WasmMediaStore) {
-    let Some(media) = (unsafe { media_ptr.as_mut() }) else {
-        return;
-    };
-    media.videos.clear();
+pub extern "C" fn lumen_wasm_media_store_create() -> u32 {
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let handle = registry.alloc_handle();
+		if handle == 0 {
+			registry.set_status("error", "internal_error", "unable to allocate media store handle");
+			return 0;
+		}
+		registry
+			.media_stores
+			.insert(handle, Arc::new(InMemoryMediaStore::default()));
+		registry.set_status("ok", "ok", "media store created");
+		handle
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_media_has_image(
-    media_ptr: *mut WasmMediaStore,
-    source_ptr: *const u8,
-    source_len: usize,
-) -> u8 {
-    let media = match unsafe { media_ptr.as_ref() } {
-        Some(media) => media,
-        None => return 0,
-    };
-    let source_id = match unsafe { read_string(source_ptr, source_len) } {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-    if media.images.contains_key(&source_id) {
-        1
-    } else {
-        0
-    }
+pub extern "C" fn lumen_wasm_media_store_destroy(media: u32) {
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		if registry.media_stores.remove(&media).is_some() {
+			registry.set_status("ok", "ok", "media store destroyed")
+		} else {
+			registry.set_status("error", "invalid_input", "media store handle not found")
+		}
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_media_set_image(
-    media_ptr: *mut WasmMediaStore,
-    source_ptr: *const u8,
-    source_len: usize,
-    width: u32,
-    height: u32,
-    rgba_ptr: *const u8,
-    rgba_len: usize,
-) -> u8 {
-    let media = match unsafe { media_ptr.as_mut() } {
-        Some(media) => media,
-        None => return 0,
-    };
-    let source_id = match unsafe { read_string(source_ptr, source_len) } {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-    let rgba = match unsafe { read_bytes(rgba_ptr, rgba_len) } {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-    if !validate_rgba_shape(width, height, rgba.len()) {
-        return 0;
-    }
-
-    media.images.insert(
-        source_id,
-        FrameData {
-            width,
-            height,
-            pixels_rgba: Arc::new(rgba),
-        },
-    );
-    1
+pub extern "C" fn lumen_wasm_media_store_clear(media: u32) {
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let Some(store) = registry.media_stores.get(&media).cloned() else {
+			registry.set_status("error", "invalid_input", "media store handle not found");
+			return;
+		};
+		let images_ok = store.images.write().map(|mut map| map.clear()).is_ok();
+		let videos_ok = store.videos.write().map(|mut map| map.clear()).is_ok();
+		if images_ok && videos_ok {
+			registry.set_status("ok", "ok", "media store cleared")
+		} else {
+			registry.set_status("error", "internal_error", "media store lock poisoned")
+		}
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_media_set_video_frame(
-    media_ptr: *mut WasmMediaStore,
-    source_ptr: *const u8,
-    source_len: usize,
-    source_frame: u64,
-    width: u32,
-    height: u32,
-    rgba_ptr: *const u8,
-    rgba_len: usize,
-) -> u8 {
-    let media = match unsafe { media_ptr.as_mut() } {
-        Some(media) => media,
-        None => return 0,
-    };
-    let source_id = match unsafe { read_string(source_ptr, source_len) } {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-    let rgba = match unsafe { read_bytes(rgba_ptr, rgba_len) } {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-    if !validate_rgba_shape(width, height, rgba.len()) {
-        return 0;
-    }
-
-    let source = media
-        .videos
-        .entry(source_id)
-        .or_insert_with(|| VideoSourceFrames {
-            width,
-            height,
-            frames: HashMap::new(),
-        });
-    if source.width != width || source.height != height {
-        return 0;
-    }
-
-    source.frames.insert(
-        source_frame,
-        FrameData {
-            width,
-            height,
-            pixels_rgba: Arc::new(rgba),
-        },
-    );
-    1
+pub extern "C" fn lumen_wasm_media_store_clear_videos(media: u32) {
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let Some(store) = registry.media_stores.get(&media).cloned() else {
+			registry.set_status("error", "invalid_input", "media store handle not found");
+			return;
+		};
+		if store.videos.write().map(|mut map| map.clear()).is_ok() {
+			registry.set_status("ok", "ok", "video frames cleared")
+		} else {
+			registry.set_status("error", "internal_error", "media store lock poisoned")
+		}
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_media_set_image_owned(
-    media_ptr: *mut WasmMediaStore,
-    source_ptr: *const u8,
-    source_len: usize,
-    width: u32,
-    height: u32,
-    rgba_ptr: *mut u8,
-    rgba_len: usize,
-) -> u8 {
-    let rgba = match unsafe { adopt_owned_bytes(rgba_ptr, rgba_len) } {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
+pub extern "C" fn lumen_wasm_media_store_has_image(
+	media: u32,
+	source_ptr: *const u8,
+	source_len: usize,
+) -> i32 {
+	let source = unsafe { read_string(source_ptr, source_len) };
+	let source = match source {
+		Ok(source) => source,
+		Err(message) => {
+			REGISTRY.with(|registry| registry.borrow_mut().set_status("error", "invalid_input", message));
+			return 0;
+		}
+	};
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let Some(store) = registry.media_stores.get(&media).cloned() else {
+			registry.set_status("error", "invalid_input", "media store handle not found");
+			return 0;
+		};
+		let has = store
+			.images
+			.read()
+			.ok()
+			.is_some_and(|images| images.contains_key(&source));
+		registry.set_status("ok", "ok", "media lookup complete");
+		if has { 1 } else { 0 }
+	})
+}
 
-    let media = match unsafe { media_ptr.as_mut() } {
-        Some(media) => media,
-        None => return 0,
-    };
-    let source_id = match unsafe { read_string(source_ptr, source_len) } {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-    if !validate_rgba_shape(width, height, rgba.len()) {
-        return 0;
-    }
+fn insert_image(
+	media: u32,
+	source_ptr: *const u8,
+	source_len: usize,
+	width: u32,
+	height: u32,
+	rgba: Vec<u8>,
+) -> i32 {
+	if width == 0 || height == 0 {
+		REGISTRY.with(|registry| {
+			registry
+				.borrow_mut()
+				.set_status("error", "invalid_input", "image dimensions must be > 0")
+		});
+		return 0;
+	}
+	if !validate_rgba_len(width, height, rgba.len()) {
+		REGISTRY.with(|registry| {
+			registry.borrow_mut().set_status(
+				"error",
+				"invalid_input",
+				"invalid image rgba buffer length",
+			)
+		});
+		return 0;
+	}
+	let source = unsafe { read_string(source_ptr, source_len) };
+	let source = match source {
+		Ok(source) if !source.is_empty() => source,
+		Ok(_) => {
+			REGISTRY.with(|registry| {
+				registry
+					.borrow_mut()
+					.set_status("error", "invalid_input", "source id must be non-empty")
+			});
+			return 0;
+		}
+		Err(message) => {
+			REGISTRY.with(|registry| registry.borrow_mut().set_status("error", "invalid_input", message));
+			return 0;
+		}
+	};
 
-    media.images.insert(
-        source_id,
-        FrameData {
-            width,
-            height,
-            pixels_rgba: Arc::new(rgba),
-        },
-    );
-    1
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let Some(store) = registry.media_stores.get(&media).cloned() else {
+			registry.set_status("error", "invalid_input", "media store handle not found");
+			return 0;
+		};
+		let result = store.images.write().map(|mut images| {
+			images.insert(
+				source,
+				StoredImage {
+					width,
+					height,
+					pixels: Arc::new(rgba),
+				},
+			);
+		});
+		if result.is_ok() {
+			registry.set_status("ok", "ok", "image uploaded");
+			1
+		} else {
+			registry.set_status("error", "internal_error", "media store lock poisoned");
+			0
+		}
+	})
+}
+
+fn insert_video_frame(
+	media: u32,
+	source_ptr: *const u8,
+	source_len: usize,
+	frame: u64,
+	width: u32,
+	height: u32,
+	rgba: Vec<u8>,
+) -> i32 {
+	let frame = match u32::try_from(frame) {
+		Ok(frame) => frame,
+		Err(_) => {
+			REGISTRY.with(|registry| {
+				registry
+					.borrow_mut()
+					.set_status("error", "invalid_input", "video frame index out of range")
+			});
+			return 0;
+		}
+	};
+	if width == 0 || height == 0 {
+		REGISTRY.with(|registry| {
+			registry
+				.borrow_mut()
+				.set_status("error", "invalid_input", "video frame dimensions must be > 0")
+		});
+		return 0;
+	}
+	if !validate_rgba_len(width, height, rgba.len()) {
+		REGISTRY.with(|registry| {
+			registry.borrow_mut().set_status(
+				"error",
+				"invalid_input",
+				"invalid video rgba buffer length",
+			)
+		});
+		return 0;
+	}
+	let source = unsafe { read_string(source_ptr, source_len) };
+	let source = match source {
+		Ok(source) if !source.is_empty() => source,
+		Ok(_) => {
+			REGISTRY.with(|registry| {
+				registry
+					.borrow_mut()
+					.set_status("error", "invalid_input", "source id must be non-empty")
+			});
+			return 0;
+		}
+		Err(message) => {
+			REGISTRY.with(|registry| registry.borrow_mut().set_status("error", "invalid_input", message));
+			return 0;
+		}
+	};
+
+	REGISTRY.with(|registry| {
+		let mut registry = registry.borrow_mut();
+		let Some(store) = registry.media_stores.get(&media).cloned() else {
+			registry.set_status("error", "invalid_input", "media store handle not found");
+			return 0;
+		};
+		let result = store.videos.write().map(|mut videos| {
+			let entry = videos.entry(source).or_default();
+			entry.width = width;
+			entry.height = height;
+			entry.frames.insert(frame, Arc::new(rgba));
+		});
+		if result.is_ok() {
+			registry.set_status("ok", "ok", "video frame uploaded");
+			1
+		} else {
+			registry.set_status("error", "internal_error", "media store lock poisoned");
+			0
+		}
+	})
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_media_set_video_frame_owned(
-    media_ptr: *mut WasmMediaStore,
-    source_ptr: *const u8,
-    source_len: usize,
-    source_frame: u64,
-    width: u32,
-    height: u32,
-    rgba_ptr: *mut u8,
-    rgba_len: usize,
-) -> u8 {
-    let rgba = match unsafe { adopt_owned_bytes(rgba_ptr, rgba_len) } {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-
-    let media = match unsafe { media_ptr.as_mut() } {
-        Some(media) => media,
-        None => return 0,
-    };
-    let source_id = match unsafe { read_string(source_ptr, source_len) } {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-    if !validate_rgba_shape(width, height, rgba.len()) {
-        return 0;
-    }
-
-    let source = media
-        .videos
-        .entry(source_id)
-        .or_insert_with(|| VideoSourceFrames {
-            width,
-            height,
-            frames: HashMap::new(),
-        });
-    if source.width != width || source.height != height {
-        return 0;
-    }
-
-    source.frames.insert(
-        source_frame,
-        FrameData {
-            width,
-            height,
-            pixels_rgba: Arc::new(rgba),
-        },
-    );
-    1
+pub extern "C" fn lumen_wasm_media_store_set_image(
+	media: u32,
+	source_ptr: *const u8,
+	source_len: usize,
+	width: u32,
+	height: u32,
+	rgba_ptr: *const u8,
+	rgba_len: usize,
+) -> i32 {
+	let rgba = unsafe { read_bytes(rgba_ptr, rgba_len) };
+	match rgba {
+		Ok(rgba) => insert_image(media, source_ptr, source_len, width, height, rgba),
+		Err(message) => {
+			REGISTRY.with(|registry| registry.borrow_mut().set_status("error", "invalid_input", message));
+			0
+		}
+	}
 }
 
-#[cfg(test)]
-mod tests {
-    use super::collect_frame_requirements;
-    use lumen::{
-        Layer, Project, Rational,
-        clip::{
-            ClipMeta, ClipType,
-            media::{ImageClip, ImageFit, LoopMode, VideoClip},
-            style::{BaseStyle, StyleProperty, TransformStyle},
-        },
-        scene::BlendMode,
-    };
+#[unsafe(no_mangle)]
+pub extern "C" fn lumen_wasm_media_store_set_image_owned(
+	media: u32,
+	source_ptr: *const u8,
+	source_len: usize,
+	width: u32,
+	height: u32,
+	rgba_ptr: *mut u8,
+	rgba_len: usize,
+) -> i32 {
+	let rgba = unsafe { take_owned_bytes(rgba_ptr, rgba_len) };
+	match rgba {
+		Ok(rgba) => insert_image(media, source_ptr, source_len, width, height, rgba),
+		Err(message) => {
+			REGISTRY.with(|registry| registry.borrow_mut().set_status("error", "invalid_input", message));
+			0
+		}
+	}
+}
 
-    fn base_style() -> BaseStyle {
-        BaseStyle {
-            visible: Default::default(),
-            opacity: Default::default(),
-            blend_mode: Default::default(),
-            blur: Default::default(),
-            shadows: Vec::new(),
-            clip_radius: [
-                Default::default(),
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            ],
-            transform: TransformStyle {
-                translate: [Default::default(), Default::default()],
-                scale: [Default::default(), Default::default()],
-                rotation: Default::default(),
-                skew: [Default::default(), Default::default()],
-                origin: [Default::default(), Default::default()],
-            },
-            alignment: [Default::default(), Default::default()],
-            mask: None,
-        }
-    }
+#[unsafe(no_mangle)]
+pub extern "C" fn lumen_wasm_media_store_set_video_frame(
+	media: u32,
+	source_ptr: *const u8,
+	source_len: usize,
+	frame: u64,
+	width: u32,
+	height: u32,
+	rgba_ptr: *const u8,
+	rgba_len: usize,
+) -> i32 {
+	let rgba = unsafe { read_bytes(rgba_ptr, rgba_len) };
+	match rgba {
+		Ok(rgba) => insert_video_frame(media, source_ptr, source_len, frame, width, height, rgba),
+		Err(message) => {
+			REGISTRY.with(|registry| registry.borrow_mut().set_status("error", "invalid_input", message));
+			0
+		}
+	}
+}
 
-    fn scene_with_image_and_video() -> Project {
-        let image = ClipType::Image(ImageClip::new(
-            ClipMeta {
-                id: Some("image-clip".to_string()),
-                start_frame: 0,
-                end_frame: 10,
-            },
-            "image_0",
-            ImageFit::Contain,
-            base_style(),
-        ));
-        let video = ClipType::Video(
-            VideoClip::new(
-                ClipMeta {
-                    id: Some("video-clip".to_string()),
-                    start_frame: 0,
-                    end_frame: 10,
-                },
-                "video_0",
-                ImageFit::Contain,
-                base_style(),
-            )
-            .with_trim(Some(1.0..3.0))
-            .with_speed(1.0)
-            .with_loop_mode(LoopMode::Repeat),
-        );
-
-        Project {
-            width: 320,
-            height: 180,
-            frame_rate: Rational::new(30, 1),
-            duration_frames: 12,
-            layers: vec![Layer {
-                id: "layer_0".to_string(),
-                clips: vec![image, video],
-                blend_mode: BlendMode::Normal,
-                opacity: StyleProperty::Value(Default::default()),
-                visible: true,
-            }],
-        }
-    }
-
-    #[test]
-    fn frame_requirements_include_expected_sources() {
-        let scene = scene_with_image_and_video();
-        let requirements = collect_frame_requirements(&scene, 1).expect("requirements");
-
-        assert_eq!(requirements.images, vec!["image_0".to_string()]);
-        assert_eq!(requirements.videos.len(), 1);
-        assert_eq!(requirements.videos[0].source_id, "video_0");
-        assert_eq!(requirements.videos[0].frames, vec![31]);
-    }
-
-    #[test]
-    fn frame_requirements_reject_out_of_range_frame() {
-        let scene = scene_with_image_and_video();
-        let err = collect_frame_requirements(&scene, 99).expect_err("out of range");
-        assert!(err.contains("out of range"));
-    }
+#[unsafe(no_mangle)]
+pub extern "C" fn lumen_wasm_media_store_set_video_frame_owned(
+	media: u32,
+	source_ptr: *const u8,
+	source_len: usize,
+	frame: u64,
+	width: u32,
+	height: u32,
+	rgba_ptr: *mut u8,
+	rgba_len: usize,
+) -> i32 {
+	let rgba = unsafe { take_owned_bytes(rgba_ptr, rgba_len) };
+	match rgba {
+		Ok(rgba) => insert_video_frame(media, source_ptr, source_len, frame, width, height, rgba),
+		Err(message) => {
+			REGISTRY.with(|registry| registry.borrow_mut().set_status("error", "invalid_input", message));
+			0
+		}
+	}
 }
