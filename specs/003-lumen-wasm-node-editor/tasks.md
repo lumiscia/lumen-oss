@@ -101,22 +101,22 @@
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T018 [P] [US3] Unit test in `apps/editor/tests/graph-utils.test.ts` — test cycle detection (reject A→B→A), test port type compatibility (reject RasterFrame→Vector), test single-connection-per-input enforcement, test self-loop rejection
-- [ ] T019 [P] [US3] Unit test in `apps/editor/tests/nodes.test.ts` — test all 16 node type definitions in registry have correct port counts/types, test `createDefaultComposition()` includes MediaOutput node
+- [x] T018 [P] [US3] Unit test in `apps/editor/tests/graph-utils.test.ts` — test cycle detection (reject A→B→A), test port type compatibility (reject RasterFrame→Vector), test single-connection-per-input enforcement, test self-loop rejection
+- [x] T019 [P] [US3] Unit test in `apps/editor/tests/nodes.test.ts` — test all 16 node type definitions in registry have correct port counts/types, test `createDefaultComposition()` includes MediaOutput node
 
 ### Implementation for User Story 3
 
-- [ ] T020 [US3] Create composition Zustand store in `apps/editor/src/store/composition.ts` — nodes state (React Flow `Node[]`), edges state (React Flow `Edge[]`), composition metadata (render settings, timeline settings), actions: `addNode`, `removeNode`, `addEdge`, `removeEdge`, `updateNodeProperties`, `setRenderSettings`, `setTimelineSettings`. MediaOutput node created by default and protected from deletion.
-- [ ] T021 [US3] Create base node component in `apps/editor/src/nodes/base-node.tsx` — shared wrapper rendering `<Handle>` components for each port from `NodeTypeDef`, node label, selection highlight. Handles use port `kind` as data attribute for connection validation.
-- [ ] T022 [P] [US3] Create source node components in `apps/editor/src/nodes/source-nodes.tsx` — `ShapeNode`, `MediaInNode`, `SolidColorNode`, `TextNode`. Each uses `base-node.tsx` wrapper, shows compact property preview in node body.
-- [ ] T023 [P] [US3] Create processing node components in `apps/editor/src/nodes/process-nodes.tsx` — `ShapeRendererNode`, `TransformNode`, `CropNode`, `ResizeNode`, `BlurNode`, `ShadowNode`, `FrameHoldNode`, `MemoNode`. Each uses `base-node.tsx` wrapper.
-- [ ] T024 [P] [US3] Create compositing node components in `apps/editor/src/nodes/composite-nodes.tsx` — `MergeNode`, `BooleanNode`, `SwitchNode`. Each uses `base-node.tsx` wrapper.
-- [ ] T025 [US3] Create terminal node component in `apps/editor/src/nodes/terminal-nodes.tsx` — `MediaOutputNode`. Uses `base-node.tsx` wrapper. Visually distinct (different color/border) to indicate it's required.
-- [ ] T026 [US3] Create node palette sidebar in `apps/editor/src/components/node-palette.tsx` — lists all 16 node types grouped by category (source, processing, compositing, terminal). Supports drag-to-add onto canvas. Uses `NodeTypeDef` registry.
-- [ ] T027 [US3] Create inspector panel in `apps/editor/src/components/inspector/inspector.tsx` — shows properties of selected node. Renders `property-fields.tsx` for each property of the node's `JsonNodeKind`.
-- [ ] T028 [US3] Create property field components in `apps/editor/src/components/inspector/property-fields.tsx` — per-type input controls: color picker (RGBA [number,4]), numeric input (f32/u32), boolean toggle, enum dropdown (BlendMode, ResizeMode, etc.), text input (String), range editor ({start, end}).
-- [ ] T029 [US3] Rewrite `apps/editor/src/App.tsx` — root component with `<ReactFlowProvider>`, layout: node palette (left), React Flow canvas (center), inspector (right), preview panel (bottom or right). Wire `isValidConnection` callback from `graph-utils.ts`. Register all node types from registry.
-- [ ] T030 [US3] Create stable ID generator in `apps/editor/src/lib/id-generator.ts` — monotonic u64 ID generation for nodes and keyframe tracks. Must not collide across save/load cycles.
+- [x] T020 [US3] Create composition Zustand store in `apps/editor/src/store/composition.ts` — nodes state (React Flow `Node[]`), edges state (React Flow `Edge[]`), composition metadata (render settings, timeline settings), actions: `addNode`, `removeNode`, `addEdge`, `removeEdge`, `updateNodeProperties`, `setRenderSettings`, `setTimelineSettings`. MediaOutput node created by default and protected from deletion.
+- [x] T021 [US3] Create base node component in `apps/editor/src/nodes/base-node.tsx` — shared wrapper rendering `<Handle>` components for each port from `NodeTypeDef`, node label, selection highlight. Handles use port `kind` as data attribute for connection validation.
+- [x] T022 [P] [US3] Create source node components in `apps/editor/src/nodes/source-nodes.tsx` — `ShapeNode`, `MediaInNode`, `SolidColorNode`, `TextNode`. Each uses `base-node.tsx` wrapper, shows compact property preview in node body.
+- [x] T023 [P] [US3] Create processing node components in `apps/editor/src/nodes/process-nodes.tsx` — `ShapeRendererNode`, `TransformNode`, `CropNode`, `ResizeNode`, `BlurNode`, `ShadowNode`, `FrameHoldNode`, `MemoNode`. Each uses `base-node.tsx` wrapper.
+- [x] T024 [P] [US3] Create compositing node components in `apps/editor/src/nodes/composite-nodes.tsx` — `MergeNode`, `BooleanNode`, `SwitchNode`. Each uses `base-node.tsx` wrapper.
+- [x] T025 [US3] Create terminal node component in `apps/editor/src/nodes/terminal-nodes.tsx` — `MediaOutputNode`. Uses `base-node.tsx` wrapper. Visually distinct (different color/border) to indicate it's required.
+- [x] T026 [US3] Create node palette sidebar in `apps/editor/src/components/node-palette.tsx` — lists all 16 node types grouped by category (source, processing, compositing, terminal). Supports drag-to-add onto canvas. Uses `NodeTypeDef` registry.
+- [x] T027 [US3] Create inspector panel in `apps/editor/src/components/inspector/inspector.tsx` — shows properties of selected node. Renders `property-fields.tsx` for each property of the node's `JsonNodeKind`.
+- [x] T028 [US3] Create property field components in `apps/editor/src/components/inspector/property-fields.tsx` — per-type input controls: color picker (RGBA [number,4]), numeric input (f32/u32), boolean toggle, enum dropdown (BlendMode, ResizeMode, etc.), text input (String), range editor ({start, end}).
+- [x] T029 [US3] Rewrite `apps/editor/src/App.tsx` — root component with `<ReactFlowProvider>`, layout: node palette (left), React Flow canvas (center), inspector (right), preview panel (bottom or right). Wire `isValidConnection` callback from `graph-utils.ts`. Register all node types from registry.
+- [x] T030 [US3] Create stable ID generator in `apps/editor/src/lib/id-generator.ts` — monotonic u64 ID generation for nodes and keyframe tracks. Must not collide across save/load cycles.
 
 **Checkpoint**: Node editor functional — can place all 16 node types, connect them with type checking and cycle prevention, edit properties in inspector, MediaOutput is always present.
 
