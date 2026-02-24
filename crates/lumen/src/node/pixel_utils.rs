@@ -7,7 +7,6 @@ use skia_safe::{AlphaType, ColorType, Data, ImageInfo, images, surfaces};
 use crate::{
     raster::{AlphaMode, BitmapFrame, RasterFrame},
     render::RenderContext,
-    surface_pool::SurfacePool,
 };
 pub fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
     let pixels = u64::from(width).checked_mul(u64::from(height))?;

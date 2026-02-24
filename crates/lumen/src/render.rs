@@ -98,6 +98,7 @@ impl CancellationToken {
 
 pub struct RenderContext {
     pub request: RenderRequest,
+    request_cache_key: u64,
     pub fps: f32,
     pub duration_frames: u32,
     pub surface_pool: Arc<SurfacePool>,
@@ -108,6 +109,8 @@ pub struct RenderContext {
     pub cancellation: CancellationToken,
     pub graph_revision: u64,
     pub instrumentation: RenderInstrumentation,
+    animated_nodes: HashSet<NodeId>,
+    animated_nodes_revision: u64,
     surface_pool_baseline: SurfacePoolStats,
 }
 
@@ -125,6 +128,7 @@ impl RenderContext {
                 composition.render_settings.width,
                 composition.render_settings.height,
             ),
+            request_cache_key: 0,
             fps: composition.timeline.fps,
             duration_frames: composition.timeline.duration_frames,
             surface_pool: Arc::clone(&surface_pool),
@@ -135,6 +139,8 @@ impl RenderContext {
             cancellation: CancellationToken::new(),
             graph_revision: composition.graph_revision(),
             instrumentation: RenderInstrumentation::default(),
+            animated_nodes: HashSet::new(),
+            animated_nodes_revision: 0,
             surface_pool_baseline: surface_pool.stats(),
         }
     }
@@ -166,12 +172,28 @@ impl RenderContext {
     }
 
     fn request_cache_key(&self) -> u64 {
+        self.request_cache_key
+    }
+
+    fn refresh_request_cache_key(&mut self) {
         let mut hasher = DefaultHasher::new();
         self.request.output_rect.hash(&mut hasher);
         self.request.roi.hash(&mut hasher);
         self.request.proxy_scale.hash(&mut hasher);
         self.request.quality.hash(&mut hasher);
-        hasher.finish()
+        self.request_cache_key = hasher.finish()
+    }
+
+    fn refresh_animated_nodes(&mut self, composition: &Composition) {
+        if self.animated_nodes_revision == self.graph_revision {
+            return;
+        }
+        self.animated_nodes.clear();
+        self.animated_nodes
+            .extend(composition.tracks.iter().map(|track| track.node_id));
+        self.animated_nodes
+            .extend(composition.expressions.keys().copied());
+        self.animated_nodes_revision = self.graph_revision;
     }
 }
 
@@ -195,9 +217,11 @@ impl Composition {
             self.render_settings.width,
             self.render_settings.height,
         );
+        ctx.refresh_request_cache_key();
         ctx.fps = self.timeline.fps;
         ctx.duration_frames = self.timeline.duration_frames;
         ctx.graph_revision = self.graph_revision();
+        ctx.refresh_animated_nodes(self);
         ctx.node_output_cache.clear();
 
         if ctx.cancellation.is_cancelled() {
@@ -218,7 +242,9 @@ impl Composition {
     }
 
     fn media_output_target(&self) -> Result<NodeId, LumenError> {
-        let cached = self.cached_media_output.load(std::sync::atomic::Ordering::Relaxed);
+        let cached = self
+            .cached_media_output
+            .load(std::sync::atomic::Ordering::Relaxed);
         if cached != 0 {
             return Ok(NodeId(cached));
         }
@@ -275,8 +301,7 @@ impl Composition {
             .get(&node_id)
             .ok_or(GraphValidationError::InvalidEvaluationTarget { node_id })?;
 
-        let has_animations = self.tracks.iter().any(|t| t.node_id == node_id)
-            || self.expressions.contains_key(&node_id);
+        let has_animations = ctx.animated_nodes.contains(&node_id);
 
         let resolved_kind: Cow<'_, NodeKind> = if has_animations {
             let mut cloned = node.kind.clone();
@@ -305,11 +330,10 @@ impl Composition {
                     .iter()
                     .find_map(|(index, range)| range.contains(&frame).then_some(*index));
                 if let Some(index) = selected {
-                    let input_name = format!("input_{index}");
-                    if let Some(connection) = self.find_input_connection(node_id, &input_name) {
+                    if let Some(connection) = self.find_indexed_input_connection(node_id, index) {
                         let output =
                             self.evaluate_node_at_frame(connection.from_node, frame, ctx)?;
-                        inputs.insert(input_name, output);
+                        inputs.insert(format!("input_{index}"), output);
                     }
                 }
             }
@@ -596,6 +620,18 @@ impl Composition {
         self.evaluate_node_at_frame(connection.from_node, frame, ctx)
     }
 
+    fn find_indexed_input_connection(&self, node_id: NodeId, index: u16) -> Option<&Connection> {
+        self.graph
+            .connections_to(node_id)
+            .find(|edge| match &edge.to_port {
+                InputPort::Indexed(port_index) => *port_index == index,
+                InputPort::Named(name) => name
+                    .strip_prefix("input_")
+                    .and_then(|suffix| suffix.parse::<u16>().ok())
+                    .is_some_and(|parsed| parsed == index),
+            })
+    }
+
     fn find_input_connection(&self, node_id: NodeId, input_name: &str) -> Option<&Connection> {
         self.graph
             .connections_to(node_id)
@@ -632,7 +668,6 @@ fn expression_depends_on_frame(ast: &ExprNode) -> bool {
         }
     }
 }
-
 
 pub struct NullMediaStore;
 
