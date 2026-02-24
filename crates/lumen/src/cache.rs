@@ -5,7 +5,11 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use crate::node::{NodeId, PortValue};
+use crate::{
+    error::MediaError,
+    media::ImageResolver,
+    node::{NodeId, PortValue},
+};
 
 #[derive(Debug, Default)]
 pub struct AssetCache {
@@ -29,6 +33,19 @@ impl AssetCache {
         self.decoded_images.get(source).cloned()
     }
 
+    pub fn get_or_insert_image(
+        &mut self,
+        source: &str,
+        resolver: &dyn ImageResolver,
+    ) -> Result<Arc<Vec<u8>>, MediaError> {
+        if let Some(pixels) = self.get_image(source) {
+            return Ok(pixels);
+        }
+
+        let decoded = Arc::new(resolver.resolve()?);
+        self.insert_image(source.to_string(), Arc::clone(&decoded));
+        Ok(decoded)
+    }
     pub fn insert_image(&mut self, source: impl Into<String>, pixels: Arc<Vec<u8>>) {
         self.decoded_images.insert(source.into(), pixels);
     }

@@ -4,13 +4,15 @@ use std::{
 };
 
 use lumen::{
-    AssetCache, Composition, Connection, Graph, InputPort, NodeId, NodeKind, NullMediaStore,
-    OutputPort, RasterFrame, RenderContext, RenderSettings, RuntimeCapabilityProfile, SurfacePool,
-    TimelineSettings,
+    AssetCache, Composition, Connection, Graph, InputPort, LumenError, NodeId, NodeKind,
+    NullMediaStore, OutputPort, RasterFrame, RenderContext, RenderSettings,
+    RuntimeCapabilityProfile, SurfacePool, TimelineSettings, Warning,
+    media::{MediaStore, MockImageResolver, MockMediaStore, MockVideoResolver},
     node::{
-        Node, ShapeGeometry, blur::Blur, frame_hold::FrameHold, media_output::MediaOutput,
-        merge::Merge, shape::Shape, shape_renderer::ShapeRenderer, solid_color::SolidColor,
-        switch::Switch, transform::Transform,
+        Node, ShapeGeometry, blur::Blur, frame_hold::FrameHold, media_in::LoopMode,
+        media_in::MediaIn, media_in::MediaInKind, media_output::MediaOutput, merge::Merge,
+        shape::Shape, shape_renderer::ShapeRenderer, solid_color::SolidColor, switch::Switch,
+        transform::Transform,
     },
 };
 
@@ -49,6 +51,43 @@ fn render_at_frame(graph: Graph, width: u32, height: u32, frame: u32) -> RasterF
         Arc::new(RwLock::new(AssetCache::new())),
         Arc::new(NullMediaStore),
         RuntimeCapabilityProfile::cpu_only(),
+    );
+
+    composition
+        .render_frame(frame, &mut context)
+        .expect("render should succeed")
+}
+
+fn render_with_store(
+    graph: Graph,
+    width: u32,
+    height: u32,
+    frame: u32,
+    media_store: Arc<dyn MediaStore>,
+) -> RasterFrame {
+    let composition = Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 30.0,
+            duration_frames: 60,
+        },
+        RenderSettings {
+            width,
+            height,
+            background_color: [0, 0, 0, 0],
+        },
+    );
+    let mut context = RenderContext::new(
+        &composition,
+        Arc::new(SurfacePool::new()),
+        Arc::new(RwLock::new(AssetCache::new())),
+        media_store,
+        RuntimeCapabilityProfile {
+            has_image_resolver: true,
+            has_video_resolver: true,
+            has_threading: false,
+            sink_types: vec![lumen::SinkType::Bitmap],
+        },
     );
 
     composition
@@ -329,4 +368,181 @@ fn identity_transform_is_passthrough() {
 
     let (bytes, _, _) = expect_bitmap(render_single(graph, 2, 1));
     assert_eq!(bytes.as_slice(), &[12, 34, 56, 255, 12, 34, 56, 255]);
+}
+
+#[test]
+fn media_in_image_uses_image_resolver_and_renders_bitmap() {
+    let mut graph = Graph::new();
+    let media_in = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::MediaIn(MediaIn {
+            kind: MediaInKind::Image {
+                source: "test-image".to_string(),
+            },
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    connect(&mut graph, media_in, output, "source");
+
+    let mut store = MockMediaStore::default();
+    store.insert_image(MockImageResolver::new(
+        "test-image",
+        2,
+        1,
+        vec![100, 50, 25, 128, 20, 40, 60, 255],
+    ));
+
+    let (bytes, width, height) = expect_bitmap(render_with_store(graph, 2, 1, 0, Arc::new(store)));
+    assert_eq!((width, height), (2, 1));
+    assert_eq!(bytes.as_slice(), &[50, 25, 13, 128, 20, 40, 60, 255]);
+}
+
+#[test]
+fn media_in_video_speed_one_requests_matching_source_frame() {
+    let mut graph = Graph::new();
+    let media_in = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::MediaIn(MediaIn {
+            kind: MediaInKind::Video {
+                source: "video".to_string(),
+                range: None,
+                speed: 1.0,
+                loop_mode: LoopMode::None,
+            },
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    connect(&mut graph, media_in, output, "source");
+
+    let resolver = MockVideoResolver::new("video", 1, 1, 120, vec![10, 20, 30, 255]);
+    let requested_frames = resolver.requested_frames();
+    let mut store = MockMediaStore::default();
+    store.insert_video(resolver);
+
+    let _ = render_with_store(graph, 1, 1, 7, Arc::new(store));
+    let calls = requested_frames.lock().expect("frames lock").clone();
+    assert_eq!(calls, vec![7]);
+}
+
+#[test]
+fn media_in_video_speed_two_requests_double_source_frame_rate() {
+    let mut graph = Graph::new();
+    let media_in = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::MediaIn(MediaIn {
+            kind: MediaInKind::Video {
+                source: "video".to_string(),
+                range: None,
+                speed: 2.0,
+                loop_mode: LoopMode::None,
+            },
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    connect(&mut graph, media_in, output, "source");
+
+    let resolver = MockVideoResolver::new("video", 1, 1, 240, vec![40, 80, 120, 255]);
+    let requested_frames = resolver.requested_frames();
+    let mut store = MockMediaStore::default();
+    store.insert_video(resolver);
+
+    let _ = render_with_store(graph, 1, 1, 7, Arc::new(store));
+    let calls = requested_frames.lock().expect("frames lock").clone();
+    assert_eq!(calls, vec![14]);
+}
+
+#[test]
+fn composition_validate_rejects_video_node_without_video_resolver_capability() {
+    let mut graph = Graph::new();
+    let media_in = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::MediaIn(MediaIn {
+            kind: MediaInKind::Video {
+                source: "video".to_string(),
+                range: None,
+                speed: 1.0,
+                loop_mode: LoopMode::None,
+            },
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    connect(&mut graph, media_in, output, "source");
+
+    let composition = Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 30.0,
+            duration_frames: 60,
+        },
+        RenderSettings {
+            width: 1,
+            height: 1,
+            background_color: [0, 0, 0, 0],
+        },
+    );
+
+    let profile = RuntimeCapabilityProfile {
+        has_image_resolver: true,
+        has_video_resolver: false,
+        has_threading: false,
+        sink_types: vec![lumen::SinkType::Bitmap],
+    };
+
+    let errors = composition
+        .validate_against_profile(&profile)
+        .expect_err("video resolver capability should be required");
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        LumenError::Render(lumen::error::RenderError::NodeEvaluation { node_id, .. }) if *node_id == media_in
+    )));
+}
+
+#[test]
+fn composition_validate_reports_fps_mismatch_warning_for_video_speed_change() {
+    let mut graph = Graph::new();
+    let media_in = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::MediaIn(MediaIn {
+            kind: MediaInKind::Video {
+                source: "video".to_string(),
+                range: None,
+                speed: 2.0,
+                loop_mode: LoopMode::None,
+            },
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    connect(&mut graph, media_in, output, "source");
+
+    let composition = Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 30.0,
+            duration_frames: 60,
+        },
+        RenderSettings {
+            width: 1,
+            height: 1,
+            background_color: [0, 0, 0, 0],
+        },
+    );
+
+    let profile = RuntimeCapabilityProfile {
+        has_image_resolver: true,
+        has_video_resolver: true,
+        has_threading: false,
+        sink_types: vec![lumen::SinkType::Bitmap],
+    };
+
+    let warnings = composition
+        .validate_against_profile(&profile)
+        .expect("profile should validate with warning");
+    assert!(warnings.iter().any(|warning| matches!(
+        warning,
+        Warning::FpsMismatch {
+            node_id,
+            composition_fps,
+            source_fps,
+        } if *node_id == media_in && (*composition_fps - 30.0).abs() < f32::EPSILON && (*source_fps - 60.0).abs() < f32::EPSILON
+    )));
 }

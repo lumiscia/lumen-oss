@@ -37,25 +37,52 @@ impl Composition {
         &self,
         profile: &RuntimeCapabilityProfile,
     ) -> Result<Vec<Warning>, Vec<LumenError>> {
-        let warnings = Vec::new();
+        let mut warnings = Vec::new();
         let mut errors = Vec::new();
 
         for node in self.graph.nodes.values() {
-            if let NodeKind::MediaIn(_) = &node.kind
-                && !profile.has_image_resolver && !profile.has_video_resolver
-            {
-                errors.push(
-                    RenderError::NodeEvaluation {
-                        frame: 0,
-                        node_id: node.id,
-                        node_kind: node.kind.kind_name(),
-                        details: "media node requires an image or video resolver".to_string(),
+            if let NodeKind::MediaIn(media_in) = &node.kind {
+                match &media_in.kind {
+                    crate::node::media_in::MediaInKind::Image { .. } => {
+                        if !profile.has_image_resolver {
+                            errors.push(
+                                RenderError::NodeEvaluation {
+                                    frame: 0,
+                                    node_id: node.id,
+                                    node_kind: node.kind.kind_name(),
+                                    details: "image media node requires an image resolver"
+                                        .to_string(),
+                                }
+                                .into(),
+                            );
+                        }
                     }
-                    .into(),
-                )
+                    crate::node::media_in::MediaInKind::Video { speed, .. } => {
+                        if !profile.has_video_resolver {
+                            errors.push(
+                                RenderError::NodeEvaluation {
+                                    frame: 0,
+                                    node_id: node.id,
+                                    node_kind: node.kind.kind_name(),
+                                    details: "video media node requires a video resolver"
+                                        .to_string(),
+                                }
+                                .into(),
+                            );
+                        }
+
+                        let source_fps = self.timeline.fps * speed.abs();
+                        if (source_fps - self.timeline.fps).abs() > f32::EPSILON {
+                            warnings.push(Warning::FpsMismatch {
+                                node_id: node.id,
+                                composition_fps: self.timeline.fps,
+                                source_fps,
+                            });
+                        }
+                    }
+                }
             }
         }
-
         if profile.sink_types.is_empty() {
             errors.push(
                 RenderError::NodeEvaluation {
