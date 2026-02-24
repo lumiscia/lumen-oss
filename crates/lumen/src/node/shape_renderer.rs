@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use skia_safe::{AlphaType, Color, ColorType, ImageInfo, Paint, PaintStyle, Path, Rect, surfaces};
+use skia_safe::{Color, Paint, PaintStyle, Path, Rect, surfaces};
 
 use crate::{
     error::LumenError,
     node::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue, ShapeGeometry,
         VectorData,
+        pixel_utils::{read_surface_rgba, to_skia_color},
     },
     raster::RasterFrame,
     render::RenderContext,
@@ -78,7 +79,7 @@ fn rasterize_geometry(geometry: &ShapeGeometry, renderer: &ShapeRenderer) -> Ras
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
         fill.set_style(PaintStyle::Fill);
-        fill.set_color(to_color(renderer.fill_color));
+        fill.set_color(to_skia_color(renderer.fill_color));
         canvas.draw_path(&path, &fill);
     }
 
@@ -87,7 +88,7 @@ fn rasterize_geometry(geometry: &ShapeGeometry, renderer: &ShapeRenderer) -> Ras
         stroke.set_anti_alias(true);
         stroke.set_style(PaintStyle::Stroke);
         stroke.set_stroke_width(renderer.stroke_width);
-        stroke.set_color(to_color(renderer.stroke_color));
+        stroke.set_color(to_skia_color(renderer.stroke_color));
         canvas.draw_path(&path, &stroke);
     }
 
@@ -156,30 +157,4 @@ fn polygon_path(points: &[(f32, f32)]) -> (Path, u32, u32) {
         width,
         height,
     )
-}
-
-fn read_surface_rgba(surface: &mut skia_safe::Surface, width: u32, height: u32) -> Vec<u8> {
-    let byte_len = rgba_byte_len(width, height).unwrap_or(4);
-    let mut bytes = vec![0_u8; byte_len];
-    let info = ImageInfo::new(
-        (width as i32, height as i32),
-        ColorType::RGBA8888,
-        AlphaType::Premul,
-        None,
-    );
-    if surface.read_pixels(&info, bytes.as_mut_slice(), (width * 4) as usize, (0, 0)) {
-        bytes
-    } else {
-        vec![0_u8; byte_len]
-    }
-}
-
-fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
-    let pixels = u64::from(width).checked_mul(u64::from(height))?;
-    let bytes = pixels.checked_mul(4)?;
-    usize::try_from(bytes).ok()
-}
-
-fn to_color(color: [u8; 4]) -> Color {
-    Color::from_argb(color[3], color[0], color[1], color[2])
 }

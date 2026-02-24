@@ -1,8 +1,13 @@
 use std::{ops::Range, sync::Arc};
 
+use skia_safe::{AlphaType, ColorType, Data, ImageInfo, images, surfaces};
+
 use crate::{
     error::{LumenError, MediaError},
-    node::{InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue},
+    node::{
+        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        pixel_utils::read_surface_rgba,
+    },
     raster::RasterFrame,
     render::RenderContext,
 };
@@ -85,7 +90,7 @@ fn evaluate_image(source: &str, ctx: &mut RenderContext) -> Result<RasterFrame, 
     };
 
     validate_rgba_len(source, width, height, &decoded)?;
-    let premultiplied = Arc::new(premultiply_rgba(decoded.as_ref()));
+    let premultiplied = Arc::new(premultiply_rgba(decoded.as_ref(), width, height));
     Ok(RasterFrame::Bitmap(premultiplied, width, height))
 }
 
@@ -131,7 +136,7 @@ fn evaluate_video(
 
     let decoded = resolver.resolve_frame(source_frame)?;
     validate_rgba_len(source, width, height, &decoded)?;
-    let premultiplied = Arc::new(premultiply_rgba(&decoded));
+    let premultiplied = Arc::new(premultiply_rgba(&decoded, width, height));
     Ok(RasterFrame::Bitmap(premultiplied, width, height))
 }
 
@@ -214,7 +219,27 @@ fn validate_rgba_len(
     }
 }
 
-fn premultiply_rgba(source: &[u8]) -> Vec<u8> {
+fn premultiply_rgba(source: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let info = ImageInfo::new(
+        (width as i32, height as i32),
+        ColorType::RGBA8888,
+        AlphaType::Unpremul,
+        None,
+    );
+    let row_bytes = (width * 4) as usize;
+    let data = unsafe { Data::new_bytes(source) };
+    let Some(unpremul_image) = images::raster_from_data(&info, data, row_bytes) else {
+        return fallback_premultiply(source);
+    };
+    let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
+        return fallback_premultiply(source);
+    };
+    surface.canvas().clear(skia_safe::Color::TRANSPARENT);
+    surface.canvas().draw_image(&unpremul_image, (0.0, 0.0), None);
+    read_surface_rgba(&mut surface, width, height)
+}
+
+fn fallback_premultiply(source: &[u8]) -> Vec<u8> {
     let mut premultiplied = source.to_vec();
     for pixel in premultiplied.chunks_exact_mut(4) {
         let alpha = f32::from(pixel[3]) / 255.0;
