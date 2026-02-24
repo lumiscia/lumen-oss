@@ -119,8 +119,11 @@ impl NodeEval for Text {
             skia_safe::font_style::Width::NORMAL,
             to_slant(self.font_style),
         ));
-        if !self.font_family.trim().is_empty() {
-            text_style.set_font_families(&[self.font_family.as_str()]);
+        let requested_font_family = self.font_family.trim();
+        if requested_font_family.is_empty() {
+            text_style.set_font_families(&["sans-serif"]);
+        } else {
+            text_style.set_font_families(&[requested_font_family, "sans-serif"]);
         }
 
         paragraph_style.set_text_style(&text_style);
