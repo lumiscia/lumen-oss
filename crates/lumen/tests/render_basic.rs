@@ -202,6 +202,45 @@ fn merge_with_half_opacity_blends_base_and_overlay() {
 }
 
 #[test]
+fn zero_opacity_merge_short_circuits_overlay_evaluation() {
+    let mut graph = Graph::new();
+    let base = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::SolidColor(SolidColor {
+            color: [7, 8, 9, 255],
+            width: Some(2),
+            height: Some(2),
+        }),
+    ));
+    let overlay = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::MediaIn(MediaIn {
+            kind: MediaInKind::Image {
+                source: "missing-image".to_string(),
+            },
+        }),
+    ));
+    let merge = graph.add_node(Node::new(
+        NodeId(0),
+        NodeKind::Merge(Merge {
+            opacity: 0.0,
+            ..Merge::default()
+        }),
+    ));
+    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+
+    connect(&mut graph, base, merge, "base");
+    connect(&mut graph, overlay, merge, "overlay");
+    connect(&mut graph, merge, output, "source");
+
+    let (bytes, width, height) = expect_bitmap(render_single(graph, 2, 2));
+    assert_eq!((width, height), (2, 2));
+    for chunk in bytes.chunks_exact(4) {
+        assert_eq!(chunk, &[7, 8, 9, 255]);
+    }
+}
+
+#[test]
 fn shape_to_shape_renderer_to_media_output_renders_rectangle() {
     let mut graph = Graph::new();
     let shape = graph.add_node(Node::new(

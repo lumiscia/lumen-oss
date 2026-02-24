@@ -266,6 +266,9 @@ impl Composition {
             NodeKind::Blur(blur) if blur.is_noop() => self
                 .resolve_required_input(node_id, node_kind.kind_name(), "source", frame, ctx)
                 .map(Some),
+            NodeKind::Merge(merge) if merge.opacity <= 0.0 => self
+                .resolve_required_input(node_id, node_kind.kind_name(), "base", frame, ctx)
+                .map(Some),
             NodeKind::Memo(memo) => self.resolve_memo_node(node_id, memo, frame, ctx).map(Some),
             _ => Ok(None),
         }
