@@ -155,14 +155,14 @@
 
 ### Tests for User Story 5 (REQUIRED for behavior changes) ⚠️
 
-- [ ] T040 [P] [US5] Unit test extending `apps/editor/tests/serialization.test.ts` — test keyframe track serialization: tracks array populated with correct node_id, property_path, keys, extrapolation. Test duplicate frame position rejection.
+- [x] T040 [P] [US5] Unit test extending `apps/editor/tests/serialization.test.ts` — test keyframe track serialization: tracks array populated with correct node_id, property_path, keys, extrapolation. Test duplicate frame position rejection.
 
 ### Implementation for User Story 5
 
-- [ ] T041 [US5] Extend composition store in `apps/editor/src/store/composition.ts` — add `tracks: JsonKeyframeTrack[]` state. Actions: `addTrack(nodeId, propertyPath, valueType)`, `removeTrack(trackId)`, `addKeyframe(trackId, frame, value, interpolation)`, `updateKeyframe(trackId, frame, updates)`, `removeKeyframe(trackId, frame)`, `setExtrapolation(trackId, before, after)`. Enforce no duplicate frame positions. Generate stable track IDs.
-- [ ] T042 [US5] Create keyframe editor UI in `apps/editor/src/components/inspector/keyframe-editor.tsx` — per-property "Add Keyframe" button (appears for animatable properties), keyframe list with frame position / value / interpolation mode controls, delete keyframe button. Extrapolation dropdown (Hold/DefaultValue) per track.
-- [ ] T043 [US5] Integrate keyframe editor into inspector in `apps/editor/src/components/inspector/inspector.tsx` — for each animatable property, show keyframe editor below the property field. Highlight properties that have active keyframe tracks.
-- [ ] T044 [US5] Update serialization in `apps/editor/src/lib/serialization.ts` — `serializeComposition` must include `tracks` array from composition store. `deserializeComposition` must reconstruct tracks in store. Validate orphaned tracks (referencing deleted nodes) and emit warnings.
+- [x] T041 [US5] Extend composition store in `apps/editor/src/store/composition.ts` — add `tracks: JsonKeyframeTrack[]` state. Actions: `addTrack(nodeId, propertyPath, valueType)`, `removeTrack(trackId)`, `addKeyframe(trackId, frame, value, interpolation)`, `updateKeyframe(trackId, frame, updates)`, `removeKeyframe(trackId, frame)`, `setExtrapolation(trackId, before, after)`. Enforce no duplicate frame positions. Generate stable track IDs.
+- [x] T042 [US5] Create keyframe editor UI in `apps/editor/src/components/inspector/keyframe-editor.tsx` — per-property "Add Keyframe" button (appears for animatable properties), keyframe list with frame position / value / interpolation mode controls, delete keyframe button. Extrapolation dropdown (Hold/DefaultValue) per track.
+- [x] T043 [US5] Integrate keyframe editor into inspector in `apps/editor/src/components/inspector/inspector.tsx` — for each animatable property, show keyframe editor below the property field. Highlight properties that have active keyframe tracks.
+- [x] T044 [US5] Update serialization in `apps/editor/src/lib/serialization.ts` — `serializeComposition` must include `tracks` array from composition store. `deserializeComposition` must reconstruct tracks in store. Validate orphaned tracks (referencing deleted nodes) and emit warnings.
 
 **Checkpoint**: Keyframe animation tracks can be created, edited, deleted. They serialize correctly and the preview reflects animated values during playback.
 
@@ -200,17 +200,17 @@
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T051 [P] [US7] Unit test in `packages/lumen/tests/validate.test.ts` — test `validateComposition`: missing MediaOutput → error, duplicate node IDs → error, connection references nonexistent node → error, cycle → error, incompatible port types → error, orphaned keyframe track → warning, valid composition → pass
+- [x] T051 [P] [US7] Unit test in `packages/lumen/tests/validate.test.ts` — test `validateComposition`: missing MediaOutput → error, duplicate node IDs → error, connection references nonexistent node → error, cycle → error, incompatible port types → error, orphaned keyframe track → warning, valid composition → pass
 - [ ] T052 [P] [US7] Unit test in `apps/editor/tests/serialization.test.ts` — full round-trip: build complex graph (10+ nodes, connections, keyframes, expressions), export JSON string, parse, reimport, assert all nodes/edges/properties/tracks/expressions identical
 
 ### Implementation for User Story 7
 
-- [ ] T053 [US7] Implement `validateComposition()` in `packages/lumen/src/json-delegate/validate.ts` — check exactly one MediaOutput, no duplicate node IDs, all connection node/port references valid, port type compatibility, DAG check (no cycles), non-optional input ports on reachable nodes must be connected, orphaned keyframe tracks/expressions produce warnings. Return structured result with errors + warnings.
-- [ ] T054 [US7] Implement `serialize()` in `packages/lumen/src/json-delegate/serialize.ts` — convert editor's graph representation to `JsonComposition`. Run `validateComposition()` before output. Throw on errors, include warnings in result.
-- [ ] T055 [US7] Implement `deserialize()` in `packages/lumen/src/json-delegate/deserialize.ts` — parse JSON string, validate structure, convert to editor's graph representation (nodes with positions, edges). Handle schema version check. Return structured errors for malformed input (SR-001).
+- [x] T053 [US7] Implement `validateComposition()` in `packages/lumen/src/json-delegate/validate.ts` — check exactly one MediaOutput, no duplicate node IDs, all connection node/port references valid, port type compatibility, DAG check (no cycles), non-optional input ports on reachable nodes must be connected, orphaned keyframe tracks/expressions produce warnings. Return structured result with errors + warnings.
+- [x] T054 [US7] Implement `serialize()` in `packages/lumen/src/json-delegate/serialize.ts` — convert editor's graph representation to `JsonComposition`. Run `validateComposition()` before output. Throw on errors, include warnings in result.
+- [x] T055 [US7] Implement `deserialize()` in `packages/lumen/src/json-delegate/deserialize.ts` — parse JSON string, validate structure, convert to editor's graph representation (nodes with positions, edges). Handle schema version check. Return structured errors for malformed input (SR-001).
 - [ ] T056 [US7] Create toolbar component in `apps/editor/src/components/toolbar.tsx` — Export JSON button (triggers serialize → download), Import JSON button (triggers file picker → deserialize → load into store), render settings controls (width, height, background color, fps, duration). Validate on import, show errors inline.
-- [ ] T057 [US7] Add expression support to composition store in `apps/editor/src/store/composition.ts` — `expressions: JsonExpression[]` state. Actions: `addExpression(nodeId, propertyPath, source)`, `updateExpression(nodeId, propertyPath, source)`, `removeExpression(nodeId, propertyPath)`. Expressions are stored as data strings, not evaluated in JS.
-- [ ] T058 [US7] Add expression editor to inspector in `apps/editor/src/components/inspector/inspector.tsx` — for each property, toggle between "Value" and "Expression" mode. Expression mode shows a text input for the expression source string.
+- [x] T057 [US7] Add expression support to composition store in `apps/editor/src/store/composition.ts` — `expressions: JsonExpression[]` state. Actions: `addExpression(nodeId, propertyPath, source)`, `updateExpression(nodeId, propertyPath, source)`, `removeExpression(nodeId, propertyPath)`. Expressions are stored as data strings, not evaluated in JS.
+- [x] T058 [US7] Add expression editor to inspector in `apps/editor/src/components/inspector/inspector.tsx` — for each property, toggle between "Value" and "Expression" mode. Expression mode shows a text input for the expression source string.
 
 **Checkpoint**: JSON delegate export produces valid documents that load in both the editor and the WASM renderer. Round-trip fidelity is verified.
 
