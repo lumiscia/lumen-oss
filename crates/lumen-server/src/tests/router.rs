@@ -326,78 +326,81 @@ async fn render_events_endpoint_returns_sse_stream() {
 
 fn url_source_project_json() -> serde_json::Value {
     json!({
-        "version": "1",
-        "canvas": {
-            "width": 320,
-            "height": 180,
-            "background": [0, 0, 0, 255]
-        },
+        "schema_revision": "lumen_graph_v1",
         "timeline": {
-            "fps": { "num": 30, "den": 1 },
+            "fps": 30.0,
             "duration_frames": 2
         },
-        "sources": [{
-            "id": "image_0",
-            "media": "image",
-            "kind": {
-                "type": "url",
-                "url": "https://cdn.example.com/media/background.png"
-            }
-        }],
-        "layers": [{
-            "id": "layer_image",
-            "items": [{
-                "type": "clip",
-                "id": "clip_image_1",
-                "start_frame": 0,
-                "duration_frames": 2,
-                "content": {
-                    "type": "image",
-                    "source": "image_0"
+        "render_settings": {
+            "width": 320,
+            "height": 180,
+            "background_color": [0, 0, 0, 255]
+        },
+        "graph": {
+            "nodes": [
+                {
+                    "id": 1,
+                    "kind": {
+                        "type": "media_in",
+                        "kind": {
+                            "media_type": "image",
+                            "source": "https://cdn.example.com/media/background.png"
+                        }
+                    }
+                },
+                {
+                    "id": 2,
+                    "kind": { "type": "media_output" }
                 }
-            }]
-        }],
-        "audio": { "tracks": [] }
+            ],
+            "connections": [
+                {
+                    "from_node": 1,
+                    "from_port": "output",
+                    "to_node": 2,
+                    "to_port": "source"
+                }
+            ]
+        }
     })
 }
 
 fn valid_project_json() -> serde_json::Value {
     json!({
-        "version": "1",
-        "canvas": {
-            "width": 320,
-            "height": 180,
-            "background": [0, 0, 0, 255]
-        },
+        "schema_revision": "lumen_graph_v1",
         "timeline": {
-            "fps": { "num": 30, "den": 1 },
+            "fps": 30.0,
             "duration_frames": 2
         },
-        "sources": [],
-        "layers": [{
-            "id": "layer_text",
-            "items": [{
-                "type": "clip",
-                "id": "clip_text_1",
-                "start_frame": 0,
-                "duration_frames": 2,
-                "content": {
-                    "type": "text",
-                    "content": "Hello"
+        "render_settings": {
+            "width": 320,
+            "height": 180,
+            "background_color": [0, 0, 0, 255]
+        },
+        "graph": {
+            "nodes": [
+                {
+                    "id": 1,
+                    "kind": {
+                        "type": "solid_color",
+                        "color": [255, 255, 255, 255],
+                        "width": 320,
+                        "height": 180
+                    }
                 },
-                "style": {
-                    "transform": {
-                        "x": 20.0,
-                        "y": 20.0,
-                        "width": 280.0,
-                        "height": 80.0
-                    },
-                    "font_size": 24.0,
-                    "color": [255, 255, 255, 255],
-                    "align": "center"
+                {
+                    "id": 2,
+                    "kind": { "type": "media_output" }
                 }
-            }]
-        }],
-        "audio": { "tracks": [] }
+            ],
+            "connections": [
+                {
+                    "from_node": 1,
+                    "from_port": "output",
+                    "to_node": 2,
+                    "to_port": "source"
+                }
+            ]
+        }
     })
 }

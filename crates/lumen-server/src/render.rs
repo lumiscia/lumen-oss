@@ -500,6 +500,13 @@ fn normalize_delegate_payload(payload: &serde_json::Value) -> anyhow::Result<Str
         return serde_json::to_string(&payload).context("serialize payload");
     };
 
+    let looks_like_composition = project.contains_key("schema_revision")
+        && project.contains_key("graph")
+        && project.contains_key("render_settings");
+    if looks_like_composition {
+        return serde_json::to_string(&payload).context("serialize payload");
+    }
+
     normalize_timeline(project);
     normalize_sources(project);
     normalize_layers(project);
