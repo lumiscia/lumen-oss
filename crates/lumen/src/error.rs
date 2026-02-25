@@ -79,13 +79,13 @@ pub enum PropertyError {
 
 #[derive(Debug, Error, Clone)]
 pub enum ExpressionError {
-    #[error("expression parse failed")]
+    #[error("expression parse failed: {details}")]
     Parse {
         node_id: Option<NodeId>,
         property_path: Option<String>,
         details: String,
     },
-    #[error("expression evaluation failed")]
+    #[error("expression evaluation failed: {details}")]
     Evaluate {
         node_id: Option<NodeId>,
         property_path: Option<String>,
