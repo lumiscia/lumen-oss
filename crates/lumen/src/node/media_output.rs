@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
+use skia_safe::{Paint, Rect, SamplingOptions};
+
 use crate::{
     error::LumenError,
     node::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
         pixel_utils::{make_skia_image, render_with_skia},
     },
-    raster::{BitmapFrame, RasterFrame},
+    raster::{BitmapFrame, RasterFrame, RectI},
     render::RenderContext,
 };
 
@@ -38,8 +40,14 @@ impl NodeEval for MediaOutput {
         let output_rect = ctx.request.output_rect;
         let (target_w, target_h) = (output_rect.width, output_rect.height);
         let (source_w, source_h) = source.dimensions();
+        let source_format = source.format_rect();
+        let source_data = source.data_rect();
 
-        if source_w == target_w && source_h == target_h {
+        if source_w == target_w
+            && source_h == target_h
+            && source_format == output_rect
+            && source_data == output_rect
+        {
             let bitmap = source.clone().into_bitmap_frame()?;
             return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
                 BitmapFrame::with_domain(
@@ -77,7 +85,16 @@ impl NodeEval for MediaOutput {
         };
 
         let output = render_with_skia(target_w, target_h, Some(ctx), |canvas| {
-            canvas.draw_image(&image, (0.0, 0.0), None);
+            draw_frame_image(
+                canvas,
+                &image,
+                width,
+                height,
+                source_format,
+                source_data,
+                output_rect,
+                None,
+            );
         });
 
         Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
@@ -90,5 +107,62 @@ impl NodeEval for MediaOutput {
             )
             .with_alpha_mode(source_alpha),
         )))
+    }
+}
+
+fn draw_frame_image(
+    canvas: &skia_safe::Canvas,
+    image: &skia_safe::Image,
+    storage_w: u32,
+    storage_h: u32,
+    format_rect: RectI,
+    data_rect: RectI,
+    target_rect: RectI,
+    paint: Option<&Paint>,
+) {
+    if data_rect.width == 0
+        || data_rect.height == 0
+        || format_rect.width == 0
+        || format_rect.height == 0
+    {
+        return;
+    }
+
+    let Some(clipped) = data_rect.intersect(&target_rect) else {
+        return;
+    };
+
+    let sx = storage_w as f32 / format_rect.width as f32;
+    let sy = storage_h as f32 / format_rect.height as f32;
+    let src_x = (clipped.x - format_rect.x) as f32 * sx;
+    let src_y = (clipped.y - format_rect.y) as f32 * sy;
+    let src_w = clipped.width as f32 * sx;
+    let src_h = clipped.height as f32 * sy;
+    let dst_x = (clipped.x - target_rect.x) as f32;
+    let dst_y = (clipped.y - target_rect.y) as f32;
+    let dst_rect = Rect::from_xywh(dst_x, dst_y, clipped.width as f32, clipped.height as f32);
+    let src_rect = Rect::from_xywh(src_x, src_y, src_w, src_h);
+    let sampling = SamplingOptions::default();
+
+    match paint {
+        Some(paint) => {
+            canvas.draw_image_rect_with_sampling_options(
+                image,
+                Some((&src_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
+                dst_rect,
+                sampling,
+                paint,
+            );
+        }
+        None => {
+            let default_paint = Paint::default();
+            canvas.draw_image_rect_with_sampling_options(
+                image,
+                Some((&src_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
+                dst_rect,
+                sampling,
+                &default_paint,
+            );
+        }
     }
 }
