@@ -15,6 +15,7 @@ use crate::{
         media_output::MediaOutput,
         memo::Memo,
         merge::Merge,
+        raster_multimerge::RasterMultiMerge,
         resize::{Resize, ResizeMode, ResizeSampling},
         shadow::Shadow,
         shape::Shape,
@@ -26,6 +27,9 @@ use crate::{
         },
         transform::Transform,
         transform::TransformSampling,
+        vector_merge::VectorMerge,
+        vector_multimerge::VectorMultiMerge,
+        vector_text::VectorText,
         VectorStroke, VectorStyle,
         {PropertyValue::Bool, PropertyValue::Color as PropertyColor, PropertyValue::Float},
     },
@@ -176,6 +180,50 @@ fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
                         .into_iter()
                         .map(|point| (point[0], point[1]))
                         .collect(),
+                },
+            },
+            style: VectorStyle {
+                color,
+                stroke: stroke.map(
+                    |JsonVectorStroke {
+                         color,
+                         width,
+                     }| VectorStroke { color, width },
+                ),
+            },
+        }),
+        JsonNodeKind::VectorText {
+            content,
+            font_family,
+            font_size,
+            font_weight,
+            font_style,
+            max_width,
+            color,
+            stroke,
+            alignment,
+        } => NodeKind::VectorText(VectorText {
+            content,
+            font_family,
+            font_size,
+            font_weight,
+            font_style: match font_style {
+                JsonTextFontStyle::Normal => TextFontStyle::Normal,
+                JsonTextFontStyle::Italic => TextFontStyle::Italic,
+                JsonTextFontStyle::Oblique => TextFontStyle::Oblique,
+            },
+            max_width,
+            alignment: TextAlignment {
+                horizontal: match alignment.horizontal {
+                    JsonTextAlignmentHorizontal::Left => TextAlignmentHorizontal::Left,
+                    JsonTextAlignmentHorizontal::Center => TextAlignmentHorizontal::Center,
+                    JsonTextAlignmentHorizontal::Right => TextAlignmentHorizontal::Right,
+                    JsonTextAlignmentHorizontal::Justify => TextAlignmentHorizontal::Justify,
+                },
+                vertical: match alignment.vertical {
+                    JsonTextAlignmentVertical::Top => TextAlignmentVertical::Top,
+                    JsonTextAlignmentVertical::Middle => TextAlignmentVertical::Middle,
+                    JsonTextAlignmentVertical::Bottom => TextAlignmentVertical::Bottom,
                 },
             },
             style: VectorStyle {
@@ -362,6 +410,26 @@ fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
                 JsonBlendMode::Lighten => BlendMode::Lighten,
             },
         }),
+        JsonNodeKind::RasterMultiMerge {
+            blend_mode,
+            opacity,
+            input_count,
+        } => NodeKind::RasterMultiMerge(RasterMultiMerge {
+            opacity,
+            input_count,
+            blend_mode: match blend_mode {
+                JsonBlendMode::Normal => BlendMode::Normal,
+                JsonBlendMode::Multiply => BlendMode::Multiply,
+                JsonBlendMode::Screen => BlendMode::Screen,
+                JsonBlendMode::Overlay => BlendMode::Overlay,
+                JsonBlendMode::Darken => BlendMode::Darken,
+                JsonBlendMode::Lighten => BlendMode::Lighten,
+            },
+        }),
+        JsonNodeKind::VectorMerge {} => NodeKind::VectorMerge(VectorMerge),
+        JsonNodeKind::VectorMultiMerge { input_count } => {
+            NodeKind::VectorMultiMerge(VectorMultiMerge { input_count })
+        }
         JsonNodeKind::Switch { map } => {
             let mut parsed = std::collections::HashMap::new();
             for (index, range) in map {

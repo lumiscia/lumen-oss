@@ -17,6 +17,7 @@ pub mod media_output;
 pub mod memo;
 pub mod merge;
 pub mod pixel_utils;
+pub mod raster_multimerge;
 pub mod resize;
 pub mod shadow;
 pub mod shape;
@@ -25,6 +26,9 @@ pub mod solid_color;
 pub mod switch;
 pub mod text;
 pub mod transform;
+pub mod vector_merge;
+pub mod vector_multimerge;
+pub mod vector_text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub u64);
@@ -94,11 +98,25 @@ pub struct VectorStyle {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct VectorTextData {
+    pub content: String,
+    pub font_family: String,
+    pub font_size: f32,
+    pub font_weight: u16,
+    pub font_style: text::TextFontStyle,
+    pub max_width: Option<f32>,
+    pub alignment: text::TextAlignment,
+    pub style: VectorStyle,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum VectorData {
     Shape {
         geometry: ShapeGeometry,
         style: VectorStyle,
     },
+    Text(VectorTextData),
+    Group(Vec<VectorData>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,7 +277,10 @@ impl Node {
 #[non_exhaustive]
 pub enum NodeKind {
     Shape(shape::Shape),
+    VectorText(vector_text::VectorText),
     ShapeRenderer(shape_renderer::ShapeRenderer),
+    VectorMerge(vector_merge::VectorMerge),
+    VectorMultiMerge(vector_multimerge::VectorMultiMerge),
     MediaIn(media_in::MediaIn),
     SolidColor(solid_color::SolidColor),
     Text(text::Text),
@@ -270,6 +291,7 @@ pub enum NodeKind {
     Shadow(shadow::Shadow),
     Boolean(boolean::Boolean),
     Merge(merge::Merge),
+    RasterMultiMerge(raster_multimerge::RasterMultiMerge),
     Switch(switch::Switch),
     FrameHold(frame_hold::FrameHold),
     MediaOutput(media_output::MediaOutput),
@@ -280,7 +302,10 @@ impl NodeKind {
     pub fn kind_name(&self) -> &'static str {
         match self {
             Self::Shape(_) => "Shape",
+            Self::VectorText(_) => "VectorText",
             Self::ShapeRenderer(_) => "ShapeRenderer",
+            Self::VectorMerge(_) => "VectorMerge",
+            Self::VectorMultiMerge(_) => "VectorMultiMerge",
             Self::MediaIn(_) => "MediaIn",
             Self::SolidColor(_) => "SolidColor",
             Self::Text(_) => "Text",
@@ -291,6 +316,7 @@ impl NodeKind {
             Self::Shadow(_) => "Shadow",
             Self::Boolean(_) => "Boolean",
             Self::Merge(_) => "Merge",
+            Self::RasterMultiMerge(_) => "RasterMultiMerge",
             Self::Switch(_) => "Switch",
             Self::FrameHold(_) => "FrameHold",
             Self::MediaOutput(_) => "MediaOutput",
@@ -341,12 +367,35 @@ impl NodeKind {
                     None => false.hash(hasher),
                 }
             }
+            Self::VectorText(t) => {
+                t.content.hash(hasher);
+                t.font_family.hash(hasher);
+                t.font_size.to_bits().hash(hasher);
+                t.font_weight.hash(hasher);
+                std::mem::discriminant(&t.font_style).hash(hasher);
+                t.max_width.map(|v| v.to_bits()).hash(hasher);
+                std::mem::discriminant(&t.alignment.horizontal).hash(hasher);
+                std::mem::discriminant(&t.alignment.vertical).hash(hasher);
+                t.style.color.hash(hasher);
+                match t.style.stroke {
+                    Some(stroke) => {
+                        true.hash(hasher);
+                        stroke.color.hash(hasher);
+                        stroke.width.to_bits().hash(hasher);
+                    }
+                    None => false.hash(hasher),
+                }
+            }
             Self::ShapeRenderer(r) => {
                 r.fill_color.hash(hasher);
                 r.stroke_color.hash(hasher);
                 r.stroke_width.to_bits().hash(hasher);
                 r.fill_enabled.hash(hasher);
                 r.stroke_enabled.hash(hasher);
+            }
+            Self::VectorMerge(_) => {}
+            Self::VectorMultiMerge(m) => {
+                m.input_count.hash(hasher);
             }
             Self::MediaIn(m) => match &m.kind {
                 media_in::MediaInKind::Image { source } => {
@@ -421,6 +470,11 @@ impl NodeKind {
                 std::mem::discriminant(&m.blend_mode).hash(hasher);
                 m.opacity.to_bits().hash(hasher);
             }
+            Self::RasterMultiMerge(m) => {
+                std::mem::discriminant(&m.blend_mode).hash(hasher);
+                m.opacity.to_bits().hash(hasher);
+                m.input_count.hash(hasher);
+            }
             Self::Switch(s) => {
                 let mut entries: Vec<_> = s.map.iter().collect();
                 entries.sort_by_key(|(k, _)| *k);
@@ -444,7 +498,10 @@ impl NodeKind {
     pub fn input_port_defs(&self) -> &'static [InputPortDef] {
         match self {
             Self::Shape(node) => node.input_port_defs(),
+            Self::VectorText(node) => node.input_port_defs(),
             Self::ShapeRenderer(node) => node.input_port_defs(),
+            Self::VectorMerge(node) => node.input_port_defs(),
+            Self::VectorMultiMerge(node) => node.input_port_defs(),
             Self::MediaIn(node) => node.input_port_defs(),
             Self::SolidColor(node) => node.input_port_defs(),
             Self::Text(node) => node.input_port_defs(),
@@ -455,6 +512,7 @@ impl NodeKind {
             Self::Shadow(node) => node.input_port_defs(),
             Self::Boolean(node) => node.input_port_defs(),
             Self::Merge(node) => node.input_port_defs(),
+            Self::RasterMultiMerge(node) => node.input_port_defs(),
             Self::Switch(node) => node.input_port_defs(),
             Self::FrameHold(node) => node.input_port_defs(),
             Self::MediaOutput(node) => node.input_port_defs(),
@@ -465,7 +523,10 @@ impl NodeKind {
     pub fn output_port_defs(&self) -> &'static [OutputPortDef] {
         match self {
             Self::Shape(node) => node.output_port_defs(),
+            Self::VectorText(node) => node.output_port_defs(),
             Self::ShapeRenderer(node) => node.output_port_defs(),
+            Self::VectorMerge(node) => node.output_port_defs(),
+            Self::VectorMultiMerge(node) => node.output_port_defs(),
             Self::MediaIn(node) => node.output_port_defs(),
             Self::SolidColor(node) => node.output_port_defs(),
             Self::Text(node) => node.output_port_defs(),
@@ -476,6 +537,7 @@ impl NodeKind {
             Self::Shadow(node) => node.output_port_defs(),
             Self::Boolean(node) => node.output_port_defs(),
             Self::Merge(node) => node.output_port_defs(),
+            Self::RasterMultiMerge(node) => node.output_port_defs(),
             Self::Switch(node) => node.output_port_defs(),
             Self::FrameHold(node) => node.output_port_defs(),
             Self::MediaOutput(node) => node.output_port_defs(),
@@ -490,7 +552,10 @@ impl NodeKind {
     ) -> Result<PortValue, LumenError> {
         match self {
             Self::Shape(node) => node.evaluate(inputs, ctx),
+            Self::VectorText(node) => node.evaluate(inputs, ctx),
             Self::ShapeRenderer(node) => node.evaluate(inputs, ctx),
+            Self::VectorMerge(node) => node.evaluate(inputs, ctx),
+            Self::VectorMultiMerge(node) => node.evaluate(inputs, ctx),
             Self::MediaIn(node) => node.evaluate(inputs, ctx),
             Self::SolidColor(node) => node.evaluate(inputs, ctx),
             Self::Text(node) => node.evaluate(inputs, ctx),
@@ -501,6 +566,7 @@ impl NodeKind {
             Self::Shadow(node) => node.evaluate(inputs, ctx),
             Self::Boolean(node) => node.evaluate(inputs, ctx),
             Self::Merge(node) => node.evaluate(inputs, ctx),
+            Self::RasterMultiMerge(node) => node.evaluate(inputs, ctx),
             Self::Switch(node) => node.evaluate(inputs, ctx),
             Self::FrameHold(node) => node.evaluate(inputs, ctx),
             Self::MediaOutput(node) => node.evaluate(inputs, ctx),

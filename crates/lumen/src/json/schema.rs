@@ -63,6 +63,24 @@ pub enum JsonNodeKind {
         #[serde(default)]
         stroke: Option<JsonVectorStroke>,
     },
+    VectorText {
+        content: String,
+        #[serde(default = "default_font_family")]
+        font_family: String,
+        #[serde(default = "default_font_size")]
+        font_size: f32,
+        #[serde(default = "default_font_weight")]
+        font_weight: u16,
+        #[serde(default = "default_font_style")]
+        font_style: JsonTextFontStyle,
+        max_width: Option<f32>,
+        #[serde(default)]
+        color: Option<[u8; 4]>,
+        #[serde(default)]
+        stroke: Option<JsonVectorStroke>,
+        #[serde(default)]
+        alignment: JsonTextAlignment,
+    },
     ShapeRenderer {
         #[serde(default = "default_color")]
         fill_color: [u8; 4],
@@ -148,6 +166,19 @@ pub enum JsonNodeKind {
         blend_mode: JsonBlendMode,
         #[serde(default = "default_one")]
         opacity: f32,
+    },
+    RasterMultiMerge {
+        #[serde(default = "default_blend_mode")]
+        blend_mode: JsonBlendMode,
+        #[serde(default = "default_one")]
+        opacity: f32,
+        #[serde(default = "default_input_count")]
+        input_count: u16,
+    },
+    VectorMerge {},
+    VectorMultiMerge {
+        #[serde(default = "default_input_count")]
+        input_count: u16,
     },
     Switch {
         map: HashMap<String, JsonRange>,
@@ -424,6 +455,10 @@ fn default_blend_mode() -> JsonBlendMode {
 
 fn default_transform_sampling() -> JsonTransformSampling {
     JsonTransformSampling::Bilinear
+}
+
+fn default_input_count() -> u16 {
+    2
 }
 
 fn default_extrapolation() -> JsonExtrapolation {

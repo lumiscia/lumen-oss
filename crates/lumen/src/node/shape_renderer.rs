@@ -6,8 +6,8 @@ use crate::{
     error::LumenError,
     node::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue, ShapeGeometry,
-        VectorData, VectorStyle,
-        pixel_utils::{read_surface_rgba, to_skia_color},
+        VectorData, VectorStyle, VectorTextData,
+        pixel_utils::{make_skia_image, read_surface_rgba, render_with_skia, to_skia_color},
     },
     raster::RasterFrame,
     render::RenderContext,
@@ -77,6 +77,8 @@ pub(crate) fn rasterize_vector(
 ) -> RasterFrame {
     match vector {
         VectorData::Shape { geometry, style } => rasterize_geometry(geometry, style, renderer, ctx),
+        VectorData::Text(text) => rasterize_text(text, renderer, ctx),
+        VectorData::Group(children) => rasterize_group(children, renderer, ctx),
     }
 }
 
@@ -144,6 +146,73 @@ fn resolve_style(style: &VectorStyle, renderer: &ShapeRenderer) -> ResolvedVecto
         stroke_width,
         stroke_enabled,
     }
+}
+
+fn rasterize_text(text: &VectorTextData, renderer: &ShapeRenderer, ctx: &mut RenderContext) -> RasterFrame {
+    let style = resolve_style(&text.style, renderer);
+    let text_color = if style.fill_enabled {
+        style.fill_color
+    } else if style.stroke_enabled {
+        // Skia paragraph text is currently rasterized as fill only here.
+        // If no fill is specified, fall back to the resolved stroke color.
+        style.stroke_color
+    } else {
+        [0, 0, 0, 0]
+    };
+
+    let raster_text = crate::node::text::Text {
+        content: text.content.clone(),
+        font_family: text.font_family.clone(),
+        font_size: text.font_size,
+        font_weight: text.font_weight,
+        font_style: text.font_style,
+        max_width: text.max_width,
+        color: text_color,
+        alignment: text.alignment,
+    };
+
+    match raster_text.evaluate(&NodeInputs::new(), ctx) {
+        Ok(PortValue::RasterFrame(frame)) => frame,
+        Ok(PortValue::Vector(_)) | Err(_) => RasterFrame::bitmap(Arc::new(vec![0; 4]), 1, 1),
+    }
+}
+
+fn rasterize_group(children: &[VectorData], renderer: &ShapeRenderer, ctx: &mut RenderContext) -> RasterFrame {
+    let mut layers = Vec::with_capacity(children.len());
+    for child in children {
+        layers.push(rasterize_vector(child, renderer, ctx));
+    }
+
+    if layers.is_empty() {
+        return RasterFrame::bitmap(Arc::new(vec![0; 4]), 1, 1);
+    }
+    if layers.len() == 1 {
+        return layers.pop().expect("length checked");
+    }
+
+    let (out_w, out_h) = layers.iter().fold((1_u32, 1_u32), |(max_w, max_h), frame| {
+        let (w, h) = frame.dimensions();
+        (max_w.max(w), max_h.max(h))
+    });
+
+    let rendered = render_with_skia(out_w, out_h, Some(ctx), |canvas| {
+        canvas.clear(Color::TRANSPARENT);
+        for layer in &layers {
+            let (bytes, width, height) = layer.clone().into_parts();
+            let Some(image) = make_skia_image(
+                &bytes,
+                width,
+                height,
+                (width as usize) * 4,
+                layer.alpha_mode(),
+            ) else {
+                continue;
+            };
+            canvas.draw_image(&image, (0.0, 0.0), None);
+        }
+    });
+
+    RasterFrame::bitmap(Arc::new(rendered), out_w, out_h)
 }
 
 fn draw_shape(canvas: &skia_safe::Canvas, path: &Path, style: ResolvedVectorStyle) {
