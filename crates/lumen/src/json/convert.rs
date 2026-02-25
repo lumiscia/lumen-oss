@@ -36,11 +36,10 @@ use crate::{
 };
 
 use super::schema::{
-    JsonAnimatableType, JsonBlendMode, JsonComposition, JsonConnection, JsonExtrapolation,
-    JsonInterpolationMode, JsonKeyframeTrack, JsonLoopMode, JsonMaskKind, JsonMediaInKind,
-    JsonNodeKind, JsonPort, JsonResizeMode, JsonResizeSampling, JsonShapeGeometry,
-    JsonTextAlignmentHorizontal, JsonTextAlignmentVertical, JsonTextFontStyle,
-    JsonTransformSampling, JsonVectorStroke,
+    JsonAnimatableType, JsonBlendMode, JsonComposition, JsonExtrapolation, JsonInterpolationMode,
+    JsonKeyframeTrack, JsonLoopMode, JsonMaskKind, JsonMediaInKind, JsonNodeKind, JsonPort,
+    JsonResizeMode, JsonResizeSampling, JsonShapeGeometry, JsonTextAlignmentHorizontal,
+    JsonTextAlignmentVertical, JsonTextFontStyle, JsonTransformSampling, JsonVectorStroke,
 };
 
 pub fn convert_json_composition(payload: JsonComposition) -> Result<Composition, Vec<LumenError>> {
@@ -48,7 +47,7 @@ pub fn convert_json_composition(payload: JsonComposition) -> Result<Composition,
     let mut graph = Graph::new();
     let mut seen_ids = HashSet::new();
 
-    for json_node in payload.graph.nodes {
+    for json_node in payload.graph.0 {
         if json_node.id == 0 || !seen_ids.insert(json_node.id) {
             errors.push(
                 PropertyError::InvalidType {
@@ -69,12 +68,16 @@ pub fn convert_json_composition(payload: JsonComposition) -> Result<Composition,
                 continue;
             }
         };
-        graph.add_node(Node::new(NodeId(json_node.id), node_kind));
-    }
 
-    for connection in payload.graph.connections {
-        if let Err(error) = graph.connect(convert_connection(connection)) {
-            errors.push(error);
+        graph.add_node(Node::new(NodeId(json_node.id), node_kind));
+
+        for (from_port, (to_node, to_port)) in json_node.inputs {
+            graph.connections.push(Connection {
+                from_node: NodeId(json_node.id),
+                from_port: convert_output_port(from_port),
+                to_node: NodeId(to_node),
+                to_port: convert_input_port(to_port),
+            });
         }
     }
 
@@ -129,15 +132,6 @@ pub fn convert_json_composition(payload: JsonComposition) -> Result<Composition,
         Ok(composition)
     } else {
         Err(errors)
-    }
-}
-
-fn convert_connection(connection: JsonConnection) -> Connection {
-    Connection {
-        from_node: NodeId(connection.from_node),
-        from_port: convert_output_port(connection.from_port),
-        to_node: NodeId(connection.to_node),
-        to_port: convert_input_port(connection.to_port),
     }
 }
 

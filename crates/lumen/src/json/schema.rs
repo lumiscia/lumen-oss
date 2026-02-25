@@ -26,10 +26,7 @@ pub struct JsonCompositionMetadata {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct JsonGraph {
-    pub nodes: Vec<JsonNode>,
-    pub connections: Vec<JsonConnection>,
-}
+pub struct JsonGraph(pub Vec<JsonNode>);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +48,7 @@ pub struct JsonRenderSettings {
 pub struct JsonNode {
     pub id: u64,
     pub kind: JsonNodeKind,
+    pub inputs: HashMap<JsonPort, (u64, JsonPort)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -354,16 +352,7 @@ pub struct JsonRange {
     pub end: u32,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct JsonConnection {
-    pub from_node: u64,
-    pub from_port: JsonPort,
-    pub to_node: u64,
-    pub to_port: JsonPort,
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(untagged)]
 pub enum JsonPort {
     Named(String),
