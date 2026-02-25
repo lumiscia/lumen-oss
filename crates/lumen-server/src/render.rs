@@ -1,21 +1,17 @@
 use std::{
-    collections::HashMap,
     env,
     io::Write,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, RwLock, mpsc},
 };
 
 use anyhow::{Context, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
+use lumen::json::JsonDelegateStatus;
 use lumen::{
-    Project,
-    ffmpeg::{FfmpegError, worker::VideoDecodeWorker},
-    json::{JsonDelegateRequest, JsonDelegateStatus, ProjectBundle, convert_json_delegate},
-    media::{ImageResolver, MediaStore, VideoResolver},
-    render::{context::RendererContext, render_scene},
-    time::Rational,
+    AssetCache, Composition, FfmpegMediaStore, ImageResolver, MediaStore, NullMediaStore,
+    RenderContext, RuntimeCapabilityProfile, SinkType, SurfacePool, VideoFrameResolver,
 };
 
 pub const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
@@ -68,6 +64,54 @@ pub struct RenderOptions {
     pub video_encoder: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProjectInfo {
+    pub width: u32,
+    pub height: u32,
+    pub duration_frames: u32,
+}
+
+pub struct ProjectBundle {
+    pub project: ProjectInfo,
+    pub composition: Composition,
+}
+
+struct LocalMediaStore {
+    root: PathBuf,
+    backend: FfmpegMediaStore,
+}
+
+impl LocalMediaStore {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            backend: FfmpegMediaStore::new(),
+        }
+    }
+
+    fn resolve_source(&self, source: &str) -> Option<String> {
+        if is_http_url(source) {
+            return None;
+        }
+
+        resolve_local_path_with_root(source, &self.root)
+            .ok()
+            .map(|path| path.to_string_lossy().to_string())
+    }
+}
+
+impl MediaStore for LocalMediaStore {
+    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+        let resolved = self.resolve_source(source)?;
+        self.backend.get_image_resolver(&resolved)
+    }
+
+    fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        let resolved = self.resolve_source(source)?;
+        self.backend.get_video_resolver(&resolved)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // JSON conversion
 // ---------------------------------------------------------------------------
@@ -79,29 +123,28 @@ pub fn convert_project_payload(payload: &serde_json::Value) -> Result<ProjectBun
         retryable: false,
     })?;
 
-    let request = JsonDelegateRequest {
-        input_payload: normalized,
-        input_schema_revision: "lumen_graph_v1".to_string(),
-        caller_context: "lumen-server".to_string(),
-    };
-
-    let result = convert_json_delegate(&request);
+    let result = Composition::from_json(&normalized);
     match result.status {
-        JsonDelegateStatus::Success => result.project_bundle.ok_or_else(|| RenderError {
-            code: "conversion_error",
-            message: "delegate returned success without project bundle".to_string(),
-            retryable: false,
-        }),
-        JsonDelegateStatus::CapabilityDisabled => Err(RenderError {
-            code: "capability_disabled",
-            message: "json delegate is disabled in this build".to_string(),
-            retryable: false,
-        }),
+        JsonDelegateStatus::Success => {
+            let composition = result.composition.ok_or_else(|| RenderError {
+                code: "conversion_error",
+                message: "delegate returned success without composition".to_string(),
+                retryable: false,
+            })?;
+            Ok(ProjectBundle {
+                project: ProjectInfo {
+                    width: composition.render_settings.width,
+                    height: composition.render_settings.height,
+                    duration_frames: composition.timeline.duration_frames,
+                },
+                composition,
+            })
+        }
         JsonDelegateStatus::ValidationError | JsonDelegateStatus::ConversionError => {
             let detail = result
                 .errors
                 .first()
-                .map(|issue| format!("{}: {}", issue.code, issue.message))
+                .map(std::string::ToString::to_string)
                 .unwrap_or_else(|| "unknown conversion failure".to_string());
             Err(RenderError {
                 code: "invalid_project_payload",
@@ -121,113 +164,139 @@ pub fn render_project_mp4(
     options: &RenderOptions,
     on_progress: &mut dyn FnMut(RenderProgress),
 ) -> Result<Vec<u8>, RenderError> {
-    let project = &bundle.project;
-    let mut renderer_ctx = create_renderer_context(project, bundle.background)?;
+    let composition = &bundle.composition;
+    let width = composition.render_settings.width;
+    let height = composition.render_settings.height;
+    let fps = composition.timeline.fps;
+    let total_frames = composition.timeline.duration_frames;
+
+    if fps <= 0.0 {
+        return Err(RenderError {
+            code: "invalid_project_payload",
+            message: format!("invalid timeline fps: {fps}"),
+            retryable: false,
+        });
+    }
+
+    if total_frames == 0 {
+        return Err(RenderError {
+            code: "invalid_project_payload",
+            message: "composition duration_frames must be greater than zero".to_string(),
+            retryable: false,
+        });
+    }
 
     let media_root = media_root(options.media_root.as_deref()).map_err(|err| RenderError {
         code: "media_root_error",
         message: err.to_string(),
         retryable: false,
     })?;
-
-    let media_store = build_media_store(bundle, &media_root).map_err(|err| RenderError {
-        code: "media_setup_error",
-        message: err.to_string(),
-        retryable: true,
-    })?;
-    renderer_ctx.set_media_store(Box::new(media_store));
-
-    let width = project.width;
-    let height = project.height;
-    let fps = project.frame_rate;
-    let total_frames = project.duration_frames;
+    let media_store: Arc<dyn MediaStore> = Arc::new(LocalMediaStore::new(media_root));
+    let mut renderer_ctx = create_renderer_context(composition, media_store, true);
     let encoder = choose_video_encoder(options.video_encoder.as_deref());
 
-    let output: Arc<Mutex<Option<Result<Vec<u8>, FfmpegError>>>> = Arc::new(Mutex::new(None));
-    let output_capture = Arc::clone(&output);
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let encode_handle =
+        std::thread::spawn(move || encode_rgba_stream(width, height, fps, encoder, rx));
 
-    lumen::ffmpeg::worker::render_to_mp4(
-        total_frames,
-        |frame| {
-            render_scene(project, frame, &mut renderer_ctx)
-                .map_err(|err| FfmpegError::Init(format!("render failed at frame {frame}: {err}")))
-        },
-        move |rx| {
-            let result = encode_rgba_stream(width, height, fps, encoder, rx);
-            *output_capture.lock().expect("output lock") = Some(result);
-            Ok(())
-        },
-        |frame, total| {
-            let ratio = if total == 0 {
-                0.0
-            } else {
-                (frame as f32 / total as f32).clamp(0.0, 1.0)
-            };
-            on_progress(RenderProgress {
-                stage: "rendering",
-                frame,
-                total_frames: total,
-                ratio,
+    for frame in 0..total_frames {
+        let bitmap = composition
+            .render_frame(frame, &mut renderer_ctx)
+            .map_err(|err| RenderError {
+                code: "render_failed",
+                message: format!("render failed at frame {frame}: {err}"),
+                retryable: true,
+            })?
+            .into_bitmap_frame()
+            .map_err(|err| RenderError {
+                code: "render_failed",
+                message: format!("failed to convert frame {frame} to bitmap: {err}"),
+                retryable: true,
+            })?;
+
+        if bitmap.storage_width != width || bitmap.storage_height != height {
+            return Err(RenderError {
+                code: "render_failed",
+                message: format!(
+                    "frame {frame} dimensions {}x{} do not match composition {}x{}",
+                    bitmap.storage_width, bitmap.storage_height, width, height
+                ),
+                retryable: false,
             });
-        },
-    )
-    .map_err(|err| RenderError {
-        code: "render_failed",
-        message: err.to_string(),
-        retryable: true,
-    })?;
+        }
 
-    let result = output
-        .lock()
-        .expect("output lock")
-        .take()
-        .ok_or_else(|| RenderError {
-            code: "render_failed",
-            message: "encode thread did not produce output".to_string(),
-            retryable: false,
+        tx.send((*bitmap.pixels).clone()).map_err(|_| RenderError {
+            code: "encode_failed",
+            message: "ffmpeg encoder thread is unavailable".to_string(),
+            retryable: true,
         })?;
 
-    result.map_err(|err| RenderError {
-        code: "encode_failed",
-        message: err.to_string(),
-        retryable: true,
-    })
+        let completed = frame.saturating_add(1);
+        let ratio = (completed as f32 / total_frames as f32).clamp(0.0, 1.0);
+        on_progress(RenderProgress {
+            stage: "rendering",
+            frame: completed,
+            total_frames,
+            ratio,
+        });
+    }
+
+    drop(tx);
+
+    encode_handle
+        .join()
+        .map_err(|_| RenderError {
+            code: "encode_failed",
+            message: "ffmpeg encoder thread panicked".to_string(),
+            retryable: true,
+        })?
+        .map_err(|err| RenderError {
+            code: "encode_failed",
+            message: err.to_string(),
+            retryable: true,
+        })
 }
 
 pub fn render_project_frame_png(
     bundle: &ProjectBundle,
     frame: u32,
 ) -> Result<Vec<u8>, RenderError> {
-    let project = &bundle.project;
+    let composition = &bundle.composition;
 
-    if frame >= project.duration_frames {
+    if frame >= composition.timeline.duration_frames {
         return Err(RenderError {
             code: "frame_out_of_range",
             message: format!(
                 "requested frame {frame} is out of range for duration {}",
-                project.duration_frames
+                composition.timeline.duration_frames
             ),
             retryable: false,
         });
     }
 
-    let mut renderer_ctx = create_renderer_context(project, bundle.background)?;
-
-    // For frame preview, we don't set up a full media store — images/video won't resolve,
-    // but text/shape clips will render fine. A production deploy would want media here.
-    let rgba = render_scene(project, frame, &mut renderer_ctx).map_err(|err| RenderError {
-        code: "render_failed",
-        message: err.to_string(),
-        retryable: false,
-    })?;
+    let media_store: Arc<dyn MediaStore> = Arc::new(NullMediaStore);
+    let mut renderer_ctx = create_renderer_context(composition, media_store, false);
+    let rendered = composition
+        .render_frame(frame, &mut renderer_ctx)
+        .map_err(|err| RenderError {
+            code: "render_failed",
+            message: err.to_string(),
+            retryable: false,
+        })?
+        .into_bitmap_frame()
+        .map_err(|err| RenderError {
+            code: "render_failed",
+            message: err.to_string(),
+            retryable: false,
+        })?;
 
     let mut png = Vec::new();
     let encoder = PngEncoder::new(&mut png);
     encoder
         .write_image(
-            &rgba,
-            project.width,
-            project.height,
+            rendered.pixels.as_slice(),
+            rendered.storage_width,
+            rendered.storage_height,
             image::ExtendedColorType::Rgba8,
         )
         .map_err(|err| RenderError {
@@ -244,143 +313,24 @@ pub fn render_project_frame_png(
 // ---------------------------------------------------------------------------
 
 fn create_renderer_context(
-    project: &Project,
-    background: [u8; 4],
-) -> Result<RendererContext, RenderError> {
-    let mut ctx =
-        RendererContext::new(project.width, project.height, project.frame_rate).map_err(|err| {
-            RenderError {
-                code: "renderer_init_failed",
-                message: err.to_string(),
-                retryable: false,
-            }
-        })?;
-    ctx.clear_color =
-        skia_safe::Color::from_argb(background[3], background[0], background[1], background[2]);
-    Ok(ctx)
-}
+    composition: &Composition,
+    media_store: Arc<dyn MediaStore>,
+    has_media_resolvers: bool,
+) -> RenderContext {
+    let profile = RuntimeCapabilityProfile {
+        has_image_resolver: has_media_resolvers,
+        has_video_resolver: has_media_resolvers,
+        has_threading: false,
+        sink_types: vec![SinkType::Bitmap, SinkType::Video],
+    };
 
-// ---------------------------------------------------------------------------
-// MediaStore implementation for server
-// ---------------------------------------------------------------------------
-
-struct ServerMediaStore {
-    image_sources: HashMap<String, PathBuf>,
-    image_cache: HashMap<String, CachedImage>,
-    video_workers: HashMap<String, VideoDecodeWorker>,
-}
-
-#[derive(Clone)]
-struct CachedImage {
-    width: u32,
-    height: u32,
-    pixels_rgba: Arc<Vec<u8>>,
-}
-
-struct ServerImageResolver {
-    id: String,
-    image: CachedImage,
-}
-
-struct ServerVideoResolver {
-    id: String,
-    worker: *mut VideoDecodeWorker,
-}
-
-// SAFETY: VideoDecodeWorker is accessed exclusively through the MediaStore which is
-// single-threaded within a render context. The pointer is never shared across threads.
-unsafe impl Send for ServerVideoResolver {}
-
-impl ImageResolver for ServerImageResolver {
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-
-    fn width(&self) -> u32 {
-        self.image.width
-    }
-
-    fn height(&self) -> u32 {
-        self.image.height
-    }
-
-    fn resolve(&mut self) -> Vec<u8> {
-        (*self.image.pixels_rgba).clone()
-    }
-}
-
-impl VideoResolver for ServerVideoResolver {
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-
-    fn width(&self) -> u32 {
-        // Video dimensions are determined by the decoder, but we don't have easy access
-        // to them here. Return 0 and let the renderer handle it.
-        0
-    }
-
-    fn height(&self) -> u32 {
-        0
-    }
-
-    fn resolve_frame(&mut self, frame: u32) -> Vec<u8> {
-        // SAFETY: see unsafe impl Send above
-        let worker = unsafe { &*self.worker };
-        match worker.get_frame(frame as u64) {
-            Ok(Some(image)) => (*image.pixels_rgba).clone(),
-            _ => Vec::new(),
-        }
-    }
-}
-
-impl MediaStore for ServerMediaStore {
-    fn get_image_resolver(&mut self, id: &str) -> Option<Box<dyn ImageResolver>> {
-        if !self.image_cache.contains_key(id) {
-            let path = self.image_sources.get(id)?.clone();
-            let image = load_image_rgba(&path).ok()?;
-            self.image_cache.insert(id.to_string(), image);
-        }
-        let image = self.image_cache.get(id)?.clone();
-        Some(Box::new(ServerImageResolver {
-            id: id.to_string(),
-            image,
-        }))
-    }
-
-    fn get_video_resolver(&mut self, id: &str) -> Option<Box<dyn VideoResolver>> {
-        let worker = self.video_workers.get_mut(id)?;
-        Some(Box::new(ServerVideoResolver {
-            id: id.to_string(),
-            worker: worker as *mut VideoDecodeWorker,
-        }))
-    }
-}
-
-fn build_media_store(
-    bundle: &ProjectBundle,
-    media_root: &Path,
-) -> anyhow::Result<ServerMediaStore> {
-    let mut image_sources = HashMap::new();
-    for (id, source) in &bundle.image_sources {
-        if is_http_url(source) {
-            // TODO: URL image download support
-            continue;
-        }
-        let path = resolve_local_path_with_root(source, media_root)
-            .with_context(|| format!("failed resolving image source `{id}` -> `{source}`"))?;
-        image_sources.insert(id.clone(), path);
-    }
-
-    // Video workers would be set up here from sources in the raw JSON.
-    // For now, video sources require the ffmpeg libav decode path.
-    let video_workers = HashMap::new();
-
-    Ok(ServerMediaStore {
-        image_sources,
-        image_cache: HashMap::new(),
-        video_workers,
-    })
+    RenderContext::new(
+        composition,
+        Arc::new(SurfacePool::new()),
+        Arc::new(RwLock::new(AssetCache::new())),
+        media_store,
+        profile,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -390,12 +340,11 @@ fn build_media_store(
 fn encode_rgba_stream(
     width: u32,
     height: u32,
-    fps: Rational,
+    fps: f32,
     encoder: String,
     rx: mpsc::Receiver<Vec<u8>>,
-) -> Result<Vec<u8>, FfmpegError> {
-    let tmp = tempfile::tempdir()
-        .map_err(|err| FfmpegError::Init(format!("failed to create temp dir: {err}")))?;
+) -> anyhow::Result<Vec<u8>> {
+    let tmp = tempfile::tempdir().context("failed to create temp dir")?;
     let output_path = tmp.path().join("output.mp4");
 
     let mut child = Command::new("ffmpeg")
@@ -411,7 +360,7 @@ fn encode_rgba_stream(
         .arg("-s:v")
         .arg(format!("{width}x{height}"))
         .arg("-r")
-        .arg(format!("{}/{}", fps.num, fps.den))
+        .arg(format!("{fps}"))
         .arg("-i")
         .arg("pipe:0")
         .arg("-an")
@@ -425,13 +374,13 @@ fn encode_rgba_stream(
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|err| FfmpegError::Init(format!("failed to spawn ffmpeg: {err}")))?;
+        .context("failed to spawn ffmpeg")?;
 
     {
         let stdin = child
             .stdin
             .as_mut()
-            .ok_or_else(|| FfmpegError::Init("ffmpeg stdin unavailable".to_string()))?;
+            .ok_or_else(|| anyhow!("ffmpeg stdin unavailable"))?;
 
         for frame in rx {
             if stdin.write_all(&frame).is_err() {
@@ -440,19 +389,16 @@ fn encode_rgba_stream(
         }
     }
 
-    let output = child
-        .wait_with_output()
-        .map_err(|err| FfmpegError::Init(format!("ffmpeg wait failed: {err}")))?;
+    let output = child.wait_with_output().context("ffmpeg wait failed")?;
 
     if !output.status.success() {
-        return Err(FfmpegError::Init(format!(
+        return Err(anyhow!(
             "ffmpeg encode failed with encoder `{encoder}`: {}",
             String::from_utf8_lossy(&output.stderr)
-        )));
+        ));
     }
 
-    std::fs::read(&output_path)
-        .map_err(|err| FfmpegError::Init(format!("failed to read encoded output: {err}")))
+    std::fs::read(&output_path).context("failed to read encoded output")
 }
 
 // ---------------------------------------------------------------------------
@@ -542,19 +488,6 @@ fn resolve_local_path_with_root(source: &str, root: &Path) -> anyhow::Result<Pat
 
 fn is_http_url(source: &str) -> bool {
     source.starts_with("http://") || source.starts_with("https://")
-}
-
-fn load_image_rgba(path: &Path) -> anyhow::Result<CachedImage> {
-    let image = image::ImageReader::open(path)
-        .with_context(|| format!("failed to open image `{}`", path.display()))?
-        .decode()
-        .with_context(|| format!("failed to decode image `{}`", path.display()))?;
-    let rgba = image.into_rgba8();
-    Ok(CachedImage {
-        width: rgba.width(),
-        height: rgba.height(),
-        pixels_rgba: Arc::new(rgba.into_raw()),
-    })
 }
 
 // ---------------------------------------------------------------------------

@@ -94,7 +94,7 @@ pub async fn create_render(
     {
         let bundle =
             convert_project_payload(&payload).map_err(|err| ApiError::bad_request(err.message))?;
-        validate_project_limits(&bundle.project)?;
+        validate_project_limits(&payload, &bundle.project)?;
     }
 
     let status = state
@@ -300,15 +300,13 @@ pub async fn get_frame(
 
     let payload = cached.payload.clone();
     let png = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
-        let bundle =
-            convert_project_payload(&payload).map_err(|err| err.message)?;
+        let bundle = convert_project_payload(&payload).map_err(|err| err.message)?;
 
         if frame_index_u32 >= bundle.project.duration_frames {
             return Err("requested frame is out of range".to_string());
         }
 
-        render_project_frame_png(&bundle, frame_index_u32)
-            .map_err(|err| err.message)
+        render_project_frame_png(&bundle, frame_index_u32).map_err(|err| err.message)
     })
     .await
     .map_err(ApiError::internal)?
@@ -323,23 +321,33 @@ pub async fn get_frame(
     png_response(png_bytes)
 }
 
-fn validate_project_limits(project: &lumen::Project) -> Result<(), ApiError> {
-    if project.layers.len() > MAX_LAYERS {
-        return Err(ApiError::bad_request(format!(
-            "project has {} layers, limit is {MAX_LAYERS}",
-            project.layers.len()
-        )));
-    }
+fn validate_project_limits(
+    payload: &Value,
+    project: &crate::render::ProjectInfo,
+) -> Result<(), ApiError> {
+    if let Some(layers) = payload.get("layers").and_then(Value::as_array) {
+        if layers.len() > MAX_LAYERS {
+            return Err(ApiError::bad_request(format!(
+                "project has {} layers, limit is {MAX_LAYERS}",
+                layers.len()
+            )));
+        }
 
-    let total_clips: usize = project
-        .layers
-        .iter()
-        .map(|layer| layer.clips.iter().map(count_clip_nodes).sum::<usize>())
-        .sum();
-    if total_clips > MAX_TOTAL_CLIPS {
-        return Err(ApiError::bad_request(format!(
-            "project has {total_clips} clips, limit is {MAX_TOTAL_CLIPS}"
-        )));
+        let total_clips: usize = layers
+            .iter()
+            .map(|layer| {
+                layer
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .map(|items| items.iter().map(count_clip_nodes).sum::<usize>())
+                    .unwrap_or(0)
+            })
+            .sum();
+        if total_clips > MAX_TOTAL_CLIPS {
+            return Err(ApiError::bad_request(format!(
+                "project has {total_clips} clips, limit is {MAX_TOTAL_CLIPS}"
+            )));
+        }
     }
 
     let total_frames = u64::from(project.duration_frames);
@@ -359,8 +367,26 @@ fn validate_project_limits(project: &lumen::Project) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn count_clip_nodes(_clip: &lumen::clip::ClipType) -> usize {
-    1
+fn count_clip_nodes(item: &Value) -> usize {
+    let Some(obj) = item.as_object() else {
+        return 0;
+    };
+
+    let kind = obj
+        .get("kind")
+        .or_else(|| obj.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    if kind == "group" {
+        return obj
+            .get("items")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().map(count_clip_nodes).sum())
+            .unwrap_or(0);
+    }
+
+    usize::from(kind == "clip")
 }
 
 fn to_progress_event(status: &RenderJobStatus) -> RenderProgressEvent {
