@@ -130,11 +130,9 @@ impl SurfacePool {
             });
         }
 
-        let surface = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))
-            .ok_or(LumenError::from(RenderError::SurfaceAllocation {
-                width,
-                height,
-            }))?;
+        let surface = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32)).ok_or(
+            LumenError::from(RenderError::SurfaceAllocation { width, height }),
+        )?;
         if let Ok(mut stats) = self.stats.lock() {
             stats.fresh_allocations = stats.fresh_allocations.saturating_add(1);
             let bytes = u64::from(width)

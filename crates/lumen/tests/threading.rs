@@ -117,7 +117,6 @@ mod tests {
                 panic!("expected bitmap frame");
             };
             single_thread_frames.push((frame, bitmap.pixels));
-            single_thread_frames.push((frame, bytes));
         }
 
         let state = Arc::new(Mutex::new(SinkState::default()));

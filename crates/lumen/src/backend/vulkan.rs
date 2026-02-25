@@ -105,14 +105,13 @@ impl VulkanState {
         let context = {
             let get_proc = |of: gpu::vk::GetProcOf| -> *const std::ffi::c_void {
                 unsafe {
-                    let proc = match of {
-                        gpu::vk::GetProcOf::Instance(inst, name) => {
-                            entry.get_instance_proc_addr(vk::Instance::from_raw(inst as u64), name)
-                        }
-                        gpu::vk::GetProcOf::Device(dev, name) => {
-                            instance.get_device_proc_addr(vk::Device::from_raw(dev as u64), name)
-                        }
-                    };
+                    let proc =
+                        match of {
+                            gpu::vk::GetProcOf::Instance(inst, name) => entry
+                                .get_instance_proc_addr(vk::Instance::from_raw(inst as u64), name),
+                            gpu::vk::GetProcOf::Device(dev, name) => instance
+                                .get_device_proc_addr(vk::Device::from_raw(dev as u64), name),
+                        };
                     proc.map_or(std::ptr::null(), |f| f as *const std::ffi::c_void)
                 }
             };

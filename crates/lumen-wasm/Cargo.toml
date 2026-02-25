@@ -8,13 +8,10 @@ build = "build.rs"
 crate-type = ["staticlib"]
 
 [features]
-default = ["json"]
+default = ["json", "embed-roboto"]
 json = ["lumen/json"]
-
 webgl = ["lumen/webgl"]
-
-metal = ["lumen/metal"]
-vulkan = ["lumen/vulkan"]
+embed-roboto = ["lumen/embed-roboto"]
 
 [dependencies]
 lumen = { path = "../lumen" }

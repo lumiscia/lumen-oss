@@ -1,5 +1,7 @@
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 
+#[cfg(feature = "embed-roboto")]
+use skia_safe::textlayout::TypefaceFontProvider;
 use skia_safe::{
     Color, FontMgr, FontStyle,
     font_style::Weight,
@@ -19,6 +21,62 @@ use crate::{
     raster::RasterFrame,
     render::RenderContext,
 };
+
+thread_local! {
+    static TEXT_FONT_MGR: RefCell<Option<FontMgr>> = const { RefCell::new(None) };
+    static TEXT_FONT_COLLECTION: RefCell<Option<FontCollection>> = const { RefCell::new(None) };
+}
+
+#[cfg(feature = "embed-roboto")]
+const EMBEDDED_ROBOTO_REGULAR: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/roboto/Roboto-Regular.ttf"
+));
+
+fn with_text_font_mgr<R>(f: impl FnOnce(&FontMgr) -> R) -> R {
+    TEXT_FONT_MGR.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let mgr = borrow.get_or_insert_with(FontMgr::default);
+        f(mgr)
+    })
+}
+
+fn with_text_font_collection<R>(f: impl FnOnce(FontCollection) -> R) -> R {
+    TEXT_FONT_COLLECTION.with(|cell| {
+        if cell.borrow().is_none() {
+            let font_collection = with_text_font_mgr(new_text_font_collection);
+            *cell.borrow_mut() = Some(font_collection);
+        }
+
+        let font_collection = cell
+            .borrow()
+            .as_ref()
+            .expect("text font collection should be initialized")
+            .clone();
+
+        f(font_collection)
+    })
+}
+
+fn new_text_font_collection(default_font_mgr: &FontMgr) -> FontCollection {
+    let mut font_collection = FontCollection::new();
+    font_collection.set_default_font_manager(default_font_mgr.clone(), None);
+    #[cfg(feature = "embed-roboto")]
+    attach_embedded_roboto(&mut font_collection, default_font_mgr);
+    font_collection
+}
+
+#[cfg(feature = "embed-roboto")]
+fn attach_embedded_roboto(font_collection: &mut FontCollection, default_font_mgr: &FontMgr) {
+    let Some(roboto_typeface) = default_font_mgr.new_from_data(EMBEDDED_ROBOTO_REGULAR, None)
+    else {
+        return;
+    };
+
+    let mut provider = TypefaceFontProvider::new();
+    provider.register_typeface(roboto_typeface, Some("Roboto"));
+    font_collection.set_asset_font_manager(Some(provider.into()));
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextFontStyle {
@@ -124,21 +182,27 @@ impl NodeEval for Text {
         ));
         let requested_font_family = self.font_family.trim();
         if requested_font_family.is_empty() {
+            #[cfg(feature = "embed-roboto")]
+            text_style.set_font_families(&["Roboto", "sans-serif"]);
+            #[cfg(not(feature = "embed-roboto"))]
             text_style.set_font_families(&["sans-serif"]);
         } else {
+            #[cfg(feature = "embed-roboto")]
+            text_style.set_font_families(&[requested_font_family, "Roboto", "sans-serif"]);
+            #[cfg(not(feature = "embed-roboto"))]
             text_style.set_font_families(&[requested_font_family, "sans-serif"]);
         }
 
         paragraph_style.set_text_style(&text_style);
 
-        let mut font_collection = FontCollection::new();
-        font_collection.set_default_font_manager(FontMgr::default(), None);
-
-        let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
-        builder.push_style(&text_style);
-        builder.add_text(&self.content);
-        let mut paragraph = builder.build();
-        paragraph.layout(layout_width);
+        let paragraph = with_text_font_collection(|font_collection| {
+            let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
+            builder.push_style(&text_style);
+            builder.add_text(&self.content);
+            let mut paragraph = builder.build();
+            paragraph.layout(layout_width);
+            paragraph
+        });
 
         let width = layout_width.ceil().max(1.0) as u32;
         let height = paragraph.height().ceil().max(1.0) as u32;
