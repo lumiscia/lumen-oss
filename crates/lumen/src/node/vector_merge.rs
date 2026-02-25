@@ -42,6 +42,9 @@ impl NodeEval for VectorMerge {
         let base = inputs.get_vector("base")?.clone();
         let overlay = inputs.get_vector("overlay")?.clone();
 
-        Ok(PortValue::Vector(VectorData::Group(vec![base, overlay])))
+        Ok(PortValue::Vector(VectorData::Group {
+            children: vec![base, overlay],
+            position: Default::default(),
+        }))
     }
 }

@@ -81,8 +81,13 @@ pub enum ShapeGeometry {
         height: u32,
         border_radius: f32,
     },
-    Ellipse { width: u32, height: u32 },
-    Polygon { points: Vec<(f32, f32)> },
+    Ellipse {
+        width: u32,
+        height: u32,
+    },
+    Polygon {
+        points: Vec<(f32, f32)>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -97,6 +102,12 @@ pub struct VectorStyle {
     pub stroke: Option<VectorStroke>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct VectorPosition {
+    pub x: f32,
+    pub y: f32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorTextData {
     pub content: String,
@@ -106,6 +117,7 @@ pub struct VectorTextData {
     pub font_style: text::TextFontStyle,
     pub max_width: Option<f32>,
     pub alignment: text::TextAlignment,
+    pub position: VectorPosition,
     pub style: VectorStyle,
 }
 
@@ -114,9 +126,13 @@ pub enum VectorData {
     Shape {
         geometry: ShapeGeometry,
         style: VectorStyle,
+        position: VectorPosition,
     },
     Text(VectorTextData),
-    Group(Vec<VectorData>),
+    Group {
+        children: Vec<VectorData>,
+        position: VectorPosition,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,6 +382,8 @@ impl NodeKind {
                     }
                     None => false.hash(hasher),
                 }
+                s.position.x.to_bits().hash(hasher);
+                s.position.y.to_bits().hash(hasher);
             }
             Self::VectorText(t) => {
                 t.content.hash(hasher);
@@ -376,6 +394,8 @@ impl NodeKind {
                 t.max_width.map(|v| v.to_bits()).hash(hasher);
                 std::mem::discriminant(&t.alignment.horizontal).hash(hasher);
                 std::mem::discriminant(&t.alignment.vertical).hash(hasher);
+                t.position.x.to_bits().hash(hasher);
+                t.position.y.to_bits().hash(hasher);
                 t.style.color.hash(hasher);
                 match t.style.stroke {
                     Some(stroke) => {

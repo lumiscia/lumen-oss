@@ -89,9 +89,15 @@ impl NodeEval for VectorMultiMerge {
         }
 
         let output = match merged.len() {
-            0 => VectorData::Group(Vec::new()),
+            0 => VectorData::Group {
+                children: Vec::new(),
+                position: Default::default(),
+            },
             1 => merged.pop().expect("length checked"),
-            _ => VectorData::Group(merged),
+            _ => VectorData::Group {
+                children: merged,
+                position: Default::default(),
+            },
         };
 
         Ok(PortValue::Vector(output))

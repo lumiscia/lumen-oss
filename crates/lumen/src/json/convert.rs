@@ -7,6 +7,7 @@ use crate::{
     animation::PropertyPath,
     error::{ExpressionError, PropertyError},
     node::{
+        VectorStroke, VectorStyle,
         blur::Blur,
         boolean::{Boolean, MaskKind},
         crop::Crop,
@@ -30,7 +31,6 @@ use crate::{
         vector_merge::VectorMerge,
         vector_multimerge::VectorMultiMerge,
         vector_text::VectorText,
-        VectorStroke, VectorStyle,
         {PropertyValue::Bool, PropertyValue::Color as PropertyColor, PropertyValue::Float},
     },
 };
@@ -159,6 +159,7 @@ fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
     Ok(match kind {
         JsonNodeKind::Shape {
             geometry,
+            position,
             color,
             stroke,
         } => NodeKind::Shape(Shape {
@@ -184,12 +185,12 @@ fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
             },
             style: VectorStyle {
                 color,
-                stroke: stroke.map(
-                    |JsonVectorStroke {
-                         color,
-                         width,
-                     }| VectorStroke { color, width },
-                ),
+                stroke: stroke
+                    .map(|JsonVectorStroke { color, width }| VectorStroke { color, width }),
+            },
+            position: crate::node::VectorPosition {
+                x: position.x,
+                y: position.y,
             },
         }),
         JsonNodeKind::VectorText {
@@ -199,6 +200,7 @@ fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
             font_weight,
             font_style,
             max_width,
+            position,
             color,
             stroke,
             alignment,
@@ -226,14 +228,14 @@ fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
                     JsonTextAlignmentVertical::Bottom => TextAlignmentVertical::Bottom,
                 },
             },
+            position: crate::node::VectorPosition {
+                x: position.x,
+                y: position.y,
+            },
             style: VectorStyle {
                 color,
-                stroke: stroke.map(
-                    |JsonVectorStroke {
-                         color,
-                         width,
-                     }| VectorStroke { color, width },
-                ),
+                stroke: stroke
+                    .map(|JsonVectorStroke { color, width }| VectorStroke { color, width }),
             },
         }),
         JsonNodeKind::ShapeRenderer {

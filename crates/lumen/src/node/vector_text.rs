@@ -2,7 +2,7 @@ use crate::{
     error::LumenError,
     node::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue, VectorData,
-        VectorStyle, VectorTextData,
+        VectorPosition, VectorStyle, VectorTextData,
         text::{TextAlignment, TextFontStyle},
     },
     render::RenderContext,
@@ -17,6 +17,7 @@ pub struct VectorText {
     pub font_style: TextFontStyle,
     pub max_width: Option<f32>,
     pub alignment: TextAlignment,
+    pub position: VectorPosition,
     pub style: VectorStyle,
 }
 
@@ -30,6 +31,7 @@ impl Default for VectorText {
             font_style: TextFontStyle::Normal,
             max_width: None,
             alignment: TextAlignment::default(),
+            position: VectorPosition::default(),
             style: VectorStyle::default(),
         }
     }
@@ -60,6 +62,7 @@ impl NodeEval for VectorText {
             font_style: self.font_style,
             max_width: self.max_width,
             alignment: self.alignment,
+            position: self.position,
             style: self.style.clone(),
         })))
     }

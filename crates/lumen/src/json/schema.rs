@@ -59,6 +59,8 @@ pub enum JsonNodeKind {
     Shape {
         geometry: JsonShapeGeometry,
         #[serde(default)]
+        position: JsonVectorPosition,
+        #[serde(default)]
         color: Option<[u8; 4]>,
         #[serde(default)]
         stroke: Option<JsonVectorStroke>,
@@ -74,6 +76,8 @@ pub enum JsonNodeKind {
         #[serde(default = "default_font_style")]
         font_style: JsonTextFontStyle,
         max_width: Option<f32>,
+        #[serde(default)]
+        position: JsonVectorPosition,
         #[serde(default)]
         color: Option<[u8; 4]>,
         #[serde(default)]
@@ -203,8 +207,13 @@ pub enum JsonShapeGeometry {
         #[serde(default)]
         border_radius: f32,
     },
-    Ellipse { width: u32, height: u32 },
-    Polygon { points: Vec<[f32; 2]> },
+    Ellipse {
+        width: u32,
+        height: u32,
+    },
+    Polygon {
+        points: Vec<[f32; 2]>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +221,15 @@ pub enum JsonShapeGeometry {
 pub struct JsonVectorStroke {
     pub color: [u8; 4],
     pub width: f32,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[serde(deny_unknown_fields)]
+pub struct JsonVectorPosition {
+    #[serde(default)]
+    pub x: f32,
+    #[serde(default)]
+    pub y: f32,
 }
 
 #[derive(Debug, Deserialize)]
