@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
-use lumen::Project;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::executor::{execute_render, RenderExecutionError, RenderExecutionOptions};
+use crate::render::{
+    RenderError as RenderPipelineError, RenderOptions, RenderProgress, convert_project_payload,
+    render_project_mp4,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct RunpodJobRequest {
@@ -84,14 +86,9 @@ pub async fn handle_runpod_request(request: RunpodJobRequest) -> RunpodJobRespon
 async fn execute_request(
     request: RunpodJobRequest,
 ) -> Result<RunpodJobResponse, RunpodRenderError> {
-    let project: Project =
-        serde_json::from_value(request.input.project.clone()).map_err(|err| RunpodRenderError {
-            code: "invalid_project_payload".to_string(),
-            message: sanitize_error_message(&err.to_string()),
-            retryable: false,
-        })?;
+    let bundle = convert_project_payload(&request.input.project).map_err(map_execution_error)?;
 
-    let options = RenderExecutionOptions {
+    let options = RenderOptions {
         media_root: request
             .input
             .render_profile
@@ -103,14 +100,11 @@ async fn execute_request(
             .render_profile
             .as_ref()
             .and_then(|profile| profile.encoder.clone()),
-        encode_queue: None,
-        max_decoded_source_frames: None,
-        stream_cache_frames: None,
     };
 
     validate_artifact_staging(&request.input.artifact_staging)?;
 
-    let mut progress = |event: crate::executor::RenderExecutionProgress| {
+    let mut progress_callback = |event: RenderProgress| {
         tracing::info!(
             job_id = request.input.job_id,
             stage = event.stage,
@@ -121,24 +115,24 @@ async fn execute_request(
         );
     };
 
-    let rendered =
-        execute_render(&project, &options, &mut progress).map_err(map_execution_error)?;
+    let rendered_bytes = render_project_mp4(&bundle, &options, &mut progress_callback)
+        .map_err(map_execution_error)?;
 
-    let artifact = upload_artifact(&request.input.artifact_staging, &rendered.bytes).await?;
+    let artifact = upload_artifact(&request.input.artifact_staging, &rendered_bytes).await?;
 
     Ok(RunpodJobResponse {
         ok: true,
         artifact: Some(artifact),
         metrics: Some(RunpodRenderMetrics {
-            compile_ms: rendered.metrics.compile_ms,
-            render_ms: rendered.metrics.render_ms,
-            total_frames: rendered.metrics.total_frames,
+            compile_ms: 0,
+            render_ms: 0,
+            total_frames: bundle.project.duration_frames as u64,
         }),
         error: None,
     })
 }
 
-fn map_execution_error(error: RenderExecutionError) -> RunpodRenderError {
+fn map_execution_error(error: RenderPipelineError) -> RunpodRenderError {
     RunpodRenderError {
         code: error.code.to_string(),
         message: sanitize_error_message(&error.message),

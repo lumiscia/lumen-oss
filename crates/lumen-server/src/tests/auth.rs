@@ -73,35 +73,40 @@ fn valid_render_request(auth_header: Option<&str>) -> Request<Body> {
 
 fn valid_project_json() -> serde_json::Value {
     json!({
-        "canvas": {
+        "schema_revision": "lumen_graph_v1",
+        "timeline": {
+            "fps": 30.0,
+            "duration_frames": 2
+        },
+        "render_settings": {
             "width": 320,
             "height": 180,
-            "background": [0, 0, 0, 255]
+            "background_color": [0, 0, 0, 255]
         },
-        "timeline": {
-            "fps": { "num": 30, "den": 1 },
-            "total_frames": 2
-        },
-        "sources": [],
-        "layers": [{
-            "id": "layer_text",
-            "z_index": 0,
-            "items": [{
-                "kind": "clip",
-                "id": "clip_text_1",
-                "start_frame": 0,
-                "duration_frames": 2,
-                "opacity": 1.0,
-                "transform": { "x": 20.0, "y": 20.0, "width": 280.0, "height": 80.0, "rotation_degrees": 0.0 },
-                "content": {
-                    "type": "text",
-                    "text": "Hello",
-                    "font_size": 24.0,
-                    "color": [255, 255, 255, 255],
-                    "align": "center"
+        "graph": {
+            "nodes": [
+                {
+                    "id": 1,
+                    "kind": {
+                        "type": "solid_color",
+                        "color": [255, 255, 255, 255],
+                        "width": 320,
+                        "height": 180
+                    }
+                },
+                {
+                    "id": 2,
+                    "kind": { "type": "media_output" }
                 }
-            }]
-        }],
-        "audio": { "tracks": [] }
+            ],
+            "connections": [
+                {
+                    "from_node": 1,
+                    "from_port": "output",
+                    "to_node": 2,
+                    "to_port": "source"
+                }
+            ]
+        }
     })
 }

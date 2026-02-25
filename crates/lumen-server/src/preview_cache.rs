@@ -7,15 +7,14 @@ use std::{
 
 use axum::body::Bytes;
 use lru::LruCache;
-use lumen::CompiledTimeline;
 use tokio::sync::Mutex;
 
 const DEFAULT_PLAN_CACHE_ITEMS: usize = 128;
 const DEFAULT_FRAME_CACHE_ITEMS: usize = 1_024;
 const DEFAULT_CACHE_TTL_MS: u64 = 5 * 60 * 1_000;
 
-pub struct CompiledPreview {
-    pub timeline: Arc<CompiledTimeline>,
+pub struct CachedProject {
+    pub payload: Arc<serde_json::Value>,
 }
 
 struct CachedFrame {
@@ -24,7 +23,7 @@ struct CachedFrame {
 }
 
 pub struct PreviewCache {
-    plans: Mutex<LruCache<String, Arc<CompiledPreview>>>,
+    projects: Mutex<LruCache<String, Arc<CachedProject>>>,
     frames: Mutex<LruCache<String, CachedFrame>>,
     ttl_ms: u64,
 }
@@ -43,13 +42,13 @@ impl PreviewCache {
         let frame_capacity = non_zero(frame_capacity.max(1));
 
         Self {
-            plans: Mutex::new(LruCache::new(plan_capacity)),
+            projects: Mutex::new(LruCache::new(plan_capacity)),
             frames: Mutex::new(LruCache::new(frame_capacity)),
             ttl_ms,
         }
     }
 
-    pub fn compiled_key(job_id: &str, version: u64) -> String {
+    pub fn project_key(job_id: &str, version: u64) -> String {
         format!("{job_id}:{version}")
     }
 
@@ -57,12 +56,12 @@ impl PreviewCache {
         format!("{job_id}:{version}:{frame_index}")
     }
 
-    pub async fn get_compiled(&self, key: &str) -> Option<Arc<CompiledPreview>> {
-        self.plans.lock().await.get(key).cloned()
+    pub async fn get_project(&self, key: &str) -> Option<Arc<CachedProject>> {
+        self.projects.lock().await.get(key).cloned()
     }
 
-    pub async fn put_compiled(&self, key: String, compiled: Arc<CompiledPreview>) {
-        self.plans.lock().await.put(key, compiled);
+    pub async fn put_project(&self, key: String, project: Arc<CachedProject>) {
+        self.projects.lock().await.put(key, project);
     }
 
     pub async fn get_frame(&self, key: &str) -> Option<Bytes> {

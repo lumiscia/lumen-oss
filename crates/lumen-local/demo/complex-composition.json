@@ -1,0 +1,143 @@
+{
+	"canvas": {
+		"width": 1280,
+		"height": 720,
+		"background": [10, 12, 18, 255]
+	},
+	"timeline": {
+		"fps": { "num": 30, "den": 1 },
+		"total_frames": 180
+	},
+	"layers": [
+		{
+			"id": "bg_shapes",
+			"z_index": 0,
+			"items": [
+				{
+					"id": "bg_rect",
+					"start_frame": 0,
+					"duration_frames": 180,
+					"opacity": 1,
+					"transform": { "x": 0, "y": 0, "width": 1280, "height": 720, "rotation_degrees": 0 },
+					"content": {
+						"type": "shape",
+						"shape": "rectangle",
+						"fill": [24, 28, 42, 255],
+						"radius": 0
+					}
+				},
+				{
+					"id": "glow_orb_left",
+					"start_frame": 0,
+					"duration_frames": 180,
+					"opacity": 0.7,
+					"transform": { "x": 180, "y": 140, "width": 420, "height": 420, "rotation_degrees": -10 },
+					"content": {
+						"type": "shape",
+						"shape": "ellipse",
+						"fill": [72, 112, 255, 180]
+					}
+				},
+				{
+					"id": "glow_orb_right",
+					"start_frame": 20,
+					"duration_frames": 160,
+					"opacity": 0.68,
+					"transform": { "x": 760, "y": 120, "width": 380, "height": 380, "rotation_degrees": 12 },
+					"content": {
+						"type": "shape",
+						"shape": "ellipse",
+						"fill": [255, 108, 92, 170]
+					}
+				}
+			]
+		},
+		{
+			"id": "cards",
+			"z_index": 2,
+			"items": [
+				{
+					"id": "card_a",
+					"start_frame": 0,
+					"duration_frames": 180,
+					"opacity": 0.9,
+					"transform": { "x": 120, "y": 340, "width": 460, "height": 260, "rotation_degrees": -6 },
+					"content": {
+						"type": "shape",
+						"shape": "rectangle",
+						"fill": [38, 46, 74, 220],
+						"radius": 28
+					}
+				},
+				{
+					"id": "card_b",
+					"start_frame": 10,
+					"duration_frames": 170,
+					"opacity": 0.92,
+					"transform": { "x": 540, "y": 300, "width": 560, "height": 300, "rotation_degrees": 4 },
+					"content": {
+						"type": "shape",
+						"shape": "rectangle",
+						"fill": [24, 32, 56, 230],
+						"radius": 30
+					}
+				}
+			]
+		},
+		{
+			"id": "titles",
+			"z_index": 4,
+			"items": [
+				{
+					"id": "headline",
+					"start_frame": 0,
+					"duration_frames": 180,
+					"opacity": 1,
+					"transform": { "x": 120, "y": 120, "width": 980, "height": 120, "rotation_degrees": 0 },
+					"content": {
+						"type": "text",
+						"text": "Lumen Local Delegate Demo",
+						"font_size": 72,
+						"font_weight": 700,
+						"align": "left",
+						"line_height": 1.05,
+						"color": [248, 250, 255, 255]
+					}
+				},
+				{
+					"id": "subhead",
+					"start_frame": 8,
+					"duration_frames": 172,
+					"opacity": 0.95,
+					"transform": { "x": 124, "y": 218, "width": 860, "height": 80, "rotation_degrees": 0 },
+					"content": {
+						"type": "text",
+						"text": "shape + text rendering, layered timing, no serde in lumen core",
+						"font_size": 30,
+						"font_weight": 500,
+						"align": "left",
+						"line_height": 1.2,
+						"color": [198, 210, 255, 255]
+					}
+				},
+				{
+					"id": "badge",
+					"start_frame": 40,
+					"duration_frames": 140,
+					"opacity": 1,
+					"transform": { "x": 580, "y": 505, "width": 360, "height": 62, "rotation_degrees": 0 },
+					"content": {
+						"type": "text",
+						"text": "FRAME-ACCURATE RENDERING",
+						"font_size": 28,
+						"font_weight": 650,
+						"align": "center",
+						"line_height": 1.0,
+						"color": [255, 230, 186, 255]
+					}
+				}
+			]
+		}
+	],
+	"audio": { "tracks": [] }
+}

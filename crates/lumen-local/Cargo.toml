@@ -7,8 +7,15 @@ edition = "2024"
 name = "lumen-local"
 path = "src/main.rs"
 
+[features]
+default = []
+metal = ["lumen/metal"]
+
+
 [dependencies]
 anyhow = "1.0.101"
-serde_json = "1.0.149"
-lumen = { path = "../lumen" }
-lumen-server = { path = "../lumen-server" }
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
+tempfile = "3.23.0"
+skia-safe = { version = "0.91", features = ["textlayout"] }
+lumen = { path = "../lumen", features = ["ffmpeg", "json", "threading", "embed-roboto"] }
+serde_json = "1.0.145"

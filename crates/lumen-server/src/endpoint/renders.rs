@@ -11,19 +11,17 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
-use lumen::{LayerItem, Project, compile_project};
 use serde::{Deserialize, Serialize};
-use tokio::task::spawn_blocking;
+use serde_json::Value;
 
 use crate::{
     api_error::ApiError,
     app_state::AppState,
     jobs::{ObjectBlob, RenderJobState, RenderJobStatus},
-    preview_cache::{CompiledPreview, PreviewCache},
-    video::FfmpegRenderBackend,
+    preview_cache::{CachedProject, PreviewCache},
+    render::{convert_project_payload, render_project_frame_png},
 };
 
-const MAX_SOURCES: usize = 512;
 const MAX_LAYERS: usize = 256;
 const MAX_TOTAL_CLIPS: usize = 8_192;
 const MAX_TOTAL_FRAMES: u64 = 216_000;
@@ -91,13 +89,13 @@ pub async fn list_renders(
 
 pub async fn create_render(
     State(state): State<AppState>,
-    Json(project): Json<Project>,
+    Json(payload): Json<Value>,
 ) -> Result<(StatusCode, Json<crate::jobs::RenderJobStatus>), ApiError> {
-    let timeline =
-        compile_project(&project).map_err(|err| ApiError::bad_request(err.to_string()))?;
-    validate_project_limits(&project, timeline.total_frames())?;
-
-    let payload = serde_json::to_value(project).map_err(ApiError::internal)?;
+    {
+        let bundle =
+            convert_project_payload(&payload).map_err(|err| ApiError::bad_request(err.message))?;
+        validate_project_limits(&payload, &bundle.project)?;
+    }
 
     let status = state
         .job_store
@@ -282,38 +280,37 @@ pub async fn get_frame(
         return png_response(png);
     }
 
-    let compiled_cache_key = PreviewCache::compiled_key(&job_id, version);
-    let compiled = match state.preview_cache.get_compiled(&compiled_cache_key).await {
-        Some(compiled) => compiled,
+    let project_cache_key = PreviewCache::project_key(&job_id, version);
+    let cached = match state.preview_cache.get_project(&project_cache_key).await {
+        Some(cached) => cached,
         None => {
-            let project: Project =
-                serde_json::from_value(job.payload).map_err(ApiError::internal)?;
-            let timeline =
-                compile_project(&project).map_err(|err| ApiError::bad_request(err.to_string()))?;
-            let compiled = Arc::new(CompiledPreview {
-                timeline: Arc::new(timeline),
+            let cached = Arc::new(CachedProject {
+                payload: Arc::new(job.payload),
             });
             state
                 .preview_cache
-                .put_compiled(compiled_cache_key, compiled.clone())
+                .put_project(project_cache_key, cached.clone())
                 .await;
-            compiled
+            cached
         }
     };
 
-    if frame_index >= compiled.timeline.total_frames() {
-        return Err(ApiError::bad_request("requested frame is out of range"));
-    }
+    let frame_index_u32 = u32::try_from(frame_index)
+        .map_err(|_| ApiError::bad_request("requested frame is out of range"))?;
 
-    let timeline = compiled.timeline.clone();
-    let png = spawn_blocking(move || -> Result<Vec<u8>, ApiError> {
-        let mut backend = FfmpegRenderBackend::new(timeline);
-        backend
-            .render_frame_png(frame_index)
-            .map_err(ApiError::internal)
+    let payload = cached.payload.clone();
+    let png = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        let bundle = convert_project_payload(&payload).map_err(|err| err.message)?;
+
+        if frame_index_u32 >= bundle.project.duration_frames {
+            return Err("requested frame is out of range".to_string());
+        }
+
+        render_project_frame_png(&bundle, frame_index_u32).map_err(|err| err.message)
     })
     .await
-    .map_err(ApiError::internal)??;
+    .map_err(ApiError::internal)?
+    .map_err(|msg| ApiError::bad_request(msg))?;
 
     let png_bytes = axum::body::Bytes::from(png);
     state
@@ -324,74 +321,72 @@ pub async fn get_frame(
     png_response(png_bytes)
 }
 
-fn validate_project_limits(project: &Project, total_frames: u64) -> Result<(), ApiError> {
-    if project.sources.len() > MAX_SOURCES {
-        return Err(ApiError::bad_request(format!(
-            "project has {} sources, limit is {MAX_SOURCES}",
-            project.sources.len()
-        )));
+fn validate_project_limits(
+    payload: &Value,
+    project: &crate::render::ProjectInfo,
+) -> Result<(), ApiError> {
+    if let Some(layers) = payload.get("layers").and_then(Value::as_array) {
+        if layers.len() > MAX_LAYERS {
+            return Err(ApiError::bad_request(format!(
+                "project has {} layers, limit is {MAX_LAYERS}",
+                layers.len()
+            )));
+        }
+
+        let total_clips: usize = layers
+            .iter()
+            .map(|layer| {
+                layer
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .map(|items| items.iter().map(count_clip_nodes).sum::<usize>())
+                    .unwrap_or(0)
+            })
+            .sum();
+        if total_clips > MAX_TOTAL_CLIPS {
+            return Err(ApiError::bad_request(format!(
+                "project has {total_clips} clips, limit is {MAX_TOTAL_CLIPS}"
+            )));
+        }
     }
 
-    if project.layers.len() > MAX_LAYERS {
-        return Err(ApiError::bad_request(format!(
-            "project has {} layers, limit is {MAX_LAYERS}",
-            project.layers.len()
-        )));
-    }
-
-    let total_clips: usize = project
-        .layers
-        .iter()
-        .map(|layer| {
-            layer
-                .items
-                .iter()
-                .map(count_layer_item_nodes)
-                .sum::<usize>()
-        })
-        .sum();
-    if total_clips > MAX_TOTAL_CLIPS {
-        return Err(ApiError::bad_request(format!(
-            "project has {total_clips} clips, limit is {MAX_TOTAL_CLIPS}"
-        )));
-    }
-
+    let total_frames = u64::from(project.duration_frames);
     if total_frames > MAX_TOTAL_FRAMES {
         return Err(ApiError::bad_request(format!(
             "timeline resolves to {total_frames} frames, limit is {MAX_TOTAL_FRAMES}"
         )));
     }
 
-    if project.canvas.width > MAX_CANVAS_DIMENSION || project.canvas.height > MAX_CANVAS_DIMENSION {
+    if project.width > MAX_CANVAS_DIMENSION || project.height > MAX_CANVAS_DIMENSION {
         return Err(ApiError::bad_request(format!(
             "canvas dimensions {}x{} exceed limit {MAX_CANVAS_DIMENSION}",
-            project.canvas.width, project.canvas.height
+            project.width, project.height
         )));
     }
 
     Ok(())
 }
 
-fn count_layer_item_nodes(item: &LayerItem) -> usize {
-    match item {
-        LayerItem::Clip(clip) => {
-            let mask_count = clip
-                .mask
-                .as_deref()
-                .map(count_layer_item_nodes)
-                .unwrap_or(0);
-            1 + mask_count
-        }
-        LayerItem::Group(group) => {
-            let child_count: usize = group.items.iter().map(count_layer_item_nodes).sum();
-            let mask_count = group
-                .mask
-                .as_deref()
-                .map(count_layer_item_nodes)
-                .unwrap_or(0);
-            1 + child_count + mask_count
-        }
+fn count_clip_nodes(item: &Value) -> usize {
+    let Some(obj) = item.as_object() else {
+        return 0;
+    };
+
+    let kind = obj
+        .get("kind")
+        .or_else(|| obj.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    if kind == "group" {
+        return obj
+            .get("items")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().map(count_clip_nodes).sum())
+            .unwrap_or(0);
     }
+
+    usize::from(kind == "clip")
 }
 
 fn to_progress_event(status: &RenderJobStatus) -> RenderProgressEvent {

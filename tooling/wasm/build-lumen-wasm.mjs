@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -15,24 +15,37 @@ if (!existsSync(staticLib)) {
 	process.exit(1)
 }
 
+if (!process.env.EMSDK) {
+	console.warn(
+		'[lumen-wasm] EMSDK is not set; ensure your emscripten toolchain is discoverable (asdf-managed emsdk is also supported).',
+	)
+}
+
 const exportedFunctions = [
 	'_malloc',
 	'_free',
-	'_lumen_renderer_create',
-	'_lumen_renderer_destroy',
-	'_lumen_renderer_width',
-	'_lumen_renderer_height',
-	'_lumen_renderer_render_frame',
-	'_lumen_renderer_last_frame_len',
-	'_lumen_renderer_frame_requirements',
-	'_lumen_renderer_frame_requirements_len',
-	'_lumen_renderer_last_error_ptr',
-	'_lumen_renderer_last_error_len',
-	'_lumen_media_create',
-	'_lumen_media_destroy',
-	'_lumen_media_clear',
-	'_lumen_media_set_image',
-	'_lumen_media_set_video_frame',
+	'_lumen_wasm_version',
+	'_lumen_wasm_last_status_ptr',
+	'_lumen_wasm_last_status_len',
+	'_lumen_wasm_load_project',
+	'_lumen_wasm_unload_project',
+	'_lumen_wasm_project_width',
+	'_lumen_wasm_project_height',
+	'_lumen_wasm_request_frame',
+	'_lumen_wasm_request_frame_len',
+	'_lumen_wasm_request_frame_requirements',
+	'_lumen_wasm_request_frame_requirements_len',
+	'_lumen_wasm_last_error_ptr',
+	'_lumen_wasm_last_error_len',
+	'_lumen_wasm_media_store_create',
+	'_lumen_wasm_media_store_destroy',
+	'_lumen_wasm_media_store_clear',
+	'_lumen_wasm_media_store_clear_videos',
+	'_lumen_wasm_media_store_has_image',
+	'_lumen_wasm_media_store_set_image',
+	'_lumen_wasm_media_store_set_video_frame',
+	'_lumen_wasm_media_store_set_image_owned',
+	'_lumen_wasm_media_store_set_video_frame_owned',
 ]
 
 const exportArg = `EXPORTED_FUNCTIONS=[${exportedFunctions.map((fn) => `'${fn}'`).join(',')}]`
@@ -47,7 +60,11 @@ execFileSync(
 		'-s',
 		exportArg,
 		'-s',
-		"EXPORTED_RUNTIME_METHODS=['HEAPU8']",
+		"EXPORTED_RUNTIME_METHODS=['HEAPU8','GL']",
+		'-s',
+		'ERROR_ON_UNDEFINED_SYMBOLS=0',
+		'-s',
+		'MAX_WEBGL_VERSION=2',
 		'-s',
 		'MODULARIZE=1',
 		'-s',

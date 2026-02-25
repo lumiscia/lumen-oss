@@ -78,7 +78,7 @@ No API compatibility with the old track schema is preserved.
 
 ## Crates
 - `lumen-server`: FFmpeg backend + job orchestration.
-- `@lumiscia/canvas-renderer`: CanvasKit preview renderer aligned with Skia semantics.
+- `@lumiscia/lumen/canvas`: browser preview renderer aligned with Skia semantics.
 
 ## Performance Principles
 - Reuse GPU resources per job.

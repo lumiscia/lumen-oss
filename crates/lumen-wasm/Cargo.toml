@@ -7,6 +7,12 @@ build = "build.rs"
 [lib]
 crate-type = ["staticlib"]
 
+[features]
+default = ["json", "embed-roboto"]
+json = ["lumen/json"]
+webgl = ["lumen/webgl"]
+embed-roboto = ["lumen/embed-roboto"]
+
 [dependencies]
 lumen = { path = "../lumen" }
 serde = { version = "1.0.228", features = ["derive"] }

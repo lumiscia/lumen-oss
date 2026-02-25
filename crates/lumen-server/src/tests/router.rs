@@ -65,6 +65,34 @@ async fn authorized_post_creates_queued_job() {
 }
 
 #[tokio::test]
+async fn authorized_post_accepts_url_sources() {
+    let app = endpoint::build_router(AppState::with_defaults("secret".to_string()));
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/renders")
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(url_source_project_json().to_string()))
+        .expect("request");
+
+    let response = app.oneshot(request).await.expect("response");
+    let status = response.status();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "unexpected response body: {}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+#[tokio::test]
 async fn lifecycle_completes_and_returns_artifact_and_frame() {
     let state = AppState::with_defaults("secret".to_string());
     worker::spawn_render_worker(state.clone());
@@ -296,37 +324,83 @@ async fn render_events_endpoint_returns_sse_stream() {
     );
 }
 
-fn valid_project_json() -> serde_json::Value {
+fn url_source_project_json() -> serde_json::Value {
     json!({
-        "canvas": {
+        "schema_revision": "lumen_graph_v1",
+        "timeline": {
+            "fps": 30.0,
+            "duration_frames": 2
+        },
+        "render_settings": {
             "width": 320,
             "height": 180,
-            "background": [0, 0, 0, 255]
+            "background_color": [0, 0, 0, 255]
         },
-        "timeline": {
-            "fps": { "num": 30, "den": 1 },
-            "total_frames": 2
-        },
-        "sources": [],
-        "layers": [{
-            "id": "layer_text",
-            "z_index": 0,
-            "items": [{
-                "kind": "clip",
-                "id": "clip_text_1",
-                "start_frame": 0,
-                "duration_frames": 2,
-                "opacity": 1.0,
-                "transform": { "x": 20.0, "y": 20.0, "width": 280.0, "height": 80.0, "rotation_degrees": 0.0 },
-                "content": {
-                    "type": "text",
-                    "text": "Hello",
-                    "font_size": 24.0,
-                    "color": [255, 255, 255, 255],
-                    "align": "center"
+        "graph": {
+            "nodes": [
+                {
+                    "id": 1,
+                    "kind": {
+                        "type": "media_in",
+                        "kind": {
+                            "media_type": "image",
+                            "source": "https://cdn.example.com/media/background.png"
+                        }
+                    }
+                },
+                {
+                    "id": 2,
+                    "kind": { "type": "media_output" }
                 }
-            }]
-        }],
-        "audio": { "tracks": [] }
+            ],
+            "connections": [
+                {
+                    "from_node": 1,
+                    "from_port": "output",
+                    "to_node": 2,
+                    "to_port": "source"
+                }
+            ]
+        }
+    })
+}
+
+fn valid_project_json() -> serde_json::Value {
+    json!({
+        "schema_revision": "lumen_graph_v1",
+        "timeline": {
+            "fps": 30.0,
+            "duration_frames": 2
+        },
+        "render_settings": {
+            "width": 320,
+            "height": 180,
+            "background_color": [0, 0, 0, 255]
+        },
+        "graph": {
+            "nodes": [
+                {
+                    "id": 1,
+                    "kind": {
+                        "type": "solid_color",
+                        "color": [255, 255, 255, 255],
+                        "width": 320,
+                        "height": 180
+                    }
+                },
+                {
+                    "id": 2,
+                    "kind": { "type": "media_output" }
+                }
+            ],
+            "connections": [
+                {
+                    "from_node": 1,
+                    "from_port": "output",
+                    "to_node": 2,
+                    "to_port": "source"
+                }
+            ]
+        }
     })
 }

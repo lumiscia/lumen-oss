@@ -1,0 +1,168 @@
+use std::sync::Arc;
+
+use skia_safe::Paint;
+
+use crate::{
+    error::LumenError,
+    node::{
+        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        pixel_utils::{make_skia_image, render_with_skia},
+        shape_renderer::{ShapeRenderer, rasterize_vector},
+    },
+    raster::{AlphaMode, BitmapFrame, RasterFrame},
+    render::RenderContext,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MaskKind {
+    Alpha,
+    Luma,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Boolean {
+    pub mask_kind: MaskKind,
+    pub invert: bool,
+}
+
+impl Default for Boolean {
+    fn default() -> Self {
+        Self {
+            mask_kind: MaskKind::Alpha,
+            invert: false,
+        }
+    }
+}
+
+const INPUT_PORT_DEFS: &[InputPortDef] = &[
+    InputPortDef {
+        name: "source",
+        kind: PortKind::RasterFrame,
+        optional: false,
+    },
+    InputPortDef {
+        name: "mask",
+        kind: PortKind::RasterFrame,
+        optional: true,
+    },
+    InputPortDef {
+        name: "vector",
+        kind: PortKind::Vector,
+        optional: true,
+    },
+];
+
+const OUTPUT_PORT_DEFS: &[OutputPortDef] = &[OutputPortDef {
+    name: "output",
+    kind: PortKind::RasterFrame,
+}];
+
+impl NodeEval for Boolean {
+    fn input_port_defs(&self) -> &'static [InputPortDef] {
+        INPUT_PORT_DEFS
+    }
+
+    fn output_port_defs(&self) -> &'static [OutputPortDef] {
+        OUTPUT_PORT_DEFS
+    }
+
+    fn evaluate(
+        &self,
+        inputs: &NodeInputs,
+        ctx: &mut RenderContext,
+    ) -> Result<PortValue, LumenError> {
+        let source = inputs.get_raster("source")?;
+        let (source_bytes, source_w, source_h) = source.clone().into_parts();
+        let source_alpha = source.alpha_mode();
+        let source_format = source.format_rect();
+        let source_data = source.data_rect();
+        let mask = match inputs.get_raster_optional("mask")? {
+            Some(frame) => Some(frame.clone().into_parts()),
+            None => inputs.get_vector_optional("vector")?.map(|vector| {
+                rasterize_vector(vector, &ShapeRenderer::default(), ctx).into_parts()
+            }),
+        };
+
+        let Some((mask_bytes, mask_w, mask_h)) = mask else {
+            return Ok(PortValue::RasterFrame(source.clone()));
+        };
+
+        let out_w = source_w;
+        let out_h = source_h;
+        if out_w == 0 || out_h == 0 {
+            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                BitmapFrame::with_domain(Arc::new(Vec::new()), 0, 0, source_format, source_data)
+                    .with_alpha_mode(source_alpha),
+            )));
+        }
+
+        let source_image = make_skia_image(
+            &source_bytes,
+            source_w,
+            source_h,
+            (source_w as usize) * 4,
+            source_alpha,
+        );
+        let mask_image = make_skia_image(
+            &mask_bytes,
+            mask_w,
+            mask_h,
+            (mask_w as usize) * 4,
+            AlphaMode::Premultiplied,
+        );
+
+        let (source_image, mask_image) = match (source_image, mask_image) {
+            (Some(s), Some(m)) => (s, m),
+            _ => {
+                return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                    BitmapFrame::with_domain(
+                        Arc::new(vec![0u8; (out_w as usize) * (out_h as usize) * 4]),
+                        out_w,
+                        out_h,
+                        source_format,
+                        source_data,
+                    )
+                    .with_alpha_mode(source_alpha),
+                )));
+            }
+        };
+
+        let mask_kind = self.mask_kind;
+        let invert = self.invert;
+
+        let output = render_with_skia(out_w, out_h, Some(ctx), |canvas| {
+            canvas.draw_image(&source_image, (0.0, 0.0), None);
+
+            // For luma masking, we need to convert the mask to a grayscale alpha.
+            // For alpha masking, we use the mask's alpha channel directly.
+            // In both cases, DstIn keeps destination where mask is opaque,
+            // DstOut keeps destination where mask is transparent.
+            let blend_mode = if invert {
+                skia_safe::BlendMode::DstOut
+            } else {
+                skia_safe::BlendMode::DstIn
+            };
+
+            if mask_kind == MaskKind::Luma {
+                // For luma masking, draw a luminance-based alpha mask.
+                // We create a layer, draw the mask, then apply a color filter
+                // that converts RGB to alpha based on luminance.
+                let luma_cf = skia_safe::ColorFilter::luma();
+                let mut mask_paint = Paint::default();
+                mask_paint.set_blend_mode(blend_mode);
+                mask_paint.set_color_filter(luma_cf);
+                canvas.draw_image(&mask_image, (0.0, 0.0), Some(&mask_paint));
+            } else {
+                let mut mask_paint = Paint::default();
+                mask_paint.set_blend_mode(blend_mode);
+                canvas.draw_image(&mask_image, (0.0, 0.0), Some(&mask_paint));
+            }
+        });
+
+        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            BitmapFrame::with_domain(Arc::new(output), out_w, out_h, source_format, source_data)
+                .with_alpha_mode(source_alpha),
+        )))
+    }
+}

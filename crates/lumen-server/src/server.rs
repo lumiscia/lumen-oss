@@ -1,17 +1,14 @@
-use std::{env, net::Ipv4Addr};
+use std::env;
 
 use crate::{app_state::AppState, endpoint, worker};
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use tokio::net::TcpListener;
 use tracing::info;
 
-pub async fn serve() -> anyhow::Result<()> {
-    let host: Ipv4Addr = match env::var("HOST") {
-        Ok(host) => match host.parse() {
-            Ok(host) => host,
-            Err(err) => return Err(err.into()),
-        },
-        Err(env::VarError::NotPresent) => Ipv4Addr::new(0, 0, 0, 0),
+pub async fn run_server() -> anyhow::Result<()> {
+    let host = match env::var("HOST") {
+        Ok(host) => host,
+        Err(env::VarError::NotPresent) => "0.0.0.0".to_string(),
         Err(err) => return Err(err.into()),
     };
 
@@ -32,9 +29,14 @@ pub async fn serve() -> anyhow::Result<()> {
         Err(err) => return Err(err.into()),
     };
 
-    let listener = TcpListener::bind((host, port)).await?;
+    let listener = TcpListener::bind((host.as_str(), port))
+        .await
+        .with_context(|| format!("failed to bind server listener on {host}:{port}"))?;
+    let addr = listener
+        .local_addr()
+        .context("failed to read local server address")?;
 
-    info!("Started server at {}:{}", host, port);
+    info!(%addr, "started lumen-server");
 
     let state = AppState::with_defaults(secret);
     worker::spawn_render_worker(state.clone());
