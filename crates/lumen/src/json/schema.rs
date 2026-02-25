@@ -58,6 +58,10 @@ pub struct JsonNode {
 pub enum JsonNodeKind {
     Shape {
         geometry: JsonShapeGeometry,
+        #[serde(default)]
+        color: Option<[u8; 4]>,
+        #[serde(default)]
+        stroke: Option<JsonVectorStroke>,
     },
     ShapeRenderer {
         #[serde(default = "default_color")]
@@ -162,9 +166,21 @@ pub enum JsonNodeKind {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JsonShapeGeometry {
-    Rectangle { width: u32, height: u32 },
+    Rectangle {
+        width: u32,
+        height: u32,
+        #[serde(default)]
+        border_radius: f32,
+    },
     Ellipse { width: u32, height: u32 },
     Polygon { points: Vec<[f32; 2]> },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonVectorStroke {
+    pub color: [u8; 4],
+    pub width: f32,
 }
 
 #[derive(Debug, Deserialize)]

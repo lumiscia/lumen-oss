@@ -26,6 +26,7 @@ use crate::{
         },
         transform::Transform,
         transform::TransformSampling,
+        VectorStroke, VectorStyle,
         {PropertyValue::Bool, PropertyValue::Color as PropertyColor, PropertyValue::Float},
     },
 };
@@ -35,7 +36,7 @@ use super::schema::{
     JsonInterpolationMode, JsonKeyframeTrack, JsonLoopMode, JsonMaskKind, JsonMediaInKind,
     JsonNodeKind, JsonPort, JsonResizeMode, JsonResizeSampling, JsonShapeGeometry,
     JsonTextAlignmentHorizontal, JsonTextAlignmentVertical, JsonTextFontStyle,
-    JsonTransformSampling,
+    JsonTransformSampling, JsonVectorStroke,
 };
 
 pub fn convert_json_composition(payload: JsonComposition) -> Result<Composition, Vec<LumenError>> {
@@ -152,11 +153,21 @@ fn convert_output_port(port: JsonPort) -> OutputPort {
 
 fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
     Ok(match kind {
-        JsonNodeKind::Shape { geometry } => NodeKind::Shape(Shape {
+        JsonNodeKind::Shape {
+            geometry,
+            color,
+            stroke,
+        } => NodeKind::Shape(Shape {
             geometry: match geometry {
-                JsonShapeGeometry::Rectangle { width, height } => {
-                    crate::node::ShapeGeometry::Rectangle { width, height }
-                }
+                JsonShapeGeometry::Rectangle {
+                    width,
+                    height,
+                    border_radius,
+                } => crate::node::ShapeGeometry::Rectangle {
+                    width,
+                    height,
+                    border_radius,
+                },
                 JsonShapeGeometry::Ellipse { width, height } => {
                     crate::node::ShapeGeometry::Ellipse { width, height }
                 }
@@ -166,6 +177,15 @@ fn convert_node_kind(kind: JsonNodeKind) -> Result<NodeKind, LumenError> {
                         .map(|point| (point[0], point[1]))
                         .collect(),
                 },
+            },
+            style: VectorStyle {
+                color,
+                stroke: stroke.map(
+                    |JsonVectorStroke {
+                         color,
+                         width,
+                     }| VectorStroke { color, width },
+                ),
             },
         }),
         JsonNodeKind::ShapeRenderer {

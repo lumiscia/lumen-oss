@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use skia_safe::{Color, Paint, PaintStyle, Path, Rect};
+use skia_safe::{Color, Paint, PaintStyle, Path, RRect, Rect};
 
 use crate::{
     error::LumenError,
     node::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue, ShapeGeometry,
-        VectorData,
+        VectorData, VectorStyle,
         pixel_utils::{read_surface_rgba, to_skia_color},
     },
     raster::RasterFrame,
@@ -56,19 +56,38 @@ impl NodeEval for ShapeRenderer {
         ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
         let vector = inputs.get_vector("vector")?;
-        let raster = match vector {
-            VectorData::Shape(geometry) => rasterize_geometry(geometry, self, ctx),
-        };
+        let raster = rasterize_vector(vector, self, ctx);
         Ok(PortValue::RasterFrame(raster))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedVectorStyle {
+    fill_color: [u8; 4],
+    fill_enabled: bool,
+    stroke_color: [u8; 4],
+    stroke_width: f32,
+    stroke_enabled: bool,
+}
+
+pub(crate) fn rasterize_vector(
+    vector: &VectorData,
+    renderer: &ShapeRenderer,
+    ctx: &mut RenderContext,
+) -> RasterFrame {
+    match vector {
+        VectorData::Shape { geometry, style } => rasterize_geometry(geometry, style, renderer, ctx),
     }
 }
 
 fn rasterize_geometry(
     geometry: &ShapeGeometry,
+    style: &VectorStyle,
     renderer: &ShapeRenderer,
     ctx: &mut RenderContext,
 ) -> RasterFrame {
     let (path, width, height) = build_path(geometry);
+    let style = resolve_style(style, renderer);
     let width = width.max(1);
     let height = height.max(1);
 
@@ -79,7 +98,7 @@ fn rasterize_geometry(
             canvas.restore_to_count(1);
             canvas.reset_matrix();
             canvas.clear(Color::TRANSPARENT);
-            draw_shape(canvas, &path, renderer);
+            draw_shape(canvas, &path, style);
             let bytes = read_surface_rgba(surface, width, height, Some(ctx));
             return RasterFrame::bitmap(Arc::new(bytes), width, height);
         }
@@ -92,7 +111,7 @@ fn rasterize_geometry(
     };
 
     surface.canvas().clear(Color::TRANSPARENT);
-    draw_shape(surface.canvas(), &path, renderer);
+    draw_shape(surface.canvas(), &path, style);
 
     RasterFrame::bitmap(
         Arc::new(read_surface_rgba(&mut surface, width, height, Some(ctx))),
@@ -101,32 +120,68 @@ fn rasterize_geometry(
     )
 }
 
-fn draw_shape(canvas: &skia_safe::Canvas, path: &Path, renderer: &ShapeRenderer) {
-    if renderer.fill_enabled {
+fn resolve_style(style: &VectorStyle, renderer: &ShapeRenderer) -> ResolvedVectorStyle {
+    let fill_color = style.color.unwrap_or(renderer.fill_color);
+    let fill_enabled = if style.color.is_some() {
+        true
+    } else {
+        renderer.fill_enabled
+    };
+
+    let (stroke_color, stroke_width, stroke_enabled) = match style.stroke {
+        Some(stroke) => (stroke.color, stroke.width.max(0.0), stroke.width > 0.0),
+        None => (
+            renderer.stroke_color,
+            renderer.stroke_width.max(0.0),
+            renderer.stroke_enabled && renderer.stroke_width > 0.0,
+        ),
+    };
+
+    ResolvedVectorStyle {
+        fill_color,
+        fill_enabled,
+        stroke_color,
+        stroke_width,
+        stroke_enabled,
+    }
+}
+
+fn draw_shape(canvas: &skia_safe::Canvas, path: &Path, style: ResolvedVectorStyle) {
+    if style.fill_enabled {
         let mut fill = Paint::default();
         fill.set_anti_alias(true);
         fill.set_style(PaintStyle::Fill);
-        fill.set_color(to_skia_color(renderer.fill_color));
+        fill.set_color(to_skia_color(style.fill_color));
         canvas.draw_path(path, &fill);
     }
 
-    if renderer.stroke_enabled && renderer.stroke_width > 0.0 {
+    if style.stroke_enabled && style.stroke_width > 0.0 {
         let mut stroke = Paint::default();
         stroke.set_anti_alias(true);
         stroke.set_style(PaintStyle::Stroke);
-        stroke.set_stroke_width(renderer.stroke_width);
-        stroke.set_color(to_skia_color(renderer.stroke_color));
+        stroke.set_stroke_width(style.stroke_width);
+        stroke.set_color(to_skia_color(style.stroke_color));
         canvas.draw_path(path, &stroke);
     }
 }
 
 fn build_path(geometry: &ShapeGeometry) -> (Path, u32, u32) {
     match geometry {
-        ShapeGeometry::Rectangle { width, height } => {
+        ShapeGeometry::Rectangle {
+            width,
+            height,
+            border_radius,
+        } => {
             let width = (*width).max(1);
             let height = (*height).max(1);
+            let border_radius = (*border_radius).max(0.0).min(width.min(height) as f32 * 0.5);
+            let rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
             (
-                Path::rect(Rect::from_xywh(0.0, 0.0, width as f32, height as f32), None),
+                if border_radius > 0.0 {
+                    Path::rrect(RRect::new_rect_xy(rect, border_radius, border_radius), None)
+                } else {
+                    Path::rect(rect, None)
+                },
                 width,
                 height,
             )

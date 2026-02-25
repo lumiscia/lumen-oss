@@ -2,7 +2,7 @@ use crate::{
     error::LumenError,
     node::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue, ShapeGeometry,
-        VectorData,
+        VectorData, VectorStroke, VectorStyle,
     },
     render::RenderContext,
 };
@@ -10,6 +10,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shape {
     pub geometry: ShapeGeometry,
+    pub style: VectorStyle,
 }
 
 impl Default for Shape {
@@ -18,7 +19,9 @@ impl Default for Shape {
             geometry: ShapeGeometry::Rectangle {
                 width: 1,
                 height: 1,
+                border_radius: 0.0,
             },
+            style: VectorStyle::default(),
         }
     }
 }
@@ -40,6 +43,21 @@ impl NodeEval for Shape {
         _inputs: &NodeInputs,
         _ctx: &mut RenderContext,
     ) -> Result<PortValue, LumenError> {
-        Ok(PortValue::Vector(VectorData::Shape(self.geometry.clone())))
+        Ok(PortValue::Vector(VectorData::Shape {
+            geometry: self.geometry.clone(),
+            style: self.style.clone(),
+        }))
+    }
+}
+
+impl Shape {
+    pub fn with_color(mut self, color: [u8; 4]) -> Self {
+        self.style.color = Some(color);
+        self
+    }
+
+    pub fn with_stroke(mut self, stroke: VectorStroke) -> Self {
+        self.style.stroke = Some(stroke);
+        self
     }
 }

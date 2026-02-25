@@ -72,14 +72,33 @@ pub enum PortValue {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShapeGeometry {
-    Rectangle { width: u32, height: u32 },
+    Rectangle {
+        width: u32,
+        height: u32,
+        border_radius: f32,
+    },
     Ellipse { width: u32, height: u32 },
     Polygon { points: Vec<(f32, f32)> },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VectorStroke {
+    pub color: [u8; 4],
+    pub width: f32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VectorStyle {
+    pub color: Option<[u8; 4]>,
+    pub stroke: Option<VectorStroke>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum VectorData {
-    Shape(ShapeGeometry),
+    Shape {
+        geometry: ShapeGeometry,
+        style: VectorStyle,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +179,20 @@ impl NodeInputs {
                 property_path: name.to_string(),
             }
             .into()),
+        }
+    }
+
+    pub fn get_vector_optional(&self, name: &str) -> Result<Option<&VectorData>, LumenError> {
+        match self.ports.get(name) {
+            Some(PortValue::Vector(vector)) => Ok(Some(vector)),
+            Some(_) => Err(PropertyError::InvalidType {
+                node_id: NodeId(0),
+                property_path: name.to_string(),
+                expected: "Vector",
+                actual: "non-vector",
+            }
+            .into()),
+            None => Ok(None),
         }
     }
 }
@@ -272,25 +305,42 @@ impl NodeKind {
         // Discriminant tag
         std::mem::discriminant(self).hash(hasher);
         match self {
-            Self::Shape(s) => match &s.geometry {
-                ShapeGeometry::Rectangle { width, height } => {
-                    0u8.hash(hasher);
-                    width.hash(hasher);
-                    height.hash(hasher);
-                }
-                ShapeGeometry::Ellipse { width, height } => {
-                    1u8.hash(hasher);
-                    width.hash(hasher);
-                    height.hash(hasher);
-                }
-                ShapeGeometry::Polygon { points } => {
-                    2u8.hash(hasher);
-                    for (x, y) in points {
-                        x.to_bits().hash(hasher);
-                        y.to_bits().hash(hasher);
+            Self::Shape(s) => {
+                match &s.geometry {
+                    ShapeGeometry::Rectangle {
+                        width,
+                        height,
+                        border_radius,
+                    } => {
+                        0u8.hash(hasher);
+                        width.hash(hasher);
+                        height.hash(hasher);
+                        border_radius.to_bits().hash(hasher);
+                    }
+                    ShapeGeometry::Ellipse { width, height } => {
+                        1u8.hash(hasher);
+                        width.hash(hasher);
+                        height.hash(hasher);
+                    }
+                    ShapeGeometry::Polygon { points } => {
+                        2u8.hash(hasher);
+                        for (x, y) in points {
+                            x.to_bits().hash(hasher);
+                            y.to_bits().hash(hasher);
+                        }
                     }
                 }
-            },
+
+                s.style.color.hash(hasher);
+                match s.style.stroke {
+                    Some(stroke) => {
+                        true.hash(hasher);
+                        stroke.color.hash(hasher);
+                        stroke.width.to_bits().hash(hasher);
+                    }
+                    None => false.hash(hasher),
+                }
+            }
             Self::ShapeRenderer(r) => {
                 r.fill_color.hash(hasher);
                 r.stroke_color.hash(hasher);

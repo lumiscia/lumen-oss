@@ -7,6 +7,7 @@ use crate::{
     node::{
         InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
         pixel_utils::{make_skia_image, render_with_skia},
+        shape_renderer::{ShapeRenderer, rasterize_vector},
     },
     raster::{AlphaMode, BitmapFrame, RasterFrame},
     render::RenderContext,
@@ -78,7 +79,9 @@ impl NodeEval for Boolean {
         let source_data = source.data_rect();
         let mask = match inputs.get_raster_optional("mask")? {
             Some(frame) => Some(frame.clone().into_parts()),
-            None => None,
+            None => inputs.get_vector_optional("vector")?.map(|vector| {
+                rasterize_vector(vector, &ShapeRenderer::default(), ctx).into_parts()
+            }),
         };
 
         let Some((mask_bytes, mask_w, mask_h)) = mask else {
