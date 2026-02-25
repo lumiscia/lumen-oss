@@ -171,6 +171,7 @@ pub enum JsonNodeKind {
         #[serde(default = "default_one")]
         opacity: f32,
     },
+    #[serde(rename = "raster_multimerge")]
     RasterMultiMerge {
         #[serde(default = "default_blend_mode")]
         blend_mode: JsonBlendMode,
@@ -180,6 +181,7 @@ pub enum JsonNodeKind {
         input_count: u16,
     },
     VectorMerge {},
+    #[serde(rename = "vector_multimerge")]
     VectorMultiMerge {
         #[serde(default = "default_input_count")]
         input_count: u16,
