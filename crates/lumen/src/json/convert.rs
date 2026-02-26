@@ -46,6 +46,13 @@ pub fn convert_json_composition(payload: JsonComposition) -> Result<Composition,
     let mut errors = Vec::new();
     let mut graph = Graph::new();
     let mut seen_ids = HashSet::new();
+    let mut connections = Vec::with_capacity(
+        payload
+            .graph
+            .0
+            .iter()
+            .fold(0, |cur, node| node.inputs.len() + cur),
+    );
 
     for json_node in payload.graph.0 {
         if json_node.id == 0 || !seen_ids.insert(json_node.id) {
@@ -71,14 +78,21 @@ pub fn convert_json_composition(payload: JsonComposition) -> Result<Composition,
 
         graph.add_node(Node::new(NodeId(json_node.id), node_kind));
 
-        for (from_port, (to_node, to_port)) in json_node.inputs {
-            graph.connections.push(Connection {
-                from_node: NodeId(json_node.id),
+        for (to_port, (from_node, from_port)) in json_node.inputs {
+            connections.push(Connection {
+                from_node: NodeId(from_node),
                 from_port: convert_output_port(from_port),
-                to_node: NodeId(to_node),
+                to_node: NodeId(json_node.id),
                 to_port: convert_input_port(to_port),
             });
         }
+    }
+
+    for ele in connections {
+        match graph.connect(ele) {
+            Ok(_) => {}
+            Err(err) => errors.push(err),
+        };
     }
 
     if !errors.is_empty() {
