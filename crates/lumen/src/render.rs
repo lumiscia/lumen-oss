@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::{
+    animation::{DynamicBindingSource, DynamicKeyValue, PropertyTarget},
     cache::{AssetCache, CachedBitmap, NodeOutputCache},
     capability::RuntimeCapabilityProfile,
     composition::{
@@ -189,6 +190,8 @@ impl RenderContext {
             return;
         }
         self.animated_nodes.clear();
+        self.animated_nodes
+            .extend(composition.dynamic_animated_node_ids());
         self.animated_nodes
             .extend(composition.tracks.iter().map(|track| track.node_id));
         self.animated_nodes
@@ -496,14 +499,33 @@ impl Composition {
     fn memo_is_eligible(&self, node_id: NodeId, allow_expressions: bool) -> bool {
         let upstream = self.upstream_nodes(node_id);
         if self
-            .tracks
-            .iter()
-            .any(|track| upstream.contains(&track.node_id))
+            .dynamic_bindings
+            .keys()
+            .any(|target| match target {
+                PropertyTarget::NodeProperty { node_id, .. } => upstream.contains(node_id),
+                PropertyTarget::VirtualProperty { .. } => true,
+            })
+            || self
+                .tracks
+                .iter()
+                .any(|track| upstream.contains(&track.node_id))
         {
             return false;
         }
 
         if !allow_expressions {
+            for (target, binding) in &self.dynamic_bindings {
+                let applies_to_upstream = match target {
+                    PropertyTarget::NodeProperty { node_id, .. } => upstream.contains(node_id),
+                    PropertyTarget::VirtualProperty { .. } => true,
+                };
+                if !applies_to_upstream {
+                    continue;
+                }
+                if dynamic_binding_depends_on_frame(binding) {
+                    return false;
+                }
+            }
             for upstream_node_id in &upstream {
                 if let Some(expressions) = self.expressions.get(upstream_node_id)
                     && expressions
@@ -544,6 +566,24 @@ impl Composition {
             if let Some(node) = self.graph.nodes.get(upstream_node_id) {
                 node.kind.kind_name().hash(&mut hasher);
                 node.kind.hash_content(&mut hasher);
+            }
+            let mut dynamic_entries: Vec<_> = self
+                .dynamic_bindings
+                .iter()
+                .filter(|(target, _)| match target {
+                    PropertyTarget::NodeProperty { node_id, .. } => node_id == upstream_node_id,
+                    PropertyTarget::VirtualProperty { .. } => false,
+                })
+                .collect();
+            dynamic_entries.sort_by(|(left_target, _), (right_target, _)| {
+                format!("{left_target:?}").cmp(&format!("{right_target:?}"))
+            });
+            for (target, binding) in dynamic_entries {
+                format!("{target:?}").hash(&mut hasher);
+                format!("{:?}", binding.source).hash(&mut hasher);
+                if dynamic_binding_depends_on_frame(binding) {
+                    frame.hash(&mut hasher);
+                }
             }
             if let Some(expressions) = self.expressions.get(upstream_node_id) {
                 let mut expression_entries: Vec<_> = expressions.iter().collect();
@@ -639,6 +679,17 @@ impl Composition {
     }
 }
 
+fn dynamic_binding_depends_on_frame(binding: &crate::animation::DynamicBinding) -> bool {
+    match &binding.source {
+        DynamicBindingSource::Literal(_) => false,
+        DynamicBindingSource::Expression(expression) => expression_depends_on_frame(&expression.ast),
+        DynamicBindingSource::Animation(track) => track.keys.iter().any(|key| match &key.value {
+            DynamicKeyValue::Literal(_) => false,
+            DynamicKeyValue::Expression(expression) => expression_depends_on_frame(&expression.ast),
+        }),
+    }
+}
+
 fn input_port_matches(port: &InputPort, expected_name: &str) -> bool {
     match port {
         InputPort::Named(name) => name == expected_name,
@@ -655,7 +706,11 @@ fn input_port_matches(port: &InputPort, expected_name: &str) -> bool {
 fn expression_depends_on_frame(ast: &ExprNode) -> bool {
     match ast {
         ExprNode::Global(GlobalVar::Frame | GlobalVar::Time) => true,
-        ExprNode::Literal(_) | ExprNode::Global(_) | ExprNode::NodeProperty(_, _) => false,
+        ExprNode::Literal(_)
+        | ExprNode::Global(_)
+        | ExprNode::SymbolicPath(_)
+        | ExprNode::NodeProperty(_, _)
+        | ExprNode::VirtualProperty(_) => false,
         ExprNode::Unary(_, inner) => expression_depends_on_frame(inner),
         ExprNode::Binary(left, _, right) => {
             expression_depends_on_frame(left) || expression_depends_on_frame(right)

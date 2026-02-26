@@ -6,13 +6,11 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct JsonComposition {
     pub schema_revision: String,
-    pub graph: JsonGraph,
+    #[serde(default)]
+    pub components: HashMap<String, JsonComponentDef>,
+    pub graph: Vec<JsonNode>,
     pub timeline: JsonTimelineSettings,
     pub render_settings: JsonRenderSettings,
-    #[serde(default)]
-    pub tracks: Vec<JsonKeyframeTrack>,
-    #[serde(default)]
-    pub expressions: Vec<JsonExpression>,
     #[serde(default)]
     pub metadata: Option<JsonCompositionMetadata>,
 }
@@ -23,10 +21,6 @@ pub struct JsonCompositionMetadata {
     #[serde(default)]
     pub name: Option<String>,
 }
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct JsonGraph(pub Vec<JsonNode>);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,9 +40,75 @@ pub struct JsonRenderSettings {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JsonNode {
-    pub id: u64,
-    pub kind: JsonNodeKind,
-    pub inputs: HashMap<JsonPort, (u64, JsonPort)>,
+    pub id: String,
+    pub kind: serde_json::Value,
+    #[serde(default)]
+    pub inputs: HashMap<String, JsonConnectionSource>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonComponentDef {
+    #[serde(default)]
+    pub props: HashMap<String, JsonComponentPropDef>,
+    #[serde(default)]
+    pub inputs: HashMap<String, JsonComponentPortDef>,
+    #[serde(default)]
+    pub outputs: HashMap<String, JsonComponentOutputDef>,
+    pub graph: Vec<JsonNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonComponentPropDef {
+    #[serde(rename = "type")]
+    pub value_type: JsonAnimatableType,
+    pub name: String,
+    pub default: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonComponentPortDef {
+    pub kind: JsonComponentPortKind,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonComponentOutputDef {
+    pub kind: JsonComponentPortKind,
+    pub name: String,
+    pub source: JsonNodeSourceRef,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JsonComponentPortKind {
+    RasterFrame,
+    Surface,
+    Vector,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct JsonNodeSourceRef {
+    pub node: String,
+    #[serde(default)]
+    pub port: JsonPort,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum JsonConnectionSource {
+    Node(JsonNodeSourceRef),
+    ComponentInput(JsonComponentInputRef),
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct JsonComponentInputRef {
+    pub component_input: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -352,11 +412,17 @@ pub struct JsonRange {
     pub end: u32,
 }
 
-#[derive(Debug, Deserialize, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Deserialize, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(untagged)]
 pub enum JsonPort {
     Named(String),
     Indexed(u16),
+}
+
+impl Default for JsonPort {
+    fn default() -> Self {
+        Self::Named("output".to_string())
+    }
 }
 
 #[derive(Debug, Deserialize)]

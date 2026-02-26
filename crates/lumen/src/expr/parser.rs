@@ -18,6 +18,7 @@ enum TokenKind {
     LParen,
     RParen,
     Comma,
+    Dot,
     Plus,
     Minus,
     Star,
@@ -76,6 +77,10 @@ impl<'a> Lexer<'a> {
             ',' => {
                 self.bump_char();
                 TokenKind::Comma
+            }
+            '.' => {
+                self.bump_char();
+                TokenKind::Dot
             }
             '+' => {
                 self.bump_char();
@@ -467,6 +472,34 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_identifier(&mut self, identifier: String) -> Result<ExprNode, ExpressionError> {
+        let mut dotted_segments = vec![identifier.clone()];
+        while self.match_token(|kind| matches!(kind, TokenKind::Dot)) {
+            let token = self.peek().cloned().ok_or(ExpressionError::Parse {
+                node_id: None,
+                property_path: None,
+                details: "expected identifier after `.`".to_string(),
+            })?;
+            match token.kind {
+                TokenKind::Identifier(next_segment) => {
+                    self.position += 1;
+                    dotted_segments.push(next_segment);
+                }
+                _ => {
+                    return Err(ExpressionError::Parse {
+                        node_id: None,
+                        property_path: None,
+                        details: "expected identifier after `.`".to_string(),
+                    });
+                }
+            }
+        }
+        if dotted_segments.len() > 1 {
+            self.references.push(ExpressionReference::SymbolicPath {
+                segments: dotted_segments.clone(),
+            });
+            return Ok(ExprNode::SymbolicPath(dotted_segments));
+        }
+
         if identifier == "true" {
             return Ok(ExprNode::Literal(ExpressionValue::Boolean(true)));
         }
@@ -564,7 +597,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        self.references.push(ExpressionReference {
+        self.references.push(ExpressionReference::NodeProperty {
             node_id,
             property_path: property_path.clone(),
         });

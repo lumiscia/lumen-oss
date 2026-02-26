@@ -1,4 +1,7 @@
-use crate::{animation::PropertyPath, node::NodeId};
+use crate::{
+    animation::{PropertyPath, VirtualPropertyId},
+    node::NodeId,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExpressionId(pub u64);
@@ -82,14 +85,24 @@ pub enum ExprNode {
     Unary(UnaryOp, Box<ExprNode>),
     Builtin(BuiltinFn, Vec<ExprNode>),
     Global(GlobalVar),
+    SymbolicPath(Vec<String>),
     NodeProperty(NodeId, PropertyPath),
+    VirtualProperty(VirtualPropertyId),
     Conditional(Box<ExprNode>, Box<ExprNode>, Box<ExprNode>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ExpressionReference {
-    pub node_id: NodeId,
-    pub property_path: PropertyPath,
+pub enum ExpressionReference {
+    NodeProperty {
+        node_id: NodeId,
+        property_path: PropertyPath,
+    },
+    VirtualProperty {
+        id: VirtualPropertyId,
+    },
+    SymbolicPath {
+        segments: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

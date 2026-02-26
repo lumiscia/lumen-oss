@@ -25,7 +25,11 @@ pub mod json;
 #[cfg(feature = "threading")]
 pub mod threading;
 
-pub use animation::{AnimatableType, Extrapolation, InterpolationMode, Keyframe, KeyframeTrack};
+pub use animation::{
+    AnimatableType, DynamicAnimationTrack, DynamicBinding, DynamicBindingSource, DynamicKeyValue,
+    DynamicKeyframe, Extrapolation, InterpolationMode, Keyframe, KeyframeTrack, PropertyTarget,
+    VirtualPropertyId,
+};
 pub use cache::{AssetCache, NodeOutputCache, SharedAssetCache, VideoMetadata};
 pub use capability::{RuntimeCapabilityProfile, SinkType};
 pub use composition::{Composition, CompositionMetadata, RenderSettings, TimelineSettings};

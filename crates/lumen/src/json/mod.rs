@@ -10,7 +10,7 @@ use crate::{
 use convert::convert_json_composition;
 use schema::JsonComposition;
 
-pub const SCHEMA_REVISION: &str = "lumen_graph_v1";
+pub const SCHEMA_REVISION: &str = "lumen_graph_v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonDelegateStatus {

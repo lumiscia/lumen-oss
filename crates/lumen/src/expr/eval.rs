@@ -1,4 +1,7 @@
+use std::collections::HashSet;
+
 use crate::{
+    animation::PropertyTarget,
     composition::Composition,
     error::{ExpressionError, LumenError},
     expr::{
@@ -11,7 +14,8 @@ use crate::{
 
 impl Expression {
     pub fn evaluate(&self, ctx: &RenderContext) -> Result<ExpressionValue, LumenError> {
-        self.evaluate_with_context(ctx, None, None, None)
+        let mut active_targets = HashSet::new();
+        self.evaluate_with_context_and_frame(ctx, None, None, None, None, &mut active_targets)
     }
 
     pub fn evaluate_with_context(
@@ -21,12 +25,34 @@ impl Expression {
         node_id: Option<NodeId>,
         property_path: Option<String>,
     ) -> Result<ExpressionValue, LumenError> {
+        let mut active_targets = HashSet::new();
+        self.evaluate_with_context_and_frame(
+            ctx,
+            composition,
+            node_id,
+            property_path,
+            None,
+            &mut active_targets,
+        )
+    }
+
+    pub(crate) fn evaluate_with_context_and_frame(
+        &self,
+        ctx: &RenderContext,
+        composition: Option<&Composition>,
+        node_id: Option<NodeId>,
+        property_path: Option<String>,
+        frame_override: Option<u32>,
+        active_targets: &mut HashSet<PropertyTarget>,
+    ) -> Result<ExpressionValue, LumenError> {
         evaluate_expr(
             &self.ast,
             ctx,
             composition,
             node_id,
             property_path.as_deref(),
+            frame_override,
+            active_targets,
         )
     }
 }
@@ -37,11 +63,21 @@ fn evaluate_expr(
     composition: Option<&Composition>,
     node_id: Option<NodeId>,
     property_path: Option<&str>,
+    frame_override: Option<u32>,
+    active_targets: &mut HashSet<PropertyTarget>,
 ) -> Result<ExpressionValue, LumenError> {
     match expr {
         ExprNode::Literal(value) => Ok(value.clone()),
         ExprNode::Unary(op, value) => {
-            let evaluated = evaluate_expr(value, ctx, composition, node_id, property_path)?;
+            let evaluated = evaluate_expr(
+                value,
+                ctx,
+                composition,
+                node_id,
+                property_path,
+                frame_override,
+                active_targets,
+            )?;
             match op {
                 UnaryOp::Neg => Ok(ExpressionValue::Number(-to_number(
                     &evaluated,
@@ -53,28 +89,68 @@ fn evaluate_expr(
             }
         }
         ExprNode::Binary(left, op, right) => {
-            let lhs = evaluate_expr(left, ctx, composition, node_id, property_path)?;
+            let lhs = evaluate_expr(
+                left,
+                ctx,
+                composition,
+                node_id,
+                property_path,
+                frame_override,
+                active_targets,
+            )?;
             match op {
                 BinaryOp::And => {
                     if !to_boolean(&lhs) {
                         return Ok(ExpressionValue::Boolean(false));
                     }
-                    let rhs = evaluate_expr(right, ctx, composition, node_id, property_path)?;
+                    let rhs = evaluate_expr(
+                        right,
+                        ctx,
+                        composition,
+                        node_id,
+                        property_path,
+                        frame_override,
+                        active_targets,
+                    )?;
                     Ok(ExpressionValue::Boolean(to_boolean(&rhs)))
                 }
                 BinaryOp::Or => {
                     if to_boolean(&lhs) {
                         return Ok(ExpressionValue::Boolean(true));
                     }
-                    let rhs = evaluate_expr(right, ctx, composition, node_id, property_path)?;
+                    let rhs = evaluate_expr(
+                        right,
+                        ctx,
+                        composition,
+                        node_id,
+                        property_path,
+                        frame_override,
+                        active_targets,
+                    )?;
                     Ok(ExpressionValue::Boolean(to_boolean(&rhs)))
                 }
                 BinaryOp::Eq => {
-                    let rhs = evaluate_expr(right, ctx, composition, node_id, property_path)?;
+                    let rhs = evaluate_expr(
+                        right,
+                        ctx,
+                        composition,
+                        node_id,
+                        property_path,
+                        frame_override,
+                        active_targets,
+                    )?;
                     Ok(ExpressionValue::Boolean(lhs == rhs))
                 }
                 BinaryOp::Neq => {
-                    let rhs = evaluate_expr(right, ctx, composition, node_id, property_path)?;
+                    let rhs = evaluate_expr(
+                        right,
+                        ctx,
+                        composition,
+                        node_id,
+                        property_path,
+                        frame_override,
+                        active_targets,
+                    )?;
                     Ok(ExpressionValue::Boolean(lhs != rhs))
                 }
                 BinaryOp::Add
@@ -86,7 +162,15 @@ fn evaluate_expr(
                 | BinaryOp::Lt
                 | BinaryOp::Gte
                 | BinaryOp::Lte => {
-                    let rhs = evaluate_expr(right, ctx, composition, node_id, property_path)?;
+                    let rhs = evaluate_expr(
+                        right,
+                        ctx,
+                        composition,
+                        node_id,
+                        property_path,
+                        frame_override,
+                        active_targets,
+                    )?;
                     let lhs_num = to_number(
                         &lhs,
                         node_id,
@@ -141,6 +225,8 @@ fn evaluate_expr(
                     composition,
                     node_id,
                     property_path,
+                    frame_override,
+                    active_targets,
                 )?);
             }
             evaluate_builtin(
@@ -152,13 +238,16 @@ fn evaluate_expr(
             )
         }
         ExprNode::Global(global) => match global {
-            GlobalVar::Frame => Ok(ExpressionValue::Number(f64::from(ctx.request.frame))),
+            GlobalVar::Frame => Ok(ExpressionValue::Number(f64::from(
+                frame_override.unwrap_or(ctx.request.frame),
+            ))),
             GlobalVar::Time => {
+                let frame = frame_override.unwrap_or(ctx.request.frame);
                 if ctx.fps <= 0.0 {
                     Ok(ExpressionValue::Number(0.0))
                 } else {
                     Ok(ExpressionValue::Number(
-                        f64::from(ctx.request.frame) / f64::from(ctx.fps),
+                        f64::from(frame) / f64::from(ctx.fps),
                     ))
                 }
             }
@@ -173,6 +262,14 @@ fn evaluate_expr(
                 }))
             }
         },
+        ExprNode::SymbolicPath(segments) => Err(expression_eval_error(
+            node_id,
+            property_path,
+            &format!(
+                "unresolved symbolic property reference `{}`",
+                segments.join(".")
+            ),
+        )),
         ExprNode::NodeProperty(target_node_id, target_path) => {
             let Some(composition) = composition else {
                 return Err(expression_eval_error(
@@ -181,19 +278,63 @@ fn evaluate_expr(
                     "node property reference requires composition context",
                 ));
             };
-            let value = composition.sample_property_without_expressions(
+            let value = composition.sample_node_property_from_expression(
                 *target_node_id,
                 &target_path.0,
-                ctx.request.frame,
+                frame_override.unwrap_or(ctx.request.frame),
+                ctx,
+                frame_override,
+                active_targets,
+            )?;
+            property_value_to_expression_value(&value)
+        }
+        ExprNode::VirtualProperty(id) => {
+            let Some(composition) = composition else {
+                return Err(expression_eval_error(
+                    node_id,
+                    property_path,
+                    "virtual property reference requires composition context",
+                ));
+            };
+            let value = composition.sample_virtual_property_from_expression(
+                *id,
+                frame_override.unwrap_or(ctx.request.frame),
+                ctx,
+                frame_override,
+                active_targets,
             )?;
             property_value_to_expression_value(&value)
         }
         ExprNode::Conditional(condition, when_true, when_false) => {
-            let condition = evaluate_expr(condition, ctx, composition, node_id, property_path)?;
+            let condition = evaluate_expr(
+                condition,
+                ctx,
+                composition,
+                node_id,
+                property_path,
+                frame_override,
+                active_targets,
+            )?;
             if to_boolean(&condition) {
-                evaluate_expr(when_true, ctx, composition, node_id, property_path)
+                evaluate_expr(
+                    when_true,
+                    ctx,
+                    composition,
+                    node_id,
+                    property_path,
+                    frame_override,
+                    active_targets,
+                )
             } else {
-                evaluate_expr(when_false, ctx, composition, node_id, property_path)
+                evaluate_expr(
+                    when_false,
+                    ctx,
+                    composition,
+                    node_id,
+                    property_path,
+                    frame_override,
+                    active_targets,
+                )
             }
         }
     }
@@ -207,11 +348,16 @@ pub fn property_value_to_expression_value(
         PropertyValue::Int(number) => Ok(ExpressionValue::Number(*number as f64)),
         PropertyValue::Bool(boolean) => Ok(ExpressionValue::Boolean(*boolean)),
         PropertyValue::String(text) => Ok(ExpressionValue::String(text.clone())),
-        PropertyValue::Color(color) => Ok(ExpressionValue::String(format!(
-            "#{:02x}{:02x}{:02x}{:02x}",
-            color[0], color[1], color[2], color[3]
-        ))),
-        PropertyValue::Vector2(x, y) => Ok(ExpressionValue::String(format!("{x},{y}"))),
+        PropertyValue::Color(_) => Err(expression_eval_error(
+            None,
+            None,
+            "cannot coerce color property value into expression value",
+        )),
+        PropertyValue::Vector2(_, _) => Err(expression_eval_error(
+            None,
+            None,
+            "cannot coerce vector2 property value into expression value",
+        )),
         PropertyValue::Map(_) => Err(expression_eval_error(
             None,
             None,

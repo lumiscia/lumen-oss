@@ -2,6 +2,7 @@
 
 use crate::{
     error::{LumenError, PropertyError},
+    expr::Expression,
     node::{NodeId, PropertyValue, TrackId},
 };
 
@@ -53,6 +54,82 @@ pub struct KeyframeTrack {
     pub keys: Vec<Keyframe>,
     pub before_extrapolation: Extrapolation,
     pub after_extrapolation: Extrapolation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct VirtualPropertyId(pub u64);
+
+impl VirtualPropertyId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PropertyTarget {
+    NodeProperty {
+        node_id: NodeId,
+        property_path: PropertyPath,
+    },
+    VirtualProperty {
+        id: VirtualPropertyId,
+    },
+}
+
+impl PropertyTarget {
+    pub fn node_property(node_id: NodeId, property_path: impl Into<String>) -> Self {
+        Self::NodeProperty {
+            node_id,
+            property_path: PropertyPath::new(property_path),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DynamicKeyValue {
+    Literal(PropertyValue),
+    Expression(Expression),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicKeyframe {
+    pub time_frame: u32,
+    pub value: DynamicKeyValue,
+    pub interpolation: InterpolationMode,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicAnimationTrack {
+    pub value_type: AnimatableType,
+    pub keys: Vec<DynamicKeyframe>,
+    pub before_extrapolation: Extrapolation,
+    pub after_extrapolation: Extrapolation,
+}
+
+impl DynamicAnimationTrack {
+    pub fn new(value_type: AnimatableType) -> Self {
+        Self {
+            value_type,
+            keys: Vec::new(),
+            before_extrapolation: Extrapolation::Hold,
+            after_extrapolation: Extrapolation::Hold,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DynamicBindingSource {
+    Literal(PropertyValue),
+    Expression(Expression),
+    Animation(DynamicAnimationTrack),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicBinding {
+    pub target: PropertyTarget,
+    pub value_type: AnimatableType,
+    pub source: DynamicBindingSource,
+    pub debug_name: Option<String>,
 }
 
 impl KeyframeTrack {
