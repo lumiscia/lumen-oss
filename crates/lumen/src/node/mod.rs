@@ -4,31 +4,17 @@ use std::{collections::HashMap, fmt, hash::Hasher};
 
 use crate::{
     error::{LumenError, PropertyError},
+    node::source::text,
     raster::RasterFrame,
     render::RenderContext,
 };
 
-pub mod blur;
-pub mod boolean;
-pub mod crop;
-pub mod frame_hold;
-pub mod media_in;
+pub mod compositing;
 pub mod media_output;
-pub mod memo;
-pub mod merge;
 pub mod pixel_utils;
-pub mod raster_multimerge;
-pub mod resize;
-pub mod shadow;
-pub mod shape;
-pub mod shape_renderer;
-pub mod solid_color;
-pub mod switch;
-pub mod text;
-pub mod transform;
-pub mod vector_merge;
-pub mod vector_multimerge;
-pub mod vector_text;
+pub mod processing;
+pub mod source;
+pub mod vector;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub u64);
@@ -292,26 +278,26 @@ impl Node {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum NodeKind {
-    Shape(shape::Shape),
-    VectorText(vector_text::VectorText),
-    ShapeRenderer(shape_renderer::ShapeRenderer),
-    VectorMerge(vector_merge::VectorMerge),
-    VectorMultiMerge(vector_multimerge::VectorMultiMerge),
-    MediaIn(media_in::MediaIn),
-    SolidColor(solid_color::SolidColor),
-    Text(text::Text),
-    Transform(transform::Transform),
-    Crop(crop::Crop),
-    Resize(resize::Resize),
-    Blur(blur::Blur),
-    Shadow(shadow::Shadow),
-    Boolean(boolean::Boolean),
-    Merge(merge::Merge),
-    RasterMultiMerge(raster_multimerge::RasterMultiMerge),
-    Switch(switch::Switch),
-    FrameHold(frame_hold::FrameHold),
+    Shape(vector::shape::Shape),
+    VectorText(vector::vector_text::VectorText),
+    ShapeRenderer(vector::shape_renderer::ShapeRenderer),
+    VectorMerge(vector::vector_merge::VectorMerge),
+    VectorMultiMerge(vector::vector_multimerge::VectorMultiMerge),
+    MediaIn(source::media_in::MediaIn),
+    SolidColor(source::solid_color::SolidColor),
+    Text(source::text::Text),
+    Transform(processing::transform::Transform),
+    Crop(processing::crop::Crop),
+    Resize(processing::resize::Resize),
+    Blur(processing::blur::Blur),
+    Shadow(processing::shadow::Shadow),
+    Boolean(compositing::boolean::Boolean),
+    Merge(compositing::merge::Merge),
+    RasterMultiMerge(compositing::raster_multimerge::RasterMultiMerge),
+    Switch(compositing::switch::Switch),
+    FrameHold(processing::frame_hold::FrameHold),
     MediaOutput(media_output::MediaOutput),
-    Memo(memo::Memo),
+    Memo(processing::memo::Memo),
 }
 
 impl NodeKind {
@@ -418,11 +404,11 @@ impl NodeKind {
                 m.input_count.hash(hasher);
             }
             Self::MediaIn(m) => match &m.kind {
-                media_in::MediaInKind::Image { source } => {
+                source::media_in::MediaInKind::Image { source } => {
                     0u8.hash(hasher);
                     source.hash(hasher);
                 }
-                media_in::MediaInKind::Video {
+                source::media_in::MediaInKind::Video {
                     source,
                     range,
                     speed,
