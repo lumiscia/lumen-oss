@@ -1,50 +1,40 @@
 use crate::{
     error::LumenError,
-    node::{InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue, VectorData},
+    node::{NodeId, PortRef, VectorData},
     render::RenderContext,
 };
+use lumen_macros::{Node, node_impl};
 
-const INPUT_PORT_DEFS: &[InputPortDef] = &[
-    InputPortDef {
-        name: "base",
-        kind: PortKind::Vector,
-        optional: false,
-    },
-    InputPortDef {
-        name: "overlay",
-        kind: PortKind::Vector,
-        optional: false,
-    },
-];
+#[derive(Debug, Clone, Node)]
+pub struct VectorMerge {
+    pub id: NodeId,
 
-const OUTPUT_PORT_DEFS: &[OutputPortDef] = &[OutputPortDef {
-    name: "output",
-    kind: PortKind::Vector,
-}];
+    #[input(kind = Vector)]
+    pub base: PortRef,
+    #[input(kind = Vector)]
+    pub overlay: PortRef,
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct VectorMerge;
-
-impl NodeEval for VectorMerge {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        INPUT_PORT_DEFS
+impl Default for VectorMerge {
+    fn default() -> Self {
+        Self {
+            id: NodeId::new(0),
+            base: PortRef::empty(),
+            overlay: PortRef::empty(),
+        }
     }
+}
 
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        OUTPUT_PORT_DEFS
-    }
+#[node_impl]
+impl VectorMerge {
+    #[output(port = "output", kind = Vector)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<VectorData> {
+        let base = ctx.eval(self.base.clone())?.as_vector()?.clone();
+        let overlay = ctx.eval(self.overlay.clone())?.as_vector()?.clone();
 
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let base = inputs.get_vector("base")?.clone();
-        let overlay = inputs.get_vector("overlay")?.clone();
-
-        Ok(PortValue::Vector(VectorData::Group {
+        Ok(VectorData::Group {
             children: vec![base, overlay],
             position: Default::default(),
-        }))
+        })
     }
 }

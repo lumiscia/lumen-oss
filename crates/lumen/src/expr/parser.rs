@@ -1,11 +1,10 @@
 use std::ops::Range;
 
 use crate::{
-    animation::PropertyPath,
     error::ExpressionError,
     expr::ast::{
         BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionId, ExpressionReference,
-        ExpressionValue, GlobalVar, UnaryOp,
+        ExpressionValue, GlobalVar, PropertyPath, UnaryOp,
     },
     node::NodeId,
 };
@@ -118,8 +117,7 @@ impl<'a> Lexer<'a> {
                     TokenKind::EqEq
                 } else {
                     return Err(ExpressionError::Parse {
-                        node_id: None,
-                        property_path: None,
+                        path: None,
                         details: "unexpected `=`; use `==` for equality".to_string(),
                     });
                 }
@@ -149,8 +147,7 @@ impl<'a> Lexer<'a> {
                     TokenKind::AndAnd
                 } else {
                     return Err(ExpressionError::Parse {
-                        node_id: None,
-                        property_path: None,
+                        path: None,
                         details: "unexpected `&`; use `&&`".to_string(),
                     });
                 }
@@ -162,8 +159,7 @@ impl<'a> Lexer<'a> {
                     TokenKind::OrOr
                 } else {
                     return Err(ExpressionError::Parse {
-                        node_id: None,
-                        property_path: None,
+                        path: None,
                         details: "unexpected `|`; use `||`".to_string(),
                     });
                 }
@@ -173,8 +169,7 @@ impl<'a> Lexer<'a> {
             c if is_ident_start(c) => TokenKind::Identifier(self.read_identifier()),
             other => {
                 return Err(ExpressionError::Parse {
-                    node_id: None,
-                    property_path: None,
+                    path: None,
                     details: format!("unexpected character `{other}` at byte {start}"),
                 });
             }
@@ -199,8 +194,7 @@ impl<'a> Lexer<'a> {
         loop {
             let Some(ch) = self.peek_char() else {
                 return Err(ExpressionError::Parse {
-                    node_id: None,
-                    property_path: None,
+                    path: None,
                     details: format!("unterminated string literal starting at byte {start}"),
                 });
             };
@@ -210,8 +204,7 @@ impl<'a> Lexer<'a> {
                 '\\' => {
                     let Some(escaped) = self.peek_char() else {
                         return Err(ExpressionError::Parse {
-                            node_id: None,
-                            property_path: None,
+                            path: None,
                             details: "unterminated escape sequence".to_string(),
                         });
                     };
@@ -247,8 +240,7 @@ impl<'a> Lexer<'a> {
         self.source[start..self.position]
             .parse::<f64>()
             .map_err(|error| ExpressionError::Parse {
-                node_id: None,
-                property_path: None,
+                path: None,
                 details: format!("invalid number at byte {start}: {error}"),
             })
     }
@@ -440,8 +432,7 @@ impl<'a> Parser<'a> {
 
     fn parse_primary(&mut self) -> Result<ExprNode, ExpressionError> {
         let token = self.peek().cloned().ok_or(ExpressionError::Parse {
-            node_id: None,
-            property_path: None,
+            path: None,
             details: "unexpected end of expression".to_string(),
         })?;
         match token.kind {
@@ -464,8 +455,7 @@ impl<'a> Parser<'a> {
                 Ok(expr)
             }
             _ => Err(ExpressionError::Parse {
-                node_id: None,
-                property_path: None,
+                path: None,
                 details: format!("expected expression at byte {}", token.span.start),
             }),
         }
@@ -475,8 +465,7 @@ impl<'a> Parser<'a> {
         let mut dotted_segments = vec![identifier.clone()];
         while self.match_token(|kind| matches!(kind, TokenKind::Dot)) {
             let token = self.peek().cloned().ok_or(ExpressionError::Parse {
-                node_id: None,
-                property_path: None,
+                path: None,
                 details: "expected identifier after `.`".to_string(),
             })?;
             match token.kind {
@@ -486,8 +475,7 @@ impl<'a> Parser<'a> {
                 }
                 _ => {
                     return Err(ExpressionError::Parse {
-                        node_id: None,
-                        property_path: None,
+                        path: None,
                         details: "expected identifier after `.`".to_string(),
                     });
                 }
@@ -523,8 +511,7 @@ impl<'a> Parser<'a> {
             if identifier == "if" {
                 if args.len() != 3 {
                     return Err(ExpressionError::Parse {
-                        node_id: None,
-                        property_path: None,
+                        path: None,
                         details: "if(cond, then, else) requires exactly 3 arguments".to_string(),
                     });
                 }
@@ -540,8 +527,7 @@ impl<'a> Parser<'a> {
             }
 
             let builtin = builtin_for_name(&identifier).ok_or(ExpressionError::Parse {
-                node_id: None,
-                property_path: None,
+                path: None,
                 details: format!("unknown function `{identifier}`"),
             })?;
             return Ok(ExprNode::Builtin(builtin, args));
@@ -560,8 +546,7 @@ impl<'a> Parser<'a> {
     fn parse_node_reference(&mut self, args: Vec<ExprNode>) -> Result<ExprNode, ExpressionError> {
         if args.len() != 2 {
             return Err(ExpressionError::Parse {
-                node_id: None,
-                property_path: None,
+                path: None,
                 details: "node(id, property_path) requires exactly 2 arguments".to_string(),
             });
         }
@@ -570,8 +555,7 @@ impl<'a> Parser<'a> {
             ExprNode::Literal(ExpressionValue::Number(value)) => {
                 if *value < 0.0 || value.fract() != 0.0 {
                     return Err(ExpressionError::Parse {
-                        node_id: None,
-                        property_path: None,
+                        path: None,
                         details: "node(id, ..) expects an unsigned integer id".to_string(),
                     });
                 }
@@ -579,8 +563,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 return Err(ExpressionError::Parse {
-                    node_id: None,
-                    property_path: None,
+                    path: None,
                     details: "node(id, ..) first argument must be a numeric node id".to_string(),
                 });
             }
@@ -590,8 +573,7 @@ impl<'a> Parser<'a> {
             ExprNode::Literal(ExpressionValue::String(value)) => PropertyPath::new(value.clone()),
             _ => {
                 return Err(ExpressionError::Parse {
-                    node_id: None,
-                    property_path: None,
+                    path: None,
                     details: "node(.., property_path) second argument must be a string".to_string(),
                 });
             }
@@ -617,8 +599,7 @@ impl<'a> Parser<'a> {
 
     fn expect(&mut self, expected: TokenExpectation) -> Result<(), ExpressionError> {
         let token = self.peek().ok_or(ExpressionError::Parse {
-            node_id: None,
-            property_path: None,
+            path: None,
             details: format!("expected {}", expected.describe()),
         })?;
 
@@ -631,8 +612,7 @@ impl<'a> Parser<'a> {
             Ok(())
         } else {
             Err(ExpressionError::Parse {
-                node_id: None,
-                property_path: None,
+                path: None,
                 details: format!("expected {}", expected.describe()),
             })
         }
@@ -673,6 +653,8 @@ fn builtin_for_name(name: &str) -> Option<BuiltinFn> {
         "mod" => Some(BuiltinFn::Mod),
         "fract" => Some(BuiltinFn::Fract),
         "smoothstep" => Some(BuiltinFn::Smoothstep),
+        "linear" => Some(BuiltinFn::Linear),
+        "step" => Some(BuiltinFn::Step),
         "text_height" => Some(BuiltinFn::TextHeight),
         "text_width" => Some(BuiltinFn::TextWidth),
         "uppercase" => Some(BuiltinFn::Uppercase),

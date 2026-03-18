@@ -4,113 +4,153 @@ use skia_safe::{IRect, image::RequiredProperties};
 
 use crate::{
     error::LumenError,
-    node::{
-        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
-        pixel_utils::make_skia_image,
-    },
+    node::{NodeId, NodeProperty, PortRef, pixel_utils::make_skia_image},
     raster::{BitmapFrame, RasterFrame, RectI},
     render::RenderContext,
 };
+use lumen_macros::{Node, node_impl};
 
-const INPUT_PORTS: [InputPortDef; 1] = [InputPortDef {
-    name: "source",
-    kind: PortKind::RasterFrame,
-    optional: false,
-}];
-
-const OUTPUT_PORTS: [OutputPortDef; 1] = [OutputPortDef {
-    name: "output",
-    kind: PortKind::RasterFrame,
-}];
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Node)]
 pub struct Crop {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
+    pub id: NodeId,
+
+    #[property(expected = Int)]
+    pub x: NodeProperty,
+    #[property(expected = Int)]
+    pub y: NodeProperty,
+    #[property(expected = Int)]
+    pub width: NodeProperty,
+    #[property(expected = Int)]
+    pub height: NodeProperty,
+
+    #[input(kind = Raster)]
+    pub source: PortRef,
 }
 
-impl NodeEval for Crop {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        &INPUT_PORTS
+impl Default for Crop {
+    fn default() -> Self {
+        Self {
+            id: NodeId::new(0),
+            x: NodeProperty::Int(0),
+            y: NodeProperty::Int(0),
+            width: NodeProperty::Int(1),
+            height: NodeProperty::Int(1),
+            source: PortRef::empty(),
+        }
     }
+}
 
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &OUTPUT_PORTS
-    }
+#[node_impl]
+impl Crop {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let source = ctx.eval(self.source.clone())?.as_raster()?;
+        let x = self.resolve_x(ctx)?;
+        let y = self.resolve_y(ctx)?;
+        let width = self.resolve_width(ctx)?.max(0);
+        let height = self.resolve_height(ctx)?.max(0);
 
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let source = inputs.get_raster("source")?;
         let (src_w, src_h) = source.dimensions();
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
 
-        let x0 = (self.x as i64).clamp(0, src_w as i64) as i32;
-        let y0 = (self.y as i64).clamp(0, src_h as i64) as i32;
-        let x1 = ((self.x as i64) + (self.width as i64)).clamp(0, src_w as i64) as i32;
-        let y1 = ((self.y as i64) + (self.height as i64)).clamp(0, src_h as i64) as i32;
+        // Calculate crop boundaries clamped to source dimensions
+        let crop_left = x.clamp(0, src_w as i64) as i32;
+        let crop_top = y.clamp(0, src_h as i64) as i32;
+        let crop_right = (x + width).clamp(0, src_w as i64) as i32;
+        let crop_bottom = (y + height).clamp(0, src_h as i64) as i32;
 
-        if x1 > x0 && y1 > y0 && x0 == 0 && y0 == 0 && x1 == src_w as i32 && y1 == src_h as i32 {
-            return Ok(PortValue::RasterFrame(source.clone()));
+        // Check if crop covers entire source image (no-op case)
+        if crop_left == 0
+            && crop_top == 0
+            && crop_right == src_w as i32
+            && crop_bottom == src_h as i32
+            && crop_right > crop_left
+            && crop_bottom > crop_top
+        {
+            return Ok(source.clone());
         }
 
-        if x1 <= x0 || y1 <= y0 {
-            let transparent = Arc::new(vec![0, 0, 0, 0]);
-            let output_rect = RectI::new(source_format.x + x0, source_format.y + y0, 1, 1);
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(transparent, 1, 1, output_rect, output_rect)
+        // Return 1x1 transparent pixel if crop area is empty
+        if crop_right <= crop_left || crop_bottom <= crop_top {
+            let transparent_pixel = Arc::new(vec![0, 0, 0, 0]);
+            let output_rect = RectI::new(
+                source_format.x + crop_left,
+                source_format.y + crop_top,
+                1,
+                1,
+            );
+            return Ok(RasterFrame::Bitmap(
+                BitmapFrame::with_domain(transparent_pixel, 1, 1, output_rect, output_rect)
                     .with_alpha_mode(source_alpha),
-            )));
+            ));
         }
 
         let (bytes, src_w, src_h) = source.clone().into_parts();
         let Some(image) = make_skia_image(&bytes, src_w, src_h, (src_w as usize) * 4, source_alpha)
         else {
-            let transparent = Arc::new(vec![0, 0, 0, 0]);
-            let output_rect = RectI::new(source_format.x + x0, source_format.y + y0, 1, 1);
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(transparent, 1, 1, output_rect, output_rect)
+            // Failed to create Skia image, return transparent pixel
+            let transparent_pixel = Arc::new(vec![0, 0, 0, 0]);
+            let output_rect = RectI::new(
+                source_format.x + crop_left,
+                source_format.y + crop_top,
+                1,
+                1,
+            );
+            return Ok(RasterFrame::Bitmap(
+                BitmapFrame::with_domain(transparent_pixel, 1, 1, output_rect, output_rect)
                     .with_alpha_mode(source_alpha),
-            )));
+            ));
         };
 
-        let subset = IRect::from_ltrb(x0, y0, x1, y1);
-        let out_w = (x1 - x0) as u32;
-        let out_h = (y1 - y0) as u32;
-        let output_rect = RectI::new(source_format.x + x0, source_format.y + y0, out_w, out_h);
-
-        if let Some(cropped) = image.make_subset(None, &subset, RequiredProperties::default()) {
-            if let Some(data) = cropped.peek_pixels() {
-                let pixel_bytes = data.bytes();
-                if let Some(pixel_bytes) = pixel_bytes {
-                    return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        let subset_rect = IRect::from_ltrb(crop_left, crop_top, crop_right, crop_bottom);
+        let crop_width = (crop_right - crop_left) as u32;
+        let crop_height = (crop_bottom - crop_top) as u32;
+        let output_rect = RectI::new(
+            source_format.x + crop_left,
+            source_format.y + crop_top,
+            crop_width,
+            crop_height,
+        );
+        // Try to create subset image directly from source
+        if let Some(cropped_image) =
+            image.make_subset(None, &subset_rect, RequiredProperties::default())
+        {
+            if let Some(pixel_data) = cropped_image.peek_pixels() {
+                if let Some(pixel_bytes) = pixel_data.bytes() {
+                    return Ok(RasterFrame::Bitmap(
                         BitmapFrame::with_domain(
                             Arc::new(pixel_bytes.to_vec()),
-                            out_w,
-                            out_h,
+                            crop_width,
+                            crop_height,
                             output_rect,
                             output_rect,
                         )
                         .with_alpha_mode(source_alpha),
-                    )));
+                    ));
                 }
             }
         }
 
-        // Fallback: draw via canvas
-        let output =
-            crate::node::pixel_utils::render_with_skia(out_w, out_h, Some(ctx), |canvas| {
-                canvas.draw_image(&image, (-x0 as f32, -y0 as f32), None);
-            });
+        // Fallback: render crop using canvas
+        let output = crate::node::pixel_utils::render_with_skia(
+            crop_width,
+            crop_height,
+            Some(ctx),
+            |canvas| {
+                canvas.draw_image(&image, (-crop_left as f32, -crop_top as f32), None);
+            },
+        );
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-            BitmapFrame::with_domain(Arc::new(output), out_w, out_h, output_rect, output_rect)
-                .with_alpha_mode(source_alpha),
-        )))
+        Ok(RasterFrame::Bitmap(
+            BitmapFrame::with_domain(
+                Arc::new(output),
+                crop_width,
+                crop_height,
+                output_rect,
+                output_rect,
+            )
+            .with_alpha_mode(source_alpha),
+        ))
     }
 }

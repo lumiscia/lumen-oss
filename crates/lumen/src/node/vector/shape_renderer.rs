@@ -1,28 +1,102 @@
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 
-use skia_safe::{Color, Paint, PaintStyle, Path, RRect, Rect};
+#[cfg(feature = "embed-roboto")]
+use skia_safe::textlayout::TypefaceFontProvider;
+use skia_safe::{
+    Color, FontMgr, FontStyle, Paint, PaintStyle, Path, RRect, Rect,
+    font_style::Weight,
+    textlayout::{
+        FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as ParagraphTextAlign,
+        TextStyle as ParagraphTextStyle,
+    },
+};
 
 use crate::{
     error::LumenError,
+    media::MediaStore,
     node::{
-        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue, ShapeGeometry,
-        VectorData, VectorPosition, VectorStyle, VectorTextData,
+        NodeId, NodeProperty, PortRef,
         pixel_utils::{make_skia_image, read_surface_rgba, render_with_skia, to_skia_color},
+        vector::{ShapeGeometry, VectorData, VectorPosition, VectorStyle, VectorTextData},
     },
     raster::{BitmapFrame, RasterFrame, RectI},
-    render::RenderContext,
+    render::{RenderContext, surface::SurfacePool},
 };
+use lumen_macros::{Node, node_impl};
 
-#[derive(Debug, Clone, PartialEq)]
+thread_local! {
+    static VECTOR_TEXT_FONT_MGR: RefCell<Option<FontMgr>> = const { RefCell::new(None) };
+    static VECTOR_TEXT_FONT_COLLECTION: RefCell<Option<FontCollection>> = const { RefCell::new(None) };
+}
+
+#[cfg(feature = "embed-roboto")]
+const EMBEDDED_ROBOTO_REGULAR: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/roboto/Roboto-Regular.ttf"
+));
+
+#[derive(Debug, Clone, Node)]
 pub struct ShapeRenderer {
-    pub fill_color: [u8; 4],
-    pub stroke_color: [u8; 4],
-    pub stroke_width: f32,
-    pub fill_enabled: bool,
-    pub stroke_enabled: bool,
+    pub id: NodeId,
+
+    #[property(expected = Color)]
+    pub fill_color: NodeProperty,
+    #[property(expected = Color)]
+    pub stroke_color: NodeProperty,
+    #[property(expected = Float)]
+    pub stroke_width: NodeProperty,
+    #[property(expected = Bool)]
+    pub fill_enabled: NodeProperty,
+    #[property(expected = Bool)]
+    pub stroke_enabled: NodeProperty,
+
+    #[input(kind = Vector)]
+    pub vector: PortRef,
 }
 
 impl Default for ShapeRenderer {
+    fn default() -> Self {
+        Self {
+            id: NodeId::new(0),
+            fill_color: NodeProperty::Color([255, 255, 255, 255]),
+            stroke_color: NodeProperty::Color([0, 0, 0, 255]),
+            stroke_width: NodeProperty::Float(1.0),
+            fill_enabled: NodeProperty::Bool(true),
+            stroke_enabled: NodeProperty::Bool(false),
+            vector: PortRef::empty(),
+        }
+    }
+}
+
+#[node_impl]
+impl ShapeRenderer {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let vector = ctx.eval(self.vector.clone())?;
+        let vector_data = match *vector {
+            crate::node::NodeResult::Raster(_) => todo!("return new err type"),
+            crate::node::NodeResult::Vector(ref vector_data) => vector_data,
+            crate::node::NodeResult::None => todo!("return new err type"),
+        };
+        let renderer_style = resolve_renderer_style(self, ctx)?;
+        Ok(rasterize_vector_with_style(
+            vector_data,
+            renderer_style,
+            ctx,
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedRendererStyle {
+    fill_color: [u8; 4],
+    stroke_color: [u8; 4],
+    stroke_width: f32,
+    fill_enabled: bool,
+    stroke_enabled: bool,
+}
+
+impl Default for ResolvedRendererStyle {
     fn default() -> Self {
         Self {
             fill_color: [255, 255, 255, 255],
@@ -31,33 +105,6 @@ impl Default for ShapeRenderer {
             fill_enabled: true,
             stroke_enabled: false,
         }
-    }
-}
-
-impl NodeEval for ShapeRenderer {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        &[InputPortDef {
-            name: "vector",
-            kind: PortKind::Vector,
-            optional: false,
-        }]
-    }
-
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &[OutputPortDef {
-            name: "output",
-            kind: PortKind::RasterFrame,
-        }]
-    }
-
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let vector = inputs.get_vector("vector")?;
-        let raster = rasterize_vector(vector, self, ctx);
-        Ok(PortValue::RasterFrame(raster))
     }
 }
 
@@ -70,52 +117,123 @@ struct ResolvedVectorStyle {
     stroke_enabled: bool,
 }
 
-pub(crate) fn rasterize_vector(
+pub(crate) fn rasterize_vector<S: SurfacePool, M: MediaStore>(
     vector: &VectorData,
     renderer: &ShapeRenderer,
-    ctx: &mut RenderContext,
+    ctx: &mut RenderContext<'_, S, M>,
+) -> RasterFrame {
+    match resolve_renderer_style(renderer, ctx) {
+        Ok(renderer_style) => rasterize_vector_with_style(vector, renderer_style, ctx),
+        Err(_) => rasterize_vector_with_style(vector, ResolvedRendererStyle::default(), ctx),
+    }
+}
+
+fn rasterize_vector_with_style<S: SurfacePool, M: MediaStore>(
+    vector: &VectorData,
+    renderer_style: ResolvedRendererStyle,
+    ctx: &mut RenderContext<'_, S, M>,
 ) -> RasterFrame {
     match vector {
         VectorData::Shape {
             geometry,
             style,
             position,
-        } => rasterize_geometry(geometry, *position, style, renderer, ctx),
-        VectorData::Text(text) => rasterize_text(text, renderer, ctx),
+        } => rasterize_geometry(geometry, *position, style, renderer_style, ctx),
+        VectorData::Text(text) => rasterize_text(text, renderer_style, ctx),
         VectorData::Group { children, position } => {
-            rasterize_group(children, *position, renderer, ctx)
+            rasterize_group(children, *position, renderer_style, ctx)
         }
     }
 }
 
-fn rasterize_geometry(
+fn resolve_renderer_style<S: SurfacePool, M: MediaStore>(
+    renderer: &ShapeRenderer,
+    ctx: &RenderContext<'_, S, M>,
+) -> crate::Result<ResolvedRendererStyle> {
+    Ok(ResolvedRendererStyle {
+        fill_color: renderer.resolve_fill_color(ctx)?,
+        stroke_color: renderer.resolve_stroke_color(ctx)?,
+        stroke_width: renderer.resolve_stroke_width(ctx)? as f32,
+        fill_enabled: renderer.resolve_fill_enabled(ctx)?,
+        stroke_enabled: renderer.resolve_stroke_enabled(ctx)?,
+    })
+}
+
+fn with_vector_text_font_mgr<R>(f: impl FnOnce(&FontMgr) -> R) -> R {
+    VECTOR_TEXT_FONT_MGR.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let mgr = borrow.get_or_insert_with(FontMgr::default);
+        f(mgr)
+    })
+}
+
+fn with_vector_text_font_collection<R>(f: impl FnOnce(FontCollection) -> R) -> R {
+    VECTOR_TEXT_FONT_COLLECTION.with(|cell| {
+        if cell.borrow().is_none() {
+            let font_collection = with_vector_text_font_mgr(new_vector_text_font_collection);
+            *cell.borrow_mut() = Some(font_collection);
+        }
+
+        let font_collection = cell
+            .borrow()
+            .as_ref()
+            .expect("vector text font collection should be initialized")
+            .clone();
+
+        f(font_collection)
+    })
+}
+
+fn new_vector_text_font_collection(default_font_mgr: &FontMgr) -> FontCollection {
+    let mut font_collection = FontCollection::new();
+    font_collection.set_default_font_manager(default_font_mgr.clone(), None);
+    #[cfg(feature = "embed-roboto")]
+    attach_embedded_roboto(&mut font_collection, default_font_mgr);
+    font_collection
+}
+
+#[cfg(feature = "embed-roboto")]
+fn attach_embedded_roboto(font_collection: &mut FontCollection, default_font_mgr: &FontMgr) {
+    let Some(roboto_typeface) = default_font_mgr.new_from_data(EMBEDDED_ROBOTO_REGULAR, None)
+    else {
+        return;
+    };
+
+    let mut provider = TypefaceFontProvider::new();
+    provider.register_typeface(roboto_typeface, Some("Roboto"));
+    font_collection.set_asset_font_manager(Some(provider.into()));
+}
+
+fn rasterize_geometry<S: SurfacePool, M: MediaStore>(
     geometry: &ShapeGeometry,
     position: VectorPosition,
     style: &VectorStyle,
-    renderer: &ShapeRenderer,
-    ctx: &mut RenderContext,
+    renderer_style: ResolvedRendererStyle,
+    ctx: &mut RenderContext<'_, S, M>,
 ) -> RasterFrame {
-    let style = resolve_style(style, renderer);
+    let style = resolve_style(style, renderer_style);
     let (path, width, height) = build_path(geometry);
     let width = width.max(1);
     let height = height.max(1);
     let pad = draw_padding(style);
     let bounds = positioned_bounds(width, height, position, pad);
 
-    let pool = Arc::clone(&ctx.surface_pool);
-    if let Ok(mut surface_ref) = pool.acquire_raster(bounds.width, bounds.height) {
-        if let Some(surface) = surface_ref.surface_mut() {
-            let canvas = surface.canvas();
-            canvas.restore_to_count(1);
-            canvas.reset_matrix();
-            canvas.clear(Color::TRANSPARENT);
-            canvas.save();
-            canvas.translate((bounds.draw_x, bounds.draw_y));
-            draw_shape(canvas, &path, style);
-            canvas.restore();
-            let bytes = read_surface_rgba(surface, bounds.width, bounds.height, Some(ctx));
-            return bitmap_with_bounds(bytes, &bounds);
-        }
+    if let Ok(mut surface_ref) = ctx
+        .renderer
+        .surface_pool
+        .acquire_raster(bounds.width, bounds.height)
+    {
+        let surface = surface_ref.surface_mut();
+        let canvas = surface.canvas();
+        canvas.restore_to_count(1);
+        canvas.reset_matrix();
+        canvas.clear(Color::TRANSPARENT);
+        canvas.save();
+        canvas.translate((bounds.draw_x, bounds.draw_y));
+        draw_shape(canvas, &path, style);
+        canvas.restore();
+        let bytes = read_surface_rgba(surface, bounds.width, bounds.height, Some(ctx));
+        return bitmap_with_bounds(bytes, &bounds);
     }
 
     // Fallback: allocate a fresh surface
@@ -137,20 +255,23 @@ fn rasterize_geometry(
     )
 }
 
-fn resolve_style(style: &VectorStyle, renderer: &ShapeRenderer) -> ResolvedVectorStyle {
-    let fill_color = style.color.unwrap_or(renderer.fill_color);
+fn resolve_style(
+    style: &VectorStyle,
+    renderer_style: ResolvedRendererStyle,
+) -> ResolvedVectorStyle {
+    let fill_color = style.color.unwrap_or(renderer_style.fill_color);
     let fill_enabled = if style.color.is_some() {
         true
     } else {
-        renderer.fill_enabled
+        renderer_style.fill_enabled
     };
 
     let (stroke_color, stroke_width, stroke_enabled) = match style.stroke {
         Some(stroke) => (stroke.color, stroke.width.max(0.0), stroke.width > 0.0),
         None => (
-            renderer.stroke_color,
-            renderer.stroke_width.max(0.0),
-            renderer.stroke_enabled && renderer.stroke_width > 0.0,
+            renderer_style.stroke_color,
+            renderer_style.stroke_width.max(0.0),
+            renderer_style.stroke_enabled && renderer_style.stroke_width > 0.0,
         ),
     };
 
@@ -163,12 +284,12 @@ fn resolve_style(style: &VectorStyle, renderer: &ShapeRenderer) -> ResolvedVecto
     }
 }
 
-fn rasterize_text(
+fn rasterize_text<S: SurfacePool, M: MediaStore>(
     text: &VectorTextData,
-    renderer: &ShapeRenderer,
-    ctx: &mut RenderContext,
+    renderer_style: ResolvedRendererStyle,
+    ctx: &mut RenderContext<'_, S, M>,
 ) -> RasterFrame {
-    let style = resolve_style(&text.style, renderer);
+    let style = resolve_style(&text.style, renderer_style);
     let text_color = if style.fill_enabled {
         style.fill_color
     } else if style.stroke_enabled {
@@ -179,37 +300,99 @@ fn rasterize_text(
         [0, 0, 0, 0]
     };
 
-    let raster_text = crate::node::text::Text {
-        content: text.content.clone(),
-        font_family: text.font_family.clone(),
-        font_size: text.font_size,
-        font_weight: text.font_weight,
-        font_style: text.font_style,
-        max_width: text.max_width,
-        color: text_color,
-        alignment: text.alignment,
+    let mut paragraph_style = ParagraphStyle::new();
+    paragraph_style.set_text_align(match text.alignment.horizontal {
+        crate::node::source::text::TextAlignmentHorizontal::Left => ParagraphTextAlign::Left,
+        crate::node::source::text::TextAlignmentHorizontal::Center => ParagraphTextAlign::Center,
+        crate::node::source::text::TextAlignmentHorizontal::Right => ParagraphTextAlign::Right,
+        crate::node::source::text::TextAlignmentHorizontal::Justify => ParagraphTextAlign::Justify,
+    });
+
+    let mut text_style = ParagraphTextStyle::new();
+    text_style.set_font_size(text.font_size.max(1.0));
+    text_style.set_color(to_skia_color(text_color));
+    text_style.set_font_style(FontStyle::new(
+        Weight::from(i32::from(text.font_weight.clamp(100, 900))),
+        skia_safe::font_style::Width::NORMAL,
+        to_slant(text.font_style),
+    ));
+
+    let requested_font_family = text.font_family.trim();
+    if requested_font_family.is_empty() {
+        #[cfg(feature = "embed-roboto")]
+        text_style.set_font_families(&["Roboto", "sans-serif"]);
+        #[cfg(not(feature = "embed-roboto"))]
+        text_style.set_font_families(&["sans-serif"]);
+    } else {
+        #[cfg(feature = "embed-roboto")]
+        text_style.set_font_families(&[requested_font_family, "Roboto", "sans-serif"]);
+        #[cfg(not(feature = "embed-roboto"))]
+        text_style.set_font_families(&[requested_font_family, "sans-serif"]);
+    }
+
+    paragraph_style.set_text_style(&text_style);
+    let layout_width = text
+        .max_width
+        .unwrap_or(ctx.renderer.composition.render_settings.width as f32)
+        .clamp(1.0, u32::MAX as f32);
+    let paragraph = with_vector_text_font_collection(|font_collection| {
+        let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
+        builder.push_style(&text_style);
+        builder.add_text(&text.content);
+        let mut paragraph = builder.build();
+        paragraph.layout(layout_width);
+        paragraph
+    });
+
+    let width = layout_width.ceil().max(1.0) as u32;
+    let height = paragraph.height().ceil().max(1.0) as u32;
+    let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))
+    else {
+        return RasterFrame::bitmap(Arc::new(vec![0; 4]), 1, 1);
     };
 
-    match raster_text.evaluate(&NodeInputs::new(), ctx) {
-        Ok(PortValue::RasterFrame(frame)) => {
-            let (text_w, text_h) = frame.dimensions();
-            let pad = draw_padding(style);
-            let bounds = positioned_bounds(text_w.max(1), text_h.max(1), text.position, pad);
-            offset_raster_into_bounds(frame, &bounds, ctx)
+    let canvas = surface.canvas();
+    canvas.clear(Color::TRANSPARENT);
+    let vertical_offset = match text.alignment.vertical {
+        crate::node::source::text::TextAlignmentVertical::Top => 0.0,
+        crate::node::source::text::TextAlignmentVertical::Middle => {
+            (height as f32 - paragraph.height()).max(0.0) * 0.5
         }
-        Ok(PortValue::Vector(_)) | Err(_) => RasterFrame::bitmap(Arc::new(vec![0; 4]), 1, 1),
+        crate::node::source::text::TextAlignmentVertical::Bottom => {
+            (height as f32 - paragraph.height()).max(0.0)
+        }
+    };
+    paragraph.paint(canvas, (0.0, vertical_offset));
+
+    let frame = RasterFrame::bitmap(
+        Arc::new(read_surface_rgba(&mut surface, width, height, Some(ctx))),
+        width,
+        height,
+    );
+
+    let (text_w, text_h) = frame.dimensions();
+    let pad = draw_padding(style);
+    let bounds = positioned_bounds(text_w.max(1), text_h.max(1), text.position, pad);
+    offset_raster_into_bounds(frame, &bounds, ctx)
+}
+
+fn to_slant(style: crate::node::source::text::TextFontStyle) -> skia_safe::font_style::Slant {
+    match style {
+        crate::node::source::text::TextFontStyle::Normal => skia_safe::font_style::Slant::Upright,
+        crate::node::source::text::TextFontStyle::Italic => skia_safe::font_style::Slant::Italic,
+        crate::node::source::text::TextFontStyle::Oblique => skia_safe::font_style::Slant::Oblique,
     }
 }
 
-fn rasterize_group(
+fn rasterize_group<S: SurfacePool, M: MediaStore>(
     children: &[VectorData],
     group_position: VectorPosition,
-    renderer: &ShapeRenderer,
-    ctx: &mut RenderContext,
+    renderer_style: ResolvedRendererStyle,
+    ctx: &mut RenderContext<'_, S, M>,
 ) -> RasterFrame {
     let mut layers = Vec::with_capacity(children.len());
     for child in children {
-        layers.push(rasterize_vector(child, renderer, ctx));
+        layers.push(rasterize_vector_with_style(child, renderer_style, ctx));
     }
 
     if layers.is_empty() {
@@ -244,7 +427,8 @@ fn rasterize_group(
         |canvas| {
             canvas.clear(Color::TRANSPARENT);
             for layer in &layers {
-                let (bytes, width, height) = layer.clone().into_parts();
+                let bytes = layer.as_bitmap_bytes();
+                let (width, height) = layer.dimensions()
                 let Some(image) = make_skia_image(
                     &bytes,
                     width,
@@ -339,10 +523,10 @@ fn bitmap_with_bounds(bytes: Vec<u8>, bounds: &PositionedRasterBounds) -> Raster
     ))
 }
 
-fn offset_raster_into_bounds(
+fn offset_raster_into_bounds<S: SurfacePool, M: MediaStore>(
     frame: RasterFrame,
     bounds: &PositionedRasterBounds,
-    ctx: &mut RenderContext,
+    ctx: &mut RenderContext<'_, S, M>,
 ) -> RasterFrame {
     let (bytes, width, height) = frame.clone().into_parts();
     if width == 0 || height == 0 {

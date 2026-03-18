@@ -5,144 +5,209 @@ use skia_safe::{CubicResampler, Rect, SamplingOptions};
 use crate::{
     error::LumenError,
     node::{
-        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        NodeId, NodeProperty, PortRef,
         pixel_utils::{make_skia_image, render_with_skia},
     },
     raster::{BitmapFrame, RasterFrame, RectI},
     render::RenderContext,
 };
-
-const INPUT_PORTS: [InputPortDef; 1] = [InputPortDef {
-    name: "source",
-    kind: PortKind::RasterFrame,
-    optional: false,
-}];
-
-const OUTPUT_PORTS: [OutputPortDef; 1] = [OutputPortDef {
-    name: "output",
-    kind: PortKind::RasterFrame,
-}];
+use lumen_macros::{Node, node_impl};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
 pub enum ResizeMode {
-    Stretch,
-    Fit,
-    Fill,
+    Stretch = 0,
+    Fit = 1,
+    Fill = 2,
+}
+
+impl ResizeMode {
+    fn from_int(value: i64) -> Self {
+        match value {
+            1 => Self::Fit,
+            2 => Self::Fill,
+            _ => Self::Stretch,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
 pub enum ResizeSampling {
-    Nearest,
-    Linear,
+    Nearest = 0,
+    Linear = 1,
 }
 
-#[derive(Debug, Clone)]
+impl ResizeSampling {
+    fn from_int(value: i64) -> Self {
+        match value {
+            0 => Self::Nearest,
+            _ => Self::Linear,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Node)]
 pub struct Resize {
-    pub width: u32,
-    pub height: u32,
-    pub mode: ResizeMode,
-    pub sampling: ResizeSampling,
+    pub id: NodeId,
+
+    #[property(expected = Int)]
+    pub width: NodeProperty,
+    #[property(expected = Int)]
+    pub height: NodeProperty,
+    #[property(expected = Int)]
+    pub mode: NodeProperty,
+    #[property(expected = Int)]
+    pub sampling: NodeProperty,
+
+    #[input(kind = Raster)]
+    pub source: PortRef,
 }
 
-impl NodeEval for Resize {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        &INPUT_PORTS
+impl Default for Resize {
+    fn default() -> Self {
+        Self {
+            id: NodeId::new(0),
+            width: NodeProperty::Int(1),
+            height: NodeProperty::Int(1),
+            mode: NodeProperty::Int(ResizeMode::Stretch as i64),
+            sampling: NodeProperty::Int(ResizeSampling::Linear as i64),
+            source: PortRef::empty(),
+        }
     }
+}
 
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &OUTPUT_PORTS
-    }
+#[node_impl]
+impl Resize {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let source = ctx.eval(self.source.clone())?.as_raster()?;
+        let mode = ResizeMode::from_int(self.resolve_mode(ctx)?);
+        let sampling_mode = ResizeSampling::from_int(self.resolve_sampling(ctx)?);
+        let dest_width = self.resolve_width(ctx)?.max(1) as u32;
+        let dest_height = self.resolve_height(ctx)?.max(1) as u32;
 
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let source = inputs.get_raster("source")?;
-        let (src_w, src_h) = source.dimensions();
+        let (source_width, source_height) = source.dimensions();
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
-        let dst_w = self.width.max(1);
-        let dst_h = self.height.max(1);
 
-        if src_w == dst_w && src_h == dst_h {
-            return Ok(PortValue::RasterFrame(source.clone()));
+        // Early return if dimensions already match
+        if source_width == dest_width && source_height == dest_height {
+            return Ok(source.clone());
         }
 
-        let output_rect = RectI::new(source_format.x, source_format.y, dst_w, dst_h);
-        let (bytes, src_w, src_h) = source.clone().into_parts();
+        let output_rect = RectI::new(source_format.x, source_format.y, dest_width, dest_height);
+        let (bytes, source_width, source_height) = source.clone().into_parts();
 
-        if src_w == 0 || src_h == 0 {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        // Handle empty source image by returning transparent buffer
+        if source_width == 0 || source_height == 0 {
+            let transparent_buffer =
+                Arc::new(vec![
+                    0u8;
+                    (dest_width as usize) * (dest_height as usize) * 4
+                ]);
+            return Ok(RasterFrame::Bitmap(
                 BitmapFrame::with_domain(
-                    Arc::new(vec![0u8; (dst_w as usize) * (dst_h as usize) * 4]),
-                    dst_w,
-                    dst_h,
+                    transparent_buffer,
+                    dest_width,
+                    dest_height,
                     output_rect,
                     output_rect,
                 )
                 .with_alpha_mode(source_alpha),
-            )));
+            ));
         }
 
-        let Some(image) = make_skia_image(&bytes, src_w, src_h, (src_w as usize) * 4, source_alpha)
-        else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        let Some(image) = make_skia_image(
+            &bytes,
+            source_width,
+            source_height,
+            (source_width as usize) * 4,
+            source_alpha,
+        ) else {
+            // Failed to create Skia image, return transparent buffer
+            let transparent_buffer =
+                Arc::new(vec![
+                    0u8;
+                    (dest_width as usize) * (dest_height as usize) * 4
+                ]);
+            return Ok(RasterFrame::Bitmap(
                 BitmapFrame::with_domain(
-                    Arc::new(vec![0u8; (dst_w as usize) * (dst_h as usize) * 4]),
-                    dst_w,
-                    dst_h,
+                    transparent_buffer,
+                    dest_width,
+                    dest_height,
                     output_rect,
                     output_rect,
                 )
                 .with_alpha_mode(source_alpha),
-            )));
+            ));
         };
 
-        let (src_rect, dst_rect) = compute_rects(src_w, src_h, dst_w, dst_h, self.mode);
-        let sampling = match self.sampling {
+        let (source_rect, dest_rect) =
+            compute_rects(source_width, source_height, dest_width, dest_height, mode);
+        let sampling = match sampling_mode {
             ResizeSampling::Nearest => SamplingOptions::default(),
             ResizeSampling::Linear => SamplingOptions::from(CubicResampler::catmull_rom()),
         };
 
-        let resized = render_with_skia(dst_w, dst_h, Some(ctx), |canvas| {
+        let resized = render_with_skia(dest_width, dest_height, Some(ctx), |canvas| {
             canvas.draw_image_rect_with_sampling_options(
                 &image,
-                Some((&src_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
-                dst_rect,
+                Some((&source_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
+                dest_rect,
                 sampling,
                 &skia_safe::Paint::default(),
             );
         });
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-            BitmapFrame::with_domain(Arc::new(resized), dst_w, dst_h, output_rect, output_rect)
-                .with_alpha_mode(source_alpha),
-        )))
+        Ok(RasterFrame::Bitmap(
+            BitmapFrame::with_domain(
+                Arc::new(resized),
+                dest_width,
+                dest_height,
+                output_rect,
+                output_rect,
+            )
+            .with_alpha_mode(source_alpha),
+        ))
     }
 }
 
-fn compute_rects(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32, mode: ResizeMode) -> (Rect, Rect) {
-    let src_full = Rect::from_wh(src_w as f32, src_h as f32);
-    let dst_full = Rect::from_wh(dst_w as f32, dst_h as f32);
+fn compute_rects(
+    source_width: u32,
+    source_height: u32,
+    dest_width: u32,
+    dest_height: u32,
+    mode: ResizeMode,
+) -> (Rect, Rect) {
+    let source_rect = Rect::from_wh(source_width as f32, source_height as f32);
+    let dest_rect = Rect::from_wh(dest_width as f32, dest_height as f32);
 
     match mode {
-        ResizeMode::Stretch => (src_full, dst_full),
+        ResizeMode::Stretch => (source_rect, dest_rect),
         ResizeMode::Fit => {
-            let scale = (dst_w as f32 / src_w as f32).min(dst_h as f32 / src_h as f32);
-            let w = src_w as f32 * scale;
-            let h = src_h as f32 * scale;
-            let x = (dst_w as f32 - w) * 0.5;
-            let y = (dst_h as f32 - h) * 0.5;
-            (src_full, Rect::from_xywh(x, y, w, h))
+            let scale = (dest_width as f32 / source_width as f32)
+                .min(dest_height as f32 / source_height as f32);
+            let scaled_width = source_width as f32 * scale;
+            let scaled_height = source_height as f32 * scale;
+            let x_offset = (dest_width as f32 - scaled_width) * 0.5;
+            let y_offset = (dest_height as f32 - scaled_height) * 0.5;
+            (
+                source_rect,
+                Rect::from_xywh(x_offset, y_offset, scaled_width, scaled_height),
+            )
         }
         ResizeMode::Fill => {
-            let scale = (dst_w as f32 / src_w as f32).max(dst_h as f32 / src_h as f32);
-            let w = dst_w as f32 / scale;
-            let h = dst_h as f32 / scale;
-            let x = (src_w as f32 - w) * 0.5;
-            let y = (src_h as f32 - h) * 0.5;
-            (Rect::from_xywh(x, y, w, h), dst_full)
+            let scale = (dest_width as f32 / source_width as f32)
+                .max(dest_height as f32 / source_height as f32);
+            let crop_width = dest_width as f32 / scale;
+            let crop_height = dest_height as f32 / scale;
+            let x_offset = (source_width as f32 - crop_width) * 0.5;
+            let y_offset = (source_height as f32 - crop_height) * 0.5;
+            (
+                Rect::from_xywh(x_offset, y_offset, crop_width, crop_height),
+                dest_rect,
+            )
         }
     }
 }

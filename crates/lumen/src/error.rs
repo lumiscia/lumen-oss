@@ -33,11 +33,7 @@ pub enum GraphValidationError {
     #[error("connection source node is missing")]
     MissingSourceNode { node_id: NodeId },
     #[error("missing required input `{port}`")]
-    MissingRequiredInput {
-        node_id: NodeId,
-        node_kind: &'static str,
-        port: String,
-    },
+    MissingRequiredInput { node_id: NodeId, port: String },
     #[error("port kind mismatch for `{to_port}`")]
     PortKindMismatch {
         from_node: NodeId,
@@ -81,22 +77,16 @@ pub enum PropertyError {
 pub enum ExpressionError {
     #[error("expression parse failed: {details}")]
     Parse {
-        node_id: Option<NodeId>,
-        property_path: Option<String>,
+        path: Option<String>,
         details: String,
     },
     #[error("expression evaluation failed: {details}")]
     Evaluate {
-        node_id: Option<NodeId>,
-        property_path: Option<String>,
+        path: Option<String>,
         details: String,
     },
     #[error("undefined variable in expression")]
-    UndefinedVariable {
-        node_id: Option<NodeId>,
-        property_path: Option<String>,
-        name: String,
-    },
+    UndefinedVariable { path: Option<String>, name: String },
 }
 
 #[derive(Debug, Error, Clone)]

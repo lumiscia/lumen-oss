@@ -18,6 +18,7 @@ vulkan = ["skia-safe/vulkan", "dep:ash"]
 
 [dependencies]
 thiserror = "2.0.18"
+lumen-macros = { path = "../lumen-macros" }
 skia-safe = { version = "0.91", features = ["textlayout"] }
 ffmpeg-next = { version = "8.0", optional = true }
 serde = { version = "1.0.228", features = ["derive"], optional = true }

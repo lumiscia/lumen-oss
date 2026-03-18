@@ -1,12 +1,13 @@
 //! Node type system, shared value types, and enum-based node dispatch.
 
-use std::{collections::HashMap, fmt, hash::Hasher};
+use std::{collections::HashMap, fmt};
 
 use crate::{
     error::{LumenError, PropertyError},
-    node::source::text,
+    expr::Expression,
+    media::MediaStore,
     raster::RasterFrame,
-    render::RenderContext,
+    render::{context::RenderContext, surface::SurfacePool},
 };
 
 pub mod compositing;
@@ -15,6 +16,10 @@ pub mod pixel_utils;
 pub mod processing;
 pub mod source;
 pub mod vector;
+
+pub use vector::{
+    ShapeGeometry, VectorData, VectorPosition, VectorStroke, VectorStyle, VectorTextData,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub u64);
@@ -45,6 +50,35 @@ impl fmt::Display for TrackId {
         write!(f, "{}", self.0)
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputPortDef {
+    pub name: &'static str,
+    pub kind: PortKind,
+    pub optional: bool,
+    pub variadic: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputPortDef {
+    pub name: &'static str,
+    pub kind: PortKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum PropertyKind {
+    Float = 0,
+    Int = 1,
+    Bool = 2,
+    String = 3,
+    Color = 4,
+    Vec2 = 5,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertyDef {
+    pub name: &'static str,
+    pub expected: PropertyKind,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -54,529 +88,389 @@ pub enum PortKind {
     Vector = 2,
 }
 
+// TODO: fix
 #[derive(Debug, Clone)]
-pub enum PortValue {
-    RasterFrame(RasterFrame),
-    Vector(VectorData),
+pub struct NodeDef {
+    pub inputs: HashMap<String, ()>, // we should replace the () with a type that holds our data
+    pub outputs: HashMap<String, ()>, // same here
+
+    pub properties: HashMap<String, ()>, // and... same here
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ShapeGeometry {
-    Rectangle {
-        width: u32,
-        height: u32,
-        border_radius: f32,
-    },
-    Ellipse {
-        width: u32,
-        height: u32,
-    },
-    Polygon {
-        points: Vec<(f32, f32)>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct VectorStroke {
-    pub color: [u8; 4],
-    pub width: f32,
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct VectorStyle {
-    pub color: Option<[u8; 4]>,
-    pub stroke: Option<VectorStroke>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct VectorPosition {
-    pub x: f32,
-    pub y: f32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct VectorTextData {
-    pub content: String,
-    pub font_family: String,
-    pub font_size: f32,
-    pub font_weight: u16,
-    pub font_style: text::TextFontStyle,
-    pub max_width: Option<f32>,
-    pub alignment: text::TextAlignment,
-    pub position: VectorPosition,
-    pub style: VectorStyle,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum VectorData {
-    Shape {
-        geometry: ShapeGeometry,
-        style: VectorStyle,
-        position: VectorPosition,
-    },
-    Text(VectorTextData),
-    Group {
-        children: Vec<VectorData>,
-        position: VectorPosition,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InputPortDef {
-    pub name: &'static str,
-    pub kind: PortKind,
-    pub optional: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutputPortDef {
-    pub name: &'static str,
-    pub kind: PortKind,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct NodeInputs {
-    ports: HashMap<String, PortValue>,
-}
-
-impl NodeInputs {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn insert(&mut self, name: impl Into<String>, value: PortValue) {
-        self.ports.insert(name.into(), value);
-    }
-
-    pub fn get_port(&self, name: &str) -> Option<&PortValue> {
-        self.ports.get(name)
-    }
-
-    pub fn get_raster(&self, name: &str) -> Result<&RasterFrame, LumenError> {
-        match self.ports.get(name) {
-            Some(PortValue::RasterFrame(frame)) => Ok(frame),
-            Some(_) => Err(PropertyError::InvalidType {
-                node_id: NodeId(0),
-                property_path: name.to_string(),
-                expected: "RasterFrame",
-                actual: "non-raster",
-            }
-            .into()),
-            None => Err(PropertyError::MissingProperty {
-                node_id: NodeId(0),
-                property_path: name.to_string(),
-            }
-            .into()),
-        }
-    }
-
-    pub fn get_raster_optional(&self, name: &str) -> Result<Option<&RasterFrame>, LumenError> {
-        match self.ports.get(name) {
-            Some(PortValue::RasterFrame(frame)) => Ok(Some(frame)),
-            Some(_) => Err(PropertyError::InvalidType {
-                node_id: NodeId(0),
-                property_path: name.to_string(),
-                expected: "RasterFrame",
-                actual: "non-raster",
-            }
-            .into()),
-            None => Ok(None),
-        }
-    }
-
-    pub fn get_vector(&self, name: &str) -> Result<&VectorData, LumenError> {
-        match self.ports.get(name) {
-            Some(PortValue::Vector(vector)) => Ok(vector),
-            Some(_) => Err(PropertyError::InvalidType {
-                node_id: NodeId(0),
-                property_path: name.to_string(),
-                expected: "Vector",
-                actual: "non-vector",
-            }
-            .into()),
-            None => Err(PropertyError::MissingProperty {
-                node_id: NodeId(0),
-                property_path: name.to_string(),
-            }
-            .into()),
-        }
-    }
-
-    pub fn get_vector_optional(&self, name: &str) -> Result<Option<&VectorData>, LumenError> {
-        match self.ports.get(name) {
-            Some(PortValue::Vector(vector)) => Ok(Some(vector)),
-            Some(_) => Err(PropertyError::InvalidType {
-                node_id: NodeId(0),
-                property_path: name.to_string(),
-                expected: "Vector",
-                actual: "non-vector",
-            }
-            .into()),
-            None => Ok(None),
-        }
-    }
-}
-
-pub trait NodeEval: Send + Sync {
-    fn input_port_defs(&self) -> &'static [InputPortDef];
-    fn output_port_defs(&self) -> &'static [OutputPortDef];
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError>;
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PropertyValue {
+#[derive(Debug, Clone)]
+pub enum NodeProperty {
     Float(f64),
     Int(i64),
     Bool(bool),
-    Color([u8; 4]),
     String(String),
-    Vector2(f64, f64),
-    Map(HashMap<String, PropertyValue>),
+    Color([u8; 4]),
+    Vec2((f64, f64)),
+    FloatVec(Vec<f64>),
+    IntVec(Vec<i64>),
+    StringVec(Vec<String>),
+    Expr(Expression),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-#[non_exhaustive]
-pub enum BlendMode {
-    Normal = 0,
-    Multiply = 1,
-    Screen = 2,
-    Overlay = 3,
-    Darken = 4,
-    Lighten = 5,
-}
+impl NodeProperty {
+    fn invalid_type(
+        node_id: NodeId,
+        property_path: &str,
+        expected: &'static str,
+        actual: &'static str,
+    ) -> LumenError {
+        LumenError::Property(PropertyError::InvalidType {
+            node_id,
+            property_path: property_path.to_string(),
+            expected,
+            actual,
+        })
+    }
 
-impl From<BlendMode> for skia_safe::BlendMode {
-    fn from(value: BlendMode) -> Self {
-        match value {
-            BlendMode::Normal => Self::SrcOver,
-            BlendMode::Multiply => Self::Multiply,
-            BlendMode::Screen => Self::Screen,
-            BlendMode::Overlay => Self::Overlay,
-            BlendMode::Darken => Self::Darken,
-            BlendMode::Lighten => Self::Lighten,
+    pub fn resolve_float(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext,
+    ) -> crate::Result<f64> {
+        match self {
+            Self::Float(value) => Ok(*value),
+            Self::Int(value) => Ok(*value as f64),
+            Self::String(value) => value
+                .parse::<f64>()
+                .map_err(|_| Self::invalid_type(node_id, property_path, "Float", "String")),
+            _ => Err(Self::invalid_type(
+                node_id,
+                property_path,
+                "Float",
+                "unsupported",
+            )),
+        }
+    }
+
+    pub fn resolve_int(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext,
+    ) -> crate::Result<i64> {
+        match self {
+            Self::Int(value) => Ok(*value),
+            Self::Float(value) => Ok(*value as i64),
+            Self::Bool(value) => Ok(i64::from(*value)),
+            Self::String(value) => value
+                .parse::<i64>()
+                .map_err(|_| Self::invalid_type(node_id, property_path, "Int", "String")),
+            _ => Err(Self::invalid_type(
+                node_id,
+                property_path,
+                "Int",
+                "unsupported",
+            )),
+        }
+    }
+
+    pub fn resolve_bool(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext,
+    ) -> crate::Result<bool> {
+        match self {
+            Self::Bool(value) => Ok(*value),
+            Self::Int(value) => Ok(*value != 0),
+            Self::Float(value) => Ok(*value != 0.0),
+            Self::String(value) => match value.to_ascii_lowercase().as_str() {
+                "true" | "1" => Ok(true),
+                "false" | "0" => Ok(false),
+                _ => Err(Self::invalid_type(node_id, property_path, "Bool", "String")),
+            },
+            _ => Err(Self::invalid_type(
+                node_id,
+                property_path,
+                "Bool",
+                "unsupported",
+            )),
+        }
+    }
+
+    pub fn resolve_string(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext,
+    ) -> crate::Result<String> {
+        match self {
+            Self::String(value) => Ok(value.clone()),
+            Self::Int(value) => Ok(value.to_string()),
+            Self::Float(value) => Ok(value.to_string()),
+            Self::Bool(value) => Ok(value.to_string()),
+            _ => Err(Self::invalid_type(
+                node_id,
+                property_path,
+                "String",
+                "unsupported",
+            )),
+        }
+    }
+
+    pub fn resolve_color(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext,
+    ) -> crate::Result<[u8; 4]> {
+        match self {
+            Self::Color(value) => Ok(*value),
+            _ => Err(Self::invalid_type(
+                node_id,
+                property_path,
+                "Color",
+                "unsupported",
+            )),
+        }
+    }
+
+    pub fn resolve_vec2(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext,
+    ) -> crate::Result<(f64, f64)> {
+        match self {
+            Self::Vec2(value) => Ok(*value),
+            _ => Err(Self::invalid_type(
+                node_id,
+                property_path,
+                "Vec2",
+                "unsupported",
+            )),
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Node {
-    pub id: NodeId,
-    pub kind: NodeKind,
+#[derive(Debug)]
+pub enum NodeResult {
+    Raster(RasterFrame),
+    Vector(VectorData),
+    None,
 }
 
-impl Node {
-    pub fn new(id: NodeId, kind: NodeKind) -> Self {
-        Self { id, kind }
+impl NodeResult {
+    pub fn as_raster(&self) -> crate::Result<&RasterFrame> {
+        match self {
+            Self::Raster(frame) => Ok(frame),
+            Self::Vector(_) | Self::None => Err(LumenError::Property(PropertyError::InvalidType {
+                node_id: NodeId::new(0),
+                property_path: "result".to_string(),
+                expected: "RasterFrame",
+                actual: "non-raster",
+            })),
+        }
+    }
+
+    pub fn as_vector(&self) -> crate::Result<&VectorData> {
+        match self {
+            Self::Vector(vector) => Ok(vector),
+            Self::Raster(_) | Self::None => Err(LumenError::Property(PropertyError::InvalidType {
+                node_id: NodeId::new(0),
+                property_path: "result".to_string(),
+                expected: "Vector",
+                actual: "non-vector",
+            })),
+        }
     }
 }
 
-#[derive(Debug, Clone)]
-#[non_exhaustive]
+impl From<RasterFrame> for NodeResult {
+    fn from(value: RasterFrame) -> Self {
+        Self::Raster(value)
+    }
+}
+
+impl From<VectorData> for NodeResult {
+    fn from(value: VectorData) -> Self {
+        Self::Vector(value)
+    }
+}
+
+pub trait PropertyEval {
+    fn property_defs(&self) -> &'static [PropertyDef];
+    fn get_property(&self, id: &str) -> crate::Result<Option<NodeProperty>>;
+}
+
+pub trait Node: PropertyEval + Send + Sync {
+    fn id(&self) -> NodeId;
+    fn input_port_defs(&self) -> &'static [InputPortDef];
+    fn output_port_defs(&self) -> &'static [OutputPortDef];
+}
+
+pub trait NodeEval<'a, S: SurfacePool, M: MediaStore>: PropertyEval + Send + Sync {
+    fn evaluate(
+        &self,
+        context: &mut RenderContext<'a, S, M>,
+        port: &str,
+    ) -> crate::Result<NodeResult>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PortRef {
+    pub id: NodeId,
+    pub port: String,
+}
+
+impl PortRef {
+    pub fn new(id: NodeId, port: String) -> Self {
+        Self { id, port }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            id: NodeId::new(0),
+            port: Default::default(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.id.0 == 0
+    }
+}
+
+#[derive(Debug)]
 pub enum NodeKind {
-    Shape(vector::shape::Shape),
-    VectorText(vector::vector_text::VectorText),
-    ShapeRenderer(vector::shape_renderer::ShapeRenderer),
-    VectorMerge(vector::vector_merge::VectorMerge),
-    VectorMultiMerge(vector::vector_multimerge::VectorMultiMerge),
+    // compositing nodes
+    Boolean(compositing::boolean::Boolean),
+    Merge(compositing::merge::Merge),
+    RasterMultimerge(compositing::raster_multimerge::RasterMultiMerge),
+    Switch(compositing::switch::Switch),
+
+    // processing nodes
+    Blur(processing::blur::Blur),
+    Crop(processing::crop::Crop),
+    FrameHold(processing::frame_hold::FrameHold),
+    Memo(processing::memo::Memo),
+    Resize(processing::resize::Resize),
+    Shadow(processing::shadow::Shadow),
+    Transform(processing::transform::Transform),
+
+    // source nodes
     MediaIn(source::media_in::MediaIn),
     SolidColor(source::solid_color::SolidColor),
     Text(source::text::Text),
-    Transform(processing::transform::Transform),
-    Crop(processing::crop::Crop),
-    Resize(processing::resize::Resize),
-    Blur(processing::blur::Blur),
-    Shadow(processing::shadow::Shadow),
-    Boolean(compositing::boolean::Boolean),
-    Merge(compositing::merge::Merge),
-    RasterMultiMerge(compositing::raster_multimerge::RasterMultiMerge),
-    Switch(compositing::switch::Switch),
-    FrameHold(processing::frame_hold::FrameHold),
+
+    // vector nodes
+    Shape(vector::shape::Shape),
+    ShapeRenderer(vector::shape_renderer::ShapeRenderer),
+    VectorMultimerge(vector::vector_multimerge::VectorMultiMerge),
+    VectorText(vector::vector_text::VectorText),
+
     MediaOutput(media_output::MediaOutput),
-    Memo(processing::memo::Memo),
 }
 
 impl NodeKind {
-    pub fn kind_name(&self) -> &'static str {
+    pub fn as_node(&self) -> &dyn Node {
         match self {
-            Self::Shape(_) => "Shape",
-            Self::VectorText(_) => "VectorText",
-            Self::ShapeRenderer(_) => "ShapeRenderer",
-            Self::VectorMerge(_) => "VectorMerge",
-            Self::VectorMultiMerge(_) => "VectorMultiMerge",
-            Self::MediaIn(_) => "MediaIn",
-            Self::SolidColor(_) => "SolidColor",
-            Self::Text(_) => "Text",
-            Self::Transform(_) => "Transform",
-            Self::Crop(_) => "Crop",
-            Self::Resize(_) => "Resize",
-            Self::Blur(_) => "Blur",
-            Self::Shadow(_) => "Shadow",
-            Self::Boolean(_) => "Boolean",
-            Self::Merge(_) => "Merge",
-            Self::RasterMultiMerge(_) => "RasterMultiMerge",
-            Self::Switch(_) => "Switch",
-            Self::FrameHold(_) => "FrameHold",
-            Self::MediaOutput(_) => "MediaOutput",
-            Self::Memo(_) => "Memo",
+            NodeKind::Boolean(boolean) => boolean,
+            NodeKind::Merge(merge) => merge,
+            NodeKind::RasterMultimerge(raster_multi_merge) => raster_multi_merge,
+            NodeKind::Switch(switch) => switch,
+            NodeKind::Blur(blur) => blur,
+            NodeKind::Crop(crop) => crop,
+            NodeKind::FrameHold(frame_hold) => frame_hold,
+            NodeKind::Memo(memo) => memo,
+            NodeKind::Resize(resize) => resize,
+            NodeKind::Shadow(shadow) => shadow,
+            NodeKind::Transform(transform) => transform,
+            NodeKind::MediaIn(media_in) => media_in,
+            NodeKind::SolidColor(solid_color) => solid_color,
+            NodeKind::Text(text) => text,
+            NodeKind::Shape(shape) => shape,
+            NodeKind::ShapeRenderer(shape_renderer) => shape_renderer,
+            NodeKind::VectorMultimerge(vector_multi_merge) => vector_multi_merge,
+            NodeKind::VectorText(vector_text) => vector_text,
+            NodeKind::MediaOutput(media_output) => media_output,
         }
     }
 
-    /// Hash the structural content of this node kind into the given hasher,
-    /// without allocating (replaces the prior `format!("{:?}")` approach).
-    pub fn hash_content(&self, hasher: &mut impl Hasher) {
-        use std::hash::Hash;
-        // Discriminant tag
-        std::mem::discriminant(self).hash(hasher);
+    pub fn as_property_eval(&self) -> &dyn PropertyEval {
         match self {
-            Self::Shape(s) => {
-                match &s.geometry {
-                    ShapeGeometry::Rectangle {
-                        width,
-                        height,
-                        border_radius,
-                    } => {
-                        0u8.hash(hasher);
-                        width.hash(hasher);
-                        height.hash(hasher);
-                        border_radius.to_bits().hash(hasher);
-                    }
-                    ShapeGeometry::Ellipse { width, height } => {
-                        1u8.hash(hasher);
-                        width.hash(hasher);
-                        height.hash(hasher);
-                    }
-                    ShapeGeometry::Polygon { points } => {
-                        2u8.hash(hasher);
-                        for (x, y) in points {
-                            x.to_bits().hash(hasher);
-                            y.to_bits().hash(hasher);
-                        }
-                    }
-                }
-
-                s.style.color.hash(hasher);
-                match s.style.stroke {
-                    Some(stroke) => {
-                        true.hash(hasher);
-                        stroke.color.hash(hasher);
-                        stroke.width.to_bits().hash(hasher);
-                    }
-                    None => false.hash(hasher),
-                }
-                s.position.x.to_bits().hash(hasher);
-                s.position.y.to_bits().hash(hasher);
-            }
-            Self::VectorText(t) => {
-                t.content.hash(hasher);
-                t.font_family.hash(hasher);
-                t.font_size.to_bits().hash(hasher);
-                t.font_weight.hash(hasher);
-                std::mem::discriminant(&t.font_style).hash(hasher);
-                t.max_width.map(|v| v.to_bits()).hash(hasher);
-                std::mem::discriminant(&t.alignment.horizontal).hash(hasher);
-                std::mem::discriminant(&t.alignment.vertical).hash(hasher);
-                t.position.x.to_bits().hash(hasher);
-                t.position.y.to_bits().hash(hasher);
-                t.style.color.hash(hasher);
-                match t.style.stroke {
-                    Some(stroke) => {
-                        true.hash(hasher);
-                        stroke.color.hash(hasher);
-                        stroke.width.to_bits().hash(hasher);
-                    }
-                    None => false.hash(hasher),
-                }
-            }
-            Self::ShapeRenderer(r) => {
-                r.fill_color.hash(hasher);
-                r.stroke_color.hash(hasher);
-                r.stroke_width.to_bits().hash(hasher);
-                r.fill_enabled.hash(hasher);
-                r.stroke_enabled.hash(hasher);
-            }
-            Self::VectorMerge(_) => {}
-            Self::VectorMultiMerge(m) => {
-                m.input_count.hash(hasher);
-            }
-            Self::MediaIn(m) => match &m.kind {
-                source::media_in::MediaInKind::Image { source } => {
-                    0u8.hash(hasher);
-                    source.hash(hasher);
-                }
-                source::media_in::MediaInKind::Video {
-                    source,
-                    range,
-                    speed,
-                    loop_mode,
-                } => {
-                    1u8.hash(hasher);
-                    source.hash(hasher);
-                    range.hash(hasher);
-                    speed.to_bits().hash(hasher);
-                    std::mem::discriminant(loop_mode).hash(hasher);
-                }
-            },
-            Self::SolidColor(c) => {
-                c.color.hash(hasher);
-                c.width.hash(hasher);
-                c.height.hash(hasher);
-            }
-            Self::Text(t) => {
-                t.content.hash(hasher);
-                t.font_family.hash(hasher);
-                t.font_size.to_bits().hash(hasher);
-                t.font_weight.hash(hasher);
-                std::mem::discriminant(&t.font_style).hash(hasher);
-                t.max_width.map(|v| v.to_bits()).hash(hasher);
-                t.color.hash(hasher);
-                std::mem::discriminant(&t.alignment.horizontal).hash(hasher);
-                std::mem::discriminant(&t.alignment.vertical).hash(hasher);
-            }
-            Self::Transform(t) => {
-                t.scale_x.to_bits().hash(hasher);
-                t.scale_y.to_bits().hash(hasher);
-                t.translate_x.to_bits().hash(hasher);
-                t.translate_y.to_bits().hash(hasher);
-                t.rotate.to_bits().hash(hasher);
-                t.pivot_x.to_bits().hash(hasher);
-                t.pivot_y.to_bits().hash(hasher);
-                std::mem::discriminant(&t.sampling).hash(hasher);
-            }
-            Self::Crop(c) => {
-                c.x.hash(hasher);
-                c.y.hash(hasher);
-                c.width.hash(hasher);
-                c.height.hash(hasher);
-            }
-            Self::Resize(r) => {
-                r.width.hash(hasher);
-                r.height.hash(hasher);
-                std::mem::discriminant(&r.mode).hash(hasher);
-                std::mem::discriminant(&r.sampling).hash(hasher);
-            }
-            Self::Blur(b) => {
-                b.radius.to_bits().hash(hasher);
-            }
-            Self::Shadow(s) => {
-                s.offset_x.hash(hasher);
-                s.offset_y.hash(hasher);
-                s.color.hash(hasher);
-                s.blur_radius.to_bits().hash(hasher);
-            }
-            Self::Boolean(b) => {
-                std::mem::discriminant(&b.mask_kind).hash(hasher);
-                b.invert.hash(hasher);
-            }
-            Self::Merge(m) => {
-                std::mem::discriminant(&m.blend_mode).hash(hasher);
-                m.opacity.to_bits().hash(hasher);
-            }
-            Self::RasterMultiMerge(m) => {
-                std::mem::discriminant(&m.blend_mode).hash(hasher);
-                m.opacity.to_bits().hash(hasher);
-                m.input_count.hash(hasher);
-            }
-            Self::Switch(s) => {
-                let mut entries: Vec<_> = s.map.iter().collect();
-                entries.sort_by_key(|(k, _)| *k);
-                for (k, range) in entries {
-                    k.hash(hasher);
-                    range.start.hash(hasher);
-                    range.end.hash(hasher);
-                }
-            }
-            Self::FrameHold(f) => {
-                f.hold_frame.hash(hasher);
-            }
-            Self::MediaOutput(_) => {}
-            Self::Memo(m) => {
-                m.cache_id.hash(hasher);
-                m.allow_expressions.hash(hasher);
-            }
+            NodeKind::Boolean(boolean) => boolean,
+            NodeKind::Merge(merge) => merge,
+            NodeKind::RasterMultimerge(raster_multi_merge) => raster_multi_merge,
+            NodeKind::Switch(switch) => switch,
+            NodeKind::Blur(blur) => blur,
+            NodeKind::Crop(crop) => crop,
+            NodeKind::FrameHold(frame_hold) => frame_hold,
+            NodeKind::Memo(memo) => memo,
+            NodeKind::Resize(resize) => resize,
+            NodeKind::Shadow(shadow) => shadow,
+            NodeKind::Transform(transform) => transform,
+            NodeKind::MediaIn(media_in) => media_in,
+            NodeKind::SolidColor(solid_color) => solid_color,
+            NodeKind::Text(text) => text,
+            NodeKind::Shape(shape) => shape,
+            NodeKind::ShapeRenderer(shape_renderer) => shape_renderer,
+            NodeKind::VectorMultimerge(vector_multi_merge) => vector_multi_merge,
+            NodeKind::VectorText(vector_text) => vector_text,
+            NodeKind::MediaOutput(media_output) => media_output,
         }
     }
 
-    pub fn input_port_defs(&self) -> &'static [InputPortDef] {
+    pub fn as_node_eval<'a, S: SurfacePool, M: MediaStore>(&self) -> &dyn NodeEval<'a, S, M> {
         match self {
-            Self::Shape(node) => node.input_port_defs(),
-            Self::VectorText(node) => node.input_port_defs(),
-            Self::ShapeRenderer(node) => node.input_port_defs(),
-            Self::VectorMerge(node) => node.input_port_defs(),
-            Self::VectorMultiMerge(node) => node.input_port_defs(),
-            Self::MediaIn(node) => node.input_port_defs(),
-            Self::SolidColor(node) => node.input_port_defs(),
-            Self::Text(node) => node.input_port_defs(),
-            Self::Transform(node) => node.input_port_defs(),
-            Self::Crop(node) => node.input_port_defs(),
-            Self::Resize(node) => node.input_port_defs(),
-            Self::Blur(node) => node.input_port_defs(),
-            Self::Shadow(node) => node.input_port_defs(),
-            Self::Boolean(node) => node.input_port_defs(),
-            Self::Merge(node) => node.input_port_defs(),
-            Self::RasterMultiMerge(node) => node.input_port_defs(),
-            Self::Switch(node) => node.input_port_defs(),
-            Self::FrameHold(node) => node.input_port_defs(),
-            Self::MediaOutput(node) => node.input_port_defs(),
-            Self::Memo(node) => node.input_port_defs(),
+            NodeKind::Boolean(boolean) => boolean,
+            NodeKind::Merge(merge) => merge,
+            NodeKind::RasterMultimerge(raster_multi_merge) => raster_multi_merge,
+            NodeKind::Switch(switch) => switch,
+            NodeKind::Blur(blur) => blur,
+            NodeKind::Crop(crop) => crop,
+            NodeKind::FrameHold(frame_hold) => frame_hold,
+            NodeKind::Memo(memo) => memo,
+            NodeKind::Resize(resize) => resize,
+            NodeKind::Shadow(shadow) => shadow,
+            NodeKind::Transform(transform) => transform,
+            NodeKind::MediaIn(media_in) => media_in,
+            NodeKind::SolidColor(solid_color) => solid_color,
+            NodeKind::Text(text) => text,
+            NodeKind::Shape(shape) => shape,
+            NodeKind::ShapeRenderer(shape_renderer) => shape_renderer,
+            NodeKind::VectorMultimerge(vector_multi_merge) => vector_multi_merge,
+            NodeKind::VectorText(vector_text) => vector_text,
+            NodeKind::MediaOutput(media_output) => media_output,
         }
     }
+}
 
-    pub fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        match self {
-            Self::Shape(node) => node.output_port_defs(),
-            Self::VectorText(node) => node.output_port_defs(),
-            Self::ShapeRenderer(node) => node.output_port_defs(),
-            Self::VectorMerge(node) => node.output_port_defs(),
-            Self::VectorMultiMerge(node) => node.output_port_defs(),
-            Self::MediaIn(node) => node.output_port_defs(),
-            Self::SolidColor(node) => node.output_port_defs(),
-            Self::Text(node) => node.output_port_defs(),
-            Self::Transform(node) => node.output_port_defs(),
-            Self::Crop(node) => node.output_port_defs(),
-            Self::Resize(node) => node.output_port_defs(),
-            Self::Blur(node) => node.output_port_defs(),
-            Self::Shadow(node) => node.output_port_defs(),
-            Self::Boolean(node) => node.output_port_defs(),
-            Self::Merge(node) => node.output_port_defs(),
-            Self::RasterMultiMerge(node) => node.output_port_defs(),
-            Self::Switch(node) => node.output_port_defs(),
-            Self::FrameHold(node) => node.output_port_defs(),
-            Self::MediaOutput(node) => node.output_port_defs(),
-            Self::Memo(node) => node.output_port_defs(),
-        }
+// such small performance loss for more readable code using dyn, don't really care
+impl PropertyEval for NodeKind {
+    fn property_defs(&self) -> &'static [PropertyDef] {
+        self.as_property_eval().property_defs()
     }
 
-    pub fn evaluate(
+    fn get_property(&self, id: &str) -> crate::Result<Option<NodeProperty>> {
+        self.as_property_eval().get_property(id)
+    }
+}
+
+impl Node for NodeKind {
+    fn id(&self) -> NodeId {
+        self.as_node().id()
+    }
+
+    fn input_port_defs(&self) -> &'static [InputPortDef] {
+        self.as_node().input_port_defs()
+    }
+
+    fn output_port_defs(&self) -> &'static [OutputPortDef] {
+        self.as_node().output_port_defs()
+    }
+}
+
+impl<'a, S: SurfacePool, M: MediaStore> NodeEval<'a, S, M> for NodeKind {
+    fn evaluate(
         &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        match self {
-            Self::Shape(node) => node.evaluate(inputs, ctx),
-            Self::VectorText(node) => node.evaluate(inputs, ctx),
-            Self::ShapeRenderer(node) => node.evaluate(inputs, ctx),
-            Self::VectorMerge(node) => node.evaluate(inputs, ctx),
-            Self::VectorMultiMerge(node) => node.evaluate(inputs, ctx),
-            Self::MediaIn(node) => node.evaluate(inputs, ctx),
-            Self::SolidColor(node) => node.evaluate(inputs, ctx),
-            Self::Text(node) => node.evaluate(inputs, ctx),
-            Self::Transform(node) => node.evaluate(inputs, ctx),
-            Self::Crop(node) => node.evaluate(inputs, ctx),
-            Self::Resize(node) => node.evaluate(inputs, ctx),
-            Self::Blur(node) => node.evaluate(inputs, ctx),
-            Self::Shadow(node) => node.evaluate(inputs, ctx),
-            Self::Boolean(node) => node.evaluate(inputs, ctx),
-            Self::Merge(node) => node.evaluate(inputs, ctx),
-            Self::RasterMultiMerge(node) => node.evaluate(inputs, ctx),
-            Self::Switch(node) => node.evaluate(inputs, ctx),
-            Self::FrameHold(node) => node.evaluate(inputs, ctx),
-            Self::MediaOutput(node) => node.evaluate(inputs, ctx),
-            Self::Memo(node) => node.evaluate(inputs, ctx),
-        }
+        context: &mut RenderContext<'a, S, M>,
+        port: &str,
+    ) -> crate::Result<NodeResult> {
+        self.as_node_eval().evaluate(context, port)
     }
 }

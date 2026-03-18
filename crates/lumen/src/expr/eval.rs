@@ -1,156 +1,68 @@
-use std::collections::HashSet;
-
 use crate::{
-    animation::PropertyTarget,
-    composition::Composition,
     error::{ExpressionError, LumenError},
     expr::{
+        ExpressionContext,
         ast::{BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::evaluate_builtin,
     },
-    node::{NodeId, PropertyValue},
-    render::RenderContext,
+    node::NodeProperty,
 };
 
 impl Expression {
-    pub fn evaluate(&self, ctx: &RenderContext) -> Result<ExpressionValue, LumenError> {
-        let mut active_targets = HashSet::new();
-        self.evaluate_with_context_and_frame(ctx, None, None, None, None, &mut active_targets)
-    }
-
-    pub fn evaluate_with_context(
-        &self,
-        ctx: &RenderContext,
-        composition: Option<&Composition>,
-        node_id: Option<NodeId>,
-        property_path: Option<String>,
-    ) -> Result<ExpressionValue, LumenError> {
-        let mut active_targets = HashSet::new();
-        self.evaluate_with_context_and_frame(
-            ctx,
-            composition,
-            node_id,
-            property_path,
-            None,
-            &mut active_targets,
-        )
-    }
-
-    pub(crate) fn evaluate_with_context_and_frame(
-        &self,
-        ctx: &RenderContext,
-        composition: Option<&Composition>,
-        node_id: Option<NodeId>,
-        property_path: Option<String>,
-        frame_override: Option<u32>,
-        active_targets: &mut HashSet<PropertyTarget>,
-    ) -> Result<ExpressionValue, LumenError> {
-        evaluate_expr(
-            &self.ast,
-            ctx,
-            composition,
-            node_id,
-            property_path.as_deref(),
-            frame_override,
-            active_targets,
-        )
+    pub fn evaluate(&self, ctx: &ExpressionContext) -> crate::Result<ExpressionValue> {
+        evaluate_expr(&self.ast, ctx)
     }
 }
 
-fn evaluate_expr(
-    expr: &ExprNode,
-    ctx: &RenderContext,
-    composition: Option<&Composition>,
-    node_id: Option<NodeId>,
-    property_path: Option<&str>,
-    frame_override: Option<u32>,
-    active_targets: &mut HashSet<PropertyTarget>,
-) -> Result<ExpressionValue, LumenError> {
+pub fn property_value_to_expression_value(value: &NodeProperty) -> crate::Result<ExpressionValue> {
+    match value {
+        NodeProperty::Float(number) => Ok(ExpressionValue::Number(*number)),
+        NodeProperty::Int(number) => Ok(ExpressionValue::Number(*number as f64)),
+        NodeProperty::Bool(boolean) => Ok(ExpressionValue::Boolean(*boolean)),
+        NodeProperty::String(text) => Ok(ExpressionValue::String(text.clone())),
+        unsupported => Err(LumenError::Expression(ExpressionError::Evaluate {
+            path: None,
+            details: format!(
+                "cannot convert node property `{}` into an expression value",
+                node_property_type_name(unsupported)
+            ),
+        })),
+    }
+}
+
+fn evaluate_expr(expr: &ExprNode, ctx: &ExpressionContext) -> crate::Result<ExpressionValue> {
     match expr {
         ExprNode::Literal(value) => Ok(value.clone()),
         ExprNode::Unary(op, value) => {
-            let evaluated = evaluate_expr(
-                value,
-                ctx,
-                composition,
-                node_id,
-                property_path,
-                frame_override,
-                active_targets,
-            )?;
+            let evaluated = evaluate_expr(value, ctx)?;
             match op {
-                UnaryOp::Neg => Ok(ExpressionValue::Number(-to_number(
-                    &evaluated,
-                    node_id,
-                    property_path,
-                    "unary negation expects numeric operand",
-                )?)),
+                UnaryOp::Neg => Ok(ExpressionValue::Number(-to_number(&evaluated, ctx)?)),
                 UnaryOp::Not => Ok(ExpressionValue::Boolean(!to_boolean(&evaluated))),
             }
         }
         ExprNode::Binary(left, op, right) => {
-            let lhs = evaluate_expr(
-                left,
-                ctx,
-                composition,
-                node_id,
-                property_path,
-                frame_override,
-                active_targets,
-            )?;
+            let lhs = evaluate_expr(left, ctx)?;
             match op {
                 BinaryOp::And => {
                     if !to_boolean(&lhs) {
                         return Ok(ExpressionValue::Boolean(false));
                     }
-                    let rhs = evaluate_expr(
-                        right,
-                        ctx,
-                        composition,
-                        node_id,
-                        property_path,
-                        frame_override,
-                        active_targets,
-                    )?;
+                    let rhs = evaluate_expr(right, ctx)?;
                     Ok(ExpressionValue::Boolean(to_boolean(&rhs)))
                 }
                 BinaryOp::Or => {
                     if to_boolean(&lhs) {
                         return Ok(ExpressionValue::Boolean(true));
                     }
-                    let rhs = evaluate_expr(
-                        right,
-                        ctx,
-                        composition,
-                        node_id,
-                        property_path,
-                        frame_override,
-                        active_targets,
-                    )?;
+                    let rhs = evaluate_expr(right, ctx)?;
                     Ok(ExpressionValue::Boolean(to_boolean(&rhs)))
                 }
                 BinaryOp::Eq => {
-                    let rhs = evaluate_expr(
-                        right,
-                        ctx,
-                        composition,
-                        node_id,
-                        property_path,
-                        frame_override,
-                        active_targets,
-                    )?;
+                    let rhs = evaluate_expr(right, ctx)?;
                     Ok(ExpressionValue::Boolean(lhs == rhs))
                 }
                 BinaryOp::Neq => {
-                    let rhs = evaluate_expr(
-                        right,
-                        ctx,
-                        composition,
-                        node_id,
-                        property_path,
-                        frame_override,
-                        active_targets,
-                    )?;
+                    let rhs = evaluate_expr(right, ctx)?;
                     Ok(ExpressionValue::Boolean(lhs != rhs))
                 }
                 BinaryOp::Add
@@ -162,48 +74,28 @@ fn evaluate_expr(
                 | BinaryOp::Lt
                 | BinaryOp::Gte
                 | BinaryOp::Lte => {
-                    let rhs = evaluate_expr(
-                        right,
-                        ctx,
-                        composition,
-                        node_id,
-                        property_path,
-                        frame_override,
-                        active_targets,
-                    )?;
-                    let lhs_num = to_number(
-                        &lhs,
-                        node_id,
-                        property_path,
-                        "binary operation expects numeric operands",
-                    )?;
-                    let rhs_num = to_number(
-                        &rhs,
-                        node_id,
-                        property_path,
-                        "binary operation expects numeric operands",
-                    )?;
+                    let rhs = evaluate_expr(right, ctx)?;
+                    let lhs_num = to_number(&lhs, ctx)?;
+                    let rhs_num = to_number(&rhs, ctx)?;
                     match op {
                         BinaryOp::Add => Ok(ExpressionValue::Number(lhs_num + rhs_num)),
                         BinaryOp::Sub => Ok(ExpressionValue::Number(lhs_num - rhs_num)),
                         BinaryOp::Mul => Ok(ExpressionValue::Number(lhs_num * rhs_num)),
                         BinaryOp::Div => {
                             if rhs_num.abs() <= f64::EPSILON {
-                                return Err(expression_eval_error(
-                                    node_id,
-                                    property_path,
-                                    "division by zero",
-                                ));
+                                return Err(LumenError::Expression(ExpressionError::Evaluate {
+                                    path: ctx.path.clone(),
+                                    details: "division by zero".to_string(),
+                                }));
                             }
                             Ok(ExpressionValue::Number(lhs_num / rhs_num))
                         }
                         BinaryOp::Mod => {
                             if rhs_num.abs() <= f64::EPSILON {
-                                return Err(expression_eval_error(
-                                    node_id,
-                                    property_path,
-                                    "modulo by zero",
-                                ));
+                                return Err(LumenError::Expression(ExpressionError::Evaluate {
+                                    path: ctx.path.clone(),
+                                    details: "modulo by zero".to_string(),
+                                }));
                             }
                             Ok(ExpressionValue::Number(lhs_num % rhs_num))
                         }
@@ -219,173 +111,63 @@ fn evaluate_expr(
         ExprNode::Builtin(builtin, args) => {
             let mut evaluated_args = Vec::with_capacity(args.len());
             for arg in args {
-                evaluated_args.push(evaluate_expr(
-                    arg,
-                    ctx,
-                    composition,
-                    node_id,
-                    property_path,
-                    frame_override,
-                    active_targets,
-                )?);
+                evaluated_args.push(evaluate_expr(arg, ctx)?);
             }
-            evaluate_builtin(
-                *builtin,
-                &evaluated_args,
-                ctx,
-                node_id,
-                property_path.map(ToString::to_string),
-            )
+            evaluate_builtin(*builtin, &evaluated_args, ctx)
         }
         ExprNode::Global(global) => match global {
-            GlobalVar::Frame => Ok(ExpressionValue::Number(f64::from(
-                frame_override.unwrap_or(ctx.request.frame),
-            ))),
-            GlobalVar::Time => {
-                let frame = frame_override.unwrap_or(ctx.request.frame);
-                if ctx.fps <= 0.0 {
-                    Ok(ExpressionValue::Number(0.0))
-                } else {
-                    Ok(ExpressionValue::Number(
-                        f64::from(frame) / f64::from(ctx.fps),
-                    ))
-                }
-            }
+            GlobalVar::Frame => Ok(ExpressionValue::Number(f64::from(ctx.frame))),
+            GlobalVar::Time => Ok(ExpressionValue::Number(ctx.time_seconds())),
             GlobalVar::Fps => Ok(ExpressionValue::Number(f64::from(ctx.fps))),
-            GlobalVar::Width => Ok(ExpressionValue::Number(f64::from(ctx.request.width()))),
-            GlobalVar::Height => Ok(ExpressionValue::Number(f64::from(ctx.request.height()))),
+            GlobalVar::Width => Ok(ExpressionValue::Number(f64::from(ctx.width))),
+            GlobalVar::Height => Ok(ExpressionValue::Number(f64::from(ctx.height))),
             GlobalVar::Custom(name) => {
                 Err(LumenError::Expression(ExpressionError::UndefinedVariable {
-                    node_id,
-                    property_path: property_path.map(ToString::to_string),
+                    path: ctx.path.clone(),
                     name: name.clone(),
                 }))
             }
         },
-        ExprNode::SymbolicPath(segments) => Err(expression_eval_error(
-            node_id,
-            property_path,
-            &format!(
-                "unresolved symbolic property reference `{}`",
-                segments.join(".")
-            ),
-        )),
-        ExprNode::NodeProperty(target_node_id, target_path) => {
-            let Some(composition) = composition else {
-                return Err(expression_eval_error(
-                    node_id,
-                    property_path,
-                    "node property reference requires composition context",
-                ));
-            };
-            let value = composition.sample_node_property_from_expression(
-                *target_node_id,
-                &target_path.0,
-                frame_override.unwrap_or(ctx.request.frame),
-                ctx,
-                frame_override,
-                active_targets,
-            )?;
-            property_value_to_expression_value(&value)
+        ExprNode::SymbolicPath(segments) => {
+            Err(LumenError::Expression(ExpressionError::Evaluate {
+                path: ctx.path.clone(),
+                details: format!(
+                    "unresolved symbolic property reference `{}`",
+                    segments.join(".")
+                ),
+            }))
         }
-        ExprNode::VirtualProperty(id) => {
-            let Some(composition) = composition else {
-                return Err(expression_eval_error(
-                    node_id,
-                    property_path,
-                    "virtual property reference requires composition context",
-                ));
-            };
-            let value = composition.sample_virtual_property_from_expression(
-                *id,
-                frame_override.unwrap_or(ctx.request.frame),
-                ctx,
-                frame_override,
-                active_targets,
-            )?;
-            property_value_to_expression_value(&value)
+        ExprNode::NodeProperty(_, target_path) => {
+            Err(LumenError::Expression(ExpressionError::Evaluate {
+                path: ctx.path.clone(),
+                details: format!("unresolved node property reference `{}`", target_path.0),
+            }))
         }
+        ExprNode::VirtualProperty(id) => Err(LumenError::Expression(ExpressionError::Evaluate {
+            path: ctx.path.clone(),
+            details: format!("unresolved virtual property reference `{}`", id.0),
+        })),
         ExprNode::Conditional(condition, when_true, when_false) => {
-            let condition = evaluate_expr(
-                condition,
-                ctx,
-                composition,
-                node_id,
-                property_path,
-                frame_override,
-                active_targets,
-            )?;
+            let condition = evaluate_expr(condition, ctx)?;
             if to_boolean(&condition) {
-                evaluate_expr(
-                    when_true,
-                    ctx,
-                    composition,
-                    node_id,
-                    property_path,
-                    frame_override,
-                    active_targets,
-                )
+                evaluate_expr(when_true, ctx)
             } else {
-                evaluate_expr(
-                    when_false,
-                    ctx,
-                    composition,
-                    node_id,
-                    property_path,
-                    frame_override,
-                    active_targets,
-                )
+                evaluate_expr(when_false, ctx)
             }
         }
     }
 }
 
-pub fn property_value_to_expression_value(
-    value: &PropertyValue,
-) -> Result<ExpressionValue, LumenError> {
-    match value {
-        PropertyValue::Float(number) => Ok(ExpressionValue::Number(*number)),
-        PropertyValue::Int(number) => Ok(ExpressionValue::Number(*number as f64)),
-        PropertyValue::Bool(boolean) => Ok(ExpressionValue::Boolean(*boolean)),
-        PropertyValue::String(text) => Ok(ExpressionValue::String(text.clone())),
-        PropertyValue::Color(_) => Err(expression_eval_error(
-            None,
-            None,
-            "cannot coerce color property value into expression value",
-        )),
-        PropertyValue::Vector2(_, _) => Err(expression_eval_error(
-            None,
-            None,
-            "cannot coerce vector2 property value into expression value",
-        )),
-        PropertyValue::Map(_) => Err(expression_eval_error(
-            None,
-            None,
-            "cannot coerce map property value into expression value",
-        )),
-    }
-}
-
-pub fn expression_value_to_property_value(value: &ExpressionValue) -> PropertyValue {
-    match value {
-        ExpressionValue::Number(number) => PropertyValue::Float(*number),
-        ExpressionValue::Boolean(boolean) => PropertyValue::Bool(*boolean),
-        ExpressionValue::String(text) => PropertyValue::String(text.clone()),
-    }
-}
-
-fn to_number(
-    value: &ExpressionValue,
-    node_id: Option<NodeId>,
-    property_path: Option<&str>,
-    error_message: &str,
-) -> Result<f64, LumenError> {
+fn to_number(value: &ExpressionValue, ctx: &ExpressionContext) -> crate::Result<f64> {
     match value {
         ExpressionValue::Number(number) => Ok(*number),
         ExpressionValue::Boolean(boolean) => Ok(if *boolean { 1.0 } else { 0.0 }),
-        ExpressionValue::String(text) => text
-            .parse::<f64>()
-            .map_err(|_| expression_eval_error(node_id, property_path, error_message)),
+        ExpressionValue::String(text) => text.parse::<f64>().map_err(|_| {
+            LumenError::Expression(ExpressionError::Parse {
+                path: ctx.path.clone(),
+                details: format!("cannot convert `{text}` into f64"),
+            })
+        }),
     }
 }
 
@@ -397,14 +179,117 @@ fn to_boolean(value: &ExpressionValue) -> bool {
     }
 }
 
-fn expression_eval_error(
-    node_id: Option<NodeId>,
-    property_path: Option<&str>,
-    details: &str,
-) -> LumenError {
-    LumenError::Expression(ExpressionError::Evaluate {
-        node_id,
-        property_path: property_path.map(ToString::to_string),
-        details: details.to_string(),
-    })
+fn node_property_type_name(value: &NodeProperty) -> &'static str {
+    match value {
+        NodeProperty::Float(_) => "float",
+        NodeProperty::Int(_) => "int",
+        NodeProperty::Bool(_) => "bool",
+        NodeProperty::String(_) => "string",
+        NodeProperty::Color(_) => "color",
+        NodeProperty::Vec2(_) => "vec2",
+        NodeProperty::FloatVec(_) => "float[]",
+        NodeProperty::IntVec(_) => "int[]",
+        NodeProperty::StringVec(_) => "string[]",
+        NodeProperty::Expr(_) => "expression",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expr::ast::{BuiltinFn, ExprNode, ExpressionId};
+
+    fn test_context() -> ExpressionContext {
+        ExpressionContext {
+            frame: 48,
+            fps: 24.0,
+            width: 1920,
+            height: 1080,
+            duration_frames: 240,
+            path: Some("node.opacity".to_string()),
+        }
+    }
+
+    #[test]
+    fn evaluates_globals_from_expression_context() {
+        let ctx = test_context();
+
+        assert_eq!(
+            evaluate_expr(&ExprNode::Global(GlobalVar::Time), &ctx).unwrap(),
+            ExpressionValue::Number(2.0)
+        );
+        assert_eq!(
+            evaluate_expr(&ExprNode::Global(GlobalVar::Fps), &ctx).unwrap(),
+            ExpressionValue::Number(24.0)
+        );
+        assert_eq!(
+            evaluate_expr(&ExprNode::Global(GlobalVar::Width), &ctx).unwrap(),
+            ExpressionValue::Number(1920.0)
+        );
+        assert_eq!(
+            evaluate_expr(&ExprNode::Global(GlobalVar::Height), &ctx).unwrap(),
+            ExpressionValue::Number(1080.0)
+        );
+    }
+
+    #[test]
+    fn converts_supported_node_properties() {
+        assert_eq!(
+            property_value_to_expression_value(&NodeProperty::Int(7)).unwrap(),
+            ExpressionValue::Number(7.0)
+        );
+        assert_eq!(
+            property_value_to_expression_value(&NodeProperty::Bool(true)).unwrap(),
+            ExpressionValue::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn rejects_non_scalar_node_properties() {
+        let error = property_value_to_expression_value(&NodeProperty::Color([0, 0, 0, 255]))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("cannot convert node property `color`"));
+    }
+
+    #[test]
+    fn evaluates_linear_and_step_builtins() {
+        let ctx = test_context();
+        let expression = Expression {
+            id: ExpressionId(1),
+            ast: ExprNode::Builtin(
+                BuiltinFn::Linear,
+                vec![
+                    ExprNode::Literal(ExpressionValue::Number(10.0)),
+                    ExprNode::Literal(ExpressionValue::Number(20.0)),
+                    ExprNode::Literal(ExpressionValue::Number(0.25)),
+                ],
+            ),
+            references: Vec::new(),
+            source: "linear(10, 20, 0.25)".to_string(),
+        };
+        let stepped = Expression {
+            id: ExpressionId(2),
+            ast: ExprNode::Builtin(
+                BuiltinFn::Step,
+                vec![
+                    ExprNode::Literal(ExpressionValue::Number(10.0)),
+                    ExprNode::Literal(ExpressionValue::Number(20.0)),
+                    ExprNode::Literal(ExpressionValue::Number(0.5)),
+                ],
+            ),
+            references: Vec::new(),
+            source: "step(10, 20, 0.5)".to_string(),
+        };
+
+        assert_eq!(
+            expression.evaluate(&ctx).unwrap(),
+            ExpressionValue::Number(12.5)
+        );
+        assert_eq!(
+            stepped.evaluate(&ctx).unwrap(),
+            ExpressionValue::Number(10.0)
+        );
+    }
 }

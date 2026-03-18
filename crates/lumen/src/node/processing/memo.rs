@@ -1,49 +1,91 @@
 use crate::{
-    error::{LumenError, PropertyError},
-    node::{InputPortDef, NodeEval, NodeId, NodeInputs, OutputPortDef, PortKind, PortValue},
-    render::RenderContext,
+    error::PropertyError,
+    node::{NodeId, NodeProperty, PortRef},
+    raster::RasterFrame,
 };
+use lumen_macros::{Node, node_impl};
 
-const INPUT_PORTS: [InputPortDef; 1] = [InputPortDef {
-    name: "source",
-    kind: PortKind::RasterFrame,
-    optional: false,
-}];
-
-const OUTPUT_PORTS: [OutputPortDef; 1] = [OutputPortDef {
-    name: "output",
-    kind: PortKind::RasterFrame,
-}];
-
-#[derive(Debug, Clone)]
-pub struct Memo {
-    pub cache_id: String,
-    pub allow_expressions: bool,
+#[derive(Debug, Default)]
+pub struct MemoCache {
+    /// Two-level map: cache_id -> (width, height, request_hash, signature_hash) -> bitmap.
+    /// This avoids allocating a String on every `get` lookup.
+    entries: HashMap<String, HashMap<(u32, u32, u64, u64), CachedBitmap>>,
 }
 
-impl NodeEval for Memo {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        &INPUT_PORTS
+impl MemoCache {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &OUTPUT_PORTS
-    }
-
-    fn evaluate(
+    pub fn get(
         &self,
-        inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        if self.cache_id.trim().is_empty() {
+        cache_id: &str,
+        width: u32,
+        height: u32,
+        request_hash: u64,
+        signature_hash: u64,
+    ) -> Option<CachedBitmap> {
+        self.entries
+            .get(cache_id)?
+            .get(&(width, height, request_hash, signature_hash))
+            .cloned()
+    }
+
+    pub fn insert(
+        &mut self,
+        cache_id: String,
+        width: u32,
+        height: u32,
+        request_hash: u64,
+        signature_hash: u64,
+        bitmap: CachedBitmap,
+    ) {
+        self.entries
+            .entry(cache_id)
+            .or_default()
+            .insert((width, height, request_hash, signature_hash), bitmap);
+    }
+}
+
+#[derive(Debug, Node)]
+pub struct Memo {
+    pub id: NodeId,
+
+    #[property(expected = String)]
+    pub cache_id: NodeProperty,
+    #[property(expected = Bool)]
+    pub allow_expressions: NodeProperty,
+
+    #[input(kind = Raster)]
+    pub source: PortRef,
+
+    cache: MemoCache,
+}
+
+impl Default for Memo {
+    fn default() -> Self {
+        Self {
+            id: NodeId::new(0),
+            cache_id: NodeProperty::String(String::new()),
+            allow_expressions: NodeProperty::Bool(false),
+            source: PortRef::empty(),
+        }
+    }
+}
+
+#[node_impl]
+impl Memo {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let cache_id = self.resolve_cache_id(ctx)?;
+        if cache_id.trim().is_empty() {
             return Err(PropertyError::MissingProperty {
-                node_id: NodeId(0),
+                node_id: self.id,
                 property_path: "cache_id".to_string(),
             }
             .into());
         }
 
-        let source = inputs.get_raster("source")?.clone();
-        Ok(PortValue::RasterFrame(source))
+        Ok(ctx.eval(self.source.clone())?.as_raster()?.clone())
     }
 }

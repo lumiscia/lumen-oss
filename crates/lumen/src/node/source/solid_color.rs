@@ -3,63 +3,67 @@ use std::sync::Arc;
 use crate::{
     error::LumenError,
     node::{
-        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        NodeId, NodeProperty,
         pixel_utils::{render_with_skia, rgba_byte_len, to_skia_color},
     },
     raster::RasterFrame,
     render::RenderContext,
 };
+use lumen_macros::{Node, node_impl};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Node)]
 pub struct SolidColor {
-    pub color: [u8; 4],
-    pub width: Option<u32>,
-    pub height: Option<u32>,
+    pub id: NodeId,
+
+    #[property(expected = Color)]
+    pub color: NodeProperty,
+    #[property(expected = Int)]
+    pub width: NodeProperty,
+    #[property(expected = Int)]
+    pub height: NodeProperty,
 }
 
 impl Default for SolidColor {
     fn default() -> Self {
         Self {
-            color: [0, 0, 0, 255],
-            width: None,
-            height: None,
+            id: NodeId::new(0),
+            color: NodeProperty::Color([0, 0, 0, 255]),
+            width: NodeProperty::Int(0),
+            height: NodeProperty::Int(0),
         }
     }
 }
 
-impl NodeEval for SolidColor {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        &[]
-    }
+#[node_impl]
+impl SolidColor {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let requested_width = self.resolve_width(ctx)?;
+        let requested_height = self.resolve_height(ctx)?;
 
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &[OutputPortDef {
-            name: "output",
-            kind: PortKind::RasterFrame,
-        }]
-    }
+        let width = if requested_width <= 0 {
+            i64::from(ctx.renderer.composition.render_settings.width)
+        } else {
+            requested_width
+        };
+        let height = if requested_height <= 0 {
+            i64::from(ctx.renderer.composition.render_settings.height)
+        } else {
+            requested_height
+        };
 
-    fn evaluate(
-        &self,
-        _inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let mut width = self.width.unwrap_or(ctx.request.width()).max(1);
-        let mut height = self.height.unwrap_or(ctx.request.height()).max(1);
+        let mut width = width.clamp(1, i64::from(u32::MAX)) as u32;
+        let mut height = height.clamp(1, i64::from(u32::MAX)) as u32;
         if rgba_byte_len(width, height).is_none() {
             width = 1;
             height = 1;
         }
 
-        let color = to_skia_color(self.color);
+        let color = to_skia_color(self.resolve_color(ctx)?);
         let bytes = render_with_skia(width, height, Some(ctx), |canvas| {
             canvas.clear(color);
         });
 
-        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
-            Arc::new(bytes),
-            width,
-            height,
-        )))
+        Ok(RasterFrame::bitmap(Arc::new(bytes), width, height))
     }
 }

@@ -5,83 +5,98 @@ use skia_safe::{CubicResampler, Matrix, SamplingOptions};
 use crate::{
     error::LumenError,
     node::{
-        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        NodeId, NodeProperty, PortRef,
         pixel_utils::{make_skia_image, render_with_skia},
     },
     raster::{BitmapFrame, RasterFrame},
     render::RenderContext,
 };
+use lumen_macros::{Node, node_impl};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
 pub enum TransformSampling {
-    Nearest,
-    Linear,
+    Nearest = 0,
+    Linear = 1,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+impl TransformSampling {
+    fn from_int(value: i64) -> Self {
+        match value {
+            x if x == Self::Nearest as i64 => Self::Nearest,
+            _ => Self::Linear,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Node)]
 pub struct Transform {
-    pub scale_x: f32,
-    pub scale_y: f32,
-    pub translate_x: f32,
-    pub translate_y: f32,
-    pub rotate: f32,
-    pub pivot_x: f32,
-    pub pivot_y: f32,
-    pub sampling: TransformSampling,
+    pub id: NodeId,
+
+    #[property(expected = Float)]
+    pub scale_x: NodeProperty,
+    #[property(expected = Float)]
+    pub scale_y: NodeProperty,
+    #[property(expected = Float)]
+    pub translate_x: NodeProperty,
+    #[property(expected = Float)]
+    pub translate_y: NodeProperty,
+    #[property(expected = Float)]
+    pub rotate: NodeProperty,
+    #[property(expected = Float)]
+    pub pivot_x: NodeProperty,
+    #[property(expected = Float)]
+    pub pivot_y: NodeProperty,
+    #[property(expected = Int)]
+    pub sampling: NodeProperty,
+
+    #[input(kind = Raster)]
+    pub source: PortRef,
 }
 
 impl Default for Transform {
     fn default() -> Self {
         Self {
-            scale_x: 1.0,
-            scale_y: 1.0,
-            translate_x: 0.0,
-            translate_y: 0.0,
-            rotate: 0.0,
-            pivot_x: 0.0,
-            pivot_y: 0.0,
-            sampling: TransformSampling::Linear,
+            id: NodeId::new(0),
+            scale_x: NodeProperty::Float(1.0),
+            scale_y: NodeProperty::Float(1.0),
+            translate_x: NodeProperty::Float(0.0),
+            translate_y: NodeProperty::Float(0.0),
+            rotate: NodeProperty::Float(0.0),
+            pivot_x: NodeProperty::Float(0.0),
+            pivot_y: NodeProperty::Float(0.0),
+            sampling: NodeProperty::Int(TransformSampling::Linear as i64),
+            source: PortRef::empty(),
         }
     }
 }
 
-const INPUT_PORT_DEFS: &[InputPortDef] = &[InputPortDef {
-    name: "source",
-    kind: PortKind::RasterFrame,
-    optional: false,
-}];
-
-const OUTPUT_PORT_DEFS: &[OutputPortDef] = &[OutputPortDef {
-    name: "output",
-    kind: PortKind::RasterFrame,
-}];
-
-impl NodeEval for Transform {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        INPUT_PORT_DEFS
-    }
-
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        OUTPUT_PORT_DEFS
-    }
-
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let source = inputs.get_raster("source")?;
+#[node_impl]
+impl Transform {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let source = ctx.eval(self.source.clone())?.as_raster()?;
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
         let source_data = source.data_rect();
-        if self.is_identity() {
-            return Ok(PortValue::RasterFrame(source.clone()));
+
+        let scale_x = self.resolve_scale_x(ctx)? as f32;
+        let scale_y = self.resolve_scale_y(ctx)? as f32;
+        let translate_x = self.resolve_translate_x(ctx)? as f32;
+        let translate_y = self.resolve_translate_y(ctx)? as f32;
+        let rotate = self.resolve_rotate(ctx)? as f32;
+        let pivot_x = self.resolve_pivot_x(ctx)? as f32;
+        let pivot_y = self.resolve_pivot_y(ctx)? as f32;
+        let sampling_mode = TransformSampling::from_int(self.resolve_sampling(ctx)?);
+
+        if Self::is_identity_transform(scale_x, scale_y, translate_x, translate_y, rotate) {
+            return Ok(source.clone());
         }
 
         let (bytes, source_width, source_height) = source.clone().into_parts();
 
         if source_width == 0 || source_height == 0 {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            return Ok(RasterFrame::Bitmap(
                 BitmapFrame::with_domain(
                     bytes,
                     source_width,
@@ -90,11 +105,11 @@ impl NodeEval for Transform {
                     source_data,
                 )
                 .with_alpha_mode(source_alpha),
-            )));
+            ));
         }
 
-        let render_width = source_width.max(ctx.request.width());
-        let render_height = source_height.max(ctx.request.height());
+        let render_width = source_width.max(ctx.renderer.composition.render_settings.width);
+        let render_height = source_height.max(ctx.renderer.composition.render_settings.height);
 
         let Some(image) = make_skia_image(
             &bytes,
@@ -103,7 +118,7 @@ impl NodeEval for Transform {
             (source_width as usize) * 4,
             source_alpha,
         ) else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            return Ok(RasterFrame::Bitmap(
                 BitmapFrame::with_domain(
                     bytes,
                     source_width,
@@ -112,17 +127,18 @@ impl NodeEval for Transform {
                     source_data,
                 )
                 .with_alpha_mode(source_alpha),
-            )));
+            ));
         };
 
-        let (pivot_x, pivot_y) = self.resolved_pivot(source_width, source_height);
+        let (pivot_x, pivot_y) =
+            Self::resolved_pivot(pivot_x, pivot_y, source_width, source_height);
         let mut matrix = Matrix::new_identity();
-        matrix.pre_translate((pivot_x + self.translate_x, pivot_y + self.translate_y));
-        matrix.pre_rotate(self.rotate, None);
-        matrix.pre_scale((self.scale_x, self.scale_y), None);
+        matrix.pre_translate((pivot_x + translate_x, pivot_y + translate_y));
+        matrix.pre_rotate(rotate, None);
+        matrix.pre_scale((scale_x, scale_y), None);
         matrix.pre_translate((-pivot_x, -pivot_y));
 
-        let sampling = match self.sampling {
+        let sampling = match sampling_mode {
             TransformSampling::Nearest => SamplingOptions::default(),
             TransformSampling::Linear => SamplingOptions::from(CubicResampler::catmull_rom()),
         };
@@ -132,7 +148,7 @@ impl NodeEval for Transform {
             canvas.draw_image_with_sampling_options(&image, (0.0, 0.0), sampling, None);
         });
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        Ok(RasterFrame::Bitmap(
             BitmapFrame::with_domain(
                 Arc::new(transformed),
                 render_width,
@@ -141,24 +157,57 @@ impl NodeEval for Transform {
                 source_data,
             )
             .with_alpha_mode(source_alpha),
-        )))
+        ))
     }
-}
 
-impl Transform {
     pub fn is_identity(&self) -> bool {
-        (self.scale_x - 1.0).abs() <= f32::EPSILON
-            && (self.scale_y - 1.0).abs() <= f32::EPSILON
-            && self.translate_x.abs() <= f32::EPSILON
-            && self.translate_y.abs() <= f32::EPSILON
-            && self.rotate.abs() <= f32::EPSILON
+        let Some(scale_x) = Self::literal_float(&self.scale_x) else {
+            return false;
+        };
+        let Some(scale_y) = Self::literal_float(&self.scale_y) else {
+            return false;
+        };
+        let Some(translate_x) = Self::literal_float(&self.translate_x) else {
+            return false;
+        };
+        let Some(translate_y) = Self::literal_float(&self.translate_y) else {
+            return false;
+        };
+        let Some(rotate) = Self::literal_float(&self.rotate) else {
+            return false;
+        };
+
+        Self::is_identity_transform(scale_x, scale_y, translate_x, translate_y, rotate)
     }
 
-    fn resolved_pivot(&self, width: u32, height: u32) -> (f32, f32) {
-        if self.pivot_x.abs() <= f32::EPSILON && self.pivot_y.abs() <= f32::EPSILON {
+    fn is_identity_transform(
+        scale_x: f32,
+        scale_y: f32,
+        translate_x: f32,
+        translate_y: f32,
+        rotate: f32,
+    ) -> bool {
+        (scale_x - 1.0).abs() <= f32::EPSILON
+            && (scale_y - 1.0).abs() <= f32::EPSILON
+            && translate_x.abs() <= f32::EPSILON
+            && translate_y.abs() <= f32::EPSILON
+            && rotate.abs() <= f32::EPSILON
+    }
+
+    fn resolved_pivot(pivot_x: f32, pivot_y: f32, width: u32, height: u32) -> (f32, f32) {
+        if pivot_x.abs() <= f32::EPSILON && pivot_y.abs() <= f32::EPSILON {
             (width as f32 * 0.5, height as f32 * 0.5)
         } else {
-            (self.pivot_x, self.pivot_y)
+            (pivot_x, pivot_y)
+        }
+    }
+
+    fn literal_float(property: &NodeProperty) -> Option<f32> {
+        match property {
+            NodeProperty::Float(value) => Some(*value as f32),
+            NodeProperty::Int(value) => Some(*value as f32),
+            NodeProperty::String(value) => value.parse::<f32>().ok(),
+            _ => None,
         }
     }
 }

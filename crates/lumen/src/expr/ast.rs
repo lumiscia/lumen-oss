@@ -1,10 +1,25 @@
-use crate::{
-    animation::{PropertyPath, VirtualPropertyId},
-    node::NodeId,
-};
+use crate::node::NodeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExpressionId(pub u64);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PropertyPath(pub String);
+
+impl PropertyPath {
+    pub fn new(path: impl Into<String>) -> Self {
+        Self(path.into())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct VirtualPropertyId(pub u64);
+
+impl VirtualPropertyId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExpressionValue {
@@ -72,6 +87,8 @@ pub enum BuiltinFn {
     Mod,
     Fract,
     Smoothstep,
+    Linear,
+    Step,
     TextHeight,
     TextWidth,
     Uppercase,

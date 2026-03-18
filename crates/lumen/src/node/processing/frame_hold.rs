@@ -1,40 +1,36 @@
 use crate::{
     error::LumenError,
-    node::{InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue},
+    node::{NodeId, NodeProperty, PortRef},
+    raster::RasterFrame,
     render::RenderContext,
 };
+use lumen_macros::{Node, node_impl};
 
-const INPUT_PORTS: [InputPortDef; 1] = [InputPortDef {
-    name: "source",
-    kind: PortKind::RasterFrame,
-    optional: false,
-}];
-
-const OUTPUT_PORTS: [OutputPortDef; 1] = [OutputPortDef {
-    name: "output",
-    kind: PortKind::RasterFrame,
-}];
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Node)]
 pub struct FrameHold {
-    pub hold_frame: u32,
+    pub id: NodeId,
+
+    #[property(expected = Int)]
+    pub hold_frame: NodeProperty,
+
+    #[input(kind = Raster)]
+    pub source: PortRef,
 }
 
-impl NodeEval for FrameHold {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        &INPUT_PORTS
+impl Default for FrameHold {
+    fn default() -> Self {
+        Self {
+            id: NodeId::new(0),
+            hold_frame: NodeProperty::Int(0),
+            source: PortRef::empty(),
+        }
     }
+}
 
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &OUTPUT_PORTS
-    }
-
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        _ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let source = inputs.get_raster("source")?.clone();
-        Ok(PortValue::RasterFrame(source))
+#[node_impl]
+impl FrameHold {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        Ok(ctx.eval(self.source.clone())?.as_raster()?.clone())
     }
 }

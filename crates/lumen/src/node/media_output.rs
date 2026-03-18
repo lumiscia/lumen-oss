@@ -3,41 +3,50 @@ use std::sync::Arc;
 use skia_safe::{Paint, Rect, SamplingOptions};
 
 use crate::{
-    error::LumenError,
     node::{
-        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        NodeId, NodeResult, PortRef,
         pixel_utils::{make_skia_image, render_with_skia},
     },
     raster::{BitmapFrame, RasterFrame, RectI},
-    render::RenderContext,
+    render::context::RenderContext,
 };
+use lumen_macros::{Node, node_impl};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MediaOutput;
+#[derive(Debug, Clone, Node)]
+pub struct MediaOutput {
+    pub id: NodeId,
 
-impl NodeEval for MediaOutput {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        &[InputPortDef {
-            name: "source",
-            kind: PortKind::RasterFrame,
-            optional: false,
-        }]
+    #[input(kind = Raster)]
+    pub source: PortRef,
+}
+
+impl Default for MediaOutput {
+    fn default() -> Self {
+        Self {
+            id: NodeId::new(0),
+            source: PortRef::empty(),
+        }
     }
+}
 
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &[OutputPortDef {
-            name: "output",
-            kind: PortKind::RasterFrame,
-        }]
-    }
+#[node_impl]
+impl MediaOutput {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext<'_>) -> crate::Result<RasterFrame> {
+        let source = match ctx.eval_once(self.source.clone())? {
+            NodeResult::Raster(raster) => raster,
+            NodeResult::Vector(vector) => {
+                todo!("return proper error type")
+            }
+            NodeResult::None => {
+                todo!("return proper error type")
+            }
+        };
 
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let source = inputs.get_raster("source")?;
-        let output_rect = ctx.request.output_rect;
+        let output_rect = RectI::from_size(
+            ctx.renderer.composition.render_settings.width,
+            ctx.renderer.composition.render_settings.height,
+        );
         let (target_w, target_h) = (output_rect.width, output_rect.height);
         let (source_w, source_h) = source.dimensions();
         let source_format = source.format_rect();
@@ -48,41 +57,23 @@ impl NodeEval for MediaOutput {
             && source_format == output_rect
             && source_data == output_rect
         {
-            let bitmap = source.clone().into_bitmap_frame()?;
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(
-                    bitmap.pixels,
-                    bitmap.storage_width,
-                    bitmap.storage_height,
-                    output_rect,
-                    output_rect,
-                )
-                .with_alpha_mode(bitmap.alpha_mode),
-            )));
+            return Ok(source.to_bitmap()?);
         }
 
         if target_w == 0 || target_h == 0 {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(Arc::new(Vec::new()), 0, 0, output_rect, output_rect),
+            return Ok(RasterFrame::Bitmap(BitmapFrame::with_domain(
+                Arc::new(Vec::new()),
+                0,
+                0,
+                output_rect,
+                output_rect,
             )));
         }
 
-        let (bytes, width, height) = source.clone().into_parts();
-        let source_alpha = source.alpha_mode();
-        let Some(image) =
-            make_skia_image(&bytes, width, height, (width as usize) * 4, source_alpha)
-        else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(
-                    Arc::new(vec![0u8; (target_w as usize) * (target_h as usize) * 4]),
-                    target_w,
-                    target_h,
-                    output_rect,
-                    output_rect,
-                )
-                .with_alpha_mode(source_alpha),
-            )));
-        };
+        let (width, height) = source.dimensions();
+
+        let surface = source.promote_to_surface(ctx.renderer.surface_pool)?;
+        surface.surface.surface_mut().resi
 
         let output = render_with_skia(target_w, target_h, Some(ctx), |canvas| {
             draw_frame_image(
@@ -97,7 +88,7 @@ impl NodeEval for MediaOutput {
             );
         });
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        Ok(RasterFrame::Bitmap(
             BitmapFrame::with_domain(
                 Arc::new(output),
                 target_w,
@@ -106,7 +97,7 @@ impl NodeEval for MediaOutput {
                 output_rect,
             )
             .with_alpha_mode(source_alpha),
-        )))
+        ))
     }
 }
 

@@ -19,7 +19,7 @@ use ffmpeg_next as ffmpeg;
 
 use crate::{
     error::MediaError,
-    media::{ImageResolver, MediaStore, VideoFrameResolver, premultiply_rgba_in_place_if_needed},
+    media::{ImageResolver, MediaStore, VideoFrameResolver},
 };
 
 const DEFAULT_LRU_CAPACITY: usize = 48;

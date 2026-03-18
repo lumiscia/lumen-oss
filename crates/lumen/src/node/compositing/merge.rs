@@ -3,73 +3,78 @@ use std::sync::Arc;
 use skia_safe::{Paint, Rect, SamplingOptions};
 
 use crate::{
-    error::LumenError,
+    error::{LumenError, RenderError},
     node::{
-        BlendMode, InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        NodeId, NodeProperty, PortRef,
+        compositing::BlendMode,
         pixel_utils::{make_skia_image, render_with_skia},
     },
     raster::{BitmapFrame, RasterFrame, RectI},
     render::RenderContext,
 };
+use lumen_macros::{Node, node_impl};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Node)]
 pub struct Merge {
-    pub blend_mode: BlendMode,
-    pub opacity: f32,
+    pub id: NodeId,
+
+    #[property(expected = Float)]
+    pub opacity: NodeProperty,
+    #[property(expected = Int)]
+    pub blend_mode: NodeProperty,
+
+    #[input(kind = Raster)]
+    pub base: PortRef,
+    #[input(kind = Raster)]
+    pub overlay: PortRef,
+    #[input(kind = Raster, optional)]
+    pub mask: PortRef,
 }
 
 impl Default for Merge {
     fn default() -> Self {
         Self {
-            blend_mode: BlendMode::Normal,
-            opacity: 1.0,
+            id: NodeId::new(0),
+            opacity: NodeProperty::Float(1.0),
+            blend_mode: NodeProperty::Int(BlendMode::Normal as i64),
+            base: PortRef::empty(),
+            overlay: PortRef::empty(),
+            mask: PortRef::empty(),
         }
     }
 }
 
-const INPUT_PORT_DEFS: &[InputPortDef] = &[
-    InputPortDef {
-        name: "base",
-        kind: PortKind::RasterFrame,
-        optional: false,
-    },
-    InputPortDef {
-        name: "overlay",
-        kind: PortKind::RasterFrame,
-        optional: false,
-    },
-    InputPortDef {
-        name: "mask",
-        kind: PortKind::RasterFrame,
-        optional: true,
-    },
-];
+#[node_impl]
+impl Merge {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let opacity = self.resolve_opacity(ctx)? as f32;
+        let blend_mode =
+            BlendMode::try_from(self.resolve_blend_mode(ctx)? as usize).map_err(|err| {
+                LumenError::Render(RenderError::NodeEvaluation {
+                    frame: ctx.frame,
+                    node_id: self.node_id(),
+                    node_kind: "merge",
+                    details: err.into(),
+                })
+            })?;
 
-const OUTPUT_PORT_DEFS: &[OutputPortDef] = &[OutputPortDef {
-    name: "output",
-    kind: PortKind::RasterFrame,
-}];
+        let base_result = ctx.eval(self.base.clone())?;
+        let base = base_result.as_raster()?;
 
-impl NodeEval for Merge {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        INPUT_PORT_DEFS
-    }
-
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        OUTPUT_PORT_DEFS
-    }
-
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        if self.opacity <= 0.0 {
-            return Ok(PortValue::RasterFrame(inputs.get_raster("base")?.clone()));
+        if opacity <= 0.0 {
+            return Ok(base.clone());
         }
 
-        let base = inputs.get_raster("base")?;
-        let overlay = inputs.get_raster("overlay")?;
+        let overlay_result = ctx.eval(self.overlay.clone())?;
+        let overlay = overlay_result.as_raster()?;
+        let mask_result = if !self.mask.is_empty() {
+            Some(ctx.eval(self.mask.clone())?)
+        } else {
+            None
+        };
+        let mask = mask_result.as_ref().map(|v| v.as_raster()).transpose()?;
+
         let (base_bytes, base_w, base_h) = base.clone().into_parts();
         let (overlay_bytes, overlay_w, overlay_h) = overlay.clone().into_parts();
         let base_alpha = base.alpha_mode();
@@ -78,15 +83,15 @@ impl NodeEval for Merge {
         let base_data = base.data_rect();
         let overlay_format = overlay.format_rect();
         let overlay_data = overlay.data_rect();
-        let mask = match inputs.get_raster_optional("mask")? {
-            Some(raster) => Some((
+        let mask_parts = mask.map(|raster| {
+            (
                 raster.clone().into_parts(),
                 raster.alpha_mode(),
                 raster.format_rect(),
                 raster.data_rect(),
-            )),
-            None => None,
-        };
+            )
+        });
+
         let out_format = union_rect(base_format, overlay_format);
         let mut out_data = union_rect(base_data, overlay_data);
         out_data =
@@ -112,7 +117,7 @@ impl NodeEval for Merge {
         );
 
         let Some(base_image) = base_image else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            return Ok(RasterFrame::Bitmap(
                 BitmapFrame::with_domain(
                     Arc::new(vec![0u8; (render_w as usize) * (render_h as usize) * 4]),
                     render_w,
@@ -121,16 +126,16 @@ impl NodeEval for Merge {
                     out_data,
                 )
                 .with_alpha_mode(base_alpha),
-            )));
+            ));
         };
         let Some(overlay_image) = overlay_image else {
-            return Ok(PortValue::RasterFrame(base.clone()));
+            return Ok(base.clone());
         };
 
-        let opacity = self.opacity.clamp(0.0, 1.0);
-        let skia_blend: skia_safe::BlendMode = self.blend_mode.into();
+        let opacity = opacity.clamp(0.0, 1.0);
+        let skia_blend: skia_safe::BlendMode = blend_mode.into();
 
-        let mask_image = match mask.as_ref() {
+        let mask_image = match mask_parts.as_ref() {
             Some(((mb, mw, mh), alpha_mode, _mask_format, _mask_data)) => {
                 make_skia_image(mb.as_slice(), *mw, *mh, (*mw as usize) * 4, *alpha_mode)
             }
@@ -168,7 +173,8 @@ impl NodeEval for Merge {
 
                 let mut mask_paint = Paint::default();
                 mask_paint.set_blend_mode(skia_safe::BlendMode::DstIn);
-                if let Some(((_, mask_w, mask_h), _, mask_format, mask_data)) = mask.as_ref() {
+                if let Some(((_, mask_w, mask_h), _, mask_format, mask_data)) = mask_parts.as_ref()
+                {
                     draw_frame_image(
                         canvas,
                         mask_img,
@@ -199,14 +205,14 @@ impl NodeEval for Merge {
             }
         });
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        Ok(RasterFrame::Bitmap(
             BitmapFrame::with_domain(Arc::new(merged), render_w, render_h, out_format, out_data)
                 .with_alpha_mode(base_alpha),
-        )))
+        ))
     }
 }
 
-fn union_rect(left: RectI, right: RectI) -> RectI {
+pub(crate) fn union_rect(left: RectI, right: RectI) -> RectI {
     let min_x = left.x.min(right.x);
     let min_y = left.y.min(right.y);
     let max_x = left.right().max(right.right());
@@ -216,7 +222,7 @@ fn union_rect(left: RectI, right: RectI) -> RectI {
     RectI::new(min_x, min_y, width, height)
 }
 
-fn draw_frame_image(
+pub(crate) fn draw_frame_image(
     canvas: &skia_safe::Canvas,
     image: &skia_safe::Image,
     storage_w: u32,

@@ -1,145 +1,177 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::sync::Arc;
+
+use skia_safe::Paint;
 
 use crate::{
-    error::{LumenError, RenderError},
+    error::LumenError,
+    media::MediaStore,
     node::{
-        BlendMode, InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
-        merge::Merge,
+        NodeId, NodeProperty, PortRef,
+        compositing::{
+            BlendMode,
+            merge::{draw_frame_image, union_rect},
+        },
+        pixel_utils::{make_skia_image, render_with_skia},
     },
-    raster::RasterFrame,
-    render::RenderContext,
+    raster::{BitmapFrame, RasterFrame, RectI},
+    render::{RenderContext, surface::SurfacePool},
 };
+use lumen_macros::{Node, node_impl};
 
-static INPUT_PORT_DEFS_CACHE: OnceLock<Mutex<HashMap<u16, &'static [InputPortDef]>>> =
-    OnceLock::new();
-
-const OUTPUT_PORT_DEFS: [OutputPortDef; 1] = [OutputPortDef {
-    name: "output",
-    kind: PortKind::RasterFrame,
-}];
-
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Node)]
 pub struct RasterMultiMerge {
-    pub blend_mode: BlendMode,
-    pub opacity: f32,
-    pub input_count: u16,
+    pub id: NodeId,
+
+    #[property(expected = Float)]
+    pub opacity: NodeProperty,
+    #[property(expected = Int)]
+    pub blend_mode: NodeProperty,
+
+    #[input(kind = Raster, variadic)]
+    pub layers: Vec<PortRef>,
 }
 
 impl Default for RasterMultiMerge {
     fn default() -> Self {
         Self {
-            blend_mode: BlendMode::Normal,
-            opacity: 1.0,
-            input_count: 2,
+            id: NodeId::new(0),
+            opacity: NodeProperty::Float(1.0),
+            blend_mode: NodeProperty::Int(BlendMode::Normal as i64),
+            layers: Vec::new(),
         }
     }
 }
 
+#[node_impl]
 impl RasterMultiMerge {
-    fn normalized_input_count(&self) -> u16 {
-        self.input_count.max(1)
-    }
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let opacity = self.resolve_opacity(ctx)? as f32;
+        let blend_mode = BlendMode::from_int(self.resolve_blend_mode(ctx)?);
 
-    pub fn input_port_name(index: u16) -> String {
-        format!("input_{index}")
-    }
-
-    fn cached_input_port_defs(&self) -> &'static [InputPortDef] {
-        let input_count = self.normalized_input_count();
-        let cache = INPUT_PORT_DEFS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut cache_guard = match cache.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-
-        if let Some(existing_defs) = cache_guard.get(&input_count) {
-            return existing_defs;
-        }
-
-        let defs: Vec<InputPortDef> = (0..input_count)
-            .map(|index| {
-                let name: &'static str = Box::leak(Self::input_port_name(index).into_boxed_str());
-                InputPortDef {
-                    name,
-                    kind: PortKind::RasterFrame,
-                    optional: true,
-                }
-            })
-            .collect();
-        let defs: &'static [InputPortDef] = Box::leak(defs.into_boxed_slice());
-
-        cache_guard.insert(input_count, defs);
-        defs
-    }
-
-    fn transparent_output(ctx: &RenderContext) -> Result<PortValue, LumenError> {
-        let pixel_count = ctx
-            .request
-            .width()
-            .checked_mul(ctx.request.height())
-            .and_then(|count| count.checked_mul(4))
-            .ok_or(RenderError::SurfaceAllocation {
-                width: ctx.request.width(),
-                height: ctx.request.height(),
-            })?;
-
-        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
-            Arc::new(vec![0; pixel_count as usize]),
-            ctx.request.width(),
-            ctx.request.height(),
-        )))
-    }
-}
-
-impl NodeEval for RasterMultiMerge {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        self.cached_input_port_defs()
-    }
-
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &OUTPUT_PORT_DEFS
-    }
-
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let mut layers = Vec::new();
-        for index in 0..self.normalized_input_count() {
-            let port_name = Self::input_port_name(index);
-            if let Some(raster) = inputs.get_raster_optional(&port_name)? {
-                layers.push(raster.clone());
+        // Evaluate all connected layers
+        let mut rasters = Vec::new();
+        for layer in &self.layers {
+            if !layer.is_empty() {
+                let result = ctx.eval(layer.clone())?;
+                rasters.push(result.as_raster()?.clone());
             }
         }
 
-        let mut layers = layers.into_iter();
-        let Some(mut acc) = layers.next() else {
-            return Self::transparent_output(ctx);
+        let mut rasters = rasters.into_iter();
+        let Some(mut acc) = rasters.next() else {
+            // No layers — return transparent
+            let w = ctx.renderer.composition.render_settings.width.max(1);
+            let h = ctx.renderer.composition.render_settings.height.max(1);
+            return Ok(RasterFrame::Bitmap(BitmapFrame::new(
+                Arc::new(vec![0u8; (w as usize) * (h as usize) * 4]),
+                w,
+                h,
+            )));
         };
 
-        if self.opacity <= 0.0 {
-            return Ok(PortValue::RasterFrame(acc));
+        if opacity <= 0.0 {
+            return Ok(acc);
         }
 
-        let merge = Merge {
-            blend_mode: self.blend_mode,
-            opacity: self.opacity,
-        };
+        let skia_blend: skia_safe::BlendMode = blend_mode.into();
 
-        for overlay in layers {
-            let mut merge_inputs = NodeInputs::new();
-            merge_inputs.insert("base", PortValue::RasterFrame(acc));
-            merge_inputs.insert("overlay", PortValue::RasterFrame(overlay));
-            acc = match merge.evaluate(&merge_inputs, ctx)? {
-                PortValue::RasterFrame(output) => output,
-                PortValue::Vector(_) => unreachable!("merge outputs raster"),
-            };
+        // Fold remaining layers onto the accumulator
+        for overlay in rasters {
+            acc = merge_pair(&acc, &overlay, opacity, skia_blend, ctx)?;
         }
 
-        Ok(PortValue::RasterFrame(acc))
+        Ok(acc)
     }
+}
+
+fn merge_pair<S: SurfacePool, M: MediaStore>(
+    base: &RasterFrame,
+    overlay: &RasterFrame,
+    opacity: f32,
+    blend_mode: skia_safe::BlendMode,
+    ctx: &RenderContext<'_, S, M>,
+) -> crate::Result<RasterFrame> {
+    let (base_bytes, base_w, base_h) = base.clone().into_parts();
+    let (overlay_bytes, overlay_w, overlay_h) = overlay.clone().into_parts();
+    let base_alpha = base.alpha_mode();
+    let overlay_alpha = overlay.alpha_mode();
+    let base_format = base.format_rect();
+    let base_data = base.data_rect();
+    let overlay_format = overlay.format_rect();
+    let overlay_data = overlay.data_rect();
+
+    let out_format = union_rect(base_format, overlay_format);
+    let mut out_data = union_rect(base_data, overlay_data);
+    out_data =
+        out_format
+            .intersect(&out_data)
+            .unwrap_or(RectI::new(out_format.x, out_format.y, 0, 0));
+    let render_w = out_data.width.max(1);
+    let render_h = out_data.height.max(1);
+
+    let base_image = make_skia_image(
+        &base_bytes,
+        base_w,
+        base_h,
+        (base_w as usize) * 4,
+        base_alpha,
+    );
+    let overlay_image = make_skia_image(
+        &overlay_bytes,
+        overlay_w,
+        overlay_h,
+        (overlay_w as usize) * 4,
+        overlay_alpha,
+    );
+
+    let Some(base_image) = base_image else {
+        return Ok(RasterFrame::Bitmap(
+            BitmapFrame::with_domain(
+                Arc::new(vec![0u8; (render_w as usize) * (render_h as usize) * 4]),
+                render_w,
+                render_h,
+                out_format,
+                out_data,
+            )
+            .with_alpha_mode(base_alpha),
+        ));
+    };
+    let Some(overlay_image) = overlay_image else {
+        return Ok(base.clone());
+    };
+
+    let opacity = opacity.clamp(0.0, 1.0);
+
+    let merged = render_with_skia(render_w, render_h, Some(ctx), |canvas| {
+        draw_frame_image(
+            canvas,
+            &base_image,
+            base_w,
+            base_h,
+            base_format,
+            base_data,
+            out_data,
+            None,
+        );
+
+        let mut overlay_paint = Paint::default();
+        overlay_paint.set_blend_mode(blend_mode);
+        overlay_paint.set_alpha_f(opacity);
+        draw_frame_image(
+            canvas,
+            &overlay_image,
+            overlay_w,
+            overlay_h,
+            overlay_format,
+            overlay_data,
+            out_data,
+            Some(&overlay_paint),
+        );
+    });
+
+    Ok(RasterFrame::Bitmap(
+        BitmapFrame::with_domain(Arc::new(merged), render_w, render_h, out_format, out_data)
+            .with_alpha_mode(base_alpha),
+    ))
 }

@@ -5,89 +5,89 @@ use skia_safe::{Paint, image_filters};
 use crate::{
     error::LumenError,
     node::{
-        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        NodeId, NodeProperty, PortRef,
         pixel_utils::{make_skia_image, render_with_skia},
     },
     raster::{BitmapFrame, RasterFrame},
     render::RenderContext,
 };
+use lumen_macros::{Node, node_impl};
 
-const INPUT_PORTS: [InputPortDef; 1] = [InputPortDef {
-    name: "source",
-    kind: PortKind::RasterFrame,
-    optional: false,
-}];
-
-const OUTPUT_PORTS: [OutputPortDef; 1] = [OutputPortDef {
-    name: "output",
-    kind: PortKind::RasterFrame,
-}];
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Node)]
 pub struct Blur {
-    pub radius: f32,
+    pub id: NodeId,
+
+    #[property(expected = Float)]
+    pub radius: NodeProperty,
+
+    #[input(kind = Raster)]
+    pub source: PortRef,
+}
+
+impl Default for Blur {
+    fn default() -> Self {
+        Self {
+            id: NodeId::new(0),
+            radius: NodeProperty::Float(0.0),
+            source: PortRef::empty(),
+        }
+    }
 }
 
 impl Blur {
-    pub fn is_noop(&self) -> bool {
-        self.radius <= 0.0
+    /// Returns true if the blur operation would have no visual effect
+    pub fn is_noop(radius: f32) -> bool {
+        radius <= 0.0
     }
 }
+#[node_impl]
+impl Blur {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let radius = self.resolve_radius(ctx)? as f32;
+        let source = ctx.eval(self.source.clone())?.as_raster()?;
 
-impl NodeEval for Blur {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        &INPUT_PORTS
-    }
-
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &OUTPUT_PORTS
-    }
-
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        if self.is_noop() {
-            return Ok(PortValue::RasterFrame(inputs.get_raster("source")?.clone()));
+        if Self::is_noop(radius) {
+            return Ok(source.clone());
         }
 
-        let source = inputs.get_raster("source")?;
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
         let source_data = source.data_rect();
         let (bytes, width, height) = source.clone().into_parts();
 
         if width == 0 || height == 0 {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            return Ok(RasterFrame::Bitmap(
                 BitmapFrame::with_domain(bytes, width, height, source_format, source_data)
                     .with_alpha_mode(source_alpha),
-            )));
+            ));
         }
 
         let Some(image) =
             make_skia_image(&bytes, width, height, (width as usize) * 4, source_alpha)
         else {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            return Ok(RasterFrame::Bitmap(
                 BitmapFrame::with_domain(bytes, width, height, source_format, source_data)
                     .with_alpha_mode(source_alpha),
-            )));
+            ));
         };
 
-        let sigma = self.radius.max(0.5);
+        // Use minimum sigma of 0.5 to ensure visible blur effect
+        let sigma = radius.max(0.5);
         let blurred = render_with_skia(width, height, Some(ctx), |canvas| {
-            if let Some(filter) = image_filters::blur((sigma, sigma), None, None, None) {
+            if let Some(blur_filter) = image_filters::blur((sigma, sigma), None, None, None) {
                 let mut paint = Paint::default();
-                paint.set_image_filter(filter);
+                paint.set_image_filter(blur_filter);
                 canvas.draw_image(&image, (0.0, 0.0), Some(&paint));
             } else {
+                // Fallback if blur filter creation fails
                 canvas.draw_image(&image, (0.0, 0.0), None);
             }
         });
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        Ok(RasterFrame::Bitmap(
             BitmapFrame::with_domain(Arc::new(blurred), width, height, source_format, source_data)
                 .with_alpha_mode(source_alpha),
-        )))
+        ))
     }
 }

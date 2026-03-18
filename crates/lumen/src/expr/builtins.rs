@@ -10,8 +10,10 @@ use skia_safe::{
 
 use crate::{
     error::{ExpressionError, LumenError},
-    expr::ast::{BuiltinFn, ExpressionValue},
-    render::RenderContext,
+    expr::{
+        ExpressionContext,
+        ast::{BuiltinFn, ExpressionValue},
+    },
 };
 
 thread_local! {
@@ -73,14 +75,11 @@ fn measure_text_with_skia(
 pub fn evaluate_builtin(
     builtin: BuiltinFn,
     args: &[ExpressionValue],
-    ctx: &RenderContext,
-    node_id: Option<crate::node::NodeId>,
-    property_path: Option<String>,
-) -> Result<ExpressionValue, LumenError> {
+    ctx: &ExpressionContext,
+) -> crate::Result<ExpressionValue> {
     let error = |details: String| {
         LumenError::Expression(ExpressionError::Evaluate {
-            node_id,
-            property_path: property_path.clone(),
+            path: ctx.path.clone(),
             details,
         })
     };
@@ -156,22 +155,7 @@ pub fn evaluate_builtin(
             }
             Ok(ExpressionValue::Number(value.clamp(min, max)))
         }
-        BuiltinFn::Lerp => {
-            expect_len(3)?;
-            let start = to_number(
-                &args[0],
-                error("lerp expects numeric arguments".to_string()),
-            )?;
-            let end = to_number(
-                &args[1],
-                error("lerp expects numeric arguments".to_string()),
-            )?;
-            let t = to_number(
-                &args[2],
-                error("lerp expects numeric arguments".to_string()),
-            )?;
-            Ok(ExpressionValue::Number(start + (end - start) * t))
-        }
+        BuiltinFn::Lerp => interpolate_linear(args, &expect_len, &error, "lerp"),
         BuiltinFn::Pow => {
             expect_len(2)?;
             let lhs = to_number(&args[0], error("pow expects numeric arguments".to_string()))?;
@@ -207,6 +191,23 @@ pub fn evaluate_builtin(
             let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
             Ok(ExpressionValue::Number(t * t * (3.0 - 2.0 * t)))
         }
+        BuiltinFn::Linear => interpolate_linear(args, &expect_len, &error, "linear"),
+        BuiltinFn::Step => {
+            expect_len(3)?;
+            let start = to_number(
+                &args[0],
+                error("step expects numeric arguments".to_string()),
+            )?;
+            let end = to_number(
+                &args[1],
+                error("step expects numeric arguments".to_string()),
+            )?;
+            let t = to_number(
+                &args[2],
+                error("step expects numeric arguments".to_string()),
+            )?;
+            Ok(ExpressionValue::Number(if t >= 1.0 { end } else { start }))
+        }
         BuiltinFn::TextHeight => {
             if args.is_empty() || args.len() > 3 {
                 return Err(error("text_height expects 1 to 3 arguments".to_string()));
@@ -236,8 +237,7 @@ pub fn evaluate_builtin(
             } else {
                 None
             };
-            let (_, height) =
-                measure_text_with_skia(&text, font_size, wrap_width, ctx.request.width());
+            let (_, height) = measure_text_with_skia(&text, font_size, wrap_width, ctx.width);
             Ok(ExpressionValue::Number(height))
         }
         BuiltinFn::TextWidth => {
@@ -269,8 +269,7 @@ pub fn evaluate_builtin(
             } else {
                 None
             };
-            let (width, _) =
-                measure_text_with_skia(&text, font_size, wrap_width, ctx.request.width());
+            let (width, _) = measure_text_with_skia(&text, font_size, wrap_width, ctx.width);
             Ok(ExpressionValue::Number(width))
         }
         BuiltinFn::Uppercase => {
@@ -292,24 +291,45 @@ pub fn evaluate_builtin(
     }
 }
 
+fn interpolate_linear(
+    args: &[ExpressionValue],
+    expect_len: &dyn Fn(usize) -> crate::Result<()>,
+    error: &dyn Fn(String) -> LumenError,
+    builtin_name: &'static str,
+) -> crate::Result<ExpressionValue> {
+    expect_len(3)?;
+    let start = to_number(
+        &args[0],
+        error(format!("{builtin_name} expects numeric arguments")),
+    )?;
+    let end = to_number(
+        &args[1],
+        error(format!("{builtin_name} expects numeric arguments")),
+    )?;
+    let t = to_number(
+        &args[2],
+        error(format!("{builtin_name} expects numeric arguments")),
+    )?;
+    Ok(ExpressionValue::Number(start + (end - start) * t))
+}
+
 fn unary_numeric(
     args: &[ExpressionValue],
-    expect_len: &dyn Fn(usize) -> Result<(), LumenError>,
+    expect_len: &dyn Fn(usize) -> crate::Result<()>,
     f: impl Fn(f64) -> f64,
-) -> Result<ExpressionValue, LumenError> {
+) -> crate::Result<ExpressionValue> {
     expect_len(1)?;
     let value = to_number(
         &args[0],
         LumenError::Expression(ExpressionError::Evaluate {
-            node_id: None,
-            property_path: None,
+            path: None,
             details: "builtin expects numeric argument".to_string(),
         }),
     )?;
     Ok(ExpressionValue::Number(f(value)))
 }
 
-fn to_number(value: &ExpressionValue, error: LumenError) -> Result<f64, LumenError> {
+fn to_number(value: &ExpressionValue, error: LumenError) -> crate::Result<f64> {
     match value {
         ExpressionValue::Number(number) => Ok(*number),
         ExpressionValue::Boolean(boolean) => Ok(if *boolean { 1.0 } else { 0.0 }),
@@ -317,7 +337,7 @@ fn to_number(value: &ExpressionValue, error: LumenError) -> Result<f64, LumenErr
     }
 }
 
-fn to_string(value: &ExpressionValue, _error: LumenError) -> Result<String, LumenError> {
+fn to_string(value: &ExpressionValue, _error: LumenError) -> crate::Result<String> {
     match value {
         ExpressionValue::String(text) => Ok(text.clone()),
         ExpressionValue::Number(number) => Ok(number.to_string()),

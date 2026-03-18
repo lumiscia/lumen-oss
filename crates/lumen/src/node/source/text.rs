@@ -13,14 +13,14 @@ use skia_safe::{
 };
 
 use crate::{
-    error::LumenError,
     node::{
-        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        NodeId, NodeProperty,
         pixel_utils::{read_surface_rgba, to_skia_color},
     },
     raster::RasterFrame,
     render::RenderContext,
 };
+use lumen_macros::{Node, node_impl};
 
 thread_local! {
     static TEXT_FONT_MGR: RefCell<Option<FontMgr>> = const { RefCell::new(None) };
@@ -85,6 +85,16 @@ pub enum TextFontStyle {
     Oblique,
 }
 
+impl TextFontStyle {
+    fn from_int(value: i64) -> Self {
+        match value {
+            1 => Self::Italic,
+            2 => Self::Oblique,
+            _ => Self::Normal,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextAlignmentHorizontal {
     Left,
@@ -93,11 +103,32 @@ pub enum TextAlignmentHorizontal {
     Justify,
 }
 
+impl TextAlignmentHorizontal {
+    fn from_int(value: i64) -> Self {
+        match value {
+            1 => Self::Center,
+            2 => Self::Right,
+            3 => Self::Justify,
+            _ => Self::Left,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextAlignmentVertical {
     Top,
     Middle,
     Bottom,
+}
+
+impl TextAlignmentVertical {
+    fn from_int(value: i64) -> Self {
+        match value {
+            1 => Self::Middle,
+            2 => Self::Bottom,
+            _ => Self::Top,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,57 +146,69 @@ impl Default for TextAlignment {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Node)]
 pub struct Text {
-    pub content: String,
-    pub font_family: String,
-    pub font_size: f32,
-    pub font_weight: u16,
-    pub font_style: TextFontStyle,
-    pub max_width: Option<f32>,
-    pub color: [u8; 4],
-    pub alignment: TextAlignment,
+    pub id: NodeId,
+
+    #[property(expected = String)]
+    pub content: NodeProperty,
+    #[property(expected = String)]
+    pub font_family: NodeProperty,
+    #[property(expected = Float)]
+    pub font_size: NodeProperty,
+    #[property(expected = Int)]
+    pub font_weight: NodeProperty,
+    #[property(expected = Int)]
+    pub font_style: NodeProperty,
+    #[property(expected = Float)]
+    pub max_width: NodeProperty,
+    #[property(expected = Color)]
+    pub color: NodeProperty,
+    #[property(expected = Int)]
+    pub alignment_horizontal: NodeProperty,
+    #[property(expected = Int)]
+    pub alignment_vertical: NodeProperty,
 }
 
 impl Default for Text {
     fn default() -> Self {
         Self {
-            content: String::new(),
-            font_family: "sans-serif".to_string(),
-            font_size: 16.0,
-            font_weight: 400,
-            font_style: TextFontStyle::Normal,
-            max_width: None,
-            color: [255, 255, 255, 255],
-            alignment: TextAlignment::default(),
+            id: NodeId::new(0),
+            content: NodeProperty::String(String::new()),
+            font_family: NodeProperty::String("sans-serif".to_string()),
+            font_size: NodeProperty::Float(16.0),
+            font_weight: NodeProperty::Int(400),
+            font_style: NodeProperty::Int(0),
+            max_width: NodeProperty::Float(0.0),
+            color: NodeProperty::Color([255, 255, 255, 255]),
+            alignment_horizontal: NodeProperty::Int(0),
+            alignment_vertical: NodeProperty::Int(0),
         }
     }
 }
 
-impl NodeEval for Text {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        &[]
-    }
+#[node_impl]
+impl Text {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let content = self.resolve_content(ctx)?;
+        let font_family = self.resolve_font_family(ctx)?;
+        let font_size = self.resolve_font_size(ctx)? as f32;
+        let font_weight = self.resolve_font_weight(ctx)? as i32;
+        let font_style = TextFontStyle::from_int(self.resolve_font_style(ctx)?);
+        let max_width = resolved_max_width(self.resolve_max_width(ctx)? as f32);
+        let color = self.resolve_color(ctx)?;
+        let alignment = TextAlignment {
+            horizontal: TextAlignmentHorizontal::from_int(self.resolve_alignment_horizontal(ctx)?),
+            vertical: TextAlignmentVertical::from_int(self.resolve_alignment_vertical(ctx)?),
+        };
 
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &[OutputPortDef {
-            name: "output",
-            kind: PortKind::RasterFrame,
-        }]
-    }
-
-    fn evaluate(
-        &self,
-        _inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let layout_width = self
-            .max_width
-            .unwrap_or(ctx.request.width() as f32)
+        let layout_width = max_width
+            .unwrap_or(ctx.renderer.composition.render_settings.width as f32)
             .clamp(1.0, u32::MAX as f32);
 
         let mut paragraph_style = ParagraphStyle::new();
-        paragraph_style.set_text_align(match self.alignment.horizontal {
+        paragraph_style.set_text_align(match alignment.horizontal {
             TextAlignmentHorizontal::Left => ParagraphTextAlign::Left,
             TextAlignmentHorizontal::Center => ParagraphTextAlign::Center,
             TextAlignmentHorizontal::Right => ParagraphTextAlign::Right,
@@ -173,14 +216,14 @@ impl NodeEval for Text {
         });
 
         let mut text_style = ParagraphTextStyle::new();
-        text_style.set_font_size(self.font_size.max(1.0));
-        text_style.set_color(to_skia_color(self.color));
+        text_style.set_font_size(font_size.max(1.0));
+        text_style.set_color(to_skia_color(color));
         text_style.set_font_style(FontStyle::new(
-            Weight::from(i32::from(self.font_weight.clamp(100, 900))),
+            Weight::from(font_weight.clamp(100, 900)),
             skia_safe::font_style::Width::NORMAL,
-            to_slant(self.font_style),
+            to_slant(font_style),
         ));
-        let requested_font_family = self.font_family.trim();
+        let requested_font_family = font_family.trim();
         if requested_font_family.is_empty() {
             #[cfg(feature = "embed-roboto")]
             text_style.set_font_families(&["Roboto", "sans-serif"]);
@@ -198,7 +241,7 @@ impl NodeEval for Text {
         let paragraph = with_text_font_collection(|font_collection| {
             let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
             builder.push_style(&text_style);
-            builder.add_text(&self.content);
+            builder.add_text(&content);
             let mut paragraph = builder.build();
             paragraph.layout(layout_width);
             paragraph
@@ -207,16 +250,12 @@ impl NodeEval for Text {
         let width = layout_width.ceil().max(1.0) as u32;
         let height = paragraph.height().ceil().max(1.0) as u32;
         let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
-            return Ok(PortValue::RasterFrame(RasterFrame::bitmap(
-                Arc::new(vec![0_u8; 4]),
-                1,
-                1,
-            )));
+            return Ok(RasterFrame::bitmap(Arc::new(vec![0_u8; 4]), 1, 1));
         };
 
         let canvas = surface.canvas();
         canvas.clear(Color::TRANSPARENT);
-        let vertical_offset = match self.alignment.vertical {
+        let vertical_offset = match alignment.vertical {
             TextAlignmentVertical::Top => 0.0,
             TextAlignmentVertical::Middle => (height as f32 - paragraph.height()).max(0.0) * 0.5,
             TextAlignmentVertical::Bottom => (height as f32 - paragraph.height()).max(0.0),
@@ -224,11 +263,15 @@ impl NodeEval for Text {
         paragraph.paint(canvas, (0.0, vertical_offset));
 
         let bytes = read_surface_rgba(&mut surface, width, height, Some(ctx));
-        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
-            Arc::new(bytes),
-            width,
-            height,
-        )))
+        Ok(RasterFrame::bitmap(Arc::new(bytes), width, height))
+    }
+}
+
+fn resolved_max_width(value: f32) -> Option<f32> {
+    if value.is_finite() && value > 0.0 {
+        Some(value)
+    } else {
+        None
     }
 }
 

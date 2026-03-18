@@ -3,9 +3,8 @@
 use std::sync::Arc;
 
 use crate::{
-    error::LumenError,
-    node::pixel_utils::{into_bitmap_parts, read_surface_rgba, rgba_byte_len},
-    surface_pool::{SurfacePool, SurfaceRef},
+    node::pixel_utils::into_bitmap_parts,
+    render::surface::{OwnedSurface, SurfacePool},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +158,7 @@ impl BitmapFrame {
 
 #[derive(Debug)]
 pub struct SurfaceFrame {
-    pub surface: SurfaceRef,
+    pub surface: OwnedSurface,
     pub format_rect: RectI,
     pub data_rect: RectI,
     pub alpha_mode: AlphaMode,
@@ -167,8 +166,8 @@ pub struct SurfaceFrame {
 }
 
 impl SurfaceFrame {
-    pub fn new(surface: SurfaceRef) -> Self {
-        let format_rect = RectI::from_size(surface.width(), surface.height());
+    pub fn new(surface: OwnedSurface) -> Self {
+        let format_rect = RectI::from_size(surface.width() as u32, surface.height() as u32);
         Self {
             surface,
             format_rect,
@@ -187,39 +186,6 @@ impl SurfaceFrame {
 pub enum RasterFrame {
     Bitmap(BitmapFrame),
     Surface(SurfaceFrame),
-}
-
-impl Clone for RasterFrame {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Bitmap(frame) => Self::Bitmap(frame.clone()),
-            Self::Surface(surface_frame) => {
-                let width = surface_frame.surface.width();
-                let height = surface_frame.surface.height();
-                let bytes = surface_frame
-                    .surface
-                    .surface()
-                    .and_then(|surface| {
-                        let mut surface = surface.clone();
-                        let snapshot = surface.image_snapshot();
-                        snapshot
-                            .peek_pixels()
-                            .and_then(|pixels| pixels.bytes().map(std::borrow::ToOwned::to_owned))
-                    })
-                    .unwrap_or_else(|| {
-                        let byte_len = rgba_byte_len(width, height).unwrap_or(4);
-                        vec![0; byte_len]
-                    });
-                let mut bitmap = BitmapFrame::new(Arc::new(bytes), width, height)
-                    .with_alpha_mode(surface_frame.alpha_mode);
-                bitmap.color_space = surface_frame.color_space;
-                bitmap.format_rect = surface_frame.format_rect;
-                bitmap.data_rect = surface_frame.data_rect;
-                bitmap.sanitize_domain();
-                Self::Bitmap(bitmap)
-            }
-        }
-    }
 }
 
 impl RasterFrame {
@@ -269,19 +235,14 @@ impl RasterFrame {
         }
     }
 
-    pub fn to_bitmap(self) -> Result<Self, LumenError> {
+    pub fn to_bitmap(self) -> crate::Result<Self> {
         match self {
             Self::Bitmap(..) => Ok(self),
             Self::Surface(mut surface_frame) => {
                 let width = surface_frame.surface.width();
                 let height = surface_frame.surface.height();
-                let bytes = match surface_frame.surface.surface_mut() {
-                    Some(surface) => read_surface_rgba(surface, width, height, None),
-                    None => {
-                        let byte_len = rgba_byte_len(width, height).unwrap_or(4);
-                        vec![0; byte_len]
-                    }
-                };
+                let bytes =
+                    read_surface_pixels(surface_frame.surface.surface_mut(), width, height, None);
                 let mut bitmap = BitmapFrame::new(Arc::new(bytes), width, height)
                     .with_alpha_mode(surface_frame.alpha_mode);
                 bitmap.format_rect = surface_frame.format_rect;
@@ -296,24 +257,26 @@ impl RasterFrame {
         into_bitmap_parts(self)
     }
 
-    pub fn into_bitmap_frame(self) -> Result<BitmapFrame, LumenError> {
+    pub fn into_bitmap_frame(self) -> crate::Result<BitmapFrame> {
         match self.to_bitmap()? {
             Self::Bitmap(frame) => Ok(frame),
             Self::Surface(_) => unreachable!(),
         }
     }
 
-    pub fn promote_to_surface(self, pool: &Arc<SurfacePool>) -> Result<Self, LumenError> {
+    pub fn promote_to_surface(self, pool: &impl SurfacePool) -> crate::Result<SurfaceFrame> {
         match self {
-            Self::Surface(..) => Ok(self),
+            Self::Surface(surface) => Ok(surface),
             Self::Bitmap(frame) => {
-                let surface_ref = pool.acquire(frame.storage_width, frame.storage_height)?;
+                let surface_ref = pool
+                    .acquire(frame.storage_width, frame.storage_height)?
+                    .take()?;
                 let mut surface_frame = SurfaceFrame::new(surface_ref);
                 surface_frame.format_rect = frame.format_rect;
                 surface_frame.data_rect = frame.data_rect;
                 surface_frame.alpha_mode = frame.alpha_mode;
                 surface_frame.color_space = frame.color_space;
-                Ok(Self::Surface(surface_frame))
+                Ok(surface_frame)
             }
         }
     }

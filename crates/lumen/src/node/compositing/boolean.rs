@@ -5,96 +5,94 @@ use skia_safe::Paint;
 use crate::{
     error::LumenError,
     node::{
-        InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue,
+        NodeId, NodeProperty, PortRef,
         pixel_utils::{make_skia_image, render_with_skia},
-        shape_renderer::{ShapeRenderer, rasterize_vector},
+        vector::shape_renderer::{ShapeRenderer, rasterize_vector},
     },
     raster::{AlphaMode, BitmapFrame, RasterFrame},
     render::RenderContext,
 };
+use lumen_macros::{Node, node_impl};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
 #[non_exhaustive]
 pub enum MaskKind {
-    Alpha,
-    Luma,
+    Alpha = 0,
+    Luma = 1,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl MaskKind {
+    fn from_int(value: i64) -> Self {
+        match value {
+            1 => Self::Luma,
+            _ => Self::Alpha,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Node)]
 pub struct Boolean {
-    pub mask_kind: MaskKind,
-    pub invert: bool,
+    pub id: NodeId,
+
+    #[property(expected = Int)]
+    pub mask_kind: NodeProperty,
+    #[property(expected = Bool)]
+    pub invert: NodeProperty,
+
+    #[input(kind = Raster)]
+    pub source: PortRef,
+    #[input(kind = Raster, optional)]
+    pub mask: PortRef,
+    #[input(kind = Vector, optional)]
+    pub vector: PortRef,
 }
 
 impl Default for Boolean {
     fn default() -> Self {
         Self {
-            mask_kind: MaskKind::Alpha,
-            invert: false,
+            id: NodeId::new(0),
+            mask_kind: NodeProperty::Int(MaskKind::Alpha as i64),
+            invert: NodeProperty::Bool(false),
+            source: PortRef::empty(),
+            mask: PortRef::empty(),
+            vector: PortRef::empty(),
         }
     }
 }
 
-const INPUT_PORT_DEFS: &[InputPortDef] = &[
-    InputPortDef {
-        name: "source",
-        kind: PortKind::RasterFrame,
-        optional: false,
-    },
-    InputPortDef {
-        name: "mask",
-        kind: PortKind::RasterFrame,
-        optional: true,
-    },
-    InputPortDef {
-        name: "vector",
-        kind: PortKind::Vector,
-        optional: true,
-    },
-];
-
-const OUTPUT_PORT_DEFS: &[OutputPortDef] = &[OutputPortDef {
-    name: "output",
-    kind: PortKind::RasterFrame,
-}];
-
-impl NodeEval for Boolean {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        INPUT_PORT_DEFS
-    }
-
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        OUTPUT_PORT_DEFS
-    }
-
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
-        let source = inputs.get_raster("source")?;
+#[node_impl]
+impl Boolean {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let source = ctx.eval(self.source.clone())?;
+        let source = source.as_raster()?;
         let (source_bytes, source_w, source_h) = source.clone().into_parts();
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
         let source_data = source.data_rect();
-        let mask = match inputs.get_raster_optional("mask")? {
-            Some(frame) => Some(frame.clone().into_parts()),
-            None => inputs.get_vector_optional("vector")?.map(|vector| {
-                rasterize_vector(vector, &ShapeRenderer::default(), ctx).into_parts()
-            }),
+
+        let mask = if !self.mask.is_empty() {
+            let frame = ctx.eval(self.mask.clone())?;
+            Some(frame.as_raster()?.clone().into_parts())
+        } else if !self.vector.is_empty() {
+            let vector = ctx.eval(self.vector.clone())?;
+            Some(rasterize_vector(vector.as_vector()?, &ShapeRenderer::default(), ctx).into_parts())
+        } else {
+            None
         };
 
         let Some((mask_bytes, mask_w, mask_h)) = mask else {
-            return Ok(PortValue::RasterFrame(source.clone()));
+            return Ok(source.clone());
         };
 
         let out_w = source_w;
         let out_h = source_h;
         if out_w == 0 || out_h == 0 {
-            return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+            return Ok(RasterFrame::Bitmap(
                 BitmapFrame::with_domain(Arc::new(Vec::new()), 0, 0, source_format, source_data)
                     .with_alpha_mode(source_alpha),
-            )));
+            ));
         }
 
         let source_image = make_skia_image(
@@ -113,9 +111,9 @@ impl NodeEval for Boolean {
         );
 
         let (source_image, mask_image) = match (source_image, mask_image) {
-            (Some(s), Some(m)) => (s, m),
+            (Some(source_image), Some(mask_image)) => (source_image, mask_image),
             _ => {
-                return Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+                return Ok(RasterFrame::Bitmap(
                     BitmapFrame::with_domain(
                         Arc::new(vec![0u8; (out_w as usize) * (out_h as usize) * 4]),
                         out_w,
@@ -124,12 +122,12 @@ impl NodeEval for Boolean {
                         source_data,
                     )
                     .with_alpha_mode(source_alpha),
-                )));
+                ));
             }
         };
 
-        let mask_kind = self.mask_kind;
-        let invert = self.invert;
+        let mask_kind = MaskKind::from_int(self.resolve_mask_kind(ctx)?);
+        let invert = self.resolve_invert(ctx)?;
 
         let output = render_with_skia(out_w, out_h, Some(ctx), |canvas| {
             canvas.draw_image(&source_image, (0.0, 0.0), None);
@@ -160,9 +158,9 @@ impl NodeEval for Boolean {
             }
         });
 
-        Ok(PortValue::RasterFrame(RasterFrame::Bitmap(
+        Ok(RasterFrame::Bitmap(
             BitmapFrame::with_domain(Arc::new(output), out_w, out_h, source_format, source_data)
                 .with_alpha_mode(source_alpha),
-        )))
+        ))
     }
 }

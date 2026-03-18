@@ -1,127 +1,85 @@
-use std::{
-    collections::HashMap,
-    ops::Range,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::{collections::HashMap, ops::Range, sync::Arc};
 
 use crate::{
     error::{LumenError, RenderError},
-    node::{InputPortDef, NodeEval, NodeInputs, OutputPortDef, PortKind, PortValue},
-    raster::RasterFrame,
-    render::RenderContext,
+    media::MediaStore,
+    node::{NodeId, PortRef},
+    raster::{BitmapFrame, RasterFrame},
+    render::{RenderContext, surface::SurfacePool},
 };
+use lumen_macros::{Node, node_impl};
 
-static INPUT_PORT_DEFS_CACHE: OnceLock<Mutex<HashMap<Vec<u16>, &'static [InputPortDef]>>> =
-    OnceLock::new();
-
-const OUTPUT_PORT_DEFS: [OutputPortDef; 1] = [OutputPortDef {
-    name: "output",
-    kind: PortKind::RasterFrame,
-}];
-
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Node)]
 pub struct Switch {
+    pub id: NodeId,
     pub map: HashMap<u16, Range<u32>>,
+
+    #[input(kind = Raster, optional, variadic)]
+    pub layers: Vec<PortRef>,
 }
 
 impl Switch {
     pub fn new(map: HashMap<u16, Range<u32>>) -> Self {
-        Self { map }
+        Self {
+            map,
+            ..Self::default()
+        }
     }
 
-    fn sorted_indices(&self) -> Vec<u16> {
-        let mut indices: Vec<u16> = self.map.keys().copied().collect();
-        indices.sort_unstable();
-        indices
-    }
-
-    fn input_port_name(index: u16) -> String {
-        format!("input_{index}")
-    }
-
-    fn transparent_output(ctx: &RenderContext) -> Result<PortValue, LumenError> {
-        let pixel_count = ctx
-            .request
-            .width()
-            .checked_mul(ctx.request.height())
+    fn transparent_output<S: SurfacePool, M: MediaStore>(
+        ctx: &RenderContext<'_, S, M>,
+    ) -> crate::Result<RasterFrame> {
+        let w = ctx.renderer.composition.render_settings.width;
+        let h = ctx.renderer.composition.render_settings.height;
+        let pixel_count = w
+            .checked_mul(h)
             .and_then(|count| count.checked_mul(4))
             .ok_or(RenderError::SurfaceAllocation {
-                width: ctx.request.width(),
-                height: ctx.request.height(),
+                width: w,
+                height: h,
             })?;
 
-        Ok(PortValue::RasterFrame(RasterFrame::bitmap(
+        Ok(RasterFrame::Bitmap(BitmapFrame::new(
             Arc::new(vec![0; pixel_count as usize]),
-            ctx.request.width(),
-            ctx.request.height(),
+            w,
+            h,
         )))
-    }
-
-    fn cached_input_port_defs(&self) -> &'static [InputPortDef] {
-        let indices = self.sorted_indices();
-        if indices.is_empty() {
-            return &[];
-        }
-
-        let cache = INPUT_PORT_DEFS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut cache_guard = match cache.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-
-        if let Some(existing_defs) = cache_guard.get(&indices) {
-            return existing_defs;
-        }
-
-        let defs: Vec<InputPortDef> = indices
-            .iter()
-            .map(|index| {
-                let name: &'static str = Box::leak(Self::input_port_name(*index).into_boxed_str());
-                InputPortDef {
-                    name,
-                    kind: PortKind::RasterFrame,
-                    optional: true,
-                }
-            })
-            .collect();
-        let defs: &'static [InputPortDef] = Box::leak(defs.into_boxed_slice());
-
-        cache_guard.insert(indices, defs);
-        defs
     }
 }
 
-impl NodeEval for Switch {
-    fn input_port_defs(&self) -> &'static [InputPortDef] {
-        self.cached_input_port_defs()
+impl Default for Switch {
+    fn default() -> Self {
+        Self {
+            id: NodeId::new(0),
+            map: HashMap::new(),
+            layers: Vec::new(),
+        }
     }
+}
 
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        &OUTPUT_PORT_DEFS
-    }
-
-    fn evaluate(
-        &self,
-        inputs: &NodeInputs,
-        ctx: &mut RenderContext,
-    ) -> Result<PortValue, LumenError> {
+#[node_impl]
+impl Switch {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
         let selected_index = self
             .map
             .iter()
-            .filter_map(|(index, frame_range)| {
-                frame_range.contains(&ctx.request.frame).then_some(*index)
-            })
+            .filter_map(|(index, frame_range)| frame_range.contains(&ctx.frame).then_some(*index))
             .min();
 
         let Some(index) = selected_index else {
             return Self::transparent_output(ctx);
         };
 
-        let input_port = Self::input_port_name(index);
-        let Some(raster) = inputs.get_raster_optional(&input_port)? else {
+        let Some(layer) = self.layers.get(index as usize) else {
             return Self::transparent_output(ctx);
         };
 
-        Ok(PortValue::RasterFrame(raster.clone()))
+        if layer.is_empty() {
+            return Self::transparent_output(ctx);
+        }
+
+        let value = ctx.eval(layer.clone())?;
+        Ok(value.as_raster()?.clone())
     }
 }
