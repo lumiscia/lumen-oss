@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::{
-    error::{LumenError, MediaError},
+    error::MediaError,
     media::MediaStore,
     node::{NodeId, NodeProperty},
     raster::RasterFrame,
@@ -125,8 +125,6 @@ fn evaluate_image<S: SurfacePool, M: MediaStore>(
     let meta = resolver.metadata();
     let width = meta.width.max(1);
     let height = meta.height.max(1);
-
-    // TODO: asset_cache not available on new RenderContext
     let decoded = resolver.resolve()?;
 
     validate_rgba_len(source, width, height, decoded.as_ref())?;
@@ -151,9 +149,6 @@ fn evaluate_video<S: SurfacePool, M: MediaStore>(
     let width = meta.width.max(1);
     let height = meta.height.max(1);
     let frame_count = meta.frame_count;
-
-    // TODO: asset_cache not available on new RenderContext
-
     let source_frame = map_to_source_frame(ctx.frame, frame_count, range, speed, loop_mode).ok_or(
         MediaError::FrameOutOfRange {
             media_source: source.to_string(),

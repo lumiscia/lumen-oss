@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use crate::{
     composition::Composition,
+    error::GraphValidationError,
     media::MediaStore,
     node::{NodeResult, PortRef},
     raster::BitmapFrame,
@@ -37,34 +38,42 @@ impl<'a, S: SurfacePool, M: MediaStore> LumenRenderer<'a, S, M> {
         })
     }
 
-    // todo: proper error handling
     pub fn render(&mut self, frame: u32) -> crate::Result<BitmapFrame> {
-        let output_node_id = self
-            .composition
-            .graph
-            .nodes
-            .iter()
-            .find_map(|node| {
-                if matches!(node.1, crate::node::NodeKind::MediaOutput(_)) {
-                    Some(*node.0)
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| todo!("new error type"))
-            .unwrap();
+        let mut media_outputs =
+            self.composition
+                .graph
+                .nodes
+                .iter()
+                .filter_map(|(node_id, node)| {
+                    matches!(node, crate::node::NodeKind::MediaOutput(_)).then_some(*node_id)
+                });
+        let Some(output_node_id) = media_outputs.next() else {
+            return Err(GraphValidationError::MissingMediaOutput.into());
+        };
+        if let Some(_) = media_outputs.next() {
+            return Err(GraphValidationError::MultipleMediaOutputs { count: 2 }.into());
+        }
 
         let mut ctx = RenderContext::new(self, frame);
-        let output =
-            Rc::try_unwrap(ctx.eval(PortRef::new(output_node_id, "output".to_string()))?).unwrap();
-
-        let raster = match output {
-            NodeResult::Raster(raster) => raster.into_bitmap_frame(),
-            NodeResult::Vector(_) => unreachable!(),
-            NodeResult::None => unreachable!(),
-        }
-        .unwrap();
-        // create ctx then call request_node_output on it
+        let output = ctx.eval(PortRef::new(output_node_id, "output".to_string()))?;
+        let raster = match Rc::try_unwrap(output) {
+            Ok(NodeResult::Raster(raster)) => raster.into_bitmap_frame()?,
+            Ok(NodeResult::Vector(_)) => {
+                return Err(ctx.invalid_node_output_type(output_node_id, "RasterFrame", "Vector"));
+            }
+            Ok(NodeResult::None) => return Err(ctx.missing_node_output_error(output_node_id)),
+            Err(shared) => match shared.as_ref() {
+                NodeResult::Raster(raster) => raster.bitmap_snapshot()?,
+                NodeResult::Vector(_) => {
+                    return Err(ctx.invalid_node_output_type(
+                        output_node_id,
+                        "RasterFrame",
+                        "Vector",
+                    ));
+                }
+                NodeResult::None => return Err(ctx.missing_node_output_error(output_node_id)),
+            },
+        };
         Ok(raster)
     }
 }

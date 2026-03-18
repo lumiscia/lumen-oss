@@ -3,7 +3,6 @@ use std::sync::Arc;
 use skia_safe::{CubicResampler, Matrix, SamplingOptions};
 
 use crate::{
-    error::LumenError,
     node::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{make_skia_image, render_with_skia},
@@ -75,7 +74,8 @@ impl Default for Transform {
 impl Transform {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
-        let source = ctx.eval(self.source.clone())?.as_raster()?;
+        let source_result = ctx.eval(self.source.clone())?;
+        let source = source_result.as_raster()?;
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
         let source_data = source.data_rect();
@@ -90,10 +90,10 @@ impl Transform {
         let sampling_mode = TransformSampling::from_int(self.resolve_sampling(ctx)?);
 
         if Self::is_identity_transform(scale_x, scale_y, translate_x, translate_y, rotate) {
-            return Ok(source.clone());
+            return source.snapshot();
         }
 
-        let (bytes, source_width, source_height) = source.clone().into_parts();
+        let (bytes, source_width, source_height) = source.snapshot_parts()?;
 
         if source_width == 0 || source_height == 0 {
             return Ok(RasterFrame::Bitmap(

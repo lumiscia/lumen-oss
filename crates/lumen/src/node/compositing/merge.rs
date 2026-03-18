@@ -63,7 +63,7 @@ impl Merge {
         let base = base_result.as_raster()?;
 
         if opacity <= 0.0 {
-            return Ok(base.clone());
+            return base.snapshot();
         }
 
         let overlay_result = ctx.eval(self.overlay.clone())?;
@@ -75,22 +75,24 @@ impl Merge {
         };
         let mask = mask_result.as_ref().map(|v| v.as_raster()).transpose()?;
 
-        let (base_bytes, base_w, base_h) = base.clone().into_parts();
-        let (overlay_bytes, overlay_w, overlay_h) = overlay.clone().into_parts();
+        let (base_bytes, base_w, base_h) = base.snapshot_parts()?;
+        let (overlay_bytes, overlay_w, overlay_h) = overlay.snapshot_parts()?;
         let base_alpha = base.alpha_mode();
         let overlay_alpha = overlay.alpha_mode();
         let base_format = base.format_rect();
         let base_data = base.data_rect();
         let overlay_format = overlay.format_rect();
         let overlay_data = overlay.data_rect();
-        let mask_parts = mask.map(|raster| {
-            (
-                raster.clone().into_parts(),
+        let mask_parts = if let Some(raster) = mask {
+            Some((
+                raster.snapshot_parts()?,
                 raster.alpha_mode(),
                 raster.format_rect(),
                 raster.data_rect(),
-            )
-        });
+            ))
+        } else {
+            None
+        };
 
         let out_format = union_rect(base_format, overlay_format);
         let mut out_data = union_rect(base_data, overlay_data);
@@ -129,7 +131,7 @@ impl Merge {
             ));
         };
         let Some(overlay_image) = overlay_image else {
-            return Ok(base.clone());
+            return base.snapshot();
         };
 
         let opacity = opacity.clamp(0.0, 1.0);

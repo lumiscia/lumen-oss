@@ -1,6 +1,6 @@
 //! Node type system, shared value types, and enum-based node dispatch.
 
-use std::{collections::HashMap, fmt};
+use std::fmt;
 
 use crate::{
     error::{LumenError, PropertyError},
@@ -86,15 +86,6 @@ pub enum PortKind {
     RasterFrame = 0,
     Surface = 1,
     Vector = 2,
-}
-
-// TODO: fix
-#[derive(Debug, Clone)]
-pub struct NodeDef {
-    pub inputs: HashMap<String, ()>, // we should replace the () with a type that holds our data
-    pub outputs: HashMap<String, ()>, // same here
-
-    pub properties: HashMap<String, ()>, // and... same here
 }
 
 #[derive(Debug, Clone)]
@@ -295,7 +286,16 @@ impl From<VectorData> for NodeResult {
 
 pub trait PropertyEval {
     fn property_defs(&self) -> &'static [PropertyDef];
+
     fn get_property(&self, id: &str) -> crate::Result<Option<NodeProperty>>;
+}
+
+pub trait NodeDef {
+    fn property_defs() -> &'static [PropertyDef];
+
+    fn input_port_defs() -> &'static [InputPortDef];
+
+    fn output_port_defs() -> &'static [OutputPortDef];
 }
 
 pub trait Node: PropertyEval + Send + Sync {

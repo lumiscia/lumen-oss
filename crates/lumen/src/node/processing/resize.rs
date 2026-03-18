@@ -3,7 +3,6 @@ use std::sync::Arc;
 use skia_safe::{CubicResampler, Rect, SamplingOptions};
 
 use crate::{
-    error::LumenError,
     node::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{make_skia_image, render_with_skia},
@@ -81,7 +80,8 @@ impl Default for Resize {
 impl Resize {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
-        let source = ctx.eval(self.source.clone())?.as_raster()?;
+        let source_result = ctx.eval(self.source.clone())?;
+        let source = source_result.as_raster()?;
         let mode = ResizeMode::from_int(self.resolve_mode(ctx)?);
         let sampling_mode = ResizeSampling::from_int(self.resolve_sampling(ctx)?);
         let dest_width = self.resolve_width(ctx)?.max(1) as u32;
@@ -91,13 +91,14 @@ impl Resize {
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
 
-        // Early return if dimensions already match
+        // Early return if dimensions already match.
+
         if source_width == dest_width && source_height == dest_height {
-            return Ok(source.clone());
+            return source.snapshot();
         }
 
         let output_rect = RectI::new(source_format.x, source_format.y, dest_width, dest_height);
-        let (bytes, source_width, source_height) = source.clone().into_parts();
+        let (bytes, source_width, source_height) = source.snapshot_parts()?;
 
         // Handle empty source image by returning transparent buffer
         if source_width == 0 || source_height == 0 {

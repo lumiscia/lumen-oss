@@ -3,7 +3,7 @@ use std::sync::Arc;
 use skia_safe::Paint;
 
 use crate::{
-    error::LumenError,
+    error::{LumenError, RenderError},
     media::MediaStore,
     node::{
         NodeId, NodeProperty, PortRef,
@@ -47,20 +47,27 @@ impl RasterMultiMerge {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
         let opacity = self.resolve_opacity(ctx)? as f32;
-        let blend_mode = BlendMode::from_int(self.resolve_blend_mode(ctx)?);
+        let blend_mode =
+            BlendMode::try_from(self.resolve_blend_mode(ctx)? as usize).map_err(|err| {
+                LumenError::Render(RenderError::NodeEvaluation {
+                    frame: ctx.frame,
+                    node_id: self.node_id(),
+                    node_kind: "raster_multimerge",
+                    details: err.into(),
+                })
+            })?;
 
-        // Evaluate all connected layers
         let mut rasters = Vec::new();
         for layer in &self.layers {
-            if !layer.is_empty() {
-                let result = ctx.eval(layer.clone())?;
-                rasters.push(result.as_raster()?.clone());
+            if layer.is_empty() {
+                continue;
             }
+            let result = ctx.eval(layer.clone())?;
+            rasters.push(result.as_raster()?.snapshot()?);
         }
 
         let mut rasters = rasters.into_iter();
         let Some(mut acc) = rasters.next() else {
-            // No layers — return transparent
             let w = ctx.renderer.composition.render_settings.width.max(1);
             let h = ctx.renderer.composition.render_settings.height.max(1);
             return Ok(RasterFrame::Bitmap(BitmapFrame::new(
@@ -75,8 +82,6 @@ impl RasterMultiMerge {
         }
 
         let skia_blend: skia_safe::BlendMode = blend_mode.into();
-
-        // Fold remaining layers onto the accumulator
         for overlay in rasters {
             acc = merge_pair(&acc, &overlay, opacity, skia_blend, ctx)?;
         }
@@ -90,10 +95,10 @@ fn merge_pair<S: SurfacePool, M: MediaStore>(
     overlay: &RasterFrame,
     opacity: f32,
     blend_mode: skia_safe::BlendMode,
-    ctx: &RenderContext<'_, S, M>,
+    ctx: &mut RenderContext<'_, S, M>,
 ) -> crate::Result<RasterFrame> {
-    let (base_bytes, base_w, base_h) = base.clone().into_parts();
-    let (overlay_bytes, overlay_w, overlay_h) = overlay.clone().into_parts();
+    let (base_bytes, base_w, base_h) = base.snapshot_parts()?;
+    let (overlay_bytes, overlay_w, overlay_h) = overlay.snapshot_parts()?;
     let base_alpha = base.alpha_mode();
     let overlay_alpha = overlay.alpha_mode();
     let base_format = base.format_rect();
@@ -111,14 +116,14 @@ fn merge_pair<S: SurfacePool, M: MediaStore>(
     let render_h = out_data.height.max(1);
 
     let base_image = make_skia_image(
-        &base_bytes,
+        base_bytes.as_slice(),
         base_w,
         base_h,
         (base_w as usize) * 4,
         base_alpha,
     );
     let overlay_image = make_skia_image(
-        &overlay_bytes,
+        overlay_bytes.as_slice(),
         overlay_w,
         overlay_h,
         (overlay_w as usize) * 4,
@@ -138,11 +143,10 @@ fn merge_pair<S: SurfacePool, M: MediaStore>(
         ));
     };
     let Some(overlay_image) = overlay_image else {
-        return Ok(base.clone());
+        return base.snapshot();
     };
 
     let opacity = opacity.clamp(0.0, 1.0);
-
     let merged = render_with_skia(render_w, render_h, Some(ctx), |canvas| {
         draw_frame_image(
             canvas,

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use skia_safe::{Paint, image_filters};
 
 use crate::{
-    error::LumenError,
     node::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{make_skia_image, render_with_skia},
@@ -45,16 +44,17 @@ impl Blur {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
         let radius = self.resolve_radius(ctx)? as f32;
-        let source = ctx.eval(self.source.clone())?.as_raster()?;
+        let source_result = ctx.eval(self.source.clone())?;
+        let source = source_result.as_raster()?;
 
         if Self::is_noop(radius) {
-            return Ok(source.clone());
+            return source.snapshot();
         }
 
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
         let source_data = source.data_rect();
-        let (bytes, width, height) = source.clone().into_parts();
+        let (bytes, width, height) = source.snapshot_parts()?;
 
         if width == 0 || height == 0 {
             return Ok(RasterFrame::Bitmap(

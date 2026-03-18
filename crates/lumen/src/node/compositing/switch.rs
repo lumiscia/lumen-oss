@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Range, sync::Arc};
 
 use crate::{
-    error::{LumenError, RenderError},
+    error::RenderError,
     media::MediaStore,
     node::{NodeId, PortRef},
     raster::{BitmapFrame, RasterFrame},
@@ -80,6 +80,6 @@ impl Switch {
         }
 
         let value = ctx.eval(layer.clone())?;
-        Ok(value.as_raster()?.clone())
+        value.as_raster()?.snapshot()
     }
 }

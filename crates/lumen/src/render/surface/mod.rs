@@ -156,21 +156,18 @@ impl<'pool> SurfaceLease<'pool> {
     }
 
     pub fn take(mut self) -> Result<OwnedSurface, LumenError> {
-        if let Some(surface) = self.surface.take() {
-            Ok(OwnedSurface {
-                surface: surface,
-                kind: self.kind,
-            })
-        } else {
-            Err(todo!("new error type"))
-        }
+        let Some(surface) = self.surface.take() else {
+            return Err(RenderError::SurfaceLeaseReleased.into());
+        };
+        Ok(OwnedSurface {
+            surface,
+            kind: self.kind,
+        })
     }
 
     pub fn take_rc(self: Rc<Self>) -> Result<OwnedSurface, LumenError> {
-        // todo: proper error handling
         Rc::try_unwrap(self)
-            .map_err(|_| todo!("create error type"))
-            .unwrap()
+            .map_err(|_| LumenError::from(RenderError::SharedSurfaceLease))?
             .take()
     }
 }
@@ -178,8 +175,9 @@ impl<'pool> SurfaceLease<'pool> {
 impl Drop for SurfaceLease<'_> {
     fn drop(&mut self) {
         if let Some(surface) = self.surface.take() {
-            self.pool
-                .release(self.kind, self.width(), self.height(), surface);
+            let width = surface.width() as u32;
+            let height = surface.height() as u32;
+            self.pool.release(self.kind, width, height, surface);
         }
     }
 }
@@ -215,5 +213,17 @@ impl OwnedSurface {
 
     pub fn surface_mut(&mut self) -> &mut skia_safe::Surface {
         &mut self.surface
+    }
+}
+
+impl OwnedSurface {
+    pub fn kind(&self) -> SurfaceKind {
+        self.kind
+    }
+
+    pub fn release_to(self, pool: &dyn SurfacePool) {
+        let width = self.surface.width() as u32;
+        let height = self.surface.height() as u32;
+        pool.release(self.kind, width, height, self.surface)
     }
 }

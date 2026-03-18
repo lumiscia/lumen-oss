@@ -117,12 +117,27 @@ pub enum RenderError {
         node_kind: &'static str,
         details: String,
     },
+    #[error("referenced node is missing from the graph")]
+    MissingNode { frame: u32, node_id: NodeId },
     #[error("surface allocation failed")]
     SurfaceAllocation { width: u32, height: u32 },
     #[error("node output is missing")]
     MissingNodeOutput { frame: u32, node_id: NodeId },
+    #[error("node output has invalid type")]
+    InvalidNodeOutputType {
+        frame: u32,
+        node_id: NodeId,
+        expected: &'static str,
+        actual: &'static str,
+    },
     #[error("media output node did not produce raster output")]
     InvalidMediaOutputType { frame: u32, node_id: NodeId },
+    #[error("surface lease has already been taken")]
+    SurfaceLeaseReleased,
+    #[error("surface lease is still shared")]
+    SharedSurfaceLease,
+    #[error("surface readback requires owned access")]
+    SurfaceReadbackUnsupported,
     #[error("render cancelled")]
     Cancelled { frame: u32 },
 }

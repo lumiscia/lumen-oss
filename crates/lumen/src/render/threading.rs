@@ -6,7 +6,7 @@ use crossbeam_channel::bounded;
 
 use crate::{
     composition::Composition,
-    error::LumenError,
+    error::{LumenError, ThreadingError},
     media::MediaStore,
     raster::{BitmapFrame, RasterFrame},
     render::{LumenRenderer, SurfacePool},
@@ -37,44 +37,45 @@ impl<S: SurfacePool, M: MediaStore> RenderOrchestrator<S, M> {
         }
     }
 
-    // TODO: handle cancellation with atomic bool
     pub fn render<T: Sink>(&self, sink: &mut T) -> Result<(), LumenError> {
+        if self.worker_count == 0 {
+            return Err(ThreadingError::WorkerInit {
+                details: "worker_count must be greater than zero".to_string(),
+            }
+            .into());
+        }
+
         let (job_tx, job_rx) = bounded::<u32>(self.worker_count);
         let (result_tx, result_rx) = bounded::<WorkerResult>(self.worker_count);
 
-        std::thread::scope(|s| -> Result<(), LumenError> {
+        std::thread::scope(|scope| -> Result<(), LumenError> {
             for _ in 0..self.worker_count {
                 let composition = &self.composition;
                 let surface_pool = &self.surface_pool;
                 let media_store = &self.media_store;
-
                 let result_tx = result_tx.clone();
                 let job_rx = job_rx.clone();
 
-                s.spawn(move || {
-                    // TODO: remove unwraps & panics
+                scope.spawn(move || {
                     let mut renderer =
-                        LumenRenderer::new(composition, surface_pool, media_store).unwrap();
-
-                    while let Ok(frame) = job_rx.recv() {
-                        match renderer.render(frame) {
-                            Ok(rendered) => {
-                                result_tx.send(WorkerResult::Frame(frame, rendered));
-                            }
+                        match LumenRenderer::new(composition, surface_pool, media_store) {
+                            Ok(renderer) => renderer,
                             Err(err) => {
-                                panic!("{:?}", err);
+                                let _ = result_tx.send(WorkerResult::Error(None, err));
+                                return;
                             }
                         };
+
+                    while let Ok(frame) = job_rx.recv() {
+                        let message = match renderer.render(frame) {
+                            Ok(rendered) => WorkerResult::Frame(frame, rendered),
+                            Err(err) => WorkerResult::Error(Some(frame), err),
+                        };
+                        if result_tx.send(message).is_err() {
+                            break;
+                        }
                     }
                 });
-            }
-
-            if self.worker_count == 0 {
-                return Err(LumenError::Threading(
-                    crate::error::ThreadingError::WorkerInit {
-                        details: "worker_count must be greater than zero".to_string(),
-                    },
-                ));
             }
 
             let total_frames = self.composition.timeline.duration_frames;
@@ -85,30 +86,27 @@ impl<S: SurfacePool, M: MediaStore> RenderOrchestrator<S, M> {
 
             while next_to_write < total_frames {
                 while in_flight < self.worker_count && next_to_submit < total_frames {
-                    job_tx.send(next_to_submit).map_err(|_| {
-                        LumenError::Threading(crate::error::ThreadingError::WorkerFailure {
+                    job_tx
+                        .send(next_to_submit)
+                        .map_err(|_| ThreadingError::WorkerFailure {
                             frame: Some(next_to_submit),
                             details: "job channel closed while submitting frame".to_string(),
-                        })
-                    })?;
-
+                        })?;
                     next_to_submit += 1;
                     in_flight += 1;
                 }
 
-                let result = result_rx.recv().map_err(|_| {
-                    LumenError::Threading(crate::error::ThreadingError::WorkerFailure {
+                let result = result_rx
+                    .recv()
+                    .map_err(|_| ThreadingError::WorkerFailure {
                         frame: Some(next_to_write),
                         details: "result channel closed before all frames completed".to_string(),
-                    })
-                })?;
-
+                    })?;
                 in_flight = in_flight.saturating_sub(1);
 
                 match result {
                     WorkerResult::Frame(frame, bitmap_frame) => {
                         buffered_frames.insert(frame, bitmap_frame);
-
                         while let Some(bitmap_frame) = buffered_frames.remove(&next_to_write) {
                             let raster_frame = RasterFrame::Bitmap(bitmap_frame);
                             sink.write_frame(next_to_write, &raster_frame)?;
@@ -121,14 +119,11 @@ impl<S: SurfacePool, M: MediaStore> RenderOrchestrator<S, M> {
 
             drop(job_tx);
             Ok(())
-        })?;
-
-        // todo: submit jobs & handle surface pool returns
-        Ok(())
+        })
     }
 }
 
 enum WorkerResult {
     Frame(u32, BitmapFrame),
-    Error(u32, LumenError),
+    Error(Option<u32>, LumenError),
 }

@@ -255,6 +255,7 @@ fn parse_property_attrs(attr: &syn::Attribute) -> syn::Result<Ident> {
 // ===========================================================================
 
 struct InputPort {
+    field_ident: Ident,
     name: String,
     kind: Ident,
     optional: bool,
@@ -332,6 +333,7 @@ fn derive_node_inner(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
                     .port_name
                     .unwrap_or_else(|| field_ident.to_string());
                 inputs.push(InputPort {
+                    field_ident: field_ident.clone(),
                     name: port_name,
                     kind: input_attrs.kind,
                     optional: input_attrs.optional,
@@ -427,6 +429,24 @@ fn derive_node_inner(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
         }
     });
 
+    // --- __set_property match arms ---
+    let set_property_arms: Vec<_> = properties.iter().map(|prop| {
+        let name = &prop.name;
+        let field = &prop.field_ident;
+        quote! { #name => { self.#field = value; true } }
+    }).collect();
+
+    // --- __wire_input match arms ---
+    let wire_input_arms: Vec<_> = inputs.iter().map(|inp| {
+        let name = &inp.name;
+        let field = &inp.field_ident;
+        if inp.variadic {
+            quote! { #name => { self.#field.push(port_ref); true } }
+        } else {
+            quote! { #name => { self.#field = port_ref; true } }
+        }
+    }).collect();
+
     let property_static =
         format_ident!("__{}_PROPERTY_DEFS", struct_name.to_string().to_uppercase());
 
@@ -455,6 +475,22 @@ fn derive_node_inner(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
 
                 fn node_id(&self) -> NodeId {
                     self.#id_field
+                }
+
+                /// Set a property by name. Returns `true` if the name matched.
+                pub fn __set_property(&mut self, name: &str, value: NodeProperty) -> bool {
+                    match name {
+                        #(#set_property_arms)*
+                        _ => false,
+                    }
+                }
+
+                /// Wire an input port by name. Returns `true` if the name matched.
+                pub fn __wire_input(&mut self, name: &str, port_ref: crate::node::PortRef) -> bool {
+                    match name {
+                        #(#wire_input_arms)*
+                        _ => false,
+                    }
                 }
 
                 #(#resolve_methods)*
@@ -611,7 +647,7 @@ fn node_impl_inner(mut input: ItemImpl) -> syn::Result<proc_macro2::TokenStream>
     let node_trait_impl = quote! {
         #[automatically_derived]
         const _: () = {
-            use crate::node::{InputPortDef, OutputPortDef, PortKind, NodeId, NodeResult};
+            use crate::node::{InputPortDef, OutputPortDef, PropertyDef, PropertyKind, PortKind, NodeId, NodeResult, NodeDef};
             use crate::error::LumenError;
 
             static #output_static: [OutputPortDef; #output_count] = [
@@ -624,17 +660,32 @@ fn node_impl_inner(mut input: ItemImpl) -> syn::Result<proc_macro2::TokenStream>
                 }
             }
 
+            // Override the placeholder output_port_defs from #[derive(Node)]
+            impl crate::node::NodeDef for #struct_name {
+                fn property_defs() -> &'static [PropertyDef] {
+                    #struct_name::__property_defs()
+                }
+
+                fn input_port_defs() -> &'static [InputPortDef] {
+                    #struct_name::__input_port_defs()
+                }
+
+                fn output_port_defs() -> &'static [OutputPortDef] {
+                    &#output_static
+                }
+            }
+
             impl crate::node::Node for #struct_name {
                 fn id(&self) -> NodeId {
                     self.node_id()
                 }
 
                 fn input_port_defs(&self) -> &'static [InputPortDef] {
-                    #struct_name::__input_port_defs()
+                    <#struct_name as NodeDef>::input_port_defs()
                 }
 
                 fn output_port_defs(&self) -> &'static [OutputPortDef] {
-                    &#output_static
+                    <#struct_name as NodeDef>::output_port_defs()
                 }
             }
 

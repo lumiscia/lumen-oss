@@ -1,5 +1,4 @@
 use crate::{
-    error::LumenError,
     node::{NodeId, NodeProperty, PortRef},
     raster::RasterFrame,
     render::RenderContext,
@@ -31,6 +30,11 @@ impl Default for FrameHold {
 impl FrameHold {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
-        Ok(ctx.eval(self.source.clone())?.as_raster()?.clone())
+        let hold_frame = self.resolve_hold_frame(ctx)? as u32;
+        let original_frame = ctx.frame;
+        ctx.frame = hold_frame;
+        let result = ctx.eval(self.source.clone())?.as_raster()?.snapshot();
+        ctx.frame = original_frame;
+        result
     }
 }

@@ -1,5 +1,4 @@
 use crate::{
-    error::LumenError,
     node::{
         NodeId, NodeProperty, ShapeGeometry, VectorData, VectorPosition, VectorStroke, VectorStyle,
     },

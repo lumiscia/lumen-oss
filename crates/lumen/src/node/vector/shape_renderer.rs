@@ -12,7 +12,6 @@ use skia_safe::{
 };
 
 use crate::{
-    error::LumenError,
     media::MediaStore,
     node::{
         NodeId, NodeProperty, PortRef,
@@ -73,10 +72,14 @@ impl ShapeRenderer {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
         let vector = ctx.eval(self.vector.clone())?;
-        let vector_data = match *vector {
-            crate::node::NodeResult::Raster(_) => todo!("return new err type"),
-            crate::node::NodeResult::Vector(ref vector_data) => vector_data,
-            crate::node::NodeResult::None => todo!("return new err type"),
+        let vector_data = match vector.as_ref() {
+            crate::node::NodeResult::Raster(_) => {
+                return Err(ctx.invalid_node_output_type(self.vector.id, "Vector", "RasterFrame"));
+            }
+            crate::node::NodeResult::Vector(vector_data) => vector_data,
+            crate::node::NodeResult::None => {
+                return Err(ctx.missing_node_output_error(self.vector.id));
+            }
         };
         let renderer_style = resolve_renderer_style(self, ctx)?;
         Ok(rasterize_vector_with_style(
@@ -427,14 +430,15 @@ fn rasterize_group<S: SurfacePool, M: MediaStore>(
         |canvas| {
             canvas.clear(Color::TRANSPARENT);
             for layer in &layers {
-                let bytes = layer.as_bitmap_bytes();
-                let (width, height) = layer.dimensions()
+                let Ok(bitmap) = layer.bitmap_snapshot() else {
+                    continue;
+                };
                 let Some(image) = make_skia_image(
-                    &bytes,
-                    width,
-                    height,
-                    (width as usize) * 4,
-                    layer.alpha_mode(),
+                    bitmap.pixels.as_slice(),
+                    bitmap.storage_width,
+                    bitmap.storage_height,
+                    bitmap.row_bytes,
+                    bitmap.alpha_mode,
                 ) else {
                     continue;
                 };
@@ -528,7 +532,9 @@ fn offset_raster_into_bounds<S: SurfacePool, M: MediaStore>(
     bounds: &PositionedRasterBounds,
     ctx: &mut RenderContext<'_, S, M>,
 ) -> RasterFrame {
-    let (bytes, width, height) = frame.clone().into_parts();
+    let Ok((bytes, width, height)) = frame.snapshot_parts() else {
+        return RasterFrame::bitmap(Arc::new(Vec::new()), 0, 0);
+    };
     if width == 0 || height == 0 {
         return RasterFrame::bitmap(Arc::new(Vec::new()), 0, 0);
     }
@@ -536,7 +542,7 @@ fn offset_raster_into_bounds<S: SurfacePool, M: MediaStore>(
     let rendered = render_with_skia(bounds.width, bounds.height, Some(ctx), |canvas| {
         canvas.clear(Color::TRANSPARENT);
         let Some(image) = make_skia_image(
-            &bytes,
+            bytes.as_slice(),
             width,
             height,
             (width as usize) * 4,

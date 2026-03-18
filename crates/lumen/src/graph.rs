@@ -19,7 +19,7 @@ pub struct Connection {
 pub struct Graph {
     pub nodes: HashMap<NodeId, NodeKind>,
     pub connections: Vec<Connection>,
-    // TODO: index nodes by source for faster lookup when caching node results
+    outgoing_connection_counts: HashMap<NodeId, usize>,
 }
 
 unsafe impl Sync for Graph {}
@@ -30,6 +30,7 @@ impl Graph {
         Self {
             nodes: HashMap::new(),
             connections: Vec::new(),
+            outgoing_connection_counts: HashMap::new(),
         }
     }
 
@@ -48,8 +49,19 @@ impl Graph {
             .into());
         }
 
+        *self
+            .outgoing_connection_counts
+            .entry(connection.from_node)
+            .or_default() += 1;
         self.connections.push(connection);
         Ok(())
+    }
+
+    pub fn outgoing_connection_count(&self, node_id: NodeId) -> usize {
+        self.outgoing_connection_counts
+            .get(&node_id)
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn validate(&self) -> Result<(), Vec<LumenError>> {
@@ -69,6 +81,28 @@ impl Graph {
                 }
                 .into(),
             );
+        }
+
+        for node in self.nodes.values() {
+            if let NodeKind::Switch(switch) = node {
+                let mut ranges: Vec<_> = switch.map.iter().collect();
+                ranges.sort_by_key(|(_, range)| (range.start, range.end));
+                for window in ranges.windows(2) {
+                    let [(_, first), (_, second)] = window else {
+                        continue;
+                    };
+                    if first.start < second.end && second.start < first.end {
+                        errors.push(
+                            GraphValidationError::SwitchRangeOverlap {
+                                node_id: switch.id,
+                                first: (*first).clone(),
+                                second: (*second).clone(),
+                            }
+                            .into(),
+                        );
+                    }
+                }
+            }
         }
 
         for connection in &self.connections {
@@ -91,37 +125,31 @@ impl Graph {
                 continue;
             };
 
-            let output_def = match from_node
+            let Some(output_def) = from_node
                 .output_port_defs()
                 .iter()
-                .find(|def| def.name == &connection.to_port)
-            {
-                Some(output_def) => output_def,
-                None => {
-                    errors.push(
-                        GraphValidationError::MissingSourceNode {
-                            node_id: connection.to_node,
-                        }
-                        .into(),
-                    );
-                    continue;
-                }
+                .find(|def| def.name == connection.from_port)
+            else {
+                errors.push(
+                    GraphValidationError::MissingSourceNode {
+                        node_id: connection.from_node,
+                    }
+                    .into(),
+                );
+                continue;
             };
-            let input_def = match to_node
+            let Some(input_def) = to_node
                 .input_port_defs()
                 .iter()
-                .find(|def| def.name == &connection.to_port)
-            {
-                Some(input_def) => input_def,
-                None => {
-                    errors.push(
-                        GraphValidationError::MissingTargetNode {
-                            node_id: connection.to_node,
-                        }
-                        .into(),
-                    );
-                    continue;
-                }
+                .find(|def| def.name == connection.to_port)
+            else {
+                errors.push(
+                    GraphValidationError::MissingTargetNode {
+                        node_id: connection.to_node,
+                    }
+                    .into(),
+                );
+                continue;
             };
 
             if output_def.kind != input_def.kind {
@@ -148,8 +176,7 @@ impl Graph {
                 let connected = self
                     .connections
                     .iter()
-                    .any(|edge| edge.to_node == node.id() && &edge.to_port == input.name);
-
+                    .any(|edge| edge.to_node == node.id() && edge.to_port == input.name);
                 if !connected {
                     errors.push(
                         GraphValidationError::MissingRequiredInput {

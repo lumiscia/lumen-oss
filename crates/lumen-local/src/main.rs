@@ -1,16 +1,24 @@
 use std::{
+    collections::HashMap,
     env, fs,
     io::Write,
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen::{
-    AssetCache, Composition, FfmpegMediaStore, MediaStore, RasterFrame, RenderContext,
-    RuntimeCapabilityProfile, Sink, SinkType, SurfacePool, error::SinkError,
+    composition::Composition,
+    error::SinkError,
+    ffmpeg::FfmpegVideoResolver,
+    image::ImageFileResolver,
+    media::{ImageResolver, MediaStore, VideoFrameResolver},
+    raster::RasterFrame,
+    render::surface::DefaultSurfacePool,
+    render::{LumenRenderer, threading::RenderOrchestrator},
+    sink::Sink,
 };
 
 #[derive(Debug)]
@@ -24,14 +32,38 @@ struct CliArgs {
 
 struct LocalMediaStore {
     root: PathBuf,
-    backend: FfmpegMediaStore,
+    image_cache: Mutex<HashMap<String, ImageFileResolver>>,
+    video_cache: Mutex<HashMap<String, Arc<FfmpegVideoResolver>>>,
+}
+
+impl std::fmt::Debug for LocalMediaStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalMediaStore")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
+}
+
+struct SharedVideoResolver(Arc<FfmpegVideoResolver>);
+
+impl VideoFrameResolver for SharedVideoResolver {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+    fn metadata(&self) -> lumen::media::VideoMetadata {
+        self.0.metadata()
+    }
+    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
+        self.0.resolve_frame(frame)
+    }
 }
 
 impl LocalMediaStore {
     fn new(root: PathBuf) -> Self {
         Self {
             root,
-            backend: FfmpegMediaStore::new(),
+            image_cache: Mutex::new(HashMap::new()),
+            video_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -43,14 +75,26 @@ impl LocalMediaStore {
 }
 
 impl MediaStore for LocalMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn lumen::ImageResolver>> {
+    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
         let resolved = self.resolve_source(source)?;
-        self.backend.get_image_resolver(&resolved)
+        let mut cache = self.image_cache.lock().unwrap();
+        if let Some(cached) = cache.get(&resolved) {
+            return Some(Box::new(cached.clone()));
+        }
+        let resolver = ImageFileResolver::open(&resolved).ok()?;
+        cache.insert(resolved, resolver.clone());
+        Some(Box::new(resolver))
     }
 
-    fn get_video_resolver(&self, source: &str) -> Option<Box<dyn lumen::VideoFrameResolver>> {
+    fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
         let resolved = self.resolve_source(source)?;
-        self.backend.get_video_resolver(&resolved)
+        let mut cache = self.video_cache.lock().unwrap();
+        if let Some(cached) = cache.get(&resolved) {
+            return Some(Box::new(SharedVideoResolver(Arc::clone(cached))));
+        }
+        let resolver = Arc::new(FfmpegVideoResolver::open(&resolved).ok()?);
+        cache.insert(resolved, Arc::clone(&resolver));
+        Some(Box::new(SharedVideoResolver(resolver)))
     }
 }
 
@@ -115,8 +159,7 @@ impl Sink for FfmpegPipeSink {
         data: &RasterFrame,
     ) -> std::result::Result<(), SinkError> {
         let bitmap = data
-            .clone()
-            .into_bitmap_frame()
+            .bitmap_snapshot()
             .map_err(|error| SinkError::WriteFrame {
                 frame,
                 details: error.to_string(),
@@ -276,7 +319,8 @@ fn run() -> Result<()> {
     let args = parse_args().inspect_err(|_| print_usage())?;
     let composition = load_composition(&args.composition)?;
     let media_root = media_root(args.media_root.as_deref())?;
-    let media_store = Arc::new(LocalMediaStore::new(media_root));
+    let media_store = LocalMediaStore::new(media_root);
+    let surface_pool = DefaultSurfacePool::new();
 
     let extension = args
         .output
@@ -286,33 +330,24 @@ fn run() -> Result<()> {
         .unwrap_or_default();
 
     match extension.as_str() {
-        "png" => {
-            let profile = runtime_profile(false);
-            validate_composition_runtime(&composition, &profile)?;
-            let mut context = RenderContext::new(
-                &composition,
-                Arc::new(SurfacePool::new()),
-                Arc::new(RwLock::new(AssetCache::new())),
-                media_store,
-                profile,
-            );
-            render_single_png(&composition, &args.output, args.frame, &mut context)
-        }
+        "png" => render_single_png(
+            &composition,
+            &surface_pool,
+            &media_store,
+            &args.output,
+            args.frame,
+        ),
         "mp4" => {
             if args.frame.is_some() {
                 return Err(anyhow!("--frame is only supported when output is .png"));
             }
-
-            let profile = runtime_profile(true);
-            validate_composition_runtime(&composition, &profile)?;
-            let context = RenderContext::new(
-                &composition,
-                Arc::new(SurfacePool::new()),
-                Arc::new(RwLock::new(AssetCache::new())),
+            render_mp4(
+                composition,
+                surface_pool,
                 media_store,
-                profile,
-            );
-            render_mp4(&composition, &args.output, args.encoder.as_deref(), context)
+                &args.output,
+                args.encoder.as_deref(),
+            )
         }
         _ => Err(anyhow!(
             "unsupported output extension; use .png or .mp4 (got `{}`)",
@@ -321,73 +356,20 @@ fn run() -> Result<()> {
     }
 }
 
-fn runtime_profile(threading_enabled: bool) -> RuntimeCapabilityProfile {
-    RuntimeCapabilityProfile {
-        has_image_resolver: true,
-        has_video_resolver: true,
-        has_threading: threading_enabled,
-        sink_types: if threading_enabled {
-            vec![SinkType::Bitmap, SinkType::Video]
-        } else {
-            vec![SinkType::Bitmap]
-        },
-    }
-}
-
-fn validate_composition_runtime(
-    composition: &Composition,
-    profile: &RuntimeCapabilityProfile,
-) -> Result<()> {
-    let warnings = composition
-        .validate(profile)
-        .map_err(|errors| anyhow!("composition validation failed: {errors:?}"))?;
-
-    if !warnings.is_empty() {
-        for warning in warnings {
-            eprintln!("runtime warning: {warning:?}");
-        }
-    }
-
-    Ok(())
-}
-
 fn load_composition(path: &Path) -> Result<Composition> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read composition file {}", path.display()))?;
 
-    let result = Composition::from_json(raw.as_str());
-    if !result.warnings.is_empty() {
-        for warning in &result.warnings {
-            eprintln!("composition warning: {warning:?}");
-        }
-    }
-
-    if let Some(composition) = result.composition {
-        return Ok(composition);
-    }
-
-    let details = if result.errors.is_empty() {
-        "unknown conversion failure".to_string()
-    } else {
-        result
-            .errors
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ")
-    };
-
-    Err(anyhow!(
-        "failed to parse composition JSON {}: {details}",
-        path.display()
-    ))
+    lumen::json::parse(&raw)
+        .with_context(|| format!("failed to parse composition {}", path.display()))
 }
 
 fn render_single_png(
     composition: &Composition,
+    surface_pool: &DefaultSurfacePool,
+    media_store: &LocalMediaStore,
     output: &Path,
     frame_override: Option<u32>,
-    context: &mut RenderContext,
 ) -> Result<()> {
     let frame = frame_override.unwrap_or(0);
     if frame >= composition.timeline.duration_frames {
@@ -397,10 +379,12 @@ fn render_single_png(
         ));
     }
 
-    let rendered = composition
-        .render_frame(frame, context)
-        .with_context(|| format!("render failed at frame {frame}"))?
-        .into_bitmap_frame()?;
+    let mut renderer = LumenRenderer::new(composition, surface_pool, media_store)
+        .context("failed to create renderer")?;
+
+    let rendered = renderer
+        .render(frame)
+        .with_context(|| format!("render failed at frame {frame}"))?;
 
     write_png(
         output,
@@ -414,10 +398,11 @@ fn render_single_png(
 }
 
 fn render_mp4(
-    composition: &Composition,
+    composition: Composition,
+    surface_pool: DefaultSurfacePool,
+    media_store: LocalMediaStore,
     output: &Path,
     override_encoder: Option<&str>,
-    context: RenderContext,
 ) -> Result<()> {
     if composition.timeline.fps <= 0.0 {
         return Err(anyhow!(
@@ -438,26 +423,30 @@ fn render_mp4(
 
     let encoder = choose_video_encoder(override_encoder);
     let worker_count = render_worker_count();
-    let sink = Box::new(FfmpegPipeSink::new(
+
+    let mut sink = FfmpegPipeSink::new(
         output,
         composition.render_settings.width,
         composition.render_settings.height,
         composition.timeline.fps,
         encoder.as_str(),
         composition.timeline.duration_frames,
-    )?);
-
-    composition.render_sequence(
-        0..composition.timeline.duration_frames,
-        context,
-        sink,
-        worker_count,
     )?;
+
+    let total_frames = composition.timeline.duration_frames;
+    let orchestrator =
+        RenderOrchestrator::new(composition, surface_pool, media_store, worker_count);
+    orchestrator
+        .render(&mut sink)
+        .map_err(|e| anyhow!("render failed: {e}"))?;
+
+    sink.finalize()
+        .map_err(|e| anyhow!("finalize failed: {e}"))?;
 
     println!(
         "render complete output={} frames={} workers={}",
         output.display(),
-        composition.timeline.duration_frames,
+        total_frames,
         worker_count
     );
     Ok(())

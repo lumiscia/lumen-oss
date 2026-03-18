@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
-use skia_safe::{Paint, Rect, SamplingOptions};
-
 use crate::{
     node::{
         NodeId, NodeResult, PortRef,
+        compositing::merge::draw_frame_image,
         pixel_utils::{make_skia_image, render_with_skia},
     },
     raster::{BitmapFrame, RasterFrame, RectI},
-    render::context::RenderContext,
+    render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
 
@@ -35,12 +34,10 @@ impl MediaOutput {
     fn eval_output(&self, ctx: &mut RenderContext<'_>) -> crate::Result<RasterFrame> {
         let source = match ctx.eval_once(self.source.clone())? {
             NodeResult::Raster(raster) => raster,
-            NodeResult::Vector(vector) => {
-                todo!("return proper error type")
+            NodeResult::Vector(_) => {
+                return Err(ctx.invalid_node_output_type(self.source.id, "RasterFrame", "Vector"));
             }
-            NodeResult::None => {
-                todo!("return proper error type")
-            }
+            NodeResult::None => return Err(ctx.missing_node_output_error(self.source.id)),
         };
 
         let output_rect = RectI::from_size(
@@ -57,7 +54,7 @@ impl MediaOutput {
             && source_format == output_rect
             && source_data == output_rect
         {
-            return Ok(source.to_bitmap()?);
+            return source.into_bitmap_frame().map(RasterFrame::Bitmap);
         }
 
         if target_w == 0 || target_h == 0 {
@@ -70,17 +67,33 @@ impl MediaOutput {
             )));
         }
 
-        let (width, height) = source.dimensions();
-
-        let surface = source.promote_to_surface(ctx.renderer.surface_pool)?;
-        surface.surface.surface_mut().resi
+        let source_alpha = source.alpha_mode();
+        let (source_bytes, storage_w, storage_h) = source.into_parts();
+        let Some(image) = make_skia_image(
+            source_bytes.as_slice(),
+            storage_w,
+            storage_h,
+            (storage_w as usize) * 4,
+            source_alpha,
+        ) else {
+            return Ok(RasterFrame::Bitmap(
+                BitmapFrame::with_domain(
+                    Arc::new(vec![0; (target_w as usize) * (target_h as usize) * 4]),
+                    target_w,
+                    target_h,
+                    output_rect,
+                    output_rect,
+                )
+                .with_alpha_mode(source_alpha),
+            ));
+        };
 
         let output = render_with_skia(target_w, target_h, Some(ctx), |canvas| {
             draw_frame_image(
                 canvas,
                 &image,
-                width,
-                height,
+                storage_w,
+                storage_h,
                 source_format,
                 source_data,
                 output_rect,
@@ -98,62 +111,5 @@ impl MediaOutput {
             )
             .with_alpha_mode(source_alpha),
         ))
-    }
-}
-
-fn draw_frame_image(
-    canvas: &skia_safe::Canvas,
-    image: &skia_safe::Image,
-    storage_w: u32,
-    storage_h: u32,
-    format_rect: RectI,
-    data_rect: RectI,
-    target_rect: RectI,
-    paint: Option<&Paint>,
-) {
-    if data_rect.width == 0
-        || data_rect.height == 0
-        || format_rect.width == 0
-        || format_rect.height == 0
-    {
-        return;
-    }
-
-    let Some(clipped) = data_rect.intersect(&target_rect) else {
-        return;
-    };
-
-    let sx = storage_w as f32 / format_rect.width as f32;
-    let sy = storage_h as f32 / format_rect.height as f32;
-    let src_x = (clipped.x - format_rect.x) as f32 * sx;
-    let src_y = (clipped.y - format_rect.y) as f32 * sy;
-    let src_w = clipped.width as f32 * sx;
-    let src_h = clipped.height as f32 * sy;
-    let dst_x = (clipped.x - target_rect.x) as f32;
-    let dst_y = (clipped.y - target_rect.y) as f32;
-    let dst_rect = Rect::from_xywh(dst_x, dst_y, clipped.width as f32, clipped.height as f32);
-    let src_rect = Rect::from_xywh(src_x, src_y, src_w, src_h);
-    let sampling = SamplingOptions::default();
-
-    match paint {
-        Some(paint) => {
-            canvas.draw_image_rect_with_sampling_options(
-                image,
-                Some((&src_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
-                dst_rect,
-                sampling,
-                paint,
-            );
-        }
-        None => {
-            let default_paint = Paint::default();
-            canvas.draw_image_rect_with_sampling_options(
-                image,
-                Some((&src_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
-                dst_rect,
-                sampling,
-                &default_paint,
-            );
-        }
     }
 }

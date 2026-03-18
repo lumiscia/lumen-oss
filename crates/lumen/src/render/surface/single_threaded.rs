@@ -1,17 +1,14 @@
-use std::cell::RefCell;
+use std::sync::{Mutex, PoisonError};
 
-use crate::{backend::SurfaceFactory, error::LumenError};
+use crate::{backend::SurfaceFactory, render::surface::SurfaceLease};
 
-use super::{
-    RasterSurfaceRef, SharedPointer, SurfaceBuckets, SurfaceKind, SurfacePool, SurfacePoolStats,
-    SurfaceRef, allocate_raster_surface, allocate_surface,
-};
+use super::{SurfaceBuckets, SurfaceKind, SurfacePool, SurfacePoolStats, allocate_raster_surface};
 
 #[derive(Default)]
 pub struct SingleThreadedSurfacePool {
-    buckets: RefCell<SurfaceBuckets>,
-    stats: RefCell<SurfacePoolStats>,
-    backend: RefCell<SurfaceFactory>,
+    buckets: Mutex<SurfaceBuckets>,
+    stats: Mutex<SurfacePoolStats>,
+    backend: Mutex<SurfaceFactory>,
 }
 
 impl SingleThreadedSurfacePool {
@@ -20,53 +17,46 @@ impl SingleThreadedSurfacePool {
     }
 }
 
-impl SurfacePool for SingleThreadedSurfacePool {
-    fn acquire(self: SharedPointer<Self>, width: u32, height: u32) -> crate::Result<SurfaceRef> {
-        self.stats.borrow_mut().record_acquire(width, height);
+unsafe impl Send for SingleThreadedSurfacePool {}
+unsafe impl Sync for SingleThreadedSurfacePool {}
 
-        let surface = if let Some(surface) = self.buckets.borrow_mut().take_render((width, height))
-        {
-            self.stats.borrow_mut().record_reuse();
+impl SurfacePool for SingleThreadedSurfacePool {
+    fn acquire(&self, width: u32, height: u32) -> crate::Result<SurfaceLease<'_>> {
+        lock(&self.stats).record_acquire(width, height);
+
+        let surface = if let Some(surface) = lock(&self.buckets).take_render((width, height)) {
+            lock(&self.stats).record_reuse();
             surface
         } else {
-            let surface = allocate_surface(&mut self.backend.borrow_mut(), width, height)?;
-            self.stats
-                .borrow_mut()
-                .record_fresh_allocation(width, height);
+            let surface = lock(&self.backend).create_surface(width, height)?;
+            lock(&self.stats).record_fresh_allocation(width, height);
             surface
         };
 
-        Ok(SurfaceRef::new(surface, self, width, height))
+        Ok(SurfaceLease::new(surface, self, SurfaceKind::Render))
     }
 
-    fn acquire_raster(
-        self: SharedPointer<Self>,
-        width: u32,
-        height: u32,
-    ) -> crate::Result<RasterSurfaceRef> {
-        self.stats.borrow_mut().record_acquire(width, height);
+    fn acquire_raster(&self, width: u32, height: u32) -> crate::Result<SurfaceLease<'_>> {
+        lock(&self.stats).record_acquire(width, height);
 
-        let surface = if let Some(surface) = self.buckets.borrow_mut().take_raster((width, height))
-        {
-            self.stats.borrow_mut().record_reuse();
+        let surface = if let Some(surface) = lock(&self.buckets).take_raster((width, height)) {
+            lock(&self.stats).record_reuse();
             surface
         } else {
             let surface = allocate_raster_surface(width, height)?;
-            self.stats
-                .borrow_mut()
-                .record_fresh_allocation(width, height);
+            lock(&self.stats).record_fresh_allocation(width, height);
             surface
         };
 
-        Ok(RasterSurfaceRef::new(surface, self))
+        Ok(SurfaceLease::new(surface, self, SurfaceKind::Raster))
     }
 
     fn stats(&self) -> SurfacePoolStats {
-        self.stats.borrow().clone()
+        lock(&self.stats).clone()
     }
 
     fn release(&self, kind: SurfaceKind, width: u32, height: u32, surface: skia_safe::Surface) {
-        let mut buckets = self.buckets.borrow_mut();
+        let mut buckets = lock(&self.buckets);
         match kind {
             SurfaceKind::Render => buckets.store_render((width, height), surface),
             SurfaceKind::Raster => buckets.store_raster((width, height), surface),
@@ -77,7 +67,11 @@ impl SurfacePool for SingleThreadedSurfacePool {
 impl std::fmt::Debug for SingleThreadedSurfacePool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SingleThreadedSurfacePool")
-            .field("stats", &self.stats.borrow())
+            .field("stats", &lock(&self.stats))
             .finish_non_exhaustive()
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::{
-    error::LumenError,
     node::{
         NodeId, NodeProperty,
         pixel_utils::{render_with_skia, rgba_byte_len, to_skia_color},

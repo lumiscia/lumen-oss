@@ -17,13 +17,10 @@ mod backend;
 #[cfg(feature = "ffmpeg")]
 pub mod ffmpeg;
 
+#[cfg(feature = "image")]
+pub mod image;
+
 #[cfg(feature = "json")]
 pub mod json;
-
-#[cfg(not(feature = "threading"))]
-pub(crate) type SharedPointer<T> = std::rc::Rc<T>;
-
-#[cfg(feature = "threading")]
-pub(crate) type SharedPointer<T> = std::sync::Arc<T>;
 
 pub(crate) type Result<T> = std::result::Result<T, LumenError>;

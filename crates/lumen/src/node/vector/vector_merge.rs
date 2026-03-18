@@ -1,5 +1,4 @@
 use crate::{
-    error::LumenError,
     node::{NodeId, PortRef, VectorData},
     render::RenderContext,
 };

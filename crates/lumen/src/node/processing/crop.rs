@@ -3,7 +3,6 @@ use std::sync::Arc;
 use skia_safe::{IRect, image::RequiredProperties};
 
 use crate::{
-    error::LumenError,
     node::{NodeId, NodeProperty, PortRef, pixel_utils::make_skia_image},
     raster::{BitmapFrame, RasterFrame, RectI},
     render::RenderContext,
@@ -44,7 +43,8 @@ impl Default for Crop {
 impl Crop {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
-        let source = ctx.eval(self.source.clone())?.as_raster()?;
+        let source_result = ctx.eval(self.source.clone())?;
+        let source = source_result.as_raster()?;
         let x = self.resolve_x(ctx)?;
         let y = self.resolve_y(ctx)?;
         let width = self.resolve_width(ctx)?.max(0);
@@ -54,13 +54,11 @@ impl Crop {
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
 
-        // Calculate crop boundaries clamped to source dimensions
         let crop_left = x.clamp(0, src_w as i64) as i32;
         let crop_top = y.clamp(0, src_h as i64) as i32;
         let crop_right = (x + width).clamp(0, src_w as i64) as i32;
         let crop_bottom = (y + height).clamp(0, src_h as i64) as i32;
 
-        // Check if crop covers entire source image (no-op case)
         if crop_left == 0
             && crop_top == 0
             && crop_right == src_w as i32
@@ -68,10 +66,9 @@ impl Crop {
             && crop_right > crop_left
             && crop_bottom > crop_top
         {
-            return Ok(source.clone());
+            return source.snapshot();
         }
 
-        // Return 1x1 transparent pixel if crop area is empty
         if crop_right <= crop_left || crop_bottom <= crop_top {
             let transparent_pixel = Arc::new(vec![0, 0, 0, 0]);
             let output_rect = RectI::new(
@@ -86,10 +83,14 @@ impl Crop {
             ));
         }
 
-        let (bytes, src_w, src_h) = source.clone().into_parts();
-        let Some(image) = make_skia_image(&bytes, src_w, src_h, (src_w as usize) * 4, source_alpha)
-        else {
-            // Failed to create Skia image, return transparent pixel
+        let (bytes, storage_w, storage_h) = source.snapshot_parts()?;
+        let Some(image) = make_skia_image(
+            bytes.as_slice(),
+            storage_w,
+            storage_h,
+            (storage_w as usize) * 4,
+            source_alpha,
+        ) else {
             let transparent_pixel = Arc::new(vec![0, 0, 0, 0]);
             let output_rect = RectI::new(
                 source_format.x + crop_left,
@@ -112,27 +113,25 @@ impl Crop {
             crop_width,
             crop_height,
         );
-        // Try to create subset image directly from source
         if let Some(cropped_image) =
             image.make_subset(None, &subset_rect, RequiredProperties::default())
         {
-            if let Some(pixel_data) = cropped_image.peek_pixels() {
-                if let Some(pixel_bytes) = pixel_data.bytes() {
-                    return Ok(RasterFrame::Bitmap(
-                        BitmapFrame::with_domain(
-                            Arc::new(pixel_bytes.to_vec()),
-                            crop_width,
-                            crop_height,
-                            output_rect,
-                            output_rect,
-                        )
-                        .with_alpha_mode(source_alpha),
-                    ));
-                }
+            if let Some(pixel_data) = cropped_image.peek_pixels()
+                && let Some(pixel_bytes) = pixel_data.bytes()
+            {
+                return Ok(RasterFrame::Bitmap(
+                    BitmapFrame::with_domain(
+                        Arc::new(pixel_bytes.to_vec()),
+                        crop_width,
+                        crop_height,
+                        output_rect,
+                        output_rect,
+                    )
+                    .with_alpha_mode(source_alpha),
+                ));
             }
         }
 
-        // Fallback: render crop using canvas
         let output = crate::node::pixel_utils::render_with_skia(
             crop_width,
             crop_height,

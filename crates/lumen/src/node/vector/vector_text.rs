@@ -1,9 +1,10 @@
 use crate::{
-    error::LumenError,
     node::{
         NodeId, NodeProperty, VectorData, VectorPosition, VectorStroke, VectorStyle,
         VectorTextData,
-        source::text::{TextAlignment, TextAlignmentHorizontal, TextAlignmentVertical, TextFontStyle},
+        source::text::{
+            TextAlignment, TextAlignmentHorizontal, TextAlignmentVertical, TextFontStyle,
+        },
     },
     render::RenderContext,
 };
@@ -93,9 +94,7 @@ impl VectorText {
             content: self.resolve_content(ctx)?,
             font_family: self.resolve_font_family(ctx)?,
             font_size: (self.resolve_font_size(ctx)? as f32).max(1.0),
-            font_weight: self
-                .resolve_font_weight(ctx)?
-                .clamp(0, u16::MAX as i64) as u16,
+            font_weight: self.resolve_font_weight(ctx)?.clamp(0, u16::MAX as i64) as u16,
             font_style: resolve_font_style(self.resolve_font_style(ctx)?),
             max_width: resolve_max_width(self.resolve_max_width(ctx)? as f32),
             alignment: TextAlignment {

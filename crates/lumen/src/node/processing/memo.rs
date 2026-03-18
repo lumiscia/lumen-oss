@@ -1,15 +1,19 @@
+use std::{
+    collections::HashMap,
+    sync::{Mutex, PoisonError},
+};
+
 use crate::{
     error::PropertyError,
     node::{NodeId, NodeProperty, PortRef},
-    raster::RasterFrame,
+    raster::{BitmapFrame, RasterFrame},
+    render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
 
 #[derive(Debug, Default)]
 pub struct MemoCache {
-    /// Two-level map: cache_id -> (width, height, request_hash, signature_hash) -> bitmap.
-    /// This avoids allocating a String on every `get` lookup.
-    entries: HashMap<String, HashMap<(u32, u32, u64, u64), CachedBitmap>>,
+    entries: Mutex<HashMap<String, BitmapFrame>>,
 }
 
 impl MemoCache {
@@ -17,33 +21,12 @@ impl MemoCache {
         Self::default()
     }
 
-    pub fn get(
-        &self,
-        cache_id: &str,
-        width: u32,
-        height: u32,
-        request_hash: u64,
-        signature_hash: u64,
-    ) -> Option<CachedBitmap> {
-        self.entries
-            .get(cache_id)?
-            .get(&(width, height, request_hash, signature_hash))
-            .cloned()
+    pub fn get(&self, cache_id: &str) -> Option<BitmapFrame> {
+        lock(&self.entries).get(cache_id).cloned()
     }
 
-    pub fn insert(
-        &mut self,
-        cache_id: String,
-        width: u32,
-        height: u32,
-        request_hash: u64,
-        signature_hash: u64,
-        bitmap: CachedBitmap,
-    ) {
-        self.entries
-            .entry(cache_id)
-            .or_default()
-            .insert((width, height, request_hash, signature_hash), bitmap);
+    pub fn insert(&self, cache_id: String, bitmap: BitmapFrame) {
+        lock(&self.entries).insert(cache_id, bitmap);
     }
 }
 
@@ -69,6 +52,7 @@ impl Default for Memo {
             cache_id: NodeProperty::String(String::new()),
             allow_expressions: NodeProperty::Bool(false),
             source: PortRef::empty(),
+            cache: MemoCache::new(),
         }
     }
 }
@@ -86,6 +70,24 @@ impl Memo {
             .into());
         }
 
-        Ok(ctx.eval(self.source.clone())?.as_raster()?.clone())
+        let allow_expressions = self.resolve_allow_expressions(ctx)?;
+        if !allow_expressions && let Some(cached) = self.cache.get(&cache_id) {
+            return Ok(RasterFrame::Bitmap(cached));
+        }
+
+        let bitmap = ctx
+            .eval(self.source.clone())?
+            .as_raster()?
+            .bitmap_snapshot()?;
+
+        if !allow_expressions {
+            self.cache.insert(cache_id, bitmap.clone());
+        }
+
+        Ok(RasterFrame::Bitmap(bitmap))
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use skia_safe::Paint;
 
 use crate::{
-    error::LumenError,
     node::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{make_skia_image, render_with_skia},
@@ -67,14 +66,14 @@ impl Boolean {
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
         let source = ctx.eval(self.source.clone())?;
         let source = source.as_raster()?;
-        let (source_bytes, source_w, source_h) = source.clone().into_parts();
+        let (source_bytes, source_w, source_h) = source.snapshot_parts()?;
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
         let source_data = source.data_rect();
 
         let mask = if !self.mask.is_empty() {
             let frame = ctx.eval(self.mask.clone())?;
-            Some(frame.as_raster()?.clone().into_parts())
+            Some(frame.as_raster()?.snapshot_parts()?)
         } else if !self.vector.is_empty() {
             let vector = ctx.eval(self.vector.clone())?;
             Some(rasterize_vector(vector.as_vector()?, &ShapeRenderer::default(), ctx).into_parts())
@@ -83,7 +82,7 @@ impl Boolean {
         };
 
         let Some((mask_bytes, mask_w, mask_h)) = mask else {
-            return Ok(source.clone());
+            return source.snapshot();
         };
 
         let out_w = source_w;

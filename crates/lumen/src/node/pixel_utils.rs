@@ -2,13 +2,14 @@
 
 use std::sync::Arc;
 
-use skia_safe::{AlphaType, ColorType, Data, ImageInfo, images, surfaces};
+use skia_safe::{AlphaType, ColorType, Data, ImageInfo, image::CachingHint, images, surfaces};
 
 use crate::{
     media::MediaStore,
     raster::{AlphaMode, BitmapFrame, RasterFrame},
     render::{RenderContext, surface::SurfacePool},
 };
+
 pub fn rgba_byte_len(width: u32, height: u32) -> Option<usize> {
     let pixels = u64::from(width).checked_mul(u64::from(height))?;
     let bytes = pixels.checked_mul(4)?;
@@ -21,19 +22,13 @@ pub fn into_bitmap_parts(raster: RasterFrame) -> (Arc<Vec<u8>>, u32, u32) {
         RasterFrame::Surface(mut surface_frame) => {
             let width = surface_frame.surface.width();
             let height = surface_frame.surface.height();
-            let bytes = match surface_frame.surface.surface_mut() {
-                Some(surface) => read_surface_pixels(surface, width, height),
-                None => rgba_byte_len(width, height)
-                    .map(|len| vec![0u8; len])
-                    .unwrap_or_default(),
-            };
+            let bytes = read_surface_pixels(surface_frame.surface.surface_mut(), width, height);
             (Arc::new(bytes), width, height)
         }
     }
 }
 
-/// Read raw RGBA pixels from a surface without any render context tracking.
-fn read_surface_pixels(surface: &mut skia_safe::Surface, width: u32, height: u32) -> Vec<u8> {
+pub fn read_surface_pixels(surface: &mut skia_safe::Surface, width: u32, height: u32) -> Vec<u8> {
     let byte_len = rgba_byte_len(width, height).unwrap_or(4);
     let mut bytes = vec![0_u8; byte_len];
     let info = ImageInfo::new(
@@ -42,11 +37,27 @@ fn read_surface_pixels(surface: &mut skia_safe::Surface, width: u32, height: u32
         AlphaType::Premul,
         None,
     );
-    if surface.read_pixels(&info, bytes.as_mut_slice(), (width * 4) as usize, (0, 0)) {
+    let snapshot = surface.image_snapshot();
+    if snapshot.read_pixels(
+        &info,
+        bytes.as_mut_slice(),
+        (width * 4) as usize,
+        (0, 0),
+        CachingHint::Disallow,
+    ) {
         bytes
     } else {
         vec![0_u8; byte_len]
     }
+}
+
+pub fn read_surface_rgba<S: SurfacePool, M: MediaStore>(
+    surface: &mut skia_safe::Surface,
+    width: u32,
+    height: u32,
+    _ctx: Option<&mut RenderContext<'_, S, M>>,
+) -> Vec<u8> {
+    read_surface_pixels(surface, width, height)
 }
 
 pub fn make_skia_image_frame(frame: &BitmapFrame) -> Option<skia_safe::Image> {
@@ -89,32 +100,32 @@ pub fn render_with_skia<S: SurfacePool, M: MediaStore>(
     mut ctx: Option<&mut RenderContext<'_, S, M>>,
     draw: impl FnOnce(&skia_safe::Canvas),
 ) -> Vec<u8> {
-    // Try to acquire a CPU raster surface from pool
-    if let Some(pool) = ctx.as_ref().map(|c| Arc::clone(&c.surface_pool)) {
-        if let Ok(mut surface_ref) = pool.acquire_raster(width, height) {
-            let surface = surface_ref.surface_mut();
-            let canvas = surface.canvas();
-            canvas.restore_to_count(1);
-            canvas.reset_matrix();
-            canvas.clear(skia_safe::Color::TRANSPARENT);
-            draw(canvas);
-            return read_surface_rgba(surface, width, height, ctx);
-        }
+    if let Some(ctx_ref) = ctx.as_deref_mut()
+        && let Ok(mut surface_ref) = ctx_ref.renderer.surface_pool.acquire_raster(width, height)
+    {
+        let surface = surface_ref.surface_mut();
+        let canvas = surface.canvas();
+        canvas.restore_to_count(1);
+        canvas.reset_matrix();
+        canvas.clear(skia_safe::Color::TRANSPARENT);
+        draw(canvas);
+        return read_surface_rgba(surface, width, height, None::<&mut RenderContext<'_, S, M>>);
     }
 
-    // Fallback: allocate a fresh surface
     let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
-        let fallback = rgba_byte_len(width, height)
+        return rgba_byte_len(width, height)
             .map(|len| vec![0u8; len])
             .unwrap_or_default();
-        if let Some(ctx) = ctx.as_deref_mut() {
-            ctx.record_pixel_allocation_bytes(fallback.len());
-        }
-        return fallback;
     };
-    surface.canvas().clear(skia_safe::Color::TRANSPARENT);
-    draw(surface.canvas());
-    read_surface_rgba(&mut surface, width, height, ctx)
+    let canvas = surface.canvas();
+    canvas.clear(skia_safe::Color::TRANSPARENT);
+    draw(canvas);
+    read_surface_rgba(
+        &mut surface,
+        width,
+        height,
+        None::<&mut RenderContext<'_, S, M>>,
+    )
 }
 
 pub fn to_skia_color(color: [u8; 4]) -> skia_safe::Color {

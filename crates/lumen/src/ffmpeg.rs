@@ -2,8 +2,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, RwLock, mpsc},
+    sync::{Arc, Mutex, OnceLock, mpsc},
     thread,
 };
 
@@ -19,7 +18,7 @@ use ffmpeg_next as ffmpeg;
 
 use crate::{
     error::MediaError,
-    media::{ImageResolver, MediaStore, VideoFrameResolver},
+    media::{VideoFrameResolver, VideoMetadata, premultiply_rgba_in_place_if_needed},
 };
 
 const DEFAULT_LRU_CAPACITY: usize = 48;
@@ -482,9 +481,7 @@ fn run_decode_worker(
 
 pub struct FfmpegVideoResolver {
     id: String,
-    width: u32,
-    height: u32,
-    frame_count: u32,
+    metadata: VideoMetadata,
     request_tx: mpsc::Sender<WorkerRequest>,
     worker_handle: Mutex<Option<thread::JoinHandle<()>>>,
 }
@@ -500,9 +497,11 @@ impl FfmpegVideoResolver {
     ) -> Result<Self, MediaError> {
         let source = source.into();
         let decoder = LibavStreamDecoder::open(source.clone(), options.prefer_hardware_decode)?;
-        let width = decoder.width;
-        let height = decoder.height;
-        let frame_count = decoder.frame_count;
+        let metadata = VideoMetadata {
+            width: decoder.width,
+            height: decoder.height,
+            frame_count: decoder.frame_count,
+        };
         drop(decoder);
 
         let (request_tx, request_rx) = mpsc::channel::<WorkerRequest>();
@@ -512,9 +511,7 @@ impl FfmpegVideoResolver {
 
         Ok(Self {
             id: source,
-            width,
-            height,
-            frame_count,
+            metadata,
             request_tx,
             worker_handle: Mutex::new(Some(worker_handle)),
         })
@@ -537,24 +534,16 @@ impl VideoFrameResolver for FfmpegVideoResolver {
         &self.id
     }
 
-    fn width(&self) -> u32 {
-        self.width
-    }
-
-    fn height(&self) -> u32 {
-        self.height
-    }
-
-    fn frame_count(&self) -> u32 {
-        self.frame_count
+    fn metadata(&self) -> VideoMetadata {
+        self.metadata
     }
 
     fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError> {
-        if frame >= self.frame_count {
+        if frame >= self.metadata.frame_count {
             return Err(MediaError::FrameOutOfRange {
                 media_source: self.id.clone(),
                 frame,
-                frame_count: self.frame_count,
+                frame_count: self.metadata.frame_count,
             });
         }
 
@@ -570,135 +559,6 @@ impl VideoFrameResolver for FfmpegVideoResolver {
             media_source: self.id.clone(),
             details: "video decode worker did not return a frame".to_string(),
         })?
-    }
-}
-
-#[derive(Clone)]
-struct SharedVideoResolver {
-    inner: Arc<FfmpegVideoResolver>,
-}
-
-impl VideoFrameResolver for SharedVideoResolver {
-    fn id(&self) -> &str {
-        self.inner.id()
-    }
-
-    fn width(&self) -> u32 {
-        self.inner.width()
-    }
-
-    fn height(&self) -> u32 {
-        self.inner.height()
-    }
-
-    fn frame_count(&self) -> u32 {
-        self.inner.frame_count()
-    }
-
-    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError> {
-        self.inner.resolve_frame(frame)
-    }
-}
-
-#[derive(Clone)]
-struct SharedImageResolver {
-    inner: Arc<FfmpegVideoResolver>,
-}
-
-impl ImageResolver for SharedImageResolver {
-    fn id(&self) -> &str {
-        self.inner.id()
-    }
-
-    fn width(&self) -> u32 {
-        self.inner.width()
-    }
-
-    fn height(&self) -> u32 {
-        self.inner.height()
-    }
-
-    fn resolve(&self) -> Result<Arc<Vec<u8>>, MediaError> {
-        self.inner.resolve_frame(0)
-    }
-}
-
-pub struct FfmpegMediaStore {
-    root: Option<PathBuf>,
-    options: FfmpegResolverOptions,
-    resolvers: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
-}
-
-impl Default for FfmpegMediaStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FfmpegMediaStore {
-    pub fn new() -> Self {
-        Self {
-            root: None,
-            options: FfmpegResolverOptions::default(),
-            resolvers: RwLock::new(HashMap::new()),
-        }
-    }
-
-    pub fn with_root(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root: Some(root.into()),
-            options: FfmpegResolverOptions::default(),
-            resolvers: RwLock::new(HashMap::new()),
-        }
-    }
-
-    pub fn with_options(root: Option<PathBuf>, options: FfmpegResolverOptions) -> Self {
-        Self {
-            root,
-            options,
-            resolvers: RwLock::new(HashMap::new()),
-        }
-    }
-
-    fn resolver_for_source(&self, source: &str) -> Option<Arc<FfmpegVideoResolver>> {
-        let resolved_path = self.resolve_path(source);
-        let key = resolved_path.to_string_lossy().to_string();
-        if let Ok(guard) = self.resolvers.read()
-            && let Some(existing) = guard.get(&key)
-        {
-            return Some(Arc::clone(existing));
-        }
-
-        let opened = FfmpegVideoResolver::open_with_options(key.clone(), self.options).ok()?;
-        let opened = Arc::new(opened);
-        if let Ok(mut guard) = self.resolvers.write() {
-            let entry = guard.entry(key).or_insert_with(|| Arc::clone(&opened));
-            return Some(Arc::clone(entry));
-        }
-        Some(opened)
-    }
-
-    fn resolve_path(&self, source: &str) -> PathBuf {
-        let candidate = Path::new(source);
-        if candidate.is_absolute() {
-            return candidate.to_path_buf();
-        }
-        match &self.root {
-            Some(root) => root.join(candidate),
-            None => candidate.to_path_buf(),
-        }
-    }
-}
-
-impl MediaStore for FfmpegMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
-        let resolver = self.resolver_for_source(source)?;
-        Some(Box::new(SharedImageResolver { inner: resolver }))
-    }
-
-    fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        let resolver = self.resolver_for_source(source)?;
-        Some(Box::new(SharedVideoResolver { inner: resolver }))
     }
 }
 

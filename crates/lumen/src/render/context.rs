@@ -1,9 +1,10 @@
 use std::{collections::HashMap, rc::Rc};
 
 use crate::{
+    error::{LumenError, RenderError},
     expr::ExpressionContext,
     media::MediaStore,
-    node::{Node, NodeEval, NodeResult, PortRef},
+    node::{Node, NodeEval, NodeId, NodeResult, PortRef},
     render::{LumenRenderer, surface::SurfacePool},
 };
 
@@ -25,41 +26,73 @@ impl<'a, S: SurfacePool, M: MediaStore> RenderContext<'a, S, M> {
 
     pub fn eval(&mut self, port: PortRef) -> crate::Result<Rc<NodeResult>> {
         if let Some(cached) = self.output_cache.get(&port) {
-            return Ok(cached.clone());
+            return Ok(Rc::clone(cached));
         }
-        match self.renderer.composition.graph.nodes.get(&port.id) {
-            Some(node) => {
-                let node_id = node.id();
-                let result = node
-                    .evaluate(self, &port.port)
-                    .map(|result| Rc::new(result))?;
 
-                // cache if there's another thing that needs it
-                if self
-                    .renderer
-                    .composition
-                    .graph
-                    .connections
-                    .iter()
-                    .filter(|connection| connection.from_node == node_id)
-                    .count()
-                    > 1
-                {
-                    self.output_cache.insert(port, result.clone());
-                }
+        let node = self
+            .renderer
+            .composition
+            .graph
+            .nodes
+            .get(&port.id)
+            .ok_or_else(|| self.missing_node_error(port.id))?;
+        let node_id = node.id();
+        let result = Rc::new(node.evaluate(self, &port.port)?);
 
-                Ok(result)
-            }
-            None => Err(todo!("create error type")),
+        if self
+            .renderer
+            .composition
+            .graph
+            .outgoing_connection_count(node_id)
+            > 1
+        {
+            self.output_cache.insert(port, Rc::clone(&result));
         }
+
+        Ok(result)
     }
 
     /// Evaluates once without caching.
     pub fn eval_once(&mut self, port: PortRef) -> crate::Result<NodeResult> {
-        match self.renderer.composition.graph.nodes.get(&port.id) {
-            Some(node) => node.evaluate(self, &port.port),
-            None => Err(todo!("create error type")),
+        let node = self
+            .renderer
+            .composition
+            .graph
+            .nodes
+            .get(&port.id)
+            .ok_or_else(|| self.missing_node_error(port.id))?;
+        node.evaluate(self, &port.port)
+    }
+
+    pub fn missing_node_error(&self, node_id: NodeId) -> LumenError {
+        RenderError::MissingNode {
+            frame: self.frame,
+            node_id,
         }
+        .into()
+    }
+
+    pub fn missing_node_output_error(&self, node_id: NodeId) -> LumenError {
+        RenderError::MissingNodeOutput {
+            frame: self.frame,
+            node_id,
+        }
+        .into()
+    }
+
+    pub fn invalid_node_output_type(
+        &self,
+        node_id: NodeId,
+        expected: &'static str,
+        actual: &'static str,
+    ) -> LumenError {
+        RenderError::InvalidNodeOutputType {
+            frame: self.frame,
+            node_id,
+            expected,
+            actual,
+        }
+        .into()
     }
 
     pub fn expr_context(&self, path: String) -> ExpressionContext {

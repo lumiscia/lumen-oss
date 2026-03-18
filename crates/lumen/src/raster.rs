@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use crate::{
-    node::pixel_utils::into_bitmap_parts,
+    error::RenderError,
+    node::pixel_utils::{into_bitmap_parts, read_surface_pixels},
     render::surface::{OwnedSurface, SurfacePool},
 };
 
@@ -235,20 +236,27 @@ impl RasterFrame {
         }
     }
 
+    pub fn bitmap_snapshot(&self) -> crate::Result<BitmapFrame> {
+        match self {
+            Self::Bitmap(frame) => Ok(frame.clone()),
+            Self::Surface(_) => Err(RenderError::SurfaceReadbackUnsupported.into()),
+        }
+    }
+
+    pub fn snapshot(&self) -> crate::Result<Self> {
+        Ok(Self::Bitmap(self.bitmap_snapshot()?))
+    }
+
+    pub fn snapshot_parts(&self) -> crate::Result<(Arc<Vec<u8>>, u32, u32)> {
+        let frame = self.bitmap_snapshot()?;
+        Ok((frame.pixels, frame.storage_width, frame.storage_height))
+    }
+
     pub fn to_bitmap(self) -> crate::Result<Self> {
         match self {
             Self::Bitmap(..) => Ok(self),
-            Self::Surface(mut surface_frame) => {
-                let width = surface_frame.surface.width();
-                let height = surface_frame.surface.height();
-                let bytes =
-                    read_surface_pixels(surface_frame.surface.surface_mut(), width, height, None);
-                let mut bitmap = BitmapFrame::new(Arc::new(bytes), width, height)
-                    .with_alpha_mode(surface_frame.alpha_mode);
-                bitmap.format_rect = surface_frame.format_rect;
-                bitmap.data_rect = surface_frame.data_rect;
-                bitmap.sanitize_domain();
-                Ok(Self::Bitmap(bitmap))
+            Self::Surface(surface_frame) => {
+                Ok(Self::Bitmap(surface_frame_to_bitmap(surface_frame)))
             }
         }
     }
@@ -280,4 +288,16 @@ impl RasterFrame {
             }
         }
     }
+}
+
+fn surface_frame_to_bitmap(mut surface_frame: SurfaceFrame) -> BitmapFrame {
+    let width = surface_frame.surface.width();
+    let height = surface_frame.surface.height();
+    let bytes = read_surface_pixels(surface_frame.surface.surface_mut(), width, height);
+    let mut bitmap =
+        BitmapFrame::new(Arc::new(bytes), width, height).with_alpha_mode(surface_frame.alpha_mode);
+    bitmap.format_rect = surface_frame.format_rect;
+    bitmap.data_rect = surface_frame.data_rect;
+    bitmap.sanitize_domain();
+    bitmap
 }
