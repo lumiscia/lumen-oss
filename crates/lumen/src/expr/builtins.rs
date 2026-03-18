@@ -75,7 +75,7 @@ fn measure_text_with_skia(
 pub fn evaluate_builtin(
     builtin: BuiltinFn,
     args: &[ExpressionValue],
-    ctx: &ExpressionContext,
+    ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
     let error = |details: String| {
         LumenError::Expression(ExpressionError::Evaluate {

@@ -9,7 +9,7 @@ use crate::{
 };
 
 impl Expression {
-    pub fn evaluate(&self, ctx: &ExpressionContext) -> crate::Result<ExpressionValue> {
+    pub fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
         evaluate_expr(&self.ast, ctx)
     }
 }
@@ -30,7 +30,7 @@ pub fn property_value_to_expression_value(value: &NodeProperty) -> crate::Result
     }
 }
 
-fn evaluate_expr(expr: &ExprNode, ctx: &ExpressionContext) -> crate::Result<ExpressionValue> {
+fn evaluate_expr(expr: &ExprNode, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
     match expr {
         ExprNode::Literal(value) => Ok(value.clone()),
         ExprNode::Unary(op, value) => {
@@ -137,11 +137,29 @@ fn evaluate_expr(expr: &ExprNode, ctx: &ExpressionContext) -> crate::Result<Expr
                 ),
             }))
         }
-        ExprNode::NodeProperty(_, target_path) => {
-            Err(LumenError::Expression(ExpressionError::Evaluate {
-                path: ctx.path.clone(),
-                details: format!("unresolved node property reference `{}`", target_path.0),
-            }))
+        ExprNode::NodeProperty(node_id, target_path) => {
+            let graph = ctx.graph.ok_or_else(|| {
+                LumenError::Expression(ExpressionError::Evaluate {
+                    path: ctx.path.clone(),
+                    details: format!("no graph available to resolve node property reference `{}`", target_path.0),
+                })
+            })?;
+            let node = graph.nodes.get(node_id).ok_or_else(|| {
+                LumenError::Expression(ExpressionError::Evaluate {
+                    path: ctx.path.clone(),
+                    details: format!("node `{}` not found for property reference `{}`", node_id.0, target_path.0),
+                })
+            })?;
+            let prop = node.as_property_eval().get_property(&target_path.0)?.ok_or_else(|| {
+                LumenError::Expression(ExpressionError::Evaluate {
+                    path: ctx.path.clone(),
+                    details: format!("property `{}` not found on node `{}`", target_path.0, node_id.0),
+                })
+            })?;
+            match &prop {
+                NodeProperty::Expr(inner_expr) => inner_expr.evaluate(ctx),
+                other => property_value_to_expression_value(other),
+            }
         }
         ExprNode::VirtualProperty(id) => Err(LumenError::Expression(ExpressionError::Evaluate {
             path: ctx.path.clone(),
@@ -158,7 +176,7 @@ fn evaluate_expr(expr: &ExprNode, ctx: &ExpressionContext) -> crate::Result<Expr
     }
 }
 
-fn to_number(value: &ExpressionValue, ctx: &ExpressionContext) -> crate::Result<f64> {
+fn to_number(value: &ExpressionValue, ctx: &ExpressionContext<'_>) -> crate::Result<f64> {
     match value {
         ExpressionValue::Number(number) => Ok(*number),
         ExpressionValue::Boolean(boolean) => Ok(if *boolean { 1.0 } else { 0.0 }),
@@ -199,7 +217,7 @@ mod tests {
     use super::*;
     use crate::expr::ast::{BuiltinFn, ExprNode, ExpressionId};
 
-    fn test_context() -> ExpressionContext {
+    fn test_context() -> ExpressionContext<'static> {
         ExpressionContext {
             frame: 48,
             fps: 24.0,
@@ -207,6 +225,7 @@ mod tests {
             height: 1080,
             duration_frames: 240,
             path: Some("node.opacity".to_string()),
+            graph: None,
         }
     }
 

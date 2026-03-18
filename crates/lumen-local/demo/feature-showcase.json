@@ -1,7 +1,7 @@
 {
   "timeline": {
     "fps": 30,
-    "duration_frames": 150
+    "duration_frames": 1800
   },
   "render_settings": {
     "width": 1920,
@@ -140,7 +140,7 @@
         "scale_y": 1.0,
         "translate_x": 0.0,
         "translate_y": 0.0,
-        "rotate": 15.0,
+        "rotate": "=frame * 2.4",
         "pivot_x": 260.0,
         "pivot_y": 280.0,
         "sampling": 1
@@ -249,11 +249,11 @@
       "id": 42,
       "type": "transform",
       "properties": {
-        "scale_x": 1.8,
-        "scale_y": 1.8,
+        "scale_x": "=lerp(1.4, 2.2, (sin(time * 3) + 1) / 2)",
+        "scale_y": "=lerp(1.4, 2.2, (sin(time * 3) + 1) / 2)",
         "translate_x": 0.0,
         "translate_y": 0.0,
-        "rotate": 30.0,
+        "rotate": "=frame * -1.5",
         "pivot_x": 950.0,
         "pivot_y": 175.0,
         "sampling": 1
@@ -362,8 +362,8 @@
         "scale_x": 1.0,
         "scale_y": 1.0,
         "translate_x": 1300.0,
-        "translate_y": 100.0,
-        "rotate": -10.0,
+        "translate_y": "=100 + sin(time * 2) * 40",
+        "rotate": "=sin(time) * 10",
         "pivot_x": 1500.0,
         "pivot_y": 200.0,
         "sampling": 1
@@ -485,7 +485,7 @@
         "scale_y": 1.0,
         "translate_x": 1400.0,
         "translate_y": 800.0,
-        "rotate": 5.0,
+        "rotate": "=sin(time * 1.5) * 15",
         "pivot_x": 1600.0,
         "pivot_y": 900.0,
         "sampling": 1
@@ -553,7 +553,7 @@
       "id": 120,
       "type": "merge",
       "properties": {
-        "opacity": 0.3,
+        "opacity": "=lerp(0.2, 0.5, (sin(time * 1.2) + 1) / 2)",
         "blend_mode": 2
       }
     },

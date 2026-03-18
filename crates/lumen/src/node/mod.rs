@@ -121,7 +121,7 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        _ctx: &crate::expr::ExpressionContext,
+        ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<f64> {
         match self {
             Self::Float(value) => Ok(*value),
@@ -129,6 +129,9 @@ impl NodeProperty {
             Self::String(value) => value
                 .parse::<f64>()
                 .map_err(|_| Self::invalid_type(node_id, property_path, "Float", "String")),
+            Self::Expr(expr) => expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
+                Self::invalid_type(node_id, property_path, "Float", "expression")
+            }),
             _ => Err(Self::invalid_type(
                 node_id,
                 property_path,
@@ -142,7 +145,7 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        _ctx: &crate::expr::ExpressionContext,
+        ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<i64> {
         match self {
             Self::Int(value) => Ok(*value),
@@ -151,6 +154,12 @@ impl NodeProperty {
             Self::String(value) => value
                 .parse::<i64>()
                 .map_err(|_| Self::invalid_type(node_id, property_path, "Int", "String")),
+            Self::Expr(expr) => {
+                let val = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
+                    Self::invalid_type(node_id, property_path, "Int", "expression")
+                })?;
+                Ok(val as i64)
+            }
             _ => Err(Self::invalid_type(
                 node_id,
                 property_path,
@@ -164,7 +173,7 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        _ctx: &crate::expr::ExpressionContext,
+        ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<bool> {
         match self {
             Self::Bool(value) => Ok(*value),
@@ -175,6 +184,7 @@ impl NodeProperty {
                 "false" | "0" => Ok(false),
                 _ => Err(Self::invalid_type(node_id, property_path, "Bool", "String")),
             },
+            Self::Expr(expr) => Ok(expr.evaluate(ctx)?.as_bool()),
             _ => Err(Self::invalid_type(
                 node_id,
                 property_path,
@@ -188,13 +198,14 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        _ctx: &crate::expr::ExpressionContext,
+        ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<String> {
         match self {
             Self::String(value) => Ok(value.clone()),
             Self::Int(value) => Ok(value.to_string()),
             Self::Float(value) => Ok(value.to_string()),
             Self::Bool(value) => Ok(value.to_string()),
+            Self::Expr(expr) => Ok(expr.evaluate(ctx)?.as_string()),
             _ => Err(Self::invalid_type(
                 node_id,
                 property_path,
@@ -208,7 +219,7 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        _ctx: &crate::expr::ExpressionContext,
+        _ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<[u8; 4]> {
         match self {
             Self::Color(value) => Ok(*value),
@@ -225,7 +236,7 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        _ctx: &crate::expr::ExpressionContext,
+        _ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<(f64, f64)> {
         match self {
             Self::Vec2(value) => Ok(*value),

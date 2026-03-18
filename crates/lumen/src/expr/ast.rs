@@ -36,6 +36,30 @@ impl ExpressionValue {
             Self::String(_) => "string",
         }
     }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Number(n) => Some(*n),
+            Self::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
+            Self::String(s) => s.parse().ok(),
+        }
+    }
+
+    pub fn as_bool(&self) -> bool {
+        match self {
+            Self::Boolean(b) => *b,
+            Self::Number(n) => n.abs() > f64::EPSILON,
+            Self::String(s) => !s.is_empty(),
+        }
+    }
+
+    pub fn as_string(&self) -> String {
+        match self {
+            Self::String(s) => s.clone(),
+            Self::Number(n) => n.to_string(),
+            Self::Boolean(b) => b.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

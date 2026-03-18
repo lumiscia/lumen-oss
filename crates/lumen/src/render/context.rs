@@ -95,7 +95,7 @@ impl<'a, S: SurfacePool, M: MediaStore> RenderContext<'a, S, M> {
         .into()
     }
 
-    pub fn expr_context(&self, path: String) -> ExpressionContext {
+    pub fn expr_context(&self, path: String) -> ExpressionContext<'_> {
         ExpressionContext {
             frame: self.frame,
             fps: self.renderer.composition.timeline.fps,
@@ -103,6 +103,7 @@ impl<'a, S: SurfacePool, M: MediaStore> RenderContext<'a, S, M> {
             height: self.renderer.composition.render_settings.height,
             duration_frames: self.renderer.composition.timeline.duration_frames,
             path: Some(path),
+            graph: Some(&self.renderer.composition.graph),
         }
     }
 }

@@ -16,8 +16,8 @@ use lumen::{
     image::ImageFileResolver,
     media::{ImageResolver, MediaStore, VideoFrameResolver},
     raster::RasterFrame,
+    render::LumenRenderer,
     render::surface::DefaultSurfacePool,
-    render::{LumenRenderer, threading::RenderOrchestrator},
     sink::Sink,
 };
 
@@ -434,12 +434,19 @@ fn render_mp4(
     )?;
 
     let total_frames = composition.timeline.duration_frames;
-    let orchestrator =
-        RenderOrchestrator::new(composition, surface_pool, media_store, worker_count);
-    orchestrator
-        .render(&mut sink)
-        .map_err(|e| anyhow!("render failed: {e}"))?;
 
+    let mut renderer = LumenRenderer::new(&composition, &surface_pool, &media_store).unwrap();
+    for i in 0..composition.timeline.duration_frames {
+        let frame = renderer.render(i).unwrap();
+        sink.write_frame(i, &RasterFrame::Bitmap(frame));
+    }
+    /*
+       let orchestrator =
+           RenderOrchestrator::new(composition, surface_pool, media_store, worker_count);
+       orchestrator
+           .render(&mut sink)
+           .map_err(|e| anyhow!("render failed: {e}"))?;
+    */
     sink.finalize()
         .map_err(|e| anyhow!("finalize failed: {e}"))?;
 
