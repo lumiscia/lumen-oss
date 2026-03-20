@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     io::Write,
     path::{Component, Path, PathBuf},
@@ -8,10 +9,13 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
-use lumen::json::JsonDelegateStatus;
 use lumen::{
-    AssetCache, Composition, FfmpegMediaStore, ImageResolver, MediaStore, NullMediaStore,
-    RenderContext, RuntimeCapabilityProfile, SinkType, SurfacePool, VideoFrameResolver,
+    composition::Composition,
+    ffmpeg::FfmpegVideoResolver,
+    image::ImageFileResolver,
+    media::{ImageMetadata, ImageResolver, MediaStore, VideoFrameResolver, VideoMetadata},
+    raster::ImageFrame,
+    render::{LumenRenderer, surface::DefaultSurfacePool},
 };
 
 pub const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
@@ -78,14 +82,16 @@ pub struct ProjectBundle {
 
 struct LocalMediaStore {
     root: PathBuf,
-    backend: FfmpegMediaStore,
+    images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
+    videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
 }
 
 impl LocalMediaStore {
     fn new(root: PathBuf) -> Self {
         Self {
             root,
-            backend: FfmpegMediaStore::new(),
+            images: RwLock::new(HashMap::new()),
+            videos: RwLock::new(HashMap::new()),
         }
     }
 
@@ -98,17 +104,106 @@ impl LocalMediaStore {
             .ok()
             .map(|path| path.to_string_lossy().to_string())
     }
+
+    fn image_resolver(&self, source: &str) -> Option<Arc<ImageFileResolver>> {
+        if let Ok(cache) = self.images.read()
+            && let Some(resolver) = cache.get(source)
+        {
+            return Some(Arc::clone(resolver));
+        }
+
+        let resolver = Arc::new(ImageFileResolver::open(source.to_string()).ok()?);
+        if let Ok(mut cache) = self.images.write() {
+            cache
+                .entry(source.to_string())
+                .or_insert_with(|| Arc::clone(&resolver));
+        }
+        Some(resolver)
+    }
+
+    fn video_resolver(&self, source: &str) -> Option<Arc<FfmpegVideoResolver>> {
+        if let Ok(cache) = self.videos.read()
+            && let Some(resolver) = cache.get(source)
+        {
+            return Some(Arc::clone(resolver));
+        }
+
+        let resolver = Arc::new(FfmpegVideoResolver::open(source.to_string()).ok()?);
+        if let Ok(mut cache) = self.videos.write() {
+            cache
+                .entry(source.to_string())
+                .or_insert_with(|| Arc::clone(&resolver));
+        }
+        Some(resolver)
+    }
+}
+
+impl std::fmt::Debug for LocalMediaStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalMediaStore")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SharedImageResolver(Arc<ImageFileResolver>);
+
+impl ImageResolver for SharedImageResolver {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+
+    fn metadata(&self) -> ImageMetadata {
+        self.0.metadata()
+    }
+
+    fn resolve_image(&self) -> Result<Arc<ImageFrame>, lumen::error::MediaError> {
+        self.0.resolve_image()
+    }
+}
+
+#[derive(Clone)]
+struct SharedVideoResolver(Arc<FfmpegVideoResolver>);
+
+impl VideoFrameResolver for SharedVideoResolver {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+
+    fn metadata(&self) -> VideoMetadata {
+        self.0.metadata()
+    }
+
+    fn resolve_frame_image(&self, frame: u32) -> Result<Arc<ImageFrame>, lumen::error::MediaError> {
+        self.0.resolve_frame_image(frame)
+    }
+}
+
+#[derive(Debug)]
+struct NullMediaStore;
+
+impl MediaStore for NullMediaStore {
+    fn get_image_resolver(&self, _source: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _source: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
 }
 
 impl MediaStore for LocalMediaStore {
     fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
         let resolved = self.resolve_source(source)?;
-        self.backend.get_image_resolver(&resolved)
+        let resolver = self.image_resolver(&resolved)?;
+        Some(Box::new(SharedImageResolver(resolver)))
     }
 
     fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
         let resolved = self.resolve_source(source)?;
-        self.backend.get_video_resolver(&resolved)
+        let resolver = self.video_resolver(&resolved)?;
+        Some(Box::new(SharedVideoResolver(resolver)))
     }
 }
 
@@ -123,36 +218,19 @@ pub fn convert_project_payload(payload: &serde_json::Value) -> Result<ProjectBun
         retryable: false,
     })?;
 
-    let result = Composition::from_json(&normalized);
-    match result.status {
-        JsonDelegateStatus::Success => {
-            let composition = result.composition.ok_or_else(|| RenderError {
-                code: "conversion_error",
-                message: "delegate returned success without composition".to_string(),
-                retryable: false,
-            })?;
-            Ok(ProjectBundle {
-                project: ProjectInfo {
-                    width: composition.render_settings.width,
-                    height: composition.render_settings.height,
-                    duration_frames: composition.timeline.duration_frames,
-                },
-                composition,
-            })
-        }
-        JsonDelegateStatus::ValidationError | JsonDelegateStatus::ConversionError => {
-            let detail = result
-                .errors
-                .first()
-                .map(std::string::ToString::to_string)
-                .unwrap_or_else(|| "unknown conversion failure".to_string());
-            Err(RenderError {
-                code: "invalid_project_payload",
-                message: detail,
-                retryable: false,
-            })
-        }
-    }
+    let composition = lumen::json::parse(&normalized).map_err(|err| RenderError {
+        code: "invalid_project_payload",
+        message: err.to_string(),
+        retryable: false,
+    })?;
+    Ok(ProjectBundle {
+        project: ProjectInfo {
+            width: composition.render_settings.width,
+            height: composition.render_settings.height,
+            duration_frames: composition.timeline.duration_frames,
+        },
+        composition,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -191,8 +269,16 @@ pub fn render_project_mp4(
         message: err.to_string(),
         retryable: false,
     })?;
-    let media_store: Arc<dyn MediaStore> = Arc::new(LocalMediaStore::new(media_root));
-    let mut renderer_ctx = create_renderer_context(composition, media_store, true);
+    let media_store = LocalMediaStore::new(media_root);
+    let surface_pool = DefaultSurfacePool::new();
+    let mut renderer =
+        LumenRenderer::new(composition, &surface_pool, &media_store).map_err(|err| {
+            RenderError {
+                code: "render_failed",
+                message: err.to_string(),
+                retryable: false,
+            }
+        })?;
     let encoder = choose_video_encoder(options.video_encoder.as_deref());
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -200,13 +286,11 @@ pub fn render_project_mp4(
         std::thread::spawn(move || encode_rgba_stream(width, height, fps, encoder, rx));
 
     for frame in 0..total_frames {
-        let raster = composition
-            .render_frame(frame, &mut renderer_ctx)
-            .map_err(|err| RenderError {
-                code: "render_failed",
-                message: format!("render failed at frame {frame}: {err}"),
-                retryable: true,
-            })?;
+        let raster = renderer.render(frame).map_err(|err| RenderError {
+            code: "render_failed",
+            message: format!("render failed at frame {frame}: {err}"),
+            retryable: true,
+        })?;
         let (storage_width, storage_height) = raster.storage_dimensions();
         let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
         raster
@@ -277,15 +361,21 @@ pub fn render_project_frame_png(
         });
     }
 
-    let media_store: Arc<dyn MediaStore> = Arc::new(NullMediaStore);
-    let mut renderer_ctx = create_renderer_context(composition, media_store, false);
-    let rendered = composition
-        .render_frame(frame, &mut renderer_ctx)
-        .map_err(|err| RenderError {
-            code: "render_failed",
-            message: err.to_string(),
-            retryable: false,
+    let media_store = NullMediaStore;
+    let surface_pool = DefaultSurfacePool::new();
+    let mut renderer =
+        LumenRenderer::new(composition, &surface_pool, &media_store).map_err(|err| {
+            RenderError {
+                code: "render_failed",
+                message: err.to_string(),
+                retryable: false,
+            }
         })?;
+    let rendered = renderer.render(frame).map_err(|err| RenderError {
+        code: "render_failed",
+        message: err.to_string(),
+        retryable: false,
+    })?;
     let (storage_width, storage_height) = rendered.storage_dimensions();
     let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
     rendered
@@ -312,31 +402,6 @@ pub fn render_project_frame_png(
         })?;
 
     Ok(png)
-}
-
-// ---------------------------------------------------------------------------
-// RendererContext factory
-// ---------------------------------------------------------------------------
-
-fn create_renderer_context(
-    composition: &Composition,
-    media_store: Arc<dyn MediaStore>,
-    has_media_resolvers: bool,
-) -> RenderContext {
-    let profile = RuntimeCapabilityProfile {
-        has_image_resolver: has_media_resolvers,
-        has_video_resolver: has_media_resolvers,
-        has_threading: false,
-        sink_types: vec![SinkType::Bitmap, SinkType::Video],
-    };
-
-    RenderContext::new(
-        composition,
-        Arc::new(SurfacePool::new()),
-        Arc::new(RwLock::new(AssetCache::new())),
-        media_store,
-        profile,
-    )
 }
 
 // ---------------------------------------------------------------------------

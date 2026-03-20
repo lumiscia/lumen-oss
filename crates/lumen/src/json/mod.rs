@@ -12,8 +12,8 @@
 mod node;
 mod property;
 
-use anyhow::{Context, Result};
-use serde_json::Value;
+use anyhow::{Context, Result, bail};
+use serde_json::{Map, Value};
 
 use crate::{
     composition::{Composition, CompositionMetadata, RenderSettings, TimelineSettings},
@@ -32,6 +32,10 @@ pub fn parse(json: &str) -> Result<Composition> {
 /// Parse a [`serde_json::Value`] into a [`Composition`].
 pub fn parse_value(root: &Value) -> Result<Composition> {
     let obj = root.as_object().context("root must be an object")?;
+    if obj.contains_key("graph") {
+        let normalized = normalize_graph_delegate(obj)?;
+        return parse_value(&normalized);
+    }
 
     let timeline = parse_timeline(obj.get("timeline").context("missing `timeline`")?)?;
     let render_settings = parse_render_settings(
@@ -102,6 +106,180 @@ pub fn parse_value(root: &Value) -> Result<Composition> {
     let mut comp = Composition::new(graph, timeline, render_settings);
     comp.metadata = metadata;
     Ok(comp)
+}
+
+fn normalize_graph_delegate(root: &Map<String, Value>) -> Result<Value> {
+    let graph_value = root.get("graph").context("missing `graph`")?;
+    let (nodes, connections) = match graph_value {
+        Value::Object(graph) => {
+            let nodes = graph
+                .get("nodes")
+                .and_then(Value::as_array)
+                .context("`graph.nodes` must be an array")?;
+            let connections =
+                if let Some(existing) = graph.get("connections").and_then(Value::as_array) {
+                    existing.clone()
+                } else {
+                    derive_connections_from_inputs(nodes)?
+                };
+            (nodes.clone(), connections)
+        }
+        Value::Array(nodes) => (nodes.clone(), derive_connections_from_inputs(nodes)?),
+        _ => bail!("`graph` must be an object or array"),
+    };
+
+    let normalized_nodes = nodes
+        .iter()
+        .map(normalize_graph_node)
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut normalized = Map::new();
+    if let Some(timeline) = root.get("timeline").cloned() {
+        normalized.insert("timeline".to_string(), timeline);
+    }
+    if let Some(render_settings) = root.get("render_settings").cloned() {
+        normalized.insert("render_settings".to_string(), render_settings);
+    }
+    if let Some(metadata) = root.get("metadata").cloned() {
+        normalized.insert("metadata".to_string(), metadata);
+    }
+    normalized.insert("nodes".to_string(), Value::Array(normalized_nodes));
+    normalized.insert("connections".to_string(), Value::Array(connections));
+    Ok(Value::Object(normalized))
+}
+
+fn derive_connections_from_inputs(nodes: &[Value]) -> Result<Vec<Value>> {
+    let mut connections = Vec::new();
+    for node in nodes {
+        let node_obj = node.as_object().context("graph node must be an object")?;
+        let to_node = node_obj
+            .get("id")
+            .cloned()
+            .context("graph node missing `id`")?;
+        let Some(inputs) = node_obj.get("inputs").and_then(Value::as_object) else {
+            continue;
+        };
+        for (to_port, input) in inputs {
+            let parts = input
+                .as_array()
+                .with_context(|| format!("input `{to_port}` must be [node_id, port]"))?;
+            if parts.len() != 2 {
+                bail!("input `{to_port}` must be [node_id, port]");
+            }
+            let from_node = parts[0]
+                .as_u64()
+                .with_context(|| format!("input `{to_port}` source node must be u64"))?;
+            let from_port = parts[1]
+                .as_str()
+                .with_context(|| format!("input `{to_port}` source port must be string"))?;
+
+            let mut connection = Map::new();
+            connection.insert("from_node".to_string(), Value::from(from_node));
+            connection.insert(
+                "from_port".to_string(),
+                Value::String(from_port.to_string()),
+            );
+            connection.insert("to_node".to_string(), to_node.clone());
+            connection.insert("to_port".to_string(), Value::String(to_port.clone()));
+            connections.push(Value::Object(connection));
+        }
+    }
+    Ok(connections)
+}
+
+fn normalize_graph_node(node: &Value) -> Result<Value> {
+    let node_obj = node.as_object().context("graph node must be an object")?;
+    let id = node_obj
+        .get("id")
+        .cloned()
+        .context("graph node missing `id`")?;
+    let kind = node_obj
+        .get("kind")
+        .and_then(Value::as_object)
+        .context("graph node missing `kind`")?;
+    let kind_type = kind
+        .get("type")
+        .and_then(Value::as_str)
+        .context("graph node kind missing `type`")?;
+
+    let mut normalized = Map::new();
+    normalized.insert("id".to_string(), id);
+    normalized.insert("type".to_string(), Value::String(kind_type.to_string()));
+
+    let mut properties = match kind_type {
+        "media_in" => normalize_media_in_properties(kind)?,
+        _ => normalize_node_properties(kind, &["type", "map"]),
+    };
+
+    if kind_type == "switch"
+        && let Some(map) = kind.get("map").cloned()
+    {
+        normalized.insert("map".to_string(), map);
+    }
+
+    if !properties.is_empty() {
+        normalized.insert(
+            "properties".to_string(),
+            Value::Object(std::mem::take(&mut properties)),
+        );
+    }
+
+    Ok(Value::Object(normalized))
+}
+
+fn normalize_node_properties(kind: &Map<String, Value>, skip: &[&str]) -> Map<String, Value> {
+    kind.iter()
+        .filter_map(|(key, value)| {
+            (!skip.iter().any(|skip_key| skip_key == &key.as_str()))
+                .then(|| (key.clone(), value.clone()))
+        })
+        .collect()
+}
+
+fn normalize_media_in_properties(kind: &Map<String, Value>) -> Result<Map<String, Value>> {
+    let media_kind = kind
+        .get("kind")
+        .and_then(Value::as_object)
+        .context("media_in kind must be an object")?;
+    let media_type = media_kind
+        .get("media_type")
+        .and_then(Value::as_str)
+        .context("media_in.kind.media_type must be a string")?;
+    let source = media_kind
+        .get("source")
+        .cloned()
+        .context("media_in.kind.source is required")?;
+
+    let mut properties = Map::new();
+    properties.insert(
+        "kind".to_string(),
+        Value::from(if media_type == "image" { 0 } else { 1 }),
+    );
+    properties.insert("source".to_string(), source);
+
+    if media_type == "video" {
+        if let Some(range) = media_kind.get("range").and_then(Value::as_array)
+            && range.len() == 2
+        {
+            properties.insert("range_start".to_string(), range[0].clone());
+            properties.insert("range_end".to_string(), range[1].clone());
+        }
+        if let Some(speed) = media_kind.get("speed").cloned() {
+            properties.insert("speed".to_string(), speed);
+        }
+        if let Some(loop_mode) = media_kind.get("loop_mode").and_then(Value::as_str) {
+            properties.insert(
+                "loop_mode".to_string(),
+                Value::from(match loop_mode {
+                    "repeat" => 1,
+                    "ping_pong" => 2,
+                    _ => 0,
+                }),
+            );
+        }
+    }
+
+    Ok(properties)
 }
 
 // ---------------------------------------------------------------------------

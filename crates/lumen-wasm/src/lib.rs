@@ -1,22 +1,31 @@
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{HashMap, VecDeque},
     ffi::{c_char, c_void},
     ptr,
     sync::{Arc, RwLock},
 };
 
 use lumen::{
-    AssetCache, Composition, Connection, Graph, InputPort, MediaStore, NodeId, NodeKind,
-    OutputPort, RenderContext, RenderSettings, RuntimeCapabilityProfile, SharedAssetCache,
-    SurfacePool, TimelineSettings,
-    media::{ImageResolver, VideoFrameResolver, premultiply_rgba_in_place_if_needed},
-    node::{Node, media_output::MediaOutput, solid_color::SolidColor},
+    composition::{Composition, RenderSettings, TimelineSettings},
+    graph::{Connection, Graph},
+    media::{
+        FrameRequirements, ImageMetadata, ImageResolver, MediaStore, VideoFrameRequirement,
+        VideoFrameResolver, VideoMetadata, collect_frame_requirements,
+        premultiply_rgba_in_place_if_needed,
+    },
+    node::{
+        NodeId, NodeKind, NodeProperty, PortRef, media_output::MediaOutput,
+        source::solid_color::SolidColor,
+    },
+    raster::{AlphaMode, ImageFrame, RectI},
+    render::{LumenRenderer, surface::DefaultSurfacePool},
 };
 use serde::{Deserialize, Serialize};
 
 static VERSION: &[u8] = b"lumen-wasm-next\0";
 static EMPTY_FRAME_REQUIREMENTS: &[u8] = br#"{"images":[],"videos":[]}"#;
+const DEFAULT_VIDEO_FRAME_CAPACITY: usize = 96;
 
 unsafe extern "C" {
     fn free(ptr: *mut c_void);
@@ -30,7 +39,7 @@ struct Registry {
     next_handle: u32,
     last_status: Vec<u8>,
     renderers: HashMap<u32, RendererSession>,
-    media_stores: HashMap<u32, Arc<InMemoryMediaStore>>,
+    media_stores: HashMap<u32, WasmMediaStore>,
 }
 
 impl Registry {
@@ -69,8 +78,7 @@ impl Default for Registry {
 
 struct RendererSession {
     composition: Composition,
-    asset_cache: SharedAssetCache,
-    surface_pool: Arc<SurfacePool>,
+    surface_pool: DefaultSurfacePool,
     last_frame: Vec<u8>,
     last_frame_requirements: Vec<u8>,
     last_error: Vec<u8>,
@@ -80,9 +88,8 @@ impl RendererSession {
     fn new(composition: Composition) -> Self {
         Self {
             composition,
-            asset_cache: Arc::new(RwLock::new(AssetCache::new())),
+            surface_pool: DefaultSurfacePool::new(),
             last_frame: Vec::new(),
-            surface_pool: Arc::new(SurfacePool::new()),
             last_frame_requirements: EMPTY_FRAME_REQUIREMENTS.to_vec(),
             last_error: Vec::new(),
         }
@@ -97,24 +104,88 @@ impl RendererSession {
     }
 }
 
-#[derive(Default)]
-struct InMemoryMediaStore {
+#[derive(Debug, Clone, Default)]
+struct WasmMediaStore {
+    inner: Arc<WasmMediaStoreInner>,
+}
+
+#[derive(Debug, Default)]
+struct WasmMediaStoreInner {
     images: RwLock<HashMap<String, StoredImage>>,
     videos: RwLock<HashMap<String, StoredVideo>>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct StoredImage {
-    width: u32,
-    height: u32,
-    pixels: Arc<Vec<u8>>,
+    metadata: ImageMetadata,
+    frame: Arc<ImageFrame>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone)]
 struct StoredVideo {
-    width: u32,
-    height: u32,
-    frames: BTreeMap<u32, Arc<Vec<u8>>>,
+    metadata: VideoMetadata,
+    frames: VideoFrameCache,
+}
+
+impl Default for StoredVideo {
+    fn default() -> Self {
+        Self {
+            metadata: VideoMetadata::default(),
+            frames: VideoFrameCache::with_capacity(DEFAULT_VIDEO_FRAME_CAPACITY),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct VideoFrameCache {
+    capacity: usize,
+    order: VecDeque<u32>,
+    entries: HashMap<u32, Arc<ImageFrame>>,
+}
+
+impl VideoFrameCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            order: VecDeque::new(),
+            entries: HashMap::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.order.clear();
+        self.entries.clear();
+    }
+
+    fn get(&self, frame: u32) -> Option<Arc<ImageFrame>> {
+        self.entries.get(&frame).cloned()
+    }
+
+    fn insert(&mut self, frame: u32, image: Arc<ImageFrame>) {
+        if let std::collections::hash_map::Entry::Occupied(mut existing) = self.entries.entry(frame)
+        {
+            existing.insert(image);
+            self.touch(frame);
+            return;
+        }
+
+        self.entries.insert(frame, image);
+        self.order.push_back(frame);
+        while self.entries.len() > self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn touch(&mut self, frame: u32) {
+        if let Some(index) = self.order.iter().position(|existing| *existing == frame) {
+            self.order.remove(index);
+        }
+        self.order.push_back(frame);
+    }
 }
 
 #[derive(Clone)]
@@ -134,16 +205,12 @@ impl ImageResolver for WasmImageResolver {
         &self.id
     }
 
-    fn width(&self) -> u32 {
-        self.entry.width
+    fn metadata(&self) -> ImageMetadata {
+        self.entry.metadata
     }
 
-    fn height(&self) -> u32 {
-        self.entry.height
-    }
-
-    fn resolve(&self) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
-        Ok(Arc::clone(&self.entry.pixels))
+    fn resolve_image(&self) -> Result<Arc<ImageFrame>, lumen::error::MediaError> {
+        Ok(Arc::clone(&self.entry.frame))
     }
 }
 
@@ -152,38 +219,127 @@ impl VideoFrameResolver for WasmVideoResolver {
         &self.id
     }
 
-    fn width(&self) -> u32 {
-        self.entry.width
+    fn metadata(&self) -> VideoMetadata {
+        self.entry.metadata
     }
 
-    fn height(&self) -> u32 {
-        self.entry.height
-    }
-
-    fn frame_count(&self) -> u32 {
-        self.entry
-            .frames
-            .keys()
-            .next_back()
-            .and_then(|frame| frame.checked_add(1))
-            .unwrap_or(0)
-    }
-
-    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
-        let Some(bytes) = self.entry.frames.get(&frame) else {
+    fn resolve_frame_image(&self, frame: u32) -> Result<Arc<ImageFrame>, lumen::error::MediaError> {
+        let Some(image) = self.entry.frames.get(frame) else {
             return Err(lumen::error::MediaError::FrameOutOfRange {
                 media_source: self.id.clone(),
                 frame,
-                frame_count: self.frame_count(),
+                frame_count: self.entry.metadata.frame_count,
             });
         };
-        Ok(Arc::clone(bytes))
+        Ok(image)
     }
 }
 
-impl MediaStore for InMemoryMediaStore {
+impl WasmMediaStore {
+    fn clear(&self) -> Result<(), &'static str> {
+        self.inner
+            .images
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .clear();
+        self.inner
+            .videos
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .clear();
+        Ok(())
+    }
+
+    fn clear_video_frames(&self) -> Result<(), &'static str> {
+        let mut videos = self
+            .inner
+            .videos
+            .write()
+            .map_err(|_| "media store lock poisoned")?;
+        for video in videos.values_mut() {
+            video.frames.clear();
+        }
+        Ok(())
+    }
+
+    fn clear_video_frames_for_source(&self, source: &str) -> Result<bool, &'static str> {
+        let mut videos = self
+            .inner
+            .videos
+            .write()
+            .map_err(|_| "media store lock poisoned")?;
+        let Some(video) = videos.get_mut(source) else {
+            return Ok(false);
+        };
+        video.frames.clear();
+        Ok(true)
+    }
+
+    fn has_image(&self, source: &str) -> bool {
+        self.inner
+            .images
+            .read()
+            .ok()
+            .is_some_and(|images| images.contains_key(source))
+    }
+
+    fn set_image(&self, source: String, frame: ImageFrame) -> Result<(), &'static str> {
+        let metadata = ImageMetadata {
+            width: frame.storage_width,
+            height: frame.storage_height,
+        };
+        self.inner
+            .images
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .insert(
+                source,
+                StoredImage {
+                    metadata,
+                    frame: Arc::new(frame),
+                },
+            );
+        Ok(())
+    }
+
+    fn set_video_metadata(
+        &self,
+        source: String,
+        metadata: VideoMetadata,
+    ) -> Result<(), &'static str> {
+        let mut videos = self
+            .inner
+            .videos
+            .write()
+            .map_err(|_| "media store lock poisoned")?;
+        let entry = videos.entry(source).or_default();
+        entry.metadata = metadata;
+        Ok(())
+    }
+
+    fn set_video_frame(
+        &self,
+        source: String,
+        frame: u32,
+        image: ImageFrame,
+    ) -> Result<(), &'static str> {
+        let mut videos = self
+            .inner
+            .videos
+            .write()
+            .map_err(|_| "media store lock poisoned")?;
+        let entry = videos.entry(source).or_default();
+        entry.metadata.width = image.storage_width;
+        entry.metadata.height = image.storage_height;
+        entry.metadata.frame_count = entry.metadata.frame_count.max(frame.saturating_add(1));
+        entry.frames.insert(frame, Arc::new(image));
+        Ok(())
+    }
+}
+
+impl MediaStore for WasmMediaStore {
     fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
-        let images = self.images.read().ok()?;
+        let images = self.inner.images.read().ok()?;
         let entry = images.get(source)?.clone();
         Some(Box::new(WasmImageResolver {
             id: source.to_string(),
@@ -192,7 +348,7 @@ impl MediaStore for InMemoryMediaStore {
     }
 
     fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        let videos = self.videos.read().ok()?;
+        let videos = self.inner.videos.read().ok()?;
         let entry = videos.get(source)?.clone();
         Some(Box::new(WasmVideoResolver {
             id: source.to_string(),
@@ -206,6 +362,41 @@ struct StatusPayload<'a> {
     status: &'a str,
     code: &'a str,
     message: &'a str,
+}
+
+#[derive(Serialize)]
+struct FrameRequirementsPayload {
+    images: Vec<String>,
+    videos: Vec<FrameRequirementsVideoPayload>,
+}
+
+#[derive(Serialize)]
+struct FrameRequirementsVideoPayload {
+    #[serde(rename = "sourceId")]
+    source_id: String,
+    frames: Vec<u32>,
+}
+
+impl From<FrameRequirements> for FrameRequirementsPayload {
+    fn from(value: FrameRequirements) -> Self {
+        Self {
+            images: value.images,
+            videos: value
+                .videos
+                .into_iter()
+                .map(|video| FrameRequirementsVideoPayload::from(video))
+                .collect(),
+        }
+    }
+}
+
+impl From<VideoFrameRequirement> for FrameRequirementsVideoPayload {
+    fn from(value: VideoFrameRequirement) -> Self {
+        Self {
+            source_id: value.source_id,
+            frames: value.frames,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -299,6 +490,17 @@ unsafe fn take_owned_bytes(ptr_in: *mut u8, len: usize) -> Result<Vec<u8>, &'sta
     Ok(bytes)
 }
 
+fn read_non_empty_source_id(
+    source_ptr: *const u8,
+    source_len: usize,
+) -> Result<String, &'static str> {
+    match unsafe { read_string(source_ptr, source_len) } {
+        Ok(source) if !source.is_empty() => Ok(source),
+        Ok(_) => Err("source id must be non-empty"),
+        Err(message) => Err(message),
+    }
+}
+
 fn scaled_dimension(value: u32, scale: f32) -> Result<u32, String> {
     let scaled = (value as f32) * scale;
     if !scaled.is_finite() || scaled <= 0.0 {
@@ -335,22 +537,31 @@ fn preview_project_to_composition(
     let height = scaled_dimension(project.canvas.height, scale)?;
     let fps = (project.timeline.fps.num as f32) / (project.timeline.fps.den as f32);
 
+    let solid_id = NodeId::new(1);
+    let output_id = NodeId::new(2);
     let mut graph = Graph::new();
-    let solid = graph.add_node(Node::new(
-        NodeId(0),
+    graph.nodes.insert(
+        solid_id,
         NodeKind::SolidColor(SolidColor {
-            color: project.canvas.background,
-            width: Some(width),
-            height: Some(height),
+            id: solid_id,
+            color: NodeProperty::Color(project.canvas.background),
+            width: NodeProperty::Int(i64::from(width)),
+            height: NodeProperty::Int(i64::from(height)),
         }),
-    ));
-    let output = graph.add_node(Node::new(NodeId(0), NodeKind::MediaOutput(MediaOutput)));
+    );
+    graph.nodes.insert(
+        output_id,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output_id,
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
     graph
         .connect(Connection {
-            from_node: solid,
-            from_port: OutputPort::default(),
-            to_node: output,
-            to_port: InputPort::named("source"),
+            from_node: solid_id,
+            from_port: "output".to_string(),
+            to_node: output_id,
+            to_port: "source".to_string(),
         })
         .map_err(|error| error.to_string())?;
 
@@ -375,16 +586,8 @@ fn renderer_from_json(bytes: &[u8], scale: f32) -> Result<RendererSession, Strin
 
     let payload =
         std::str::from_utf8(bytes).map_err(|_| "project payload is not valid utf-8".to_string())?;
-    let result = Composition::from_json(payload);
-    if let Some(composition) = result.composition {
-        return Ok(RendererSession::new(composition));
-    }
-    let message = result
-        .errors
-        .first()
-        .map(ToString::to_string)
-        .unwrap_or_else(|| "failed to parse composition json".to_string());
-    Err(message)
+    let composition = lumen::json::parse(payload).map_err(|error| error.to_string())?;
+    Ok(RendererSession::new(composition))
 }
 
 fn validate_rgba_len(width: u32, height: u32, len: usize) -> bool {
@@ -395,29 +598,29 @@ fn validate_rgba_len(width: u32, height: u32, len: usize) -> bool {
         .is_some_and(|expected| expected == len)
 }
 
+fn image_frame_from_rgba(width: u32, height: u32, mut rgba: Vec<u8>) -> Result<ImageFrame, String> {
+    premultiply_rgba_in_place_if_needed(&mut rgba);
+    let rect = RectI::from_size(width, height);
+    ImageFrame::from_rgba_bytes(
+        rgba.as_slice(),
+        width,
+        height,
+        (width as usize) * 4,
+        AlphaMode::Premultiplied,
+        rect,
+        rect,
+    )
+    .map_err(|error| error.to_string())
+}
+
 fn render_into_session(
     session: &mut RendererSession,
     frame: u32,
-    media_store: Arc<InMemoryMediaStore>,
+    media_store: &WasmMediaStore,
 ) -> Result<*const u8, String> {
-    let capability_profile = RuntimeCapabilityProfile {
-        has_image_resolver: true,
-        has_video_resolver: true,
-        has_threading: false,
-        sink_types: vec![lumen::SinkType::Bitmap],
-    };
-    let media_store: Arc<dyn MediaStore> = media_store;
-    let mut ctx = RenderContext::new(
-        &session.composition,
-        Arc::clone(&session.surface_pool),
-        Arc::clone(&session.asset_cache),
-        media_store,
-        capability_profile,
-    );
-    let raster = session
-        .composition
-        .render_frame(frame, &mut ctx)
+    let mut renderer = LumenRenderer::new(&session.composition, &session.surface_pool, media_store)
         .map_err(|error| error.to_string())?;
+    let raster = renderer.render(frame).map_err(|error| error.to_string())?;
     let (storage_width, storage_height) = raster.storage_dimensions();
     let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
     raster
@@ -427,6 +630,20 @@ fn render_into_session(
     session.last_frame.extend_from_slice(pixels.as_slice());
     session.last_error.clear();
     Ok(session.last_frame.as_ptr())
+}
+
+fn collect_requirements_into_session(
+    session: &mut RendererSession,
+    frame: u32,
+    media_store: &WasmMediaStore,
+) -> Result<*const u8, String> {
+    let payload = collect_frame_requirements(&session.composition, media_store, frame)
+        .map(FrameRequirementsPayload::from)
+        .map_err(|error| error.to_string())?;
+    session.last_frame_requirements =
+        serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+    session.last_error.clear();
+    Ok(session.last_frame_requirements.as_ptr())
 }
 
 #[unsafe(no_mangle)]
@@ -562,7 +779,7 @@ pub extern "C" fn lumen_wasm_request_frame(renderer: u32, frame: u64, media: u32
                 registry.set_status("error", "invalid_input", "renderer handle not found");
                 return ptr::null();
             };
-            render_into_session(session, frame, media_store)
+            render_into_session(session, frame, &media_store)
         };
         match render_result {
             Ok(ptr_out) => {
@@ -593,18 +810,51 @@ pub extern "C" fn lumen_wasm_request_frame_len(renderer: u32) -> usize {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumen_wasm_request_frame_requirements(renderer: u32, _frame: u64) -> *const u8 {
+pub extern "C" fn lumen_wasm_request_frame_requirements(
+    renderer: u32,
+    frame: u64,
+    media: u32,
+) -> *const u8 {
+    let frame = match u32::try_from(frame) {
+        Ok(value) => value,
+        Err(_) => {
+            REGISTRY.with(|registry| {
+                registry.borrow_mut().set_status(
+                    "error",
+                    "invalid_input",
+                    "frame index out of range",
+                )
+            });
+            return ptr::null();
+        }
+    };
+
     REGISTRY.with(|registry| {
         let mut registry = registry.borrow_mut();
-        let ptr_out = {
+        let Some(media_store) = registry.media_stores.get(&media).cloned() else {
+            registry.set_status("error", "invalid_input", "media store handle not found");
+            return ptr::null();
+        };
+        let requirements_result = {
             let Some(session) = registry.renderers.get_mut(&renderer) else {
                 registry.set_status("error", "invalid_input", "renderer handle not found");
                 return ptr::null();
             };
-            session.last_frame_requirements.as_ptr()
+            collect_requirements_into_session(session, frame, &media_store)
         };
-        registry.set_status("ok", "ok", "frame requirements ready");
-        ptr_out
+        match requirements_result {
+            Ok(ptr_out) => {
+                registry.set_status("ok", "ok", "frame requirements ready");
+                ptr_out
+            }
+            Err(message) => {
+                if let Some(session) = registry.renderers.get_mut(&renderer) {
+                    session.last_error = message.as_bytes().to_vec();
+                }
+                registry.set_status("error", "internal_error", &message);
+                ptr::null()
+            }
+        }
     })
 }
 
@@ -659,7 +909,7 @@ pub extern "C" fn lumen_wasm_media_store_create() -> u32 {
         }
         registry
             .media_stores
-            .insert(handle, Arc::new(InMemoryMediaStore::default()));
+            .insert(handle, WasmMediaStore::default());
         registry.set_status("ok", "ok", "media store created");
         handle
     })
@@ -685,12 +935,9 @@ pub extern "C" fn lumen_wasm_media_store_clear(media: u32) {
             registry.set_status("error", "invalid_input", "media store handle not found");
             return;
         };
-        let images_ok = store.images.write().map(|mut map| map.clear()).is_ok();
-        let videos_ok = store.videos.write().map(|mut map| map.clear()).is_ok();
-        if images_ok && videos_ok {
-            registry.set_status("ok", "ok", "media store cleared")
-        } else {
-            registry.set_status("error", "internal_error", "media store lock poisoned")
+        match store.clear() {
+            Ok(()) => registry.set_status("ok", "ok", "media store cleared"),
+            Err(message) => registry.set_status("error", "internal_error", message),
         }
     })
 }
@@ -703,10 +950,41 @@ pub extern "C" fn lumen_wasm_media_store_clear_videos(media: u32) {
             registry.set_status("error", "invalid_input", "media store handle not found");
             return;
         };
-        if store.videos.write().map(|mut map| map.clear()).is_ok() {
-            registry.set_status("ok", "ok", "video frames cleared")
-        } else {
-            registry.set_status("error", "internal_error", "media store lock poisoned")
+        match store.clear_video_frames() {
+            Ok(()) => registry.set_status("ok", "ok", "video frames cleared"),
+            Err(message) => registry.set_status("error", "internal_error", message),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lumen_wasm_media_store_clear_video_source(
+    media: u32,
+    source_ptr: *const u8,
+    source_len: usize,
+) {
+    let source = match read_non_empty_source_id(source_ptr, source_len) {
+        Ok(source) => source,
+        Err(message) => {
+            REGISTRY.with(|registry| {
+                registry
+                    .borrow_mut()
+                    .set_status("error", "invalid_input", message)
+            });
+            return;
+        }
+    };
+
+    REGISTRY.with(|registry| {
+        let mut registry = registry.borrow_mut();
+        let Some(store) = registry.media_stores.get(&media).cloned() else {
+            registry.set_status("error", "invalid_input", "media store handle not found");
+            return;
+        };
+        match store.clear_video_frames_for_source(&source) {
+            Ok(true) => registry.set_status("ok", "ok", "video source frames cleared"),
+            Ok(false) => registry.set_status("error", "invalid_input", "video source not found"),
+            Err(message) => registry.set_status("error", "internal_error", message),
         }
     })
 }
@@ -717,8 +995,7 @@ pub extern "C" fn lumen_wasm_media_store_has_image(
     source_ptr: *const u8,
     source_len: usize,
 ) -> i32 {
-    let source = unsafe { read_string(source_ptr, source_len) };
-    let source = match source {
+    let source = match read_non_empty_source_id(source_ptr, source_len) {
         Ok(source) => source,
         Err(message) => {
             REGISTRY.with(|registry| {
@@ -729,17 +1006,14 @@ pub extern "C" fn lumen_wasm_media_store_has_image(
             return 0;
         }
     };
+
     REGISTRY.with(|registry| {
         let mut registry = registry.borrow_mut();
         let Some(store) = registry.media_stores.get(&media).cloned() else {
             registry.set_status("error", "invalid_input", "media store handle not found");
             return 0;
         };
-        let has = store
-            .images
-            .read()
-            .ok()
-            .is_some_and(|images| images.contains_key(&source));
+        let has = store.has_image(&source);
         registry.set_status("ok", "ok", "media lookup complete");
         if has { 1 } else { 0 }
     })
@@ -751,7 +1025,7 @@ fn insert_image(
     source_len: usize,
     width: u32,
     height: u32,
-    mut rgba: Vec<u8>,
+    rgba: Vec<u8>,
 ) -> i32 {
     if width == 0 || height == 0 {
         REGISTRY.with(|registry| {
@@ -773,24 +1047,24 @@ fn insert_image(
         });
         return 0;
     }
-    let source = unsafe { read_string(source_ptr, source_len) };
-    let source = match source {
-        Ok(source) if !source.is_empty() => source,
-        Ok(_) => {
-            REGISTRY.with(|registry| {
-                registry.borrow_mut().set_status(
-                    "error",
-                    "invalid_input",
-                    "source id must be non-empty",
-                )
-            });
-            return 0;
-        }
+    let source = match read_non_empty_source_id(source_ptr, source_len) {
+        Ok(source) => source,
         Err(message) => {
             REGISTRY.with(|registry| {
                 registry
                     .borrow_mut()
                     .set_status("error", "invalid_input", message)
+            });
+            return 0;
+        }
+    };
+    let frame = match image_frame_from_rgba(width, height, rgba) {
+        Ok(frame) => frame,
+        Err(message) => {
+            REGISTRY.with(|registry| {
+                registry
+                    .borrow_mut()
+                    .set_status("error", "internal_error", &message)
             });
             return 0;
         }
@@ -802,23 +1076,15 @@ fn insert_image(
             registry.set_status("error", "invalid_input", "media store handle not found");
             return 0;
         };
-        premultiply_rgba_in_place_if_needed(&mut rgba);
-        let result = store.images.write().map(|mut images| {
-            images.insert(
-                source,
-                StoredImage {
-                    width,
-                    height,
-                    pixels: Arc::new(rgba),
-                },
-            );
-        });
-        if result.is_ok() {
-            registry.set_status("ok", "ok", "image uploaded");
-            1
-        } else {
-            registry.set_status("error", "internal_error", "media store lock poisoned");
-            0
+        match store.set_image(source, frame) {
+            Ok(()) => {
+                registry.set_status("ok", "ok", "image uploaded");
+                1
+            }
+            Err(message) => {
+                registry.set_status("error", "internal_error", message);
+                0
+            }
         }
     })
 }
@@ -830,7 +1096,7 @@ fn insert_video_frame(
     frame: u64,
     width: u32,
     height: u32,
-    mut rgba: Vec<u8>,
+    rgba: Vec<u8>,
 ) -> i32 {
     let frame = match u32::try_from(frame) {
         Ok(frame) => frame,
@@ -865,19 +1131,82 @@ fn insert_video_frame(
         });
         return 0;
     }
-    let source = unsafe { read_string(source_ptr, source_len) };
-    let source = match source {
-        Ok(source) if !source.is_empty() => source,
-        Ok(_) => {
+    let source = match read_non_empty_source_id(source_ptr, source_len) {
+        Ok(source) => source,
+        Err(message) => {
+            REGISTRY.with(|registry| {
+                registry
+                    .borrow_mut()
+                    .set_status("error", "invalid_input", message)
+            });
+            return 0;
+        }
+    };
+    let image = match image_frame_from_rgba(width, height, rgba) {
+        Ok(frame) => frame,
+        Err(message) => {
+            REGISTRY.with(|registry| {
+                registry
+                    .borrow_mut()
+                    .set_status("error", "internal_error", &message)
+            });
+            return 0;
+        }
+    };
+
+    REGISTRY.with(|registry| {
+        let mut registry = registry.borrow_mut();
+        let Some(store) = registry.media_stores.get(&media).cloned() else {
+            registry.set_status("error", "invalid_input", "media store handle not found");
+            return 0;
+        };
+        match store.set_video_frame(source, frame, image) {
+            Ok(()) => {
+                registry.set_status("ok", "ok", "video frame uploaded");
+                1
+            }
+            Err(message) => {
+                registry.set_status("error", "internal_error", message);
+                0
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lumen_wasm_media_store_set_video_metadata(
+    media: u32,
+    source_ptr: *const u8,
+    source_len: usize,
+    width: u32,
+    height: u32,
+    frame_count: u64,
+) -> i32 {
+    let frame_count = match u32::try_from(frame_count) {
+        Ok(value) => value,
+        Err(_) => {
             REGISTRY.with(|registry| {
                 registry.borrow_mut().set_status(
                     "error",
                     "invalid_input",
-                    "source id must be non-empty",
+                    "video frame_count is out of range",
                 )
             });
             return 0;
         }
+    };
+    if width == 0 || height == 0 {
+        REGISTRY.with(|registry| {
+            registry.borrow_mut().set_status(
+                "error",
+                "invalid_input",
+                "video dimensions must be > 0",
+            )
+        });
+        return 0;
+    }
+    let source = match read_non_empty_source_id(source_ptr, source_len) {
+        Ok(source) => source,
         Err(message) => {
             REGISTRY.with(|registry| {
                 registry
@@ -894,19 +1223,22 @@ fn insert_video_frame(
             registry.set_status("error", "invalid_input", "media store handle not found");
             return 0;
         };
-        premultiply_rgba_in_place_if_needed(&mut rgba);
-        let result = store.videos.write().map(|mut videos| {
-            let entry = videos.entry(source).or_default();
-            entry.width = width;
-            entry.height = height;
-            entry.frames.insert(frame, Arc::new(rgba));
-        });
-        if result.is_ok() {
-            registry.set_status("ok", "ok", "video frame uploaded");
-            1
-        } else {
-            registry.set_status("error", "internal_error", "media store lock poisoned");
-            0
+        match store.set_video_metadata(
+            source,
+            VideoMetadata {
+                width,
+                height,
+                frame_count,
+            },
+        ) {
+            Ok(()) => {
+                registry.set_status("ok", "ok", "video metadata stored");
+                1
+            }
+            Err(message) => {
+                registry.set_status("error", "internal_error", message);
+                0
+            }
         }
     })
 }
@@ -1006,5 +1338,40 @@ pub extern "C" fn lumen_wasm_media_store_set_video_frame_owned(
             });
             0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_videos_preserves_metadata() {
+        let store = WasmMediaStore::default();
+        store
+            .set_video_metadata(
+                "intro".to_string(),
+                VideoMetadata {
+                    width: 1920,
+                    height: 1080,
+                    frame_count: 240,
+                },
+            )
+            .expect("set metadata");
+        let frame = image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
+        store
+            .set_video_frame("intro".to_string(), 0, frame)
+            .expect("set frame");
+
+        store.clear_video_frames().expect("clear video frames");
+
+        let resolver = store
+            .get_video_resolver("intro")
+            .expect("video resolver should still exist");
+        assert_eq!(resolver.metadata().frame_count, 240);
+        assert!(matches!(
+            resolver.resolve_frame_image(0),
+            Err(lumen::error::MediaError::FrameOutOfRange { .. })
+        ));
     }
 }

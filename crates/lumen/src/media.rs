@@ -1,8 +1,18 @@
 //! Media resolver traits and shared metadata for image/video sources.
 
-use std::{fmt::Debug, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt::Debug,
+    sync::Arc,
+};
 
-use crate::{error::MediaError, raster::ImageFrame};
+use crate::{
+    composition::Composition,
+    error::{LumenError, MediaError},
+    expr::ExpressionContext,
+    node::{NodeKind, source::media_in},
+    raster::ImageFrame,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImageMetadata {
@@ -37,6 +47,88 @@ pub trait MediaStore: Send + Sync + Debug {
     fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>>;
 
     fn get_video_resolver(&self, stream: &str) -> Option<Box<dyn VideoFrameResolver>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FrameRequirements {
+    pub images: Vec<String>,
+    pub videos: Vec<VideoFrameRequirement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoFrameRequirement {
+    pub source_id: String,
+    pub frames: Vec<u32>,
+}
+
+pub fn collect_frame_requirements<M: MediaStore>(
+    composition: &Composition,
+    media_store: &M,
+    frame: u32,
+) -> Result<FrameRequirements, LumenError> {
+    let expr_context = ExpressionContext {
+        frame,
+        fps: composition.timeline.fps,
+        width: composition.render_settings.width,
+        height: composition.render_settings.height,
+        duration_frames: composition.timeline.duration_frames,
+        path: Some("media_requirements".to_string()),
+        graph: Some(&composition.graph),
+    };
+
+    let mut images = BTreeSet::new();
+    let mut videos: HashMap<String, BTreeSet<u32>> = HashMap::new();
+
+    for node in composition.graph.nodes.values() {
+        let NodeKind::MediaIn(media_in_node) = node else {
+            continue;
+        };
+
+        match media_in::resolve_for_context(media_in_node, &expr_context)? {
+            media_in::MediaInKind::Image { source } => {
+                images.insert(source);
+            }
+            media_in::MediaInKind::Video {
+                source,
+                range,
+                speed,
+                loop_mode,
+            } => {
+                let resolver = media_store.get_video_resolver(&source).ok_or_else(|| {
+                    MediaError::SourceNotFound {
+                        media_source: source.clone(),
+                    }
+                })?;
+                let metadata = resolver.metadata();
+                let source_frame = media_in::map_to_source_frame(
+                    frame,
+                    metadata.frame_count,
+                    range.as_ref(),
+                    speed,
+                    loop_mode,
+                )
+                .ok_or_else(|| MediaError::FrameOutOfRange {
+                    media_source: source.clone(),
+                    frame,
+                    frame_count: metadata.frame_count,
+                })?;
+                videos.entry(source).or_default().insert(source_frame);
+            }
+        }
+    }
+
+    let videos = videos
+        .into_iter()
+        .map(|(source_id, frames)| VideoFrameRequirement {
+            source_id,
+            frames: frames.into_iter().collect(),
+        })
+        .collect();
+
+    Ok(FrameRequirements {
+        images: images.into_iter().collect(),
+        videos,
+    })
 }
 
 pub fn premultiply_rgba_in_place_if_needed(pixels: &mut [u8]) {

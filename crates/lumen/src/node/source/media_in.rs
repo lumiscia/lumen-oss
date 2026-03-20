@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use crate::{
     error::MediaError,
+    expr::ExpressionContext,
     media::MediaStore,
     node::{NodeId, NodeProperty},
     raster::RasterFrame,
@@ -17,7 +18,7 @@ pub enum LoopMode {
 }
 
 impl LoopMode {
-    fn from_int(value: i64) -> Self {
+    pub fn from_int(value: i64) -> Self {
         match value {
             1 => Self::Repeat,
             2 => Self::PingPong,
@@ -105,7 +106,38 @@ impl MediaIn {
     }
 }
 
-fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
+pub fn resolve_for_context(
+    media_in: &MediaIn,
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<MediaInKind> {
+    let kind = media_in.kind.resolve_int(media_in.id, "kind", ctx)?;
+    let source = media_in.source.resolve_string(media_in.id, "source", ctx)?;
+    let range_start = media_in
+        .range_start
+        .resolve_int(media_in.id, "range_start", ctx)?;
+    let range_end = media_in
+        .range_end
+        .resolve_int(media_in.id, "range_end", ctx)?;
+    let speed = media_in.speed.resolve_float(media_in.id, "speed", ctx)? as f32;
+    let loop_mode = LoopMode::from_int(media_in.loop_mode.resolve_int(
+        media_in.id,
+        "loop_mode",
+        ctx,
+    )?);
+
+    if kind == 0 {
+        Ok(MediaInKind::Image { source })
+    } else {
+        Ok(MediaInKind::Video {
+            source,
+            range: resolve_range(range_start, range_end),
+            speed,
+            loop_mode,
+        })
+    }
+}
+
+pub fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
     let start = u32::try_from(start).ok()?;
     let end = u32::try_from(end).ok()?;
     (end > start).then_some(start..end)
@@ -155,7 +187,7 @@ fn evaluate_video<S: SurfacePool, M: MediaStore>(
     Ok(RasterFrame::Image((*decoded).clone()))
 }
 
-fn map_to_source_frame(
+pub fn map_to_source_frame(
     timeline_frame: u32,
     frame_count: u32,
     range: Option<&Range<u32>>,
