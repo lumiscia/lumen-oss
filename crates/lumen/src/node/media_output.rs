@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use crate::{
     node::{
         NodeId, NodeResult, PortRef,
         compositing::merge::draw_frame_image,
-        pixel_utils::{make_skia_image, render_with_skia},
+        pixel_utils::{ClearMode, render_to_surface_stable},
     },
-    raster::{BitmapFrame, RasterFrame, RectI},
+    raster::{AlphaMode, RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -54,62 +52,50 @@ impl MediaOutput {
             && source_format == output_rect
             && source_data == output_rect
         {
-            return source.into_bitmap_frame().map(RasterFrame::Bitmap);
+            return source.snapshot();
         }
 
         if target_w == 0 || target_h == 0 {
-            return Ok(RasterFrame::Bitmap(BitmapFrame::with_domain(
-                Arc::new(Vec::new()),
+            return RasterFrame::transparent(
                 0,
                 0,
                 output_rect,
                 output_rect,
-            )));
+                AlphaMode::Premultiplied,
+            );
         }
 
         let source_alpha = source.alpha_mode();
-        let (source_bytes, storage_w, storage_h) = source.into_parts();
-        let Some(image) = make_skia_image(
-            source_bytes.as_slice(),
-            storage_w,
-            storage_h,
-            (storage_w as usize) * 4,
-            source_alpha,
-        ) else {
-            return Ok(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(
-                    Arc::new(vec![0; (target_w as usize) * (target_h as usize) * 4]),
-                    target_w,
-                    target_h,
-                    output_rect,
-                    output_rect,
-                )
-                .with_alpha_mode(source_alpha),
-            ));
-        };
-
-        let output = render_with_skia(target_w, target_h, Some(ctx), |canvas| {
-            draw_frame_image(
-                canvas,
-                &image,
-                storage_w,
-                storage_h,
-                source_format,
-                source_data,
-                output_rect,
-                None,
-            );
-        });
-
-        Ok(RasterFrame::Bitmap(
-            BitmapFrame::with_domain(
-                Arc::new(output),
+        let Some((image, storage_w, storage_h)) = source.image_parts() else {
+            return RasterFrame::transparent(
                 target_w,
                 target_h,
                 output_rect,
                 output_rect,
-            )
-            .with_alpha_mode(source_alpha),
-        ))
+                source_alpha,
+            );
+        };
+
+        render_to_surface_stable(
+            target_w,
+            target_h,
+            ctx,
+            output_rect,
+            output_rect,
+            source_alpha,
+            ClearMode::Transparent,
+            |canvas| {
+                draw_frame_image(
+                    canvas,
+                    &image,
+                    storage_w,
+                    storage_h,
+                    source_format,
+                    source_data,
+                    output_rect,
+                    None,
+                );
+            },
+        )
     }
 }

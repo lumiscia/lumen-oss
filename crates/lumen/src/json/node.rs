@@ -38,7 +38,9 @@ pub fn build_node(
     match kind {
         "boolean" => Ok(NodeKind::Boolean(build_typed::<Boolean>(id, properties)?)),
         "merge" => Ok(NodeKind::Merge(build_typed::<Merge>(id, properties)?)),
-        "raster_multimerge" => Ok(NodeKind::RasterMultimerge(build_typed::<RasterMultiMerge>(id, properties)?)),
+        "raster_multimerge" => Ok(NodeKind::RasterMultimerge(build_typed::<RasterMultiMerge>(
+            id, properties,
+        )?)),
         "switch" => {
             let mut node = Switch::default();
             node.id = id;
@@ -49,19 +51,33 @@ pub fn build_node(
         }
         "blur" => Ok(NodeKind::Blur(build_typed::<Blur>(id, properties)?)),
         "crop" => Ok(NodeKind::Crop(build_typed::<Crop>(id, properties)?)),
-        "frame_hold" => Ok(NodeKind::FrameHold(build_typed::<FrameHold>(id, properties)?)),
+        "frame_hold" => Ok(NodeKind::FrameHold(build_typed::<FrameHold>(
+            id, properties,
+        )?)),
         "memo" => Ok(NodeKind::Memo(build_typed::<Memo>(id, properties)?)),
         "resize" => Ok(NodeKind::Resize(build_typed::<Resize>(id, properties)?)),
         "shadow" => Ok(NodeKind::Shadow(build_typed::<Shadow>(id, properties)?)),
-        "transform" => Ok(NodeKind::Transform(build_typed::<Transform>(id, properties)?)),
+        "transform" => Ok(NodeKind::Transform(build_typed::<Transform>(
+            id, properties,
+        )?)),
         "media_in" => Ok(NodeKind::MediaIn(build_typed::<MediaIn>(id, properties)?)),
-        "solid_color" => Ok(NodeKind::SolidColor(build_typed::<SolidColor>(id, properties)?)),
+        "solid_color" => Ok(NodeKind::SolidColor(build_typed::<SolidColor>(
+            id, properties,
+        )?)),
         "text" => Ok(NodeKind::Text(build_typed::<Text>(id, properties)?)),
         "shape" => Ok(NodeKind::Shape(build_typed::<Shape>(id, properties)?)),
-        "shape_renderer" => Ok(NodeKind::ShapeRenderer(build_typed::<ShapeRenderer>(id, properties)?)),
-        "vector_multimerge" => Ok(NodeKind::VectorMultimerge(build_typed::<VectorMultiMerge>(id, properties)?)),
-        "vector_text" => Ok(NodeKind::VectorText(build_typed::<VectorText>(id, properties)?)),
-        "media_output" => Ok(NodeKind::MediaOutput(build_typed::<MediaOutput>(id, properties)?)),
+        "shape_renderer" => Ok(NodeKind::ShapeRenderer(build_typed::<ShapeRenderer>(
+            id, properties,
+        )?)),
+        "vector_multimerge" => Ok(NodeKind::VectorMultimerge(build_typed::<VectorMultiMerge>(
+            id, properties,
+        )?)),
+        "vector_text" => Ok(NodeKind::VectorText(build_typed::<VectorText>(
+            id, properties,
+        )?)),
+        "media_output" => Ok(NodeKind::MediaOutput(build_typed::<MediaOutput>(
+            id, properties,
+        )?)),
         other => bail!("unknown node type `{other}`"),
     }
 }
@@ -117,10 +133,24 @@ macro_rules! impl_json_buildable {
 }
 
 impl_json_buildable!(
-    Boolean, Merge, RasterMultiMerge, Switch,
-    Blur, Crop, FrameHold, Memo, Resize, Shadow, Transform,
-    MediaIn, SolidColor, Text,
-    Shape, ShapeRenderer, VectorMultiMerge, VectorText,
+    Boolean,
+    Merge,
+    RasterMultiMerge,
+    Switch,
+    Blur,
+    Crop,
+    FrameHold,
+    Memo,
+    Resize,
+    Shadow,
+    Transform,
+    MediaIn,
+    SolidColor,
+    Text,
+    Shape,
+    ShapeRenderer,
+    VectorMultiMerge,
+    VectorText,
     MediaOutput,
 );
 

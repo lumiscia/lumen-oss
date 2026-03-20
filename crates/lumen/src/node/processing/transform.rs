@@ -1,13 +1,11 @@
-use std::sync::Arc;
-
 use skia_safe::{CubicResampler, Matrix, SamplingOptions};
 
 use crate::{
     node::{
         NodeId, NodeProperty, PortRef,
-        pixel_utils::{make_skia_image, render_with_skia},
+        pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::{BitmapFrame, RasterFrame},
+    raster::RasterFrame,
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -93,42 +91,17 @@ impl Transform {
             return source.snapshot();
         }
 
-        let (bytes, source_width, source_height) = source.snapshot_parts()?;
+        let (image, source_width, source_height) = match source.image_parts() {
+            Some(parts) => parts,
+            None => return source.snapshot(),
+        };
 
         if source_width == 0 || source_height == 0 {
-            return Ok(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(
-                    bytes,
-                    source_width,
-                    source_height,
-                    source_format,
-                    source_data,
-                )
-                .with_alpha_mode(source_alpha),
-            ));
+            return source.snapshot();
         }
 
         let render_width = source_width.max(ctx.renderer.composition.render_settings.width);
         let render_height = source_height.max(ctx.renderer.composition.render_settings.height);
-
-        let Some(image) = make_skia_image(
-            &bytes,
-            source_width,
-            source_height,
-            (source_width as usize) * 4,
-            source_alpha,
-        ) else {
-            return Ok(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(
-                    bytes,
-                    source_width,
-                    source_height,
-                    source_format,
-                    source_data,
-                )
-                .with_alpha_mode(source_alpha),
-            ));
-        };
 
         let (pivot_x, pivot_y) =
             Self::resolved_pivot(pivot_x, pivot_y, source_width, source_height);
@@ -143,21 +116,19 @@ impl Transform {
             TransformSampling::Linear => SamplingOptions::from(CubicResampler::catmull_rom()),
         };
 
-        let transformed = render_with_skia(render_width, render_height, Some(ctx), |canvas| {
-            canvas.concat(&matrix);
-            canvas.draw_image_with_sampling_options(&image, (0.0, 0.0), sampling, None);
-        });
-
-        Ok(RasterFrame::Bitmap(
-            BitmapFrame::with_domain(
-                Arc::new(transformed),
-                render_width,
-                render_height,
-                source_format,
-                source_data,
-            )
-            .with_alpha_mode(source_alpha),
-        ))
+        render_to_surface_ephemeral(
+            render_width,
+            render_height,
+            ctx,
+            source_format,
+            source_data,
+            source_alpha,
+            ClearMode::Transparent,
+            |canvas| {
+                canvas.concat(&matrix);
+                canvas.draw_image_with_sampling_options(&image, (0.0, 0.0), sampling, None);
+            },
+        )
     }
 
     pub fn is_identity(&self) -> bool {

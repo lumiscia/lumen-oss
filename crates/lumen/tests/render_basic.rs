@@ -8,28 +8,21 @@ use lumen::{
     node::{
         NodeId, NodeKind, NodeProperty, PortRef,
         compositing::{
-            boolean::Boolean,
-            merge::Merge,
-            raster_multimerge::RasterMultiMerge,
-            switch::Switch,
+            boolean::Boolean, merge::Merge, raster_multimerge::RasterMultiMerge, switch::Switch,
         },
         media_output::MediaOutput,
         processing::{
-            blur::Blur,
-            crop::Crop,
-            frame_hold::FrameHold,
-            resize::Resize,
-            shadow::Shadow,
+            blur::Blur, crop::Crop, frame_hold::FrameHold, resize::Resize, shadow::Shadow,
             transform::Transform,
         },
         source::solid_color::SolidColor,
-        vector::{
-            shape::Shape,
-            shape_renderer::ShapeRenderer,
-        },
+        vector::{shape::Shape, shape_renderer::ShapeRenderer},
     },
-    raster::BitmapFrame,
-    render::{LumenRenderer, surface::{DefaultSurfacePool, SurfacePool}},
+    raster::RasterFrame,
+    render::{
+        LumenRenderer,
+        surface::{DefaultSurfacePool, SurfacePool},
+    },
 };
 
 // ---- Null media store for tests that don't need media resolvers ----
@@ -66,7 +59,26 @@ fn connect(graph: &mut Graph, from: NodeId, from_port: &str, to: NodeId, to_port
         .expect("connection should succeed");
 }
 
-fn render_frame(graph: Graph, width: u32, height: u32, frame: u32) -> BitmapFrame {
+struct ReadbackFrame {
+    pixels: Vec<u8>,
+    storage_width: u32,
+    storage_height: u32,
+}
+
+fn readback_frame(frame: RasterFrame) -> ReadbackFrame {
+    let (storage_width, storage_height) = frame.storage_dimensions();
+    let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
+    frame
+        .read_pixels_into(pixels.as_mut_slice(), (storage_width as usize) * 4)
+        .expect("read pixels");
+    ReadbackFrame {
+        pixels,
+        storage_width,
+        storage_height,
+    }
+}
+
+fn render_frame(graph: Graph, width: u32, height: u32, frame: u32) -> ReadbackFrame {
     let composition = Composition::new(
         graph,
         TimelineSettings {
@@ -82,10 +94,10 @@ fn render_frame(graph: Graph, width: u32, height: u32, frame: u32) -> BitmapFram
     let pool = DefaultSurfacePool::new();
     let media = NullMediaStore;
     let mut renderer = LumenRenderer::new(&composition, &pool, &media).unwrap();
-    renderer.render(frame).unwrap()
+    readback_frame(renderer.render(frame).unwrap())
 }
 
-fn render_single(graph: Graph, width: u32, height: u32) -> BitmapFrame {
+fn render_single(graph: Graph, width: u32, height: u32) -> ReadbackFrame {
     render_frame(graph, width, height, 0)
 }
 
@@ -203,7 +215,11 @@ fn merge_with_half_opacity_blends_colors() {
         // Premultiplied blend of red + blue at 50%
         assert!((120..=135).contains(&chunk[0]), "red channel: {}", chunk[0]);
         assert_eq!(chunk[1], 0);
-        assert!((120..=135).contains(&chunk[2]), "blue channel: {}", chunk[2]);
+        assert!(
+            (120..=135).contains(&chunk[2]),
+            "blue channel: {}",
+            chunk[2]
+        );
         assert_eq!(chunk[3], 255);
     }
 }
@@ -297,10 +313,7 @@ fn blur_with_zero_radius_is_passthrough() {
     connect(&mut graph, blur_id, "output", output_id, "source");
 
     let bitmap = render_single(graph, 2, 1);
-    assert_eq!(
-        bitmap.pixels.as_slice(),
-        &[0, 0, 255, 255, 0, 0, 255, 255]
-    );
+    assert_eq!(bitmap.pixels.as_slice(), &[0, 0, 255, 255, 0, 0, 255, 255]);
 }
 
 #[test]
@@ -487,10 +500,7 @@ fn resize_changes_output_dimensions() {
     assert_eq!(bitmap.storage_height, 360);
     // Sample a pixel in the middle to verify content
     let idx = ((100 * 640) + 500) * 4;
-    assert_eq!(
-        &bitmap.pixels[idx..idx + 4],
-        &[220, 30, 40, 255]
-    );
+    assert_eq!(&bitmap.pixels[idx..idx + 4], &[220, 30, 40, 255]);
 }
 
 #[test]
@@ -829,7 +839,9 @@ fn shape_rectangle_renders_through_shape_renderer() {
 #[test]
 fn graph_validation_rejects_missing_media_output() {
     let graph = Graph::new();
-    let errors = graph.validate().expect_err("should fail without media output");
+    let errors = graph
+        .validate()
+        .expect_err("should fail without media output");
     assert!(errors.iter().any(|e| matches!(
         e,
         LumenError::GraphValidation(lumen::error::GraphValidationError::MissingMediaOutput)
@@ -858,7 +870,9 @@ fn graph_validation_rejects_multiple_media_outputs() {
         .expect_err("should fail with multiple outputs");
     assert!(errors.iter().any(|e| matches!(
         e,
-        LumenError::GraphValidation(lumen::error::GraphValidationError::MultipleMediaOutputs { .. })
+        LumenError::GraphValidation(
+            lumen::error::GraphValidationError::MultipleMediaOutputs { .. }
+        )
     )));
 }
 
@@ -1144,4 +1158,3 @@ fn boolean_with_mask_preserves_source_dimensions() {
     // First pixel should be preserved (white mask = fully opaque)
     assert_eq!(&bitmap.pixels[0..4], &[10, 20, 30, 255]);
 }
-

@@ -34,8 +34,10 @@ pub fn parse_value(root: &Value) -> Result<Composition> {
     let obj = root.as_object().context("root must be an object")?;
 
     let timeline = parse_timeline(obj.get("timeline").context("missing `timeline`")?)?;
-    let render_settings =
-        parse_render_settings(obj.get("render_settings").context("missing `render_settings`")?)?;
+    let render_settings = parse_render_settings(
+        obj.get("render_settings")
+            .context("missing `render_settings`")?,
+    )?;
 
     let nodes_arr = obj
         .get("nodes")
@@ -63,7 +65,9 @@ pub fn parse_value(root: &Value) -> Result<Composition> {
 
     // Second pass: create connections and wire up PortRefs
     for conn_val in connections_arr {
-        let conn_obj = conn_val.as_object().context("connection must be an object")?;
+        let conn_obj = conn_val
+            .as_object()
+            .context("connection must be an object")?;
         let from_node = parse_node_id(conn_obj.get("from_node").context("missing `from_node`")?)?;
         let from_port = conn_obj
             .get("from_port")
@@ -107,10 +111,7 @@ pub fn parse_value(root: &Value) -> Result<Composition> {
 fn parse_timeline(val: &Value) -> Result<TimelineSettings> {
     let obj = val.as_object().context("`timeline` must be an object")?;
     Ok(TimelineSettings {
-        fps: obj
-            .get("fps")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(30.0) as f32,
+        fps: obj.get("fps").and_then(|v| v.as_f64()).unwrap_or(30.0) as f32,
         duration_frames: obj
             .get("duration_frames")
             .and_then(|v| v.as_u64())
@@ -131,10 +132,8 @@ fn parse_render_settings(val: &Value) -> Result<RenderSettings> {
             .get("height")
             .and_then(|v| v.as_u64())
             .context("render_settings.height")? as u32,
-        background_color: parse_color(
-            obj.get("background_color").unwrap_or(&Value::Null),
-        )
-        .unwrap_or([0, 0, 0, 255]),
+        background_color: parse_color(obj.get("background_color").unwrap_or(&Value::Null))
+            .unwrap_or([0, 0, 0, 255]),
     })
 }
 

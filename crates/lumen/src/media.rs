@@ -1,8 +1,8 @@
-//! Media resolver traits and test doubles for image/video sources.
+//! Media resolver traits and shared metadata for image/video sources.
 
 use std::{fmt::Debug, sync::Arc};
 
-use crate::error::MediaError;
+use crate::{error::MediaError, raster::ImageFrame};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImageMetadata {
@@ -22,7 +22,7 @@ pub trait ImageResolver: Send + Sync {
 
     fn metadata(&self) -> ImageMetadata;
 
-    fn resolve(&self) -> Result<Arc<Vec<u8>>, MediaError>;
+    fn resolve_image(&self) -> Result<Arc<ImageFrame>, MediaError>;
 }
 
 pub trait VideoFrameResolver: Send + Sync {
@@ -30,7 +30,7 @@ pub trait VideoFrameResolver: Send + Sync {
 
     fn metadata(&self) -> VideoMetadata;
 
-    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError>;
+    fn resolve_frame_image(&self, frame: u32) -> Result<Arc<ImageFrame>, MediaError>;
 }
 
 pub trait MediaStore: Send + Sync + Debug {

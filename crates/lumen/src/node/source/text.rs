@@ -1,11 +1,10 @@
-use std::{cell::RefCell, sync::Arc};
+use std::cell::RefCell;
 
 #[cfg(feature = "embed-roboto")]
 use skia_safe::textlayout::TypefaceFontProvider;
 use skia_safe::{
-    Color, FontMgr, FontStyle,
+    FontMgr, FontStyle,
     font_style::Weight,
-    surfaces,
     textlayout::{
         FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as ParagraphTextAlign,
         TextStyle as ParagraphTextStyle,
@@ -15,9 +14,9 @@ use skia_safe::{
 use crate::{
     node::{
         NodeId, NodeProperty,
-        pixel_utils::{read_surface_rgba, to_skia_color},
+        pixel_utils::{ClearMode, render_to_surface_ephemeral, to_skia_color},
     },
-    raster::RasterFrame,
+    raster::{AlphaMode, RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -249,21 +248,23 @@ impl Text {
 
         let width = layout_width.ceil().max(1.0) as u32;
         let height = paragraph.height().ceil().max(1.0) as u32;
-        let Some(mut surface) = surfaces::raster_n32_premul((width as i32, height as i32)) else {
-            return Ok(RasterFrame::bitmap(Arc::new(vec![0_u8; 4]), 1, 1));
-        };
-
-        let canvas = surface.canvas();
-        canvas.clear(Color::TRANSPARENT);
         let vertical_offset = match alignment.vertical {
             TextAlignmentVertical::Top => 0.0,
             TextAlignmentVertical::Middle => (height as f32 - paragraph.height()).max(0.0) * 0.5,
             TextAlignmentVertical::Bottom => (height as f32 - paragraph.height()).max(0.0),
         };
-        paragraph.paint(canvas, (0.0, vertical_offset));
-
-        let bytes = read_surface_rgba(&mut surface, width, height, Some(ctx));
-        Ok(RasterFrame::bitmap(Arc::new(bytes), width, height))
+        render_to_surface_ephemeral(
+            width,
+            height,
+            ctx,
+            RectI::from_size(width, height),
+            RectI::from_size(width, height),
+            AlphaMode::Premultiplied,
+            ClearMode::Transparent,
+            |canvas| {
+                paragraph.paint(canvas, (0.0, vertical_offset));
+            },
+        )
     }
 }
 

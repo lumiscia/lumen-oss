@@ -1,13 +1,11 @@
-use std::sync::Arc;
-
 use skia_safe::{CubicResampler, Rect, SamplingOptions};
 
 use crate::{
     node::{
         NodeId, NodeProperty, PortRef,
-        pixel_utils::{make_skia_image, render_with_skia},
+        pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::{BitmapFrame, RasterFrame, RectI},
+    raster::{RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -92,56 +90,34 @@ impl Resize {
         let source_format = source.format_rect();
 
         // Early return if dimensions already match.
-
         if source_width == dest_width && source_height == dest_height {
             return source.snapshot();
         }
 
         let output_rect = RectI::new(source_format.x, source_format.y, dest_width, dest_height);
-        let (bytes, source_width, source_height) = source.snapshot_parts()?;
 
         // Handle empty source image by returning transparent buffer
         if source_width == 0 || source_height == 0 {
-            let transparent_buffer =
-                Arc::new(vec![
-                    0u8;
-                    (dest_width as usize) * (dest_height as usize) * 4
-                ]);
-            return Ok(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(
-                    transparent_buffer,
-                    dest_width,
-                    dest_height,
-                    output_rect,
-                    output_rect,
-                )
-                .with_alpha_mode(source_alpha),
-            ));
+            return RasterFrame::transparent(
+                dest_width,
+                dest_height,
+                output_rect,
+                output_rect,
+                source_alpha,
+            );
         }
 
-        let Some(image) = make_skia_image(
-            &bytes,
-            source_width,
-            source_height,
-            (source_width as usize) * 4,
-            source_alpha,
-        ) else {
-            // Failed to create Skia image, return transparent buffer
-            let transparent_buffer =
-                Arc::new(vec![
-                    0u8;
-                    (dest_width as usize) * (dest_height as usize) * 4
-                ]);
-            return Ok(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(
-                    transparent_buffer,
+        let (image, source_width, source_height) = match source.image_parts() {
+            Some(parts) => parts,
+            None => {
+                return RasterFrame::transparent(
                     dest_width,
                     dest_height,
                     output_rect,
                     output_rect,
-                )
-                .with_alpha_mode(source_alpha),
-            ));
+                    source_alpha,
+                );
+            }
         };
 
         let (source_rect, dest_rect) =
@@ -150,27 +126,29 @@ impl Resize {
             ResizeSampling::Nearest => SamplingOptions::default(),
             ResizeSampling::Linear => SamplingOptions::from(CubicResampler::catmull_rom()),
         };
+        let clear_mode = match mode {
+            ResizeMode::Fit => ClearMode::Transparent,
+            ResizeMode::Stretch | ResizeMode::Fill => ClearMode::None,
+        };
 
-        let resized = render_with_skia(dest_width, dest_height, Some(ctx), |canvas| {
-            canvas.draw_image_rect_with_sampling_options(
-                &image,
-                Some((&source_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
-                dest_rect,
-                sampling,
-                &skia_safe::Paint::default(),
-            );
-        });
-
-        Ok(RasterFrame::Bitmap(
-            BitmapFrame::with_domain(
-                Arc::new(resized),
-                dest_width,
-                dest_height,
-                output_rect,
-                output_rect,
-            )
-            .with_alpha_mode(source_alpha),
-        ))
+        render_to_surface_ephemeral(
+            dest_width,
+            dest_height,
+            ctx,
+            output_rect,
+            output_rect,
+            source_alpha,
+            clear_mode,
+            |canvas| {
+                canvas.draw_image_rect_with_sampling_options(
+                    &image,
+                    Some((&source_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
+                    dest_rect,
+                    sampling,
+                    &skia_safe::Paint::default(),
+                );
+            },
+        )
     }
 }
 

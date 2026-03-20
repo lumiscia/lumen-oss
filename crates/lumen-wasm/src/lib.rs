@@ -418,12 +418,13 @@ fn render_into_session(
         .composition
         .render_frame(frame, &mut ctx)
         .map_err(|error| error.to_string())?;
-    let bitmap = raster.to_bitmap().map_err(|error| error.to_string())?;
-    let Some(bytes) = bitmap.as_bitmap_bytes() else {
-        return Err("render did not produce bitmap bytes".to_string());
-    };
+    let (storage_width, storage_height) = raster.storage_dimensions();
+    let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
+    raster
+        .read_pixels_into(pixels.as_mut_slice(), (storage_width as usize) * 4)
+        .map_err(|error| error.to_string())?;
     session.last_frame.clear();
-    session.last_frame.extend_from_slice(bytes);
+    session.last_frame.extend_from_slice(pixels.as_slice());
     session.last_error.clear();
     Ok(session.last_frame.as_ptr())
 }

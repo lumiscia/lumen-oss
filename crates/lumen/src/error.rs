@@ -138,6 +138,8 @@ pub enum RenderError {
     SharedSurfaceLease,
     #[error("surface readback requires owned access")]
     SurfaceReadbackUnsupported,
+    #[error("pixel readback failed")]
+    PixelReadbackFailed { width: u32, height: u32 },
     #[error("render cancelled")]
     Cancelled { frame: u32 },
 }

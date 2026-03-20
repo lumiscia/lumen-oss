@@ -76,7 +76,10 @@ fn parse_typed(val: &Value, expected: PropertyKind, name: &str) -> Result<NodePr
                 .as_array()
                 .with_context(|| format!("`{name}` expected [x, y]"))?;
             if arr.len() != 2 {
-                bail!("`{name}` expected [x, y], got array of length {}", arr.len());
+                bail!(
+                    "`{name}` expected [x, y], got array of length {}",
+                    arr.len()
+                );
             }
             let x = arr[0]
                 .as_f64()

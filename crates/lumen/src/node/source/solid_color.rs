@@ -1,11 +1,9 @@
-use std::sync::Arc;
-
 use crate::{
     node::{
         NodeId, NodeProperty,
-        pixel_utils::{render_with_skia, rgba_byte_len, to_skia_color},
+        pixel_utils::{ClearMode, render_to_surface_ephemeral, rgba_byte_len, to_skia_color},
     },
-    raster::RasterFrame,
+    raster::{AlphaMode, RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -59,10 +57,18 @@ impl SolidColor {
         }
 
         let color = to_skia_color(self.resolve_color(ctx)?);
-        let bytes = render_with_skia(width, height, Some(ctx), |canvas| {
-            canvas.clear(color);
-        });
-
-        Ok(RasterFrame::bitmap(Arc::new(bytes), width, height))
+        let rect = RectI::from_size(width, height);
+        render_to_surface_ephemeral(
+            width,
+            height,
+            ctx,
+            rect,
+            rect,
+            AlphaMode::Premultiplied,
+            ClearMode::None,
+            |canvas| {
+                canvas.clear(color);
+            },
+        )
     }
 }

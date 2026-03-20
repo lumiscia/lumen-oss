@@ -200,32 +200,35 @@ pub fn render_project_mp4(
         std::thread::spawn(move || encode_rgba_stream(width, height, fps, encoder, rx));
 
     for frame in 0..total_frames {
-        let bitmap = composition
+        let raster = composition
             .render_frame(frame, &mut renderer_ctx)
             .map_err(|err| RenderError {
                 code: "render_failed",
                 message: format!("render failed at frame {frame}: {err}"),
                 retryable: true,
-            })?
-            .into_bitmap_frame()
+            })?;
+        let (storage_width, storage_height) = raster.storage_dimensions();
+        let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
+        raster
+            .read_pixels_into(pixels.as_mut_slice(), (storage_width as usize) * 4)
             .map_err(|err| RenderError {
                 code: "render_failed",
-                message: format!("failed to convert frame {frame} to bitmap: {err}"),
+                message: format!("failed to read frame {frame} pixels: {err}"),
                 retryable: true,
             })?;
 
-        if bitmap.storage_width != width || bitmap.storage_height != height {
+        if storage_width != width || storage_height != height {
             return Err(RenderError {
                 code: "render_failed",
                 message: format!(
                     "frame {frame} dimensions {}x{} do not match composition {}x{}",
-                    bitmap.storage_width, bitmap.storage_height, width, height
+                    storage_width, storage_height, width, height
                 ),
                 retryable: false,
             });
         }
 
-        tx.send((*bitmap.pixels).clone()).map_err(|_| RenderError {
+        tx.send(pixels).map_err(|_| RenderError {
             code: "encode_failed",
             message: "ffmpeg encoder thread is unavailable".to_string(),
             retryable: true,
@@ -282,8 +285,11 @@ pub fn render_project_frame_png(
             code: "render_failed",
             message: err.to_string(),
             retryable: false,
-        })?
-        .into_bitmap_frame()
+        })?;
+    let (storage_width, storage_height) = rendered.storage_dimensions();
+    let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
+    rendered
+        .read_pixels_into(pixels.as_mut_slice(), (storage_width as usize) * 4)
         .map_err(|err| RenderError {
             code: "render_failed",
             message: err.to_string(),
@@ -294,9 +300,9 @@ pub fn render_project_frame_png(
     let encoder = PngEncoder::new(&mut png);
     encoder
         .write_image(
-            rendered.pixels.as_slice(),
-            rendered.storage_width,
-            rendered.storage_height,
+            pixels.as_slice(),
+            storage_width,
+            storage_height,
             image::ExtendedColorType::Rgba8,
         )
         .map_err(|err| RenderError {

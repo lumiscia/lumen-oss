@@ -1,10 +1,8 @@
 use std::{
-    collections::HashMap,
     env, fs,
     io::Write,
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -16,8 +14,8 @@ use lumen::{
     image::ImageFileResolver,
     media::{ImageResolver, MediaStore, VideoFrameResolver},
     raster::RasterFrame,
-    render::LumenRenderer,
     render::surface::DefaultSurfacePool,
+    render::{LumenRenderer, threading::RenderOrchestrator},
     sink::Sink,
 };
 
@@ -30,41 +28,14 @@ struct CliArgs {
     frame: Option<u32>,
 }
 
+#[derive(Debug)]
 struct LocalMediaStore {
     root: PathBuf,
-    image_cache: Mutex<HashMap<String, ImageFileResolver>>,
-    video_cache: Mutex<HashMap<String, Arc<FfmpegVideoResolver>>>,
-}
-
-impl std::fmt::Debug for LocalMediaStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalMediaStore")
-            .field("root", &self.root)
-            .finish_non_exhaustive()
-    }
-}
-
-struct SharedVideoResolver(Arc<FfmpegVideoResolver>);
-
-impl VideoFrameResolver for SharedVideoResolver {
-    fn id(&self) -> &str {
-        self.0.id()
-    }
-    fn metadata(&self) -> lumen::media::VideoMetadata {
-        self.0.metadata()
-    }
-    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, lumen::error::MediaError> {
-        self.0.resolve_frame(frame)
-    }
 }
 
 impl LocalMediaStore {
     fn new(root: PathBuf) -> Self {
-        Self {
-            root,
-            image_cache: Mutex::new(HashMap::new()),
-            video_cache: Mutex::new(HashMap::new()),
-        }
+        Self { root }
     }
 
     fn resolve_source(&self, source: &str) -> Option<String> {
@@ -77,24 +48,16 @@ impl LocalMediaStore {
 impl MediaStore for LocalMediaStore {
     fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
         let resolved = self.resolve_source(source)?;
-        let mut cache = self.image_cache.lock().unwrap();
-        if let Some(cached) = cache.get(&resolved) {
-            return Some(Box::new(cached.clone()));
-        }
-        let resolver = ImageFileResolver::open(&resolved).ok()?;
-        cache.insert(resolved, resolver.clone());
-        Some(Box::new(resolver))
+        ImageFileResolver::open(resolved)
+            .ok()
+            .map(|r| Box::new(r) as _)
     }
 
     fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
         let resolved = self.resolve_source(source)?;
-        let mut cache = self.video_cache.lock().unwrap();
-        if let Some(cached) = cache.get(&resolved) {
-            return Some(Box::new(SharedVideoResolver(Arc::clone(cached))));
-        }
-        let resolver = Arc::new(FfmpegVideoResolver::open(&resolved).ok()?);
-        cache.insert(resolved, Arc::clone(&resolver));
-        Some(Box::new(SharedVideoResolver(resolver)))
+        FfmpegVideoResolver::open(resolved)
+            .ok()
+            .map(|r| Box::new(r) as _)
     }
 }
 
@@ -103,6 +66,7 @@ struct FfmpegPipeSink {
     width: u32,
     height: u32,
     total_frames: u32,
+    frame_buffer: Vec<u8>,
 }
 
 impl FfmpegPipeSink {
@@ -148,6 +112,7 @@ impl FfmpegPipeSink {
             width,
             height,
             total_frames,
+            frame_buffer: vec![0; (width as usize) * (height as usize) * 4],
         })
     }
 }
@@ -158,19 +123,14 @@ impl Sink for FfmpegPipeSink {
         frame: u32,
         data: &RasterFrame,
     ) -> std::result::Result<(), SinkError> {
-        let bitmap = data
-            .bitmap_snapshot()
-            .map_err(|error| SinkError::WriteFrame {
-                frame,
-                details: error.to_string(),
-            })?;
+        let (storage_width, storage_height) = data.storage_dimensions();
 
-        if bitmap.storage_width != self.width || bitmap.storage_height != self.height {
+        if storage_width != self.width || storage_height != self.height {
             return Err(SinkError::WriteFrame {
                 frame,
                 details: format!(
                     "unexpected frame dimensions {}x{} (expected {}x{})",
-                    bitmap.storage_width, bitmap.storage_height, self.width, self.height
+                    storage_width, storage_height, self.width, self.height
                 ),
             });
         }
@@ -187,8 +147,14 @@ impl Sink for FfmpegPipeSink {
             details: "ffmpeg stdin unavailable".to_string(),
         })?;
 
+        data.read_pixels_into(self.frame_buffer.as_mut_slice(), (self.width as usize) * 4)
+            .map_err(|error| SinkError::WriteFrame {
+                frame,
+                details: error.to_string(),
+            })?;
+
         stdin
-            .write_all(bitmap.pixels.as_slice())
+            .write_all(self.frame_buffer.as_slice())
             .map_err(|error| SinkError::WriteFrame {
                 frame,
                 details: format!("failed writing frame to ffmpeg: {error}"),
@@ -385,13 +351,13 @@ fn render_single_png(
     let rendered = renderer
         .render(frame)
         .with_context(|| format!("render failed at frame {frame}"))?;
+    let (width, height) = rendered.storage_dimensions();
+    let mut pixels = vec![0; (width as usize) * (height as usize) * 4];
+    rendered
+        .read_pixels_into(pixels.as_mut_slice(), (width as usize) * 4)
+        .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
 
-    write_png(
-        output,
-        rendered.storage_width,
-        rendered.storage_height,
-        rendered.pixels.as_slice(),
-    )?;
+    write_png(output, width, height, pixels.as_slice())?;
 
     println!("render complete output={} frame={frame}", output.display());
     Ok(())
@@ -434,19 +400,12 @@ fn render_mp4(
     )?;
 
     let total_frames = composition.timeline.duration_frames;
+    let orchestrator =
+        RenderOrchestrator::new(composition, surface_pool, media_store, worker_count);
+    orchestrator
+        .render(&mut sink)
+        .map_err(|e| anyhow!("render failed: {e}"))?;
 
-    let mut renderer = LumenRenderer::new(&composition, &surface_pool, &media_store).unwrap();
-    for i in 0..composition.timeline.duration_frames {
-        let frame = renderer.render(i).unwrap();
-        sink.write_frame(i, &RasterFrame::Bitmap(frame));
-    }
-    /*
-       let orchestrator =
-           RenderOrchestrator::new(composition, surface_pool, media_store, worker_count);
-       orchestrator
-           .render(&mut sink)
-           .map_err(|e| anyhow!("render failed: {e}"))?;
-    */
     sink.finalize()
         .map_err(|e| anyhow!("finalize failed: {e}"))?;
 

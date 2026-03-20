@@ -6,14 +6,14 @@ use std::{
 use crate::{
     error::PropertyError,
     node::{NodeId, NodeProperty, PortRef},
-    raster::{BitmapFrame, RasterFrame},
+    raster::{ImageFrame, RasterFrame},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
 
 #[derive(Debug, Default)]
 pub struct MemoCache {
-    entries: Mutex<HashMap<String, BitmapFrame>>,
+    entries: Mutex<HashMap<String, ImageFrame>>,
 }
 
 impl MemoCache {
@@ -21,12 +21,12 @@ impl MemoCache {
         Self::default()
     }
 
-    pub fn get(&self, cache_id: &str) -> Option<BitmapFrame> {
+    pub fn get(&self, cache_id: &str) -> Option<ImageFrame> {
         lock(&self.entries).get(cache_id).cloned()
     }
 
-    pub fn insert(&self, cache_id: String, bitmap: BitmapFrame) {
-        lock(&self.entries).insert(cache_id, bitmap);
+    pub fn insert(&self, cache_id: String, frame: ImageFrame) {
+        lock(&self.entries).insert(cache_id, frame);
     }
 }
 
@@ -72,19 +72,16 @@ impl Memo {
 
         let allow_expressions = self.resolve_allow_expressions(ctx)?;
         if !allow_expressions && let Some(cached) = self.cache.get(&cache_id) {
-            return Ok(RasterFrame::Bitmap(cached));
+            return Ok(RasterFrame::Image(cached));
         }
 
-        let bitmap = ctx
-            .eval(self.source.clone())?
-            .as_raster()?
-            .bitmap_snapshot()?;
+        let raster = ctx.eval(self.source.clone())?.as_raster()?.snapshot_image();
 
         if !allow_expressions {
-            self.cache.insert(cache_id, bitmap.clone());
+            self.cache.insert(cache_id, raster.clone());
         }
 
-        Ok(RasterFrame::Bitmap(bitmap))
+        Ok(RasterFrame::Image(raster))
     }
 }
 

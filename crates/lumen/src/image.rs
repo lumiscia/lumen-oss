@@ -1,16 +1,17 @@
-use std::{path::Path, sync::Arc};
+use std::{fs, path::Path, sync::Arc};
 
-use ::image::ImageReader;
+use skia_safe::{Data, Image};
 
 use crate::{
     error::MediaError,
-    media::{ImageMetadata, ImageResolver, premultiply_rgba_in_place_if_needed},
+    media::{ImageMetadata, ImageResolver},
+    raster::ImageFrame,
 };
 
 #[derive(Debug, Clone)]
 struct CachedImage {
     metadata: ImageMetadata,
-    pixels: Arc<Vec<u8>>,
+    frame: Arc<ImageFrame>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,36 +37,28 @@ impl ImageResolver for ImageFileResolver {
         self.cached.metadata
     }
 
-    fn resolve(&self) -> Result<Arc<Vec<u8>>, MediaError> {
-        Ok(Arc::clone(&self.cached.pixels))
+    fn resolve_image(&self) -> Result<Arc<ImageFrame>, MediaError> {
+        Ok(Arc::clone(&self.cached.frame))
     }
 }
 
 fn load_cached_image(source: &str) -> Result<CachedImage, MediaError> {
-    let reader = ImageReader::open(Path::new(source)).map_err(|err| MediaError::Decode {
+    let encoded = fs::read(Path::new(source)).map_err(|err| MediaError::Decode {
         media_source: source.to_string(),
         details: format!("failed opening image source: {err}"),
     })?;
-    let image = reader
-        .with_guessed_format()
-        .map_err(|err| MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!("failed determining image format: {err}"),
-        })?
-        .decode()
-        .map_err(|err| MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!("failed decoding image source: {err}"),
-        })?;
-    let mut rgba = image.to_rgba8().into_raw();
-    premultiply_rgba_in_place_if_needed(&mut rgba);
+    let data = Data::new_copy(encoded.as_slice());
+    let image = Image::from_encoded(data).ok_or_else(|| MediaError::Decode {
+        media_source: source.to_string(),
+        details: "failed decoding image source with Skia".to_string(),
+    })?;
     let metadata = ImageMetadata {
-        width: image.width(),
-        height: image.height(),
+        width: image.width().max(0) as u32,
+        height: image.height().max(0) as u32,
     };
     Ok(CachedImage {
         metadata,
-        pixels: Arc::new(rgba),
+        frame: Arc::new(ImageFrame::new(image)),
     })
 }
 
@@ -81,7 +74,7 @@ mod tests {
     use ::image::{ImageBuffer, Rgba};
 
     #[test]
-    fn image_file_resolver_caches_decoded_pixels() {
+    fn image_file_resolver_caches_decoded_image_handles() {
         let path = temp_png_path();
         ImageBuffer::<Rgba<u8>, Vec<u8>>::from_pixel(2, 1, Rgba([128, 64, 32, 128]))
             .save(&path)
@@ -93,10 +86,11 @@ mod tests {
         assert_eq!(metadata.width, 2);
         assert_eq!(metadata.height, 1);
 
-        let first = resolver.resolve().expect("first resolve");
-        let second = resolver.resolve().expect("second resolve");
+        let first = resolver.resolve_image().expect("first resolve");
+        let second = resolver.resolve_image().expect("second resolve");
         assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(first.as_slice(), &[64, 32, 16, 128, 64, 32, 16, 128]);
+        assert_eq!(first.storage_width, 2);
+        assert_eq!(first.storage_height, 1);
 
         let _ = fs::remove_file(path);
     }

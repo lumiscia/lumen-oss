@@ -141,21 +141,33 @@ fn evaluate_expr(expr: &ExprNode, ctx: &ExpressionContext<'_>) -> crate::Result<
             let graph = ctx.graph.ok_or_else(|| {
                 LumenError::Expression(ExpressionError::Evaluate {
                     path: ctx.path.clone(),
-                    details: format!("no graph available to resolve node property reference `{}`", target_path.0),
+                    details: format!(
+                        "no graph available to resolve node property reference `{}`",
+                        target_path.0
+                    ),
                 })
             })?;
             let node = graph.nodes.get(node_id).ok_or_else(|| {
                 LumenError::Expression(ExpressionError::Evaluate {
                     path: ctx.path.clone(),
-                    details: format!("node `{}` not found for property reference `{}`", node_id.0, target_path.0),
+                    details: format!(
+                        "node `{}` not found for property reference `{}`",
+                        node_id.0, target_path.0
+                    ),
                 })
             })?;
-            let prop = node.as_property_eval().get_property(&target_path.0)?.ok_or_else(|| {
-                LumenError::Expression(ExpressionError::Evaluate {
-                    path: ctx.path.clone(),
-                    details: format!("property `{}` not found on node `{}`", target_path.0, node_id.0),
-                })
-            })?;
+            let prop = node
+                .as_property_eval()
+                .get_property(&target_path.0)?
+                .ok_or_else(|| {
+                    LumenError::Expression(ExpressionError::Evaluate {
+                        path: ctx.path.clone(),
+                        details: format!(
+                            "property `{}` not found on node `{}`",
+                            target_path.0, node_id.0
+                        ),
+                    })
+                })?;
             match &prop {
                 NodeProperty::Expr(inner_expr) => inner_expr.evaluate(ctx),
                 other => property_value_to_expression_value(other),

@@ -1,13 +1,11 @@
-use std::sync::Arc;
-
 use skia_safe::{Paint, image_filters};
 
 use crate::{
     node::{
         NodeId, NodeProperty, PortRef,
-        pixel_utils::{make_skia_image, render_with_skia, to_skia_color},
+        pixel_utils::{ClearMode, render_to_surface_ephemeral, to_skia_color},
     },
-    raster::{BitmapFrame, RasterFrame},
+    raster::RasterFrame,
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -51,7 +49,6 @@ impl Shadow {
         let color = self.resolve_color(ctx)?;
 
         // Early return if shadow is fully transparent.
-
         if color[3] == 0 {
             return source.snapshot();
         }
@@ -63,52 +60,47 @@ impl Shadow {
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
         let source_data = source.data_rect();
-        let (bytes, width, height) = source.snapshot_parts()?;
+        let (image, width, height) = match source.image_parts() {
+            Some(parts) => parts,
+            None => return source.snapshot(),
+        };
 
         if width == 0 || height == 0 {
-            return Ok(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(bytes, width, height, source_format, source_data)
-                    .with_alpha_mode(source_alpha),
-            ));
+            return source.snapshot();
         }
-
-        let Some(image) =
-            make_skia_image(&bytes, width, height, (width as usize) * 4, source_alpha)
-        else {
-            return Ok(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(bytes, width, height, source_format, source_data)
-                    .with_alpha_mode(source_alpha),
-            ));
-        };
 
         let shadow_color = to_skia_color(color);
         // Ensure non-negative blur radius
         let sigma = blur_radius.max(0.0);
 
-        let output = render_with_skia(width, height, Some(ctx), |canvas| {
-            // Create and apply drop shadow filter
-            let shadow_filter = image_filters::drop_shadow_only(
-                (offset_x, offset_y),
-                (sigma, sigma),
-                shadow_color,
-                None,
-                None,
-                None,
-            );
+        render_to_surface_ephemeral(
+            width,
+            height,
+            ctx,
+            source_format,
+            source_data,
+            source_alpha,
+            ClearMode::Transparent,
+            |canvas| {
+                // Create and apply drop shadow filter
+                let shadow_filter = image_filters::drop_shadow_only(
+                    (offset_x, offset_y),
+                    (sigma, sigma),
+                    shadow_color,
+                    None,
+                    None,
+                    None,
+                );
 
-            if let Some(filter) = shadow_filter {
-                let mut paint_with_shadow = Paint::default();
-                paint_with_shadow.set_image_filter(filter);
-                canvas.draw_image(&image, (0.0, 0.0), Some(&paint_with_shadow));
-            }
+                if let Some(filter) = shadow_filter {
+                    let mut paint_with_shadow = Paint::default();
+                    paint_with_shadow.set_image_filter(filter);
+                    canvas.draw_image(&image, (0.0, 0.0), Some(&paint_with_shadow));
+                }
 
-            // Draw original image on top of shadow
-            canvas.draw_image(&image, (0.0, 0.0), None);
-        });
-
-        Ok(RasterFrame::Bitmap(
-            BitmapFrame::with_domain(Arc::new(output), width, height, source_format, source_data)
-                .with_alpha_mode(source_alpha),
-        ))
+                // Draw original image on top of shadow
+                canvas.draw_image(&image, (0.0, 0.0), None);
+            },
+        )
     }
 }

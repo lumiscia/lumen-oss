@@ -122,13 +122,9 @@ fn evaluate_image<S: SurfacePool, M: MediaStore>(
         .ok_or_else(|| MediaError::SourceNotFound {
             media_source: source.to_string(),
         })?;
-    let meta = resolver.metadata();
-    let width = meta.width.max(1);
-    let height = meta.height.max(1);
-    let decoded = resolver.resolve()?;
-
-    validate_rgba_len(source, width, height, decoded.as_ref())?;
-    Ok(RasterFrame::bitmap(decoded, width, height))
+    let _meta = resolver.metadata();
+    let decoded = resolver.resolve_image()?;
+    Ok(RasterFrame::Image((*decoded).clone()))
 }
 
 fn evaluate_video<S: SurfacePool, M: MediaStore>(
@@ -146,8 +142,6 @@ fn evaluate_video<S: SurfacePool, M: MediaStore>(
             media_source: source.to_string(),
         })?;
     let meta = resolver.metadata();
-    let width = meta.width.max(1);
-    let height = meta.height.max(1);
     let frame_count = meta.frame_count;
     let source_frame = map_to_source_frame(ctx.frame, frame_count, range, speed, loop_mode).ok_or(
         MediaError::FrameOutOfRange {
@@ -157,9 +151,8 @@ fn evaluate_video<S: SurfacePool, M: MediaStore>(
         },
     )?;
 
-    let decoded = resolver.resolve_frame(source_frame)?;
-    validate_rgba_len(source, width, height, decoded.as_ref())?;
-    Ok(RasterFrame::bitmap(decoded, width, height))
+    let decoded = resolver.resolve_frame_image(source_frame)?;
+    Ok(RasterFrame::Image((*decoded).clone()))
 }
 
 fn map_to_source_frame(
@@ -211,32 +204,4 @@ fn map_to_source_frame(
         forward_offset
     };
     u32::try_from(u64::from(start).saturating_add(offset)).ok()
-}
-
-fn validate_rgba_len(
-    source: &str,
-    width: u32,
-    height: u32,
-    pixels: &[u8],
-) -> Result<(), MediaError> {
-    let expected = u64::from(width)
-        .checked_mul(u64::from(height))
-        .and_then(|count| count.checked_mul(4))
-        .and_then(|bytes| usize::try_from(bytes).ok())
-        .ok_or_else(|| MediaError::Decode {
-            media_source: source.to_string(),
-            details: "invalid frame dimensions".to_string(),
-        })?;
-
-    if pixels.len() == expected {
-        Ok(())
-    } else {
-        Err(MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!(
-                "expected rgba buffer length {expected}, got {}",
-                pixels.len()
-            ),
-        })
-    }
 }

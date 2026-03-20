@@ -430,22 +430,28 @@ fn derive_node_inner(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
     });
 
     // --- __set_property match arms ---
-    let set_property_arms: Vec<_> = properties.iter().map(|prop| {
-        let name = &prop.name;
-        let field = &prop.field_ident;
-        quote! { #name => { self.#field = value; true } }
-    }).collect();
+    let set_property_arms: Vec<_> = properties
+        .iter()
+        .map(|prop| {
+            let name = &prop.name;
+            let field = &prop.field_ident;
+            quote! { #name => { self.#field = value; true } }
+        })
+        .collect();
 
     // --- __wire_input match arms ---
-    let wire_input_arms: Vec<_> = inputs.iter().map(|inp| {
-        let name = &inp.name;
-        let field = &inp.field_ident;
-        if inp.variadic {
-            quote! { #name => { self.#field.push(port_ref); true } }
-        } else {
-            quote! { #name => { self.#field = port_ref; true } }
-        }
-    }).collect();
+    let wire_input_arms: Vec<_> = inputs
+        .iter()
+        .map(|inp| {
+            let name = &inp.name;
+            let field = &inp.field_ident;
+            if inp.variadic {
+                quote! { #name => { self.#field.push(port_ref); true } }
+            } else {
+                quote! { #name => { self.#field = port_ref; true } }
+            }
+        })
+        .collect();
 
     let property_static =
         format_ident!("__{}_PROPERTY_DEFS", struct_name.to_string().to_uppercase());

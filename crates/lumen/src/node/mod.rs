@@ -129,9 +129,10 @@ impl NodeProperty {
             Self::String(value) => value
                 .parse::<f64>()
                 .map_err(|_| Self::invalid_type(node_id, property_path, "Float", "String")),
-            Self::Expr(expr) => expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
-                Self::invalid_type(node_id, property_path, "Float", "expression")
-            }),
+            Self::Expr(expr) => expr
+                .evaluate(ctx)?
+                .as_f64()
+                .ok_or_else(|| Self::invalid_type(node_id, property_path, "Float", "expression")),
             _ => Err(Self::invalid_type(
                 node_id,
                 property_path,

@@ -8,7 +8,7 @@ use crate::{
     composition::Composition,
     error::{LumenError, ThreadingError},
     media::MediaStore,
-    raster::{BitmapFrame, RasterFrame},
+    raster::{ImageFrame, RasterFrame},
     render::{LumenRenderer, SurfacePool},
     sink::Sink,
 };
@@ -46,7 +46,7 @@ impl<S: SurfacePool, M: MediaStore> RenderOrchestrator<S, M> {
         }
 
         let (job_tx, job_rx) = bounded::<u32>(self.worker_count);
-        let (result_tx, result_rx) = bounded::<WorkerResult>(self.worker_count);
+        let (result_tx, result_rx) = bounded::<WorkerResult>(self.worker_count * 2);
 
         std::thread::scope(|scope| -> Result<(), LumenError> {
             for _ in 0..self.worker_count {
@@ -61,15 +61,15 @@ impl<S: SurfacePool, M: MediaStore> RenderOrchestrator<S, M> {
                         match LumenRenderer::new(composition, surface_pool, media_store) {
                             Ok(renderer) => renderer,
                             Err(err) => {
-                                let _ = result_tx.send(WorkerResult::Error(None, err));
+                                let _ = result_tx.send(WorkerResult::Error(err));
                                 return;
                             }
                         };
 
                     while let Ok(frame) = job_rx.recv() {
                         let message = match renderer.render(frame) {
-                            Ok(rendered) => WorkerResult::Frame(frame, rendered),
-                            Err(err) => WorkerResult::Error(Some(frame), err),
+                            Ok(rendered) => WorkerResult::Frame(frame, rendered.snapshot_image()),
+                            Err(err) => WorkerResult::Error(err),
                         };
                         if result_tx.send(message).is_err() {
                             break;
@@ -105,15 +105,15 @@ impl<S: SurfacePool, M: MediaStore> RenderOrchestrator<S, M> {
                 in_flight = in_flight.saturating_sub(1);
 
                 match result {
-                    WorkerResult::Frame(frame, bitmap_frame) => {
-                        buffered_frames.insert(frame, bitmap_frame);
-                        while let Some(bitmap_frame) = buffered_frames.remove(&next_to_write) {
-                            let raster_frame = RasterFrame::Bitmap(bitmap_frame);
+                    WorkerResult::Frame(frame, image_frame) => {
+                        buffered_frames.insert(frame, image_frame);
+                        while let Some(image_frame) = buffered_frames.remove(&next_to_write) {
+                            let raster_frame = RasterFrame::Image(image_frame);
                             sink.write_frame(next_to_write, &raster_frame)?;
                             next_to_write += 1;
                         }
                     }
-                    WorkerResult::Error(_, err) => return Err(err),
+                    WorkerResult::Error(err) => return Err(err),
                 }
             }
 
@@ -124,6 +124,6 @@ impl<S: SurfacePool, M: MediaStore> RenderOrchestrator<S, M> {
 }
 
 enum WorkerResult {
-    Frame(u32, BitmapFrame),
-    Error(Option<u32>, LumenError),
+    Frame(u32, ImageFrame),
+    Error(LumenError),
 }

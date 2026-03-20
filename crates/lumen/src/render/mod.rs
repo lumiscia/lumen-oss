@@ -13,7 +13,7 @@ use crate::{
     error::GraphValidationError,
     media::MediaStore,
     node::{NodeResult, PortRef},
-    raster::BitmapFrame,
+    raster::RasterFrame,
     render::surface::SurfacePool,
 };
 
@@ -38,7 +38,7 @@ impl<'a, S: SurfacePool, M: MediaStore> LumenRenderer<'a, S, M> {
         })
     }
 
-    pub fn render(&mut self, frame: u32) -> crate::Result<BitmapFrame> {
+    pub fn render(&mut self, frame: u32) -> crate::Result<RasterFrame> {
         let mut media_outputs =
             self.composition
                 .graph
@@ -57,13 +57,13 @@ impl<'a, S: SurfacePool, M: MediaStore> LumenRenderer<'a, S, M> {
         let mut ctx = RenderContext::new(self, frame);
         let output = ctx.eval(PortRef::new(output_node_id, "output".to_string()))?;
         let raster = match Rc::try_unwrap(output) {
-            Ok(NodeResult::Raster(raster)) => raster.into_bitmap_frame()?,
+            Ok(NodeResult::Raster(raster)) => raster,
             Ok(NodeResult::Vector(_)) => {
                 return Err(ctx.invalid_node_output_type(output_node_id, "RasterFrame", "Vector"));
             }
             Ok(NodeResult::None) => return Err(ctx.missing_node_output_error(output_node_id)),
             Err(shared) => match shared.as_ref() {
-                NodeResult::Raster(raster) => raster.bitmap_snapshot()?,
+                NodeResult::Raster(raster) => raster.snapshot()?,
                 NodeResult::Vector(_) => {
                     return Err(ctx.invalid_node_output_type(
                         output_node_id,

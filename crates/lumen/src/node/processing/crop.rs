@@ -1,10 +1,11 @@
-use std::sync::Arc;
-
 use skia_safe::{IRect, image::RequiredProperties};
 
 use crate::{
-    node::{NodeId, NodeProperty, PortRef, pixel_utils::make_skia_image},
-    raster::{BitmapFrame, RasterFrame, RectI},
+    node::{
+        NodeId, NodeProperty, PortRef,
+        pixel_utils::{ClearMode, render_to_surface_ephemeral},
+    },
+    raster::{ImageFrame, RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -70,41 +71,15 @@ impl Crop {
         }
 
         if crop_right <= crop_left || crop_bottom <= crop_top {
-            let transparent_pixel = Arc::new(vec![0, 0, 0, 0]);
             let output_rect = RectI::new(
                 source_format.x + crop_left,
                 source_format.y + crop_top,
                 1,
                 1,
             );
-            return Ok(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(transparent_pixel, 1, 1, output_rect, output_rect)
-                    .with_alpha_mode(source_alpha),
-            ));
+            return RasterFrame::transparent(1, 1, output_rect, output_rect, source_alpha);
         }
 
-        let (bytes, storage_w, storage_h) = source.snapshot_parts()?;
-        let Some(image) = make_skia_image(
-            bytes.as_slice(),
-            storage_w,
-            storage_h,
-            (storage_w as usize) * 4,
-            source_alpha,
-        ) else {
-            let transparent_pixel = Arc::new(vec![0, 0, 0, 0]);
-            let output_rect = RectI::new(
-                source_format.x + crop_left,
-                source_format.y + crop_top,
-                1,
-                1,
-            );
-            return Ok(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(transparent_pixel, 1, 1, output_rect, output_rect)
-                    .with_alpha_mode(source_alpha),
-            ));
-        };
-
-        let subset_rect = IRect::from_ltrb(crop_left, crop_top, crop_right, crop_bottom);
         let crop_width = (crop_right - crop_left) as u32;
         let crop_height = (crop_bottom - crop_top) as u32;
         let output_rect = RectI::new(
@@ -113,43 +88,42 @@ impl Crop {
             crop_width,
             crop_height,
         );
+
+        let image = match source.to_skia_image() {
+            Some(img) => img,
+            None => {
+                return RasterFrame::transparent(1, 1, output_rect, output_rect, source_alpha);
+            }
+        };
+
+        // Try fast subset path
+        let subset_rect = IRect::from_ltrb(crop_left, crop_top, crop_right, crop_bottom);
         if let Some(cropped_image) =
             image.make_subset(None, &subset_rect, RequiredProperties::default())
         {
-            if let Some(pixel_data) = cropped_image.peek_pixels()
-                && let Some(pixel_bytes) = pixel_data.bytes()
-            {
-                return Ok(RasterFrame::Bitmap(
-                    BitmapFrame::with_domain(
-                        Arc::new(pixel_bytes.to_vec()),
-                        crop_width,
-                        crop_height,
-                        output_rect,
-                        output_rect,
-                    )
-                    .with_alpha_mode(source_alpha),
-                ));
-            }
-        }
-
-        let output = crate::node::pixel_utils::render_with_skia(
-            crop_width,
-            crop_height,
-            Some(ctx),
-            |canvas| {
-                canvas.draw_image(&image, (-crop_left as f32, -crop_top as f32), None);
-            },
-        );
-
-        Ok(RasterFrame::Bitmap(
-            BitmapFrame::with_domain(
-                Arc::new(output),
+            let mut frame = ImageFrame::with_domain(
+                cropped_image,
                 crop_width,
                 crop_height,
                 output_rect,
                 output_rect,
-            )
-            .with_alpha_mode(source_alpha),
-        ))
+            );
+            frame.alpha_mode = source_alpha;
+            return Ok(RasterFrame::Image(frame));
+        }
+
+        // Fallback: render to surface
+        render_to_surface_ephemeral(
+            crop_width,
+            crop_height,
+            ctx,
+            output_rect,
+            output_rect,
+            source_alpha,
+            ClearMode::None,
+            |canvas| {
+                canvas.draw_image(&image, (-crop_left as f32, -crop_top as f32), None);
+            },
+        )
     }
 }

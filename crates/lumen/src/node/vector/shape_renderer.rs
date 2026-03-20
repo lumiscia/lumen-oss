@@ -1,9 +1,9 @@
-use std::{cell::RefCell, sync::Arc};
+use std::cell::RefCell;
 
 #[cfg(feature = "embed-roboto")]
 use skia_safe::textlayout::TypefaceFontProvider;
 use skia_safe::{
-    Color, FontMgr, FontStyle, Paint, PaintStyle, Path, RRect, Rect,
+    FontMgr, FontStyle, Paint, PaintStyle, Path, RRect, Rect,
     font_style::Weight,
     textlayout::{
         FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as ParagraphTextAlign,
@@ -15,10 +15,10 @@ use crate::{
     media::MediaStore,
     node::{
         NodeId, NodeProperty, PortRef,
-        pixel_utils::{make_skia_image, read_surface_rgba, render_with_skia, to_skia_color},
+        pixel_utils::{ClearMode, render_to_surface_ephemeral, to_skia_color},
         vector::{ShapeGeometry, VectorData, VectorPosition, VectorStyle, VectorTextData},
     },
-    raster::{BitmapFrame, RasterFrame, RectI},
+    raster::{AlphaMode, ImageFrame, RasterFrame, RectI},
     render::{RenderContext, surface::SurfacePool},
 };
 use lumen_macros::{Node, node_impl};
@@ -220,42 +220,37 @@ fn rasterize_geometry<S: SurfacePool, M: MediaStore>(
     let height = height.max(1);
     let pad = draw_padding(style);
     let bounds = positioned_bounds(width, height, position, pad);
-
-    if let Ok(mut surface_ref) = ctx
-        .renderer
-        .surface_pool
-        .acquire_raster(bounds.width, bounds.height)
-    {
-        let surface = surface_ref.surface_mut();
-        let canvas = surface.canvas();
-        canvas.restore_to_count(1);
-        canvas.reset_matrix();
-        canvas.clear(Color::TRANSPARENT);
-        canvas.save();
-        canvas.translate((bounds.draw_x, bounds.draw_y));
-        draw_shape(canvas, &path, style);
-        canvas.restore();
-        let bytes = read_surface_rgba(surface, bounds.width, bounds.height, Some(ctx));
-        return bitmap_with_bounds(bytes, &bounds);
-    }
-
-    // Fallback: allocate a fresh surface
-    let Some(mut surface) =
-        skia_safe::surfaces::raster_n32_premul((bounds.width as i32, bounds.height as i32))
-    else {
-        return RasterFrame::bitmap(Arc::new(vec![0; 4]), 1, 1);
-    };
-
-    surface.canvas().clear(Color::TRANSPARENT);
-    surface.canvas().save();
-    surface.canvas().translate((bounds.draw_x, bounds.draw_y));
-    draw_shape(surface.canvas(), &path, style);
-    surface.canvas().restore();
-
-    bitmap_with_bounds(
-        read_surface_rgba(&mut surface, bounds.width, bounds.height, Some(ctx)),
-        &bounds,
+    render_to_surface_ephemeral(
+        bounds.width,
+        bounds.height,
+        ctx,
+        bounds.format_rect,
+        bounds.format_rect,
+        AlphaMode::Premultiplied,
+        ClearMode::Transparent,
+        |canvas| {
+            canvas.save();
+            canvas.translate((bounds.draw_x, bounds.draw_y));
+            draw_shape(canvas, &path, style);
+            canvas.restore();
+        },
     )
+    .unwrap_or_else(|_| {
+        RasterFrame::transparent(
+            1,
+            1,
+            RectI::from_size(1, 1),
+            RectI::from_size(1, 1),
+            AlphaMode::Premultiplied,
+        )
+        .unwrap_or_else(|_| {
+            RasterFrame::Image(ImageFrame::new(
+                skia_safe::surfaces::raster_n32_premul((1, 1))
+                    .expect("1x1 raster surface")
+                    .image_snapshot(),
+            ))
+        })
+    })
 }
 
 fn resolve_style(
@@ -349,13 +344,6 @@ fn rasterize_text<S: SurfacePool, M: MediaStore>(
 
     let width = layout_width.ceil().max(1.0) as u32;
     let height = paragraph.height().ceil().max(1.0) as u32;
-    let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))
-    else {
-        return RasterFrame::bitmap(Arc::new(vec![0; 4]), 1, 1);
-    };
-
-    let canvas = surface.canvas();
-    canvas.clear(Color::TRANSPARENT);
     let vertical_offset = match text.alignment.vertical {
         crate::node::source::text::TextAlignmentVertical::Top => 0.0,
         crate::node::source::text::TextAlignmentVertical::Middle => {
@@ -365,13 +353,19 @@ fn rasterize_text<S: SurfacePool, M: MediaStore>(
             (height as f32 - paragraph.height()).max(0.0)
         }
     };
-    paragraph.paint(canvas, (0.0, vertical_offset));
-
-    let frame = RasterFrame::bitmap(
-        Arc::new(read_surface_rgba(&mut surface, width, height, Some(ctx))),
+    let frame = render_to_surface_ephemeral(
         width,
         height,
-    );
+        ctx,
+        RectI::from_size(width, height),
+        RectI::from_size(width, height),
+        AlphaMode::Premultiplied,
+        ClearMode::Transparent,
+        |canvas| {
+            paragraph.paint(canvas, (0.0, vertical_offset));
+        },
+    )
+    .unwrap_or_else(|_| transparent_frame(RectI::from_size(1, 1)));
 
     let (text_w, text_h) = frame.dimensions();
     let pad = draw_padding(style);
@@ -399,7 +393,7 @@ fn rasterize_group<S: SurfacePool, M: MediaStore>(
     }
 
     if layers.is_empty() {
-        return RasterFrame::bitmap(Arc::new(vec![0; 4]), 1, 1);
+        return transparent_frame(RectI::from_size(1, 1));
     }
     if layers.len() == 1 {
         let single = layers.pop().expect("length checked");
@@ -423,23 +417,17 @@ fn rasterize_group<S: SurfacePool, M: MediaStore>(
         union.height,
     );
 
-    let rendered = render_with_skia(
+    render_to_surface_ephemeral(
         union.width.max(1),
         union.height.max(1),
-        Some(ctx),
+        ctx,
+        translated_union,
+        translated_union,
+        AlphaMode::Premultiplied,
+        ClearMode::Transparent,
         |canvas| {
-            canvas.clear(Color::TRANSPARENT);
             for layer in &layers {
-                let Ok(bitmap) = layer.bitmap_snapshot() else {
-                    continue;
-                };
-                let Some(image) = make_skia_image(
-                    bitmap.pixels.as_slice(),
-                    bitmap.storage_width,
-                    bitmap.storage_height,
-                    bitmap.row_bytes,
-                    bitmap.alpha_mode,
-                ) else {
+                let Some(image) = layer.to_skia_image() else {
                     continue;
                 };
                 let layer_rect = layer.format_rect();
@@ -448,15 +436,8 @@ fn rasterize_group<S: SurfacePool, M: MediaStore>(
                 canvas.draw_image(&image, (offset_x, offset_y), None);
             }
         },
-    );
-
-    RasterFrame::Bitmap(BitmapFrame::with_domain(
-        Arc::new(rendered),
-        union.width.max(1),
-        union.height.max(1),
-        translated_union,
-        translated_union,
-    ))
+    )
+    .unwrap_or_else(|_| transparent_frame(translated_union))
 }
 
 fn draw_shape(canvas: &skia_safe::Canvas, path: &Path, style: ResolvedVectorStyle) {
@@ -517,14 +498,21 @@ fn positioned_bounds(
     }
 }
 
-fn bitmap_with_bounds(bytes: Vec<u8>, bounds: &PositionedRasterBounds) -> RasterFrame {
-    RasterFrame::Bitmap(BitmapFrame::with_domain(
-        Arc::new(bytes),
-        bounds.width,
-        bounds.height,
-        bounds.format_rect,
-        bounds.format_rect,
-    ))
+fn transparent_frame(format_rect: RectI) -> RasterFrame {
+    RasterFrame::transparent(
+        format_rect.width,
+        format_rect.height,
+        format_rect,
+        format_rect,
+        AlphaMode::Premultiplied,
+    )
+    .unwrap_or_else(|_| {
+        RasterFrame::Image(ImageFrame::new(
+            skia_safe::surfaces::raster_n32_premul((1, 1))
+                .expect("1x1 raster surface")
+                .image_snapshot(),
+        ))
+    })
 }
 
 fn offset_raster_into_bounds<S: SurfacePool, M: MediaStore>(
@@ -532,28 +520,26 @@ fn offset_raster_into_bounds<S: SurfacePool, M: MediaStore>(
     bounds: &PositionedRasterBounds,
     ctx: &mut RenderContext<'_, S, M>,
 ) -> RasterFrame {
-    let Ok((bytes, width, height)) = frame.snapshot_parts() else {
-        return RasterFrame::bitmap(Arc::new(Vec::new()), 0, 0);
+    let Some((image, width, height)) = frame.image_parts() else {
+        return transparent_frame(RectI::from_size(0, 0));
     };
     if width == 0 || height == 0 {
-        return RasterFrame::bitmap(Arc::new(Vec::new()), 0, 0);
+        return transparent_frame(RectI::from_size(0, 0));
     }
 
-    let rendered = render_with_skia(bounds.width, bounds.height, Some(ctx), |canvas| {
-        canvas.clear(Color::TRANSPARENT);
-        let Some(image) = make_skia_image(
-            bytes.as_slice(),
-            width,
-            height,
-            (width as usize) * 4,
-            frame.alpha_mode(),
-        ) else {
-            return;
-        };
-        canvas.draw_image(&image, (bounds.draw_x, bounds.draw_y), None);
-    });
-
-    bitmap_with_bounds(rendered, bounds)
+    render_to_surface_ephemeral(
+        bounds.width,
+        bounds.height,
+        ctx,
+        bounds.format_rect,
+        bounds.format_rect,
+        frame.alpha_mode(),
+        ClearMode::Transparent,
+        |canvas| {
+            canvas.draw_image(&image, (bounds.draw_x, bounds.draw_y), None);
+        },
+    )
+    .unwrap_or_else(|_| transparent_frame(bounds.format_rect))
 }
 
 fn union_rect(left: RectI, right: RectI) -> RectI {

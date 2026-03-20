@@ -19,6 +19,7 @@ use ffmpeg_next as ffmpeg;
 use crate::{
     error::MediaError,
     media::{VideoFrameResolver, VideoMetadata, premultiply_rgba_in_place_if_needed},
+    raster::{AlphaMode, ImageFrame, RectI},
 };
 
 const DEFAULT_LRU_CAPACITY: usize = 48;
@@ -56,7 +57,7 @@ impl Default for FfmpegResolverOptions {
 struct FrameLruCache {
     capacity: usize,
     order: VecDeque<u32>,
-    entries: HashMap<u32, Arc<Vec<u8>>>,
+    entries: HashMap<u32, Arc<ImageFrame>>,
 }
 
 impl FrameLruCache {
@@ -68,7 +69,7 @@ impl FrameLruCache {
         }
     }
 
-    fn get(&mut self, frame: u32) -> Option<Arc<Vec<u8>>> {
+    fn get(&mut self, frame: u32) -> Option<Arc<ImageFrame>> {
         let value = self.entries.get(&frame).cloned()?;
         self.touch(frame);
         Some(value)
@@ -78,7 +79,7 @@ impl FrameLruCache {
         self.entries.contains_key(&frame)
     }
 
-    fn insert(&mut self, frame: u32, data: Arc<Vec<u8>>) {
+    fn insert(&mut self, frame: u32, data: Arc<ImageFrame>) {
         if let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(frame) {
             entry.insert(data);
             self.touch(frame);
@@ -120,14 +121,28 @@ impl VideoDecodeWorker {
         }
     }
 
-    fn resolve_frame(&mut self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError> {
+    fn resolve_frame(&mut self, frame: u32) -> Result<Arc<ImageFrame>, MediaError> {
         if let Some(cached) = self.cache.get(frame) {
             return Ok(cached);
         }
 
         let mut decoded = self.decoder.decode_frame(frame)?;
         premultiply_rgba_in_place_if_needed(&mut decoded);
-        let decoded = Arc::new(decoded);
+        let decoded = Arc::new(
+            ImageFrame::from_rgba_bytes(
+                decoded.as_slice(),
+                self.decoder.width,
+                self.decoder.height,
+                (self.decoder.width as usize) * 4,
+                AlphaMode::Premultiplied,
+                RectI::from_size(self.decoder.width, self.decoder.height),
+                RectI::from_size(self.decoder.width, self.decoder.height),
+            )
+            .map_err(|error| MediaError::Decode {
+                media_source: self.decoder.source.clone(),
+                details: error.to_string(),
+            })?,
+        );
         self.cache.insert(frame, Arc::clone(&decoded));
         self.prefetch_after(frame);
         Ok(decoded)
@@ -150,6 +165,17 @@ impl VideoDecodeWorker {
                 break;
             };
             premultiply_rgba_in_place_if_needed(&mut decoded);
+            let Ok(decoded) = ImageFrame::from_rgba_bytes(
+                decoded.as_slice(),
+                self.decoder.width,
+                self.decoder.height,
+                (self.decoder.width as usize) * 4,
+                AlphaMode::Premultiplied,
+                RectI::from_size(self.decoder.width, self.decoder.height),
+                RectI::from_size(self.decoder.width, self.decoder.height),
+            ) else {
+                break;
+            };
             self.cache.insert(candidate, Arc::new(decoded));
         }
     }
@@ -449,7 +475,7 @@ impl LibavStreamDecoder {
 enum WorkerRequest {
     Resolve {
         frame: u32,
-        response_tx: mpsc::Sender<Result<Arc<Vec<u8>>, MediaError>>,
+        response_tx: mpsc::Sender<Result<Arc<ImageFrame>, MediaError>>,
     },
     Shutdown,
 }
@@ -538,7 +564,7 @@ impl VideoFrameResolver for FfmpegVideoResolver {
         self.metadata
     }
 
-    fn resolve_frame(&self, frame: u32) -> Result<Arc<Vec<u8>>, MediaError> {
+    fn resolve_frame_image(&self, frame: u32) -> Result<Arc<ImageFrame>, MediaError> {
         if frame >= self.metadata.frame_count {
             return Err(MediaError::FrameOutOfRange {
                 media_source: self.id.clone(),

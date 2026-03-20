@@ -1,10 +1,10 @@
-use std::{collections::HashMap, ops::Range, sync::Arc};
+use std::{collections::HashMap, ops::Range};
 
 use crate::{
     error::RenderError,
     media::MediaStore,
     node::{NodeId, PortRef},
-    raster::{BitmapFrame, RasterFrame},
+    raster::{AlphaMode, RasterFrame, RectI},
     render::{RenderContext, surface::SurfacePool},
 };
 use lumen_macros::{Node, node_impl};
@@ -31,19 +31,18 @@ impl Switch {
     ) -> crate::Result<RasterFrame> {
         let w = ctx.renderer.composition.render_settings.width;
         let h = ctx.renderer.composition.render_settings.height;
-        let pixel_count = w
-            .checked_mul(h)
-            .and_then(|count| count.checked_mul(4))
-            .ok_or(RenderError::SurfaceAllocation {
-                width: w,
-                height: h,
-            })?;
-
-        Ok(RasterFrame::Bitmap(BitmapFrame::new(
-            Arc::new(vec![0; pixel_count as usize]),
+        let pixel_count = w.checked_mul(h).ok_or(RenderError::SurfaceAllocation {
+            width: w,
+            height: h,
+        })?;
+        let _ = pixel_count;
+        RasterFrame::transparent(
             w,
             h,
-        )))
+            RectI::from_size(w, h),
+            RectI::from_size(w, h),
+            AlphaMode::Premultiplied,
+        )
     }
 }
 

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use skia_safe::{Paint, Rect, SamplingOptions};
 
 use crate::{
@@ -7,9 +5,9 @@ use crate::{
     node::{
         NodeId, NodeProperty, PortRef,
         compositing::BlendMode,
-        pixel_utils::{make_skia_image, render_with_skia},
+        pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::{BitmapFrame, RasterFrame, RectI},
+    raster::{RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -75,21 +73,34 @@ impl Merge {
         };
         let mask = mask_result.as_ref().map(|v| v.as_raster()).transpose()?;
 
-        let (base_bytes, base_w, base_h) = base.snapshot_parts()?;
-        let (overlay_bytes, overlay_w, overlay_h) = overlay.snapshot_parts()?;
         let base_alpha = base.alpha_mode();
-        let overlay_alpha = overlay.alpha_mode();
         let base_format = base.format_rect();
         let base_data = base.data_rect();
         let overlay_format = overlay.format_rect();
         let overlay_data = overlay.data_rect();
+
+        let (base_image, base_w, base_h) = match base.image_parts() {
+            Some(parts) => parts,
+            None => {
+                let out_format = union_rect(base_format, overlay_format);
+                let out_data = union_rect(base_data, overlay_data);
+                let render_w = out_data.width.max(1);
+                let render_h = out_data.height.max(1);
+                return RasterFrame::transparent(
+                    render_w, render_h, out_format, out_data, base_alpha,
+                );
+            }
+        };
+
+        let (overlay_image, overlay_w, overlay_h) = match overlay.image_parts() {
+            Some(parts) => parts,
+            None => return base.snapshot(),
+        };
+
         let mask_parts = if let Some(raster) = mask {
-            Some((
-                raster.snapshot_parts()?,
-                raster.alpha_mode(),
-                raster.format_rect(),
-                raster.data_rect(),
-            ))
+            raster
+                .image_parts()
+                .map(|(img, w, h)| (img, w, h, raster.format_rect(), raster.data_rect()))
         } else {
             None
         };
@@ -103,114 +114,77 @@ impl Merge {
         let render_w = out_data.width.max(1);
         let render_h = out_data.height.max(1);
 
-        let base_image = make_skia_image(
-            &base_bytes,
-            base_w,
-            base_h,
-            (base_w as usize) * 4,
-            base_alpha,
-        );
-        let overlay_image = make_skia_image(
-            &overlay_bytes,
-            overlay_w,
-            overlay_h,
-            (overlay_w as usize) * 4,
-            overlay_alpha,
-        );
-
-        let Some(base_image) = base_image else {
-            return Ok(RasterFrame::Bitmap(
-                BitmapFrame::with_domain(
-                    Arc::new(vec![0u8; (render_w as usize) * (render_h as usize) * 4]),
-                    render_w,
-                    render_h,
-                    out_format,
-                    out_data,
-                )
-                .with_alpha_mode(base_alpha),
-            ));
-        };
-        let Some(overlay_image) = overlay_image else {
-            return base.snapshot();
-        };
-
         let opacity = opacity.clamp(0.0, 1.0);
         let skia_blend: skia_safe::BlendMode = blend_mode.into();
 
-        let mask_image = match mask_parts.as_ref() {
-            Some(((mb, mw, mh), alpha_mode, _mask_format, _mask_data)) => {
-                make_skia_image(mb.as_slice(), *mw, *mh, (*mw as usize) * 4, *alpha_mode)
-            }
-            None => None,
-        };
-
-        let merged = render_with_skia(render_w, render_h, Some(ctx), |canvas| {
-            draw_frame_image(
-                canvas,
-                &base_image,
-                base_w,
-                base_h,
-                base_format,
-                base_data,
-                out_data,
-                None,
-            );
-
-            if let Some(ref mask_img) = mask_image {
-                canvas.save_layer_alpha(None, 255);
-
-                let mut overlay_paint = Paint::default();
-                overlay_paint.set_blend_mode(skia_blend);
-                overlay_paint.set_alpha_f(opacity);
+        render_to_surface_ephemeral(
+            render_w,
+            render_h,
+            ctx,
+            out_format,
+            out_data,
+            base_alpha,
+            ClearMode::Transparent,
+            |canvas| {
                 draw_frame_image(
                     canvas,
-                    &overlay_image,
-                    overlay_w,
-                    overlay_h,
-                    overlay_format,
-                    overlay_data,
+                    &base_image,
+                    base_w,
+                    base_h,
+                    base_format,
+                    base_data,
                     out_data,
-                    Some(&overlay_paint),
+                    None,
                 );
 
-                let mut mask_paint = Paint::default();
-                mask_paint.set_blend_mode(skia_safe::BlendMode::DstIn);
-                if let Some(((_, mask_w, mask_h), _, mask_format, mask_data)) = mask_parts.as_ref()
-                {
+                if let Some((ref mask_img, mask_w, mask_h, mask_format, mask_data)) = mask_parts {
+                    canvas.save_layer_alpha(None, 255);
+
+                    let mut overlay_paint = Paint::default();
+                    overlay_paint.set_blend_mode(skia_blend);
+                    overlay_paint.set_alpha_f(opacity);
+                    draw_frame_image(
+                        canvas,
+                        &overlay_image,
+                        overlay_w,
+                        overlay_h,
+                        overlay_format,
+                        overlay_data,
+                        out_data,
+                        Some(&overlay_paint),
+                    );
+
+                    let mut mask_paint = Paint::default();
+                    mask_paint.set_blend_mode(skia_safe::BlendMode::DstIn);
                     draw_frame_image(
                         canvas,
                         mask_img,
-                        *mask_w,
-                        *mask_h,
-                        *mask_format,
-                        *mask_data,
+                        mask_w,
+                        mask_h,
+                        mask_format,
+                        mask_data,
                         out_data,
                         Some(&mask_paint),
                     );
+
+                    canvas.restore();
+                } else {
+                    let mut overlay_paint = Paint::default();
+                    overlay_paint.set_blend_mode(skia_blend);
+                    overlay_paint.set_alpha_f(opacity);
+                    draw_frame_image(
+                        canvas,
+                        &overlay_image,
+                        overlay_w,
+                        overlay_h,
+                        overlay_format,
+                        overlay_data,
+                        out_data,
+                        Some(&overlay_paint),
+                    );
                 }
-
-                canvas.restore();
-            } else {
-                let mut overlay_paint = Paint::default();
-                overlay_paint.set_blend_mode(skia_blend);
-                overlay_paint.set_alpha_f(opacity);
-                draw_frame_image(
-                    canvas,
-                    &overlay_image,
-                    overlay_w,
-                    overlay_h,
-                    overlay_format,
-                    overlay_data,
-                    out_data,
-                    Some(&overlay_paint),
-                );
-            }
-        });
-
-        Ok(RasterFrame::Bitmap(
-            BitmapFrame::with_domain(Arc::new(merged), render_w, render_h, out_format, out_data)
-                .with_alpha_mode(base_alpha),
-        ))
+            },
+        )
     }
 }
 
