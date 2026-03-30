@@ -16,6 +16,5 @@ metal = ["lumen/metal"]
 anyhow = "1.0.101"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 tempfile = "3.23.0"
-skia-safe = { version = "0.91", features = ["textlayout"] }
 lumen = { path = "../lumen", features = ["threading", "ffmpeg", "image", "json", "embed-roboto"] }
 serde_json = "1.0.145"

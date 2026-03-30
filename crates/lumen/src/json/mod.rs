@@ -246,9 +246,10 @@ fn normalize_media_in_properties(kind: &Map<String, Value>) -> Result<Map<String
         .and_then(Value::as_str)
         .context("media_in.kind.media_type must be a string")?;
     let source = media_kind
-        .get("source")
+        .get("stream")
+        .or_else(|| media_kind.get("source"))
         .cloned()
-        .context("media_in.kind.source is required")?;
+        .context("media_in.kind.stream (or source) is required")?;
 
     let mut properties = Map::new();
     properties.insert(
@@ -256,6 +257,9 @@ fn normalize_media_in_properties(kind: &Map<String, Value>) -> Result<Map<String
         Value::from(if media_type == "image" { 0 } else { 1 }),
     );
     properties.insert("source".to_string(), source);
+    if let Some(asset) = media_kind.get("asset").cloned() {
+        properties.insert("asset".to_string(), asset);
+    }
 
     if media_type == "video" {
         if let Some(range) = media_kind.get("range").and_then(Value::as_array)

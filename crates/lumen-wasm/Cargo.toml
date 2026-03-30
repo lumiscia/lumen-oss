@@ -2,18 +2,19 @@
 name = "lumen-wasm"
 version = "0.1.0"
 edition = "2024"
-build = "build.rs"
 
 [lib]
-crate-type = ["staticlib"]
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["json", "embed-roboto"]
 json = ["lumen/json"]
-webgl = ["lumen/webgl"]
 embed-roboto = ["lumen/embed-roboto"]
 
 [dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["CanvasRenderingContext2d", "OffscreenCanvasRenderingContext2d", "ImageData"] }
+
 lumen = { path = "../lumen" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

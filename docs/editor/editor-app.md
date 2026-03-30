@@ -22,9 +22,6 @@ This app is **not** deployed to Cloudflare and should run locally only.
 - `VITE_LUMEN_SERVER_URL` — base URL for the Rust renderer API.
   - Example: `http://localhost:8080`
 
-- `VITE_LUMEN_WASM_MODULE_URL` — JS module URL for the Emscripten loader (defaults to `/lumen-wasm/lumen_wasm.js`).
-- `VITE_LUMEN_WASM_URL` — `.wasm` binary URL (defaults to `/lumen-wasm/lumen_wasm.wasm`).
-
 > Note: `lumen-server` expects `Authorization: Bearer <SECRET>` (see `crates/lumen-server`).
 > For local-only use, add `VITE_LUMEN_SERVER_SECRET` and include it in requests if set.
 
@@ -64,8 +61,8 @@ Add an `apps/editor/.env.example` with these keys.
 
 ## Local-only tooling
 - Use Vite dev server (`pnpm --filter @lumiscia/editor-app dev`).
-- Build + sync the wasm bundle before previewing: `pnpm wasm:build` (requires Emscripten).
-  - Copies artifacts into `apps/editor/public/lumen-wasm/`.
+- Build + sync the wasm bundle before previewing: `pnpm wasm:build` (requires wasm-pack + wasm-bindgen CLI).
+  - Copies artifacts (`lumen_wasm.js`, `lumen_wasm_bg.js`, `lumen_wasm_bg.wasm`, `lumen_wasm.d.ts`) into `packages/lumen/src/generated/lumen-wasm/` so consumers import wasm from the package bundle path.
 - If you already built the wasm artifacts, run `pnpm wasm:sync`.
 
 - Do **not** add `wrangler.toml` or Cloudflare bindings.

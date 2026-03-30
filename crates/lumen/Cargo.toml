@@ -20,7 +20,7 @@ vulkan = ["skia-safe/vulkan", "dep:ash"]
 [dependencies]
 thiserror = "2.0.18"
 lumen-macros = { path = "../lumen-macros" }
-skia-safe = { version = "0.91", features = ["textlayout"] }
+skia-safe = { path = "../../../rust-skia/skia-safe", features = ["textlayout"] }
 ffmpeg-next = { version = "8.0", optional = true }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico"], optional = true }
 serde = { version = "1.0.228", features = ["derive"], optional = true }
