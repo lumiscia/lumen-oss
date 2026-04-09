@@ -52,7 +52,7 @@ impl MediaOutput {
             && source_format == output_rect
             && source_data == output_rect
         {
-            return source.snapshot();
+            return Ok(source);
         }
 
         if target_w == 0 || target_h == 0 {

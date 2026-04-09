@@ -1,9 +1,11 @@
+use std::rc::Rc;
+
 use skia_safe::{Paint, Rect, SamplingOptions};
 
 use crate::{
     error::{LumenError, RenderError},
     node::{
-        NodeId, NodeProperty, PortRef,
+        NodeId, NodeKind, NodeProperty, NodeResult, PortRef,
         compositing::BlendMode,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
@@ -116,6 +118,109 @@ impl Merge {
 
         let opacity = opacity.clamp(0.0, 1.0);
         let skia_blend: skia_safe::BlendMode = blend_mode.into();
+        let output_rect = RectI::from_size(
+            ctx.renderer.composition.render_settings.width,
+            ctx.renderer.composition.render_settings.height,
+        );
+        let feeds_media_output = feeds_media_output(ctx, self.node_id());
+
+        if mask_parts.is_none()
+            && feeds_media_output
+            && base_format == output_rect
+            && base_data == output_rect
+        {
+            if let Ok(NodeResult::Raster(RasterFrame::Surface(mut base_surface))) =
+                Rc::try_unwrap(base_result)
+            {
+                let canvas = base_surface.surface.surface_mut().canvas();
+                canvas.restore_to_count(1);
+                canvas.reset_matrix();
+
+                let mut overlay_paint = Paint::default();
+                overlay_paint.set_blend_mode(skia_blend);
+                overlay_paint.set_alpha_f(opacity);
+                draw_frame_image(
+                    canvas,
+                    &overlay_image,
+                    overlay_w,
+                    overlay_h,
+                    overlay_format,
+                    overlay_data,
+                    output_rect,
+                    Some(&overlay_paint),
+                );
+                if !can_skip_snapshot_refresh(ctx, self.node_id(), output_rect, output_rect, output_rect)
+                {
+                    base_surface.refresh_snapshot();
+                }
+                return Ok(RasterFrame::Surface(base_surface));
+            }
+
+            return render_to_surface_ephemeral(
+                output_rect.width.max(1),
+                output_rect.height.max(1),
+                ctx,
+                output_rect,
+                output_rect,
+                base_alpha,
+                ClearMode::Transparent,
+                |canvas| {
+                    draw_frame_image(
+                        canvas,
+                        &base_image,
+                        base_w,
+                        base_h,
+                        base_format,
+                        base_data,
+                        output_rect,
+                        None,
+                    );
+
+                    let mut overlay_paint = Paint::default();
+                    overlay_paint.set_blend_mode(skia_blend);
+                    overlay_paint.set_alpha_f(opacity);
+                    draw_frame_image(
+                        canvas,
+                        &overlay_image,
+                        overlay_w,
+                        overlay_h,
+                        overlay_format,
+                        overlay_data,
+                        output_rect,
+                        Some(&overlay_paint),
+                    );
+                },
+            );
+        }
+
+        if mask_parts.is_none()
+            && base_format == out_format
+            && base_data == out_data
+            && let Ok(NodeResult::Raster(RasterFrame::Surface(mut base_surface))) =
+                Rc::try_unwrap(base_result)
+        {
+            let canvas = base_surface.surface.surface_mut().canvas();
+            canvas.restore_to_count(1);
+            canvas.reset_matrix();
+
+            let mut overlay_paint = Paint::default();
+            overlay_paint.set_blend_mode(skia_blend);
+            overlay_paint.set_alpha_f(opacity);
+            draw_frame_image(
+                canvas,
+                &overlay_image,
+                overlay_w,
+                overlay_h,
+                overlay_format,
+                overlay_data,
+                out_data,
+                Some(&overlay_paint),
+            );
+            if !can_skip_snapshot_refresh(ctx, self.node_id(), out_format, out_data, output_rect) {
+                base_surface.refresh_snapshot();
+            }
+            return Ok(RasterFrame::Surface(base_surface));
+        }
 
         render_to_surface_ephemeral(
             render_w,
@@ -186,6 +291,42 @@ impl Merge {
             },
         )
     }
+}
+
+fn can_skip_snapshot_refresh<S, M>(
+    ctx: &RenderContext<'_, S, M>,
+    node_id: NodeId,
+    out_format: RectI,
+    out_data: RectI,
+    output_rect: RectI,
+) -> bool
+where
+    S: crate::render::surface::SurfacePool,
+    M: crate::media::MediaStore,
+{
+    if out_format != output_rect || out_data != output_rect {
+        return false;
+    }
+
+    feeds_media_output(ctx, node_id)
+}
+
+fn feeds_media_output<S, M>(ctx: &RenderContext<'_, S, M>, node_id: NodeId) -> bool
+where
+    S: crate::render::surface::SurfacePool,
+    M: crate::media::MediaStore,
+{
+    let graph = &ctx.renderer.composition.graph;
+    if graph.outgoing_connection_count(node_id) != 1 {
+        return false;
+    }
+
+    graph
+        .connections
+        .iter()
+        .find(|connection| connection.from_node == node_id)
+        .and_then(|connection| graph.nodes.get(&connection.to_node))
+        .is_some_and(|node| matches!(node, NodeKind::MediaOutput(_)))
 }
 
 pub(crate) fn union_rect(left: RectI, right: RectI) -> RectI {
