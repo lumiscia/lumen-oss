@@ -1,0 +1,14 @@
+[workspace]
+members = [
+  "crates/lumen",
+  "crates/lumen-server",
+  "crates/lumen-wasm",
+  "crates/lumen-local",
+  "crates/lumen-macros",
+]
+
+resolver = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
