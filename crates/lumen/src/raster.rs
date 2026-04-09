@@ -263,11 +263,18 @@ impl SurfaceFrame {
         frame
     }
 
-    pub fn read_pixels_into(&self, dst: &mut [u8], row_bytes: usize) -> crate::Result<()> {
-        read_pixels_into_image(
-            &self.cached_image,
-            self.surface.width(),
-            self.surface.height(),
+    pub fn snapshot_image_fresh(&mut self) -> ImageFrame {
+        self.refresh_snapshot();
+        self.snapshot_image()
+    }
+
+    pub fn read_pixels_into(&mut self, dst: &mut [u8], row_bytes: usize) -> crate::Result<()> {
+        let width = self.surface.width();
+        let height = self.surface.height();
+        read_pixels_into_surface(
+            self.surface.surface_mut(),
+            width,
+            height,
             self.alpha_mode,
             dst,
             row_bytes,
@@ -413,6 +420,13 @@ impl RasterFrame {
         }
     }
 
+    pub fn snapshot_image_fresh(&mut self) -> ImageFrame {
+        match self {
+            Self::Image(frame) => frame.clone(),
+            Self::Surface(frame) => frame.snapshot_image_fresh(),
+        }
+    }
+
     pub fn snapshot(&self) -> crate::Result<Self> {
         Ok(Self::Image(self.snapshot_image()))
     }
@@ -424,7 +438,7 @@ impl RasterFrame {
         }
     }
 
-    pub fn read_pixels_into(&self, dst: &mut [u8], row_bytes: usize) -> crate::Result<()> {
+    pub fn read_pixels_into(&mut self, dst: &mut [u8], row_bytes: usize) -> crate::Result<()> {
         match self {
             Self::Image(frame) => frame.read_pixels_into(dst, row_bytes),
             Self::Surface(frame) => frame.read_pixels_into(dst, row_bytes),
@@ -503,6 +517,33 @@ fn read_pixels_into_image(
         None,
     );
     if image.read_pixels(&info, dst, row_bytes, (0, 0), CachingHint::Disallow) {
+        Ok(())
+    } else {
+        Err(RenderError::PixelReadbackFailed { width, height }.into())
+    }
+}
+
+fn read_pixels_into_surface(
+    surface: &mut skia_safe::Surface,
+    width: u32,
+    height: u32,
+    alpha_mode: AlphaMode,
+    dst: &mut [u8],
+    row_bytes: usize,
+) -> crate::Result<()> {
+    let min_row_bytes = usize::try_from(width).unwrap_or(0).saturating_mul(4);
+    let required_len = row_bytes.saturating_mul(height as usize);
+    if row_bytes < min_row_bytes || dst.len() < required_len {
+        return Err(RenderError::PixelReadbackFailed { width, height }.into());
+    }
+
+    let info = ImageInfo::new(
+        (width as i32, height as i32),
+        ColorType::RGBA8888,
+        alpha_mode.to_skia(),
+        None,
+    );
+    if surface.read_pixels(&info, dst, row_bytes, (0, 0)) {
         Ok(())
     } else {
         Err(RenderError::PixelReadbackFailed { width, height }.into())

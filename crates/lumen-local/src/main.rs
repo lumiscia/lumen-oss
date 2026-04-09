@@ -147,7 +147,8 @@ impl Sink for FfmpegPipeSink {
             details: "ffmpeg stdin unavailable".to_string(),
         })?;
 
-        data.read_pixels_into(self.frame_buffer.as_mut_slice(), (self.width as usize) * 4)
+        let mut raster = data.clone();
+        raster.read_pixels_into(self.frame_buffer.as_mut_slice(), (self.width as usize) * 4)
             .map_err(|error| SinkError::WriteFrame {
                 frame,
                 details: error.to_string(),
@@ -348,7 +349,7 @@ fn render_single_png(
     let mut renderer = LumenRenderer::new(composition, surface_pool, media_store)
         .context("failed to create renderer")?;
 
-    let rendered = renderer
+    let mut rendered = renderer
         .render(frame)
         .with_context(|| format!("render failed at frame {frame}"))?;
     let (width, height) = rendered.storage_dimensions();

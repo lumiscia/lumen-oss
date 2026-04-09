@@ -65,7 +65,7 @@ struct ReadbackFrame {
     storage_height: u32,
 }
 
-fn readback_frame(frame: RasterFrame) -> ReadbackFrame {
+fn readback_frame(mut frame: RasterFrame) -> ReadbackFrame {
     let (storage_width, storage_height) = frame.storage_dimensions();
     let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
     frame

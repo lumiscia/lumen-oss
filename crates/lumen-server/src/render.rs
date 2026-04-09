@@ -286,7 +286,7 @@ pub fn render_project_mp4(
         std::thread::spawn(move || encode_rgba_stream(width, height, fps, encoder, rx));
 
     for frame in 0..total_frames {
-        let raster = renderer.render(frame).map_err(|err| RenderError {
+        let mut raster = renderer.render(frame).map_err(|err| RenderError {
             code: "render_failed",
             message: format!("render failed at frame {frame}: {err}"),
             retryable: true,
@@ -371,7 +371,7 @@ pub fn render_project_frame_png(
                 retryable: false,
             }
         })?;
-    let rendered = renderer.render(frame).map_err(|err| RenderError {
+    let mut rendered = renderer.render(frame).map_err(|err| RenderError {
         code: "render_failed",
         message: err.to_string(),
         retryable: false,

@@ -68,7 +68,9 @@ impl<S: SurfacePool, M: MediaStore> RenderOrchestrator<S, M> {
 
                     while let Ok(frame) = job_rx.recv() {
                         let message = match renderer.render(frame) {
-                            Ok(rendered) => WorkerResult::Frame(frame, rendered.snapshot_image()),
+                            Ok(mut rendered) => {
+                                WorkerResult::Frame(frame, rendered.snapshot_image_fresh())
+                            }
                             Err(err) => WorkerResult::Error(err),
                         };
                         if result_tx.send(message).is_err() {

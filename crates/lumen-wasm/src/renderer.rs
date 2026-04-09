@@ -116,7 +116,7 @@ impl LumenRenderer {
 
         let mut core = CoreRenderer::new(composition, &self.surface_pool, store)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let raster = core
+        let mut raster = core
             .render(frame)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         let (w, h) = raster.storage_dimensions();
