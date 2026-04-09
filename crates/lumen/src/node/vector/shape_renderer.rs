@@ -3,8 +3,10 @@ use std::cell::RefCell;
 #[cfg(feature = "embed-roboto")]
 use skia_safe::textlayout::TypefaceFontProvider;
 use skia_safe::{
+    IRect,
     FontMgr, FontStyle, Paint, PaintStyle, Path, RRect, Rect,
     font_style::Weight,
+    image::RequiredProperties,
     textlayout::{
         FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as ParagraphTextAlign,
         TextStyle as ParagraphTextStyle,
@@ -82,9 +84,12 @@ impl ShapeRenderer {
             }
         };
         let renderer_style = resolve_renderer_style(self, ctx)?;
-        Ok(rasterize_vector_with_style(
-            vector_data,
-            renderer_style,
+        Ok(clip_raster_to_output_rect(
+            rasterize_vector_with_style(
+                vector_data,
+                renderer_style,
+                ctx,
+            ),
             ctx,
         ))
     }
@@ -513,6 +518,70 @@ fn transparent_frame(format_rect: RectI) -> RasterFrame {
                 .image_snapshot(),
         ))
     })
+}
+
+fn clip_raster_to_output_rect<S: SurfacePool, M: MediaStore>(
+    frame: RasterFrame,
+    ctx: &mut RenderContext<'_, S, M>,
+) -> RasterFrame {
+    let output_rect = RectI::from_size(
+        ctx.renderer.composition.render_settings.width,
+        ctx.renderer.composition.render_settings.height,
+    );
+    let source_format = frame.format_rect();
+    if source_format.x >= output_rect.x
+        && source_format.y >= output_rect.y
+        && source_format.right() <= output_rect.right()
+        && source_format.bottom() <= output_rect.bottom()
+    {
+        return frame;
+    }
+
+    let Some(clipped_rect) = source_format.intersect(&output_rect) else {
+        return transparent_frame(RectI::new(output_rect.x, output_rect.y, 0, 0));
+    };
+
+    if clipped_rect == source_format {
+        return frame;
+    }
+
+    let source_alpha = frame.alpha_mode();
+    let Some(image) = frame.to_skia_image() else {
+        return transparent_frame(clipped_rect);
+    };
+
+    let crop_left = clipped_rect.x - source_format.x;
+    let crop_top = clipped_rect.y - source_format.y;
+    let crop_right = crop_left + clipped_rect.width as i32;
+    let crop_bottom = crop_top + clipped_rect.height as i32;
+
+    let subset_rect = IRect::from_ltrb(crop_left, crop_top, crop_right, crop_bottom);
+    if let Some(cropped_image) = image.make_subset(None, &subset_rect, RequiredProperties::default())
+    {
+        let mut frame = ImageFrame::with_domain(
+            cropped_image,
+            clipped_rect.width.max(1),
+            clipped_rect.height.max(1),
+            clipped_rect,
+            clipped_rect,
+        );
+        frame.alpha_mode = source_alpha;
+        return RasterFrame::Image(frame);
+    }
+
+    render_to_surface_ephemeral(
+        clipped_rect.width.max(1),
+        clipped_rect.height.max(1),
+        ctx,
+        clipped_rect,
+        clipped_rect,
+        source_alpha,
+        ClearMode::None,
+        |canvas| {
+            canvas.draw_image(&image, (-crop_left as f32, -crop_top as f32), None);
+        },
+    )
+    .unwrap_or_else(|_| transparent_frame(clipped_rect))
 }
 
 fn offset_raster_into_bounds<S: SurfacePool, M: MediaStore>(
