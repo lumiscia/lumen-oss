@@ -149,8 +149,13 @@ impl Merge {
                     output_rect,
                     Some(&overlay_paint),
                 );
-                if !can_skip_snapshot_refresh(ctx, self.node_id(), output_rect, output_rect, output_rect)
-                {
+                if !can_skip_snapshot_refresh(
+                    ctx,
+                    self.node_id(),
+                    output_rect,
+                    output_rect,
+                    output_rect,
+                ) {
                     base_surface.refresh_snapshot();
                 }
                 return Ok(RasterFrame::Surface(base_surface));

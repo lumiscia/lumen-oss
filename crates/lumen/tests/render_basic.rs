@@ -402,6 +402,73 @@ fn transform_translate_shifts_pixels() {
 }
 
 #[test]
+fn transform_preserves_size_for_offset_raster_inputs() {
+    let mut graph = Graph::new();
+    let solid_id = node_id(1);
+    let crop_id = node_id(2);
+    let transform_id = node_id(3);
+    let output_id = node_id(4);
+
+    graph.nodes.insert(
+        solid_id,
+        NodeKind::SolidColor(SolidColor {
+            id: solid_id,
+            color: NodeProperty::Color([255, 0, 0, 255]),
+            width: NodeProperty::Int(4),
+            height: NodeProperty::Int(4),
+        }),
+    );
+    graph.nodes.insert(
+        crop_id,
+        NodeKind::Crop(Crop {
+            id: crop_id,
+            x: NodeProperty::Int(1),
+            y: NodeProperty::Int(1),
+            width: NodeProperty::Int(2),
+            height: NodeProperty::Int(2),
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        transform_id,
+        NodeKind::Transform(Transform {
+            id: transform_id,
+            translate_x: NodeProperty::Float(1.0),
+            source: PortRef::new(crop_id, "output".to_string()),
+            ..Transform::default()
+        }),
+    );
+    graph.nodes.insert(
+        output_id,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output_id,
+            source: PortRef::new(transform_id, "output".to_string()),
+        }),
+    );
+    connect(&mut graph, solid_id, "output", crop_id, "source");
+    connect(&mut graph, crop_id, "output", transform_id, "source");
+    connect(&mut graph, transform_id, "output", output_id, "source");
+
+    let bitmap = render_single(graph, 5, 5);
+    let pixel_at = |x: usize, y: usize| -> &[u8] {
+        let idx = (y * 5 + x) * 4;
+        &bitmap.pixels[idx..idx + 4]
+    };
+
+    assert_eq!(pixel_at(2, 1), &[255, 0, 0, 255]);
+    assert_eq!(pixel_at(3, 1), &[255, 0, 0, 255]);
+    assert_eq!(pixel_at(2, 2), &[255, 0, 0, 255]);
+    assert_eq!(pixel_at(3, 2), &[255, 0, 0, 255]);
+
+    let red_pixels = bitmap
+        .pixels
+        .chunks_exact(4)
+        .filter(|pixel| **pixel == [255, 0, 0, 255])
+        .count();
+    assert_eq!(red_pixels, 4);
+}
+
+#[test]
 fn crop_extracts_subregion() {
     let mut graph = Graph::new();
     let solid_id = node_id(1);

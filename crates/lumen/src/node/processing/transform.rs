@@ -1,11 +1,11 @@
-use skia_safe::{CubicResampler, Matrix, SamplingOptions};
+use skia_safe::{FilterMode, Matrix, Point, Rect, SamplingOptions};
 
 use crate::{
     node::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::RasterFrame,
+    raster::{RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -100,33 +100,51 @@ impl Transform {
             return source.snapshot();
         }
 
-        let render_width = source_width.max(ctx.renderer.composition.render_settings.width);
-        let render_height = source_height.max(ctx.renderer.composition.render_settings.height);
-
-        let (pivot_x, pivot_y) =
-            Self::resolved_pivot(pivot_x, pivot_y, source_width, source_height);
-        let mut matrix = Matrix::new_identity();
-        matrix.pre_translate((pivot_x + translate_x, pivot_y + translate_y));
-        matrix.pre_rotate(rotate, None);
-        matrix.pre_scale((scale_x, scale_y), None);
-        matrix.pre_translate((-pivot_x, -pivot_y));
+        let (pivot_x, pivot_y) = Self::resolved_pivot(pivot_x, pivot_y, source_format);
+        let transform = Self::build_transform_matrix(
+            scale_x,
+            scale_y,
+            translate_x,
+            translate_y,
+            rotate,
+            pivot_x,
+            pivot_y,
+        );
+        let output_format = Self::map_rect(transform, source_format);
+        let output_data = Self::map_rect(transform, source_data)
+            .intersect(&output_format)
+            .unwrap_or(RectI::new(output_format.x, output_format.y, 0, 0));
 
         let sampling = match sampling_mode {
             TransformSampling::Nearest => SamplingOptions::default(),
-            TransformSampling::Linear => SamplingOptions::from(CubicResampler::catmull_rom()),
+            TransformSampling::Linear => SamplingOptions::from(FilterMode::Linear),
         };
+        let source_rect = Rect::from_xywh(
+            source_format.x as f32,
+            source_format.y as f32,
+            source_format.width as f32,
+            source_format.height as f32,
+        );
+        let storage_rect = Rect::from_xywh(0.0, 0.0, source_width as f32, source_height as f32);
 
         render_to_surface_ephemeral(
-            render_width,
-            render_height,
+            output_format.width.max(1),
+            output_format.height.max(1),
             ctx,
-            source_format,
-            source_data,
+            output_format,
+            output_data,
             source_alpha,
             ClearMode::Transparent,
             |canvas| {
-                canvas.concat(&matrix);
-                canvas.draw_image_with_sampling_options(&image, (0.0, 0.0), sampling, None);
+                canvas.translate((-output_format.x as f32, -output_format.y as f32));
+                canvas.concat(&transform);
+                canvas.draw_image_rect_with_sampling_options(
+                    &image,
+                    Some((&storage_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
+                    source_rect,
+                    sampling,
+                    &skia_safe::Paint::default(),
+                );
             },
         )
     }
@@ -165,12 +183,76 @@ impl Transform {
             && rotate.abs() <= f32::EPSILON
     }
 
-    fn resolved_pivot(pivot_x: f32, pivot_y: f32, width: u32, height: u32) -> (f32, f32) {
+    fn resolved_pivot(pivot_x: f32, pivot_y: f32, source_format: RectI) -> (f32, f32) {
         if pivot_x.abs() <= f32::EPSILON && pivot_y.abs() <= f32::EPSILON {
-            (width as f32 * 0.5, height as f32 * 0.5)
+            (
+                source_format.x as f32 + source_format.width as f32 * 0.5,
+                source_format.y as f32 + source_format.height as f32 * 0.5,
+            )
         } else {
             (pivot_x, pivot_y)
         }
+    }
+
+    fn build_transform_matrix(
+        scale_x: f32,
+        scale_y: f32,
+        translate_x: f32,
+        translate_y: f32,
+        rotate: f32,
+        pivot_x: f32,
+        pivot_y: f32,
+    ) -> Matrix {
+        let mut matrix = Matrix::new_identity();
+        matrix.pre_translate((pivot_x + translate_x, pivot_y + translate_y));
+        matrix.pre_rotate(rotate, None);
+        matrix.pre_scale((scale_x, scale_y), None);
+        matrix.pre_translate((-pivot_x, -pivot_y));
+        matrix
+    }
+
+    fn map_rect(matrix: Matrix, rect: RectI) -> RectI {
+        if rect.width == 0 || rect.height == 0 {
+            return RectI::new(rect.x, rect.y, 0, 0);
+        }
+
+        let corners = [
+            Point::new(rect.x as f32, rect.y as f32),
+            Point::new(rect.right() as f32, rect.y as f32),
+            Point::new(rect.x as f32, rect.bottom() as f32),
+            Point::new(rect.right() as f32, rect.bottom() as f32),
+        ];
+        let mut mapped = [Point::new(0.0, 0.0); 4];
+        matrix.map_points(&mut mapped, &corners);
+
+        let min_x = mapped
+            .iter()
+            .map(|point| point.x)
+            .fold(f32::INFINITY, f32::min);
+        let min_y = mapped
+            .iter()
+            .map(|point| point.y)
+            .fold(f32::INFINITY, f32::min);
+        let max_x = mapped
+            .iter()
+            .map(|point| point.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_y = mapped
+            .iter()
+            .map(|point| point.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        let min_x = min_x.floor() as i32;
+        let min_y = min_y.floor() as i32;
+        let max_x = max_x.ceil() as i32;
+        let max_y = max_y.ceil() as i32;
+
+        RectI::new(
+            min_x,
+            min_y,
+            (max_x - min_x).max(1) as u32,
+            (max_y - min_y).max(1) as u32,
+        )
     }
 
     fn literal_float(property: &NodeProperty) -> Option<f32> {

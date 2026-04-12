@@ -3,12 +3,12 @@ use lumen::{
     media::collect_frame_requirements,
     render::{LumenRenderer as CoreRenderer, surface::DefaultSurfacePool},
 };
-use wasm_bindgen::{prelude::*, Clamped, JsCast};
+use wasm_bindgen::{Clamped, JsCast, prelude::*};
 
-use web_sys::{CanvasRenderingContext2d, ImageData, OffscreenCanvasRenderingContext2d};
 use crate::{
     media::LumenMediaStore, types::FrameRequirementsPayload, utils::composition_json_to_composition,
 };
+use web_sys::{CanvasRenderingContext2d, ImageData, OffscreenCanvasRenderingContext2d};
 
 #[wasm_bindgen]
 pub struct LumenRenderer {

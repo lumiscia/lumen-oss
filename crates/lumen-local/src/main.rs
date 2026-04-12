@@ -148,7 +148,8 @@ impl Sink for FfmpegPipeSink {
         })?;
 
         let mut raster = data.clone();
-        raster.read_pixels_into(self.frame_buffer.as_mut_slice(), (self.width as usize) * 4)
+        raster
+            .read_pixels_into(self.frame_buffer.as_mut_slice(), (self.width as usize) * 4)
             .map_err(|error| SinkError::WriteFrame {
                 frame,
                 details: error.to_string(),

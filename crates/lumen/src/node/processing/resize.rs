@@ -1,4 +1,4 @@
-use skia_safe::{CubicResampler, Rect, SamplingOptions};
+use skia_safe::{FilterMode, Rect, SamplingOptions};
 
 use crate::{
     node::{
@@ -124,7 +124,7 @@ impl Resize {
             compute_rects(source_width, source_height, dest_width, dest_height, mode);
         let sampling = match sampling_mode {
             ResizeSampling::Nearest => SamplingOptions::default(),
-            ResizeSampling::Linear => SamplingOptions::from(CubicResampler::catmull_rom()),
+            ResizeSampling::Linear => SamplingOptions::from(FilterMode::Linear),
         };
         let clear_mode = match mode {
             ResizeMode::Fit => ClearMode::Transparent,

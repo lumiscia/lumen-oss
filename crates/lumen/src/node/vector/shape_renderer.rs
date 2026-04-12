@@ -3,8 +3,7 @@ use std::cell::RefCell;
 #[cfg(feature = "embed-roboto")]
 use skia_safe::textlayout::TypefaceFontProvider;
 use skia_safe::{
-    IRect,
-    FontMgr, FontStyle, Paint, PaintStyle, Path, RRect, Rect,
+    FontMgr, FontStyle, IRect, Paint, PaintStyle, Path, RRect, Rect,
     font_style::Weight,
     image::RequiredProperties,
     textlayout::{
@@ -85,11 +84,7 @@ impl ShapeRenderer {
         };
         let renderer_style = resolve_renderer_style(self, ctx)?;
         Ok(clip_raster_to_output_rect(
-            rasterize_vector_with_style(
-                vector_data,
-                renderer_style,
-                ctx,
-            ),
+            rasterize_vector_with_style(vector_data, renderer_style, ctx),
             ctx,
         ))
     }
@@ -556,7 +551,8 @@ fn clip_raster_to_output_rect<S: SurfacePool, M: MediaStore>(
     let crop_bottom = crop_top + clipped_rect.height as i32;
 
     let subset_rect = IRect::from_ltrb(crop_left, crop_top, crop_right, crop_bottom);
-    if let Some(cropped_image) = image.make_subset(None, &subset_rect, RequiredProperties::default())
+    if let Some(cropped_image) =
+        image.make_subset(None, &subset_rect, RequiredProperties::default())
     {
         let mut frame = ImageFrame::with_domain(
             cropped_image,
