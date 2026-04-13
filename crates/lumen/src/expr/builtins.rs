@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::OnceCell;
 
 use skia_safe::{
     Color, FontMgr, FontStyle,
@@ -17,15 +17,11 @@ use crate::{
 };
 
 thread_local! {
-    static EXPR_TEXT_FONT_MGR: RefCell<Option<FontMgr>> = const { RefCell::new(None) };
+    static EXPR_TEXT_FONT_MGR: OnceCell<FontMgr> = const { OnceCell::new() };
 }
 
-fn with_expr_font_mgr<R>(f: impl FnOnce(&FontMgr) -> R) -> R {
-    EXPR_TEXT_FONT_MGR.with(|cell| {
-        let mut borrow = cell.borrow_mut();
-        let mgr = borrow.get_or_insert_with(FontMgr::default);
-        f(mgr)
-    })
+fn expr_font_mgr() -> FontMgr {
+    EXPR_TEXT_FONT_MGR.with(|cell| cell.get_or_init(FontMgr::default).clone())
 }
 
 fn measure_text_with_skia(
@@ -51,25 +47,24 @@ fn measure_text_with_skia(
         .max(1.0)
         .min(f64::from(u32::MAX)) as f32;
 
-    with_expr_font_mgr(|font_mgr| {
-        let mut font_collection = FontCollection::new();
-        font_collection.set_default_font_manager(font_mgr.clone(), None);
-        let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
-        builder.push_style(&text_style);
-        builder.add_text(text);
-        let mut paragraph = builder.build();
-        paragraph.layout(layout_width);
+    let font_mgr = expr_font_mgr();
+    let mut font_collection = FontCollection::new();
+    font_collection.set_default_font_manager(font_mgr, None);
+    let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
+    builder.push_style(&text_style);
+    builder.add_text(text);
+    let mut paragraph = builder.build();
+    paragraph.layout(layout_width);
 
-        let width = if wrap_width.is_some() {
-            paragraph.longest_line()
-        } else {
-            paragraph.max_intrinsic_width()
-        }
-        .max(1.0)
-        .min(fallback_width.max(1) as f32);
-        let height = paragraph.height().max(1.0);
-        (f64::from(width), f64::from(height))
-    })
+    let width = if wrap_width.is_some() {
+        paragraph.longest_line()
+    } else {
+        paragraph.max_intrinsic_width()
+    }
+    .max(1.0)
+    .min(fallback_width.max(1) as f32);
+    let height = paragraph.height().max(1.0);
+    (f64::from(width), f64::from(height))
 }
 
 pub fn evaluate_builtin(

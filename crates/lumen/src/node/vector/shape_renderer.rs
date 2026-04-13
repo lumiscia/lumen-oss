@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 #[cfg(feature = "embed-roboto")]
 use skia_safe::textlayout::TypefaceFontProvider;
 use skia_safe::{
@@ -23,11 +21,6 @@ use crate::{
     render::{RenderContext, surface::SurfacePool},
 };
 use lumen_macros::{Node, node_impl};
-
-thread_local! {
-    static VECTOR_TEXT_FONT_MGR: RefCell<Option<FontMgr>> = const { RefCell::new(None) };
-    static VECTOR_TEXT_FONT_COLLECTION: RefCell<Option<FontCollection>> = const { RefCell::new(None) };
-}
 
 #[cfg(feature = "embed-roboto")]
 const EMBEDDED_ROBOTO_REGULAR: &[u8] = include_bytes!(concat!(
@@ -162,29 +155,9 @@ fn resolve_renderer_style<S: SurfacePool, M: MediaStore>(
     })
 }
 
-fn with_vector_text_font_mgr<R>(f: impl FnOnce(&FontMgr) -> R) -> R {
-    VECTOR_TEXT_FONT_MGR.with(|cell| {
-        let mut borrow = cell.borrow_mut();
-        let mgr = borrow.get_or_insert_with(FontMgr::default);
-        f(mgr)
-    })
-}
-
-fn with_vector_text_font_collection<R>(f: impl FnOnce(FontCollection) -> R) -> R {
-    VECTOR_TEXT_FONT_COLLECTION.with(|cell| {
-        if cell.borrow().is_none() {
-            let font_collection = with_vector_text_font_mgr(new_vector_text_font_collection);
-            *cell.borrow_mut() = Some(font_collection);
-        }
-
-        let font_collection = cell
-            .borrow()
-            .as_ref()
-            .expect("vector text font collection should be initialized")
-            .clone();
-
-        f(font_collection)
-    })
+fn vector_text_font_collection() -> FontCollection {
+    let font_mgr = FontMgr::default();
+    new_vector_text_font_collection(&font_mgr)
 }
 
 fn new_vector_text_font_collection(default_font_mgr: &FontMgr) -> FontCollection {
@@ -333,16 +306,32 @@ fn rasterize_text<S: SurfacePool, M: MediaStore>(
         .max_width
         .unwrap_or(ctx.renderer.composition.render_settings.width as f32)
         .clamp(1.0, u32::MAX as f32);
-    let paragraph = with_vector_text_font_collection(|font_collection| {
-        let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
-        builder.push_style(&text_style);
-        builder.add_text(&text.content);
-        let mut paragraph = builder.build();
-        paragraph.layout(layout_width);
-        paragraph
-    });
+    let font_collection = vector_text_font_collection();
+    let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
+    builder.push_style(&text_style);
+    builder.add_text(&text.content);
+    let mut paragraph = builder.build();
+    paragraph.layout(layout_width);
 
-    let width = layout_width.ceil().max(1.0) as u32;
+    let rendered_width = if text.max_width.is_some() {
+        paragraph.longest_line()
+    } else {
+        paragraph.max_intrinsic_width()
+    }
+    .max(1.0)
+    .min(layout_width);
+    let horizontal_offset = match text.alignment.horizontal {
+        crate::node::source::text::TextAlignmentHorizontal::Left
+        | crate::node::source::text::TextAlignmentHorizontal::Justify => 0.0,
+        crate::node::source::text::TextAlignmentHorizontal::Center => {
+            ((layout_width - rendered_width) * 0.5).max(0.0)
+        }
+        crate::node::source::text::TextAlignmentHorizontal::Right => {
+            (layout_width - rendered_width).max(0.0)
+        }
+    };
+
+    let width = rendered_width.ceil().max(1.0) as u32;
     let height = paragraph.height().ceil().max(1.0) as u32;
     let vertical_offset = match text.alignment.vertical {
         crate::node::source::text::TextAlignmentVertical::Top => 0.0,
@@ -362,7 +351,7 @@ fn rasterize_text<S: SurfacePool, M: MediaStore>(
         AlphaMode::Premultiplied,
         ClearMode::Transparent,
         |canvas| {
-            paragraph.paint(canvas, (0.0, vertical_offset));
+            paragraph.paint(canvas, (-horizontal_offset, vertical_offset));
         },
     )
     .unwrap_or_else(|_| transparent_frame(RectI::from_size(1, 1)));

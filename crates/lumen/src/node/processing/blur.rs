@@ -5,7 +5,7 @@ use crate::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::RasterFrame,
+    raster::{RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -63,24 +63,59 @@ impl Blur {
 
         // Use minimum sigma of 0.5 to ensure visible blur effect
         let sigma = radius.max(0.5);
+        let pad = filter_pad(sigma);
+        let output_format = expand_rect(source_format, pad);
+        let output_data = expand_rect(source_data, pad)
+            .intersect(&output_format)
+            .unwrap_or(RectI::new(output_format.x, output_format.y, 0, 0));
+
         render_to_surface_ephemeral(
-            width,
-            height,
+            output_format.width.max(width).max(1),
+            output_format.height.max(height).max(1),
             ctx,
-            source_format,
-            source_data,
+            output_format,
+            output_data,
             source_alpha,
             ClearMode::Transparent,
             |canvas| {
+                let offset_x = (source_format.x - output_format.x) as f32;
+                let offset_y = (source_format.y - output_format.y) as f32;
                 if let Some(blur_filter) = image_filters::blur((sigma, sigma), None, None, None) {
                     let mut paint = Paint::default();
                     paint.set_image_filter(blur_filter);
-                    canvas.draw_image(&image, (0.0, 0.0), Some(&paint));
+                    canvas.draw_image(&image, (offset_x, offset_y), Some(&paint));
                 } else {
                     // Fallback if blur filter creation fails
-                    canvas.draw_image(&image, (0.0, 0.0), None);
+                    canvas.draw_image(&image, (offset_x, offset_y), None);
                 }
             },
         )
     }
+}
+
+fn filter_pad(sigma: f32) -> i32 {
+    if sigma <= 0.0 {
+        0
+    } else {
+        (sigma * 4.0 + 2.0).ceil() as i32
+    }
+}
+
+fn expand_rect(rect: RectI, pad: i32) -> RectI {
+    if pad <= 0 {
+        return rect;
+    }
+
+    let pad64 = i64::from(pad);
+    let min_x = i64::from(rect.x) - pad64;
+    let min_y = i64::from(rect.y) - pad64;
+    let max_x = rect.right() + pad64;
+    let max_y = rect.bottom() + pad64;
+
+    RectI::new(
+        min_x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        min_y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        (max_x - min_x).max(1) as u32,
+        (max_y - min_y).max(1) as u32,
+    )
 }

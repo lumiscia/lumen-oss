@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 #[cfg(feature = "embed-roboto")]
 use skia_safe::textlayout::TypefaceFontProvider;
 use skia_safe::{
@@ -21,40 +19,15 @@ use crate::{
 };
 use lumen_macros::{Node, node_impl};
 
-thread_local! {
-    static TEXT_FONT_MGR: RefCell<Option<FontMgr>> = const { RefCell::new(None) };
-    static TEXT_FONT_COLLECTION: RefCell<Option<FontCollection>> = const { RefCell::new(None) };
-}
-
 #[cfg(feature = "embed-roboto")]
 const EMBEDDED_ROBOTO_REGULAR: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/roboto/Roboto-Regular.ttf"
 ));
 
-fn with_text_font_mgr<R>(f: impl FnOnce(&FontMgr) -> R) -> R {
-    TEXT_FONT_MGR.with(|cell| {
-        let mut borrow = cell.borrow_mut();
-        let mgr = borrow.get_or_insert_with(FontMgr::default);
-        f(mgr)
-    })
-}
-
-fn with_text_font_collection<R>(f: impl FnOnce(FontCollection) -> R) -> R {
-    TEXT_FONT_COLLECTION.with(|cell| {
-        if cell.borrow().is_none() {
-            let font_collection = with_text_font_mgr(new_text_font_collection);
-            *cell.borrow_mut() = Some(font_collection);
-        }
-
-        let font_collection = cell
-            .borrow()
-            .as_ref()
-            .expect("text font collection should be initialized")
-            .clone();
-
-        f(font_collection)
-    })
+fn text_font_collection() -> FontCollection {
+    let font_mgr = FontMgr::default();
+    new_text_font_collection(&font_mgr)
 }
 
 fn new_text_font_collection(default_font_mgr: &FontMgr) -> FontCollection {
@@ -237,16 +210,28 @@ impl Text {
 
         paragraph_style.set_text_style(&text_style);
 
-        let paragraph = with_text_font_collection(|font_collection| {
-            let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
-            builder.push_style(&text_style);
-            builder.add_text(&content);
-            let mut paragraph = builder.build();
-            paragraph.layout(layout_width);
-            paragraph
-        });
+        let font_collection = text_font_collection();
+        let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
+        builder.push_style(&text_style);
+        builder.add_text(&content);
+        let mut paragraph = builder.build();
+        paragraph.layout(layout_width);
 
-        let width = layout_width.ceil().max(1.0) as u32;
+        let rendered_width = if max_width.is_some() {
+            paragraph.longest_line()
+        } else {
+            paragraph.max_intrinsic_width()
+        }
+        .max(1.0)
+        .min(layout_width);
+
+        let horizontal_offset = match alignment.horizontal {
+            TextAlignmentHorizontal::Left | TextAlignmentHorizontal::Justify => 0.0,
+            TextAlignmentHorizontal::Center => ((layout_width - rendered_width) * 0.5).max(0.0),
+            TextAlignmentHorizontal::Right => (layout_width - rendered_width).max(0.0),
+        };
+
+        let width = rendered_width.ceil().max(1.0) as u32;
         let height = paragraph.height().ceil().max(1.0) as u32;
         let vertical_offset = match alignment.vertical {
             TextAlignmentVertical::Top => 0.0,
@@ -262,7 +247,7 @@ impl Text {
             AlphaMode::Premultiplied,
             ClearMode::Transparent,
             |canvas| {
-                paragraph.paint(canvas, (0.0, vertical_offset));
+                paragraph.paint(canvas, (-horizontal_offset, vertical_offset));
             },
         )
     }

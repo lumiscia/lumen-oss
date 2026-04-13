@@ -3,9 +3,10 @@ use skia_safe::{Paint, image_filters};
 use crate::{
     node::{
         NodeId, NodeProperty, PortRef,
+        compositing::merge::union_rect,
         pixel_utils::{ClearMode, render_to_surface_ephemeral, to_skia_color},
     },
-    raster::RasterFrame,
+    raster::{RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -73,15 +74,27 @@ impl Shadow {
         // Ensure non-negative blur radius
         let sigma = blur_radius.max(0.0);
 
+        let shadow_pad = filter_pad(sigma);
+        let shadow_format = offset_rect(source_format, offset_x as i32, offset_y as i32);
+        let shadow_data = offset_rect(source_data, offset_x as i32, offset_y as i32);
+        let output_format = union_rect(source_format, expand_rect(shadow_format, shadow_pad));
+        let output_data = union_rect(source_data, expand_rect(shadow_data, shadow_pad))
+            .intersect(&output_format)
+            .unwrap_or(RectI::new(output_format.x, output_format.y, 0, 0));
+
         render_to_surface_ephemeral(
-            width,
-            height,
+            output_format.width.max(width).max(1),
+            output_format.height.max(height).max(1),
             ctx,
-            source_format,
-            source_data,
+            output_format,
+            output_data,
             source_alpha,
             ClearMode::Transparent,
             |canvas| {
+                let draw_origin = (
+                    (source_format.x - output_format.x) as f32,
+                    (source_format.y - output_format.y) as f32,
+                );
                 // Create and apply drop shadow filter
                 let shadow_filter = image_filters::drop_shadow_only(
                     (offset_x, offset_y),
@@ -95,12 +108,48 @@ impl Shadow {
                 if let Some(filter) = shadow_filter {
                     let mut paint_with_shadow = Paint::default();
                     paint_with_shadow.set_image_filter(filter);
-                    canvas.draw_image(&image, (0.0, 0.0), Some(&paint_with_shadow));
+                    canvas.draw_image(&image, draw_origin, Some(&paint_with_shadow));
                 }
 
                 // Draw original image on top of shadow
-                canvas.draw_image(&image, (0.0, 0.0), None);
+                canvas.draw_image(&image, draw_origin, None);
             },
         )
     }
+}
+
+fn filter_pad(sigma: f32) -> i32 {
+    if sigma <= 0.0 {
+        0
+    } else {
+        (sigma * 4.0 + 2.0).ceil() as i32
+    }
+}
+
+fn expand_rect(rect: RectI, pad: i32) -> RectI {
+    if pad <= 0 {
+        return rect;
+    }
+
+    let pad64 = i64::from(pad);
+    let min_x = i64::from(rect.x) - pad64;
+    let min_y = i64::from(rect.y) - pad64;
+    let max_x = rect.right() + pad64;
+    let max_y = rect.bottom() + pad64;
+
+    RectI::new(
+        min_x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        min_y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        (max_x - min_x).max(1) as u32,
+        (max_y - min_y).max(1) as u32,
+    )
+}
+
+fn offset_rect(rect: RectI, offset_x: i32, offset_y: i32) -> RectI {
+    RectI::new(
+        rect.x.saturating_add(offset_x),
+        rect.y.saturating_add(offset_y),
+        rect.width,
+        rect.height,
+    )
 }

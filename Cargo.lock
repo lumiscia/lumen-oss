@@ -1011,6 +1011,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumen-node-package"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lumen",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "lumen-server"
 version = "0.1.0"
 dependencies = [
@@ -1038,6 +1049,7 @@ dependencies = [
 name = "lumen-wasm"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "lumen",
  "serde",
  "serde_json",
