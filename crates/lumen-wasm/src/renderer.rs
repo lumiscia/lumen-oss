@@ -1,20 +1,26 @@
 use lumen::{
     composition::Composition,
     media::collect_frame_requirements,
-    render::{LumenRenderer as CoreRenderer, surface::DefaultSurfacePool},
+    raster::RasterFrame,
+    render::{
+        LumenRenderer as CoreRenderer,
+        surface::{DefaultSurfacePool, SurfacePool},
+    },
 };
-use wasm_bindgen::{Clamped, JsCast, prelude::*};
+use wasm_bindgen::prelude::*;
 
 use crate::{
-    media::LumenMediaStore, types::FrameRequirementsPayload, utils::composition_json_to_composition,
+    media::LumenMediaStore,
+    types::FrameRequirementsPayload,
+    utils::composition_json_to_composition,
+    webgl::{draw_output_frame_to_context, ensure_webgl_backend},
 };
-use web_sys::{CanvasRenderingContext2d, ImageData, OffscreenCanvasRenderingContext2d};
+use web_sys::CanvasRenderingContext2d;
 
 #[wasm_bindgen]
 pub struct LumenRenderer {
     composition: Option<Composition>,
     surface_pool: DefaultSurfacePool,
-    pixels: Vec<u8>,
     width: usize,
     height: usize,
     duration_frames: u32,
@@ -24,10 +30,10 @@ pub struct LumenRenderer {
 impl LumenRenderer {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        ensure_webgl_backend();
         Self {
             composition: None,
             surface_pool: DefaultSurfacePool::new(),
-            pixels: Vec::new(),
             width: 0,
             height: 0,
             duration_frames: 0,
@@ -42,8 +48,6 @@ impl LumenRenderer {
         self.width = composition.render_settings.width as usize;
         self.height = composition.render_settings.height as usize;
         self.duration_frames = composition.timeline.duration_frames;
-        self.pixels
-            .resize(self.width.saturating_mul(self.height).saturating_mul(4), 0);
         self.composition = Some(composition);
         Ok(())
     }
@@ -66,19 +70,22 @@ impl LumenRenderer {
         self.width = 0;
         self.height = 0;
         self.duration_frames = 0;
-        self.pixels.clear();
     }
 
-    /// Render a frame and draw premultiplied RGBA pixels into a 2D canvas context.
+    /// Render a frame directly into the target 2D canvas context.
     #[wasm_bindgen(js_name = "renderFrame")]
     pub fn render_frame(
         &mut self,
         frame: u32,
         media: &LumenMediaStore,
-        context: JsValue,
+        context: CanvasRenderingContext2d,
     ) -> Result<(), JsValue> {
-        let (width, height) = self.render_frame_into_pixels(frame, media)?;
-        draw_pixels_to_context(&context, width, height, &self.pixels)
+        let raster = self.render_frame_to_image(frame, media)?;
+        let (width, height) = raster.storage_dimensions();
+        draw_output_frame_to_context(&raster, &context)?;
+        self.width = width as usize;
+        self.height = height as usize;
+        Ok(())
     }
 
     /// Returns frame media requirements as a JSON string.
@@ -105,31 +112,22 @@ impl LumenRenderer {
             .ok_or_else(|| JsValue::from_str("composition not loaded"))
     }
 
-    fn render_frame_into_pixels(
+    fn render_frame_to_image(
         &mut self,
         frame: u32,
         media: &LumenMediaStore,
-    ) -> Result<(u32, u32), JsValue> {
+    ) -> Result<RasterFrame, JsValue> {
         self.validate_frame(frame)?;
         let composition = self.require_composition()?;
         let store = media.as_wasm_store();
 
         let mut core = CoreRenderer::new(composition, &self.surface_pool, store)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let mut raster = core
+        let raster = core
             .render(frame)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let (w, h) = raster.storage_dimensions();
-
-        let needed = (w as usize).saturating_mul(h as usize).saturating_mul(4);
-        if self.pixels.len() != needed {
-            self.pixels.resize(needed, 0);
-        }
-        raster
-            .read_pixels_into(&mut self.pixels, (w as usize) * 4)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-        Ok((w, h))
+        self.surface_pool.flush();
+        Ok(raster)
     }
 
     fn validate_frame(&self, frame: u32) -> Result<(), JsValue> {
@@ -141,24 +139,4 @@ impl LumenRenderer {
         }
         Ok(())
     }
-}
-
-fn draw_pixels_to_context(
-    context: &JsValue,
-    width: u32,
-    height: u32,
-    pixels: &[u8],
-) -> Result<(), JsValue> {
-    let image = ImageData::new_with_u8_clamped_array_and_sh(Clamped(pixels), width, height)?;
-    if let Some(context_2d) = context.dyn_ref::<CanvasRenderingContext2d>() {
-        context_2d.put_image_data(&image, 0.0, 0.0)?;
-        return Ok(());
-    }
-    if let Some(context_2d) = context.dyn_ref::<OffscreenCanvasRenderingContext2d>() {
-        context_2d.put_image_data(&image, 0.0, 0.0)?;
-        return Ok(());
-    }
-    Err(JsValue::from_str(
-        "unsupported canvas context: expected 2d rendering context",
-    ))
 }

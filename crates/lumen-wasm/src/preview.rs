@@ -3,17 +3,21 @@ use std::cell::RefCell;
 use lumen::{
     composition::Composition,
     media::{VideoMetadata, collect_frame_requirements},
-    render::{LumenRenderer as CoreRenderer, surface::DefaultSurfacePool},
+    render::{
+        LumenRenderer as CoreRenderer,
+        surface::{DefaultSurfacePool, SurfacePool},
+    },
 };
 use serde::Serialize;
-use wasm_bindgen::{Clamped, JsCast, prelude::*};
+use wasm_bindgen::prelude::*;
 
 use crate::{
     media::WasmMediaStore,
     types::FrameRequirementsPayload,
     utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
+    webgl::{draw_output_frame_to_context, ensure_webgl_backend},
 };
-use web_sys::{CanvasRenderingContext2d, ImageData, OffscreenCanvasRenderingContext2d};
+use web_sys::CanvasRenderingContext2d;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct RenderMetrics {
@@ -45,7 +49,6 @@ impl RenderMetrics {
 struct PreviewState {
     composition: Option<Composition>,
     surface_pool: DefaultSurfacePool,
-    pixels: Vec<u8>,
     width: usize,
     height: usize,
     duration_frames: u32,
@@ -64,7 +67,6 @@ impl Default for PreviewState {
         Self {
             composition: None,
             surface_pool: DefaultSurfacePool::new(),
-            pixels: Vec::new(),
             width: 0,
             height: 0,
             duration_frames: 0,
@@ -83,7 +85,6 @@ impl Default for PreviewState {
 impl PreviewState {
     fn clear(&mut self) {
         self.composition = None;
-        self.pixels.clear();
         self.width = 0;
         self.height = 0;
         self.duration_frames = 0;
@@ -141,6 +142,7 @@ pub struct LumenPreviewController {
 impl LumenPreviewController {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        ensure_webgl_backend();
         Self {
             state: RefCell::new(PreviewState::default()),
             media: WasmMediaStore::default(),
@@ -166,8 +168,6 @@ impl LumenPreviewController {
         state.last_tick_ms = None;
         state.frame_accumulator_ms = 0.0;
         state.render_metrics.reset();
-        let pixel_len = state.width.saturating_mul(state.height).saturating_mul(4);
-        state.pixels.resize(pixel_len, 0);
         state.composition = Some(composition);
         state.composition_sync_ms = 0.0;
         Ok(())
@@ -269,7 +269,7 @@ impl LumenPreviewController {
         serde_json::to_string(&snapshot).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    pub fn tick(&self, now_ms: f64, context: JsValue) -> Result<bool, JsValue> {
+    pub fn tick(&self, now_ms: f64, context: CanvasRenderingContext2d) -> Result<bool, JsValue> {
         let Ok(mut state) = self.state.try_borrow_mut() else {
             return Ok(false);
         };
@@ -290,8 +290,7 @@ impl LumenPreviewController {
                     let steps =
                         (state.frame_accumulator_ms / target_frame_duration_ms).floor() as u32;
                     let wrapped_steps = steps % state.duration_frames.max(1);
-                    state.frame_accumulator_ms -=
-                        target_frame_duration_ms * f64::from(steps);
+                    state.frame_accumulator_ms -= target_frame_duration_ms * f64::from(steps);
                     state.current_frame =
                         (state.current_frame + wrapped_steps) % state.duration_frames.max(1);
                     state.dirty = true;
@@ -312,7 +311,7 @@ impl LumenPreviewController {
     }
 
     #[wasm_bindgen(js_name = "renderNow")]
-    pub fn render_now(&self, context: JsValue) -> Result<(), JsValue> {
+    pub fn render_now(&self, context: CanvasRenderingContext2d) -> Result<(), JsValue> {
         let mut state = self
             .state
             .try_borrow_mut()
@@ -409,8 +408,8 @@ impl LumenPreviewController {
             return Err(JsValue::from_str("invalid image rgba buffer length"));
         }
 
-        let frame =
-            image_frame_from_rgba(width, height, rgba.to_vec()).map_err(|e| JsValue::from_str(&e))?;
+        let frame = image_frame_from_rgba(width, height, rgba.to_vec())
+            .map_err(|e| JsValue::from_str(&e))?;
         self.media
             .set_image(image_id.to_string(), frame)
             .map_err(JsValue::from_str)?;
@@ -436,8 +435,8 @@ impl LumenPreviewController {
             return Err(JsValue::from_str("invalid video rgba buffer length"));
         }
 
-        let image =
-            image_frame_from_rgba(width, height, rgba.to_vec()).map_err(|e| JsValue::from_str(&e))?;
+        let image = image_frame_from_rgba(width, height, rgba.to_vec())
+            .map_err(|e| JsValue::from_str(&e))?;
         self.media
             .set_video_frame(stream_id.to_string(), frame, image)
             .map_err(JsValue::from_str)?;
@@ -489,7 +488,7 @@ fn validate_frame(state: &PreviewState, frame: u32) -> Result<(), JsValue> {
 fn render_state(
     state: &mut PreviewState,
     media: &WasmMediaStore,
-    context: &JsValue,
+    context: &CanvasRenderingContext2d,
 ) -> Result<(), JsValue> {
     let composition = state
         .composition
@@ -498,43 +497,15 @@ fn render_state(
 
     let mut core = CoreRenderer::new(composition, &state.surface_pool, media)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let mut raster = core
+    let raster = core
         .render(state.current_frame)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    state.surface_pool.flush();
     let (w, h) = raster.storage_dimensions();
-
-    let needed = (w as usize).saturating_mul(h as usize).saturating_mul(4);
-    if state.pixels.len() != needed {
-        state.pixels.resize(needed, 0);
-    }
-
-    raster
-        .read_pixels_into(&mut state.pixels, (w as usize) * 4)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    draw_pixels_to_context(context, w, h, &state.pixels)?;
+    draw_output_frame_to_context(&raster, context)?;
 
     state.width = w as usize;
     state.height = h as usize;
     state.dirty = false;
     Ok(())
-}
-
-fn draw_pixels_to_context(
-    context: &JsValue,
-    width: u32,
-    height: u32,
-    pixels: &[u8],
-) -> Result<(), JsValue> {
-    let image = ImageData::new_with_u8_clamped_array_and_sh(Clamped(pixels), width, height)?;
-    if let Some(context_2d) = context.dyn_ref::<CanvasRenderingContext2d>() {
-        context_2d.put_image_data(&image, 0.0, 0.0)?;
-        return Ok(());
-    }
-    if let Some(context_2d) = context.dyn_ref::<OffscreenCanvasRenderingContext2d>() {
-        context_2d.put_image_data(&image, 0.0, 0.0)?;
-        return Ok(());
-    }
-    Err(JsValue::from_str(
-        "unsupported canvas context: expected 2d rendering context",
-    ))
 }
