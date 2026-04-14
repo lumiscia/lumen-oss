@@ -9,14 +9,14 @@ use anyhow::{Context, Result, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen::{
     composition::Composition,
-    error::SinkError,
     ffmpeg::FfmpegVideoResolver,
     image::ImageFileResolver,
     media::{ImageResolver, MediaStore, VideoFrameResolver},
     raster::RasterFrame,
-    render::surface::DefaultSurfacePool,
-    render::{LumenRenderer, threading::RenderOrchestrator},
-    sink::Sink,
+    render::{
+        LumenRenderer,
+        surface::{DefaultSurfacePool, SurfacePool},
+    },
 };
 
 #[derive(Debug)]
@@ -61,136 +61,95 @@ impl MediaStore for LocalMediaStore {
     }
 }
 
-struct FfmpegPipeSink {
-    child: Option<Child>,
+fn spawn_ffmpeg_encoder(
+    output: &Path,
     width: u32,
     height: u32,
+    fps: f32,
+    encoder: &str,
+) -> Result<Child> {
+    Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-nostdin")
+        .arg("-f")
+        .arg("rawvideo")
+        .arg("-pix_fmt")
+        .arg("rgba")
+        .arg("-s:v")
+        .arg(format!("{width}x{height}"))
+        .arg("-r")
+        .arg(format!("{fps}"))
+        .arg("-i")
+        .arg("pipe:0")
+        .arg("-an")
+        .arg("-c:v")
+        .arg(encoder)
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(output)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn ffmpeg encoder")
+}
+
+fn write_frame_to_ffmpeg(
+    child: &mut Child,
+    frame: u32,
     total_frames: u32,
-    frame_buffer: Vec<u8>,
-}
-
-impl FfmpegPipeSink {
-    fn new(
-        output: &Path,
-        width: u32,
-        height: u32,
-        fps: f32,
-        encoder: &str,
-        total_frames: u32,
-    ) -> Result<Self> {
-        let child = Command::new("ffmpeg")
-            .arg("-y")
-            .arg("-hide_banner")
-            .arg("-loglevel")
-            .arg("error")
-            .arg("-nostdin")
-            .arg("-f")
-            .arg("rawvideo")
-            .arg("-pix_fmt")
-            .arg("rgba")
-            .arg("-s:v")
-            .arg(format!("{width}x{height}"))
-            .arg("-r")
-            .arg(format!("{fps}"))
-            .arg("-i")
-            .arg("pipe:0")
-            .arg("-an")
-            .arg("-c:v")
-            .arg(encoder)
-            .arg("-pix_fmt")
-            .arg("yuv420p")
-            .arg("-movflags")
-            .arg("+faststart")
-            .arg(output)
-            .stdin(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("failed to spawn ffmpeg encoder")?;
-
-        Ok(Self {
-            child: Some(child),
-            width,
-            height,
-            total_frames,
-            frame_buffer: vec![0; (width as usize) * (height as usize) * 4],
-        })
+    expected_width: u32,
+    expected_height: u32,
+    raster: &RasterFrame,
+    frame_buffer: &mut [u8],
+) -> Result<()> {
+    let (storage_width, storage_height) = raster.storage_dimensions();
+    if storage_width != expected_width || storage_height != expected_height {
+        return Err(anyhow!(
+            "unexpected frame {frame} dimensions {}x{} (expected {}x{})",
+            storage_width,
+            storage_height,
+            expected_width,
+            expected_height
+        ));
     }
+
+    raster
+        .read_pixels_into(frame_buffer, (expected_width as usize) * 4)
+        .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
+
+    let stdin = child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| anyhow!("ffmpeg stdin unavailable"))?;
+    stdin
+        .write_all(frame_buffer)
+        .with_context(|| format!("failed writing frame {frame} to ffmpeg"))?;
+
+    if frame == 0 || frame + 1 == total_frames || frame % 60 == 0 {
+        println!("progress frame={}/{}", frame + 1, total_frames);
+    }
+
+    Ok(())
 }
 
-impl Sink for FfmpegPipeSink {
-    fn write_frame(
-        &mut self,
-        frame: u32,
-        data: &RasterFrame,
-    ) -> std::result::Result<(), SinkError> {
-        let (storage_width, storage_height) = data.storage_dimensions();
+fn finalize_ffmpeg_encoder(mut child: Child) -> Result<()> {
+    let _ = child.stdin.take();
+    let output = child
+        .wait_with_output()
+        .context("failed waiting for ffmpeg encoder")?;
 
-        if storage_width != self.width || storage_height != self.height {
-            return Err(SinkError::WriteFrame {
-                frame,
-                details: format!(
-                    "unexpected frame dimensions {}x{} (expected {}x{})",
-                    storage_width, storage_height, self.width, self.height
-                ),
-            });
-        }
-
-        let Some(child) = self.child.as_mut() else {
-            return Err(SinkError::WriteFrame {
-                frame,
-                details: "ffmpeg process already finalized".to_string(),
-            });
-        };
-
-        let stdin = child.stdin.as_mut().ok_or_else(|| SinkError::WriteFrame {
-            frame,
-            details: "ffmpeg stdin unavailable".to_string(),
-        })?;
-
-        let mut raster = data.clone();
-        raster
-            .read_pixels_into(self.frame_buffer.as_mut_slice(), (self.width as usize) * 4)
-            .map_err(|error| SinkError::WriteFrame {
-                frame,
-                details: error.to_string(),
-            })?;
-
-        stdin
-            .write_all(self.frame_buffer.as_slice())
-            .map_err(|error| SinkError::WriteFrame {
-                frame,
-                details: format!("failed writing frame to ffmpeg: {error}"),
-            })?;
-
-        if frame == 0 || frame + 1 == self.total_frames || frame % 60 == 0 {
-            println!("progress frame={}/{}", frame + 1, self.total_frames);
-        }
-
+    if output.status.success() {
         Ok(())
-    }
-
-    fn finalize(&mut self) -> std::result::Result<(), SinkError> {
-        let mut child = self.child.take().ok_or_else(|| SinkError::Finalize {
-            details: "ffmpeg process already finalized".to_string(),
-        })?;
-
-        let _ = child.stdin.take();
-        let output = child
-            .wait_with_output()
-            .map_err(|error| SinkError::Finalize {
-                details: format!("failed waiting for ffmpeg encoder: {error}"),
-            })?;
-
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(SinkError::Finalize {
-                details: format!(
-                    "ffmpeg encode failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ),
-            })
-        }
+    } else {
+        Err(anyhow!(
+            "ffmpeg encode failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -350,9 +309,10 @@ fn render_single_png(
     let mut renderer = LumenRenderer::new(composition, surface_pool, media_store)
         .context("failed to create renderer")?;
 
-    let mut rendered = renderer
+    let rendered = renderer
         .render(frame)
         .with_context(|| format!("render failed at frame {frame}"))?;
+    surface_pool.flush();
     let (width, height) = rendered.storage_dimensions();
     let mut pixels = vec![0; (width as usize) * (height as usize) * 4];
     rendered
@@ -390,32 +350,42 @@ fn render_mp4(
     }
 
     let encoder = choose_video_encoder(override_encoder);
-    let worker_count = render_worker_count();
-
-    let mut sink = FfmpegPipeSink::new(
+    let width = composition.render_settings.width;
+    let height = composition.render_settings.height;
+    let total_frames = composition.timeline.duration_frames;
+    let mut renderer = LumenRenderer::new(&composition, &surface_pool, &media_store)
+        .context("failed to create renderer")?;
+    let mut child = spawn_ffmpeg_encoder(
         output,
-        composition.render_settings.width,
-        composition.render_settings.height,
+        width,
+        height,
         composition.timeline.fps,
         encoder.as_str(),
-        composition.timeline.duration_frames,
     )?;
+    let mut frame_buffer = vec![0; (width as usize) * (height as usize) * 4];
 
-    let total_frames = composition.timeline.duration_frames;
-    let orchestrator =
-        RenderOrchestrator::new(composition, surface_pool, media_store, worker_count);
-    orchestrator
-        .render(&mut sink)
-        .map_err(|e| anyhow!("render failed: {e}"))?;
+    for frame in 0..total_frames {
+        let raster = renderer
+            .render(frame)
+            .with_context(|| format!("render failed at frame {frame}"))?;
+        surface_pool.flush();
+        write_frame_to_ffmpeg(
+            &mut child,
+            frame,
+            total_frames,
+            width,
+            height,
+            &raster,
+            frame_buffer.as_mut_slice(),
+        )?;
+    }
 
-    sink.finalize()
-        .map_err(|e| anyhow!("finalize failed: {e}"))?;
+    finalize_ffmpeg_encoder(child)?;
 
     println!(
-        "render complete output={} frames={} workers={}",
+        "render complete output={} frames={}",
         output.display(),
         total_frames,
-        worker_count
     );
     Ok(())
 }
@@ -492,20 +462,6 @@ fn resolve_local_path_with_root(source: &str, root: &Path) -> Result<PathBuf> {
     }
 
     Ok(candidate)
-}
-
-fn render_worker_count() -> usize {
-    if let Ok(value) = env::var("LUMEN_RENDER_WORKERS")
-        && let Ok(parsed) = value.parse::<usize>()
-        && parsed > 0
-    {
-        return parsed;
-    }
-
-    std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
-        .max(1)
 }
 
 fn choose_video_encoder(override_encoder: Option<&str>) -> String {

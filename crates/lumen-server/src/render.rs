@@ -3,8 +3,8 @@ use std::{
     env,
     io::Write,
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
-    sync::{Arc, RwLock, mpsc},
+    process::{Child, Command, Stdio},
+    sync::{Arc, RwLock},
 };
 
 use anyhow::{Context, anyhow};
@@ -15,7 +15,10 @@ use lumen::{
     image::ImageFileResolver,
     media::{ImageMetadata, ImageResolver, MediaStore, VideoFrameResolver, VideoMetadata},
     raster::ImageFrame,
-    render::{LumenRenderer, surface::DefaultSurfacePool},
+    render::{
+        LumenRenderer,
+        surface::{DefaultSurfacePool, SurfacePool},
+    },
 };
 
 pub const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
@@ -280,41 +283,40 @@ pub fn render_project_mp4(
             }
         })?;
     let encoder = choose_video_encoder(options.video_encoder.as_deref());
-
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let encode_handle =
-        std::thread::spawn(move || encode_rgba_stream(width, height, fps, encoder, rx));
+    let tmp = tempfile::tempdir().map_err(|err| RenderError {
+        code: "encode_failed",
+        message: format!("failed to create temp dir: {err}"),
+        retryable: true,
+    })?;
+    let output_path = tmp.path().join("output.mp4");
+    let mut child =
+        spawn_ffmpeg_encoder(&output_path, width, height, fps, &encoder).map_err(|err| {
+            RenderError {
+                code: "encode_failed",
+                message: err.to_string(),
+                retryable: true,
+            }
+        })?;
+    let mut frame_buffer = vec![0; (width as usize) * (height as usize) * 4];
 
     for frame in 0..total_frames {
-        let mut raster = renderer.render(frame).map_err(|err| RenderError {
+        let raster = renderer.render(frame).map_err(|err| RenderError {
             code: "render_failed",
             message: format!("render failed at frame {frame}: {err}"),
             retryable: true,
         })?;
-        let (storage_width, storage_height) = raster.storage_dimensions();
-        let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
-        raster
-            .read_pixels_into(pixels.as_mut_slice(), (storage_width as usize) * 4)
-            .map_err(|err| RenderError {
-                code: "render_failed",
-                message: format!("failed to read frame {frame} pixels: {err}"),
-                retryable: true,
-            })?;
-
-        if storage_width != width || storage_height != height {
-            return Err(RenderError {
-                code: "render_failed",
-                message: format!(
-                    "frame {frame} dimensions {}x{} do not match composition {}x{}",
-                    storage_width, storage_height, width, height
-                ),
-                retryable: false,
-            });
-        }
-
-        tx.send(pixels).map_err(|_| RenderError {
+        surface_pool.flush();
+        write_frame_to_ffmpeg(
+            &mut child,
+            frame,
+            width,
+            height,
+            &raster,
+            frame_buffer.as_mut_slice(),
+        )
+        .map_err(|err| RenderError {
             code: "encode_failed",
-            message: "ffmpeg encoder thread is unavailable".to_string(),
+            message: err.to_string(),
             retryable: true,
         })?;
 
@@ -328,20 +330,11 @@ pub fn render_project_mp4(
         });
     }
 
-    drop(tx);
-
-    encode_handle
-        .join()
-        .map_err(|_| RenderError {
-            code: "encode_failed",
-            message: "ffmpeg encoder thread panicked".to_string(),
-            retryable: true,
-        })?
-        .map_err(|err| RenderError {
-            code: "encode_failed",
-            message: err.to_string(),
-            retryable: true,
-        })
+    finalize_ffmpeg_encoder(child, &output_path).map_err(|err| RenderError {
+        code: "encode_failed",
+        message: err.to_string(),
+        retryable: true,
+    })
 }
 
 pub fn render_project_frame_png(
@@ -371,11 +364,12 @@ pub fn render_project_frame_png(
                 retryable: false,
             }
         })?;
-    let mut rendered = renderer.render(frame).map_err(|err| RenderError {
+    let rendered = renderer.render(frame).map_err(|err| RenderError {
         code: "render_failed",
         message: err.to_string(),
         retryable: false,
     })?;
+    surface_pool.flush();
     let (storage_width, storage_height) = rendered.storage_dimensions();
     let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
     rendered
@@ -408,17 +402,14 @@ pub fn render_project_frame_png(
 // ffmpeg encoding (subprocess-based, produces bytes in memory)
 // ---------------------------------------------------------------------------
 
-fn encode_rgba_stream(
+fn spawn_ffmpeg_encoder(
+    output_path: &Path,
     width: u32,
     height: u32,
     fps: f32,
-    encoder: String,
-    rx: mpsc::Receiver<Vec<u8>>,
-) -> anyhow::Result<Vec<u8>> {
-    let tmp = tempfile::tempdir().context("failed to create temp dir")?;
-    let output_path = tmp.path().join("output.mp4");
-
-    let mut child = Command::new("ffmpeg")
+    encoder: &str,
+) -> anyhow::Result<Child> {
+    Command::new("ffmpeg")
         .arg("-y")
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -436,40 +427,61 @@ fn encode_rgba_stream(
         .arg("pipe:0")
         .arg("-an")
         .arg("-c:v")
-        .arg(&encoder)
+        .arg(encoder)
         .arg("-pix_fmt")
         .arg("yuv420p")
         .arg("-movflags")
         .arg("+faststart")
-        .arg(&output_path)
+        .arg(output_path)
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("failed to spawn ffmpeg")?;
+        .context("failed to spawn ffmpeg")
+}
 
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("ffmpeg stdin unavailable"))?;
-
-        for frame in rx {
-            if stdin.write_all(&frame).is_err() {
-                break;
-            }
-        }
-    }
-
-    let output = child.wait_with_output().context("ffmpeg wait failed")?;
-
-    if !output.status.success() {
+fn write_frame_to_ffmpeg(
+    child: &mut Child,
+    frame: u32,
+    expected_width: u32,
+    expected_height: u32,
+    raster: &ImageFrame,
+    frame_buffer: &mut [u8],
+) -> anyhow::Result<()> {
+    let (storage_width, storage_height) = raster.storage_dimensions();
+    if storage_width != expected_width || storage_height != expected_height {
         return Err(anyhow!(
-            "ffmpeg encode failed with encoder `{encoder}`: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "frame {frame} dimensions {}x{} do not match composition {}x{}",
+            storage_width,
+            storage_height,
+            expected_width,
+            expected_height
         ));
     }
 
-    std::fs::read(&output_path).context("failed to read encoded output")
+    raster
+        .read_pixels_into(frame_buffer, (expected_width as usize) * 4)
+        .with_context(|| format!("failed to read frame {frame} pixels"))?;
+
+    let stdin = child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| anyhow!("ffmpeg stdin unavailable"))?;
+    stdin
+        .write_all(frame_buffer)
+        .with_context(|| format!("failed writing frame {frame} to ffmpeg"))?;
+    Ok(())
+}
+
+fn finalize_ffmpeg_encoder(mut child: Child, output_path: &Path) -> anyhow::Result<Vec<u8>> {
+    let _ = child.stdin.take();
+    let output = child.wait_with_output().context("ffmpeg wait failed")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "ffmpeg encode failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    std::fs::read(output_path).context("failed to read encoded output")
 }
 
 // ---------------------------------------------------------------------------
