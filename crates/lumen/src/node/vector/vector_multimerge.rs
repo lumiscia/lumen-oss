@@ -28,7 +28,7 @@ impl VectorMultiMerge {
         let mut merged = Vec::new();
         for layer in &self.layers {
             if !layer.is_empty() {
-                let result = ctx.eval(layer.clone())?;
+                let result = ctx.eval(layer)?;
                 merged.push(result.as_vector()?.clone());
             }
         }

@@ -2,7 +2,7 @@ use crate::{
     node::{
         NodeId, NodeResult, PortRef,
         compositing::merge::draw_frame_image,
-        pixel_utils::{ClearMode, render_to_surface_stable},
+        pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
     raster::{AlphaMode, RasterFrame, RectI},
     render::RenderContext,
@@ -30,7 +30,7 @@ impl Default for MediaOutput {
 impl MediaOutput {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext<'_>) -> crate::Result<RasterFrame> {
-        let source = match ctx.eval_once(self.source.clone())? {
+        let source = match ctx.eval_once(&self.source)? {
             NodeResult::Raster(raster) => raster,
             NodeResult::Vector(_) => {
                 return Err(ctx.invalid_node_output_type(self.source.id, "RasterFrame", "Vector"));
@@ -76,7 +76,7 @@ impl MediaOutput {
             );
         };
 
-        render_to_surface_stable(
+        render_to_surface_ephemeral(
             target_w,
             target_h,
             ctx,

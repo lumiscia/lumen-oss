@@ -72,7 +72,7 @@ impl Default for Transform {
 impl Transform {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
-        let source_result = ctx.eval(self.source.clone())?;
+        let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();

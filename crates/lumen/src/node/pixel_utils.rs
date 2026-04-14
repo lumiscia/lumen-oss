@@ -4,10 +4,7 @@ use skia_safe::{AlphaType, ColorType, ImageInfo, image::CachingHint};
 
 use crate::{
     media::MediaStore,
-    raster::{
-        AlphaMode, ColorSpaceTag, RasterFrame, RectI, SurfaceFrame,
-        rgba_byte_len as raster_rgba_byte_len,
-    },
+    raster::{AlphaMode, RasterFrame, RectI, rgba_byte_len as raster_rgba_byte_len},
     render::{RenderContext, surface::SurfacePool},
 };
 
@@ -48,50 +45,29 @@ pub fn render_to_surface_ephemeral<S: SurfacePool, M: MediaStore>(
     clear_mode: ClearMode,
     draw: impl FnOnce(&skia_safe::Canvas),
 ) -> crate::Result<RasterFrame> {
-    let mut surface = ctx
-        .renderer
+    ctx.renderer
         .surface_pool
-        .acquire_raster(width, height)?
-        .take()?;
-    {
-        let canvas = surface.surface_mut().canvas();
-        canvas.restore_to_count(1);
-        canvas.reset_matrix();
-        if clear_mode == ClearMode::Transparent {
-            canvas.clear(skia_safe::Color::TRANSPARENT);
-        }
-        draw(canvas);
-    }
-    Ok(RasterFrame::Surface(SurfaceFrame::with_domain(
-        surface,
-        format_rect,
-        data_rect,
-        alpha_mode,
-        ColorSpaceTag::Srgb,
-    )))
-}
-
-pub fn render_to_surface_stable<S: SurfacePool, M: MediaStore>(
-    width: u32,
-    height: u32,
-    ctx: &mut RenderContext<'_, S, M>,
-    format_rect: RectI,
-    data_rect: RectI,
-    alpha_mode: AlphaMode,
-    clear_mode: ClearMode,
-    draw: impl FnOnce(&skia_safe::Canvas),
-) -> crate::Result<RasterFrame> {
-    Ok(render_to_surface_ephemeral(
-        width,
-        height,
-        ctx,
-        format_rect,
-        data_rect,
-        alpha_mode,
-        clear_mode,
-        draw,
-    )?
-    .stabilize())
+        .with_surface(width, height, |surface| {
+            {
+                let canvas = surface.canvas();
+                canvas.restore_to_count(1);
+                canvas.reset_matrix();
+                if clear_mode == ClearMode::Transparent {
+                    canvas.clear(skia_safe::Color::TRANSPARENT);
+                }
+                draw(canvas);
+            }
+            let image = surface.image_snapshot();
+            let mut frame = crate::raster::ImageFrame::with_domain(
+                image,
+                width,
+                height,
+                format_rect,
+                data_rect,
+            );
+            frame.alpha_mode = alpha_mode;
+            Ok(frame)
+        })
 }
 
 pub fn to_skia_color(color: [u8; 4]) -> skia_safe::Color {

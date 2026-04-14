@@ -1,8 +1,6 @@
 pub mod context;
 pub mod stats;
 pub mod surface;
-#[cfg(feature = "threading")]
-pub mod threading;
 
 pub use context::RenderContext;
 
@@ -55,7 +53,8 @@ impl<'a, S: SurfacePool, M: MediaStore> LumenRenderer<'a, S, M> {
         }
 
         let mut ctx = RenderContext::new(self, frame);
-        let output = ctx.eval(PortRef::new(output_node_id, "output".to_string()))?;
+        let output_port = PortRef::new(output_node_id, "output".to_string());
+        let output = ctx.eval(&output_port)?;
         let raster = match Rc::try_unwrap(output) {
             Ok(NodeResult::Raster(raster)) => raster,
             Ok(NodeResult::Vector(_)) => {

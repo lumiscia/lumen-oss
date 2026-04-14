@@ -4,6 +4,7 @@ use crate::{
     node::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
+        processing::filter_geometry::{expand_rect, filter_pad},
     },
     raster::{RasterFrame, RectI},
     render::RenderContext,
@@ -42,7 +43,7 @@ impl Blur {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
         let radius = self.resolve_radius(ctx)? as f32;
-        let source_result = ctx.eval(self.source.clone())?;
+        let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
 
         if Self::is_noop(radius) {
@@ -91,31 +92,4 @@ impl Blur {
             },
         )
     }
-}
-
-fn filter_pad(sigma: f32) -> i32 {
-    if sigma <= 0.0 {
-        0
-    } else {
-        (sigma * 4.0 + 2.0).ceil() as i32
-    }
-}
-
-fn expand_rect(rect: RectI, pad: i32) -> RectI {
-    if pad <= 0 {
-        return rect;
-    }
-
-    let pad64 = i64::from(pad);
-    let min_x = i64::from(rect.x) - pad64;
-    let min_y = i64::from(rect.y) - pad64;
-    let max_x = rect.right() + pad64;
-    let max_y = rect.bottom() + pad64;
-
-    RectI::new(
-        min_x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        min_y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        (max_x - min_x).max(1) as u32,
-        (max_y - min_y).max(1) as u32,
-    )
 }

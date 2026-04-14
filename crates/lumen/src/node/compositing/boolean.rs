@@ -62,7 +62,7 @@ impl Default for Boolean {
 impl Boolean {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
-        let source_result = ctx.eval(self.source.clone())?;
+        let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
         let source_alpha = source.alpha_mode();
         let source_format = source.format_rect();
@@ -74,10 +74,10 @@ impl Boolean {
         };
 
         let mask_image = if !self.mask.is_empty() {
-            let frame = ctx.eval(self.mask.clone())?;
+            let frame = ctx.eval(&self.mask)?;
             frame.as_raster()?.to_skia_image()
         } else if !self.vector.is_empty() {
-            let vector = ctx.eval(self.vector.clone())?;
+            let vector = ctx.eval(&self.vector)?;
             let rasterized = rasterize_vector(vector.as_vector()?, &ShapeRenderer::default(), ctx);
             rasterized.to_skia_image()
         } else {

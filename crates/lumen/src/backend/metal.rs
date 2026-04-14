@@ -24,6 +24,12 @@ impl MetalSurfaceFactory {
         create_gpu_surface(&mut state.context, width, height)
     }
 
+    pub(crate) fn flush(&mut self) {
+        if let Some(state) = self.ensure_state() {
+            state.context.flush_and_submit();
+        }
+    }
+
     fn ensure_state(&mut self) -> Option<&mut MetalState> {
         if matches!(self.state, MetalStateSlot::Uninitialized) {
             self.state = MetalState::try_create()

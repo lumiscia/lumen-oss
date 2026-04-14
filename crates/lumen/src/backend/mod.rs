@@ -60,6 +60,19 @@ impl SurfaceFactory {
             .create_surface(width, height)
             .ok_or(RenderError::SurfaceAllocation { width, height })
     }
+
+    pub(crate) fn flush(&mut self) {
+        #[cfg(feature = "metal")]
+        self.metal.flush();
+
+        #[cfg(feature = "vulkan")]
+        self.vulkan.flush();
+
+        #[cfg(feature = "webgl")]
+        self.webgl.flush();
+
+        self.software.flush();
+    }
 }
 
 impl Default for SurfaceFactory {

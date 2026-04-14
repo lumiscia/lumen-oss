@@ -78,7 +78,7 @@ impl Default for Resize {
 impl Resize {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
-        let source_result = ctx.eval(self.source.clone())?;
+        let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
         let mode = ResizeMode::from_int(self.resolve_mode(ctx)?);
         let sampling_mode = ResizeSampling::from_int(self.resolve_sampling(ctx)?);

@@ -65,7 +65,7 @@ struct ReadbackFrame {
     storage_height: u32,
 }
 
-fn readback_frame(mut frame: RasterFrame) -> ReadbackFrame {
+fn readback_frame(frame: RasterFrame) -> ReadbackFrame {
     let (storage_width, storage_height) = frame.storage_dimensions();
     let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
     frame
@@ -94,7 +94,9 @@ fn render_frame(graph: Graph, width: u32, height: u32, frame: u32) -> ReadbackFr
     let pool = DefaultSurfacePool::new();
     let media = NullMediaStore;
     let mut renderer = LumenRenderer::new(&composition, &pool, &media).unwrap();
-    readback_frame(renderer.render(frame).unwrap())
+    let rendered = renderer.render(frame).unwrap();
+    pool.flush();
+    readback_frame(rendered)
 }
 
 fn render_single(graph: Graph, width: u32, height: u32) -> ReadbackFrame {
@@ -1157,20 +1159,33 @@ fn frame_hold_evaluates_upstream_at_held_frame() {
 }
 
 #[test]
-fn surface_pool_stats_track_acquisitions() {
+fn surface_allocator_ping_pongs_between_two_scratch_surfaces() {
     let pool = DefaultSurfacePool::new();
-    {
-        let _surface = pool.acquire(3, 2).expect("should allocate");
-    }
-    // After drop, surface goes back to pool
-    {
-        let _surface = pool.acquire(3, 2).expect("should reuse");
-    }
+    pool.with_surface(3, 2, |_surface_a| {
+        pool.with_surface(3, 2, |_surface_b| Ok(()))
+    })
+    .expect("nested use should consume both scratch surfaces");
+
+    pool.with_surface(3, 2, |_surface_a| {
+        pool.with_surface(3, 2, |_surface_b| Ok(()))
+    })
+    .expect("second nested use should reuse both scratch surfaces");
+
+    pool.with_surface(3, 2, |_surface_a| {
+        pool.with_surface(3, 2, |_surface_b| {
+            let err = pool
+                .with_surface(3, 2, |_surface_c| Ok(()))
+                .expect_err("third nested acquire should fail");
+            assert!(err.to_string().contains("scratch surfaces"));
+            Ok(())
+        })
+    })
+    .expect("third nested scenario should complete");
 
     let stats = pool.stats();
-    assert_eq!(stats.total_acquires, 2);
-    assert_eq!(stats.fresh_allocations, 1);
-    assert_eq!(stats.reused_acquires, 1);
+    assert_eq!(stats.total_acquires, 7);
+    assert_eq!(stats.fresh_allocations, 2);
+    assert_eq!(stats.reused_acquires, 4);
 }
 
 #[test]

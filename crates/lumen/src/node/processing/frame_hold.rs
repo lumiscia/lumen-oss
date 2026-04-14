@@ -33,7 +33,7 @@ impl FrameHold {
         let hold_frame = self.resolve_hold_frame(ctx)? as u32;
         let original_frame = ctx.frame;
         ctx.frame = hold_frame;
-        let result = ctx.eval(self.source.clone())?.as_raster()?.snapshot();
+        let result = ctx.eval(&self.source)?.as_raster()?.snapshot();
         ctx.frame = original_frame;
         result
     }

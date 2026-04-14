@@ -59,7 +59,7 @@ impl RasterMultiMerge {
             if layer.is_empty() {
                 continue;
             }
-            let result = ctx.eval(layer.clone())?;
+            let result = ctx.eval(layer)?;
             layer_results.push(result);
         }
 

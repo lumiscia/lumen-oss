@@ -72,16 +72,16 @@ impl Memo {
 
         let allow_expressions = self.resolve_allow_expressions(ctx)?;
         if !allow_expressions && let Some(cached) = self.cache.get(&cache_id) {
-            return Ok(RasterFrame::Image(cached));
+            return Ok(cached);
         }
 
-        let raster = ctx.eval(self.source.clone())?.as_raster()?.snapshot_image();
+        let raster = ctx.eval(&self.source)?.as_raster()?.snapshot_image();
 
         if !allow_expressions {
             self.cache.insert(cache_id, raster.clone());
         }
 
-        Ok(RasterFrame::Image(raster))
+        Ok(raster)
     }
 }
 

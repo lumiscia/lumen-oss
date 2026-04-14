@@ -156,7 +156,7 @@ fn evaluate_image<S: SurfacePool, M: MediaStore>(
         })?;
     let _meta = resolver.metadata();
     let decoded = resolver.resolve_image()?;
-    Ok(RasterFrame::Image((*decoded).clone()))
+    Ok((*decoded).clone())
 }
 
 fn evaluate_video<S: SurfacePool, M: MediaStore>(
@@ -184,7 +184,7 @@ fn evaluate_video<S: SurfacePool, M: MediaStore>(
     )?;
 
     let decoded = resolver.resolve_frame_image(source_frame)?;
-    Ok(RasterFrame::Image((*decoded).clone()))
+    Ok((*decoded).clone())
 }
 
 pub fn map_to_source_frame(

@@ -18,10 +18,6 @@ pub enum LumenError {
     Media(#[from] MediaError),
     #[error("render error: {0}")]
     Render(#[from] RenderError),
-    #[error("threading error: {0}")]
-    Threading(#[from] ThreadingError),
-    #[error("sink error: {0}")]
-    Sink(#[from] SinkError),
 }
 
 #[derive(Debug, Error, Clone)]
@@ -132,34 +128,12 @@ pub enum RenderError {
     },
     #[error("media output node did not produce raster output")]
     InvalidMediaOutputType { frame: u32, node_id: NodeId },
-    #[error("surface lease has already been taken")]
-    SurfaceLeaseReleased,
-    #[error("surface lease is still shared")]
-    SharedSurfaceLease,
-    #[error("surface readback requires owned access")]
-    SurfaceReadbackUnsupported,
     #[error("pixel readback failed")]
     PixelReadbackFailed { width: u32, height: u32 },
+    #[error("all scratch surfaces are currently in use")]
+    ScratchSurfaceUnavailable,
     #[error("render cancelled")]
     Cancelled { frame: u32 },
-}
-
-#[derive(Debug, Error, Clone)]
-pub enum ThreadingError {
-    #[error("worker initialization failed")]
-    WorkerInit { details: String },
-    #[error("worker failed")]
-    WorkerFailure { frame: Option<u32>, details: String },
-    #[error("render cancelled")]
-    Cancelled,
-}
-
-#[derive(Debug, Error, Clone)]
-pub enum SinkError {
-    #[error("sink write failed")]
-    WriteFrame { frame: u32, details: String },
-    #[error("sink finalize failed")]
-    Finalize { details: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -10,4 +10,6 @@ impl SoftwareSurfaceFactory {
         let height = i32::try_from(height).ok()?;
         skia_safe::surfaces::raster_n32_premul((width, height))
     }
+
+    pub(crate) fn flush(&mut self) {}
 }

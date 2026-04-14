@@ -65,7 +65,7 @@ impl Default for ShapeRenderer {
 impl ShapeRenderer {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
-        let vector = ctx.eval(self.vector.clone())?;
+        let vector = ctx.eval(&self.vector)?;
         let vector_data = match vector.as_ref() {
             crate::node::NodeResult::Raster(_) => {
                 return Err(ctx.invalid_node_output_type(self.vector.id, "Vector", "RasterFrame"));
@@ -217,11 +217,11 @@ fn rasterize_geometry<S: SurfacePool, M: MediaStore>(
             AlphaMode::Premultiplied,
         )
         .unwrap_or_else(|_| {
-            RasterFrame::Image(ImageFrame::new(
+            ImageFrame::new(
                 skia_safe::surfaces::raster_n32_premul((1, 1))
                     .expect("1x1 raster surface")
                     .image_snapshot(),
-            ))
+            )
         })
     })
 }
@@ -496,11 +496,11 @@ fn transparent_frame(format_rect: RectI) -> RasterFrame {
         AlphaMode::Premultiplied,
     )
     .unwrap_or_else(|_| {
-        RasterFrame::Image(ImageFrame::new(
+        ImageFrame::new(
             skia_safe::surfaces::raster_n32_premul((1, 1))
                 .expect("1x1 raster surface")
                 .image_snapshot(),
-        ))
+        )
     })
 }
 
@@ -551,7 +551,7 @@ fn clip_raster_to_output_rect<S: SurfacePool, M: MediaStore>(
             clipped_rect,
         );
         frame.alpha_mode = source_alpha;
-        return RasterFrame::Image(frame);
+        return frame;
     }
 
     render_to_surface_ephemeral(

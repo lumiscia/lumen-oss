@@ -44,7 +44,7 @@ impl Default for Crop {
 impl Crop {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
-        let source_result = ctx.eval(self.source.clone())?;
+        let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
         let x = self.resolve_x(ctx)?;
         let y = self.resolve_y(ctx)?;
@@ -109,7 +109,7 @@ impl Crop {
                 output_rect,
             );
             frame.alpha_mode = source_alpha;
-            return Ok(RasterFrame::Image(frame));
+            return Ok(frame);
         }
 
         // Fallback: render to surface

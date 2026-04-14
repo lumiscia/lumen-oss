@@ -24,7 +24,7 @@ impl<'a, S: SurfacePool, M: MediaStore> RenderContext<'a, S, M> {
         }
     }
 
-    pub fn eval(&mut self, port: PortRef) -> crate::Result<Rc<NodeResult>> {
+    pub fn eval(&mut self, port: &PortRef) -> crate::Result<Rc<NodeResult>> {
         if let Some(cached) = self.output_cache.get(&port) {
             return Ok(Rc::clone(cached));
         }
@@ -37,7 +37,7 @@ impl<'a, S: SurfacePool, M: MediaStore> RenderContext<'a, S, M> {
             .get(&port.id)
             .ok_or_else(|| self.missing_node_error(port.id))?;
         let node_id = node.id();
-        let mut result = node.evaluate(self, &port.port)?;
+        let result = node.evaluate(self, &port.port)?;
 
         if self
             .renderer
@@ -46,12 +46,8 @@ impl<'a, S: SurfacePool, M: MediaStore> RenderContext<'a, S, M> {
             .outgoing_connection_count(node_id)
             > 1
         {
-            result = match result {
-                NodeResult::Raster(raster) => NodeResult::Raster(raster.stabilize()),
-                other => other,
-            };
             let result = Rc::new(result);
-            self.output_cache.insert(port, Rc::clone(&result));
+            self.output_cache.insert(port.clone(), Rc::clone(&result));
             return Ok(result);
         }
 
@@ -59,7 +55,7 @@ impl<'a, S: SurfacePool, M: MediaStore> RenderContext<'a, S, M> {
     }
 
     /// Evaluates once without caching.
-    pub fn eval_once(&mut self, port: PortRef) -> crate::Result<NodeResult> {
+    pub fn eval_once(&mut self, port: &PortRef) -> crate::Result<NodeResult> {
         let node = self
             .renderer
             .composition

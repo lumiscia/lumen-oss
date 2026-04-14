@@ -78,7 +78,7 @@ impl Switch {
             return Self::transparent_output(ctx);
         }
 
-        let value = ctx.eval(layer.clone())?;
+        let value = ctx.eval(layer)?;
         value.as_raster()?.snapshot()
     }
 }

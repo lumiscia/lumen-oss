@@ -28,8 +28,8 @@ impl Default for VectorMerge {
 impl VectorMerge {
     #[output(port = "output", kind = Vector)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<VectorData> {
-        let base = ctx.eval(self.base.clone())?.as_vector()?.clone();
-        let overlay = ctx.eval(self.overlay.clone())?.as_vector()?.clone();
+        let base = ctx.eval(&self.base)?.as_vector()?.clone();
+        let overlay = ctx.eval(&self.overlay)?.as_vector()?.clone();
 
         Ok(VectorData::Group {
             children: vec![base, overlay],

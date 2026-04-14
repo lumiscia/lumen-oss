@@ -1,20 +1,12 @@
-//! Skia surface pooling primitives for reusable render targets.
+//! Skia render-target allocation for the active backend.
 
-use std::{collections::HashMap, fmt::Debug, rc::Rc};
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    sync::{Mutex, PoisonError},
+};
 
-use crate::error::{LumenError, RenderError};
-
-#[cfg(not(feature = "threading"))]
-mod single_threaded;
-
-#[cfg(feature = "threading")]
-mod multithreaded;
-
-#[cfg(not(feature = "threading"))]
-pub use single_threaded::SingleThreadedSurfacePool as DefaultSurfacePool;
-
-#[cfg(feature = "threading")]
-pub use multithreaded::MultiThreadedSurfacePool as DefaultSurfacePool;
+use crate::{backend::SurfaceFactory, error::RenderError};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SurfacePoolStats {
@@ -69,146 +61,30 @@ impl SurfacePoolStats {
     }
 }
 
-pub trait SurfacePool: Send + Sync + std::fmt::Debug {
-    fn acquire(&self, width: u32, height: u32) -> crate::Result<SurfaceLease<'_>>;
-
-    fn acquire_raster(&self, width: u32, height: u32) -> crate::Result<SurfaceLease<'_>>;
+pub trait SurfacePool: std::fmt::Debug {
+    fn with_surface<T>(
+        &self,
+        width: u32,
+        height: u32,
+        f: impl FnOnce(&mut skia_safe::Surface) -> crate::Result<T>,
+    ) -> crate::Result<T>;
 
     fn stats(&self) -> SurfacePoolStats;
 
-    #[doc(hidden)]
-    fn release(&self, kind: SurfaceKind, width: u32, height: u32, surface: skia_safe::Surface);
+    fn flush(&self);
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum SurfaceKind {
-    Render,
-    Raster,
-}
-
-const MAX_CACHED_RENDER_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_CACHED_RASTER_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_SURFACES_PER_SIZE: usize = 2;
-
-type SurfaceSize = (u32, u32);
 
 #[derive(Default)]
-struct SurfaceBuckets {
-    render: HashMap<SurfaceSize, Vec<skia_safe::Surface>>,
-    raster: HashMap<SurfaceSize, Vec<skia_safe::Surface>>,
-    render_cached_bytes: u64,
-    raster_cached_bytes: u64,
+pub struct DefaultSurfacePool {
+    stats: Mutex<SurfacePoolStats>,
+    slots: Mutex<ScratchSurfaceRing>,
+    backend: Mutex<SurfaceFactory>,
 }
 
-impl SurfaceBuckets {
-    fn take_render(&mut self, size: SurfaceSize) -> Option<skia_safe::Surface> {
-        take_surface_from_bucket(&mut self.render, &mut self.render_cached_bytes, size)
+impl DefaultSurfacePool {
+    pub fn new() -> Self {
+        Self::default()
     }
-
-    fn take_raster(&mut self, size: SurfaceSize) -> Option<skia_safe::Surface> {
-        take_surface_from_bucket(&mut self.raster, &mut self.raster_cached_bytes, size)
-    }
-
-    fn store_render(&mut self, size: SurfaceSize, surface: skia_safe::Surface) {
-        store_surface_with_budget(
-            &mut self.render,
-            &mut self.render_cached_bytes,
-            size,
-            surface,
-            MAX_CACHED_RENDER_BYTES,
-        )
-    }
-
-    fn store_raster(&mut self, size: SurfaceSize, surface: skia_safe::Surface) {
-        store_surface_with_budget(
-            &mut self.raster,
-            &mut self.raster_cached_bytes,
-            size,
-            surface,
-            MAX_CACHED_RASTER_BYTES,
-        )
-    }
-}
-
-fn take_surface_from_bucket(
-    buckets: &mut HashMap<SurfaceSize, Vec<skia_safe::Surface>>,
-    cached_bytes: &mut u64,
-    size: SurfaceSize,
-) -> Option<skia_safe::Surface> {
-    let (surface, should_remove_entry) = {
-        let bucket = buckets.get_mut(&size)?;
-        let surface = bucket.pop()?;
-        let should_remove_entry = bucket.is_empty();
-        (surface, should_remove_entry)
-    };
-
-    if should_remove_entry {
-        buckets.remove(&size);
-    }
-
-    *cached_bytes = cached_bytes.saturating_sub(allocation_bytes(size.0, size.1));
-    Some(surface)
-}
-
-fn store_surface_with_budget(
-    buckets: &mut HashMap<SurfaceSize, Vec<skia_safe::Surface>>,
-    cached_bytes: &mut u64,
-    size: SurfaceSize,
-    surface: skia_safe::Surface,
-    max_bytes: u64,
-) {
-    let surface_bytes = allocation_bytes(size.0, size.1);
-    if surface_bytes > max_bytes {
-        return;
-    }
-
-    if buckets
-        .get(&size)
-        .is_some_and(|existing| existing.len() >= MAX_SURFACES_PER_SIZE)
-    {
-        return;
-    }
-
-    while cached_bytes.saturating_add(surface_bytes) > max_bytes {
-        if !evict_largest_surface(buckets, cached_bytes) {
-            return;
-        }
-    }
-
-    buckets.entry(size).or_default().push(surface);
-    *cached_bytes = cached_bytes.saturating_add(surface_bytes);
-}
-
-fn evict_largest_surface(
-    buckets: &mut HashMap<SurfaceSize, Vec<skia_safe::Surface>>,
-    cached_bytes: &mut u64,
-) -> bool {
-    let candidate = buckets
-        .iter()
-        .filter_map(|(&size, surfaces)| (!surfaces.is_empty()).then_some(size))
-        .max_by_key(|(width, height)| allocation_bytes(*width, *height));
-
-    let Some(size) = candidate else {
-        return false;
-    };
-
-    let should_remove_entry = {
-        let Some(bucket) = buckets.get_mut(&size) else {
-            return false;
-        };
-        if bucket.pop().is_none() {
-            return false;
-        }
-        bucket.is_empty()
-    };
-
-    if should_remove_entry {
-        buckets.remove(&size);
-    }
-
-    *cached_bytes = cached_bytes.saturating_sub(allocation_bytes(size.0, size.1));
-    true
 }
 
 fn allocation_bytes(width: u32, height: u32) -> u64 {
@@ -217,111 +93,101 @@ fn allocation_bytes(width: u32, height: u32) -> u64 {
         .saturating_mul(4)
 }
 
-fn allocate_raster_surface(width: u32, height: u32) -> crate::Result<skia_safe::Surface> {
-    skia_safe::surfaces::raster_n32_premul((width as i32, height as i32))
-        .ok_or_else(|| LumenError::from(RenderError::SurfaceAllocation { width, height }))
+#[derive(Default)]
+struct ScratchSurfaceRing {
+    next_slot: usize,
+    slots: [ScratchSurfaceSlot; 2],
 }
 
-pub struct SurfaceLease<'pool> {
+#[derive(Default)]
+struct ScratchSurfaceSlot {
+    in_use: bool,
     surface: Option<skia_safe::Surface>,
-    pool: &'pool dyn SurfacePool,
-    kind: SurfaceKind,
 }
 
-impl<'pool> SurfaceLease<'pool> {
-    fn new(surface: skia_safe::Surface, pool: &'pool dyn SurfacePool, kind: SurfaceKind) -> Self {
-        Self {
-            surface: Option::Some(surface),
-            pool,
-            kind,
-        }
-    }
+impl SurfacePool for DefaultSurfacePool {
+    fn with_surface<T>(
+        &self,
+        width: u32,
+        height: u32,
+        f: impl FnOnce(&mut skia_safe::Surface) -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        let selection = {
+            let mut stats = lock(&self.stats);
+            stats.record_acquire(width, height);
 
-    pub fn width(&self) -> u32 {
-        self.surface().width() as u32
-    }
+            let mut ring = lock(&self.slots);
+            let start = ring.next_slot;
+            let slot_count = ring.slots.len();
+            let mut selection = None;
 
-    pub fn height(&self) -> u32 {
-        self.surface().height() as u32
-    }
+            for offset in 0..slot_count {
+                let index = (start + offset) % slot_count;
+                if ring.slots[index].in_use {
+                    continue;
+                }
 
-    pub fn surface(&self) -> &skia_safe::Surface {
-        self.surface.as_ref().unwrap()
-    }
+                ring.next_slot = (index + 1) % slot_count;
+                let taken_surface = {
+                    let slot = &mut ring.slots[index];
+                    slot.in_use = true;
+                    slot.surface.take()
+                };
 
-    pub fn surface_mut(&mut self) -> &mut skia_safe::Surface {
-        self.surface.as_mut().unwrap()
-    }
+                let reusable_surface = if let Some(surface) = taken_surface {
+                    if surface.width() as u32 == width && surface.height() as u32 == height {
+                        stats.record_reuse();
+                        Some(surface)
+                    } else {
+                        stats.record_fresh_allocation(width, height);
+                        None
+                    }
+                } else {
+                    stats.record_fresh_allocation(width, height);
+                    None
+                };
 
-    pub fn take(mut self) -> Result<OwnedSurface, LumenError> {
-        let Some(surface) = self.surface.take() else {
-            return Err(RenderError::SurfaceLeaseReleased.into());
+                selection = Some((index, reusable_surface));
+                break;
+            }
+
+            selection
         };
-        Ok(OwnedSurface {
-            surface,
-            kind: self.kind,
-        })
+
+        let Some((index, maybe_surface)) = selection else {
+            return Err(RenderError::ScratchSurfaceUnavailable.into());
+        };
+
+        let mut surface = match maybe_surface {
+            Some(surface) => surface,
+            None => lock(&self.backend).create_surface(width, height)?,
+        };
+
+        let result = f(&mut surface);
+        let mut ring = lock(&self.slots);
+        let slot = &mut ring.slots[index];
+        slot.in_use = false;
+        slot.surface = Some(surface);
+        result
     }
 
-    pub fn take_rc(self: Rc<Self>) -> Result<OwnedSurface, LumenError> {
-        Rc::try_unwrap(self)
-            .map_err(|_| LumenError::from(RenderError::SharedSurfaceLease))?
-            .take()
+    fn stats(&self) -> SurfacePoolStats {
+        lock(&self.stats).clone()
+    }
+
+    fn flush(&self) {
+        lock(&self.backend).flush();
     }
 }
 
-impl Drop for SurfaceLease<'_> {
-    fn drop(&mut self) {
-        if let Some(surface) = self.surface.take() {
-            let width = surface.width() as u32;
-            let height = surface.height() as u32;
-            self.pool.release(self.kind, width, height, surface);
-        }
-    }
-}
-
-impl std::fmt::Debug for SurfaceLease<'_> {
+impl std::fmt::Debug for DefaultSurfacePool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PoolLease")
-            .field("width", &self.width())
-            .field("height", &self.height())
+        f.debug_struct("DefaultSurfacePool")
+            .field("stats", &lock(&self.stats))
             .finish_non_exhaustive()
     }
 }
 
-// Owned surface that we can manage ourselves
-#[derive(Debug)]
-pub struct OwnedSurface {
-    surface: skia_safe::Surface,
-    kind: SurfaceKind,
-}
-
-impl OwnedSurface {
-    pub fn width(&self) -> u32 {
-        self.surface.width() as u32
-    }
-
-    pub fn height(&self) -> u32 {
-        self.surface.height() as u32
-    }
-
-    pub fn surface(&self) -> &skia_safe::Surface {
-        &self.surface
-    }
-
-    pub fn surface_mut(&mut self) -> &mut skia_safe::Surface {
-        &mut self.surface
-    }
-}
-
-impl OwnedSurface {
-    pub fn kind(&self) -> SurfaceKind {
-        self.kind
-    }
-
-    pub fn release_to(self, pool: &dyn SurfacePool) {
-        let width = self.surface.width() as u32;
-        let height = self.surface.height() as u32;
-        pool.release(self.kind, width, height, self.surface)
-    }
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
