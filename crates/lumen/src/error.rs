@@ -132,6 +132,8 @@ pub enum RenderError {
     PixelReadbackFailed { width: u32, height: u32 },
     #[error("all scratch surfaces are currently in use")]
     ScratchSurfaceUnavailable,
+    #[error("{backend} backend is busy")]
+    BackendBusy { backend: &'static str },
     #[error("render cancelled")]
     Cancelled { frame: u32 },
 }

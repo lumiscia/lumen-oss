@@ -1,3 +1,5 @@
+use wasm_bindgen::JsValue;
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use std::cell::RefCell;
 
@@ -5,7 +7,7 @@ use std::cell::RefCell;
 use js_sys::{Object, Reflect};
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsCast;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use web_sys::{CanvasRenderingContext2d, OffscreenCanvas, WebGl2RenderingContext};
@@ -59,24 +61,7 @@ thread_local! {
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn ensure_webgl_backend() {
-    WEBGL_BACKEND.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        match &*slot {
-            WebGlBackendSlot::Ready(backend) => {
-                lumen::install_webgl_context(backend.context.clone());
-            }
-            WebGlBackendSlot::Unavailable => {}
-            WebGlBackendSlot::Uninitialized => match WebGlBackendContext::new() {
-                Ok(backend) => {
-                    lumen::install_webgl_context(backend.context.clone());
-                    *slot = WebGlBackendSlot::Ready(backend);
-                }
-                Err(_) => {
-                    *slot = WebGlBackendSlot::Unavailable;
-                }
-            },
-        }
-    });
+    let _ = with_webgl_backend(|_| Ok(()));
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -84,13 +69,7 @@ pub(crate) fn draw_output_frame_to_context(
     frame: &RasterFrame,
     context: &CanvasRenderingContext2d,
 ) -> Result<(), JsValue> {
-    ensure_webgl_backend();
-    WEBGL_BACKEND.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let WebGlBackendSlot::Ready(backend) = &mut *slot else {
-            return Err(JsValue::from_str("WebGL backend is unavailable"));
-        };
-
+    with_webgl_backend(|backend| {
         let (width, height) = frame.storage_dimensions();
         backend.resize(width, height);
         lumen::present_webgl_image(&frame.image, width, height)
@@ -99,6 +78,44 @@ pub(crate) fn draw_output_frame_to_context(
             .draw_image_with_offscreen_canvas(&backend.canvas, 0.0, 0.0)
             .map_err(|error| JsValue::from(error))?;
         Ok(())
+    })
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn with_webgl_backend<T>(
+    f: impl FnOnce(&mut WebGlBackendContext) -> Result<T, JsValue>,
+) -> Result<T, JsValue> {
+    WEBGL_BACKEND.with(|slot| {
+        let mut slot = slot
+            .try_borrow_mut()
+            .map_err(|_| JsValue::from_str("WebGL backend is busy"))?;
+
+        match &mut *slot {
+            WebGlBackendSlot::Ready(backend) => {
+                lumen::install_webgl_context(backend.context.clone());
+                return f(backend);
+            }
+            WebGlBackendSlot::Unavailable => {
+                return Err(JsValue::from_str("WebGL backend is unavailable"));
+            }
+            WebGlBackendSlot::Uninitialized => {}
+        }
+
+        match WebGlBackendContext::new() {
+            Ok(backend) => {
+                *slot = WebGlBackendSlot::Ready(backend);
+            }
+            Err(_) => {
+                *slot = WebGlBackendSlot::Unavailable;
+                return Err(JsValue::from_str("WebGL backend is unavailable"));
+            }
+        }
+
+        let WebGlBackendSlot::Ready(backend) = &mut *slot else {
+            return Err(JsValue::from_str("WebGL backend is unavailable"));
+        };
+        lumen::install_webgl_context(backend.context.clone());
+        f(backend)
     })
 }
 
