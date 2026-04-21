@@ -15,7 +15,7 @@ use crate::{
     media::WasmMediaStore,
     types::FrameRequirementsPayload,
     utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
-    webgl::{draw_output_frame_to_context, ensure_webgl_backend},
+    webgl::{draw_output_frame_to_context, ensure_webgl_backend, image_frame_from_video_frame},
 };
 use web_sys::CanvasRenderingContext2d;
 
@@ -290,10 +290,26 @@ impl LumenPreviewController {
                     let steps =
                         (state.frame_accumulator_ms / target_frame_duration_ms).floor() as u32;
                     let wrapped_steps = steps % state.duration_frames.max(1);
-                    state.frame_accumulator_ms -= target_frame_duration_ms * f64::from(steps);
-                    state.current_frame =
+                    let next_accumulator =
+                        state.frame_accumulator_ms - target_frame_duration_ms * f64::from(steps);
+                    let next_frame =
                         (state.current_frame + wrapped_steps) % state.duration_frames.max(1);
-                    state.dirty = true;
+
+                    if next_frame != state.current_frame {
+                        if frame_ready(&state, &self.media, next_frame)? {
+                            state.frame_accumulator_ms = next_accumulator;
+                            state.current_frame = next_frame;
+                            state.dirty = true;
+                        } else {
+                            // Backpressure playback to match media upload/decode speed.
+                            state.last_tick_ms = Some(now_ms);
+                            state.frame_accumulator_ms = 0.0;
+                            drop(state);
+                            return Ok(false);
+                        }
+                    } else {
+                        state.frame_accumulator_ms = next_accumulator;
+                    }
                 }
             }
         } else {
@@ -301,6 +317,11 @@ impl LumenPreviewController {
         }
 
         if !state.dirty {
+            drop(state);
+            return Ok(false);
+        }
+
+        if !frame_ready(&state, &self.media, state.current_frame)? {
             drop(state);
             return Ok(false);
         }
@@ -380,8 +401,26 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "clearVideoSource")]
     pub fn clear_video_source(&self, stream_id: &str) -> Result<(), JsValue> {
         self.media
-            .clear_video_frames_for_source(stream_id)
+            .clear_video_frames_for_stream(stream_id)
             .map_err(JsValue::from_str)?;
+        if let Ok(mut state) = self.state.try_borrow_mut() {
+            state.dirty = true;
+        }
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = "removeImageSource")]
+    pub fn remove_image_source(&self, image_id: &str) -> Result<(), JsValue> {
+        self.media.remove_image(image_id).map_err(JsValue::from_str)?;
+        if let Ok(mut state) = self.state.try_borrow_mut() {
+            state.dirty = true;
+        }
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = "removeVideoSource")]
+    pub fn remove_video_source(&self, stream_id: &str) -> Result<(), JsValue> {
+        self.media.remove_video(stream_id).map_err(JsValue::from_str)?;
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.dirty = true;
         }
@@ -391,6 +430,11 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "hasImage")]
     pub fn has_image(&self, image_id: &str) -> bool {
         self.media.has_image(image_id)
+    }
+
+    #[wasm_bindgen(js_name = "hasVideoFrame")]
+    pub fn has_video_frame(&self, stream_id: &str, frame: u32) -> bool {
+        self.media.has_video_frame(stream_id, frame)
     }
 
     #[wasm_bindgen(js_name = "setImage")]
@@ -446,6 +490,29 @@ impl LumenPreviewController {
         Ok(())
     }
 
+    #[wasm_bindgen(js_name = "setVideoFrameObject")]
+    pub fn set_video_frame_object(
+        &self,
+        stream_id: &str,
+        frame: u32,
+        video_frame: &web_sys::VideoFrame,
+        width: u32,
+        height: u32,
+    ) -> Result<(), JsValue> {
+        if width == 0 || height == 0 {
+            return Err(JsValue::from_str("video frame dimensions must be > 0"));
+        }
+
+        let image = image_frame_from_video_frame(video_frame, width, height)?;
+        self.media
+            .set_video_frame(stream_id.to_string(), frame, image)
+            .map_err(JsValue::from_str)?;
+        if let Ok(mut state) = self.state.try_borrow_mut() {
+            state.dirty = true;
+        }
+        Ok(())
+    }
+
     #[wasm_bindgen(js_name = "setVideoMetadata")]
     pub fn set_video_metadata(
         &self,
@@ -483,6 +550,28 @@ fn validate_frame(state: &PreviewState, frame: u32) -> Result<(), JsValue> {
         return Err(JsValue::from_str("frame index out of range"));
     }
     Ok(())
+}
+
+fn frame_ready(
+    state: &PreviewState,
+    media: &WasmMediaStore,
+    frame: u32,
+) -> Result<bool, JsValue> {
+    let composition = state
+        .composition
+        .as_ref()
+        .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
+    let requirements = collect_frame_requirements(composition, media, frame)
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+
+    let images_ready = requirements.images.iter().all(|image_id| media.has_image(image_id));
+    let videos_ready = requirements.videos.iter().all(|video| {
+        video.frames
+            .iter()
+            .all(|required_frame| media.has_video_frame(&video.stream_id, *required_frame))
+    });
+
+    Ok(images_ready && videos_ready)
 }
 
 fn render_state(

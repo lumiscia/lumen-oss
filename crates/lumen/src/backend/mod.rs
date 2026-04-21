@@ -10,7 +10,7 @@ pub(crate) mod metal;
 #[cfg(feature = "vulkan")]
 pub(crate) mod vulkan;
 
-#[cfg(feature = "webgl")]
+#[cfg(all(feature = "webgl", target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) mod webgl;
 
 pub(crate) struct SurfaceFactory {
@@ -19,7 +19,7 @@ pub(crate) struct SurfaceFactory {
     metal: metal::MetalSurfaceFactory,
     #[cfg(feature = "vulkan")]
     vulkan: vulkan::VulkanSurfaceFactory,
-    #[cfg(feature = "webgl")]
+    #[cfg(all(feature = "webgl", target_arch = "wasm32", target_os = "unknown"))]
     webgl: webgl::WebGlSurfaceFactory,
 }
 
@@ -31,7 +31,7 @@ impl SurfaceFactory {
             metal: metal::MetalSurfaceFactory::new(),
             #[cfg(feature = "vulkan")]
             vulkan: vulkan::VulkanSurfaceFactory::new(),
-            #[cfg(feature = "webgl")]
+            #[cfg(all(feature = "webgl", target_arch = "wasm32", target_os = "unknown"))]
             webgl: webgl::WebGlSurfaceFactory::new(),
         }
     }
@@ -51,7 +51,7 @@ impl SurfaceFactory {
             return Ok(surface);
         }
 
-        #[cfg(feature = "webgl")]
+        #[cfg(all(feature = "webgl", target_arch = "wasm32", target_os = "unknown"))]
         if let Some(surface) = self.webgl.create_surface(width, height) {
             return Ok(surface);
         }
@@ -68,7 +68,7 @@ impl SurfaceFactory {
         #[cfg(feature = "vulkan")]
         self.vulkan.flush();
 
-        #[cfg(feature = "webgl")]
+        #[cfg(all(feature = "webgl", target_arch = "wasm32", target_os = "unknown"))]
         self.webgl.flush();
 
         self.software.flush();
@@ -81,7 +81,11 @@ impl Default for SurfaceFactory {
     }
 }
 
-#[cfg(any(feature = "metal", feature = "vulkan", feature = "webgl"))]
+#[cfg(any(
+    feature = "metal",
+    feature = "vulkan",
+    all(feature = "webgl", target_arch = "wasm32", target_os = "unknown")
+))]
 pub(super) fn create_gpu_surface(
     context: &mut skia_safe::gpu::DirectContext,
     width: u32,

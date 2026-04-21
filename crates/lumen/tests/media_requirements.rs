@@ -23,9 +23,9 @@ impl MediaStore for TestMediaStore {
         None
     }
 
-    fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
+    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
         Some(Box::new(TestVideoResolver {
-            id: source.to_string(),
+            id: stream_id.to_string(),
             frame_count: self.video_frame_count,
         }))
     }
@@ -85,6 +85,15 @@ fn collects_image_requirements_from_media_nodes() {
             id: media_id,
             kind: NodeProperty::Int(0),
             source: NodeProperty::String("hero-image".to_string()),
+            ..MediaIn::default()
+        }),
+    );
+    graph.nodes.insert(
+        NodeId::new(3),
+        NodeKind::MediaIn(MediaIn {
+            id: NodeId::new(3),
+            kind: NodeProperty::Int(0),
+            source: NodeProperty::String("unused-image".to_string()),
             ..MediaIn::default()
         }),
     );
@@ -156,6 +165,6 @@ fn maps_video_requirements_with_range_speed_and_looping() {
 
     assert!(requirements.images.is_empty());
     assert_eq!(requirements.videos.len(), 1);
-    assert_eq!(requirements.videos[0].source_id, "intro-video");
+    assert_eq!(requirements.videos[0].stream_id, "intro-video");
     assert_eq!(requirements.videos[0].frames, vec![12]);
 }

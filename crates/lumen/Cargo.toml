@@ -41,4 +41,5 @@ objc2 = { version = "0.6.3", optional = true }
 objc2-metal = { version = "0.3.2", optional = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-web-sys = { version = "0.3", features = ["WebGl2RenderingContext"] }
+glemu = { path = "../../../glemu", default-features = false, features = ["api", "video-frame"] }
+web-sys = { version = "0.3", features = ["VideoFrame", "WebGl2RenderingContext"] }

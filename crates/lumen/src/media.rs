@@ -8,9 +8,9 @@ use std::{
 
 use crate::{
     composition::Composition,
-    error::{LumenError, MediaError},
+    error::{GraphValidationError, LumenError, MediaError},
     expr::ExpressionContext,
-    node::{NodeKind, source::media_in},
+    node::{NodeId, NodeKind, source::media_in},
     raster::ImageFrame,
 };
 
@@ -46,7 +46,7 @@ pub trait VideoFrameResolver: Send + Sync {
 pub trait MediaStore: Send + Sync + Debug {
     fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>>;
 
-    fn get_video_resolver(&self, stream: &str) -> Option<Box<dyn VideoFrameResolver>>;
+    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -57,7 +57,7 @@ pub struct FrameRequirements {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoFrameRequirement {
-    pub source_id: String,
+    pub stream_id: String,
     pub frames: Vec<u32>,
 }
 
@@ -79,24 +79,29 @@ pub fn collect_frame_requirements<M: MediaStore>(
     let mut images = BTreeSet::new();
     let mut videos: HashMap<String, BTreeSet<u32>> = HashMap::new();
 
-    for node in composition.graph.nodes.values() {
+    let required_nodes = reachable_output_nodes(composition)?;
+
+    for node_id in required_nodes {
+        let Some(node) = composition.graph.nodes.get(&node_id) else {
+            continue;
+        };
         let NodeKind::MediaIn(media_in_node) = node else {
             continue;
         };
 
         match media_in::resolve_for_context(media_in_node, &expr_context)? {
-            media_in::MediaInKind::Image { source } => {
-                images.insert(source);
+            media_in::MediaInKind::Image { image_id } => {
+                images.insert(image_id);
             }
             media_in::MediaInKind::Video {
-                source,
+                stream_id,
                 range,
                 speed,
                 loop_mode,
             } => {
-                let resolver = media_store.get_video_resolver(&source).ok_or_else(|| {
+                let resolver = media_store.get_video_resolver(&stream_id).ok_or_else(|| {
                     MediaError::SourceNotFound {
-                        media_source: source.clone(),
+                        media_source: stream_id.clone(),
                     }
                 })?;
                 let metadata = resolver.metadata();
@@ -108,19 +113,19 @@ pub fn collect_frame_requirements<M: MediaStore>(
                     loop_mode,
                 )
                 .ok_or_else(|| MediaError::FrameOutOfRange {
-                    media_source: source.clone(),
+                    media_source: stream_id.clone(),
                     frame,
                     frame_count: metadata.frame_count,
                 })?;
-                videos.entry(source).or_default().insert(source_frame);
+                videos.entry(stream_id).or_default().insert(source_frame);
             }
         }
     }
 
     let videos = videos
         .into_iter()
-        .map(|(source_id, frames)| VideoFrameRequirement {
-            source_id,
+        .map(|(stream_id, frames)| VideoFrameRequirement {
+            stream_id,
             frames: frames.into_iter().collect(),
         })
         .collect();
@@ -129,6 +134,39 @@ pub fn collect_frame_requirements<M: MediaStore>(
         images: images.into_iter().collect(),
         videos,
     })
+}
+
+fn reachable_output_nodes(composition: &Composition) -> Result<BTreeSet<NodeId>, LumenError> {
+    let mut media_outputs = composition
+        .graph
+        .nodes
+        .iter()
+        .filter_map(|(node_id, node)| matches!(node, NodeKind::MediaOutput(_)).then_some(*node_id));
+    let Some(output_node_id) = media_outputs.next() else {
+        return Err(GraphValidationError::MissingMediaOutput.into());
+    };
+    if media_outputs.next().is_some() {
+        return Err(GraphValidationError::MultipleMediaOutputs { count: 2 }.into());
+    }
+
+    let mut visited = BTreeSet::new();
+    visit_upstream(composition, output_node_id, &mut visited);
+    Ok(visited)
+}
+
+fn visit_upstream(composition: &Composition, node_id: NodeId, visited: &mut BTreeSet<NodeId>) {
+    if !visited.insert(node_id) {
+        return;
+    }
+
+    for connection in composition
+        .graph
+        .connections
+        .iter()
+        .filter(|connection| connection.to_node == node_id)
+    {
+        visit_upstream(composition, connection.from_node, visited);
+    }
 }
 
 pub fn premultiply_rgba_in_place_if_needed(pixels: &mut [u8]) {

@@ -36,7 +36,7 @@ impl MediaStore for NullMediaStore {
     }
     fn get_video_resolver(
         &self,
-        _stream: &str,
+        _stream_id: &str,
     ) -> Option<Box<dyn lumen::media::VideoFrameResolver>> {
         None
     }

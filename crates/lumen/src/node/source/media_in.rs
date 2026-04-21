@@ -30,10 +30,10 @@ impl LoopMode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaInKind {
     Image {
-        source: String,
+        image_id: String,
     },
     Video {
-        source: String,
+        stream_id: String,
         range: Option<Range<u32>>,
         speed: f32,
         loop_mode: LoopMode,
@@ -84,10 +84,10 @@ impl MediaIn {
         let loop_mode = LoopMode::from_int(self.resolve_loop_mode(ctx)?);
 
         let media = if kind == 0 {
-            MediaInKind::Image { source }
+            MediaInKind::Image { image_id: source }
         } else {
             MediaInKind::Video {
-                source,
+                stream_id: source,
                 range: resolve_range(range_start, range_end),
                 speed,
                 loop_mode,
@@ -95,13 +95,13 @@ impl MediaIn {
         };
 
         match &media {
-            MediaInKind::Image { source } => evaluate_image(source, ctx),
+            MediaInKind::Image { image_id } => evaluate_image(image_id, ctx),
             MediaInKind::Video {
-                source,
+                stream_id,
                 range,
                 speed,
                 loop_mode,
-            } => evaluate_video(source, range.as_ref(), *speed, *loop_mode, ctx),
+            } => evaluate_video(stream_id, range.as_ref(), *speed, *loop_mode, ctx),
         }
     }
 }
@@ -126,10 +126,10 @@ pub fn resolve_for_context(
     )?);
 
     if kind == 0 {
-        Ok(MediaInKind::Image { source })
+        Ok(MediaInKind::Image { image_id: source })
     } else {
         Ok(MediaInKind::Video {
-            source,
+            stream_id: source,
             range: resolve_range(range_start, range_end),
             speed,
             loop_mode,
@@ -144,15 +144,15 @@ pub fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
 }
 
 fn evaluate_image<S: SurfacePool, M: MediaStore>(
-    source: &str,
+    image_id: &str,
     ctx: &mut RenderContext<'_, S, M>,
 ) -> crate::Result<RasterFrame> {
     let resolver = ctx
         .renderer
         .media_store
-        .get_image_resolver(source)
+        .get_image_resolver(image_id)
         .ok_or_else(|| MediaError::SourceNotFound {
-            media_source: source.to_string(),
+            media_source: image_id.to_string(),
         })?;
     let _meta = resolver.metadata();
     let decoded = resolver.resolve_image()?;
@@ -160,7 +160,7 @@ fn evaluate_image<S: SurfacePool, M: MediaStore>(
 }
 
 fn evaluate_video<S: SurfacePool, M: MediaStore>(
-    source: &str,
+    stream_id: &str,
     range: Option<&Range<u32>>,
     speed: f32,
     loop_mode: LoopMode,
@@ -169,15 +169,15 @@ fn evaluate_video<S: SurfacePool, M: MediaStore>(
     let resolver = ctx
         .renderer
         .media_store
-        .get_video_resolver(source)
+        .get_video_resolver(stream_id)
         .ok_or_else(|| MediaError::SourceNotFound {
-            media_source: source.to_string(),
+            media_source: stream_id.to_string(),
         })?;
     let meta = resolver.metadata();
     let frame_count = meta.frame_count;
     let source_frame = map_to_source_frame(ctx.frame, frame_count, range, speed, loop_mode).ok_or(
         MediaError::FrameOutOfRange {
-            media_source: source.to_string(),
+            media_source: stream_id.to_string(),
             frame: ctx.frame,
             frame_count,
         },

@@ -15,6 +15,8 @@ use web_sys::{CanvasRenderingContext2d, OffscreenCanvas, WebGl2RenderingContext}
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use lumen::raster::RasterFrame;
 
+use lumen::raster::ImageFrame;
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 enum WebGlBackendSlot {
     Uninitialized,
@@ -82,6 +84,18 @@ pub(crate) fn draw_output_frame_to_context(
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn image_frame_from_video_frame(
+    video_frame: &web_sys::VideoFrame,
+    width: u32,
+    height: u32,
+) -> Result<ImageFrame, JsValue> {
+    with_webgl_backend(|_| {
+        lumen::image_frame_from_video_frame(video_frame, width, height)
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    })
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn with_webgl_backend<T>(
     f: impl FnOnce(&mut WebGlBackendContext) -> Result<T, JsValue>,
 ) -> Result<T, JsValue> {
@@ -137,5 +151,14 @@ pub(crate) fn draw_output_frame_to_context(
     _frame: &lumen::raster::RasterFrame,
     _context: &web_sys::CanvasRenderingContext2d,
 ) -> Result<(), JsValue> {
+    Err(JsValue::from_str("WebGL backend is unavailable"))
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn image_frame_from_video_frame(
+    _video_frame: &web_sys::VideoFrame,
+    _width: u32,
+    _height: u32,
+) -> Result<ImageFrame, JsValue> {
     Err(JsValue::from_str("WebGL backend is unavailable"))
 }

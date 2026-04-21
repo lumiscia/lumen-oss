@@ -1,13 +1,13 @@
 use lumen::media::{FrameRequirements, VideoFrameRequirement};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FrameRequirementsPayload {
     pub images: Vec<String>,
     pub videos: Vec<FrameRequirementsVideoPayload>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FrameRequirementsVideoPayload {
     #[serde(rename = "streamId")]
     pub stream_id: String,
@@ -30,7 +30,7 @@ impl From<FrameRequirements> for FrameRequirementsPayload {
 impl From<VideoFrameRequirement> for FrameRequirementsVideoPayload {
     fn from(value: VideoFrameRequirement) -> Self {
         Self {
-            stream_id: value.source_id,
+            stream_id: value.stream_id,
             frames: value.frames,
         }
     }

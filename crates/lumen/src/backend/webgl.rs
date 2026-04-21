@@ -1,21 +1,15 @@
-use skia_safe::Surface;
+use std::cell::{Cell, RefCell};
+
+use skia_safe::{
+    AlphaType, Color, ColorType, Surface,
+    gpu::{self, Mipmapped, SurfaceOrigin, gl::FramebufferInfo},
+};
+use web_sys::WebGl2RenderingContext;
 
 use super::create_gpu_surface;
 use crate::error::RenderError;
+use crate::raster::ImageFrame;
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use std::cell::{Cell, RefCell};
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use skia_safe::{
-    Color, ColorType,
-    gpu::{self, SurfaceOrigin, gl::FramebufferInfo},
-};
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use web_sys::WebGl2RenderingContext;
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 thread_local! {
     static WEBGL_CONTEXT_ID: Cell<Option<u32>> = const { Cell::new(None) };
     static WEBGL_STATE: RefCell<WebGlStateSlot> = const { RefCell::new(WebGlStateSlot::Uninitialized) };
@@ -51,21 +45,18 @@ impl WebGlSurfaceFactory {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 struct WebGlState {
     context: skia_safe::gpu::DirectContext,
     context_id: u32,
     presentation_surface: Option<PresentationSurface>,
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 struct PresentationSurface {
     width: u32,
     height: u32,
     surface: Surface,
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub fn install_webgl_context(context: WebGl2RenderingContext) {
     let context_id = WEBGL_CONTEXT_ID.with(|slot| {
         if let Some(context_id) = slot.get() {
@@ -79,7 +70,6 @@ pub fn install_webgl_context(context: WebGl2RenderingContext) {
     skia_safe::gpu::gl::set_gl_context(context_id);
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub fn present_webgl_image(image: &skia_safe::Image, width: u32, height: u32) -> crate::Result<()> {
     match with_state_mut(|state| state.present_image(image, width, height))? {
         Some(result) => Ok(result?),
@@ -87,11 +77,33 @@ pub fn present_webgl_image(image: &skia_safe::Image, width: u32, height: u32) ->
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn with_webgl_surface_context<T>(
+    width: u32,
+    height: u32,
+    f: impl FnOnce(&mut skia_safe::gpu::DirectContext) -> crate::Result<T>,
+) -> crate::Result<T> {
+    match with_state_mut(|state| {
+        state.make_current();
+        f(&mut state.context)
+    })? {
+        Some(result) => result,
+        None => Err(RenderError::SurfaceAllocation { width, height }.into()),
+    }
+}
+
+pub fn image_frame_from_video_frame(
+    video_frame: &web_sys::VideoFrame,
+    width: u32,
+    height: u32,
+) -> crate::Result<ImageFrame> {
+    match with_state_mut(|state| state.image_frame_from_video_frame(video_frame, width, height))? {
+        Some(result) => result,
+        None => Err(RenderError::SurfaceAllocation { width, height }.into()),
+    }
+}
+
 impl WebGlState {
     fn try_create() -> Option<Self> {
-        use skia_safe::gpu;
-
         let context_id = WEBGL_CONTEXT_ID.with(Cell::get)?;
         skia_safe::gpu::gl::set_gl_context(context_id);
         let interface = gpu::gl::Interface::new_web_sys()?;
@@ -148,9 +160,68 @@ impl WebGlState {
         context.flush_and_submit_surface(surface, None);
         Ok(())
     }
+
+    fn image_frame_from_video_frame(
+        &mut self,
+        video_frame: &web_sys::VideoFrame,
+        width: u32,
+        height: u32,
+    ) -> crate::Result<ImageFrame> {
+        self.make_current();
+
+        let texture_width = i32::try_from(width.max(1))
+            .map_err(|_| RenderError::SurfaceAllocation { width, height })?;
+        let texture_height = i32::try_from(height.max(1))
+            .map_err(|_| RenderError::SurfaceAllocation { width, height })?;
+        let gl = glemu::Context::current().ok_or(RenderError::SurfaceAllocation { width, height })?;
+        let texture = gl
+            .create_texture()
+            .ok_or(RenderError::SurfaceAllocation { width, height })?;
+        let webgl = gl.webgl2_context();
+
+        gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, Some(texture));
+        webgl.pixel_storei(WebGl2RenderingContext::UNPACK_FLIP_Y_WEBGL, 0);
+        gl.tex_image_2d_with_video_frame_and_width_and_height(
+            WebGl2RenderingContext::TEXTURE_2D,
+            0,
+            WebGl2RenderingContext::RGBA as i32,
+            texture_width,
+            texture_height,
+            WebGl2RenderingContext::RGBA,
+            WebGl2RenderingContext::UNSIGNED_BYTE,
+            video_frame,
+        )
+        .map_err(|_| RenderError::SurfaceAllocation { width, height })?;
+
+        let texture_info = gpu::gl::TextureInfo {
+            target: WebGl2RenderingContext::TEXTURE_2D,
+            id: texture.raw_id(),
+            format: gpu::gl::Format::RGBA8.into(),
+            protected: gpu::Protected::No,
+        };
+        let backend_texture = unsafe {
+            gpu::backend_textures::make_gl(
+                (texture_width, texture_height),
+                Mipmapped::No,
+                texture_info,
+                "lumen-video-frame",
+            )
+        };
+        let image = gpu::images::adopt_texture_from(
+            &mut self.context,
+            &backend_texture,
+            SurfaceOrigin::TopLeft,
+            ColorType::RGBA8888,
+            AlphaType::Premul,
+            None,
+        )
+        .ok_or(RenderError::SurfaceAllocation { width, height })?;
+
+        self.context.flush_and_submit();
+        Ok(ImageFrame::image(image, width, height))
+    }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn create_presentation_surface(
     context: &mut skia_safe::gpu::DirectContext,
     width: u32,
@@ -184,7 +255,6 @@ fn create_presentation_surface(
     .ok_or(RenderError::SurfaceAllocation { width, height })
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn with_state_mut<T>(f: impl FnOnce(&mut WebGlState) -> T) -> Result<Option<T>, RenderError> {
     WEBGL_STATE.with(|slot| {
         let mut slot = slot
@@ -201,32 +271,4 @@ fn with_state_mut<T>(f: impl FnOnce(&mut WebGlState) -> T) -> Result<Option<T>, 
             WebGlStateSlot::Uninitialized | WebGlStateSlot::Unavailable => Ok(None),
         }
     })
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-struct WebGlState {
-    context: skia_safe::gpu::DirectContext,
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-impl WebGlState {
-    fn try_create() -> Option<Self> {
-        None
-    }
-
-    fn make_current(&self) {}
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn present_webgl_image(
-    _image: &skia_safe::Image,
-    width: u32,
-    height: u32,
-) -> crate::Result<()> {
-    Err(crate::error::RenderError::SurfaceAllocation { width, height }.into())
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-fn with_state_mut<T>(_f: impl FnOnce(&mut WebGlState) -> T) -> Result<Option<T>, RenderError> {
-    Ok(None)
 }
