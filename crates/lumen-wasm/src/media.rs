@@ -11,6 +11,7 @@ use lumen::{
 use wasm_bindgen::prelude::*;
 
 use crate::utils::{image_frame_from_rgba, validate_rgba_len};
+use crate::webgl::image_frame_from_video_frame;
 
 const DEFAULT_VIDEO_FRAME_CAPACITY: usize = 96;
 
@@ -35,6 +36,10 @@ impl VideoFrameCache {
     pub fn clear(&mut self) {
         self.order.clear();
         self.entries.clear();
+    }
+
+    pub fn contains(&self, frame: u32) -> bool {
+        self.entries.contains_key(&frame)
     }
 
     pub fn get(&self, frame: u32) -> Option<Arc<ImageFrame>> {
@@ -130,24 +135,51 @@ impl WasmMediaStore {
         Ok(())
     }
 
-    pub fn clear_video_frames_for_source(&self, source: &str) -> Result<(), &'static str> {
+    pub fn clear_video_frames_for_stream(&self, stream_id: &str) -> Result<(), &'static str> {
         let mut videos = self
             .inner
             .videos
             .write()
             .map_err(|_| "media store lock poisoned")?;
-        if let Some(video) = videos.get_mut(source) {
+        if let Some(video) = videos.get_mut(stream_id) {
             video.frames.clear();
         }
         Ok(())
     }
 
-    pub fn has_image(&self, source: &str) -> bool {
+    pub fn remove_image(&self, image_id: &str) -> Result<(), &'static str> {
+        self.inner
+            .images
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .remove(image_id);
+        Ok(())
+    }
+
+    pub fn remove_video(&self, stream_id: &str) -> Result<(), &'static str> {
+        self.inner
+            .videos
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .remove(stream_id);
+        Ok(())
+    }
+
+    pub fn has_image(&self, image_id: &str) -> bool {
         self.inner
             .images
             .read()
             .ok()
-            .is_some_and(|images| images.contains_key(source))
+            .is_some_and(|images| images.contains_key(image_id))
+    }
+
+    pub fn has_video_frame(&self, stream_id: &str, frame: u32) -> bool {
+        let Ok(videos) = self.inner.videos.read() else {
+            return false;
+        };
+        videos
+            .get(stream_id)
+            .is_some_and(|video| video.frames.contains(frame))
     }
 
     pub fn set_image(&self, source: String, frame: ImageFrame) -> Result<(), &'static str> {
@@ -171,7 +203,7 @@ impl WasmMediaStore {
 
     pub fn set_video_metadata(
         &self,
-        source: String,
+        stream_id: String,
         metadata: VideoMetadata,
     ) -> Result<(), &'static str> {
         let mut videos = self
@@ -179,14 +211,14 @@ impl WasmMediaStore {
             .videos
             .write()
             .map_err(|_| "media store lock poisoned")?;
-        let entry = videos.entry(source).or_default();
+        let entry = videos.entry(stream_id).or_default();
         entry.metadata = metadata;
         Ok(())
     }
 
     pub fn set_video_frame(
         &self,
-        source: String,
+        stream_id: String,
         frame: u32,
         image: ImageFrame,
     ) -> Result<(), &'static str> {
@@ -195,7 +227,7 @@ impl WasmMediaStore {
             .videos
             .write()
             .map_err(|_| "media store lock poisoned")?;
-        let entry = videos.entry(source).or_default();
+        let entry = videos.entry(stream_id).or_default();
         entry.metadata.width = image.storage_width;
         entry.metadata.height = image.storage_height;
         entry.metadata.frame_count = entry.metadata.frame_count.max(frame.saturating_add(1));
@@ -205,21 +237,17 @@ impl WasmMediaStore {
 }
 
 impl MediaStore for WasmMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
-        let images = self.inner.images.read().ok()?;
-        let entry = images.get(source)?.clone();
+    fn get_image_resolver(&self, image_id: &str) -> Option<Box<dyn ImageResolver>> {
         Some(Box::new(WasmImageResolver {
-            id: source.to_string(),
-            entry,
+            id: image_id.to_string(),
+            store: Arc::clone(&self.inner),
         }))
     }
 
-    fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        let videos = self.inner.videos.read().ok()?;
-        let entry = videos.get(source)?.clone();
+    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
         Some(Box::new(WasmVideoResolver {
-            id: source.to_string(),
-            entry,
+            id: stream_id.to_string(),
+            store: Arc::clone(&self.inner),
         }))
     }
 }
@@ -229,7 +257,7 @@ impl MediaStore for WasmMediaStore {
 #[derive(Clone)]
 struct WasmImageResolver {
     id: String,
-    entry: StoredImage,
+    store: Arc<WasmMediaStoreInner>,
 }
 
 impl ImageResolver for WasmImageResolver {
@@ -238,18 +266,33 @@ impl ImageResolver for WasmImageResolver {
     }
 
     fn metadata(&self) -> ImageMetadata {
-        self.entry.metadata
+        self.store
+            .images
+            .read()
+            .ok()
+            .and_then(|images| images.get(&self.id).map(|entry| entry.metadata))
+            .unwrap_or_default()
     }
 
     fn resolve_image(&self) -> Result<Arc<ImageFrame>, MediaError> {
-        Ok(Arc::clone(&self.entry.frame))
+        self.store
+            .images
+            .read()
+            .map_err(|_| MediaError::SourceNotFound {
+                media_source: self.id.clone(),
+            })?
+            .get(&self.id)
+            .map(|entry| Arc::clone(&entry.frame))
+            .ok_or_else(|| MediaError::SourceNotFound {
+                media_source: self.id.clone(),
+            })
     }
 }
 
 #[derive(Clone)]
 struct WasmVideoResolver {
     id: String,
-    entry: StoredVideo,
+    store: Arc<WasmMediaStoreInner>,
 }
 
 impl VideoFrameResolver for WasmVideoResolver {
@@ -258,18 +301,26 @@ impl VideoFrameResolver for WasmVideoResolver {
     }
 
     fn metadata(&self) -> VideoMetadata {
-        self.entry.metadata
+        self.store
+            .videos
+            .read()
+            .ok()
+            .and_then(|videos| videos.get(&self.id).map(|entry| entry.metadata))
+            .unwrap_or_default()
     }
 
     fn resolve_frame_image(&self, frame: u32) -> Result<Arc<ImageFrame>, MediaError> {
-        self.entry
-            .frames
-            .get(frame)
-            .ok_or(MediaError::FrameOutOfRange {
-                media_source: self.id.clone(),
-                frame,
-                frame_count: self.entry.metadata.frame_count,
-            })
+        let videos = self.store.videos.read().map_err(|_| MediaError::SourceNotFound {
+            media_source: self.id.clone(),
+        })?;
+        let entry = videos.get(&self.id).ok_or_else(|| MediaError::SourceNotFound {
+            media_source: self.id.clone(),
+        })?;
+        entry.frames.get(frame).ok_or(MediaError::FrameOutOfRange {
+            media_source: self.id.clone(),
+            frame,
+            frame_count: entry.metadata.frame_count,
+        })
     }
 }
 
@@ -290,26 +341,39 @@ impl LumenMediaStore {
     }
 
     pub fn clear(&self) -> Result<(), JsValue> {
-        self.store.clear().map_err(|e| JsValue::from_str(e))
+        self.store.clear().map_err(JsValue::from_str)
     }
 
     #[wasm_bindgen(js_name = "clearVideos")]
     pub fn clear_videos(&self) -> Result<(), JsValue> {
-        self.store
-            .clear_video_frames()
-            .map_err(|e| JsValue::from_str(e))
+        self.store.clear_video_frames().map_err(JsValue::from_str)
     }
 
     #[wasm_bindgen(js_name = "clearVideoSource")]
     pub fn clear_video_source(&self, stream_id: &str) -> Result<(), JsValue> {
         self.store
-            .clear_video_frames_for_source(stream_id)
-            .map_err(|e| JsValue::from_str(e))
+            .clear_video_frames_for_stream(stream_id)
+            .map_err(JsValue::from_str)
+    }
+
+    #[wasm_bindgen(js_name = "removeImageSource")]
+    pub fn remove_image_source(&self, image_id: &str) -> Result<(), JsValue> {
+        self.store.remove_image(image_id).map_err(JsValue::from_str)
+    }
+
+    #[wasm_bindgen(js_name = "removeVideoSource")]
+    pub fn remove_video_source(&self, stream_id: &str) -> Result<(), JsValue> {
+        self.store.remove_video(stream_id).map_err(JsValue::from_str)
     }
 
     #[wasm_bindgen(js_name = "hasImage")]
     pub fn has_image(&self, image_id: &str) -> bool {
         self.store.has_image(image_id)
+    }
+
+    #[wasm_bindgen(js_name = "hasVideoFrame")]
+    pub fn has_video_frame(&self, stream_id: &str, frame: u32) -> bool {
+        self.store.has_video_frame(stream_id, frame)
     }
 
     #[wasm_bindgen(js_name = "setImage")]
@@ -327,10 +391,10 @@ impl LumenMediaStore {
             return Err(JsValue::from_str("invalid image rgba buffer length"));
         }
         let frame = image_frame_from_rgba(width, height, rgba.to_vec())
-            .map_err(|e| JsValue::from_str(&e))?;
+            .map_err(|error| JsValue::from_str(&error))?;
         self.store
             .set_image(image_id.to_string(), frame)
-            .map_err(|e| JsValue::from_str(e))
+            .map_err(JsValue::from_str)
     }
 
     #[wasm_bindgen(js_name = "setVideoFrame")]
@@ -349,10 +413,28 @@ impl LumenMediaStore {
             return Err(JsValue::from_str("invalid video rgba buffer length"));
         }
         let image = image_frame_from_rgba(width, height, rgba.to_vec())
-            .map_err(|e| JsValue::from_str(&e))?;
+            .map_err(|error| JsValue::from_str(&error))?;
         self.store
             .set_video_frame(stream_id.to_string(), frame, image)
-            .map_err(|e| JsValue::from_str(e))
+            .map_err(JsValue::from_str)
+    }
+
+    #[wasm_bindgen(js_name = "setVideoFrameObject")]
+    pub fn set_video_frame_object(
+        &self,
+        stream_id: &str,
+        frame: u32,
+        video_frame: &web_sys::VideoFrame,
+        width: u32,
+        height: u32,
+    ) -> Result<(), JsValue> {
+        if width == 0 || height == 0 {
+            return Err(JsValue::from_str("video frame dimensions must be > 0"));
+        }
+        let image = image_frame_from_video_frame(video_frame, width, height)?;
+        self.store
+            .set_video_frame(stream_id.to_string(), frame, image)
+            .map_err(JsValue::from_str)
     }
 
     #[wasm_bindgen(js_name = "setVideoMetadata")]
@@ -375,7 +457,7 @@ impl LumenMediaStore {
                     frame_count,
                 },
             )
-            .map_err(|e| JsValue::from_str(e))
+            .map_err(JsValue::from_str)
     }
 }
 
@@ -402,7 +484,8 @@ mod tests {
                 },
             )
             .expect("set metadata");
-        let frame = crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
+        let frame =
+            crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
         store
             .set_video_frame("intro".to_string(), 0, frame)
             .expect("set frame");

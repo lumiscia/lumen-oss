@@ -1,0 +1,29 @@
+{
+  "name": "lumen-wasm",
+  "version": "0.1.0",
+  "files": [
+    "src/**/*.ts",
+    "src/internal/lumen_wasm_bg.wasm",
+    "src/internal/lumen_wasm.js",
+    "src/internal/lumen_wasm_bg.js",
+    "src/internal/lumen_wasm.d.ts",
+    "src/internal/lumen_wasm_bg.wasm.d.ts"
+  ],
+  "type": "module",
+  "sideEffects": [
+    "./src/index.ts",
+    "./src/internal/lumen_wasm.js",
+    "./src/internal/snippets/*"
+  ],
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "mediabunny": "^1.40.1"
+  }
+}
