@@ -29,5 +29,4 @@ dist-ssr
 target
 tmp
 
-packages/lumen-wasm
 packages/lumen-node-specs
