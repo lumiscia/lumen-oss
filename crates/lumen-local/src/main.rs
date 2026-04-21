@@ -53,8 +53,8 @@ impl MediaStore for LocalMediaStore {
             .map(|r| Box::new(r) as _)
     }
 
-    fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        let resolved = self.resolve_source(source)?;
+    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        let resolved = self.resolve_source(stream_id)?;
         FfmpegVideoResolver::open(resolved)
             .ok()
             .map(|r| Box::new(r) as _)

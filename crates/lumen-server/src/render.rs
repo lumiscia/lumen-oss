@@ -191,7 +191,7 @@ impl MediaStore for NullMediaStore {
         None
     }
 
-    fn get_video_resolver(&self, _source: &str) -> Option<Box<dyn VideoFrameResolver>> {
+    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
         None
     }
 }
@@ -203,8 +203,8 @@ impl MediaStore for LocalMediaStore {
         Some(Box::new(SharedImageResolver(resolver)))
     }
 
-    fn get_video_resolver(&self, source: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        let resolved = self.resolve_source(source)?;
+    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        let resolved = self.resolve_source(stream_id)?;
         let resolver = self.video_resolver(&resolved)?;
         Some(Box::new(SharedVideoResolver(resolver)))
     }
