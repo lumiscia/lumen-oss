@@ -310,12 +310,18 @@ impl VideoFrameResolver for WasmVideoResolver {
     }
 
     fn resolve_frame_image(&self, frame: u32) -> Result<Arc<ImageFrame>, MediaError> {
-        let videos = self.store.videos.read().map_err(|_| MediaError::SourceNotFound {
-            media_source: self.id.clone(),
-        })?;
-        let entry = videos.get(&self.id).ok_or_else(|| MediaError::SourceNotFound {
-            media_source: self.id.clone(),
-        })?;
+        let videos = self
+            .store
+            .videos
+            .read()
+            .map_err(|_| MediaError::SourceNotFound {
+                media_source: self.id.clone(),
+            })?;
+        let entry = videos
+            .get(&self.id)
+            .ok_or_else(|| MediaError::SourceNotFound {
+                media_source: self.id.clone(),
+            })?;
         entry.frames.get(frame).ok_or(MediaError::FrameOutOfRange {
             media_source: self.id.clone(),
             frame,
@@ -363,7 +369,9 @@ impl LumenMediaStore {
 
     #[wasm_bindgen(js_name = "removeVideoSource")]
     pub fn remove_video_source(&self, stream_id: &str) -> Result<(), JsValue> {
-        self.store.remove_video(stream_id).map_err(JsValue::from_str)
+        self.store
+            .remove_video(stream_id)
+            .map_err(JsValue::from_str)
     }
 
     #[wasm_bindgen(js_name = "hasImage")]
@@ -484,8 +492,7 @@ mod tests {
                 },
             )
             .expect("set metadata");
-        let frame =
-            crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
+        let frame = crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
         store
             .set_video_frame("intro".to_string(), 0, frame)
             .expect("set frame");

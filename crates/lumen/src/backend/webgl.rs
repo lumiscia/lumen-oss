@@ -2,7 +2,10 @@ use std::cell::{Cell, RefCell};
 
 use skia_safe::{
     AlphaType, Color, ColorType, Surface,
-    gpu::{self, Mipmapped, SurfaceOrigin, gl::FramebufferInfo},
+    gpu::{
+        self, Mipmapped, SurfaceOrigin,
+        gl::{self, FramebufferInfo},
+    },
 };
 use web_sys::WebGl2RenderingContext;
 
@@ -11,7 +14,7 @@ use crate::error::RenderError;
 use crate::raster::ImageFrame;
 
 thread_local! {
-    static WEBGL_CONTEXT_ID: Cell<Option<u32>> = const { Cell::new(None) };
+    static WEBGL_CONTEXT_ID: Cell<Option<gl::glemu::ContextId>> = const { Cell::new(None) };
     static WEBGL_STATE: RefCell<WebGlStateSlot> = const { RefCell::new(WebGlStateSlot::Uninitialized) };
 }
 
@@ -47,7 +50,7 @@ impl WebGlSurfaceFactory {
 
 struct WebGlState {
     context: skia_safe::gpu::DirectContext,
-    context_id: u32,
+    context_id: gl::glemu::ContextId,
     presentation_surface: Option<PresentationSurface>,
 }
 
@@ -58,16 +61,17 @@ struct PresentationSurface {
 }
 
 pub fn install_webgl_context(context: WebGl2RenderingContext) {
+    configure_webgl_pixel_store(&context);
     let context_id = WEBGL_CONTEXT_ID.with(|slot| {
         if let Some(context_id) = slot.get() {
             context_id
         } else {
-            let context_id = skia_safe::gpu::gl::register_gl_context(context);
+            let context_id = gl::glemu::register_gl_context(context);
             slot.set(Some(context_id));
             context_id
         }
     });
-    skia_safe::gpu::gl::set_gl_context(context_id);
+    gl::glemu::set_gl_context(context_id);
 }
 
 pub fn present_webgl_image(image: &skia_safe::Image, width: u32, height: u32) -> crate::Result<()> {
@@ -105,7 +109,7 @@ pub fn image_frame_from_video_frame(
 impl WebGlState {
     fn try_create() -> Option<Self> {
         let context_id = WEBGL_CONTEXT_ID.with(Cell::get)?;
-        skia_safe::gpu::gl::set_gl_context(context_id);
+        gl::glemu::set_gl_context(context_id);
         let interface = gpu::gl::Interface::new_web_sys()?;
         if !interface.validate() {
             return None;
@@ -120,7 +124,7 @@ impl WebGlState {
     }
 
     fn make_current(&self) {
-        skia_safe::gpu::gl::set_gl_context(self.context_id);
+        gl::glemu::set_gl_context(self.context_id);
     }
 
     fn present_image(
@@ -173,7 +177,8 @@ impl WebGlState {
             .map_err(|_| RenderError::SurfaceAllocation { width, height })?;
         let texture_height = i32::try_from(height.max(1))
             .map_err(|_| RenderError::SurfaceAllocation { width, height })?;
-        let gl = glemu::Context::current().ok_or(RenderError::SurfaceAllocation { width, height })?;
+        let gl =
+            glemu::Context::current().ok_or(RenderError::SurfaceAllocation { width, height })?;
         let texture = gl
             .create_texture()
             .ok_or(RenderError::SurfaceAllocation { width, height })?;
@@ -220,6 +225,11 @@ impl WebGlState {
         self.context.flush_and_submit();
         Ok(ImageFrame::image(image, width, height))
     }
+}
+
+fn configure_webgl_pixel_store(context: &WebGl2RenderingContext) {
+    context.pixel_storei(WebGl2RenderingContext::UNPACK_ALIGNMENT, 1);
+    context.pixel_storei(WebGl2RenderingContext::PACK_ALIGNMENT, 1);
 }
 
 fn create_presentation_surface(

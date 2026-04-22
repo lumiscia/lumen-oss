@@ -12,6 +12,7 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::{
+    debug_error, debug_log, install_panic_hook,
     media::WasmMediaStore,
     types::FrameRequirementsPayload,
     utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
@@ -142,7 +143,9 @@ pub struct LumenPreviewController {
 impl LumenPreviewController {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        install_panic_hook();
         ensure_webgl_backend();
+        debug_log("[lumen-wasm preview] controller created");
         Self {
             state: RefCell::new(PreviewState::default()),
             media: WasmMediaStore::default(),
@@ -153,6 +156,13 @@ impl LumenPreviewController {
     pub fn load_composition(&self, composition_json: &str, fps: f64) -> Result<(), JsValue> {
         let composition =
             composition_json_to_composition(composition_json).map_err(|e| JsValue::from_str(&e))?;
+        debug_log(&format!(
+            "[lumen-wasm preview] loadComposition width={} height={} duration_frames={} fps={}",
+            composition.render_settings.width,
+            composition.render_settings.height,
+            composition.timeline.duration_frames,
+            fps.max(1.0),
+        ));
 
         let mut state = self
             .state
@@ -411,7 +421,9 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "removeImageSource")]
     pub fn remove_image_source(&self, image_id: &str) -> Result<(), JsValue> {
-        self.media.remove_image(image_id).map_err(JsValue::from_str)?;
+        self.media
+            .remove_image(image_id)
+            .map_err(JsValue::from_str)?;
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.dirty = true;
         }
@@ -420,7 +432,9 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "removeVideoSource")]
     pub fn remove_video_source(&self, stream_id: &str) -> Result<(), JsValue> {
-        self.media.remove_video(stream_id).map_err(JsValue::from_str)?;
+        self.media
+            .remove_video(stream_id)
+            .map_err(JsValue::from_str)?;
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.dirty = true;
         }
@@ -552,11 +566,7 @@ fn validate_frame(state: &PreviewState, frame: u32) -> Result<(), JsValue> {
     Ok(())
 }
 
-fn frame_ready(
-    state: &PreviewState,
-    media: &WasmMediaStore,
-    frame: u32,
-) -> Result<bool, JsValue> {
+fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Result<bool, JsValue> {
     let composition = state
         .composition
         .as_ref()
@@ -564,9 +574,13 @@ fn frame_ready(
     let requirements = collect_frame_requirements(composition, media, frame)
         .map_err(|error| JsValue::from_str(&error.to_string()))?;
 
-    let images_ready = requirements.images.iter().all(|image_id| media.has_image(image_id));
+    let images_ready = requirements
+        .images
+        .iter()
+        .all(|image_id| media.has_image(image_id));
     let videos_ready = requirements.videos.iter().all(|video| {
-        video.frames
+        video
+            .frames
             .iter()
             .all(|required_frame| media.has_video_frame(&video.stream_id, *required_frame))
     });
@@ -584,14 +598,43 @@ fn render_state(
         .as_ref()
         .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
 
-    let mut core = CoreRenderer::new(composition, &state.surface_pool, media)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let raster = core
-        .render(state.current_frame)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    debug_log(&format!(
+        "[lumen-wasm preview] render_state frame={} composition={}x{} dirty={} playing={}",
+        state.current_frame,
+        composition.render_settings.width,
+        composition.render_settings.height,
+        state.dirty,
+        state.playing,
+    ));
+
+    let mut core = CoreRenderer::new(composition, &state.surface_pool, media).map_err(|e| {
+        debug_error(&format!(
+            "[lumen-wasm preview] CoreRenderer::new error: {e}"
+        ));
+        JsValue::from_str(&e.to_string())
+    })?;
+    debug_log("[lumen-wasm preview] CoreRenderer::new ok");
+    let raster = core.render(state.current_frame).map_err(|e| {
+        debug_error(&format!(
+            "[lumen-wasm preview] CoreRenderer::render frame={} error: {e}",
+            state.current_frame,
+        ));
+        JsValue::from_str(&e.to_string())
+    })?;
+    debug_log(&format!(
+        "[lumen-wasm preview] render ok storage={:?} format={:?} data={:?}",
+        raster.storage_dimensions(),
+        raster.format_rect(),
+        raster.data_rect(),
+    ));
     state.surface_pool.flush();
     let (w, h) = raster.storage_dimensions();
+    debug_log(&format!(
+        "[lumen-wasm preview] presenting raster storage={}x{} to canvas",
+        w, h,
+    ));
     draw_output_frame_to_context(&raster, context)?;
+    debug_log("[lumen-wasm preview] draw_output_frame_to_context ok");
 
     state.width = w as usize;
     state.height = h as usize;

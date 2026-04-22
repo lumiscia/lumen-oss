@@ -19,7 +19,7 @@ vulkan = ["skia-safe/vulkan", "dep:ash"]
 [dependencies]
 thiserror = "2.0.18"
 lumen-macros = { path = "../lumen-macros" }
-skia-safe = { path = "../../../rust-skia/skia-safe", default-features = true, features = [
+skia-safe = { path = "../../../rust-skia/skia-safe", default-features = false, features = [
   "textlayout",
 ] }
 ffmpeg-next = { version = "8.0", optional = true }
@@ -41,5 +41,5 @@ objc2 = { version = "0.6.3", optional = true }
 objc2-metal = { version = "0.3.2", optional = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-glemu = { path = "../../../glemu", default-features = false, features = ["api", "video-frame"] }
-web-sys = { version = "0.3", features = ["VideoFrame", "WebGl2RenderingContext"] }
+glemu = { version = "0.1.2", default-features = false, features = ["api", "video-frame"] }
+web-sys = { version = "0.3", features = ["VideoFrame", "WebGl2RenderingContext", "console"] }

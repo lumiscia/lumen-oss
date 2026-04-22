@@ -31,6 +31,18 @@
     let renderInFlight = false;
     let queuedRender: (() => Promise<void>) | null = null;
 
+    function describeError(error: unknown): string {
+        if (error instanceof Error) {
+            return error.stack ?? `${error.name}: ${error.message}`;
+        }
+        return String(error);
+    }
+
+    function reportError(scope: string, error: unknown): void {
+        console.error(`[LumenCanvas] ${scope}`, error);
+        preview.error = describeError(error);
+    }
+
     function normalizeFrame(frame: number): number {
         const totalFrames = preview.totalFrames;
         if (totalFrames <= 0) {
@@ -129,7 +141,7 @@
             preview.isPlaying = controller.isPlaying();
             preview.error = null;
         } catch (e: unknown) {
-            preview.error = e instanceof Error ? e.message : String(e);
+            reportError("renderOnce", e);
         }
     }
 
@@ -145,7 +157,7 @@
             preview.height = controller.height();
             preview.error = null;
         } catch (e: unknown) {
-            preview.error = e instanceof Error ? e.message : String(e);
+            reportError("loadComposition", e);
         }
     }
 
@@ -177,7 +189,7 @@
                         }
                         preview.error = null;
                     } catch (e: unknown) {
-                        preview.error = e instanceof Error ? e.message : String(e);
+                        reportError("animation tick", e);
                         // Don't return — keep the loop alive so transient errors
                         // (e.g. media not yet loaded) recover automatically.
                     }
@@ -204,8 +216,7 @@
                             controller.setFrame(frame);
                             await renderOnce(controller);
                         } catch (e: unknown) {
-                            preview.error =
-                                e instanceof Error ? e.message : String(e);
+                            reportError("seek render", e);
                         }
                     });
                 });
@@ -214,7 +225,7 @@
             })
             .catch((e: unknown) => {
                 if (!cancelled) {
-                    preview.error = e instanceof Error ? e.message : String(e);
+                    reportError("import lumen-wasm", e);
                 }
             });
 
@@ -223,6 +234,7 @@
             cancelAnimationFrame(rafId);
             rafId = 0;
             resetPrefetch();
+            ctrl?.clear();
             preview._detach();
             ctrl = null;
         };

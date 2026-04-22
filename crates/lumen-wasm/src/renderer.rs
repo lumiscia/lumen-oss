@@ -10,6 +10,7 @@ use lumen::{
 use wasm_bindgen::prelude::*;
 
 use crate::{
+    debug_log, install_panic_hook,
     media::LumenMediaStore,
     types::FrameRequirementsPayload,
     utils::composition_json_to_composition,
@@ -30,7 +31,9 @@ pub struct LumenRenderer {
 impl LumenRenderer {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        install_panic_hook();
         ensure_webgl_backend();
+        debug_log("[lumen-wasm renderer] renderer created");
         Self {
             composition: None,
             surface_pool: DefaultSurfacePool::new(),

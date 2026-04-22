@@ -18,6 +18,9 @@ use lumen::raster::RasterFrame;
 use lumen::raster::ImageFrame;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use crate::{debug_error, debug_log};
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 enum WebGlBackendSlot {
     Uninitialized,
     Unavailable,
@@ -46,6 +49,8 @@ impl WebGlBackendContext {
             .ok_or_else(|| JsValue::from_str("WebGL2 context is unavailable"))?
             .dyn_into::<WebGl2RenderingContext>()
             .map_err(|_| JsValue::from_str("expected a WebGl2RenderingContext"))?;
+        configure_webgl_pixel_store(&context);
+        log_pixel_store_state(&context, "new");
 
         Ok(Self { canvas, context })
     }
@@ -73,12 +78,32 @@ pub(crate) fn draw_output_frame_to_context(
 ) -> Result<(), JsValue> {
     with_webgl_backend(|backend| {
         let (width, height) = frame.storage_dimensions();
+        debug_log(&format!(
+            "[lumen-wasm webgl] draw_output_frame_to_context storage={}x{} format={:?} data={:?}",
+            width,
+            height,
+            frame.format_rect(),
+            frame.data_rect(),
+        ));
         backend.resize(width, height);
-        lumen::present_webgl_image(&frame.image, width, height)
-            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        lumen::present_webgl_image(&frame.image, width, height).map_err(|error| {
+            debug_error(&format!(
+                "[lumen-wasm webgl] present_webgl_image error storage={}x{}: {error}",
+                width, height,
+            ));
+            JsValue::from_str(&error.to_string())
+        })?;
+        debug_log("[lumen-wasm webgl] present_webgl_image ok");
         context
             .draw_image_with_offscreen_canvas(&backend.canvas, 0.0, 0.0)
-            .map_err(|error| JsValue::from(error))?;
+            .map_err(|error| {
+                debug_error(&format!(
+                    "[lumen-wasm webgl] drawImage(offscreen) error: {:?}",
+                    error
+                ));
+                JsValue::from(error)
+            })?;
+        debug_log("[lumen-wasm webgl] drawImage(offscreen) ok");
         Ok(())
     })
 }
@@ -107,6 +132,8 @@ fn with_webgl_backend<T>(
         match &mut *slot {
             WebGlBackendSlot::Ready(backend) => {
                 lumen::install_webgl_context(backend.context.clone());
+                configure_webgl_pixel_store(&backend.context);
+                log_pixel_store_state(&backend.context, "reuse");
                 return f(backend);
             }
             WebGlBackendSlot::Unavailable => {
@@ -129,8 +156,33 @@ fn with_webgl_backend<T>(
             return Err(JsValue::from_str("WebGL backend is unavailable"));
         };
         lumen::install_webgl_context(backend.context.clone());
+        configure_webgl_pixel_store(&backend.context);
+        log_pixel_store_state(&backend.context, "ready");
         f(backend)
     })
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn configure_webgl_pixel_store(context: &WebGl2RenderingContext) {
+    context.pixel_storei(WebGl2RenderingContext::UNPACK_ALIGNMENT, 1);
+    context.pixel_storei(WebGl2RenderingContext::PACK_ALIGNMENT, 1);
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn log_pixel_store_state(context: &WebGl2RenderingContext, stage: &str) {
+    let unpack_alignment = context
+        .get_parameter(WebGl2RenderingContext::UNPACK_ALIGNMENT)
+        .ok()
+        .and_then(|value| value.as_f64())
+        .unwrap_or(-1.0);
+    let pack_alignment = context
+        .get_parameter(WebGl2RenderingContext::PACK_ALIGNMENT)
+        .ok()
+        .and_then(|value| value.as_f64())
+        .unwrap_or(-1.0);
+    debug_log(&format!(
+        "[lumen-wasm webgl] pixelStore({stage}) unpack_alignment={unpack_alignment} pack_alignment={pack_alignment}"
+    ));
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
