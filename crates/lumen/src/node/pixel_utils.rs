@@ -70,6 +70,44 @@ pub fn render_to_surface_ephemeral<S: SurfacePool, M: MediaStore>(
         })
 }
 
+pub fn render_to_software_surface_ephemeral(
+    width: u32,
+    height: u32,
+    format_rect: RectI,
+    data_rect: RectI,
+    alpha_mode: AlphaMode,
+    clear_mode: ClearMode,
+    draw: impl FnOnce(&skia_safe::Canvas),
+) -> crate::Result<RasterFrame> {
+    let alloc_width = i32::try_from(width.max(1))
+        .map_err(|_| crate::error::RenderError::SurfaceAllocation { width, height })?;
+    let alloc_height = i32::try_from(height.max(1))
+        .map_err(|_| crate::error::RenderError::SurfaceAllocation { width, height })?;
+    let mut surface = skia_safe::surfaces::raster_n32_premul((alloc_width, alloc_height))
+        .ok_or(crate::error::RenderError::SurfaceAllocation { width, height })?;
+
+    {
+        let canvas = surface.canvas();
+        canvas.restore_to_count(1);
+        canvas.reset_matrix();
+        if clear_mode == ClearMode::Transparent {
+            canvas.clear(skia_safe::Color::TRANSPARENT);
+        }
+        draw(canvas);
+    }
+
+    let image = surface.image_snapshot();
+    let mut frame = crate::raster::ImageFrame::with_domain(
+        image,
+        width.max(1),
+        height.max(1),
+        format_rect,
+        data_rect,
+    );
+    frame.alpha_mode = alpha_mode;
+    Ok(frame)
+}
+
 pub fn to_skia_color(color: [u8; 4]) -> skia_safe::Color {
     skia_safe::Color::from_argb(color[3], color[0], color[1], color[2])
 }

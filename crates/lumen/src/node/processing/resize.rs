@@ -98,24 +98,30 @@ impl Resize {
 
         // Handle empty source image by returning transparent buffer
         if source_width == 0 || source_height == 0 {
-            return RasterFrame::transparent(
+            return render_to_surface_ephemeral(
                 dest_width,
                 dest_height,
+                ctx,
                 output_rect,
                 output_rect,
                 source_alpha,
+                ClearMode::Transparent,
+                |_| {},
             );
         }
 
         let (image, source_width, source_height) = match source.image_parts() {
             Some(parts) => parts,
             None => {
-                return RasterFrame::transparent(
+                return render_to_surface_ephemeral(
                     dest_width,
                     dest_height,
+                    ctx,
                     output_rect,
                     output_rect,
                     source_alpha,
+                    ClearMode::Transparent,
+                    |_| {},
                 );
             }
         };

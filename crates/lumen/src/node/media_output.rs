@@ -56,23 +56,29 @@ impl MediaOutput {
         }
 
         if target_w == 0 || target_h == 0 {
-            return RasterFrame::transparent(
-                0,
-                0,
+            return render_to_surface_ephemeral(
+                target_w.max(1),
+                target_h.max(1),
+                ctx,
                 output_rect,
                 output_rect,
                 AlphaMode::Premultiplied,
+                ClearMode::Transparent,
+                |_| {},
             );
         }
 
         let source_alpha = source.alpha_mode();
         let Some((image, storage_w, storage_h)) = source.image_parts() else {
-            return RasterFrame::transparent(
+            return render_to_surface_ephemeral(
                 target_w,
                 target_h,
+                ctx,
                 output_rect,
                 output_rect,
                 source_alpha,
+                ClearMode::Transparent,
+                |_| {},
             );
         };
 

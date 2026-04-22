@@ -77,7 +77,16 @@ impl Crop {
                 1,
                 1,
             );
-            return RasterFrame::transparent(1, 1, output_rect, output_rect, source_alpha);
+            return render_to_surface_ephemeral(
+                1,
+                1,
+                ctx,
+                output_rect,
+                output_rect,
+                source_alpha,
+                ClearMode::Transparent,
+                |_| {},
+            );
         }
 
         let crop_width = (crop_right - crop_left) as u32;
@@ -92,7 +101,16 @@ impl Crop {
         let image = match source.to_skia_image() {
             Some(img) => img,
             None => {
-                return RasterFrame::transparent(1, 1, output_rect, output_rect, source_alpha);
+                return render_to_surface_ephemeral(
+                    1,
+                    1,
+                    ctx,
+                    output_rect,
+                    output_rect,
+                    source_alpha,
+                    ClearMode::Transparent,
+                    |_| {},
+                );
             }
         };
 

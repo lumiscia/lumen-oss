@@ -1,3 +1,5 @@
+use std::cell::OnceCell;
+
 #[cfg(feature = "embed-roboto")]
 use skia_safe::textlayout::TypefaceFontProvider;
 use skia_safe::{
@@ -25,9 +27,18 @@ const EMBEDDED_ROBOTO_REGULAR: &[u8] = include_bytes!(concat!(
     "/assets/roboto/Roboto-Regular.ttf"
 ));
 
+thread_local! {
+    static TEXT_FONT_COLLECTION: OnceCell<FontCollection> = const { OnceCell::new() };
+}
+
 fn text_font_collection() -> FontCollection {
-    let font_mgr = FontMgr::default();
-    new_text_font_collection(&font_mgr)
+    TEXT_FONT_COLLECTION.with(|cell| {
+        cell.get_or_init(|| {
+            let font_mgr = FontMgr::default();
+            new_text_font_collection(&font_mgr)
+        })
+        .clone()
+    })
 }
 
 fn new_text_font_collection(default_font_mgr: &FontMgr) -> FontCollection {

@@ -3,7 +3,10 @@ use std::{collections::HashMap, ops::Range};
 use crate::{
     error::RenderError,
     media::MediaStore,
-    node::{NodeId, PortRef},
+    node::{
+        NodeId, PortRef,
+        pixel_utils::{ClearMode, render_to_surface_ephemeral},
+    },
     raster::{AlphaMode, RasterFrame, RectI},
     render::{RenderContext, surface::SurfacePool},
 };
@@ -27,7 +30,7 @@ impl Switch {
     }
 
     fn transparent_output<S: SurfacePool, M: MediaStore>(
-        ctx: &RenderContext<'_, S, M>,
+        ctx: &mut RenderContext<'_, S, M>,
     ) -> crate::Result<RasterFrame> {
         let w = ctx.renderer.composition.render_settings.width;
         let h = ctx.renderer.composition.render_settings.height;
@@ -36,12 +39,15 @@ impl Switch {
             height: h,
         })?;
         let _ = pixel_count;
-        RasterFrame::transparent(
+        render_to_surface_ephemeral(
             w,
             h,
+            ctx,
             RectI::from_size(w, h),
             RectI::from_size(w, h),
             AlphaMode::Premultiplied,
+            ClearMode::Transparent,
+            |_| {},
         )
     }
 }

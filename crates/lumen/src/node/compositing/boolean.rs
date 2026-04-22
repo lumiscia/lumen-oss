@@ -91,7 +91,16 @@ impl Boolean {
         let out_w = source_w;
         let out_h = source_h;
         if out_w == 0 || out_h == 0 {
-            return RasterFrame::transparent(0, 0, source_format, source_data, source_alpha);
+            return render_to_surface_ephemeral(
+                out_w.max(1),
+                out_h.max(1),
+                ctx,
+                source_format,
+                source_data,
+                source_alpha,
+                ClearMode::Transparent,
+                |_| {},
+            );
         }
 
         let mask_kind = MaskKind::from_int(self.resolve_mask_kind(ctx)?);

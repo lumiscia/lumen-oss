@@ -1,4 +1,7 @@
-use std::cell::OnceCell;
+use std::{
+    cell::{OnceCell, RefCell},
+    collections::HashMap,
+};
 
 use skia_safe::{
     Color, FontMgr, FontStyle,
@@ -18,10 +21,34 @@ use crate::{
 
 thread_local! {
     static EXPR_TEXT_FONT_MGR: OnceCell<FontMgr> = const { OnceCell::new() };
+    static EXPR_TEXT_FONT_COLLECTION: OnceCell<FontCollection> = const { OnceCell::new() };
+    static EXPR_TEXT_MEASURE_CACHE: RefCell<HashMap<TextMeasureCacheKey, (f64, f64)>> = RefCell::new(HashMap::new());
+}
+
+const EXPR_TEXT_MEASURE_CACHE_LIMIT: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TextMeasureCacheKey {
+    text: String,
+    font_size_bits: u64,
+    wrap_width_bits: Option<u64>,
+    fallback_width: u32,
 }
 
 fn expr_font_mgr() -> FontMgr {
     EXPR_TEXT_FONT_MGR.with(|cell| cell.get_or_init(FontMgr::default).clone())
+}
+
+fn expr_font_collection() -> FontCollection {
+    EXPR_TEXT_FONT_COLLECTION.with(|cell| {
+        cell.get_or_init(|| {
+            let font_mgr = expr_font_mgr();
+            let mut font_collection = FontCollection::new();
+            font_collection.set_default_font_manager(font_mgr, None);
+            font_collection
+        })
+        .clone()
+    })
 }
 
 fn measure_text_with_skia(
@@ -30,6 +57,16 @@ fn measure_text_with_skia(
     wrap_width: Option<f64>,
     fallback_width: u32,
 ) -> (f64, f64) {
+    let key = TextMeasureCacheKey {
+        text: text.to_string(),
+        font_size_bits: font_size.to_bits(),
+        wrap_width_bits: wrap_width.map(f64::to_bits),
+        fallback_width,
+    };
+    if let Some(cached) = EXPR_TEXT_MEASURE_CACHE.with_borrow(|cache| cache.get(&key).copied()) {
+        return cached;
+    }
+
     let mut paragraph_style = ParagraphStyle::new();
     let mut text_style = ParagraphTextStyle::new();
     text_style.set_font_size(font_size.max(1.0) as f32);
@@ -39,7 +76,7 @@ fn measure_text_with_skia(
         skia_safe::font_style::Width::NORMAL,
         skia_safe::font_style::Slant::Upright,
     ));
-    text_style.set_font_families(&["Helvetica"]);
+    text_style.set_font_families(&["Roboto", "sans-serif"]);
     paragraph_style.set_text_style(&text_style);
 
     let layout_width = wrap_width
@@ -47,9 +84,7 @@ fn measure_text_with_skia(
         .max(1.0)
         .min(f64::from(u32::MAX)) as f32;
 
-    let font_mgr = expr_font_mgr();
-    let mut font_collection = FontCollection::new();
-    font_collection.set_default_font_manager(font_mgr, None);
+    let font_collection = expr_font_collection();
     let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
     builder.push_style(&text_style);
     builder.add_text(text);
@@ -64,7 +99,14 @@ fn measure_text_with_skia(
     .max(1.0)
     .min(fallback_width.max(1) as f32);
     let height = paragraph.height().max(1.0);
-    (f64::from(width), f64::from(height))
+    let measured = (f64::from(width), f64::from(height));
+    EXPR_TEXT_MEASURE_CACHE.with_borrow_mut(|cache| {
+        if cache.len() >= EXPR_TEXT_MEASURE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, measured);
+    });
+    measured
 }
 
 pub fn evaluate_builtin(

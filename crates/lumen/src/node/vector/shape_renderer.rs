@@ -1,3 +1,5 @@
+use std::cell::OnceCell;
+
 #[cfg(feature = "embed-roboto")]
 use skia_safe::textlayout::TypefaceFontProvider;
 use skia_safe::{
@@ -27,6 +29,10 @@ const EMBEDDED_ROBOTO_REGULAR: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/roboto/Roboto-Regular.ttf"
 ));
+
+thread_local! {
+    static VECTOR_TEXT_FONT_COLLECTION: OnceCell<FontCollection> = const { OnceCell::new() };
+}
 
 #[derive(Debug, Clone, Node)]
 pub struct ShapeRenderer {
@@ -129,17 +135,38 @@ fn rasterize_vector_with_style<S: SurfacePool, M: MediaStore>(
     renderer_style: ResolvedRendererStyle,
     ctx: &mut RenderContext<'_, S, M>,
 ) -> RasterFrame {
-    match vector {
-        VectorData::Shape {
-            geometry,
-            style,
-            position,
-        } => rasterize_geometry(geometry, *position, style, renderer_style, ctx),
-        VectorData::Text(text) => rasterize_text(text, renderer_style, ctx),
-        VectorData::Group { children, position } => {
-            rasterize_group(children, *position, renderer_style, ctx)
-        }
-    }
+    let composition_width = ctx.renderer.composition.render_settings.width as f32;
+    let Some(bounds) = measure_vector_bounds(
+        vector,
+        renderer_style,
+        composition_width,
+        VectorPosition::default(),
+    ) else {
+        return transparent_frame(ctx, RectI::from_size(1, 1));
+    };
+
+    render_to_surface_ephemeral(
+        bounds.width.max(1),
+        bounds.height.max(1),
+        ctx,
+        bounds,
+        bounds,
+        AlphaMode::Premultiplied,
+        ClearMode::Transparent,
+        |canvas| {
+            draw_vector(
+                canvas,
+                vector,
+                renderer_style,
+                composition_width,
+                VectorPosition {
+                    x: -(bounds.x as f32),
+                    y: -(bounds.y as f32),
+                },
+            );
+        },
+    )
+    .unwrap_or_else(|_| transparent_frame(ctx, bounds))
 }
 
 fn resolve_renderer_style<S: SurfacePool, M: MediaStore>(
@@ -156,8 +183,13 @@ fn resolve_renderer_style<S: SurfacePool, M: MediaStore>(
 }
 
 fn vector_text_font_collection() -> FontCollection {
-    let font_mgr = FontMgr::default();
-    new_vector_text_font_collection(&font_mgr)
+    VECTOR_TEXT_FONT_COLLECTION.with(|cell| {
+        cell.get_or_init(|| {
+            let font_mgr = FontMgr::default();
+            new_vector_text_font_collection(&font_mgr)
+        })
+        .clone()
+    })
 }
 
 fn new_vector_text_font_collection(default_font_mgr: &FontMgr) -> FontCollection {
@@ -178,52 +210,6 @@ fn attach_embedded_roboto(font_collection: &mut FontCollection, default_font_mgr
     let mut provider = TypefaceFontProvider::new();
     provider.register_typeface(roboto_typeface, Some("Roboto"));
     font_collection.set_asset_font_manager(Some(provider.into()));
-}
-
-fn rasterize_geometry<S: SurfacePool, M: MediaStore>(
-    geometry: &ShapeGeometry,
-    position: VectorPosition,
-    style: &VectorStyle,
-    renderer_style: ResolvedRendererStyle,
-    ctx: &mut RenderContext<'_, S, M>,
-) -> RasterFrame {
-    let style = resolve_style(style, renderer_style);
-    let (path, width, height) = build_path(geometry);
-    let width = width.max(1);
-    let height = height.max(1);
-    let pad = draw_padding(style);
-    let bounds = positioned_bounds(width, height, position, pad);
-    render_to_surface_ephemeral(
-        bounds.width,
-        bounds.height,
-        ctx,
-        bounds.format_rect,
-        bounds.format_rect,
-        AlphaMode::Premultiplied,
-        ClearMode::Transparent,
-        |canvas| {
-            canvas.save();
-            canvas.translate((bounds.draw_x, bounds.draw_y));
-            draw_shape(canvas, &path, style);
-            canvas.restore();
-        },
-    )
-    .unwrap_or_else(|_| {
-        RasterFrame::transparent(
-            1,
-            1,
-            RectI::from_size(1, 1),
-            RectI::from_size(1, 1),
-            AlphaMode::Premultiplied,
-        )
-        .unwrap_or_else(|_| {
-            ImageFrame::new(
-                skia_safe::surfaces::raster_n32_premul((1, 1))
-                    .expect("1x1 raster surface")
-                    .image_snapshot(),
-            )
-        })
-    })
 }
 
 fn resolve_style(
@@ -255,22 +241,196 @@ fn resolve_style(
     }
 }
 
-fn rasterize_text<S: SurfacePool, M: MediaStore>(
+fn to_slant(style: crate::node::source::text::TextFontStyle) -> skia_safe::font_style::Slant {
+    match style {
+        crate::node::source::text::TextFontStyle::Normal => skia_safe::font_style::Slant::Upright,
+        crate::node::source::text::TextFontStyle::Italic => skia_safe::font_style::Slant::Italic,
+        crate::node::source::text::TextFontStyle::Oblique => skia_safe::font_style::Slant::Oblique,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TextLayoutMetrics {
+    rendered_width: u32,
+    rendered_height: u32,
+    layout_width: f32,
+    horizontal_offset: f32,
+    vertical_offset: f32,
+}
+
+fn measure_vector_bounds(
+    vector: &VectorData,
+    renderer_style: ResolvedRendererStyle,
+    composition_width: f32,
+    translation: VectorPosition,
+) -> Option<RectI> {
+    match vector {
+        VectorData::Shape {
+            geometry,
+            style,
+            position,
+        } => {
+            let style = resolve_style(style, renderer_style);
+            let (_, width, height) = build_path(geometry);
+            Some(
+                positioned_bounds(
+                    width.max(1),
+                    height.max(1),
+                    add_positions(translation, *position),
+                    draw_padding(style),
+                )
+                .format_rect,
+            )
+        }
+        VectorData::Text(text) => {
+            let style = resolve_style(&text.style, renderer_style);
+            let metrics = measure_text_layout(text, composition_width);
+            Some(
+                positioned_bounds(
+                    metrics.rendered_width.max(1),
+                    metrics.rendered_height.max(1),
+                    add_positions(translation, text.position),
+                    draw_padding(style),
+                )
+                .format_rect,
+            )
+        }
+        VectorData::Group { children, position } => children
+            .iter()
+            .filter_map(|child| {
+                measure_vector_bounds(
+                    child,
+                    renderer_style,
+                    composition_width,
+                    add_positions(translation, *position),
+                )
+            })
+            .reduce(union_rect),
+    }
+}
+
+fn draw_vector(
+    canvas: &skia_safe::Canvas,
+    vector: &VectorData,
+    renderer_style: ResolvedRendererStyle,
+    composition_width: f32,
+    translation: VectorPosition,
+) {
+    match vector {
+        VectorData::Shape {
+            geometry,
+            style,
+            position,
+        } => {
+            let style = resolve_style(style, renderer_style);
+            let (path, _, _) = build_path(geometry);
+            let position = add_positions(translation, *position);
+            canvas.save();
+            canvas.translate((position.x, position.y));
+            draw_shape(canvas, &path, style);
+            canvas.restore();
+        }
+        VectorData::Text(text) => {
+            draw_text(
+                canvas,
+                text,
+                renderer_style,
+                composition_width,
+                add_positions(translation, text.position),
+            );
+        }
+        VectorData::Group { children, position } => {
+            let translation = add_positions(translation, *position);
+            for child in children {
+                draw_vector(
+                    canvas,
+                    child,
+                    renderer_style,
+                    composition_width,
+                    translation,
+                );
+            }
+        }
+    }
+}
+
+fn draw_text(
+    canvas: &skia_safe::Canvas,
     text: &VectorTextData,
     renderer_style: ResolvedRendererStyle,
-    ctx: &mut RenderContext<'_, S, M>,
-) -> RasterFrame {
+    composition_width: f32,
+    position: VectorPosition,
+) {
     let style = resolve_style(&text.style, renderer_style);
     let text_color = if style.fill_enabled {
         style.fill_color
     } else if style.stroke_enabled {
-        // Skia paragraph text is currently rasterized as fill only here.
-        // If no fill is specified, fall back to the resolved stroke color.
         style.stroke_color
     } else {
         [0, 0, 0, 0]
     };
+    let metrics = measure_text_layout(text, composition_width);
+    let mut paragraph = build_text_paragraph(text, text_color, metrics.layout_width);
+    paragraph.layout(metrics.layout_width);
+    paragraph.paint(
+        canvas,
+        (
+            position.x - metrics.horizontal_offset,
+            position.y + metrics.vertical_offset,
+        ),
+    );
+}
 
+fn measure_text_layout(text: &VectorTextData, composition_width: f32) -> TextLayoutMetrics {
+    let layout_width = text
+        .max_width
+        .unwrap_or(composition_width)
+        .clamp(1.0, u32::MAX as f32);
+    let mut paragraph = build_text_paragraph(text, [255, 255, 255, 255], layout_width);
+    paragraph.layout(layout_width);
+
+    let rendered_width = if text.max_width.is_some() {
+        paragraph.longest_line()
+    } else {
+        paragraph.max_intrinsic_width()
+    }
+    .max(1.0)
+    .min(layout_width);
+    let horizontal_offset = match text.alignment.horizontal {
+        crate::node::source::text::TextAlignmentHorizontal::Left
+        | crate::node::source::text::TextAlignmentHorizontal::Justify => 0.0,
+        crate::node::source::text::TextAlignmentHorizontal::Center => {
+            ((layout_width - rendered_width) * 0.5).max(0.0)
+        }
+        crate::node::source::text::TextAlignmentHorizontal::Right => {
+            (layout_width - rendered_width).max(0.0)
+        }
+    };
+    let rendered_height = paragraph.height().ceil().max(1.0);
+    let vertical_offset = match text.alignment.vertical {
+        crate::node::source::text::TextAlignmentVertical::Top => 0.0,
+        crate::node::source::text::TextAlignmentVertical::Middle => {
+            (rendered_height - paragraph.height()).max(0.0) * 0.5
+        }
+        crate::node::source::text::TextAlignmentVertical::Bottom => {
+            (rendered_height - paragraph.height()).max(0.0)
+        }
+    };
+
+    TextLayoutMetrics {
+        rendered_width: rendered_width.ceil().max(1.0) as u32,
+        rendered_height: rendered_height as u32,
+        layout_width,
+        horizontal_offset,
+        vertical_offset,
+    }
+}
+
+fn build_text_paragraph(
+    text: &VectorTextData,
+    text_color: [u8; 4],
+    layout_width: f32,
+) -> skia_safe::textlayout::Paragraph {
     let mut paragraph_style = ParagraphStyle::new();
     paragraph_style.set_text_align(match text.alignment.horizontal {
         crate::node::source::text::TextAlignmentHorizontal::Left => ParagraphTextAlign::Left,
@@ -302,131 +462,20 @@ fn rasterize_text<S: SurfacePool, M: MediaStore>(
     }
 
     paragraph_style.set_text_style(&text_style);
-    let layout_width = text
-        .max_width
-        .unwrap_or(ctx.renderer.composition.render_settings.width as f32)
-        .clamp(1.0, u32::MAX as f32);
     let font_collection = vector_text_font_collection();
     let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
     builder.push_style(&text_style);
     builder.add_text(&text.content);
     let mut paragraph = builder.build();
     paragraph.layout(layout_width);
-
-    let rendered_width = if text.max_width.is_some() {
-        paragraph.longest_line()
-    } else {
-        paragraph.max_intrinsic_width()
-    }
-    .max(1.0)
-    .min(layout_width);
-    let horizontal_offset = match text.alignment.horizontal {
-        crate::node::source::text::TextAlignmentHorizontal::Left
-        | crate::node::source::text::TextAlignmentHorizontal::Justify => 0.0,
-        crate::node::source::text::TextAlignmentHorizontal::Center => {
-            ((layout_width - rendered_width) * 0.5).max(0.0)
-        }
-        crate::node::source::text::TextAlignmentHorizontal::Right => {
-            (layout_width - rendered_width).max(0.0)
-        }
-    };
-
-    let width = rendered_width.ceil().max(1.0) as u32;
-    let height = paragraph.height().ceil().max(1.0) as u32;
-    let vertical_offset = match text.alignment.vertical {
-        crate::node::source::text::TextAlignmentVertical::Top => 0.0,
-        crate::node::source::text::TextAlignmentVertical::Middle => {
-            (height as f32 - paragraph.height()).max(0.0) * 0.5
-        }
-        crate::node::source::text::TextAlignmentVertical::Bottom => {
-            (height as f32 - paragraph.height()).max(0.0)
-        }
-    };
-    let frame = render_to_surface_ephemeral(
-        width,
-        height,
-        ctx,
-        RectI::from_size(width, height),
-        RectI::from_size(width, height),
-        AlphaMode::Premultiplied,
-        ClearMode::Transparent,
-        |canvas| {
-            paragraph.paint(canvas, (-horizontal_offset, vertical_offset));
-        },
-    )
-    .unwrap_or_else(|_| transparent_frame(RectI::from_size(1, 1)));
-
-    let (text_w, text_h) = frame.dimensions();
-    let pad = draw_padding(style);
-    let bounds = positioned_bounds(text_w.max(1), text_h.max(1), text.position, pad);
-    offset_raster_into_bounds(frame, &bounds, ctx)
+    paragraph
 }
 
-fn to_slant(style: crate::node::source::text::TextFontStyle) -> skia_safe::font_style::Slant {
-    match style {
-        crate::node::source::text::TextFontStyle::Normal => skia_safe::font_style::Slant::Upright,
-        crate::node::source::text::TextFontStyle::Italic => skia_safe::font_style::Slant::Italic,
-        crate::node::source::text::TextFontStyle::Oblique => skia_safe::font_style::Slant::Oblique,
+fn add_positions(left: VectorPosition, right: VectorPosition) -> VectorPosition {
+    VectorPosition {
+        x: left.x + right.x,
+        y: left.y + right.y,
     }
-}
-
-fn rasterize_group<S: SurfacePool, M: MediaStore>(
-    children: &[VectorData],
-    group_position: VectorPosition,
-    renderer_style: ResolvedRendererStyle,
-    ctx: &mut RenderContext<'_, S, M>,
-) -> RasterFrame {
-    let mut layers = Vec::with_capacity(children.len());
-    for child in children {
-        layers.push(rasterize_vector_with_style(child, renderer_style, ctx));
-    }
-
-    if layers.is_empty() {
-        return transparent_frame(RectI::from_size(1, 1));
-    }
-    if layers.len() == 1 {
-        let single = layers.pop().expect("length checked");
-        if group_position == VectorPosition::default() {
-            return single;
-        }
-        let (w, h) = single.dimensions();
-        let bounds = positioned_bounds(w.max(1), h.max(1), group_position, 0.0);
-        return offset_raster_into_bounds(single, &bounds, ctx);
-    }
-
-    let union = layers
-        .iter()
-        .map(RasterFrame::format_rect)
-        .reduce(union_rect)
-        .unwrap_or(RectI::from_size(1, 1));
-    let translated_union = RectI::new(
-        union.x + group_position.x.floor() as i32,
-        union.y + group_position.y.floor() as i32,
-        union.width,
-        union.height,
-    );
-
-    render_to_surface_ephemeral(
-        union.width.max(1),
-        union.height.max(1),
-        ctx,
-        translated_union,
-        translated_union,
-        AlphaMode::Premultiplied,
-        ClearMode::Transparent,
-        |canvas| {
-            for layer in &layers {
-                let Some(image) = layer.to_skia_image() else {
-                    continue;
-                };
-                let layer_rect = layer.format_rect();
-                let offset_x = (layer_rect.x - union.x) as f32;
-                let offset_y = (layer_rect.y - union.y) as f32;
-                canvas.draw_image(&image, (offset_x, offset_y), None);
-            }
-        },
-    )
-    .unwrap_or_else(|_| transparent_frame(translated_union))
 }
 
 fn draw_shape(canvas: &skia_safe::Canvas, path: &Path, style: ResolvedVectorStyle) {
@@ -450,10 +499,6 @@ fn draw_shape(canvas: &skia_safe::Canvas, path: &Path, style: ResolvedVectorStyl
 
 #[derive(Debug, Clone, Copy)]
 struct PositionedRasterBounds {
-    width: u32,
-    height: u32,
-    draw_x: f32,
-    draw_y: f32,
     format_rect: RectI,
 }
 
@@ -479,21 +524,23 @@ fn positioned_bounds(
     let width = (max_x - min_x).max(1) as u32;
     let height = (max_y - min_y).max(1) as u32;
     PositionedRasterBounds {
-        width,
-        height,
-        draw_x: position.x - min_x as f32,
-        draw_y: position.y - min_y as f32,
         format_rect: RectI::new(min_x, min_y, width, height),
     }
 }
 
-fn transparent_frame(format_rect: RectI) -> RasterFrame {
-    RasterFrame::transparent(
-        format_rect.width,
-        format_rect.height,
+fn transparent_frame<S: SurfacePool, M: MediaStore>(
+    ctx: &mut RenderContext<'_, S, M>,
+    format_rect: RectI,
+) -> RasterFrame {
+    render_to_surface_ephemeral(
+        format_rect.width.max(1),
+        format_rect.height.max(1),
+        ctx,
         format_rect,
         format_rect,
         AlphaMode::Premultiplied,
+        ClearMode::Transparent,
+        |_| {},
     )
     .unwrap_or_else(|_| {
         ImageFrame::new(
@@ -522,7 +569,7 @@ fn clip_raster_to_output_rect<S: SurfacePool, M: MediaStore>(
     }
 
     let Some(clipped_rect) = source_format.intersect(&output_rect) else {
-        return transparent_frame(RectI::new(output_rect.x, output_rect.y, 0, 0));
+        return transparent_frame(ctx, RectI::new(output_rect.x, output_rect.y, 0, 0));
     };
 
     if clipped_rect == source_format {
@@ -531,7 +578,7 @@ fn clip_raster_to_output_rect<S: SurfacePool, M: MediaStore>(
 
     let source_alpha = frame.alpha_mode();
     let Some(image) = frame.to_skia_image() else {
-        return transparent_frame(clipped_rect);
+        return transparent_frame(ctx, clipped_rect);
     };
 
     let crop_left = clipped_rect.x - source_format.x;
@@ -566,34 +613,7 @@ fn clip_raster_to_output_rect<S: SurfacePool, M: MediaStore>(
             canvas.draw_image(&image, (-crop_left as f32, -crop_top as f32), None);
         },
     )
-    .unwrap_or_else(|_| transparent_frame(clipped_rect))
-}
-
-fn offset_raster_into_bounds<S: SurfacePool, M: MediaStore>(
-    frame: RasterFrame,
-    bounds: &PositionedRasterBounds,
-    ctx: &mut RenderContext<'_, S, M>,
-) -> RasterFrame {
-    let Some((image, width, height)) = frame.image_parts() else {
-        return transparent_frame(RectI::from_size(0, 0));
-    };
-    if width == 0 || height == 0 {
-        return transparent_frame(RectI::from_size(0, 0));
-    }
-
-    render_to_surface_ephemeral(
-        bounds.width,
-        bounds.height,
-        ctx,
-        bounds.format_rect,
-        bounds.format_rect,
-        frame.alpha_mode(),
-        ClearMode::Transparent,
-        |canvas| {
-            canvas.draw_image(&image, (bounds.draw_x, bounds.draw_y), None);
-        },
-    )
-    .unwrap_or_else(|_| transparent_frame(bounds.format_rect))
+    .unwrap_or_else(|_| transparent_frame(ctx, clipped_rect))
 }
 
 fn union_rect(left: RectI, right: RectI) -> RectI {

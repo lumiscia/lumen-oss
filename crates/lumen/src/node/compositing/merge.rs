@@ -86,8 +86,15 @@ impl Merge {
                 let out_data = union_rect(base_data, overlay_data);
                 let render_w = out_data.width.max(1);
                 let render_h = out_data.height.max(1);
-                return RasterFrame::transparent(
-                    render_w, render_h, out_format, out_data, base_alpha,
+                return render_to_surface_ephemeral(
+                    render_w,
+                    render_h,
+                    ctx,
+                    out_format,
+                    out_data,
+                    base_alpha,
+                    ClearMode::Transparent,
+                    |_| {},
                 );
             }
         };

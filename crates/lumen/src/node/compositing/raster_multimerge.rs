@@ -72,12 +72,15 @@ impl RasterMultiMerge {
         let Some(first) = iter.next() else {
             let w = ctx.renderer.composition.render_settings.width.max(1);
             let h = ctx.renderer.composition.render_settings.height.max(1);
-            return RasterFrame::transparent(
+            return render_to_surface_ephemeral(
                 w,
                 h,
+                ctx,
                 RectI::from_size(w, h),
                 RectI::from_size(w, h),
                 AlphaMode::Premultiplied,
+                ClearMode::Transparent,
+                |_| {},
             );
         };
 

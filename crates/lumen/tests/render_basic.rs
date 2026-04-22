@@ -16,7 +16,9 @@ use lumen::{
             transform::Transform,
         },
         source::solid_color::SolidColor,
-        vector::{shape::Shape, shape_renderer::ShapeRenderer},
+        vector::{
+            shape::Shape, shape_renderer::ShapeRenderer, vector_multimerge::VectorMultiMerge,
+        },
     },
     raster::RasterFrame,
     render::{
@@ -903,6 +905,113 @@ fn shape_rectangle_renders_through_shape_renderer() {
     for chunk in bitmap.pixels.chunks_exact(4) {
         assert_eq!(chunk, &[0, 255, 0, 255]);
     }
+}
+
+#[test]
+fn shape_renderer_group_avoids_per_child_surface_allocations() {
+    let mut graph = Graph::new();
+    let left_shape_id = node_id(1);
+    let right_shape_id = node_id(2);
+    let vector_merge_id = node_id(3);
+    let renderer_id = node_id(4);
+    let output_id = node_id(5);
+
+    graph.nodes.insert(
+        left_shape_id,
+        NodeKind::Shape(Shape {
+            id: left_shape_id,
+            geometry_kind: NodeProperty::Int(0),
+            width: NodeProperty::Int(2),
+            height: NodeProperty::Int(2),
+            position: NodeProperty::Vec2((0.0, 0.0)),
+            fill_enabled: NodeProperty::Bool(true),
+            fill_color: NodeProperty::Color([255, 0, 0, 255]),
+            ..Shape::default()
+        }),
+    );
+    graph.nodes.insert(
+        right_shape_id,
+        NodeKind::Shape(Shape {
+            id: right_shape_id,
+            geometry_kind: NodeProperty::Int(0),
+            width: NodeProperty::Int(2),
+            height: NodeProperty::Int(2),
+            position: NodeProperty::Vec2((2.0, 0.0)),
+            fill_enabled: NodeProperty::Bool(true),
+            fill_color: NodeProperty::Color([0, 0, 255, 255]),
+            ..Shape::default()
+        }),
+    );
+    graph.nodes.insert(
+        vector_merge_id,
+        NodeKind::VectorMultimerge(VectorMultiMerge {
+            id: vector_merge_id,
+            layers: vec![
+                PortRef::new(left_shape_id, "vector".to_string()),
+                PortRef::new(right_shape_id, "vector".to_string()),
+            ],
+        }),
+    );
+    graph.nodes.insert(
+        renderer_id,
+        NodeKind::ShapeRenderer(ShapeRenderer {
+            id: renderer_id,
+            vector: PortRef::new(vector_merge_id, "output".to_string()),
+            ..ShapeRenderer::default()
+        }),
+    );
+    graph.nodes.insert(
+        output_id,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output_id,
+            source: PortRef::new(renderer_id, "output".to_string()),
+        }),
+    );
+    connect(
+        &mut graph,
+        left_shape_id,
+        "vector",
+        vector_merge_id,
+        "layers",
+    );
+    connect(
+        &mut graph,
+        right_shape_id,
+        "vector",
+        vector_merge_id,
+        "layers",
+    );
+    connect(&mut graph, vector_merge_id, "output", renderer_id, "vector");
+    connect(&mut graph, renderer_id, "output", output_id, "source");
+
+    let composition = Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 30.0,
+            duration_frames: 60,
+        },
+        RenderSettings {
+            width: 4,
+            height: 2,
+            background_color: [0, 0, 0, 0],
+        },
+    );
+    let pool = DefaultSurfacePool::new();
+    let media = NullMediaStore;
+    let mut renderer = LumenRenderer::new(&composition, &pool, &media).unwrap();
+    let rendered = renderer.render(0).unwrap();
+    pool.flush();
+
+    let stats = pool.stats();
+    let bitmap = readback_frame(rendered);
+    assert_eq!(bitmap.storage_width, 4);
+    assert_eq!(bitmap.storage_height, 2);
+    assert_eq!(&bitmap.pixels[0..4], &[255, 0, 0, 255]);
+    assert_eq!(&bitmap.pixels[8..12], &[0, 0, 255, 255]);
+    assert!(
+        stats.fresh_allocations <= 2,
+        "expected grouped vector render to stay within one main render target allocation; stats={stats:?}"
+    );
 }
 
 #[test]
