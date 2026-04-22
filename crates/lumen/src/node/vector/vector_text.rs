@@ -2,8 +2,9 @@ use crate::{
     node::{
         NodeId, NodeProperty, VectorData, VectorPosition, VectorStroke, VectorStyle,
         VectorTextData,
-        source::text::{
-            TextAlignment, TextAlignmentHorizontal, TextAlignmentVertical, TextFontStyle,
+        source::{
+            text::{TextAlignment, TextAlignmentHorizontal, TextAlignmentVertical, TextFontStyle},
+            text_layout::resolved_max_width,
         },
     },
     render::RenderContext,
@@ -95,8 +96,8 @@ impl VectorText {
             font_family: self.resolve_font_family(ctx)?,
             font_size: (self.resolve_font_size(ctx)? as f32).max(1.0),
             font_weight: self.resolve_font_weight(ctx)?.clamp(0, u16::MAX as i64) as u16,
-            font_style: resolve_font_style(self.resolve_font_style(ctx)?),
-            max_width: resolve_max_width(self.resolve_max_width(ctx)? as f32),
+            font_style: TextFontStyle::from_int(self.resolve_font_style(ctx)?),
+            max_width: resolved_max_width(self.resolve_max_width(ctx)? as f32),
             alignment: TextAlignment {
                 horizontal: resolve_horizontal(self.resolve_alignment_horizontal(ctx)?),
                 vertical: resolve_vertical(self.resolve_alignment_vertical(ctx)?),
@@ -107,14 +108,6 @@ impl VectorText {
             },
             style,
         }))
-    }
-}
-
-fn resolve_font_style(value: i64) -> TextFontStyle {
-    match value {
-        1 => TextFontStyle::Italic,
-        2 => TextFontStyle::Oblique,
-        _ => TextFontStyle::Normal,
     }
 }
 
@@ -132,13 +125,5 @@ fn resolve_vertical(value: i64) -> TextAlignmentVertical {
         1 => TextAlignmentVertical::Middle,
         2 => TextAlignmentVertical::Bottom,
         _ => TextAlignmentVertical::Top,
-    }
-}
-
-fn resolve_max_width(value: f32) -> Option<f32> {
-    if value.is_finite() && value > 0.0 {
-        Some(value)
-    } else {
-        None
     }
 }

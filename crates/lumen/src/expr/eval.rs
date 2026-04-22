@@ -3,7 +3,7 @@ use crate::{
     expr::{
         ExpressionContext,
         ast::{BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
-        builtins::evaluate_builtin,
+        builtins::{evaluate_builtin, evaluate_text_measure_builtin},
     },
     node::NodeProperty,
 };
@@ -30,7 +30,10 @@ pub fn property_value_to_expression_value(value: &NodeProperty) -> crate::Result
     }
 }
 
-fn evaluate_expr(expr: &ExprNode, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
+pub(crate) fn evaluate_expr(
+    expr: &ExprNode,
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<ExpressionValue> {
     match expr {
         ExprNode::Literal(value) => Ok(value.clone()),
         ExprNode::Unary(op, value) => {
@@ -109,6 +112,12 @@ fn evaluate_expr(expr: &ExprNode, ctx: &ExpressionContext<'_>) -> crate::Result<
             }
         }
         ExprNode::Builtin(builtin, args) => {
+            if matches!(
+                builtin,
+                crate::expr::ast::BuiltinFn::TextHeight | crate::expr::ast::BuiltinFn::TextWidth
+            ) {
+                return evaluate_text_measure_builtin(*builtin, args, ctx);
+            }
             let mut evaluated_args = Vec::with_capacity(args.len());
             for arg in args {
                 evaluated_args.push(evaluate_expr(arg, ctx)?);
@@ -137,6 +146,13 @@ fn evaluate_expr(expr: &ExprNode, ctx: &ExpressionContext<'_>) -> crate::Result<
                 ),
             }))
         }
+        ExprNode::Node(node_id) => Err(LumenError::Expression(ExpressionError::Evaluate {
+            path: ctx.path.clone(),
+            details: format!(
+                "node reference `{}` can only be used in builtins that accept node references",
+                node_id.0
+            ),
+        })),
         ExprNode::NodeProperty(node_id, target_path) => {
             let graph = ctx.graph.ok_or_else(|| {
                 LumenError::Expression(ExpressionError::Evaluate {
@@ -227,7 +243,11 @@ fn node_property_type_name(value: &NodeProperty) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::ast::{BuiltinFn, ExprNode, ExpressionId};
+    use crate::{
+        expr::ast::{BuiltinFn, ExprNode, ExpressionId},
+        graph::Graph,
+        node::{NodeId, NodeKind, NodeProperty, source::text::Text},
+    };
 
     fn test_context() -> ExpressionContext<'static> {
         ExpressionContext {
@@ -321,6 +341,38 @@ mod tests {
         assert_eq!(
             stepped.evaluate(&ctx).unwrap(),
             ExpressionValue::Number(10.0)
+        );
+    }
+
+    #[test]
+    fn text_measure_builtins_can_use_node_references() {
+        let mut graph = Graph::new();
+        let mut text = Text::default();
+        text.id = NodeId::new(8);
+        text.content = NodeProperty::String("Morning, update posted.".to_string());
+        text.font_size = NodeProperty::Float(32.0);
+        text.font_weight = NodeProperty::Int(500);
+        text.max_width = NodeProperty::Float(300.0);
+        graph.nodes.insert(text.id, NodeKind::Text(text));
+
+        let ctx = ExpressionContext {
+            graph: Some(&graph),
+            ..test_context()
+        };
+
+        let from_node = Expression::parse("text_width(node(8))").unwrap();
+        let explicit = Expression::parse("text_width(node(8, \"content\"), 32, 300)").unwrap();
+        let from_node_height = Expression::parse("text_height(node(8))").unwrap();
+        let explicit_height =
+            Expression::parse("text_height(node(8, \"content\"), 32, 300)").unwrap();
+
+        assert_eq!(
+            from_node.evaluate(&ctx).unwrap(),
+            explicit.evaluate(&ctx).unwrap()
+        );
+        assert_eq!(
+            from_node_height.evaluate(&ctx).unwrap(),
+            explicit_height.evaluate(&ctx).unwrap()
         );
     }
 }

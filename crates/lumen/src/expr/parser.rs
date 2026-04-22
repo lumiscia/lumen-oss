@@ -544,10 +544,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_node_reference(&mut self, args: Vec<ExprNode>) -> Result<ExprNode, ExpressionError> {
-        if args.len() != 2 {
+        if args.is_empty() || args.len() > 2 {
             return Err(ExpressionError::Parse {
                 path: None,
-                details: "node(id, property_path) requires exactly 2 arguments".to_string(),
+                details: "node(id) or node(id, property_path) requires 1 or 2 arguments"
+                    .to_string(),
             });
         }
 
@@ -568,6 +569,11 @@ impl<'a> Parser<'a> {
                 });
             }
         };
+
+        if args.len() == 1 {
+            self.references.push(ExpressionReference::Node { node_id });
+            return Ok(ExprNode::Node(node_id));
+        }
 
         let property_path = match &args[1] {
             ExprNode::Literal(ExpressionValue::String(value)) => PropertyPath::new(value.clone()),

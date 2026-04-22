@@ -1,67 +1,17 @@
-use std::cell::OnceCell;
-
-#[cfg(feature = "embed-roboto")]
-use skia_safe::textlayout::TypefaceFontProvider;
-use skia_safe::{
-    FontMgr, FontStyle,
-    font_style::Weight,
-    textlayout::{
-        FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as ParagraphTextAlign,
-        TextStyle as ParagraphTextStyle,
-    },
-};
+use skia_safe::textlayout::Paragraph;
 
 use crate::{
     node::{
         NodeId, NodeProperty,
-        pixel_utils::{ClearMode, render_to_surface_ephemeral, to_skia_color},
+        pixel_utils::{ClearMode, render_to_surface_ephemeral},
+        source::text_layout::{TextLayoutStyle, build_paragraph, resolved_max_width},
     },
     raster::{AlphaMode, RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
 
-#[cfg(feature = "embed-roboto")]
-const EMBEDDED_ROBOTO_REGULAR: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/roboto/Roboto-Regular.ttf"
-));
-
-thread_local! {
-    static TEXT_FONT_COLLECTION: OnceCell<FontCollection> = const { OnceCell::new() };
-}
-
-fn text_font_collection() -> FontCollection {
-    TEXT_FONT_COLLECTION.with(|cell| {
-        cell.get_or_init(|| {
-            let font_mgr = FontMgr::default();
-            new_text_font_collection(&font_mgr)
-        })
-        .clone()
-    })
-}
-
-fn new_text_font_collection(default_font_mgr: &FontMgr) -> FontCollection {
-    let mut font_collection = FontCollection::new();
-    font_collection.set_default_font_manager(default_font_mgr.clone(), None);
-    #[cfg(feature = "embed-roboto")]
-    attach_embedded_roboto(&mut font_collection, default_font_mgr);
-    font_collection
-}
-
-#[cfg(feature = "embed-roboto")]
-fn attach_embedded_roboto(font_collection: &mut FontCollection, default_font_mgr: &FontMgr) {
-    let Some(roboto_typeface) = default_font_mgr.new_from_data(EMBEDDED_ROBOTO_REGULAR, None)
-    else {
-        return;
-    };
-
-    let mut provider = TypefaceFontProvider::new();
-    provider.register_typeface(roboto_typeface, Some("Roboto"));
-    font_collection.set_asset_font_manager(Some(provider.into()));
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextFontStyle {
     Normal,
     Italic,
@@ -69,7 +19,7 @@ pub enum TextFontStyle {
 }
 
 impl TextFontStyle {
-    fn from_int(value: i64) -> Self {
+    pub(crate) fn from_int(value: i64) -> Self {
         match value {
             1 => Self::Italic,
             2 => Self::Oblique,
@@ -189,43 +139,9 @@ impl Text {
         let layout_width = max_width
             .unwrap_or(ctx.renderer.composition.render_settings.width as f32)
             .clamp(1.0, u32::MAX as f32);
-
-        let mut paragraph_style = ParagraphStyle::new();
-        paragraph_style.set_text_align(match alignment.horizontal {
-            TextAlignmentHorizontal::Left => ParagraphTextAlign::Left,
-            TextAlignmentHorizontal::Center => ParagraphTextAlign::Center,
-            TextAlignmentHorizontal::Right => ParagraphTextAlign::Right,
-            TextAlignmentHorizontal::Justify => ParagraphTextAlign::Justify,
-        });
-
-        let mut text_style = ParagraphTextStyle::new();
-        text_style.set_font_size(font_size.max(1.0));
-        text_style.set_color(to_skia_color(color));
-        text_style.set_font_style(FontStyle::new(
-            Weight::from(font_weight.clamp(100, 900)),
-            skia_safe::font_style::Width::NORMAL,
-            to_slant(font_style),
-        ));
-        let requested_font_family = font_family.trim();
-        if requested_font_family.is_empty() {
-            #[cfg(feature = "embed-roboto")]
-            text_style.set_font_families(&["Roboto", "sans-serif"]);
-            #[cfg(not(feature = "embed-roboto"))]
-            text_style.set_font_families(&["sans-serif"]);
-        } else {
-            #[cfg(feature = "embed-roboto")]
-            text_style.set_font_families(&[requested_font_family, "Roboto", "sans-serif"]);
-            #[cfg(not(feature = "embed-roboto"))]
-            text_style.set_font_families(&[requested_font_family, "sans-serif"]);
-        }
-
-        paragraph_style.set_text_style(&text_style);
-
-        let font_collection = text_font_collection();
-        let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
-        builder.push_style(&text_style);
-        builder.add_text(&content);
-        let mut paragraph = builder.build();
+        let text_style = TextLayoutStyle::new(font_family, font_size, font_weight, font_style);
+        let mut paragraph: Paragraph =
+            build_paragraph(&content, &text_style, color, alignment.horizontal);
         paragraph.layout(layout_width);
 
         let rendered_width = if max_width.is_some() {
@@ -261,21 +177,5 @@ impl Text {
                 paragraph.paint(canvas, (-horizontal_offset, vertical_offset));
             },
         )
-    }
-}
-
-fn resolved_max_width(value: f32) -> Option<f32> {
-    if value.is_finite() && value > 0.0 {
-        Some(value)
-    } else {
-        None
-    }
-}
-
-fn to_slant(style: TextFontStyle) -> skia_safe::font_style::Slant {
-    match style {
-        TextFontStyle::Normal => skia_safe::font_style::Slant::Upright,
-        TextFontStyle::Italic => skia_safe::font_style::Slant::Italic,
-        TextFontStyle::Oblique => skia_safe::font_style::Slant::Oblique,
     }
 }

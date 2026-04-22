@@ -127,6 +127,7 @@ pub enum ExprNode {
     Builtin(BuiltinFn, Vec<ExprNode>),
     Global(GlobalVar),
     SymbolicPath(Vec<String>),
+    Node(NodeId),
     NodeProperty(NodeId, PropertyPath),
     VirtualProperty(VirtualPropertyId),
     Conditional(Box<ExprNode>, Box<ExprNode>, Box<ExprNode>),
@@ -134,6 +135,9 @@ pub enum ExprNode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ExpressionReference {
+    Node {
+        node_id: NodeId,
+    },
     NodeProperty {
         node_id: NodeId,
         property_path: PropertyPath,

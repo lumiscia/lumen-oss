@@ -1,113 +1,18 @@
-use std::{
-    cell::{OnceCell, RefCell},
-    collections::HashMap,
-};
-
-use skia_safe::{
-    Color, FontMgr, FontStyle,
-    font_style::Weight,
-    textlayout::{
-        FontCollection, ParagraphBuilder, ParagraphStyle, TextStyle as ParagraphTextStyle,
-    },
-};
-
 use crate::{
     error::{ExpressionError, LumenError},
     expr::{
         ExpressionContext,
-        ast::{BuiltinFn, ExpressionValue},
+        ast::{BuiltinFn, ExprNode, ExpressionValue},
+        eval::evaluate_expr,
+    },
+    node::{
+        NodeId, NodeProperty, PropertyEval,
+        source::{
+            text::TextFontStyle,
+            text_layout::{TextLayoutStyle, measure_text, resolved_max_width},
+        },
     },
 };
-
-thread_local! {
-    static EXPR_TEXT_FONT_MGR: OnceCell<FontMgr> = const { OnceCell::new() };
-    static EXPR_TEXT_FONT_COLLECTION: OnceCell<FontCollection> = const { OnceCell::new() };
-    static EXPR_TEXT_MEASURE_CACHE: RefCell<HashMap<TextMeasureCacheKey, (f64, f64)>> = RefCell::new(HashMap::new());
-}
-
-const EXPR_TEXT_MEASURE_CACHE_LIMIT: usize = 256;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct TextMeasureCacheKey {
-    text: String,
-    font_size_bits: u64,
-    wrap_width_bits: Option<u64>,
-    fallback_width: u32,
-}
-
-fn expr_font_mgr() -> FontMgr {
-    EXPR_TEXT_FONT_MGR.with(|cell| cell.get_or_init(FontMgr::default).clone())
-}
-
-fn expr_font_collection() -> FontCollection {
-    EXPR_TEXT_FONT_COLLECTION.with(|cell| {
-        cell.get_or_init(|| {
-            let font_mgr = expr_font_mgr();
-            let mut font_collection = FontCollection::new();
-            font_collection.set_default_font_manager(font_mgr, None);
-            font_collection
-        })
-        .clone()
-    })
-}
-
-fn measure_text_with_skia(
-    text: &str,
-    font_size: f64,
-    wrap_width: Option<f64>,
-    fallback_width: u32,
-) -> (f64, f64) {
-    let key = TextMeasureCacheKey {
-        text: text.to_string(),
-        font_size_bits: font_size.to_bits(),
-        wrap_width_bits: wrap_width.map(f64::to_bits),
-        fallback_width,
-    };
-    if let Some(cached) = EXPR_TEXT_MEASURE_CACHE.with_borrow(|cache| cache.get(&key).copied()) {
-        return cached;
-    }
-
-    let mut paragraph_style = ParagraphStyle::new();
-    let mut text_style = ParagraphTextStyle::new();
-    text_style.set_font_size(font_size.max(1.0) as f32);
-    text_style.set_color(Color::WHITE);
-    text_style.set_font_style(FontStyle::new(
-        Weight::from(500),
-        skia_safe::font_style::Width::NORMAL,
-        skia_safe::font_style::Slant::Upright,
-    ));
-    text_style.set_font_families(&["Roboto", "sans-serif"]);
-    paragraph_style.set_text_style(&text_style);
-
-    let layout_width = wrap_width
-        .unwrap_or(16_384.0)
-        .max(1.0)
-        .min(f64::from(u32::MAX)) as f32;
-
-    let font_collection = expr_font_collection();
-    let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
-    builder.push_style(&text_style);
-    builder.add_text(text);
-    let mut paragraph = builder.build();
-    paragraph.layout(layout_width);
-
-    let width = if wrap_width.is_some() {
-        paragraph.longest_line()
-    } else {
-        paragraph.max_intrinsic_width()
-    }
-    .max(1.0)
-    .min(fallback_width.max(1) as f32);
-    let height = paragraph.height().max(1.0);
-    let measured = (f64::from(width), f64::from(height));
-    EXPR_TEXT_MEASURE_CACHE.with_borrow_mut(|cache| {
-        if cache.len() >= EXPR_TEXT_MEASURE_CACHE_LIMIT {
-            cache.clear();
-        }
-        cache.insert(key, measured);
-    });
-    measured
-}
 
 pub fn evaluate_builtin(
     builtin: BuiltinFn,
@@ -245,70 +150,13 @@ pub fn evaluate_builtin(
             )?;
             Ok(ExpressionValue::Number(if t >= 1.0 { end } else { start }))
         }
-        BuiltinFn::TextHeight => {
-            if args.is_empty() || args.len() > 3 {
-                return Err(error("text_height expects 1 to 3 arguments".to_string()));
-            }
-            let text = to_string(
-                &args[0],
-                error("text_height expects first arg as string".to_string()),
-            )?;
-            let font_size = if args.len() == 2 {
-                to_number(
-                    &args[1],
-                    error("text_height optional second arg must be numeric font size".to_string()),
-                )?
-            } else if args.len() == 3 {
-                to_number(
-                    &args[1],
-                    error("text_height optional second arg must be numeric font size".to_string()),
-                )?
-            } else {
-                16.0
-            };
-            let wrap_width = if args.len() == 3 {
-                Some(to_number(
-                    &args[2],
-                    error("text_height optional third arg must be numeric max width".to_string()),
-                )?)
-            } else {
-                None
-            };
-            let (_, height) = measure_text_with_skia(&text, font_size, wrap_width, ctx.width);
-            Ok(ExpressionValue::Number(height))
-        }
-        BuiltinFn::TextWidth => {
-            if args.is_empty() || args.len() > 3 {
-                return Err(error("text_width expects 1 to 3 arguments".to_string()));
-            }
-            let text = to_string(
-                &args[0],
-                error("text_width expects first arg as string".to_string()),
-            )?;
-            let font_size = if args.len() == 2 {
-                to_number(
-                    &args[1],
-                    error("text_width optional second arg must be numeric font size".to_string()),
-                )?
-            } else if args.len() == 3 {
-                to_number(
-                    &args[1],
-                    error("text_width optional second arg must be numeric font size".to_string()),
-                )?
-            } else {
-                16.0
-            };
-            let wrap_width = if args.len() == 3 {
-                Some(to_number(
-                    &args[2],
-                    error("text_width optional third arg must be numeric max width".to_string()),
-                )?)
-            } else {
-                None
-            };
-            let (width, _) = measure_text_with_skia(&text, font_size, wrap_width, ctx.width);
-            Ok(ExpressionValue::Number(width))
-        }
+        BuiltinFn::TextHeight => Err(error(
+            "text_height node references should be evaluated before calling this helper"
+                .to_string(),
+        )),
+        BuiltinFn::TextWidth => Err(error(
+            "text_width node references should be evaluated before calling this helper".to_string(),
+        )),
         BuiltinFn::Uppercase => {
             expect_len(1)?;
             let input = to_string(
@@ -380,4 +228,210 @@ fn to_string(value: &ExpressionValue, _error: LumenError) -> crate::Result<Strin
         ExpressionValue::Number(number) => Ok(number.to_string()),
         ExpressionValue::Boolean(boolean) => Ok(boolean.to_string()),
     }
+}
+
+pub fn evaluate_text_measure_builtin(
+    builtin: BuiltinFn,
+    args: &[ExprNode],
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<ExpressionValue> {
+    let builtin_name = match builtin {
+        BuiltinFn::TextHeight => "text_height",
+        BuiltinFn::TextWidth => "text_width",
+        _ => unreachable!(),
+    };
+    if args.is_empty() || args.len() > 3 {
+        return Err(text_measure_error(
+            ctx,
+            format!("{builtin_name} expects 1 to 3 arguments"),
+        ));
+    }
+
+    let mut input = match args.first() {
+        Some(ExprNode::Node(node_id)) => resolve_text_measure_node(*node_id, ctx, builtin_name)?,
+        Some(arg) => TextMeasureInput {
+            text: to_string(
+                &evaluate_expr(arg, ctx)?,
+                text_measure_error(
+                    ctx,
+                    format!("{builtin_name} expects first arg as string or node reference"),
+                ),
+            )?,
+            style: TextLayoutStyle::default(),
+            wrap_width: None,
+        },
+        None => unreachable!(),
+    };
+
+    if let Some(font_size_arg) = args.get(1) {
+        input.style.font_size = to_number(
+            &evaluate_expr(font_size_arg, ctx)?,
+            text_measure_error(
+                ctx,
+                format!("{builtin_name} optional second arg must be numeric font size"),
+            ),
+        )? as f32;
+    }
+    if let Some(max_width_arg) = args.get(2) {
+        let max_width = to_number(
+            &evaluate_expr(max_width_arg, ctx)?,
+            text_measure_error(
+                ctx,
+                format!("{builtin_name} optional third arg must be numeric max width"),
+            ),
+        )? as f32;
+        input.wrap_width = resolved_max_width(max_width);
+    }
+
+    let (width, height) = measure_text(&input.text, &input.style, input.wrap_width, ctx.width);
+    Ok(ExpressionValue::Number(match builtin {
+        BuiltinFn::TextHeight => f64::from(height),
+        BuiltinFn::TextWidth => f64::from(width),
+        _ => unreachable!(),
+    }))
+}
+
+#[derive(Debug, Clone)]
+struct TextMeasureInput {
+    text: String,
+    style: TextLayoutStyle,
+    wrap_width: Option<f32>,
+}
+
+fn resolve_text_measure_node(
+    node_id: NodeId,
+    ctx: &ExpressionContext<'_>,
+    builtin_name: &str,
+) -> crate::Result<TextMeasureInput> {
+    let graph = ctx.graph.ok_or_else(|| {
+        text_measure_error(
+            ctx,
+            format!(
+                "{builtin_name} requires a graph to resolve node `{}`",
+                node_id.0
+            ),
+        )
+    })?;
+    let node = graph.nodes.get(&node_id).ok_or_else(|| {
+        text_measure_error(
+            ctx,
+            format!("{builtin_name} could not find node `{}`", node_id.0),
+        )
+    })?;
+
+    let text = resolve_required_node_string(node_id, node, "content", ctx, builtin_name)?;
+    let font_family =
+        resolve_optional_node_string(node_id, node, "font_family", ctx, builtin_name)?
+            .unwrap_or_else(|| TextLayoutStyle::default().font_family);
+    let font_size = resolve_optional_node_number(node_id, node, "font_size", ctx, builtin_name)?
+        .unwrap_or(TextLayoutStyle::default().font_size as f64) as f32;
+    let font_weight = resolve_optional_node_number(node_id, node, "font_weight", ctx, builtin_name)?
+        .unwrap_or(TextLayoutStyle::default().font_weight as f64) as i32;
+    let font_style = resolve_optional_node_number(node_id, node, "font_style", ctx, builtin_name)?
+        .map(|value| TextFontStyle::from_int(value as i64))
+        .unwrap_or(TextLayoutStyle::default().font_style);
+    let wrap_width = resolve_optional_node_number(node_id, node, "max_width", ctx, builtin_name)?
+        .map(|value| resolved_max_width(value as f32))
+        .unwrap_or(None);
+
+    Ok(TextMeasureInput {
+        text,
+        style: TextLayoutStyle::new(font_family, font_size, font_weight, font_style),
+        wrap_width,
+    })
+}
+
+fn resolve_required_node_string(
+    node_id: NodeId,
+    node: &dyn PropertyEval,
+    property_path: &str,
+    ctx: &ExpressionContext<'_>,
+    builtin_name: &str,
+) -> crate::Result<String> {
+    match node.get_property(property_path)? {
+        Some(property) => property.resolve_string(node_id, property_path, ctx).map_err(|_| {
+            text_measure_error(
+                ctx,
+                format!(
+                    "{builtin_name} expected node `{}` property `{property_path}` to resolve as string",
+                    node_id.0
+                ),
+            )
+        }),
+        None => Err(text_measure_error(
+            ctx,
+            format!(
+                "{builtin_name} expected node `{}` to expose `{property_path}`",
+                node_id.0
+            ),
+        )),
+    }
+}
+
+fn resolve_optional_node_string(
+    node_id: NodeId,
+    node: &dyn PropertyEval,
+    property_path: &str,
+    ctx: &ExpressionContext<'_>,
+    builtin_name: &str,
+) -> crate::Result<Option<String>> {
+    match node.get_property(property_path)? {
+        Some(property) => property
+            .resolve_string(node_id, property_path, ctx)
+            .map(Some)
+            .map_err(|_| {
+                text_measure_error(
+                    ctx,
+                    format!(
+                        "{builtin_name} expected node `{}` property `{property_path}` to resolve as string",
+                        node_id.0
+                    ),
+                )
+            }),
+        None => Ok(None),
+    }
+}
+
+fn resolve_optional_node_number(
+    node_id: NodeId,
+    node: &dyn PropertyEval,
+    property_path: &str,
+    ctx: &ExpressionContext<'_>,
+    builtin_name: &str,
+) -> crate::Result<Option<f64>> {
+    match node.get_property(property_path)? {
+        Some(NodeProperty::Expr(expr)) => expr
+            .evaluate(ctx)?
+            .as_f64()
+            .map(Some)
+            .ok_or_else(|| {
+                text_measure_error(
+                    ctx,
+                    format!(
+                        "{builtin_name} expected node `{}` property `{property_path}` to resolve as number",
+                        node_id.0
+                    ),
+                )
+            }),
+        Some(property) => property
+            .resolve_float(node_id, property_path, ctx)
+            .map(Some)
+            .map_err(|_| {
+                text_measure_error(
+                    ctx,
+                    format!(
+                        "{builtin_name} expected node `{}` property `{property_path}` to resolve as number",
+                        node_id.0
+                    ),
+                )
+            }),
+        None => Ok(None),
+    }
+}
+
+fn text_measure_error(ctx: &ExpressionContext<'_>, details: String) -> LumenError {
+    LumenError::Expression(ExpressionError::Evaluate {
+        path: ctx.path.clone(),
+        details,
+    })
 }

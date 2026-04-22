@@ -1,38 +1,17 @@
-use std::cell::OnceCell;
-
-#[cfg(feature = "embed-roboto")]
-use skia_safe::textlayout::TypefaceFontProvider;
-use skia_safe::{
-    FontMgr, FontStyle, IRect, Paint, PaintStyle, Path, RRect, Rect,
-    font_style::Weight,
-    image::RequiredProperties,
-    textlayout::{
-        FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign as ParagraphTextAlign,
-        TextStyle as ParagraphTextStyle,
-    },
-};
+use skia_safe::{IRect, Paint, PaintStyle, Path, RRect, Rect, image::RequiredProperties};
 
 use crate::{
     media::MediaStore,
     node::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{ClearMode, render_to_surface_ephemeral, to_skia_color},
+        source::text_layout::{TextLayoutStyle, build_paragraph},
         vector::{ShapeGeometry, VectorData, VectorPosition, VectorStyle, VectorTextData},
     },
     raster::{AlphaMode, ImageFrame, RasterFrame, RectI},
     render::{RenderContext, surface::SurfacePool},
 };
 use lumen_macros::{Node, node_impl};
-
-#[cfg(feature = "embed-roboto")]
-const EMBEDDED_ROBOTO_REGULAR: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/roboto/Roboto-Regular.ttf"
-));
-
-thread_local! {
-    static VECTOR_TEXT_FONT_COLLECTION: OnceCell<FontCollection> = const { OnceCell::new() };
-}
 
 #[derive(Debug, Clone, Node)]
 pub struct ShapeRenderer {
@@ -182,36 +161,6 @@ fn resolve_renderer_style<S: SurfacePool, M: MediaStore>(
     })
 }
 
-fn vector_text_font_collection() -> FontCollection {
-    VECTOR_TEXT_FONT_COLLECTION.with(|cell| {
-        cell.get_or_init(|| {
-            let font_mgr = FontMgr::default();
-            new_vector_text_font_collection(&font_mgr)
-        })
-        .clone()
-    })
-}
-
-fn new_vector_text_font_collection(default_font_mgr: &FontMgr) -> FontCollection {
-    let mut font_collection = FontCollection::new();
-    font_collection.set_default_font_manager(default_font_mgr.clone(), None);
-    #[cfg(feature = "embed-roboto")]
-    attach_embedded_roboto(&mut font_collection, default_font_mgr);
-    font_collection
-}
-
-#[cfg(feature = "embed-roboto")]
-fn attach_embedded_roboto(font_collection: &mut FontCollection, default_font_mgr: &FontMgr) {
-    let Some(roboto_typeface) = default_font_mgr.new_from_data(EMBEDDED_ROBOTO_REGULAR, None)
-    else {
-        return;
-    };
-
-    let mut provider = TypefaceFontProvider::new();
-    provider.register_typeface(roboto_typeface, Some("Roboto"));
-    font_collection.set_asset_font_manager(Some(provider.into()));
-}
-
 fn resolve_style(
     style: &VectorStyle,
     renderer_style: ResolvedRendererStyle,
@@ -238,14 +187,6 @@ fn resolve_style(
         stroke_color,
         stroke_width,
         stroke_enabled,
-    }
-}
-
-fn to_slant(style: crate::node::source::text::TextFontStyle) -> skia_safe::font_style::Slant {
-    match style {
-        crate::node::source::text::TextFontStyle::Normal => skia_safe::font_style::Slant::Upright,
-        crate::node::source::text::TextFontStyle::Italic => skia_safe::font_style::Slant::Italic,
-        crate::node::source::text::TextFontStyle::Oblique => skia_safe::font_style::Slant::Oblique,
     }
 }
 
@@ -370,7 +311,7 @@ fn draw_text(
         [0, 0, 0, 0]
     };
     let metrics = measure_text_layout(text, composition_width);
-    let mut paragraph = build_text_paragraph(text, text_color, metrics.layout_width);
+    let mut paragraph = build_text_paragraph(text, text_color);
     paragraph.layout(metrics.layout_width);
     paragraph.paint(
         canvas,
@@ -386,7 +327,7 @@ fn measure_text_layout(text: &VectorTextData, composition_width: f32) -> TextLay
         .max_width
         .unwrap_or(composition_width)
         .clamp(1.0, u32::MAX as f32);
-    let mut paragraph = build_text_paragraph(text, [255, 255, 255, 255], layout_width);
+    let mut paragraph = build_text_paragraph(text, [255, 255, 255, 255]);
     paragraph.layout(layout_width);
 
     let rendered_width = if text.max_width.is_some() {
@@ -429,46 +370,19 @@ fn measure_text_layout(text: &VectorTextData, composition_width: f32) -> TextLay
 fn build_text_paragraph(
     text: &VectorTextData,
     text_color: [u8; 4],
-    layout_width: f32,
 ) -> skia_safe::textlayout::Paragraph {
-    let mut paragraph_style = ParagraphStyle::new();
-    paragraph_style.set_text_align(match text.alignment.horizontal {
-        crate::node::source::text::TextAlignmentHorizontal::Left => ParagraphTextAlign::Left,
-        crate::node::source::text::TextAlignmentHorizontal::Center => ParagraphTextAlign::Center,
-        crate::node::source::text::TextAlignmentHorizontal::Right => ParagraphTextAlign::Right,
-        crate::node::source::text::TextAlignmentHorizontal::Justify => ParagraphTextAlign::Justify,
-    });
-
-    let mut text_style = ParagraphTextStyle::new();
-    text_style.set_font_size(text.font_size.max(1.0));
-    text_style.set_color(to_skia_color(text_color));
-    text_style.set_font_style(FontStyle::new(
-        Weight::from(i32::from(text.font_weight.clamp(100, 900))),
-        skia_safe::font_style::Width::NORMAL,
-        to_slant(text.font_style),
-    ));
-
-    let requested_font_family = text.font_family.trim();
-    if requested_font_family.is_empty() {
-        #[cfg(feature = "embed-roboto")]
-        text_style.set_font_families(&["Roboto", "sans-serif"]);
-        #[cfg(not(feature = "embed-roboto"))]
-        text_style.set_font_families(&["sans-serif"]);
-    } else {
-        #[cfg(feature = "embed-roboto")]
-        text_style.set_font_families(&[requested_font_family, "Roboto", "sans-serif"]);
-        #[cfg(not(feature = "embed-roboto"))]
-        text_style.set_font_families(&[requested_font_family, "sans-serif"]);
-    }
-
-    paragraph_style.set_text_style(&text_style);
-    let font_collection = vector_text_font_collection();
-    let mut builder = ParagraphBuilder::new(&paragraph_style, font_collection);
-    builder.push_style(&text_style);
-    builder.add_text(&text.content);
-    let mut paragraph = builder.build();
-    paragraph.layout(layout_width);
-    paragraph
+    let text_style = TextLayoutStyle::new(
+        text.font_family.clone(),
+        text.font_size,
+        i32::from(text.font_weight),
+        text.font_style,
+    );
+    build_paragraph(
+        &text.content,
+        &text_style,
+        text_color,
+        text.alignment.horizontal,
+    )
 }
 
 fn add_positions(left: VectorPosition, right: VectorPosition) -> VectorPosition {
