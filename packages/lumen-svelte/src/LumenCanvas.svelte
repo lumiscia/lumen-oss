@@ -8,6 +8,7 @@
         compositionJson?: string | null;
         fps?: number;
         class?: string;
+        style?: string;
     };
 
     let {
@@ -15,6 +16,7 @@
         compositionJson = null,
         fps = 30,
         class: className,
+        style: styleName,
     }: Props = $props();
 
     let canvas = $state<HTMLCanvasElement | null>(null);
@@ -256,6 +258,7 @@
     bind:this={canvas}
     width={preview.width || 1}
     height={preview.height || 1}
+    style={styleName}
     style:visibility={preview.width > 0 ? null : "hidden"}
     class={className}
 ></canvas>
