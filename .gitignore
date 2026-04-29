@@ -28,5 +28,6 @@ dist-ssr
 
 target
 tmp
+generated
 
 packages/lumen-node-specs

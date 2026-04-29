@@ -4,7 +4,7 @@ members = [
   "crates/lumen-server",
   "crates/lumen-wasm",
   "crates/lumen-local",
-  "crates/lumen-node-package",
+  "crates/lumen-generators",
   "crates/lumen-macros",
 ]
 

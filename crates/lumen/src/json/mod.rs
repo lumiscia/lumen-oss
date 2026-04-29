@@ -9,6 +9,7 @@
 //! - [`property`] — JSON value → [`NodeProperty`](crate::node::NodeProperty) conversion
 //! - [`node`] — per-node-type construction, property application, and port wiring
 
+mod migrations;
 mod node;
 mod property;
 
@@ -31,10 +32,15 @@ pub fn parse(json: &str) -> Result<Composition> {
 
 /// Parse a [`serde_json::Value`] into a [`Composition`].
 pub fn parse_value(root: &Value) -> Result<Composition> {
+    let migrated = migrations::migrate_to_current(root)?;
+    parse_current_value(&migrated)
+}
+
+fn parse_current_value(root: &Value) -> Result<Composition> {
     let obj = root.as_object().context("root must be an object")?;
     if obj.contains_key("graph") {
         let normalized = normalize_graph_delegate(obj)?;
-        return parse_value(&normalized);
+        return parse_current_value(&normalized);
     }
 
     let timeline = parse_timeline(obj.get("timeline").context("missing `timeline`")?)?;
@@ -331,6 +337,7 @@ mod tests {
     #[test]
     fn parse_minimal_composition() {
         let json = r#"{
+            "lumenSchemaVersion": "0.1.0",
             "timeline": { "fps": 30, "duration_frames": 90 },
             "render_settings": { "width": 1920, "height": 1080 },
             "nodes": [
@@ -412,5 +419,19 @@ mod tests {
         }"#;
 
         assert!(parse(json).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_unknown_schema_version() {
+        let json = r#"{
+            "lumenSchemaVersion": "99.0.0",
+            "timeline": { "fps": 30, "duration_frames": 1 },
+            "render_settings": { "width": 100, "height": 100 },
+            "nodes": [],
+            "connections": []
+        }"#;
+
+        let err = parse(json).unwrap_err().to_string();
+        assert!(err.contains("unsupported Lumen schema version `99.0.0`"));
     }
 }
