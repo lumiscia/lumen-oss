@@ -11,11 +11,7 @@ pub struct TimeRemap {
     pub id: NodeId,
 
     #[property(expected = Float)]
-    pub source_frame: NodeProperty,
-    #[property(expected = Float)]
-    pub offset: NodeProperty,
-    #[property(expected = Float)]
-    pub speed: NodeProperty,
+    pub frame: NodeProperty,
     #[property(expected = Bool)]
     pub loop_enabled: NodeProperty,
     #[property(expected = Int)]
@@ -31,9 +27,7 @@ impl Default for TimeRemap {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            source_frame: NodeProperty::Float(0.0),
-            offset: NodeProperty::Float(0.0),
-            speed: NodeProperty::Float(1.0),
+            frame: NodeProperty::Float(0.0),
             loop_enabled: NodeProperty::Bool(false),
             loop_start: NodeProperty::Int(0),
             loop_end: NodeProperty::Int(0),
@@ -46,17 +40,12 @@ impl Default for TimeRemap {
 impl TimeRemap {
     #[output(port = "output", kind = Raster)]
     fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
-        let target_frame = remap_frame(
-            ctx.frame,
-            TimeRemapSettings {
-                source_frame: self.resolve_source_frame(ctx)?,
-                offset: self.resolve_offset(ctx)?,
-                speed: self.resolve_speed(ctx)?,
-                loop_enabled: self.resolve_loop_enabled(ctx)?,
-                loop_start: self.resolve_loop_start(ctx)?,
-                loop_end: self.resolve_loop_end(ctx)?,
-            },
-        );
+        let target_frame = remap_frame(TimeRemapSettings {
+            frame: self.resolve_frame(ctx)?,
+            loop_enabled: self.resolve_loop_enabled(ctx)?,
+            loop_start: self.resolve_loop_start(ctx)?,
+            loop_end: self.resolve_loop_end(ctx)?,
+        });
 
         with_frame(ctx, target_frame, |ctx| {
             ctx.eval_once(&self.source)?.as_raster()?.snapshot()
@@ -66,17 +55,14 @@ impl TimeRemap {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TimeRemapSettings {
-    pub source_frame: f64,
-    pub offset: f64,
-    pub speed: f64,
+    pub frame: f64,
     pub loop_enabled: bool,
     pub loop_start: i64,
     pub loop_end: i64,
 }
 
-pub fn remap_frame(current_frame: u32, settings: TimeRemapSettings) -> u32 {
-    let mapped =
-        settings.source_frame + ((f64::from(current_frame) - settings.offset) * settings.speed);
+pub fn remap_frame(settings: TimeRemapSettings) -> u32 {
+    let mapped = settings.frame;
     let mapped = if settings.loop_enabled {
         wrap_frame(mapped, settings.loop_start, settings.loop_end)
     } else {
@@ -136,24 +122,22 @@ mod tests {
     }
 
     #[test]
-    fn maps_source_frame_offset_speed_and_loop() {
+    fn maps_explicit_frame_and_loop() {
         let settings = TimeRemapSettings {
-            source_frame: 10.0,
-            offset: 2.0,
-            speed: 2.0,
+            frame: 16.0,
             loop_enabled: false,
             loop_start: 0,
             loop_end: 0,
         };
-        assert_eq!(remap_frame(5, settings), 16);
+        assert_eq!(remap_frame(settings), 16);
 
         let looped = TimeRemapSettings {
+            frame: 18.0,
             loop_enabled: true,
             loop_start: 12,
             loop_end: 16,
-            ..settings
         };
-        assert_eq!(remap_frame(6, looped), 14);
+        assert_eq!(remap_frame(looped), 14);
     }
 
     #[test]
