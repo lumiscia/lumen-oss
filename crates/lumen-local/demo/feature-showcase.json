@@ -10,7 +10,7 @@
   },
   "metadata": {
     "title": "Lumen Feature Showcase",
-    "description": "Demonstrates solid_color, shape (rect/ellipse/polygon), vector_text, shape_renderer, vector_multimerge, transform, blur, shadow, crop, merge, raster_multimerge, boolean, switch, resize, frame_hold, and blend modes."
+    "description": "Demonstrates solid_color, shape (rect/ellipse/polygon), vector_text, shape_renderer, vector_multimerge, transform, blur, shadow, crop, merge, raster_multimerge, boolean, switch, resize, time_remap, and blend modes."
   },
   "nodes": [
     {
@@ -308,9 +308,12 @@
     },
     {
       "id": 81,
-      "type": "frame_hold",
+      "type": "time_remap",
       "properties": {
-        "hold_frame": 0
+        "frame": 0,
+        "loop_enabled": false,
+        "loop_start": 0,
+        "loop_end": 0
       }
     },
     {

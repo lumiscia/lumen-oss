@@ -6,7 +6,7 @@ use crate::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{ClearMode, render_to_surface_ephemeral, to_skia_color},
         source::text_layout::{TextLayoutStyle, build_paragraph},
-        vector::{ShapeGeometry, VectorData, VectorPosition, VectorStyle, VectorTextData},
+        vector::{ShapeGeometry, VectorData, VectorStyle, VectorTextData},
     },
     raster::{AlphaMode, ImageFrame, RasterFrame, RectI},
     render::{RenderContext, surface::SurfacePool},
@@ -119,7 +119,7 @@ fn rasterize_vector_with_style<S: SurfacePool, M: MediaStore>(
         vector,
         renderer_style,
         composition_width,
-        VectorPosition::default(),
+        AffineTransform::identity(),
     ) else {
         return transparent_frame(ctx, RectI::from_size(1, 1));
     };
@@ -133,16 +133,8 @@ fn rasterize_vector_with_style<S: SurfacePool, M: MediaStore>(
         AlphaMode::Premultiplied,
         ClearMode::Transparent,
         |canvas| {
-            draw_vector(
-                canvas,
-                vector,
-                renderer_style,
-                composition_width,
-                VectorPosition {
-                    x: -(bounds.x as f32),
-                    y: -(bounds.y as f32),
-                },
-            );
+            canvas.translate((-(bounds.x as f32), -(bounds.y as f32)));
+            draw_vector(canvas, vector, renderer_style, composition_width);
         },
     )
     .unwrap_or_else(|_| transparent_frame(ctx, bounds))
@@ -203,7 +195,7 @@ fn measure_vector_bounds(
     vector: &VectorData,
     renderer_style: ResolvedRendererStyle,
     composition_width: f32,
-    translation: VectorPosition,
+    transform: AffineTransform,
 ) -> Option<RectI> {
     match vector {
         VectorData::Shape {
@@ -212,29 +204,26 @@ fn measure_vector_bounds(
             position,
         } => {
             let style = resolve_style(style, renderer_style);
-            let (_, width, height) = build_path(geometry);
-            Some(
-                positioned_bounds(
-                    width.max(1),
-                    height.max(1),
-                    add_positions(translation, *position),
-                    draw_padding(style),
-                )
-                .format_rect,
-            )
+            let path = build_path(geometry);
+            Some(transformed_bounds(
+                transform.then_translate(position.x, position.y),
+                path.bounds,
+                draw_padding(style),
+            ))
         }
         VectorData::Text(text) => {
             let style = resolve_style(&text.style, renderer_style);
             let metrics = measure_text_layout(text, composition_width);
-            Some(
-                positioned_bounds(
-                    metrics.rendered_width.max(1),
-                    metrics.rendered_height.max(1),
-                    add_positions(translation, text.position),
-                    draw_padding(style),
-                )
-                .format_rect,
-            )
+            Some(transformed_bounds(
+                transform.then_translate(text.position.x, text.position.y),
+                Rect::from_xywh(
+                    -metrics.horizontal_offset,
+                    metrics.vertical_offset,
+                    metrics.rendered_width.max(1) as f32,
+                    metrics.rendered_height.max(1) as f32,
+                ),
+                draw_padding(style),
+            ))
         }
         VectorData::Group { children, position } => children
             .iter()
@@ -243,10 +232,19 @@ fn measure_vector_bounds(
                     child,
                     renderer_style,
                     composition_width,
-                    add_positions(translation, *position),
+                    transform.then_translate(position.x, position.y),
                 )
             })
             .reduce(union_rect),
+        VectorData::Transformed {
+            child,
+            transform: child_transform,
+        } => measure_vector_bounds(
+            child,
+            renderer_style,
+            composition_width,
+            transform.then_transform(*child_transform),
+        ),
     }
 }
 
@@ -255,7 +253,6 @@ fn draw_vector(
     vector: &VectorData,
     renderer_style: ResolvedRendererStyle,
     composition_width: f32,
-    translation: VectorPosition,
 ) {
     match vector {
         VectorData::Shape {
@@ -264,33 +261,35 @@ fn draw_vector(
             position,
         } => {
             let style = resolve_style(style, renderer_style);
-            let (path, _, _) = build_path(geometry);
-            let position = add_positions(translation, *position);
+            let path = build_path(geometry);
             canvas.save();
             canvas.translate((position.x, position.y));
-            draw_shape(canvas, &path, style);
+            draw_shape(canvas, &path.path, style);
             canvas.restore();
         }
         VectorData::Text(text) => {
-            draw_text(
-                canvas,
-                text,
-                renderer_style,
-                composition_width,
-                add_positions(translation, text.position),
-            );
+            canvas.save();
+            canvas.translate((text.position.x, text.position.y));
+            draw_text(canvas, text, renderer_style, composition_width);
+            canvas.restore();
         }
         VectorData::Group { children, position } => {
-            let translation = add_positions(translation, *position);
+            canvas.save();
+            canvas.translate((position.x, position.y));
             for child in children {
-                draw_vector(
-                    canvas,
-                    child,
-                    renderer_style,
-                    composition_width,
-                    translation,
-                );
+                draw_vector(canvas, child, renderer_style, composition_width);
             }
+            canvas.restore();
+        }
+        VectorData::Transformed { child, transform } => {
+            canvas.save();
+            canvas.translate((transform.translate.x, transform.translate.y));
+            canvas.translate((transform.pivot.x, transform.pivot.y));
+            canvas.rotate(transform.rotate, None);
+            canvas.scale((transform.scale_x, transform.scale_y));
+            canvas.translate((-transform.pivot.x, -transform.pivot.y));
+            draw_vector(canvas, child, renderer_style, composition_width);
+            canvas.restore();
         }
     }
 }
@@ -300,7 +299,6 @@ fn draw_text(
     text: &VectorTextData,
     renderer_style: ResolvedRendererStyle,
     composition_width: f32,
-    position: VectorPosition,
 ) {
     let style = resolve_style(&text.style, renderer_style);
     let text_color = if style.fill_enabled {
@@ -315,10 +313,7 @@ fn draw_text(
     paragraph.layout(metrics.layout_width);
     paragraph.paint(
         canvas,
-        (
-            position.x - metrics.horizontal_offset,
-            position.y + metrics.vertical_offset,
-        ),
+        (-metrics.horizontal_offset, metrics.vertical_offset),
     );
 }
 
@@ -385,13 +380,6 @@ fn build_text_paragraph(
     )
 }
 
-fn add_positions(left: VectorPosition, right: VectorPosition) -> VectorPosition {
-    VectorPosition {
-        x: left.x + right.x,
-        y: left.y + right.y,
-    }
-}
-
 fn draw_shape(canvas: &skia_safe::Canvas, path: &Path, style: ResolvedVectorStyle) {
     if style.fill_enabled {
         let mut fill = Paint::default();
@@ -411,11 +399,6 @@ fn draw_shape(canvas: &skia_safe::Canvas, path: &Path, style: ResolvedVectorStyl
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PositionedRasterBounds {
-    format_rect: RectI,
-}
-
 fn draw_padding(style: ResolvedVectorStyle) -> f32 {
     let stroke_pad = if style.stroke_enabled {
         style.stroke_width.max(0.0) * 0.5
@@ -425,21 +408,108 @@ fn draw_padding(style: ResolvedVectorStyle) -> f32 {
     1.0 + stroke_pad
 }
 
-fn positioned_bounds(
-    content_w: u32,
-    content_h: u32,
-    position: VectorPosition,
-    pad: f32,
-) -> PositionedRasterBounds {
-    let min_x = (position.x - pad).floor() as i32;
-    let min_y = (position.y - pad).floor() as i32;
-    let max_x = (position.x + content_w as f32 + pad).ceil() as i32;
-    let max_y = (position.y + content_h as f32 + pad).ceil() as i32;
+#[derive(Debug, Clone, Copy)]
+struct AffineTransform {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    tx: f32,
+    ty: f32,
+}
+
+impl AffineTransform {
+    fn identity() -> Self {
+        Self {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            tx: 0.0,
+            ty: 0.0,
+        }
+    }
+
+    fn then_translate(self, x: f32, y: f32) -> Self {
+        Self {
+            tx: self.tx + self.a * x + self.c * y,
+            ty: self.ty + self.b * x + self.d * y,
+            ..self
+        }
+    }
+
+    fn then_transform(self, transform: crate::node::VectorTransformData) -> Self {
+        self.then_translate(transform.translate.x, transform.translate.y)
+            .then_translate(transform.pivot.x, transform.pivot.y)
+            .then_rotate(transform.rotate)
+            .then_scale(transform.scale_x, transform.scale_y)
+            .then_translate(-transform.pivot.x, -transform.pivot.y)
+    }
+
+    fn then_scale(self, sx: f32, sy: f32) -> Self {
+        Self {
+            a: self.a * sx,
+            b: self.b * sx,
+            c: self.c * sy,
+            d: self.d * sy,
+            ..self
+        }
+    }
+
+    fn then_rotate(self, degrees: f32) -> Self {
+        let radians = degrees.to_radians();
+        let (sin, cos) = radians.sin_cos();
+        Self {
+            a: self.a * cos + self.c * sin,
+            b: self.b * cos + self.d * sin,
+            c: self.c * cos - self.a * sin,
+            d: self.d * cos - self.b * sin,
+            ..self
+        }
+    }
+
+    fn map_point(self, x: f32, y: f32) -> (f32, f32) {
+        (
+            self.a * x + self.c * y + self.tx,
+            self.b * x + self.d * y + self.ty,
+        )
+    }
+}
+
+fn transformed_bounds(transform: AffineTransform, bounds: Rect, pad: f32) -> RectI {
+    let left = bounds.left - pad;
+    let top = bounds.top - pad;
+    let right = bounds.right + pad;
+    let bottom = bounds.bottom + pad;
+    let points = [
+        transform.map_point(left, top),
+        transform.map_point(right, top),
+        transform.map_point(left, bottom),
+        transform.map_point(right, bottom),
+    ];
+    let min_x = points
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f32::INFINITY, f32::min)
+        .floor() as i32;
+    let min_y = points
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f32::INFINITY, f32::min)
+        .floor() as i32;
+    let max_x = points
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f32::NEG_INFINITY, f32::max)
+        .ceil() as i32;
+    let max_y = points
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f32::NEG_INFINITY, f32::max)
+        .ceil() as i32;
     let width = (max_x - min_x).max(1) as u32;
     let height = (max_y - min_y).max(1) as u32;
-    PositionedRasterBounds {
-        format_rect: RectI::new(min_x, min_y, width, height),
-    }
+    RectI::new(min_x, min_y, width, height)
 }
 
 fn transparent_frame<S: SurfacePool, M: MediaStore>(
@@ -540,7 +610,13 @@ fn union_rect(left: RectI, right: RectI) -> RectI {
     RectI::new(min_x, min_y, width, height)
 }
 
-fn build_path(geometry: &ShapeGeometry) -> (Path, u32, u32) {
+#[derive(Debug, Clone)]
+struct BuiltPath {
+    path: Path,
+    bounds: Rect,
+}
+
+fn build_path(geometry: &ShapeGeometry) -> BuiltPath {
     match geometry {
         ShapeGeometry::Rectangle {
             width,
@@ -553,32 +629,32 @@ fn build_path(geometry: &ShapeGeometry) -> (Path, u32, u32) {
                 .max(0.0)
                 .min(width.min(height) as f32 * 0.5);
             let rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
-            (
-                if border_radius > 0.0 {
+            BuiltPath {
+                path: if border_radius > 0.0 {
                     Path::rrect(RRect::new_rect_xy(rect, border_radius, border_radius), None)
                 } else {
                     Path::rect(rect, None)
                 },
-                width,
-                height,
-            )
+                bounds: rect,
+            }
         }
         ShapeGeometry::Ellipse { width, height } => {
             let width = (*width).max(1);
             let height = (*height).max(1);
-            (
-                Path::oval(Rect::from_xywh(0.0, 0.0, width as f32, height as f32), None),
-                width,
-                height,
-            )
+            let bounds = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+            BuiltPath {
+                path: Path::oval(bounds, None),
+                bounds,
+            }
         }
         ShapeGeometry::Polygon { points } => polygon_path(points),
+        ShapeGeometry::Path { commands } => svg_path(commands),
     }
 }
 
-fn polygon_path(points: &[(f32, f32)]) -> (Path, u32, u32) {
+fn polygon_path(points: &[(f32, f32)]) -> BuiltPath {
     if points.is_empty() {
-        return (Path::rect(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), None), 1, 1);
+        return unit_path();
     }
 
     let mut min_x = f32::INFINITY;
@@ -595,19 +671,188 @@ fn polygon_path(points: &[(f32, f32)]) -> (Path, u32, u32) {
     }
 
     if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
-        return (Path::rect(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), None), 1, 1);
+        return unit_path();
     }
 
-    let width = (max_x - min_x).ceil().max(1.0) as u32;
-    let height = (max_y - min_y).ceil().max(1.0) as u32;
     let normalized_points: Vec<skia_safe::Point> = points
         .iter()
-        .map(|(x, y)| skia_safe::Point::new(*x - min_x, *y - min_y))
+        .map(|(x, y)| skia_safe::Point::new(*x, *y))
         .collect();
 
-    (
-        Path::polygon(&normalized_points, true, None, None),
-        width,
-        height,
-    )
+    BuiltPath {
+        path: Path::polygon(&normalized_points, true, None, None),
+        bounds: Rect::from_ltrb(min_x, min_y, max_x, max_y),
+    }
+}
+
+fn svg_path(commands: &str) -> BuiltPath {
+    let Some(path) = Path::from_svg(commands) else {
+        return unit_path();
+    };
+    let bounds = path.compute_tight_bounds();
+    if bounds.is_empty() || !bounds.is_finite() {
+        return unit_path();
+    }
+    BuiltPath { path, bounds }
+}
+
+fn unit_path() -> BuiltPath {
+    let bounds = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+    BuiltPath {
+        path: Path::rect(bounds, None),
+        bounds,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        composition::{Composition, RenderSettings, TimelineSettings},
+        graph::Graph,
+        media::{ImageResolver, MediaStore, VideoFrameResolver},
+        node::{
+            VectorPosition, VectorStroke, VectorTransformData,
+            vector::vector_stroke_style::apply_style_defaults,
+        },
+        render::{LumenRenderer, RenderContext, surface::DefaultSurfacePool},
+    };
+
+    #[derive(Debug)]
+    struct NullMediaStore;
+
+    impl MediaStore for NullMediaStore {
+        fn get_image_resolver(&self, _source: &str) -> Option<Box<dyn ImageResolver>> {
+            None
+        }
+
+        fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            None
+        }
+    }
+
+    fn render_vector(vector: VectorData) -> RasterFrame {
+        let composition = Composition::new(
+            Graph::new(),
+            TimelineSettings {
+                fps: 30.0,
+                duration_frames: 60,
+            },
+            RenderSettings {
+                width: 32,
+                height: 32,
+                background_color: [0, 0, 0, 0],
+            },
+        );
+        let pool = DefaultSurfacePool::new();
+        let media = NullMediaStore;
+        let renderer = LumenRenderer::new(&composition, &pool, &media).unwrap();
+        let mut ctx = RenderContext::new(&renderer, 0);
+        rasterize_vector(&vector, &ShapeRenderer::default(), &mut ctx)
+    }
+
+    fn read_pixels(frame: &RasterFrame) -> Vec<u8> {
+        let (w, h) = frame.storage_dimensions();
+        let mut pixels = vec![0; w as usize * h as usize * 4];
+        frame
+            .read_pixels_into(&mut pixels, w as usize * 4)
+            .expect("read pixels");
+        pixels
+    }
+
+    #[test]
+    fn transformed_vector_renders_scaled_offset_pixels() {
+        let vector = VectorData::Transformed {
+            child: Box::new(VectorData::Shape {
+                geometry: ShapeGeometry::Rectangle {
+                    width: 4,
+                    height: 3,
+                    border_radius: 0.0,
+                },
+                style: VectorStyle {
+                    color: Some([200, 10, 20, 255]),
+                    stroke: None,
+                },
+                position: VectorPosition::default(),
+            }),
+            transform: VectorTransformData {
+                translate: VectorPosition { x: 5.0, y: 6.0 },
+                scale_x: 2.0,
+                scale_y: 2.0,
+                rotate: 0.0,
+                pivot: VectorPosition::default(),
+            },
+        };
+
+        let frame = render_vector(vector);
+        let rect = frame.format_rect();
+        assert!(rect.x <= 5);
+        assert!(rect.y <= 6);
+        assert!(rect.width >= 8);
+        assert!(rect.height >= 6);
+
+        let red_pixels = read_pixels(&frame)
+            .chunks_exact(4)
+            .filter(|px| px[0] > 150 && px[1] < 40 && px[2] < 50 && px[3] > 200)
+            .count();
+        assert!(red_pixels >= 20, "red_pixels={red_pixels}");
+    }
+
+    #[test]
+    fn path_preserves_negative_and_non_zero_local_coordinates() {
+        let vector = VectorData::Shape {
+            geometry: ShapeGeometry::Path {
+                commands: "M -2 3 L 4 3 L 4 7 L -2 7 Z".to_string(),
+            },
+            style: VectorStyle {
+                color: Some([10, 180, 40, 255]),
+                stroke: Some(VectorStroke {
+                    color: [0, 0, 0, 255],
+                    width: 0.0,
+                }),
+            },
+            position: VectorPosition { x: 6.0, y: 5.0 },
+        };
+
+        let frame = render_vector(vector);
+        let rect = frame.format_rect();
+        assert_eq!(rect.x, 3);
+        assert_eq!(rect.y, 7);
+        assert!(rect.width >= 8);
+        assert!(rect.height >= 6);
+
+        let green_pixels = read_pixels(&frame)
+            .chunks_exact(4)
+            .filter(|px| px[0] < 40 && px[1] > 120 && px[2] < 80 && px[3] > 200)
+            .count();
+        assert!(green_pixels >= 12, "green_pixels={green_pixels}");
+    }
+
+    #[test]
+    fn stroke_style_defaults_render_fill_pixels() {
+        let vector = VectorData::Shape {
+            geometry: ShapeGeometry::Rectangle {
+                width: 5,
+                height: 5,
+                border_radius: 0.0,
+            },
+            style: VectorStyle::default(),
+            position: VectorPosition { x: 2.0, y: 2.0 },
+        };
+        let styled = apply_style_defaults(
+            vector,
+            &VectorStyle {
+                color: Some([20, 40, 220, 255]),
+                stroke: None,
+            },
+            false,
+        );
+
+        let frame = render_vector(styled);
+        let blue_pixels = read_pixels(&frame)
+            .chunks_exact(4)
+            .filter(|px| px[0] < 50 && px[1] < 70 && px[2] > 180 && px[3] > 200)
+            .count();
+        assert!(blue_pixels >= 16, "blue_pixels={blue_pixels}");
+    }
 }

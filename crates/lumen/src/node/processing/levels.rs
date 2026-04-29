@@ -1,0 +1,172 @@
+use crate::{
+    node::{
+        NodeId, NodeProperty, PortRef,
+        processing::gpu_shader::{ShaderUniform, apply_runtime_shader},
+        processing::raster_map::{byte_to_unit, unit_to_byte},
+    },
+    raster::RasterFrame,
+    render::RenderContext,
+};
+use lumen_macros::{Node, node_impl};
+
+#[derive(Debug, Clone, Node)]
+pub struct Levels {
+    pub id: NodeId,
+
+    #[property(expected = Float)]
+    pub black_point: NodeProperty,
+    #[property(expected = Float)]
+    pub white_point: NodeProperty,
+    #[property(expected = Float)]
+    pub gamma: NodeProperty,
+    #[property(expected = Float)]
+    pub output_black: NodeProperty,
+    #[property(expected = Float)]
+    pub output_white: NodeProperty,
+
+    #[input(kind = Raster)]
+    pub source: PortRef,
+}
+
+impl Default for Levels {
+    fn default() -> Self {
+        Self {
+            id: NodeId::new(0),
+            black_point: NodeProperty::Float(0.0),
+            white_point: NodeProperty::Float(1.0),
+            gamma: NodeProperty::Float(1.0),
+            output_black: NodeProperty::Float(0.0),
+            output_white: NodeProperty::Float(1.0),
+            source: PortRef::empty(),
+        }
+    }
+}
+
+#[node_impl]
+impl Levels {
+    #[output(port = "output", kind = Raster)]
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+        let black_point = self.resolve_black_point(ctx)? as f32;
+        let white_point = self.resolve_white_point(ctx)? as f32;
+        let gamma = self.resolve_gamma(ctx)? as f32;
+        let output_black = self.resolve_output_black(ctx)? as f32;
+        let output_white = self.resolve_output_white(ctx)? as f32;
+        let source_result = ctx.eval(&self.source)?;
+        let source = source_result.as_raster()?;
+        let params = [black_point, white_point, gamma, output_black, output_white];
+
+        apply_runtime_shader(
+            source,
+            LEVELS_SHADER,
+            &[ShaderUniform {
+                name: "params",
+                values: &params,
+            }],
+            source.alpha_mode(),
+            self.id,
+            "Levels",
+            ctx.frame,
+            ctx,
+        )
+    }
+}
+
+const LEVELS_SHADER: &str = r#"
+uniform shader source;
+uniform float params[5];
+
+half4 main(float2 coord) {
+    half4 color = source.eval(coord);
+    float black = clamp(params[0], 0.0, 1.0);
+    float white = clamp(params[1], 0.0, 1.0);
+    if (white <= black) {
+        white = min(black + 0.000001, 1.0);
+    }
+    float gamma = max(params[2], 0.0001);
+    float outBlack = clamp(params[3], 0.0, 1.0);
+    float outWhite = clamp(params[4], 0.0, 1.0);
+    float3 normalized = clamp((float3(color.rgb) - black) / (white - black), 0.0, 1.0);
+    normalized = pow(normalized, float3(1.0 / gamma));
+    return half4(half3(outBlack + normalized * (outWhite - outBlack)), color.a);
+}
+"#;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LevelsParams {
+    pub black_point: f32,
+    pub white_point: f32,
+    pub gamma: f32,
+    pub output_black: f32,
+    pub output_white: f32,
+}
+
+pub(crate) fn apply_levels_bytes(pixels: &mut [u8], params: LevelsParams) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        for channel in &mut pixel[..3] {
+            *channel = apply_levels_channel(*channel, params);
+        }
+    }
+}
+
+fn apply_levels_channel(value: u8, params: LevelsParams) -> u8 {
+    let black = params.black_point.clamp(0.0, 1.0);
+    let mut white = params.white_point.clamp(0.0, 1.0);
+    if white <= black {
+        white = (black + f32::EPSILON).min(1.0);
+    }
+
+    let mut normalized = ((byte_to_unit(value) - black) / (white - black)).clamp(0.0, 1.0);
+    let gamma = params.gamma.max(0.0001);
+    normalized = normalized.powf(1.0 / gamma);
+
+    let out_black = params.output_black.clamp(0.0, 1.0);
+    let out_white = params.output_white.clamp(0.0, 1.0);
+    unit_to_byte(out_black + normalized * (out_white - out_black))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{node::processing::test_support, raster::AlphaMode};
+
+    #[test]
+    fn levels_remaps_black_white_and_gamma() {
+        let params = LevelsParams {
+            black_point: 64.0 / 255.0,
+            white_point: 192.0 / 255.0,
+            gamma: 2.0,
+            output_black: 0.0,
+            output_white: 1.0,
+        };
+        let mut pixels = vec![64, 128, 192, 255];
+
+        apply_levels_bytes(&mut pixels, params);
+
+        assert_eq!(pixels, vec![0, 180, 255, 255]);
+    }
+
+    #[test]
+    fn levels_sksl_remaps_black_white_gamma_and_output_range() {
+        let source = test_support::frame_from_pixel([64, 128, 192, 210], AlphaMode::Premultiplied);
+        let params = [64.0 / 255.0, 192.0 / 255.0, 2.0, 0.0, 1.0];
+
+        let output = test_support::with_test_context(1, 1, |ctx| {
+            apply_runtime_shader(
+                &source,
+                LEVELS_SHADER,
+                &[ShaderUniform {
+                    name: "params",
+                    values: &params,
+                }],
+                source.alpha_mode(),
+                NodeId::new(1),
+                "Levels",
+                ctx.frame,
+                ctx,
+            )
+        })
+        .expect("shader output");
+
+        assert_eq!(test_support::read_first_pixel(&output), [0, 180, 255, 210]);
+    }
+}

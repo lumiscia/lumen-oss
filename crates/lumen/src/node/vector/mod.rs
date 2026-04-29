@@ -1,8 +1,11 @@
+pub mod path;
 pub mod shape;
 pub mod shape_renderer;
 pub mod vector_merge;
 pub mod vector_multimerge;
+pub mod vector_stroke_style;
 pub mod vector_text;
+pub mod vector_transform;
 
 use crate::node::source::text;
 
@@ -19,6 +22,9 @@ pub enum ShapeGeometry {
     },
     Polygon {
         points: Vec<(f32, f32)>,
+    },
+    Path {
+        commands: String,
     },
 }
 
@@ -38,6 +44,37 @@ pub struct VectorStyle {
 pub struct VectorPosition {
     pub x: f32,
     pub y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VectorTransformData {
+    pub translate: VectorPosition,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    pub rotate: f32,
+    pub pivot: VectorPosition,
+}
+
+impl Default for VectorTransformData {
+    fn default() -> Self {
+        Self {
+            translate: VectorPosition::default(),
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotate: 0.0,
+            pivot: VectorPosition::default(),
+        }
+    }
+}
+
+impl VectorTransformData {
+    pub fn is_identity(self) -> bool {
+        self.translate.x.abs() <= f32::EPSILON
+            && self.translate.y.abs() <= f32::EPSILON
+            && (self.scale_x - 1.0).abs() <= f32::EPSILON
+            && (self.scale_y - 1.0).abs() <= f32::EPSILON
+            && self.rotate.abs() <= f32::EPSILON
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,5 +101,9 @@ pub enum VectorData {
     Group {
         children: Vec<VectorData>,
         position: VectorPosition,
+    },
+    Transformed {
+        child: Box<VectorData>,
+        transform: VectorTransformData,
     },
 }
