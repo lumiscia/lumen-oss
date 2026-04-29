@@ -131,8 +131,9 @@ impl Graph {
                 .find(|def| def.name == connection.from_port)
             else {
                 errors.push(
-                    GraphValidationError::MissingSourceNode {
+                    GraphValidationError::MissingSourcePort {
                         node_id: connection.from_node,
+                        port: connection.from_port.clone(),
                     }
                     .into(),
                 );
@@ -144,8 +145,9 @@ impl Graph {
                 .find(|def| def.name == connection.to_port)
             else {
                 errors.push(
-                    GraphValidationError::MissingTargetNode {
+                    GraphValidationError::MissingTargetPort {
                         node_id: connection.to_node,
+                        port: connection.to_port.clone(),
                     }
                     .into(),
                 );

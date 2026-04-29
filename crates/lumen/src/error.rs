@@ -28,6 +28,10 @@ pub enum GraphValidationError {
     MissingTargetNode { node_id: NodeId },
     #[error("connection source node is missing")]
     MissingSourceNode { node_id: NodeId },
+    #[error("connection target port `{port}` is missing")]
+    MissingTargetPort { node_id: NodeId, port: String },
+    #[error("connection source port `{port}` is missing")]
+    MissingSourcePort { node_id: NodeId, port: String },
     #[error("missing required input `{port}`")]
     MissingRequiredInput { node_id: NodeId, port: String },
     #[error("port kind mismatch for `{to_port}`")]

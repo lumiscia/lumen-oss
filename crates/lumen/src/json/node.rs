@@ -14,13 +14,18 @@ use crate::{
         },
         media_output::MediaOutput,
         processing::{
-            blur::Blur, crop::Crop, frame_hold::FrameHold, memo::Memo, resize::Resize,
-            shadow::Shadow, transform::Transform,
+            alpha_premultiply::AlphaPremultiply, blur::Blur, channel_shuffle::ChannelShuffle,
+            color_grade::ColorGrade, crop::Crop, curves::Curves, exposure::Exposure,
+            hue_saturation::HueSaturation, levels::Levels, matte_cleanup::MatteCleanup, memo::Memo,
+            resize::Resize, shadow::Shadow, skia_shader::SkiaShader, time_remap::TimeRemap,
+            transform::Transform,
         },
         source::{media_in::MediaIn, solid_color::SolidColor, text::Text},
         vector::{
-            shape::Shape, shape_renderer::ShapeRenderer, vector_multimerge::VectorMultiMerge,
-            vector_text::VectorText,
+            path::BezierPath, shape::Shape, shape_renderer::ShapeRenderer,
+            vector_merge::VectorMerge, vector_multimerge::VectorMultiMerge,
+            vector_stroke_style::VectorStrokeStyle, vector_text::VectorText,
+            vector_transform::VectorTransform,
         },
     },
 };
@@ -49,14 +54,35 @@ pub fn build_node(
             }
             Ok(NodeKind::Switch(node))
         }
+        "alpha_premultiply" => Ok(NodeKind::AlphaPremultiply(build_typed::<AlphaPremultiply>(
+            id, properties,
+        )?)),
         "blur" => Ok(NodeKind::Blur(build_typed::<Blur>(id, properties)?)),
+        "channel_shuffle" => Ok(NodeKind::ChannelShuffle(build_typed::<ChannelShuffle>(
+            id, properties,
+        )?)),
+        "color_grade" => Ok(NodeKind::ColorGrade(build_typed::<ColorGrade>(
+            id, properties,
+        )?)),
         "crop" => Ok(NodeKind::Crop(build_typed::<Crop>(id, properties)?)),
-        "frame_hold" => Ok(NodeKind::FrameHold(build_typed::<FrameHold>(
+        "curves" => Ok(NodeKind::Curves(build_typed::<Curves>(id, properties)?)),
+        "exposure" => Ok(NodeKind::Exposure(build_typed::<Exposure>(id, properties)?)),
+        "hue_saturation" | "hsl" => Ok(NodeKind::HueSaturation(build_typed::<HueSaturation>(
+            id, properties,
+        )?)),
+        "levels" => Ok(NodeKind::Levels(build_typed::<Levels>(id, properties)?)),
+        "matte_cleanup" => Ok(NodeKind::MatteCleanup(build_typed::<MatteCleanup>(
             id, properties,
         )?)),
         "memo" => Ok(NodeKind::Memo(build_typed::<Memo>(id, properties)?)),
         "resize" => Ok(NodeKind::Resize(build_typed::<Resize>(id, properties)?)),
         "shadow" => Ok(NodeKind::Shadow(build_typed::<Shadow>(id, properties)?)),
+        "skia_shader" => Ok(NodeKind::SkiaShader(build_typed::<SkiaShader>(
+            id, properties,
+        )?)),
+        "time_remap" => Ok(NodeKind::TimeRemap(build_typed::<TimeRemap>(
+            id, properties,
+        )?)),
         "transform" => Ok(NodeKind::Transform(build_typed::<Transform>(
             id, properties,
         )?)),
@@ -65,8 +91,20 @@ pub fn build_node(
             id, properties,
         )?)),
         "text" => Ok(NodeKind::Text(build_typed::<Text>(id, properties)?)),
+        "bezier_path" | "path" => Ok(NodeKind::BezierPath(build_typed::<BezierPath>(
+            id, properties,
+        )?)),
         "shape" => Ok(NodeKind::Shape(build_typed::<Shape>(id, properties)?)),
         "shape_renderer" => Ok(NodeKind::ShapeRenderer(build_typed::<ShapeRenderer>(
+            id, properties,
+        )?)),
+        "vector_stroke_style" => Ok(NodeKind::VectorStrokeStyle(
+            build_typed::<VectorStrokeStyle>(id, properties)?,
+        )),
+        "vector_transform" => Ok(NodeKind::VectorTransform(build_typed::<VectorTransform>(
+            id, properties,
+        )?)),
+        "vector_merge" => Ok(NodeKind::VectorMerge(build_typed::<VectorMerge>(
             id, properties,
         )?)),
         "vector_multimerge" => Ok(NodeKind::VectorMultimerge(build_typed::<VectorMultiMerge>(
@@ -133,23 +171,36 @@ macro_rules! impl_json_buildable {
 }
 
 impl_json_buildable!(
+    AlphaPremultiply,
     Boolean,
+    BezierPath,
     Merge,
     RasterMultiMerge,
     Switch,
     Blur,
+    ChannelShuffle,
+    ColorGrade,
     Crop,
-    FrameHold,
+    Curves,
+    Exposure,
+    HueSaturation,
+    Levels,
+    MatteCleanup,
     Memo,
     Resize,
     Shadow,
+    SkiaShader,
+    TimeRemap,
     Transform,
     MediaIn,
     SolidColor,
     Text,
     Shape,
     ShapeRenderer,
+    VectorMerge,
     VectorMultiMerge,
+    VectorStrokeStyle,
+    VectorTransform,
     VectorText,
     MediaOutput,
 );
@@ -182,19 +233,32 @@ fn wire_node_kind(node: &mut NodeKind, port: &str, port_ref: PortRef) -> bool {
         NodeKind::Merge(n) => n.__wire_input(port, port_ref),
         NodeKind::RasterMultimerge(n) => n.__wire_input(port, port_ref),
         NodeKind::Switch(n) => n.__wire_input(port, port_ref),
+        NodeKind::AlphaPremultiply(n) => n.__wire_input(port, port_ref),
         NodeKind::Blur(n) => n.__wire_input(port, port_ref),
+        NodeKind::ChannelShuffle(n) => n.__wire_input(port, port_ref),
+        NodeKind::ColorGrade(n) => n.__wire_input(port, port_ref),
         NodeKind::Crop(n) => n.__wire_input(port, port_ref),
-        NodeKind::FrameHold(n) => n.__wire_input(port, port_ref),
+        NodeKind::Curves(n) => n.__wire_input(port, port_ref),
+        NodeKind::Exposure(n) => n.__wire_input(port, port_ref),
+        NodeKind::HueSaturation(n) => n.__wire_input(port, port_ref),
+        NodeKind::Levels(n) => n.__wire_input(port, port_ref),
+        NodeKind::MatteCleanup(n) => n.__wire_input(port, port_ref),
         NodeKind::Memo(n) => n.__wire_input(port, port_ref),
         NodeKind::Resize(n) => n.__wire_input(port, port_ref),
         NodeKind::Shadow(n) => n.__wire_input(port, port_ref),
+        NodeKind::SkiaShader(n) => n.__wire_input(port, port_ref),
+        NodeKind::TimeRemap(n) => n.__wire_input(port, port_ref),
         NodeKind::Transform(n) => n.__wire_input(port, port_ref),
         NodeKind::MediaIn(n) => n.__wire_input(port, port_ref),
         NodeKind::SolidColor(n) => n.__wire_input(port, port_ref),
         NodeKind::Text(n) => n.__wire_input(port, port_ref),
+        NodeKind::BezierPath(n) => n.__wire_input(port, port_ref),
         NodeKind::Shape(n) => n.__wire_input(port, port_ref),
         NodeKind::ShapeRenderer(n) => n.__wire_input(port, port_ref),
+        NodeKind::VectorMerge(n) => n.__wire_input(port, port_ref),
         NodeKind::VectorMultimerge(n) => n.__wire_input(port, port_ref),
+        NodeKind::VectorStrokeStyle(n) => n.__wire_input(port, port_ref),
+        NodeKind::VectorTransform(n) => n.__wire_input(port, port_ref),
         NodeKind::VectorText(n) => n.__wire_input(port, port_ref),
         NodeKind::MediaOutput(n) => n.__wire_input(port, port_ref),
     }

@@ -1,3 +1,5 @@
+/// <reference types="svelte" />
+
 import type { LumenPreviewController } from "lumen-wasm";
 
 export class LumenPreviewContext {

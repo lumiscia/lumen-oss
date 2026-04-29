@@ -1,8 +1,9 @@
-use skia_safe::Paint;
+use skia_safe::{Paint, canvas::SaveLayerRec};
 
 use crate::{
     node::{
         NodeId, NodeProperty, PortRef,
+        compositing::merge::draw_frame_image,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
         vector::shape_renderer::{ShapeRenderer, rasterize_vector},
     },
@@ -73,20 +74,28 @@ impl Boolean {
             None => return source.snapshot(),
         };
 
-        let mask_image = if !self.mask.is_empty() {
+        let mask_frame = if !self.mask.is_empty() {
             let frame = ctx.eval(&self.mask)?;
-            frame.as_raster()?.to_skia_image()
+            Some(frame.as_raster()?.snapshot()?)
         } else if !self.vector.is_empty() {
             let vector = ctx.eval(&self.vector)?;
-            let rasterized = rasterize_vector(vector.as_vector()?, &ShapeRenderer::default(), ctx);
-            rasterized.to_skia_image()
+            Some(rasterize_vector(
+                vector.as_vector()?,
+                &ShapeRenderer::default(),
+                ctx,
+            ))
         } else {
             None
         };
 
-        let Some(mask_image) = mask_image else {
+        let Some(mask_frame) = mask_frame else {
             return source.snapshot();
         };
+        let Some((mask_image, mask_w, mask_h)) = mask_frame.image_parts() else {
+            return source.snapshot();
+        };
+        let mask_format = mask_frame.format_rect();
+        let mask_data = mask_frame.data_rect();
 
         let out_w = source_w;
         let out_h = source_h;
@@ -115,25 +124,53 @@ impl Boolean {
             source_alpha,
             ClearMode::Transparent,
             |canvas| {
-                canvas.draw_image(&source_image, (0.0, 0.0), None);
+                draw_frame_image(
+                    canvas,
+                    &source_image,
+                    source_w,
+                    source_h,
+                    source_format,
+                    source_data,
+                    source_format,
+                    None,
+                );
 
                 let blend_mode = if invert {
                     skia_safe::BlendMode::DstOut
                 } else {
                     skia_safe::BlendMode::DstIn
                 };
+                let mut layer_paint = Paint::default();
+                layer_paint.set_blend_mode(blend_mode);
+                canvas.save_layer(&SaveLayerRec::default().paint(&layer_paint));
 
                 if mask_kind == MaskKind::Luma {
                     let luma_cf = skia_safe::ColorFilter::luma();
                     let mut mask_paint = Paint::default();
-                    mask_paint.set_blend_mode(blend_mode);
                     mask_paint.set_color_filter(luma_cf);
-                    canvas.draw_image(&mask_image, (0.0, 0.0), Some(&mask_paint));
+                    draw_frame_image(
+                        canvas,
+                        &mask_image,
+                        mask_w,
+                        mask_h,
+                        mask_format,
+                        mask_data,
+                        source_format,
+                        Some(&mask_paint),
+                    );
                 } else {
-                    let mut mask_paint = Paint::default();
-                    mask_paint.set_blend_mode(blend_mode);
-                    canvas.draw_image(&mask_image, (0.0, 0.0), Some(&mask_paint));
+                    draw_frame_image(
+                        canvas,
+                        &mask_image,
+                        mask_w,
+                        mask_h,
+                        mask_format,
+                        mask_data,
+                        source_format,
+                        None,
+                    );
                 }
+                canvas.restore();
             },
         )
     }
