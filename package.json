@@ -1,0 +1,16 @@
+{
+  "name": "@lumen-sdk/monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "check": "pnpm -r check",
+    "clean": "pnpm -r clean",
+    "generate:types": "pnpm --filter @lumen-sdk/generate-types generate"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}
