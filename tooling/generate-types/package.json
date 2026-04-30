@@ -1,5 +1,5 @@
 {
-  "name": "@lumen-sdk/generate-types",
+  "name": "@lumiscia/generate-types",
   "version": "0.0.0",
   "private": true,
   "type": "module",

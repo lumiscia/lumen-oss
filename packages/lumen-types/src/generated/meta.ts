@@ -6,6 +6,8 @@ export type NodePortKind = "raster_frame" | "vector";
 export type NodePropertyKind = "bool" | "color" | "float" | "int" | "string" | "vec2";
 export type NodeKind = "alpha_premultiply" | "bezier_path" | "blur" | "boolean" | "channel_shuffle" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "matte_cleanup" | "media_in" | "media_output" | "memo" | "merge" | "raster_multimerge" | "resize" | "shadow" | "shape" | "shape_renderer" | "skia_shader" | "solid_color" | "switch" | "text" | "time_remap" | "transform" | "vector_merge" | "vector_multimerge" | "vector_stroke_style" | "vector_text" | "vector_transform";
 
+export const schemaVersion = 1 as const;
+
 export interface MetaManifest {
   readonly schemaVersion: 1;
   readonly nodeKinds: readonly NodeKind[];
@@ -363,4 +365,139 @@ export interface VectorTransformNode extends CompositionNodeBase<"vector_transfo
   };
 }
 
-export type CompositionNode = AlphaPremultiplyNode | BezierPathNode | BlurNode | BooleanNode | ChannelShuffleNode | ColorGradeNode | CropNode | CurvesNode | ExposureNode | HueSaturationNode | LevelsNode | MatteCleanupNode | MediaInNode | MediaOutputNode | MemoNode | MergeNode | RasterMultimergeNode | ResizeNode | ShadowNode | ShapeNode | ShapeRendererNode | SkiaShaderNode | SolidColorNode | SwitchNode | TextNode | TimeRemapNode | TransformNode | VectorMergeNode | VectorMultimergeNode | VectorStrokeStyleNode | VectorTextNode | VectorTransformNode;
+export interface CompositionNodeByKind {
+  readonly "alpha_premultiply": AlphaPremultiplyNode;
+  readonly "bezier_path": BezierPathNode;
+  readonly "blur": BlurNode;
+  readonly "boolean": BooleanNode;
+  readonly "channel_shuffle": ChannelShuffleNode;
+  readonly "color_grade": ColorGradeNode;
+  readonly "crop": CropNode;
+  readonly "curves": CurvesNode;
+  readonly "exposure": ExposureNode;
+  readonly "hue_saturation": HueSaturationNode;
+  readonly "levels": LevelsNode;
+  readonly "matte_cleanup": MatteCleanupNode;
+  readonly "media_in": MediaInNode;
+  readonly "media_output": MediaOutputNode;
+  readonly "memo": MemoNode;
+  readonly "merge": MergeNode;
+  readonly "raster_multimerge": RasterMultimergeNode;
+  readonly "resize": ResizeNode;
+  readonly "shadow": ShadowNode;
+  readonly "shape": ShapeNode;
+  readonly "shape_renderer": ShapeRendererNode;
+  readonly "skia_shader": SkiaShaderNode;
+  readonly "solid_color": SolidColorNode;
+  readonly "switch": SwitchNode;
+  readonly "text": TextNode;
+  readonly "time_remap": TimeRemapNode;
+  readonly "transform": TransformNode;
+  readonly "vector_merge": VectorMergeNode;
+  readonly "vector_multimerge": VectorMultimergeNode;
+  readonly "vector_stroke_style": VectorStrokeStyleNode;
+  readonly "vector_text": VectorTextNode;
+  readonly "vector_transform": VectorTransformNode;
+}
+
+export interface CompositionNodeInputByKind {
+  readonly "alpha_premultiply": Omit<AlphaPremultiplyNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "bezier_path": Omit<BezierPathNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "blur": Omit<BlurNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "boolean": Omit<BooleanNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "channel_shuffle": Omit<ChannelShuffleNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "color_grade": Omit<ColorGradeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "crop": Omit<CropNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "curves": Omit<CurvesNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "exposure": Omit<ExposureNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "hue_saturation": Omit<HueSaturationNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "levels": Omit<LevelsNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "matte_cleanup": Omit<MatteCleanupNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "media_in": Omit<MediaInNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "media_output": Omit<MediaOutputNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "memo": Omit<MemoNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "merge": Omit<MergeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "raster_multimerge": Omit<RasterMultimergeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "resize": Omit<ResizeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "shadow": Omit<ShadowNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "shape": Omit<ShapeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "shape_renderer": Omit<ShapeRendererNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "skia_shader": Omit<SkiaShaderNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "solid_color": Omit<SolidColorNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "switch": Omit<SwitchNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "text": Omit<TextNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "time_remap": Omit<TimeRemapNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "transform": Omit<TransformNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "vector_merge": Omit<VectorMergeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "vector_multimerge": Omit<VectorMultimergeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "vector_stroke_style": Omit<VectorStrokeStyleNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "vector_text": Omit<VectorTextNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "vector_transform": Omit<VectorTransformNode, "id"> & {
+    readonly id?: number;
+  };
+}
+
+export type CompositionNode<TKind extends NodeKind = NodeKind> = CompositionNodeByKind[TKind];
+export type CompositionNodeInput<TKind extends NodeKind = NodeKind> = CompositionNodeInputByKind[TKind];

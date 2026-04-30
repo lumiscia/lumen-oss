@@ -1,5 +1,5 @@
 {
-  "name": "@lumen-sdk/monorepo",
+  "name": "@lumiscia/lumen-typescript",
   "version": "0.0.0",
   "private": true,
   "packageManager": "pnpm@10.0.0",
@@ -8,7 +8,7 @@
     "build": "pnpm -r build",
     "check": "pnpm -r check",
     "clean": "pnpm -r clean",
-    "generate:types": "pnpm --filter @lumen-sdk/generate-types generate"
+    "generate:types": "pnpm --filter @lumiscia/generate-types generate"
   },
   "devDependencies": {
     "typescript": "^5.8.0"

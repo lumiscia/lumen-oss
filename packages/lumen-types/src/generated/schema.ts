@@ -1,37 +1,37 @@
 import type {
   Color,
-  AlphaPremultiplyNode as AlphaPremultiplySchemaNode,
-  BezierPathNode as BezierPathSchemaNode,
-  BlurNode as BlurSchemaNode,
-  BooleanNode as BooleanSchemaNode,
-  ChannelShuffleNode as ChannelShuffleSchemaNode,
-  ColorGradeNode as ColorGradeSchemaNode,
-  CropNode as CropSchemaNode,
-  CurvesNode as CurvesSchemaNode,
-  ExposureNode as ExposureSchemaNode,
-  HueSaturationNode as HueSaturationSchemaNode,
-  LevelsNode as LevelsSchemaNode,
-  MatteCleanupNode as MatteCleanupSchemaNode,
-  MediaInNode as MediaInSchemaNode,
-  MediaOutputNode as MediaOutputSchemaNode,
-  MemoNode as MemoSchemaNode,
-  MergeNode as MergeSchemaNode,
-  RasterMultimergeNode as RasterMultimergeSchemaNode,
-  ResizeNode as ResizeSchemaNode,
-  ShadowNode as ShadowSchemaNode,
-  ShapeNode as ShapeSchemaNode,
-  ShapeRendererNode as ShapeRendererSchemaNode,
-  SkiaShaderNode as SkiaShaderSchemaNode,
-  SolidColorNode as SolidColorSchemaNode,
-  SwitchNode as SwitchSchemaNode,
-  TextNode as TextSchemaNode,
-  TimeRemapNode as TimeRemapSchemaNode,
-  TransformNode as TransformSchemaNode,
-  VectorMergeNode as VectorMergeSchemaNode,
-  VectorMultimergeNode as VectorMultimergeSchemaNode,
-  VectorStrokeStyleNode as VectorStrokeStyleSchemaNode,
-  VectorTextNode as VectorTextSchemaNode,
-  VectorTransformNode as VectorTransformSchemaNode
+  AlphaPremultiplyNode,
+  BezierPathNode,
+  BlurNode,
+  BooleanNode,
+  ChannelShuffleNode,
+  ColorGradeNode,
+  CropNode,
+  CurvesNode,
+  ExposureNode,
+  HueSaturationNode,
+  LevelsNode,
+  MatteCleanupNode,
+  MediaInNode,
+  MediaOutputNode,
+  MemoNode,
+  MergeNode,
+  RasterMultimergeNode,
+  ResizeNode,
+  ShadowNode,
+  ShapeNode,
+  ShapeRendererNode,
+  SkiaShaderNode,
+  SolidColorNode,
+  SwitchNode,
+  TextNode,
+  TimeRemapNode,
+  TransformNode,
+  VectorMergeNode,
+  VectorMultimergeNode,
+  VectorStrokeStyleNode,
+  VectorTextNode,
+  VectorTransformNode
 } from "./meta.js";
 
 export interface Connection {
@@ -53,38 +53,38 @@ export interface LumenComposition {
     [k: string]: unknown;
   };
   nodes: (
-    | BooleanSchemaNode
-    | MergeSchemaNode
-    | RasterMultimergeSchemaNode
-    | SwitchSchemaNode
-    | AlphaPremultiplySchemaNode
-    | BlurSchemaNode
-    | ChannelShuffleSchemaNode
-    | ColorGradeSchemaNode
-    | CropSchemaNode
-    | CurvesSchemaNode
-    | ExposureSchemaNode
-    | HueSaturationSchemaNode
-    | LevelsSchemaNode
-    | MatteCleanupSchemaNode
-    | MemoSchemaNode
-    | ResizeSchemaNode
-    | ShadowSchemaNode
-    | SkiaShaderSchemaNode
-    | TimeRemapSchemaNode
-    | TransformSchemaNode
-    | MediaInSchemaNode
-    | SolidColorSchemaNode
-    | TextSchemaNode
-    | BezierPathSchemaNode
-    | ShapeSchemaNode
-    | ShapeRendererSchemaNode
-    | VectorMergeSchemaNode
-    | VectorMultimergeSchemaNode
-    | VectorStrokeStyleSchemaNode
-    | VectorTextSchemaNode
-    | VectorTransformSchemaNode
-    | MediaOutputSchemaNode
+    | BooleanNode
+    | MergeNode
+    | RasterMultimergeNode
+    | SwitchNode
+    | AlphaPremultiplyNode
+    | BlurNode
+    | ChannelShuffleNode
+    | ColorGradeNode
+    | CropNode
+    | CurvesNode
+    | ExposureNode
+    | HueSaturationNode
+    | LevelsNode
+    | MatteCleanupNode
+    | MemoNode
+    | ResizeNode
+    | ShadowNode
+    | SkiaShaderNode
+    | TimeRemapNode
+    | TransformNode
+    | MediaInNode
+    | SolidColorNode
+    | TextNode
+    | BezierPathNode
+    | ShapeNode
+    | ShapeRendererNode
+    | VectorMergeNode
+    | VectorMultimergeNode
+    | VectorStrokeStyleNode
+    | VectorTextNode
+    | VectorTransformNode
+    | MediaOutputNode
   )[];
   render_settings: {
     background_color?: Color;

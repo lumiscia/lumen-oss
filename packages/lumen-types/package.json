@@ -1,5 +1,5 @@
 {
-  "name": "@lumen-sdk/lumen-types",
+  "name": "@lumiscia/lumen-types",
   "version": "0.0.0",
   "type": "module",
   "main": "./dist/index.js",
