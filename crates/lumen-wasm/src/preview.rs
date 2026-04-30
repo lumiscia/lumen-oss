@@ -242,6 +242,17 @@ impl LumenPreviewController {
         self.state.borrow().current_frame
     }
 
+    #[wasm_bindgen(js_name = "targetFrameForTimeMs")]
+    pub fn target_frame_for_time_ms(&self, time_ms: f64) -> u32 {
+        let state = self.state.borrow();
+        if state.duration_frames == 0 {
+            return 0;
+        }
+
+        let frame = ((time_ms.max(0.0) / 1_000.0) * state.fps.max(1.0)).floor() as u32;
+        frame.min(state.duration_frames - 1)
+    }
+
     pub fn width(&self) -> u32 {
         self.state.borrow().width as u32
     }

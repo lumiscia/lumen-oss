@@ -8,8 +8,9 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen::{
+    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, duration_samples},
     composition::Composition,
-    ffmpeg::FfmpegVideoResolver,
+    ffmpeg::{FfmpegAudioResolver, FfmpegVideoResolver},
     image::ImageFileResolver,
     media::{ImageResolver, MediaStore, VideoFrameResolver},
     raster::RasterFrame,
@@ -59,6 +60,13 @@ impl MediaStore for LocalMediaStore {
             .ok()
             .map(|r| Box::new(r) as _)
     }
+
+    fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
+        let resolved = self.resolve_source(source_id)?;
+        FfmpegAudioResolver::open(resolved)
+            .ok()
+            .map(|r| Box::new(r) as _)
+    }
 }
 
 fn spawn_ffmpeg_encoder(
@@ -67,8 +75,10 @@ fn spawn_ffmpeg_encoder(
     height: u32,
     fps: f32,
     encoder: &str,
+    audio_path: Option<&Path>,
 ) -> Result<Child> {
-    Command::new("ffmpeg")
+    let mut command = Command::new("ffmpeg");
+    command
         .arg("-y")
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -83,8 +93,25 @@ fn spawn_ffmpeg_encoder(
         .arg("-r")
         .arg(format!("{fps}"))
         .arg("-i")
-        .arg("pipe:0")
-        .arg("-an")
+        .arg("pipe:0");
+
+    if let Some(audio_path) = audio_path {
+        command
+            .arg("-f")
+            .arg("f32le")
+            .arg("-ar")
+            .arg(AUDIO_SAMPLE_RATE.to_string())
+            .arg("-ac")
+            .arg(AUDIO_CHANNELS.to_string())
+            .arg("-i")
+            .arg(audio_path)
+            .arg("-c:a")
+            .arg("aac");
+    } else {
+        command.arg("-an");
+    }
+
+    command
         .arg("-c:v")
         .arg(encoder)
         .arg("-pix_fmt")
@@ -355,12 +382,24 @@ fn render_mp4(
     let total_frames = composition.timeline.duration_frames;
     let mut renderer = LumenRenderer::new(&composition, &surface_pool, &media_store)
         .context("failed to create renderer")?;
+    let audio_path = if composition
+        .audio
+        .as_ref()
+        .is_some_and(|audio| !audio.clips.is_empty())
+    {
+        let path = output.with_extension("audio.f32le.tmp");
+        render_audio_raw(&composition, &media_store, &path)?;
+        Some(path)
+    } else {
+        None
+    };
     let mut child = spawn_ffmpeg_encoder(
         output,
         width,
         height,
         composition.timeline.fps,
         encoder.as_str(),
+        audio_path.as_deref(),
     )?;
     let mut frame_buffer = vec![0; (width as usize) * (height as usize) * 4];
 
@@ -381,12 +420,49 @@ fn render_mp4(
     }
 
     finalize_ffmpeg_encoder(child)?;
+    if let Some(audio_path) = audio_path {
+        let _ = fs::remove_file(audio_path);
+    }
 
     println!(
         "render complete output={} frames={}",
         output.display(),
         total_frames,
     );
+    Ok(())
+}
+
+fn render_audio_raw(
+    composition: &Composition,
+    media_store: &LocalMediaStore,
+    output: &Path,
+) -> Result<()> {
+    let Some(audio) = composition.audio.as_ref() else {
+        return Ok(());
+    };
+
+    let total_samples = duration_samples(
+        composition.timeline.duration_frames,
+        composition.timeline.fps,
+    );
+    let mixer = AudioMixer::new(audio, media_store);
+    let mut file = fs::File::create(output)
+        .with_context(|| format!("failed to create audio temp {}", output.display()))?;
+    let mut start_sample = 0_u64;
+    let chunk_frames = AUDIO_SAMPLE_RATE as usize;
+
+    while start_sample < total_samples {
+        let frames = usize::try_from((total_samples - start_sample).min(chunk_frames as u64))
+            .unwrap_or(chunk_frames);
+        let mixed = mixer
+            .mix_range(start_sample, frames)
+            .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
+        for sample in mixed.interleaved_f32() {
+            file.write_all(&sample.to_le_bytes())?;
+        }
+        start_sample = start_sample.saturating_add(frames as u64);
+    }
+
     Ok(())
 }
 

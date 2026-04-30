@@ -17,6 +17,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 
 use crate::{
+    audio::{AudioClip, AudioTimeline, AudioTrack},
     composition::{Composition, CompositionMetadata, RenderSettings, TimelineSettings},
     graph::{Connection, Graph},
     node::NodeId,
@@ -111,6 +112,7 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
 
     let mut comp = Composition::new(graph, timeline, render_settings);
     comp.metadata = metadata;
+    comp.audio = root.get("audio").map(parse_audio_timeline).transpose()?;
     Ok(comp)
 }
 
@@ -325,6 +327,91 @@ fn parse_render_settings(val: &Value) -> Result<RenderSettings> {
     })
 }
 
+fn parse_audio_timeline(val: &Value) -> Result<AudioTimeline> {
+    let obj = val.as_object().context("`audio` must be an object")?;
+    let tracks = obj
+        .get("tracks")
+        .and_then(Value::as_array)
+        .context("audio.tracks must be an array")?
+        .iter()
+        .map(parse_audio_track)
+        .collect::<Result<Vec<_>>>()?;
+    let clips = obj
+        .get("clips")
+        .and_then(Value::as_array)
+        .context("audio.clips must be an array")?
+        .iter()
+        .map(parse_audio_clip)
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(AudioTimeline { tracks, clips })
+}
+
+fn parse_audio_track(val: &Value) -> Result<AudioTrack> {
+    let obj = val.as_object().context("audio track must be an object")?;
+    Ok(AudioTrack {
+        id: required_string(obj, "id")?,
+        name: obj
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("Track")
+            .to_string(),
+        muted: obj.get("muted").and_then(Value::as_bool).unwrap_or(false),
+        solo: obj.get("solo").and_then(Value::as_bool).unwrap_or(false),
+        volume: obj.get("volume").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+    })
+}
+
+fn parse_audio_clip(val: &Value) -> Result<AudioClip> {
+    let obj = val.as_object().context("audio clip must be an object")?;
+    let start_ms = audio_time_ms(obj, "start_ms", "start_frame")?;
+    let duration_ms = audio_time_ms(obj, "duration_ms", "duration_frames")?;
+    if duration_ms == 0 {
+        anyhow::bail!("audio clip duration_ms must be greater than zero");
+    }
+
+    Ok(AudioClip {
+        id: required_string(obj, "id")?,
+        source_id: required_string(obj, "source_id")?,
+        track_id: required_string(obj, "track_id")?,
+        name: obj
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("Audio clip")
+            .to_string(),
+        start_ms,
+        duration_ms,
+        source_start_ms: obj
+            .get("source_start_ms")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                obj.get("source_start_seconds")
+                    .and_then(Value::as_f64)
+                    .map(|seconds| (seconds.max(0.0) * 1_000.0).round() as u64)
+            })
+            .unwrap_or(0),
+        volume: obj.get("volume").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+    })
+}
+
+fn audio_time_ms(obj: &Map<String, Value>, ms_key: &str, frame_key: &str) -> Result<u64> {
+    if let Some(ms) = obj.get(ms_key).and_then(Value::as_u64) {
+        return Ok(ms);
+    }
+    if let Some(frames) = obj.get(frame_key).and_then(Value::as_u64) {
+        // Frame compatibility for current editor payloads. Canonical output should emit *_ms.
+        return Ok(((frames as f64 / 30.0) * 1_000.0).round() as u64);
+    }
+    anyhow::bail!("audio clip missing `{ms_key}`")
+}
+
+fn required_string(obj: &Map<String, Value>, key: &str) -> Result<String> {
+    obj.get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .with_context(|| format!("missing `{key}` string"))
+}
+
 fn parse_node_id(val: &Value) -> Result<NodeId> {
     let n = val.as_u64().context("node id must be a u64")?;
     Ok(NodeId::new(n))
@@ -356,6 +443,46 @@ mod tests {
         assert_eq!(comp.render_settings.height, 1080);
         assert_eq!(comp.graph.nodes.len(), 2);
         assert_eq!(comp.graph.connections.len(), 1);
+    }
+
+    #[test]
+    fn parse_composition_with_audio_timeline() {
+        let json = r#"{
+            "timeline": { "fps": 30, "duration_frames": 90 },
+            "render_settings": { "width": 1920, "height": 1080 },
+            "audio": {
+                "tracks": [
+                    { "id": "track-1", "name": "Voice", "muted": false, "solo": true, "volume": 0.5 }
+                ],
+                "clips": [
+                    {
+                        "id": "clip-1",
+                        "source_id": "voice",
+                        "track_id": "track-1",
+                        "name": "voice.wav",
+                        "start_ms": 100,
+                        "duration_ms": 900,
+                        "source_start_ms": 50,
+                        "volume": 0.75
+                    }
+                ]
+            },
+            "nodes": [
+                { "id": 1, "type": "solid_color", "properties": { "color": [255, 0, 0, 255], "width": 1920, "height": 1080 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
+            ]
+        }"#;
+
+        let comp = parse(json).expect("should parse");
+        let audio = comp.audio.expect("audio timeline");
+        assert_eq!(audio.tracks[0].id, "track-1");
+        assert!(audio.tracks[0].solo);
+        assert_eq!(audio.clips[0].source_id, "voice");
+        assert_eq!(audio.clips[0].start_ms, 100);
+        assert_eq!(audio.clips[0].source_start_ms, 50);
     }
 
     #[test]

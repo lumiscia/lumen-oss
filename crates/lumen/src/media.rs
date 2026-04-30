@@ -7,6 +7,7 @@ use std::{
 };
 
 use crate::{
+    audio::{AudioResolver, AudioSourceProvider},
     composition::Composition,
     error::{GraphValidationError, LumenError, MediaError},
     expr::ExpressionContext,
@@ -47,6 +48,16 @@ pub trait MediaStore: Send + Sync + Debug {
     fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>>;
 
     fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>>;
+
+    fn get_audio_resolver(&self, _source_id: &str) -> Option<Box<dyn AudioResolver>> {
+        None
+    }
+}
+
+impl<T: MediaStore + ?Sized> AudioSourceProvider for T {
+    fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
+        MediaStore::get_audio_resolver(self, source_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     env,
+    fs::File,
     io::Write,
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -10,8 +11,12 @@ use std::{
 use anyhow::{Context, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen::{
+    audio::{
+        AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMetadata, AudioMixer, AudioResolver,
+        duration_samples,
+    },
     composition::Composition,
-    ffmpeg::FfmpegVideoResolver,
+    ffmpeg::{FfmpegAudioResolver, FfmpegVideoResolver},
     image::ImageFileResolver,
     media::{ImageMetadata, ImageResolver, MediaStore, VideoFrameResolver, VideoMetadata},
     raster::ImageFrame,
@@ -85,6 +90,7 @@ pub struct ProjectBundle {
 
 struct LocalMediaStore {
     root: PathBuf,
+    audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
     videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
 }
@@ -93,6 +99,7 @@ impl LocalMediaStore {
     fn new(root: PathBuf) -> Self {
         Self {
             root,
+            audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
             videos: RwLock::new(HashMap::new()),
         }
@@ -133,6 +140,22 @@ impl LocalMediaStore {
 
         let resolver = Arc::new(FfmpegVideoResolver::open(source.to_string()).ok()?);
         if let Ok(mut cache) = self.videos.write() {
+            cache
+                .entry(source.to_string())
+                .or_insert_with(|| Arc::clone(&resolver));
+        }
+        Some(resolver)
+    }
+
+    fn audio_resolver(&self, source: &str) -> Option<Arc<FfmpegAudioResolver>> {
+        if let Ok(cache) = self.audios.read()
+            && let Some(resolver) = cache.get(source)
+        {
+            return Some(Arc::clone(resolver));
+        }
+
+        let resolver = Arc::new(FfmpegAudioResolver::open(source.to_string()).ok()?);
+        if let Ok(mut cache) = self.audios.write() {
             cache
                 .entry(source.to_string())
                 .or_insert_with(|| Arc::clone(&resolver));
@@ -183,6 +206,27 @@ impl VideoFrameResolver for SharedVideoResolver {
     }
 }
 
+#[derive(Clone)]
+struct SharedAudioResolver(Arc<FfmpegAudioResolver>);
+
+impl AudioResolver for SharedAudioResolver {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+
+    fn metadata(&self) -> AudioMetadata {
+        self.0.metadata()
+    }
+
+    fn resolve_range(
+        &self,
+        start_sample: u64,
+        frames: usize,
+    ) -> Result<Arc<AudioBuffer>, lumen::error::MediaError> {
+        self.0.resolve_range(start_sample, frames)
+    }
+}
+
 #[derive(Debug)]
 struct NullMediaStore;
 
@@ -207,6 +251,12 @@ impl MediaStore for LocalMediaStore {
         let resolved = self.resolve_source(stream_id)?;
         let resolver = self.video_resolver(&resolved)?;
         Some(Box::new(SharedVideoResolver(resolver)))
+    }
+
+    fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
+        let resolved = self.resolve_source(source_id)?;
+        let resolver = self.audio_resolver(&resolved)?;
+        Some(Box::new(SharedAudioResolver(resolver)))
     }
 }
 
@@ -289,14 +339,34 @@ pub fn render_project_mp4(
         retryable: true,
     })?;
     let output_path = tmp.path().join("output.mp4");
-    let mut child =
-        spawn_ffmpeg_encoder(&output_path, width, height, fps, &encoder).map_err(|err| {
-            RenderError {
-                code: "encode_failed",
-                message: err.to_string(),
-                retryable: true,
-            }
+    let audio_path = if composition
+        .audio
+        .as_ref()
+        .is_some_and(|audio| !audio.clips.is_empty())
+    {
+        let path = tmp.path().join("audio.f32le");
+        render_audio_raw(composition, &media_store, &path).map_err(|err| RenderError {
+            code: "audio_render_failed",
+            message: err.to_string(),
+            retryable: true,
         })?;
+        Some(path)
+    } else {
+        None
+    };
+    let mut child = spawn_ffmpeg_encoder(
+        &output_path,
+        width,
+        height,
+        fps,
+        &encoder,
+        audio_path.as_deref(),
+    )
+    .map_err(|err| RenderError {
+        code: "encode_failed",
+        message: err.to_string(),
+        retryable: true,
+    })?;
     let mut frame_buffer = vec![0; (width as usize) * (height as usize) * 4];
 
     for frame in 0..total_frames {
@@ -408,8 +478,10 @@ fn spawn_ffmpeg_encoder(
     height: u32,
     fps: f32,
     encoder: &str,
+    audio_path: Option<&Path>,
 ) -> anyhow::Result<Child> {
-    Command::new("ffmpeg")
+    let mut command = Command::new("ffmpeg");
+    command
         .arg("-y")
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -424,8 +496,25 @@ fn spawn_ffmpeg_encoder(
         .arg("-r")
         .arg(format!("{fps}"))
         .arg("-i")
-        .arg("pipe:0")
-        .arg("-an")
+        .arg("pipe:0");
+
+    if let Some(audio_path) = audio_path {
+        command
+            .arg("-f")
+            .arg("f32le")
+            .arg("-ar")
+            .arg(AUDIO_SAMPLE_RATE.to_string())
+            .arg("-ac")
+            .arg(AUDIO_CHANNELS.to_string())
+            .arg("-i")
+            .arg(audio_path)
+            .arg("-c:a")
+            .arg("aac");
+    } else {
+        command.arg("-an");
+    }
+
+    command
         .arg("-c:v")
         .arg(encoder)
         .arg("-pix_fmt")
@@ -437,6 +526,40 @@ fn spawn_ffmpeg_encoder(
         .stderr(Stdio::piped())
         .spawn()
         .context("failed to spawn ffmpeg")
+}
+
+fn render_audio_raw(
+    composition: &Composition,
+    media_store: &LocalMediaStore,
+    output_path: &Path,
+) -> anyhow::Result<()> {
+    let Some(audio) = composition.audio.as_ref() else {
+        return Ok(());
+    };
+
+    let total_samples = duration_samples(
+        composition.timeline.duration_frames,
+        composition.timeline.fps,
+    );
+    let mixer = AudioMixer::new(audio, media_store);
+    let mut output = File::create(output_path)
+        .with_context(|| format!("failed to create audio file {}", output_path.display()))?;
+    let mut start_sample = 0_u64;
+    let chunk_frames = AUDIO_SAMPLE_RATE as usize;
+
+    while start_sample < total_samples {
+        let frames = usize::try_from((total_samples - start_sample).min(chunk_frames as u64))
+            .unwrap_or(chunk_frames);
+        let mixed = mixer
+            .mix_range(start_sample, frames)
+            .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
+        for sample in mixed.interleaved_f32() {
+            output.write_all(&sample.to_le_bytes())?;
+        }
+        start_sample = start_sample.saturating_add(frames as u64);
+    }
+
+    Ok(())
 }
 
 fn write_frame_to_ffmpeg(

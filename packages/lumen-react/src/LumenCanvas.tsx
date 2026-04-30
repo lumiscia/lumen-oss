@@ -1,12 +1,19 @@
 import { useEffect, useRef } from "react";
 
 import type { CSSProperties } from "react";
-import type { LumenPreviewController } from "lumen-wasm";
+import type {
+  AudioEngineTimeline,
+  AudioSourceRegistration,
+  LumenAudioEngine,
+  LumenPreviewController,
+} from "lumen-wasm";
 
 import type { LumenPreviewContext } from "./preview.ts";
 
 export interface LumenCanvasProps {
   preview: LumenPreviewContext;
+  audioSources?: AudioSourceRegistration[];
+  audioTimeline?: AudioEngineTimeline | null;
   compositionJson?: string | null;
   fps?: number;
   className?: string;
@@ -15,12 +22,15 @@ export interface LumenCanvasProps {
 
 export function LumenCanvas({
   preview,
+  audioSources = [],
+  audioTimeline = null,
   compositionJson = null,
   fps = 30,
   className,
   style,
 }: LumenCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioEngineRef = useRef<LumenAudioEngine | null>(null);
   const controllerRef = useRef<LumenPreviewController | null>(null);
   const queuedRenderRef = useRef<(() => Promise<void>) | null>(null);
   const renderInFlightRef = useRef(false);
@@ -185,6 +195,27 @@ export function LumenCanvas({
 
       if (ctx) {
         queueRender(async () => {
+          const audioEngine = audioEngineRef.current;
+          if (audioEngine && audioTimeline && preview.getSnapshot().isPlaying) {
+            const targetFrame = controller.targetFrameForTimeMs(audioEngine.currentTimeMs());
+            try {
+              await preloadPlaybackWindow(controller, targetFrame);
+              controller.setFrame(targetFrame);
+              const startedAt = performance.now();
+              controller.renderNow(ctx);
+              preview.update({
+                frame: targetFrame,
+                renderMs: performance.now() - startedAt,
+                isPlaying: controller.isPlaying(),
+                error: null,
+              });
+              prefetchAhead(controller, targetFrame);
+            } catch (error) {
+              reportError("audio-clock animation tick", error);
+            }
+            return;
+          }
+
           try {
             const currentFrame = controller.currentFrame();
             await preloadPlaybackWindow(controller, currentFrame);
@@ -221,24 +252,37 @@ export function LumenCanvas({
     let cancelled = false;
 
     void import("lumen-wasm")
-      .then(({ LumenPreviewController: PreviewController }) => {
+      .then(({ LumenAudioEngine: AudioEngine, LumenPreviewController: PreviewController }) => {
         if (cancelled) {
           return;
         }
 
         const controller = new PreviewController();
+        const audioEngine = new AudioEngine();
+        audioEngineRef.current = audioEngine;
         controllerRef.current = controller;
-        preview._attach(controller, (frame) => {
-          queueRender(async () => {
-            try {
-              resetPrefetch();
-              controller.setFrame(frame);
-              await renderOnce(controller);
-            } catch (error) {
-              reportError("seek render", error);
-            }
-          });
-        });
+        preview._attach(
+          controller,
+          (frame) => {
+            queueRender(async () => {
+              try {
+                resetPrefetch();
+                controller.setFrame(frame);
+                await renderOnce(controller);
+              } catch (error) {
+                reportError("seek render", error);
+              }
+            });
+          },
+          {
+            pause: () => audioEngine.pause(),
+            play: () => {
+              const frame = controller.currentFrame();
+              audioEngine.play((frame / Math.max(fps, 1)) * 1000);
+            },
+            seek: (frame) => audioEngine.seekMs((frame / Math.max(fps, 1)) * 1000),
+          },
+        );
         startLoop(controller);
       })
       .catch((error: unknown) => {
@@ -252,11 +296,25 @@ export function LumenCanvas({
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = 0;
       resetPrefetch();
+      audioEngineRef.current?.dispose();
+      audioEngineRef.current = null;
       controllerRef.current?.clear();
       controllerRef.current = null;
       preview._detach();
     };
   }, [preview]);
+
+  useEffect(() => {
+    const audioEngine = audioEngineRef.current;
+    if (!audioEngine) {
+      return;
+    }
+
+    audioEngine.setAudioTimeline(audioTimeline);
+    void audioEngine.syncAudioSources(audioSources).catch((error: unknown) => {
+      reportError("sync audio sources", error);
+    });
+  }, [audioSources, audioTimeline]);
 
   useEffect(() => {
     const controller = controllerRef.current;

@@ -5,6 +5,13 @@ import {
 } from "./internal/lumen_wasm.js";
 
 import { LumenMediaBridge } from "./media/index.js";
+export { LumenAudioEngine } from "./audio-engine.js";
+export type {
+  AudioEngineClip,
+  AudioEngineTimeline,
+  AudioEngineTrack,
+  AudioSourceRegistration,
+} from "./audio-engine.js";
 import type {
   MediaRegistration,
   MediaSourceInput,

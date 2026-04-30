@@ -1,4 +1,4 @@
-use crate::{error::LumenError, graph::Graph};
+use crate::{audio::AudioTimeline, error::LumenError, graph::Graph};
 
 #[derive(Debug, Clone)]
 pub struct TimelineSettings {
@@ -33,6 +33,7 @@ pub struct Composition {
     pub timeline: TimelineSettings,
     pub render_settings: RenderSettings,
     pub metadata: Option<CompositionMetadata>,
+    pub audio: Option<AudioTimeline>,
 }
 
 unsafe impl Sync for Composition {}
@@ -45,6 +46,7 @@ impl Composition {
             timeline,
             render_settings,
             metadata: None,
+            audio: None,
         }
     }
 

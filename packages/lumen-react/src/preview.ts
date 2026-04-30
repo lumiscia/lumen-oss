@@ -14,6 +14,11 @@ export interface LumenPreviewState {
 }
 
 type Listener = () => void;
+type PreviewTransport = {
+  pause?: () => void;
+  play?: () => void;
+  seek?: (frame: number) => void;
+};
 
 const INITIAL_STATE: LumenPreviewState = {
   frame: 0,
@@ -30,6 +35,7 @@ export class LumenPreviewContext {
   #state: LumenPreviewState = INITIAL_STATE;
   #listeners = new Set<Listener>();
   #seekFn: ((frame: number) => void) | null = null;
+  #transport: PreviewTransport | null = null;
 
   subscribe = (listener: Listener): (() => void) => {
     this.#listeners.add(listener);
@@ -62,16 +68,23 @@ export class LumenPreviewContext {
     });
   }
 
-  _attach(ctrl: LumenPreviewController, seekFn: (frame: number) => void): void {
+  _attach(
+    ctrl: LumenPreviewController,
+    seekFn: (frame: number) => void,
+    transport: PreviewTransport | null = null,
+  ): void {
     this.#seekFn = seekFn;
+    this.#transport = transport;
     this.update({ controller: ctrl });
     if (this.#state.isPlaying) {
       ctrl.play();
+      this.#transport?.play?.();
     }
   }
 
   _detach(): void {
     this.#seekFn = null;
+    this.#transport = null;
     this.#setState({
       ...INITIAL_STATE,
       isPlaying: false,
@@ -81,16 +94,19 @@ export class LumenPreviewContext {
 
   play(): void {
     this.#state.controller?.play();
+    this.#transport?.play?.();
     this.update({ isPlaying: true });
   }
 
   pause(): void {
     this.#state.controller?.pause();
+    this.#transport?.pause?.();
     this.update({ isPlaying: false });
   }
 
   seek(frame: number): void {
     this.#seekFn?.(frame);
+    this.#transport?.seek?.(frame);
     this.update({ frame });
   }
 }

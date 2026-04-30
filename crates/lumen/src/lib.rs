@@ -2,6 +2,7 @@
 
 use crate::error::LumenError;
 
+pub mod audio;
 pub mod composition;
 pub mod error;
 pub mod expr;
