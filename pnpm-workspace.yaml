@@ -1,3 +1,4 @@
 packages:
+  - "packages/lumen"
   - "packages/lumen-types"
   - "tooling/*"

@@ -17,7 +17,8 @@
 ## Package Boundaries
 
 - `packages/lumen-types` owns shared generated and hand-written public TypeScript types.
-- Future runtime SDK packages should consume `@lumen-sdk/lumen-types` instead of duplicating schema-derived types.
+- `packages/lumen` owns the dependency-free SDK client and composition builder.
+- Future runtime SDK packages should consume `@lumiscia/lumen-types` instead of duplicating schema-derived types.
 
 ## Code Style
 

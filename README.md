@@ -4,7 +4,8 @@ TypeScript workspace for generated Lumen schema and metadata types.
 
 ## Packages
 
-- `@lumen-sdk/lumen-types`
+- `@lumiscia/lumen-types`
+- `@lumiscia/lumen`
 
 ## Development
 

@@ -12,6 +12,12 @@ importers:
         specifier: ^5.8.0
         version: 5.9.3
 
+  packages/lumen:
+    dependencies:
+      '@lumiscia/lumen-types':
+        specifier: workspace:*
+        version: link:../lumen-types
+
   packages/lumen-types: {}
 
   tooling/generate-types:
