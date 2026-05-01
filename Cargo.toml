@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/lumen",
+  "crates/ffmpeg",
   "crates/lumen-server",
   "crates/lumen-wasm",
   "crates/lumen-local",
