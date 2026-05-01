@@ -5,7 +5,8 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, mpsc},
+    thread::{self, JoinHandle},
 };
 
 use anyhow::{Context, anyhow};
@@ -13,15 +14,19 @@ use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen::{
     audio::{
         AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMetadata, AudioMixer, AudioResolver,
-        duration_samples,
+        duration_samples, write_interleaved_channels_f32_bytes,
     },
     composition::Composition,
-    ffmpeg::{FfmpegAudioResolver, FfmpegVideoResolver},
+    ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
-    media::{ImageMetadata, ImageResolver, MediaStore, VideoFrameResolver, VideoMetadata},
+    media::{
+        ImageMetadata, ImageResolver, MediaStore, VideoFrameRange, VideoFrameResolver,
+        VideoMetadata,
+    },
     raster::ImageFrame,
     render::{
         LumenRenderer,
+        scheduler::{RenderScheduler, RenderSchedulerConfig},
         surface::{DefaultSurfacePool, SurfacePool},
     },
 };
@@ -64,6 +69,26 @@ pub struct RenderProgress {
     pub frame: u32,
     pub total_frames: u32,
     pub ratio: f32,
+}
+
+const MEDIA_PREFETCH_LOOKAHEAD_FRAMES: u32 = 30;
+const MEDIA_PREFETCH_LOOKAHEAD_BYTES: usize = 512 * 1024 * 1024;
+const MEDIA_UPLOAD_BUDGET_FRAMES: usize = 8;
+const SERVER_DECODED_CACHE_BYTES: usize = 512 * 1024 * 1024;
+const SERVER_UPLOADED_CACHE_BYTES: usize = 512 * 1024 * 1024;
+const SERVER_DECODED_QUEUE_CAPACITY: usize = 8;
+const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
+const GPU_RESOURCE_PURGE_INTERVAL_FRAMES: u32 = 30;
+
+struct EncoderFrame {
+    frame: u32,
+    pixels: Vec<u8>,
+}
+
+struct FfmpegEncoder {
+    child: Child,
+    frame_tx: Option<mpsc::SyncSender<EncoderFrame>>,
+    writer_handle: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +163,10 @@ impl LocalMediaStore {
             return Some(Arc::clone(resolver));
         }
 
-        let resolver = Arc::new(FfmpegVideoResolver::open(source.to_string()).ok()?);
+        let resolver = Arc::new(
+            FfmpegVideoResolver::open_with_options(source.to_string(), video_resolver_options())
+                .ok()?,
+        );
         if let Ok(mut cache) = self.videos.write() {
             cache
                 .entry(source.to_string())
@@ -203,6 +231,40 @@ impl VideoFrameResolver for SharedVideoResolver {
 
     fn resolve_frame_image(&self, frame: u32) -> Result<Arc<ImageFrame>, lumen::error::MediaError> {
         self.0.resolve_frame_image(frame)
+    }
+
+    fn prefetch_frame_images(&self, frames: &[u32]) -> Result<(), lumen::error::MediaError> {
+        self.0.prefetch_frame_images(frames)
+    }
+
+    fn queue_frame_decodes(&self, frames: &[u32]) -> Result<(), lumen::error::MediaError> {
+        self.0.queue_frame_decodes(frames)
+    }
+
+    fn queue_frame_ranges(
+        &self,
+        ranges: &[VideoFrameRange],
+    ) -> Result<(), lumen::error::MediaError> {
+        self.0.queue_frame_ranges(ranges)
+    }
+
+    fn take_decoded_frames(
+        &self,
+        max_frames: usize,
+    ) -> Result<Vec<lumen::media::DecodedVideoFrame>, lumen::error::MediaError> {
+        self.0.take_decoded_frames(max_frames)
+    }
+
+    fn store_frame_image(&self, frame: u32, image: Arc<ImageFrame>) {
+        self.0.store_frame_image(frame, image);
+    }
+
+    fn has_frame_image(&self, frame: u32) -> bool {
+        self.0.has_frame_image(frame)
+    }
+
+    fn cache_stats(&self) -> lumen::media::VideoResolverCacheStats {
+        self.0.cache_stats()
     }
 }
 
@@ -332,6 +394,8 @@ pub fn render_project_mp4(
                 retryable: false,
             }
         })?;
+    let scheduler =
+        RenderScheduler::new(composition, &media_store, &surface_pool, scheduler_config());
     let encoder = choose_video_encoder(options.video_encoder.as_deref());
     let tmp = tempfile::tempdir().map_err(|err| RenderError {
         code: "encode_failed",
@@ -354,7 +418,7 @@ pub fn render_project_mp4(
     } else {
         None
     };
-    let mut child = spawn_ffmpeg_encoder(
+    let encoder = spawn_ffmpeg_encoder(
         &output_path,
         width,
         height,
@@ -367,28 +431,31 @@ pub fn render_project_mp4(
         message: err.to_string(),
         retryable: true,
     })?;
-    let mut frame_buffer = vec![0; (width as usize) * (height as usize) * 4];
 
     for frame in 0..total_frames {
+        let scheduled = scheduler.prepare_frame(frame).map_err(|err| RenderError {
+            code: "media_prefetch_failed",
+            message: err.to_string(),
+            retryable: true,
+        })?;
         let raster = renderer.render(frame).map_err(|err| RenderError {
             code: "render_failed",
             message: format!("render failed at frame {frame}: {err}"),
             retryable: true,
         })?;
         surface_pool.flush();
-        write_frame_to_ffmpeg(
-            &mut child,
-            frame,
-            width,
-            height,
-            &raster,
-            frame_buffer.as_mut_slice(),
-        )
-        .map_err(|err| RenderError {
-            code: "encode_failed",
-            message: err.to_string(),
-            retryable: true,
+        write_frame_to_ffmpeg(&encoder, frame, width, height, &raster).map_err(|err| {
+            RenderError {
+                code: "encode_failed",
+                message: err.to_string(),
+                retryable: true,
+            }
         })?;
+        drop(raster);
+        if frame.saturating_add(1) % GPU_RESOURCE_PURGE_INTERVAL_FRAMES == 0 {
+            surface_pool.purge_unlocked_resources();
+        }
+        let _finished = scheduler.finish_frame(scheduled);
 
         let completed = frame.saturating_add(1);
         let ratio = (completed as f32 / total_frames as f32).clamp(0.0, 1.0);
@@ -400,11 +467,21 @@ pub fn render_project_mp4(
         });
     }
 
-    finalize_ffmpeg_encoder(child, &output_path).map_err(|err| RenderError {
+    surface_pool.trim_memory();
+    finalize_ffmpeg_encoder(encoder, &output_path).map_err(|err| RenderError {
         code: "encode_failed",
         message: err.to_string(),
         retryable: true,
     })
+}
+
+fn scheduler_config() -> RenderSchedulerConfig {
+    RenderSchedulerConfig {
+        lookahead_frames: MEDIA_PREFETCH_LOOKAHEAD_FRAMES,
+        lookahead_bytes: MEDIA_PREFETCH_LOOKAHEAD_BYTES,
+        upload_budget_frames: MEDIA_UPLOAD_BUDGET_FRAMES,
+        ..RenderSchedulerConfig::default()
+    }
 }
 
 pub fn render_project_frame_png(
@@ -479,7 +556,7 @@ fn spawn_ffmpeg_encoder(
     fps: f32,
     encoder: &str,
     audio_path: Option<&Path>,
-) -> anyhow::Result<Child> {
+) -> anyhow::Result<FfmpegEncoder> {
     let mut command = Command::new("ffmpeg");
     command
         .arg("-y")
@@ -514,7 +591,7 @@ fn spawn_ffmpeg_encoder(
         command.arg("-an");
     }
 
-    command
+    let mut child = command
         .arg("-c:v")
         .arg(encoder)
         .arg("-pix_fmt")
@@ -525,7 +602,27 @@ fn spawn_ffmpeg_encoder(
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("failed to spawn ffmpeg")
+        .context("failed to spawn ffmpeg")?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("ffmpeg stdin unavailable"))?;
+    let (frame_tx, frame_rx) = mpsc::sync_channel::<EncoderFrame>(ENCODER_FRAME_QUEUE_CAPACITY);
+    let writer_handle = thread::spawn(move || {
+        while let Ok(frame) = frame_rx.recv() {
+            stdin
+                .write_all(frame.pixels.as_slice())
+                .with_context(|| format!("failed writing frame {} to ffmpeg", frame.frame))?;
+        }
+        Ok(())
+    });
+
+    Ok(FfmpegEncoder {
+        child,
+        frame_tx: Some(frame_tx),
+        writer_handle: Some(writer_handle),
+    })
 }
 
 fn render_audio_raw(
@@ -546,16 +643,20 @@ fn render_audio_raw(
         .with_context(|| format!("failed to create audio file {}", output_path.display()))?;
     let mut start_sample = 0_u64;
     let chunk_frames = AUDIO_SAMPLE_RATE as usize;
+    let mut channels = vec![vec![0.0; chunk_frames]; AUDIO_CHANNELS];
+    let mut interleaved = Vec::with_capacity(chunk_frames * AUDIO_CHANNELS * 4);
 
     while start_sample < total_samples {
         let frames = usize::try_from((total_samples - start_sample).min(chunk_frames as u64))
             .unwrap_or(chunk_frames);
-        let mixed = mixer
-            .mix_range(start_sample, frames)
-            .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
-        for sample in mixed.interleaved_f32() {
-            output.write_all(&sample.to_le_bytes())?;
+        for channel in &mut channels {
+            channel.resize(frames, 0.0);
         }
+        mixer
+            .mix_into(start_sample, channels.as_mut_slice())
+            .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
+        write_interleaved_channels_f32_bytes(&channels, &mut interleaved);
+        output.write_all(interleaved.as_slice())?;
         start_sample = start_sample.saturating_add(frames as u64);
     }
 
@@ -563,12 +664,11 @@ fn render_audio_raw(
 }
 
 fn write_frame_to_ffmpeg(
-    child: &mut Child,
+    encoder: &FfmpegEncoder,
     frame: u32,
     expected_width: u32,
     expected_height: u32,
     raster: &ImageFrame,
-    frame_buffer: &mut [u8],
 ) -> anyhow::Result<()> {
     let (storage_width, storage_height) = raster.storage_dimensions();
     if storage_width != expected_width || storage_height != expected_height {
@@ -581,23 +681,38 @@ fn write_frame_to_ffmpeg(
         ));
     }
 
+    let mut frame_buffer = vec![0; (expected_width as usize) * (expected_height as usize) * 4];
     raster
-        .read_pixels_into(frame_buffer, (expected_width as usize) * 4)
+        .read_pixels_into(frame_buffer.as_mut_slice(), (expected_width as usize) * 4)
         .with_context(|| format!("failed to read frame {frame} pixels"))?;
 
-    let stdin = child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| anyhow!("ffmpeg stdin unavailable"))?;
-    stdin
-        .write_all(frame_buffer)
-        .with_context(|| format!("failed writing frame {frame} to ffmpeg"))?;
+    let frame_tx = encoder
+        .frame_tx
+        .as_ref()
+        .ok_or_else(|| anyhow!("ffmpeg frame writer is closed"))?;
+    frame_tx
+        .send(EncoderFrame {
+            frame,
+            pixels: frame_buffer,
+        })
+        .map_err(|_| anyhow!("ffmpeg frame writer stopped before frame {frame}"))?;
     Ok(())
 }
 
-fn finalize_ffmpeg_encoder(mut child: Child, output_path: &Path) -> anyhow::Result<Vec<u8>> {
-    let _ = child.stdin.take();
-    let output = child.wait_with_output().context("ffmpeg wait failed")?;
+fn finalize_ffmpeg_encoder(
+    mut encoder: FfmpegEncoder,
+    output_path: &Path,
+) -> anyhow::Result<Vec<u8>> {
+    drop(encoder.frame_tx.take());
+    if let Some(handle) = encoder.writer_handle.take() {
+        handle
+            .join()
+            .map_err(|_| anyhow!("ffmpeg frame writer thread panicked"))??;
+    }
+    let output = encoder
+        .child
+        .wait_with_output()
+        .context("ffmpeg wait failed")?;
     if !output.status.success() {
         return Err(anyhow!(
             "ffmpeg encode failed: {}",
@@ -605,6 +720,15 @@ fn finalize_ffmpeg_encoder(mut child: Child, output_path: &Path) -> anyhow::Resu
         ));
     }
     std::fs::read(output_path).context("failed to read encoded output")
+}
+
+fn video_resolver_options() -> FfmpegResolverOptions {
+    FfmpegResolverOptions {
+        decoded_cache_bytes: SERVER_DECODED_CACHE_BYTES,
+        uploaded_cache_bytes: SERVER_UPLOADED_CACHE_BYTES,
+        decoded_queue_capacity: SERVER_DECODED_QUEUE_CAPACITY,
+        ..FfmpegResolverOptions::default()
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,8 @@ path = "src/bin/lumen_runpod.rs"
 
 [features]
 legacy-decode-tests = []
+metal = ["lumen/metal"]
+vulkan = ["lumen/vulkan"]
 
 [dependencies]
 anyhow = "1.0.101"
