@@ -308,6 +308,32 @@ impl VideoEncoder {
         &self.gpu_telemetry
     }
 
+    fn refresh_stream_time_base(&mut self, output: &OutputContext) -> Result<()> {
+        unsafe {
+            let stream_count = (*output.ptr).nb_streams as usize;
+            if self.stream_index >= stream_count {
+                return Err(FfmpegError::new(
+                    "VideoEncoder::refresh_stream_time_base",
+                    format!(
+                        "stream index {} is outside output stream count {stream_count}",
+                        self.stream_index
+                    ),
+                )
+                .with_path(output.path.clone()));
+            }
+            let stream = *(*output.ptr).streams.add(self.stream_index);
+            if stream.is_null() {
+                return Err(FfmpegError::new(
+                    "VideoEncoder::refresh_stream_time_base",
+                    "output stream is null",
+                )
+                .with_path(output.path.clone()));
+            }
+            self.stream_time_base = (*stream).time_base;
+        }
+        Ok(())
+    }
+
     fn send_cpu_frame(&mut self, output: &mut OutputContext, frame: &CpuVideoFrame) -> Result<()> {
         if let EncodeMode::GpuTexture(backend) = self.mode {
             return Err(FfmpegError::new(
@@ -335,6 +361,7 @@ impl VideoEncoder {
                 (*self.frame.as_mut_ptr()).linesize.as_mut_ptr(),
             );
             (*self.frame.as_mut_ptr()).pts = frame.pts.unwrap_or(self.next_pts);
+            (*self.frame.as_mut_ptr()).duration = 1;
         }
         self.next_pts = self.next_pts.saturating_add(1);
         self.send_frame(output, self.frame.as_ptr())
@@ -362,6 +389,9 @@ impl VideoEncoder {
             }
             unsafe {
                 (*packet.as_mut_ptr()).stream_index = self.stream_index as i32;
+                if (*packet.as_mut_ptr()).duration == 0 {
+                    (*packet.as_mut_ptr()).duration = 1;
+                }
                 sys::av_packet_rescale_ts(
                     packet.as_mut_ptr(),
                     (*self.context).time_base,
@@ -456,8 +486,9 @@ pub struct MuxedEncoder {
 impl MuxedEncoder {
     pub fn create(path: impl Into<String>, video: VideoEncoderConfig) -> Result<Self> {
         let mut output = OutputContext::create(path)?;
-        let video = VideoEncoder::create(&mut output, video)?;
+        let mut video = VideoEncoder::create(&mut output, video)?;
         output.write_header()?;
+        video.refresh_stream_time_base(&output)?;
         Ok(Self {
             output,
             video,
