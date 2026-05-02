@@ -998,7 +998,7 @@ fn output_port_spec_from_def(def: &OutputPortDef) -> NodeOutputPortSpec {
 
 fn port_kind_from_def(kind: PortKind) -> NodePortKind {
     match kind {
-        PortKind::RasterFrame => NodePortKind::RasterFrame,
+        PortKind::GpuImageFrame => NodePortKind::RasterFrame,
         PortKind::Surface => NodePortKind::Surface,
         PortKind::Vector => NodePortKind::Vector,
     }

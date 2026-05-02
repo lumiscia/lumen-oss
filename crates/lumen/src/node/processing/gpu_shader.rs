@@ -1,6 +1,6 @@
 use skia_safe::{
     Data, Paint, Rect, SamplingOptions, TileMode,
-    runtime_effect::{ChildPtr, RuntimeEffect},
+    runtime_effect::{ChildPtr, RuntimeEffect, uniform::Type as UniformType},
 };
 
 use crate::{
@@ -21,6 +21,17 @@ pub(crate) const RESOLUTION_UNIFORM_NAME: &str = "resolution";
 pub(crate) struct ShaderUniform<'a> {
     pub name: &'a str,
     pub values: &'a [f32],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DynamicUniformValues {
+    Number(Vec<f64>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DynamicShaderUniform {
+    pub name: String,
+    pub values: DynamicUniformValues,
 }
 
 pub(crate) struct ChildShader<'a> {
@@ -124,6 +135,72 @@ pub(crate) fn apply_runtime_shader_with_children<S: SurfacePool, M: MediaStore>(
     )
 }
 
+pub(crate) fn apply_runtime_shader_dynamic<S: SurfacePool, M: MediaStore>(
+    source: &GpuImageFrame,
+    shader_source: &str,
+    uniforms: &[DynamicShaderUniform],
+    alpha_mode: AlphaMode,
+    node_id: NodeId,
+    node_kind: &'static str,
+    frame: u32,
+    ctx: &mut RenderContext<'_, S, M>,
+) -> crate::Result<GpuImageFrame> {
+    let (image, width, height) = match source.image_parts() {
+        Some(parts) => parts,
+        None => return source.snapshot(),
+    };
+
+    if width == 0 || height == 0 {
+        return source.snapshot();
+    }
+
+    let effect = RuntimeEffect::make_for_shader(shader_source, None).map_err(|details| {
+        shader_error(
+            node_id,
+            node_kind,
+            frame,
+            format!("SkSL shader compilation failed: {details}"),
+        )
+    })?;
+
+    let source_shader = image
+        .to_shader(
+            Some((TileMode::Clamp, TileMode::Clamp)),
+            SamplingOptions::default(),
+            None,
+        )
+        .ok_or_else(|| {
+            shader_error(
+                node_id,
+                node_kind,
+                frame,
+                "source image shader creation failed",
+            )
+        })?;
+
+    let children = build_children(&effect, source_shader, &[], node_id, node_kind, frame)?;
+    let uniform_data = build_dynamic_uniform_data(&effect, uniforms, width, height)
+        .map_err(|details| shader_error(node_id, node_kind, frame, details))?;
+    let shader = effect
+        .make_shader(Data::new_copy(&uniform_data), &children, None)
+        .ok_or_else(|| shader_error(node_id, node_kind, frame, "runtime shader creation failed"))?;
+
+    render_to_surface_ephemeral(
+        width,
+        height,
+        ctx,
+        source.format_rect(),
+        source.data_rect(),
+        alpha_mode,
+        ClearMode::Transparent,
+        |canvas| {
+            let mut paint = Paint::default();
+            paint.set_shader(shader);
+            canvas.draw_rect(Rect::from_wh(width as f32, height as f32), &paint);
+        },
+    )
+}
+
 fn build_children(
     effect: &RuntimeEffect,
     source_shader: skia_safe::Shader,
@@ -177,6 +254,100 @@ fn build_uniform_data(
     data
 }
 
+fn build_dynamic_uniform_data(
+    effect: &RuntimeEffect,
+    uniforms: &[DynamicShaderUniform],
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, String> {
+    let mut data = vec![0; effect.uniform_size()];
+
+    write_uniform_f32(
+        effect,
+        &mut data,
+        RESOLUTION_UNIFORM_NAME,
+        &[width as f32, height as f32],
+    );
+
+    for uniform in uniforms {
+        write_dynamic_uniform(effect, &mut data, uniform)?;
+    }
+
+    Ok(data)
+}
+
+fn write_dynamic_uniform(
+    effect: &RuntimeEffect,
+    data: &mut [u8],
+    requested: &DynamicShaderUniform,
+) -> Result<(), String> {
+    let Some(uniform) = effect.find_uniform(&requested.name) else {
+        return Err(format!(
+            "shader uniform `{}` is not declared",
+            requested.name
+        ));
+    };
+
+    let expected_len = uniform_component_count(uniform.ty())
+        .and_then(|components| components.checked_mul(uniform.count().max(1) as usize))
+        .ok_or_else(|| format!("unsupported shader uniform `{}`", requested.name))?;
+
+    match &requested.values {
+        DynamicUniformValues::Number(values) => {
+            if values.len() != expected_len {
+                return Err(format!(
+                    "shader uniform `{}` expects {} value(s), got {}",
+                    requested.name,
+                    expected_len,
+                    values.len()
+                ));
+            }
+
+            if is_float_uniform(uniform.ty()) {
+                let values = values.iter().map(|value| *value as f32).collect::<Vec<_>>();
+                write_uniform_values(data, uniform.offset(), uniform.size_in_bytes(), &values)
+            } else if is_int_uniform(uniform.ty()) {
+                let values = values.iter().map(|value| *value as i32).collect::<Vec<_>>();
+                write_uniform_values(data, uniform.offset(), uniform.size_in_bytes(), &values)
+            } else {
+                Err(format!("unsupported shader uniform `{}`", requested.name))
+            }
+        }
+    }
+}
+
+fn uniform_component_count(ty: UniformType) -> Option<usize> {
+    match ty {
+        UniformType::Float | UniformType::Int => Some(1),
+        UniformType::Float2 | UniformType::Int2 => Some(2),
+        UniformType::Float3 | UniformType::Int3 => Some(3),
+        UniformType::Float4 | UniformType::Int4 => Some(4),
+        UniformType::Float2x2 => Some(4),
+        UniformType::Float3x3 => Some(9),
+        UniformType::Float4x4 => Some(16),
+    }
+}
+
+fn is_float_uniform(ty: UniformType) -> bool {
+    matches!(
+        ty,
+        UniformType::Float
+            | UniformType::Float2
+            | UniformType::Float3
+            | UniformType::Float4
+            | UniformType::Float2x2
+            | UniformType::Float3x3
+            | UniformType::Float4x4
+    )
+}
+
+fn is_int_uniform(ty: UniformType) -> bool {
+    matches!(
+        ty,
+        UniformType::Int | UniformType::Int2 | UniformType::Int3 | UniformType::Int4
+    )
+}
+
 pub(crate) fn write_uniform_f32(
     effect: &RuntimeEffect,
     data: &mut [u8],
@@ -197,6 +368,28 @@ pub(crate) fn write_uniform_f32(
         let offset = start + index * size_of::<f32>();
         data[offset..offset + size_of::<f32>()].copy_from_slice(&value.to_ne_bytes());
     }
+}
+
+fn write_uniform_values<T: Copy>(
+    data: &mut [u8],
+    start: usize,
+    uniform_byte_len: usize,
+    values: &[T],
+) -> Result<(), String> {
+    let byte_len = values.len().saturating_mul(size_of::<T>());
+    let end = start.saturating_add(byte_len);
+    if end > data.len() || byte_len > uniform_byte_len {
+        return Err("uniform data does not fit reflected shader layout".to_string());
+    }
+
+    for (index, value) in values.iter().enumerate() {
+        let offset = start + index * size_of::<T>();
+        let bytes =
+            unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) };
+        data[offset..offset + size_of::<T>()].copy_from_slice(bytes);
+    }
+
+    Ok(())
 }
 
 pub(crate) fn shader_error(

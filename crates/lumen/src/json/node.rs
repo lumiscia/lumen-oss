@@ -77,9 +77,7 @@ pub fn build_node(
         "memo" => Ok(NodeKind::Memo(build_typed::<Memo>(id, properties)?)),
         "resize" => Ok(NodeKind::Resize(build_typed::<Resize>(id, properties)?)),
         "shadow" => Ok(NodeKind::Shadow(build_typed::<Shadow>(id, properties)?)),
-        "skia_shader" => Ok(NodeKind::SkiaShader(build_typed::<SkiaShader>(
-            id, properties,
-        )?)),
+        "skia_shader" => Ok(NodeKind::SkiaShader(build_skia_shader(id, properties)?)),
         "time_remap" => Ok(NodeKind::TimeRemap(build_typed::<TimeRemap>(
             id, properties,
         )?)),
@@ -224,6 +222,68 @@ fn build_typed<T: JsonBuildable>(
     }
 
     Ok(node)
+}
+
+fn build_skia_shader(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<SkiaShader> {
+    let mut node = SkiaShader::default();
+    node.id = id;
+
+    let Some(props) = properties else {
+        return Ok(node);
+    };
+
+    let defs = SkiaShader::property_defs();
+    let mut legacy_uniforms: Vec<(&str, String)> = Vec::new();
+    let mut has_uniforms_payload = false;
+
+    for (key, val) in props {
+        if matches!(
+            key.as_str(),
+            "uniform0" | "uniform1" | "uniform2" | "uniform3"
+        ) {
+            legacy_uniforms.push((key.as_str(), legacy_uniform_value(val, key)?));
+            continue;
+        }
+
+        if key == "uniforms" {
+            has_uniforms_payload = true;
+        }
+
+        let def = defs.iter().find(|d| d.name == key.as_str());
+        let prop = parse_property(val, def, key)?;
+        if !node.__set_property(key, prop) {
+            bail!("unknown property `{key}` on node {id}");
+        }
+    }
+
+    if !has_uniforms_payload && !legacy_uniforms.is_empty() {
+        node.uniforms = NodeProperty::String(
+            legacy_uniforms
+                .into_iter()
+                .map(|(name, value)| format!("{name} = {value}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+
+    Ok(node)
+}
+
+fn legacy_uniform_value(value: &Value, name: &str) -> Result<String> {
+    if let Some(number) = value.as_f64() {
+        return Ok(number.to_string());
+    }
+    if let Some(number) = value.as_i64() {
+        return Ok(number.to_string());
+    }
+    if let Some(expression) = value.as_str().filter(|value| value.starts_with('=')) {
+        return Ok(expression.to_string());
+    }
+
+    bail!("legacy skia shader `{name}` expected number or expression")
 }
 
 /// Dispatch `__wire_input` through `NodeKind` to the inner node struct.
