@@ -34,11 +34,8 @@ export function LumenCanvas({
   const controllerRef = useRef<LumenPreviewController | null>(null);
   const queuedRenderRef = useRef<(() => Promise<void>) | null>(null);
   const renderInFlightRef = useRef(false);
-  const prefetchGenerationRef = useRef(0);
-  const prefetchesRef = useRef(new Map<number, Promise<void>>());
   const animationFrameRef = useRef(0);
-
-  const PREFETCH_AHEAD_FRAMES = 6;
+  const compositionLoadedRef = useRef(false);
 
   function getCtx2d(): CanvasRenderingContext2D | null {
     return canvasRef.current?.getContext("2d") ?? null;
@@ -57,67 +54,8 @@ export function LumenCanvas({
     preview.update({ error: describeError(error) });
   }
 
-  function normalizeFrame(frame: number): number {
-    const totalFrames = preview.getSnapshot().totalFrames;
-    if (totalFrames <= 0) {
-      return frame;
-    }
-
-    return ((frame % totalFrames) + totalFrames) % totalFrames;
-  }
-
-  async function preloadFrame(controller: LumenPreviewController, frame: number): Promise<void> {
-    const totalFrames = preview.getSnapshot().totalFrames;
-    const normalizedFrame = normalizeFrame(frame);
-    if (normalizedFrame < 0 || (totalFrames > 0 && normalizedFrame >= totalFrames)) {
-      return;
-    }
-
-    const existing = prefetchesRef.current.get(normalizedFrame);
-    if (existing) {
-      await existing;
-      return;
-    }
-
-    const generation = prefetchGenerationRef.current;
-    const pending = controller.preloadFrame(normalizedFrame).finally(() => {
-      if (prefetchesRef.current.get(normalizedFrame) === pending) {
-        prefetchesRef.current.delete(normalizedFrame);
-      }
-    });
-    prefetchesRef.current.set(normalizedFrame, pending);
-
-    try {
-      await pending;
-    } catch (error) {
-      if (generation !== prefetchGenerationRef.current) {
-        return;
-      }
-
-      throw error;
-    }
-  }
-
-  function resetPrefetch(): void {
-    prefetchGenerationRef.current += 1;
-    prefetchesRef.current.clear();
-  }
-
-  function prefetchAhead(controller: LumenPreviewController, frame: number): void {
-    for (let offset = 1; offset <= PREFETCH_AHEAD_FRAMES; offset += 1) {
-      void preloadFrame(controller, frame + offset).catch(() => {
-        // The render path surfaces persistent errors.
-      });
-    }
-  }
-
-  async function preloadPlaybackWindow(
-    controller: LumenPreviewController,
-    frame: number,
-  ): Promise<void> {
-    await preloadFrame(controller, frame);
-    await preloadFrame(controller, frame + 1);
-    prefetchAhead(controller, frame);
+  function hasLoadedComposition(): boolean {
+    return compositionLoadedRef.current;
   }
 
   function queueRender(operation: () => Promise<void>): void {
@@ -151,11 +89,13 @@ export function LumenCanvas({
     if (!ctx) {
       return;
     }
+    if (!hasLoadedComposition()) {
+      return;
+    }
 
     try {
-      await preloadPlaybackWindow(controller, controller.currentFrame());
       const startedAt = performance.now();
-      controller.renderNow(ctx);
+      await controller.renderNowAsync(ctx);
       preview.update({
         frame: controller.currentFrame(),
         renderMs: performance.now() - startedAt,
@@ -174,6 +114,7 @@ export function LumenCanvas({
   ): void {
     try {
       controller.loadComposition(json, nextFps);
+      compositionLoadedRef.current = true;
       preview.update({
         totalFrames: controller.durationFrames(),
         width: controller.width(),
@@ -181,6 +122,7 @@ export function LumenCanvas({
         error: null,
       });
     } catch (error) {
+      compositionLoadedRef.current = false;
       reportError("loadComposition", error);
     }
   }
@@ -194,52 +136,52 @@ export function LumenCanvas({
       const ctx = getCtx2d();
 
       if (ctx) {
-        queueRender(async () => {
-          const audioEngine = audioEngineRef.current;
-          if (audioEngine && audioTimeline && preview.getSnapshot().isPlaying) {
-            const targetFrame = controller.targetFrameForTimeMs(audioEngine.currentTimeMs());
+        const audioEngine = audioEngineRef.current;
+        const snapshot = preview.getSnapshot();
+        const shouldRenderTick =
+          hasLoadedComposition() && (controller.isPlaying() || snapshot.isPlaying);
+
+        if (shouldRenderTick) {
+          queueRender(async () => {
+            if (!hasLoadedComposition()) {
+              return;
+            }
+
+            if (audioEngine && audioTimeline && preview.getSnapshot().isPlaying) {
+              const targetFrame = controller.targetFrameForTimeMs(audioEngine.currentTimeMs());
+              try {
+                controller.setFrame(targetFrame);
+                const startedAt = performance.now();
+                await controller.renderNowAsync(ctx);
+                preview.update({
+                  frame: targetFrame,
+                  renderMs: performance.now() - startedAt,
+                  isPlaying: controller.isPlaying(),
+                  error: null,
+                });
+              } catch (error) {
+                reportError("audio-clock animation tick", error);
+              }
+              return;
+            }
+
             try {
-              await preloadPlaybackWindow(controller, targetFrame);
-              controller.setFrame(targetFrame);
               const startedAt = performance.now();
-              controller.renderNow(ctx);
-              preview.update({
-                frame: targetFrame,
-                renderMs: performance.now() - startedAt,
-                isPlaying: controller.isPlaying(),
-                error: null,
-              });
-              prefetchAhead(controller, targetFrame);
+              const changed = await controller.tickAsync(now, ctx);
+              if (changed) {
+                const currentFrame = controller.currentFrame();
+                preview.update({
+                  frame: currentFrame,
+                  renderMs: performance.now() - startedAt,
+                  isPlaying: controller.isPlaying(),
+                  error: null,
+                });
+              }
             } catch (error) {
-              reportError("audio-clock animation tick", error);
+              reportError("animation tick", error);
             }
-            return;
-          }
-
-          try {
-            const currentFrame = controller.currentFrame();
-            await preloadPlaybackWindow(controller, currentFrame);
-          } catch {
-            // Keep the loop alive while media settles.
-          }
-
-          try {
-            const startedAt = performance.now();
-            const changed = controller.tick(now, ctx);
-            if (changed) {
-              const currentFrame = controller.currentFrame();
-              preview.update({
-                frame: currentFrame,
-                renderMs: performance.now() - startedAt,
-                isPlaying: controller.isPlaying(),
-                error: null,
-              });
-              prefetchAhead(controller, currentFrame);
-            }
-          } catch (error) {
-            reportError("animation tick", error);
-          }
-        });
+          });
+        }
       }
 
       animationFrameRef.current = requestAnimationFrame(loop);
@@ -259,6 +201,7 @@ export function LumenCanvas({
 
         const controller = new PreviewController();
         const audioEngine = new AudioEngine();
+        compositionLoadedRef.current = false;
         audioEngineRef.current = audioEngine;
         controllerRef.current = controller;
         preview._attach(
@@ -266,7 +209,6 @@ export function LumenCanvas({
           (frame) => {
             queueRender(async () => {
               try {
-                resetPrefetch();
                 controller.setFrame(frame);
                 await renderOnce(controller);
               } catch (error) {
@@ -295,11 +237,11 @@ export function LumenCanvas({
       cancelled = true;
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = 0;
-      resetPrefetch();
       audioEngineRef.current?.dispose();
       audioEngineRef.current = null;
       controllerRef.current?.clear();
       controllerRef.current = null;
+      compositionLoadedRef.current = false;
       preview._detach();
     };
   }, [preview]);
@@ -319,10 +261,10 @@ export function LumenCanvas({
   useEffect(() => {
     const controller = controllerRef.current;
     if (!controller || !compositionJson) {
+      compositionLoadedRef.current = false;
       return;
     }
 
-    resetPrefetch();
     handleLoadComposition(controller, compositionJson, fps);
     queueRender(() => renderOnce(controller));
   }, [compositionJson, fps, preview]);

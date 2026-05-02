@@ -4,7 +4,7 @@ use lumen::{
     composition::Composition,
     media::{VideoMetadata, collect_frame_requirements},
     render::{
-        LumenRenderer as CoreRenderer,
+        RenderOrchestrator, RenderOrchestratorConfig,
         surface::{DefaultSurfacePool, SurfacePool},
     },
 };
@@ -12,7 +12,7 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    debug_error, debug_log, install_panic_hook,
+    debug_error, install_panic_hook,
     media::WasmMediaStore,
     types::FrameRequirementsPayload,
     utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
@@ -55,6 +55,7 @@ struct PreviewState {
     duration_frames: u32,
     fps: f64,
     current_frame: u32,
+    lookahead_count: u32,
     playing: bool,
     dirty: bool,
     last_tick_ms: Option<f64>,
@@ -73,6 +74,7 @@ impl Default for PreviewState {
             duration_frames: 0,
             fps: 30.0,
             current_frame: 0,
+            lookahead_count: 8,
             playing: false,
             dirty: false,
             last_tick_ms: None,
@@ -145,7 +147,6 @@ impl LumenPreviewController {
     pub fn new() -> Self {
         install_panic_hook();
         ensure_webgl_backend();
-        debug_log("[lumen-wasm preview] controller created");
         Self {
             state: RefCell::new(PreviewState::default()),
             media: WasmMediaStore::default(),
@@ -156,13 +157,6 @@ impl LumenPreviewController {
     pub fn load_composition(&self, composition_json: &str, fps: f64) -> Result<(), JsValue> {
         let composition =
             composition_json_to_composition(composition_json).map_err(|e| JsValue::from_str(&e))?;
-        debug_log(&format!(
-            "[lumen-wasm preview] loadComposition width={} height={} duration_frames={} fps={}",
-            composition.render_settings.width,
-            composition.render_settings.height,
-            composition.timeline.duration_frames,
-            fps.max(1.0),
-        ));
 
         let mut state = self
             .state
@@ -181,6 +175,13 @@ impl LumenPreviewController {
         state.composition = Some(composition);
         state.composition_sync_ms = 0.0;
         Ok(())
+    }
+
+    #[wasm_bindgen(js_name = "setLookaheadCount")]
+    pub fn set_lookahead_count(&self, lookahead_count: u32) {
+        if let Ok(mut state) = self.state.try_borrow_mut() {
+            state.lookahead_count = lookahead_count;
+        }
     }
 
     pub fn clear(&self) {
@@ -401,6 +402,28 @@ impl LumenPreviewController {
         serde_json::to_string(&payload).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    #[wasm_bindgen(js_name = "frameRequirementsWindow")]
+    pub fn frame_requirements_window(&self, frame: u32) -> Result<String, JsValue> {
+        let state = self
+            .state
+            .try_borrow()
+            .map_err(|_| JsValue::from_str("preview controller is busy"))?;
+        validate_frame(&state, frame)?;
+        let composition = state
+            .composition
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
+
+        let payload = crate::renderer::collect_requirement_window(
+            composition,
+            &self.media,
+            frame,
+            state.lookahead_count,
+        )?;
+
+        serde_json::to_string(&payload).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     #[wasm_bindgen(js_name = "clearMedia")]
     pub fn clear_media(&self) -> Result<(), JsValue> {
         self.media.clear().map_err(JsValue::from_str)?;
@@ -609,43 +632,24 @@ fn render_state(
         .as_ref()
         .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
 
-    debug_log(&format!(
-        "[lumen-wasm preview] render_state frame={} composition={}x{} dirty={} playing={}",
-        state.current_frame,
-        composition.render_settings.width,
-        composition.render_settings.height,
-        state.dirty,
-        state.playing,
-    ));
-
-    let mut core = CoreRenderer::new(composition, &state.surface_pool, media).map_err(|e| {
+    let orchestrator = RenderOrchestrator::new(
+        composition,
+        &state.surface_pool,
+        media,
+        RenderOrchestratorConfig {
+            lookahead_count: state.lookahead_count,
+        },
+    );
+    let raster = orchestrator.render(state.current_frame).map_err(|e| {
         debug_error(&format!(
-            "[lumen-wasm preview] CoreRenderer::new error: {e}"
-        ));
-        JsValue::from_str(&e.to_string())
-    })?;
-    debug_log("[lumen-wasm preview] CoreRenderer::new ok");
-    let raster = core.render(state.current_frame).map_err(|e| {
-        debug_error(&format!(
-            "[lumen-wasm preview] CoreRenderer::render frame={} error: {e}",
+            "[lumen-wasm preview] RenderOrchestrator::render frame={} error: {e}",
             state.current_frame,
         ));
         JsValue::from_str(&e.to_string())
     })?;
-    debug_log(&format!(
-        "[lumen-wasm preview] render ok storage={:?} format={:?} data={:?}",
-        raster.storage_dimensions(),
-        raster.format_rect(),
-        raster.data_rect(),
-    ));
     state.surface_pool.flush();
     let (w, h) = raster.storage_dimensions();
-    debug_log(&format!(
-        "[lumen-wasm preview] presenting raster storage={}x{} to canvas",
-        w, h,
-    ));
     draw_output_frame_to_context(&raster, context)?;
-    debug_log("[lumen-wasm preview] draw_output_frame_to_context ok");
 
     state.width = w as usize;
     state.height = h as usize;

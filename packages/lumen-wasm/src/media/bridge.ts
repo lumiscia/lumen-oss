@@ -78,16 +78,20 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     this.resetVideoEntry(video);
   }
 
-  removeImageSource(imageId: string): void {
+  removeImageSource(imageId: string, syncTarget = true): void {
     this.images.delete(imageId);
-    this.target.removeImageSource?.(imageId);
+    if (syncTarget) {
+      this.target.removeImageSource?.(imageId);
+    }
   }
 
-  removeVideoSource(streamId: string): void {
+  removeVideoSource(streamId: string, syncTarget = true): void {
     const entry = this.videos.get(streamId);
     entry?.session.dispose();
     this.videos.delete(streamId);
-    this.target.removeVideoSource?.(streamId);
+    if (syncTarget) {
+      this.target.removeVideoSource?.(streamId);
+    }
   }
 
   async syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void> {
@@ -222,7 +226,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
 
   async loadVideoFrame(streamId: string, frame: number): Promise<void> {
     const entry = this.requireVideoEntry(streamId);
-    if (entry.syncedFrames.has(frame) && entry.syncedMetadataVersion === entry.version) {
+    if (!this.needsVideoFrameSync(streamId, entry, frame)) {
       return;
     }
 
@@ -236,8 +240,8 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     await Promise.all(
       parsed.videos.map(async (video) => {
         const entry = this.requireVideoEntry(video.streamId);
-        const frames = dedupeFrameNumbers(video.frames).filter(
-          (frame) => !entry.syncedFrames.has(frame),
+        const frames = dedupeFrameNumbers(video.frames).filter((frame) =>
+          this.needsVideoFrameSync(video.streamId, entry, frame),
         );
         await this.syncDecodedFrames(video.streamId, entry, frames);
       }),
@@ -267,8 +271,8 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     entry: VideoEntry,
     frames: Iterable<number>,
   ): Promise<void> {
-    const wantedFrames = dedupeFrameNumbers(frames).filter(
-      (frame) => !entry.syncedFrames.has(frame),
+    const wantedFrames = dedupeFrameNumbers(frames).filter((frame) =>
+      this.needsVideoFrameSync(streamId, entry, frame),
     );
     if (wantedFrames.length === 0) {
       return;
@@ -294,6 +298,14 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
       }
       latest.syncedFrames.add(frame);
     }
+  }
+
+  private needsVideoFrameSync(streamId: string, entry: VideoEntry, frame: number): boolean {
+    return (
+      entry.syncedMetadataVersion !== entry.version ||
+      !entry.syncedFrames.has(frame) ||
+      !this.target.hasVideoFrame(streamId, frame)
+    );
   }
 }
 

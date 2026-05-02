@@ -1,16 +1,16 @@
 use lumen::{
     composition::Composition,
+    gpu_image::GpuImageFrame,
     media::collect_frame_requirements,
-    raster::RasterFrame,
     render::{
-        LumenRenderer as CoreRenderer,
+        RenderOrchestrator, RenderOrchestratorConfig,
         surface::{DefaultSurfacePool, SurfacePool},
     },
 };
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    debug_log, install_panic_hook,
+    install_panic_hook,
     media::LumenMediaStore,
     types::FrameRequirementsPayload,
     utils::composition_json_to_composition,
@@ -25,6 +25,7 @@ pub struct LumenRenderer {
     width: usize,
     height: usize,
     duration_frames: u32,
+    lookahead_count: u32,
 }
 
 #[wasm_bindgen]
@@ -33,13 +34,13 @@ impl LumenRenderer {
     pub fn new() -> Self {
         install_panic_hook();
         ensure_webgl_backend();
-        debug_log("[lumen-wasm renderer] renderer created");
         Self {
             composition: None,
             surface_pool: DefaultSurfacePool::new(),
             width: 0,
             height: 0,
             duration_frames: 0,
+            lookahead_count: 8,
         }
     }
 
@@ -75,6 +76,11 @@ impl LumenRenderer {
         self.duration_frames = 0;
     }
 
+    #[wasm_bindgen(js_name = "setLookaheadCount")]
+    pub fn set_lookahead_count(&mut self, lookahead_count: u32) {
+        self.lookahead_count = lookahead_count;
+    }
+
     /// Render a frame directly into the target 2D canvas context.
     #[wasm_bindgen(js_name = "renderFrame")]
     pub fn render_frame(
@@ -106,6 +112,19 @@ impl LumenRenderer {
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         serde_json::to_string(&payload).map_err(|e| JsValue::from_str(&e.to_string()))
     }
+
+    #[wasm_bindgen(js_name = "frameRequirementsWindow")]
+    pub fn frame_requirements_window(
+        &self,
+        frame: u32,
+        media: &LumenMediaStore,
+    ) -> Result<String, JsValue> {
+        self.validate_frame(frame)?;
+        let composition = self.require_composition()?;
+        let store = media.as_wasm_store();
+        let payload = collect_requirement_window(composition, store, frame, self.lookahead_count)?;
+        serde_json::to_string(&payload).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
 }
 
 impl LumenRenderer {
@@ -119,14 +138,20 @@ impl LumenRenderer {
         &mut self,
         frame: u32,
         media: &LumenMediaStore,
-    ) -> Result<RasterFrame, JsValue> {
+    ) -> Result<GpuImageFrame, JsValue> {
         self.validate_frame(frame)?;
         let composition = self.require_composition()?;
         let store = media.as_wasm_store();
 
-        let mut core = CoreRenderer::new(composition, &self.surface_pool, store)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let raster = core
+        let orchestrator = RenderOrchestrator::new(
+            composition,
+            &self.surface_pool,
+            store,
+            RenderOrchestratorConfig {
+                lookahead_count: self.lookahead_count,
+            },
+        );
+        let raster = orchestrator
             .render(frame)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         self.surface_pool.flush();
@@ -142,4 +167,48 @@ impl LumenRenderer {
         }
         Ok(())
     }
+}
+
+pub(crate) fn collect_requirement_window(
+    composition: &Composition,
+    media: &crate::media::WasmMediaStore,
+    frame: u32,
+    lookahead_count: u32,
+) -> Result<FrameRequirementsPayload, JsValue> {
+    let mut requirements = lumen::media::FrameRequirements::default();
+    let duration = composition.timeline.duration_frames;
+    let last_frame = if duration == 0 {
+        frame
+    } else {
+        frame
+            .saturating_add(lookahead_count)
+            .min(duration.saturating_sub(1))
+    };
+
+    for predicted_frame in frame..=last_frame {
+        let frame_requirements = collect_frame_requirements(composition, media, predicted_frame)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        requirements.images.extend(frame_requirements.images);
+        requirements.videos.extend(frame_requirements.videos);
+    }
+
+    requirements.images.sort();
+    requirements.images.dedup();
+    let mut videos = std::collections::BTreeMap::<String, Vec<u32>>::new();
+    for video in requirements.videos {
+        videos
+            .entry(video.stream_id)
+            .or_default()
+            .extend(video.frames);
+    }
+    requirements.videos = videos
+        .into_iter()
+        .map(|(stream_id, mut frames)| {
+            frames.sort_unstable();
+            frames.dedup();
+            lumen::media::VideoFrameRequirement { stream_id, frames }
+        })
+        .collect();
+
+    Ok(FrameRequirementsPayload::from(requirements))
 }

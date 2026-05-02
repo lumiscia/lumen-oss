@@ -1,67 +1,67 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, RwLock},
 };
 
 use lumen::{
     error::MediaError,
+    gpu_image::GpuImageFrame,
     media::{ImageMetadata, ImageResolver, MediaStore, VideoFrameResolver, VideoMetadata},
-    raster::ImageFrame,
 };
 use wasm_bindgen::prelude::*;
 
 use crate::utils::{image_frame_from_rgba, validate_rgba_len};
 use crate::webgl::image_frame_from_video_frame;
 
-const DEFAULT_VIDEO_FRAME_CAPACITY: usize = 96;
+const DEFAULT_VIDEO_FRAME_CACHE_CAPACITY: usize = 96;
 
 // ── VideoFrameCache ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub(crate) struct VideoFrameCache {
     capacity: usize,
+    entries: HashMap<u32, Arc<GpuImageFrame>>,
     order: VecDeque<u32>,
-    entries: HashMap<u32, Arc<ImageFrame>>,
+    pinned: HashSet<u32>,
 }
 
 impl VideoFrameCache {
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_VIDEO_FRAME_CACHE_CAPACITY)
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
-            order: VecDeque::new(),
             entries: HashMap::new(),
+            order: VecDeque::new(),
+            pinned: HashSet::new(),
         }
     }
 
     pub fn clear(&mut self) {
-        self.order.clear();
         self.entries.clear();
+        self.order.clear();
+        self.pinned.clear();
     }
 
     pub fn contains(&self, frame: u32) -> bool {
         self.entries.contains_key(&frame)
     }
 
-    pub fn get(&self, frame: u32) -> Option<Arc<ImageFrame>> {
+    pub fn get(&self, frame: u32) -> Option<Arc<GpuImageFrame>> {
         self.entries.get(&frame).cloned()
     }
 
-    pub fn insert(&mut self, frame: u32, image: Arc<ImageFrame>) {
-        if let std::collections::hash_map::Entry::Occupied(mut existing) = self.entries.entry(frame)
-        {
-            existing.insert(image);
-            self.touch(frame);
-            return;
-        }
+    pub fn insert(&mut self, frame: u32, image: Arc<GpuImageFrame>) {
         self.entries.insert(frame, image);
-        self.order.push_back(frame);
-        while self.entries.len() > self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            } else {
-                break;
-            }
-        }
+        self.touch(frame);
+        self.evict_over_capacity();
+    }
+
+    pub fn retain(&mut self, frames: &[u32]) {
+        self.pinned = frames.iter().copied().collect();
+        self.evict_over_capacity();
     }
 
     fn touch(&mut self, frame: u32) {
@@ -70,6 +70,29 @@ impl VideoFrameCache {
         }
         self.order.push_back(frame);
     }
+
+    fn evict_over_capacity(&mut self) {
+        let target_capacity = self.capacity.max(self.pinned.len());
+        let mut attempts_remaining = self.order.len().saturating_add(self.entries.len());
+
+        while self.entries.len() > target_capacity && attempts_remaining > 0 {
+            attempts_remaining -= 1;
+            let Some(candidate) = self.order.pop_front() else {
+                break;
+            };
+
+            if !self.entries.contains_key(&candidate) {
+                continue;
+            }
+
+            if self.pinned.contains(&candidate) {
+                self.order.push_back(candidate);
+                continue;
+            }
+
+            self.entries.remove(&candidate);
+        }
+    }
 }
 
 // ── Stored entry types ────────────────────────────────────────────────────────
@@ -77,7 +100,7 @@ impl VideoFrameCache {
 #[derive(Debug, Clone)]
 struct StoredImage {
     metadata: ImageMetadata,
-    frame: Arc<ImageFrame>,
+    frame: Arc<GpuImageFrame>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,7 +113,7 @@ impl Default for StoredVideo {
     fn default() -> Self {
         Self {
             metadata: VideoMetadata::default(),
-            frames: VideoFrameCache::with_capacity(DEFAULT_VIDEO_FRAME_CAPACITY),
+            frames: VideoFrameCache::new(),
         }
     }
 }
@@ -182,7 +205,7 @@ impl WasmMediaStore {
             .is_some_and(|video| video.frames.contains(frame))
     }
 
-    pub fn set_image(&self, source: String, frame: ImageFrame) -> Result<(), &'static str> {
+    pub fn set_image(&self, source: String, frame: GpuImageFrame) -> Result<(), &'static str> {
         let metadata = ImageMetadata {
             width: frame.storage_width,
             height: frame.storage_height,
@@ -220,7 +243,7 @@ impl WasmMediaStore {
         &self,
         stream_id: String,
         frame: u32,
-        image: ImageFrame,
+        image: GpuImageFrame,
     ) -> Result<(), &'static str> {
         let mut videos = self
             .inner
@@ -274,7 +297,7 @@ impl ImageResolver for WasmImageResolver {
             .unwrap_or_default()
     }
 
-    fn resolve_image(&self) -> Result<Arc<ImageFrame>, MediaError> {
+    fn gpu_image(&self) -> Result<Arc<GpuImageFrame>, MediaError> {
         self.store
             .images
             .read()
@@ -309,7 +332,11 @@ impl VideoFrameResolver for WasmVideoResolver {
             .unwrap_or_default()
     }
 
-    fn resolve_frame_image(&self, frame: u32) -> Result<Arc<ImageFrame>, MediaError> {
+    fn enqueue_frame(&self, _frame: u32) -> Result<(), MediaError> {
+        Ok(())
+    }
+
+    fn frame(&self, frame: u32) -> Result<Arc<GpuImageFrame>, MediaError> {
         let videos = self
             .store
             .videos
@@ -327,6 +354,15 @@ impl VideoFrameResolver for WasmVideoResolver {
             frame,
             frame_count: entry.metadata.frame_count,
         })
+    }
+
+    fn retain_frames(&self, frames: &[u32]) {
+        let Ok(mut videos) = self.store.videos.write() else {
+            return;
+        };
+        if let Some(entry) = videos.get_mut(&self.id) {
+            entry.frames.retain(frames);
+        }
     }
 }
 
@@ -480,6 +516,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn video_frame_cache_keeps_pinned_frames_and_recent_entries() {
+        let mut cache = VideoFrameCache::with_capacity(3);
+        for frame in 0..3 {
+            cache.insert(frame, Arc::new(test_frame()));
+        }
+
+        cache.retain(&[0]);
+        cache.insert(3, Arc::new(test_frame()));
+        cache.insert(4, Arc::new(test_frame()));
+
+        assert!(cache.contains(0), "pinned frame should remain cached");
+        assert!(cache.contains(3), "recent frame should remain cached");
+        assert!(cache.contains(4), "most recent frame should remain cached");
+        assert_eq!(cache.entries.len(), 3);
+    }
+
+    #[test]
+    fn video_frame_cache_evicts_old_unpinned_frames() {
+        let mut cache = VideoFrameCache::with_capacity(3);
+        for frame in 0..5 {
+            cache.insert(frame, Arc::new(test_frame()));
+        }
+
+        assert!(!cache.contains(0));
+        assert!(!cache.contains(1));
+        assert!(cache.contains(2));
+        assert!(cache.contains(3));
+        assert!(cache.contains(4));
+        assert_eq!(cache.entries.len(), 3);
+    }
+
+    #[test]
     fn clear_videos_preserves_metadata() {
         let store = WasmMediaStore::default();
         store
@@ -504,8 +572,12 @@ mod tests {
             .expect("video resolver should still exist");
         assert_eq!(resolver.metadata().frame_count, 240);
         assert!(matches!(
-            resolver.resolve_frame_image(0),
+            resolver.frame(0),
             Err(MediaError::FrameOutOfRange { .. })
         ));
+    }
+
+    fn test_frame() -> GpuImageFrame {
+        crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame")
     }
 }

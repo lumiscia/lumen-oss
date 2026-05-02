@@ -1,7 +1,7 @@
 use lumen::{
     composition::Composition,
+    gpu_image::{AlphaMode, GpuImageFrame, RectI},
     media::premultiply_rgba_in_place_if_needed,
-    raster::{AlphaMode, ImageFrame, RectI},
 };
 
 pub fn validate_rgba_len(width: u32, height: u32, len: usize) -> bool {
@@ -16,11 +16,11 @@ pub fn image_frame_from_rgba(
     width: u32,
     height: u32,
     mut rgba: Vec<u8>,
-) -> Result<ImageFrame, String> {
+) -> Result<GpuImageFrame, String> {
     premultiply_rgba_in_place_if_needed(&mut rgba);
     let rect = RectI::from_size(width, height);
-    ImageFrame::from_rgba_bytes(
-        rgba.as_slice(),
+    GpuImageFrame::from_owned_cpu_decoded_rgba(
+        rgba,
         width,
         height,
         (width as usize) * 4,

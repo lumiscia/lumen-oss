@@ -16,13 +16,6 @@ pub use renderer::LumenRenderer;
 
 static INSTALL_PANIC_HOOK: Once = Once::new();
 
-pub(crate) fn debug_log(message: &str) {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    web_sys::console::log_1(&JsValue::from_str(message));
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let _ = message;
-}
-
 pub(crate) fn debug_error(message: &str) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     web_sys::console::error_1(&JsValue::from_str(message));
