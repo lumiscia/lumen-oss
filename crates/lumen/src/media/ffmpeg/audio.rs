@@ -16,10 +16,12 @@ use super::{ensure_ffmpeg_init, rational_to_f64};
 pub struct FfmpegAudioResolver {
     id: String,
     metadata: AudioMetadata,
-    decoded: Mutex<Option<Arc<AudioBuffer>>>,
+    decoded_ranges: Mutex<Vec<CachedAudioRange>>,
 }
 
 impl FfmpegAudioResolver {
+    const DECODE_WINDOW_SAMPLES: usize = AUDIO_SAMPLE_RATE as usize * 30;
+
     pub fn open(source: impl Into<String>) -> Result<Self, MediaError> {
         ensure_ffmpeg_init()?;
         let source = source.into();
@@ -28,23 +30,78 @@ impl FfmpegAudioResolver {
         Ok(Self {
             id: source,
             metadata,
-            decoded: Mutex::new(None),
+            decoded_ranges: Mutex::new(Vec::new()),
         })
     }
 
-    fn decoded(&self) -> Result<Arc<AudioBuffer>, MediaError> {
-        if let Ok(cache) = self.decoded.lock()
-            && let Some(buffer) = cache.as_ref()
-        {
-            return Ok(Arc::clone(buffer));
+    fn cached_range(&self, start_sample: u64, frames: usize) -> Option<ResolvedAudioRange> {
+        let cache = self.decoded_ranges.lock().ok()?;
+        cache
+            .iter()
+            .find(|range| range.covers(start_sample, frames))
+            .map(CachedAudioRange::resolved)
+    }
+
+    fn decode_range(
+        &self,
+        start_sample: u64,
+        frames: usize,
+    ) -> Result<ResolvedAudioRange, MediaError> {
+        if let Some(range) = self.cached_range(start_sample, frames) {
+            return Ok(range);
         }
 
-        let buffer = Arc::new(decode_audio_to_f32_stereo(&self.id)?);
-        if let Ok(mut cache) = self.decoded.lock() {
-            *cache = Some(Arc::clone(&buffer));
+        let frames_to_decode = frames.max(Self::DECODE_WINDOW_SAMPLES);
+        let buffer = Arc::new(decode_audio_range_to_f32_stereo(
+            &self.id,
+            start_sample,
+            frames_to_decode,
+        )?);
+        if let Ok(mut cache) = self.decoded_ranges.lock() {
+            if let Some(existing) = cache
+                .iter()
+                .find(|range| range.covers(start_sample, frames))
+            {
+                return Ok(existing.resolved());
+            }
+            cache.push(CachedAudioRange {
+                start_sample,
+                buffer: Arc::clone(&buffer),
+            });
         }
-        Ok(buffer)
+
+        Ok(ResolvedAudioRange {
+            start_sample,
+            buffer,
+        })
     }
+}
+
+struct CachedAudioRange {
+    start_sample: u64,
+    buffer: Arc<AudioBuffer>,
+}
+
+impl CachedAudioRange {
+    fn resolved(&self) -> ResolvedAudioRange {
+        ResolvedAudioRange {
+            start_sample: self.start_sample,
+            buffer: Arc::clone(&self.buffer),
+        }
+    }
+
+    fn covers(&self, start_sample: u64, frames: usize) -> bool {
+        let end_sample = start_sample.saturating_add(frames as u64);
+        let cached_end = self
+            .start_sample
+            .saturating_add(self.buffer.frames() as u64);
+        start_sample >= self.start_sample && end_sample <= cached_end
+    }
+}
+
+struct ResolvedAudioRange {
+    start_sample: u64,
+    buffer: Arc<AudioBuffer>,
 }
 
 impl AudioResolver for FfmpegAudioResolver {
@@ -61,15 +118,16 @@ impl AudioResolver for FfmpegAudioResolver {
         start_sample: u64,
         frames: usize,
     ) -> Result<Arc<AudioBuffer>, MediaError> {
-        let decoded = self.decoded()?;
-        let start = usize::try_from(start_sample).unwrap_or(usize::MAX);
+        let decoded = self.decode_range(start_sample, frames)?;
+        let relative_start = start_sample.saturating_sub(decoded.start_sample);
+        let start = usize::try_from(relative_start).unwrap_or(usize::MAX);
         let mut channels = vec![vec![0.0; frames]; AUDIO_CHANNELS];
-        if start < decoded.frames() {
-            let end = start.saturating_add(frames).min(decoded.frames());
+        if start < decoded.buffer.frames() {
+            let end = start.saturating_add(frames).min(decoded.buffer.frames());
             let copy_len = end.saturating_sub(start);
             for (channel_index, channel) in channels.iter_mut().enumerate() {
-                let source = &decoded.channels()
-                    [channel_index.min(decoded.channel_count().saturating_sub(1))];
+                let source = &decoded.buffer.channels()
+                    [channel_index.min(decoded.buffer.channel_count().saturating_sub(1))];
                 channel[..copy_len].copy_from_slice(&source[start..end]);
             }
         }
@@ -109,11 +167,21 @@ fn audio_metadata(source: &str) -> Result<AudioMetadata, MediaError> {
     })
 }
 
-fn decode_audio_to_f32_stereo(source: &str) -> Result<AudioBuffer, MediaError> {
+fn decode_audio_range_to_f32_stereo(
+    source: &str,
+    start_sample: u64,
+    frames: usize,
+) -> Result<AudioBuffer, MediaError> {
+    let start_seconds = start_sample as f64 / f64::from(AUDIO_SAMPLE_RATE);
+    let duration_seconds = frames as f64 / f64::from(AUDIO_SAMPLE_RATE);
     let output = Command::new("ffmpeg")
         .arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
+        .arg("-ss")
+        .arg(format!("{start_seconds:.9}"))
+        .arg("-t")
+        .arg(format!("{duration_seconds:.9}"))
         .arg("-i")
         .arg(source)
         .arg("-vn")
