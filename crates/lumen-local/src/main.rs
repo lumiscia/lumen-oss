@@ -26,6 +26,8 @@ use lumen::{
         surface::{DefaultSurfacePool, SurfacePool},
     },
 };
+use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
+use lumen_ffmpeg::{GpuBackend, gpu_texture_encode_support};
 
 #[derive(Debug)]
 struct CliArgs {
@@ -33,7 +35,14 @@ struct CliArgs {
     output: PathBuf,
     media_root: Option<PathBuf>,
     encoder: Option<String>,
+    encoder_pipeline: EncoderPipeline,
     frame: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EncoderPipeline {
+    LumenFfmpeg,
+    FfmpegCli,
 }
 
 const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
@@ -46,6 +55,28 @@ struct EncoderFrame {
 struct FfmpegEncoder {
     frame_tx: Option<mpsc::SyncSender<EncoderFrame>>,
     writer_handle: Option<JoinHandle<Result<()>>>,
+}
+
+struct LumenFfmpegEncoder {
+    encoder: MuxedEncoder,
+    width: u32,
+    height: u32,
+}
+
+enum VideoEncoderSink {
+    LumenFfmpeg(LumenFfmpegEncoder),
+    FfmpegCli(FfmpegEncoder),
+}
+
+#[derive(Debug, Default, Clone)]
+struct RenderTiming {
+    audio_mix_ms: u128,
+    render_ms: u128,
+    flush_ms: u128,
+    readback_ms: u128,
+    encode_send_ms: u128,
+    encode_finish_ms: u128,
+    mux_ms: u128,
 }
 
 struct LocalMediaStore {
@@ -293,7 +324,7 @@ fn spawn_ffmpeg_encoder(
         .context("failed to spawn ffmpeg encoder")
 }
 
-fn start_ffmpeg_encoder(mut child: Child, total_frames: u32) -> Result<FfmpegEncoder> {
+fn start_ffmpeg_encoder(mut child: Child, _total_frames: u32) -> Result<FfmpegEncoder> {
     let mut stdin = child
         .stdin
         .take()
@@ -306,17 +337,6 @@ fn start_ffmpeg_encoder(mut child: Child, total_frames: u32) -> Result<FfmpegEnc
                 .with_context(|| {
                     format!("failed writing frame {} to ffmpeg", encoded_frame.frame)
                 })?;
-
-            if encoded_frame.frame == 0
-                || encoded_frame.frame + 1 == total_frames
-                || encoded_frame.frame % 60 == 0
-            {
-                println!(
-                    "progress frame={}/{}",
-                    encoded_frame.frame + 1,
-                    total_frames
-                );
-            }
         }
 
         drop(stdin);
@@ -363,6 +383,64 @@ impl FfmpegEncoder {
     }
 }
 
+impl LumenFfmpegEncoder {
+    fn create(output: &Path, width: u32, height: u32, fps: f32, encoder: &str) -> Result<Self> {
+        let mut config = VideoEncoderConfig::h264_rgba(width, height, fps.round().max(1.0) as u32);
+        config.codec = match encoder {
+            "hevc" | "hevc_videotoolbox" | "libx265" => VideoCodec::Hevc,
+            _ => VideoCodec::H264,
+        };
+        config.encoder_name = Some(encoder.to_string());
+        config.bit_rate = 14_000_000;
+        let encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)
+            .map_err(|error| anyhow!("lumen-ffmpeg encoder failed to start: {error}"))?;
+        Ok(Self {
+            encoder,
+            width,
+            height,
+        })
+    }
+
+    fn send(&mut self, frame: EncoderFrame) -> Result<()> {
+        let cpu_frame = CpuVideoFrame {
+            width: self.width,
+            height: self.height,
+            stride: (self.width as usize) * 4,
+            pixel_format: PixelFormat::Rgba8,
+            pts: Some(i64::from(frame.frame)),
+            data: frame.pixels,
+        };
+        self.encoder.write_video_frame(&cpu_frame).map_err(|error| {
+            anyhow!(
+                "lumen-ffmpeg encode failed at frame {}: {error}",
+                frame.frame
+            )
+        })
+    }
+
+    fn finish(self) -> Result<()> {
+        self.encoder
+            .finish()
+            .map_err(|error| anyhow!("lumen-ffmpeg encoder finish failed: {error}"))
+    }
+}
+
+impl VideoEncoderSink {
+    fn send(&mut self, frame: EncoderFrame) -> Result<()> {
+        match self {
+            Self::LumenFfmpeg(encoder) => encoder.send(frame),
+            Self::FfmpegCli(encoder) => encoder.send(frame),
+        }
+    }
+
+    fn finish(self) -> Result<()> {
+        match self {
+            Self::LumenFfmpeg(encoder) => encoder.finish(),
+            Self::FfmpegCli(encoder) => encoder.finish(),
+        }
+    }
+}
+
 fn parse_args() -> Result<CliArgs> {
     parse_args_from(env::args())
 }
@@ -376,6 +454,7 @@ where
     let mut output = None;
     let mut media_root = None;
     let mut encoder = None;
+    let mut encoder_pipeline = EncoderPipeline::LumenFfmpeg;
     let mut frame = None;
 
     while let Some(flag) = args.next() {
@@ -403,6 +482,12 @@ where
                     .next()
                     .ok_or_else(|| anyhow!("missing value for --encoder"))?;
                 encoder = Some(value);
+            }
+            "--encoder-pipeline" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --encoder-pipeline"))?;
+                encoder_pipeline = parse_encoder_pipeline(&value)?;
             }
             "--frame" => {
                 let value = args
@@ -435,14 +520,25 @@ where
         output,
         media_root,
         encoder,
+        encoder_pipeline,
         frame,
     })
 }
 
 fn print_usage() {
     eprintln!(
-        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--encoder <name>] [--frame <n>]"
+        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--encoder <name>] [--encoder-pipeline lumen-ffmpeg|ffmpeg-cli] [--frame <n>]"
     )
+}
+
+fn parse_encoder_pipeline(value: &str) -> Result<EncoderPipeline> {
+    match value {
+        "lumen-ffmpeg" | "lumen_ffmpeg" | "crate" => Ok(EncoderPipeline::LumenFfmpeg),
+        "ffmpeg-cli" | "cli" => Ok(EncoderPipeline::FfmpegCli),
+        _ => Err(anyhow!(
+            "unsupported --encoder-pipeline `{value}`; expected lumen-ffmpeg or ffmpeg-cli"
+        )),
+    }
 }
 
 fn main() {
@@ -484,6 +580,7 @@ fn run() -> Result<()> {
                 media_store,
                 &args.output,
                 args.encoder.as_deref(),
+                args.encoder_pipeline,
             )
         }
         _ => Err(anyhow!(
@@ -545,6 +642,7 @@ fn render_mp4(
     media_store: LocalMediaStore,
     output: &Path,
     override_encoder: Option<&str>,
+    encoder_pipeline: EncoderPipeline,
 ) -> Result<()> {
     if composition.timeline.fps <= 0.0 {
         return Err(anyhow!(
@@ -573,6 +671,8 @@ fn render_mp4(
         &media_store,
         RenderOrchestratorConfig { lookahead_count: 8 },
     );
+    let mut timings = RenderTiming::default();
+    let audio_started = Instant::now();
     let audio_path = if composition
         .audio
         .as_ref()
@@ -584,24 +684,53 @@ fn render_mp4(
     } else {
         None
     };
-    let child = spawn_ffmpeg_encoder(
-        output,
-        width,
-        height,
-        composition.timeline.fps,
-        encoder.as_str(),
-        audio_path.as_deref(),
-    )?;
-    let encoder = start_ffmpeg_encoder(child, total_frames)?;
+    timings.audio_mix_ms = audio_started.elapsed().as_millis();
+
+    report_gpu_encode_capabilities();
+
+    let encoded_video_output =
+        if audio_path.is_some() && encoder_pipeline == EncoderPipeline::LumenFfmpeg {
+            temp_sidecar_path(output, "video", "mp4")
+        } else {
+            output.to_path_buf()
+        };
+    let mut encoder_sink = match encoder_pipeline {
+        EncoderPipeline::LumenFfmpeg => VideoEncoderSink::LumenFfmpeg(LumenFfmpegEncoder::create(
+            &encoded_video_output,
+            width,
+            height,
+            composition.timeline.fps,
+            &encoder,
+        )?),
+        EncoderPipeline::FfmpegCli => {
+            let child = spawn_ffmpeg_encoder(
+                output,
+                width,
+                height,
+                composition.timeline.fps,
+                encoder.as_str(),
+                audio_path.as_deref(),
+            )?;
+            VideoEncoderSink::FfmpegCli(start_ffmpeg_encoder(child, total_frames)?)
+        }
+    };
     let render_started = Instant::now();
-    let mut render_readback_ms = 0_u128;
 
     for frame in 0..total_frames {
-        let frame_started = Instant::now();
+        let render_frame_started = Instant::now();
         let raster = orchestrator
             .render(frame)
             .with_context(|| format!("render failed at frame {frame}"))?;
+        timings.render_ms = timings
+            .render_ms
+            .saturating_add(render_frame_started.elapsed().as_millis());
+
+        let flush_started = Instant::now();
         surface_pool.flush();
+        timings.flush_ms = timings
+            .flush_ms
+            .saturating_add(flush_started.elapsed().as_millis());
+
         let (storage_width, storage_height) = raster.storage_dimensions();
         if storage_width != width || storage_height != height {
             return Err(anyhow!(
@@ -613,24 +742,54 @@ fn render_mp4(
             ));
         }
         let mut pixels = vec![0; (width as usize) * (height as usize) * 4];
+        let readback_started = Instant::now();
         raster
             .read_pixels_into(pixels.as_mut_slice(), (width as usize) * 4)
             .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
-        render_readback_ms = render_readback_ms.saturating_add(frame_started.elapsed().as_millis());
-        encoder.send(EncoderFrame { frame, pixels })?;
+        timings.readback_ms = timings
+            .readback_ms
+            .saturating_add(readback_started.elapsed().as_millis());
+
+        let encode_send_started = Instant::now();
+        encoder_sink.send(EncoderFrame { frame, pixels })?;
+        timings.encode_send_ms = timings
+            .encode_send_ms
+            .saturating_add(encode_send_started.elapsed().as_millis());
+
+        if frame == 0 || frame + 1 == total_frames || frame % 60 == 0 {
+            println!("progress frame={}/{}", frame + 1, total_frames);
+        }
     }
 
-    encoder.finish()?;
+    let encode_finish_started = Instant::now();
+    encoder_sink.finish()?;
+    timings.encode_finish_ms = encode_finish_started.elapsed().as_millis();
+
+    if let Some(audio_path) = audio_path.as_deref()
+        && encoder_pipeline == EncoderPipeline::LumenFfmpeg
+    {
+        let mux_started = Instant::now();
+        mux_audio_with_ffmpeg_cli(&encoded_video_output, audio_path, output)?;
+        timings.mux_ms = mux_started.elapsed().as_millis();
+        let _ = fs::remove_file(&encoded_video_output);
+    }
     if let Some(audio_path) = audio_path {
         let _ = fs::remove_file(audio_path);
     }
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} render_readback_ms={} total_ms={}",
+        "render complete output={} frames={} pipeline={:?} audio_mix_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} mux_ms={} total_ms={}",
         output.display(),
         total_frames,
-        render_readback_ms,
+        encoder_pipeline,
+        timings.audio_mix_ms,
+        timings.render_ms,
+        timings.flush_ms,
+        timings.readback_ms,
+        timings.encode_send_ms,
+        timings.encode_finish_ms,
+        timings.mux_ms,
         total_ms,
     );
     Ok(())
@@ -668,6 +827,67 @@ fn render_audio_raw(
     }
 
     Ok(())
+}
+
+fn mux_audio_with_ffmpeg_cli(video_path: &Path, audio_path: &Path, output: &Path) -> Result<()> {
+    let output_result = Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-nostdin")
+        .arg("-i")
+        .arg(video_path)
+        .arg("-f")
+        .arg("f32le")
+        .arg("-ar")
+        .arg(AUDIO_SAMPLE_RATE.to_string())
+        .arg("-ac")
+        .arg(AUDIO_CHANNELS.to_string())
+        .arg("-i")
+        .arg(audio_path)
+        .arg("-c:v")
+        .arg("copy")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(output)
+        .output()
+        .context("failed to spawn ffmpeg audio muxer")?;
+
+    if output_result.status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "ffmpeg audio mux failed: {}",
+            String::from_utf8_lossy(&output_result.stderr)
+        ))
+    }
+}
+
+fn temp_sidecar_path(output: &Path, label: &str, extension: &str) -> PathBuf {
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let stem = output
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("lumen-output");
+    parent.join(format!("{stem}.{label}.tmp.{extension}"))
+}
+
+fn report_gpu_encode_capabilities() {
+    for backend in [GpuBackend::Metal, GpuBackend::Vulkan] {
+        let support = gpu_texture_encode_support(VideoCodec::H264, backend);
+        eprintln!(
+            "gpu_encode backend={:?} codec={:?} encoder={} available={} direct_texture_path={} reason={}",
+            support.backend,
+            support.codec,
+            support.encoder_name.unwrap_or("none"),
+            support.available,
+            support.direct_texture_path,
+            support.reason.as_deref().unwrap_or("none"),
+        );
+    }
 }
 
 fn write_png(output: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {

@@ -11,14 +11,17 @@ pub(super) struct FrameImage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    pub premultiply: bool,
 }
 
 impl FrameImage {
     pub fn into_gpu_image(mut self) -> Result<Arc<GpuImageFrame>, MediaError> {
-        premultiply_rgba_in_place_if_needed(&mut self.rgba);
+        if self.premultiply {
+            premultiply_rgba_in_place_if_needed(&mut self.rgba);
+        }
         Ok(Arc::new(
-            GpuImageFrame::from_cpu_decoded_rgba(
-                self.rgba.as_slice(),
+            GpuImageFrame::from_owned_cpu_decoded_rgba(
+                self.rgba,
                 self.width,
                 self.height,
                 (self.width as usize) * 4,

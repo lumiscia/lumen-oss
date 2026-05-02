@@ -12,8 +12,9 @@ pub mod video;
 
 pub use audio::{AudioDecoder, AudioFrame, AudioResampler, AudioResamplerConfig, SampleFormat};
 pub use encode::{
-    GpuEncodeEvent, GpuEncodeOutcome, GpuEncodeStage, GpuEncodeTelemetry, GpuUploadDescriptor,
-    MuxedEncoder, OutputContext, VideoEncoder, VideoEncoderConfig,
+    GpuEncodeEvent, GpuEncodeOutcome, GpuEncodeStage, GpuEncodeTelemetry, GpuTextureEncodeSupport,
+    GpuUploadDescriptor, MuxedEncoder, OutputContext, VideoEncoder, VideoEncoderConfig,
+    gpu_texture_encode_support,
 };
 pub use format::{AudioStreamInfo, InputContext, MediaInfo, Rational, VideoStreamInfo};
 pub use gpu::{GpuBackend, GpuVideoFrame, GpuVideoInput};

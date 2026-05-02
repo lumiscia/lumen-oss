@@ -4,15 +4,10 @@ use std::{
     thread,
 };
 
-use ffmpeg::{
-    Packet,
-    codec::{self, Id as CodecId, decoder::find_by_name},
-    format::Pixel,
-    media::Type,
-    software::scaling::{context::Context as ScalingContext, flag::Flags},
-    util::{error::EAGAIN, frame::video::Video},
+use lumen_ffmpeg::{
+    CpuVideoFrame, DecodeMode, GpuBackend, InputContext, Rational, VideoDecoder,
+    VideoDecoderConfig, VideoStreamInfo,
 };
-use ffmpeg_next as ffmpeg;
 
 use crate::{
     error::MediaError,
@@ -20,11 +15,7 @@ use crate::{
     media::{VideoFrameResolver, VideoMetadata},
 };
 
-use super::{
-    ensure_ffmpeg_init,
-    image::{FrameImage, FrameLruCache},
-    rational_to_f64,
-};
+use super::image::{FrameImage, FrameLruCache};
 
 const SEEK_REOPEN_THRESHOLD: u32 = 120;
 
@@ -78,28 +69,35 @@ struct LibavStreamDecoder {
     frame_count: u32,
     fps: f64,
     time_base_seconds: f64,
-    format: ffmpeg::format::context::Input,
-    decoder: ffmpeg::decoder::Video,
-    scaler: ScalingContext,
+    input: InputContext,
+    decoder: VideoDecoder,
     next_frame_hint: u32,
     sent_eof: bool,
+    gpu_decode_status: GpuDecodeStatus,
 }
 
 struct DecoderComponents {
-    format: ffmpeg::format::context::Input,
+    input: InputContext,
     stream_index: usize,
     width: u32,
     height: u32,
     frame_count: u32,
     fps: f64,
     time_base_seconds: f64,
-    decoder: ffmpeg::decoder::Video,
-    scaler: ScalingContext,
+    decoder: VideoDecoder,
+    gpu_decode_status: GpuDecodeStatus,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum GpuDecodeStatus {
+    NotRequested,
+    AvailableButNotImported { backend: GpuBackend },
+    Unavailable { backend: GpuBackend, reason: String },
 }
 
 impl LibavStreamDecoder {
     fn open(source: impl Into<String>, prefer_hardware_decode: bool) -> Result<Self, MediaError> {
-        ensure_ffmpeg_init()?;
         let source = source.into();
         let components = Self::open_components(&source, prefer_hardware_decode)?;
 
@@ -112,11 +110,11 @@ impl LibavStreamDecoder {
             frame_count: components.frame_count,
             fps: components.fps,
             time_base_seconds: components.time_base_seconds,
-            format: components.format,
+            input: components.input,
             decoder: components.decoder,
-            scaler: components.scaler,
             next_frame_hint: 0,
             sent_eof: false,
+            gpu_decode_status: components.gpu_decode_status,
         })
     }
 
@@ -124,43 +122,37 @@ impl LibavStreamDecoder {
         source: &str,
         prefer_hardware_decode: bool,
     ) -> Result<DecoderComponents, MediaError> {
-        let format = ffmpeg::format::input(source).map_err(|err| MediaError::Decode {
+        let input = InputContext::open(source.to_string()).map_err(|err| MediaError::Decode {
             media_source: source.to_string(),
             details: format!("failed opening media source: {err}"),
         })?;
-
-        let stream =
-            format
-                .streams()
-                .best(Type::Video)
-                .ok_or_else(|| MediaError::SourceNotFound {
-                    media_source: source.to_string(),
-                })?;
-        let stream_index = stream.index();
-        let stream_time_base = rational_to_f64(stream.time_base()).unwrap_or(1.0 / 30.0);
+        let stream = input
+            .best_video_stream()
+            .map_err(|err| MediaError::Decode {
+                media_source: source.to_string(),
+                details: format!("failed selecting video stream: {err}"),
+            })?;
+        let stream_index = stream.stream_index;
+        let stream_time_base = stream.time_base.as_f64().unwrap_or(1.0 / 30.0);
         let fps = resolve_stream_fps(&stream, source)?;
-        let parameters = stream.parameters();
-        let decoder = open_video_decoder(parameters, prefer_hardware_decode, source)?;
-        let width = decoder.width();
-        let height = decoder.height();
+        let width = stream.width;
+        let height = stream.height;
         let frame_count = resolve_frame_count(&stream, fps);
-
-        let scaler = ScalingContext::get(
-            decoder.format(),
-            width,
-            height,
-            Pixel::RGBA,
-            width,
-            height,
-            Flags::BILINEAR,
+        let gpu_decode_status = probe_gpu_decode(source, &input, &stream, prefer_hardware_decode);
+        let decoder = VideoDecoder::open(
+            &input,
+            VideoDecoderConfig {
+                stream_index,
+                mode: DecodeMode::Cpu,
+            },
         )
         .map_err(|err| MediaError::Decode {
             media_source: source.to_string(),
-            details: format!("failed creating color conversion pipeline: {err}"),
+            details: format!("failed opening CPU video decoder: {err}"),
         })?;
 
         Ok(DecoderComponents {
-            format,
+            input,
             stream_index,
             width,
             height,
@@ -168,7 +160,7 @@ impl LibavStreamDecoder {
             fps,
             time_base_seconds: stream_time_base.max(1e-12),
             decoder,
-            scaler,
+            gpu_decode_status,
         })
     }
 
@@ -215,12 +207,8 @@ impl LibavStreamDecoder {
                 });
             }
 
-            let mut packet = Packet::empty();
-            match packet.read(&mut self.format) {
-                Ok(()) => {
-                    if packet.stream() != self.stream_index {
-                        continue;
-                    }
+            match self.input.read_packet() {
+                Ok(Some(packet)) => {
                     self.decoder
                         .send_packet(&packet)
                         .map_err(|err| MediaError::Decode {
@@ -228,7 +216,7 @@ impl LibavStreamDecoder {
                             details: format!("failed sending packet to decoder: {err}"),
                         })?;
                 }
-                Err(ffmpeg::Error::Eof) => {
+                Ok(None) => {
                     self.decoder.send_eof().map_err(|err| MediaError::Decode {
                         media_source: self.source.clone(),
                         details: format!("failed sending decoder EOF: {err}"),
@@ -249,19 +237,17 @@ impl LibavStreamDecoder {
         &mut self,
         target_frame: u32,
     ) -> Result<Option<FrameImage>, MediaError> {
-        let mut decoded = Video::empty();
         loop {
-            match self.decoder.receive_frame(&mut decoded) {
-                Ok(()) => {
+            match self.decoder.receive_cpu_frame() {
+                Ok(Some(decoded)) => {
                     let decoded_frame = self.map_frame_index(&decoded);
                     self.next_frame_hint = decoded_frame.saturating_add(1);
                     if decoded_frame < target_frame {
                         continue;
                     }
-                    return self.frame_to_rgba(&decoded).map(Some);
+                    return self.frame_to_image(decoded).map(Some);
                 }
-                Err(ffmpeg::Error::Other { errno }) if errno == EAGAIN => return Ok(None),
-                Err(ffmpeg::Error::Eof) => return Ok(None),
+                Ok(None) => return Ok(None),
                 Err(err) => {
                     return Err(MediaError::Decode {
                         media_source: self.source.clone(),
@@ -272,52 +258,32 @@ impl LibavStreamDecoder {
         }
     }
 
-    fn map_frame_index(&self, decoded: &Video) -> u32 {
+    fn map_frame_index(&self, decoded: &CpuVideoFrame) -> u32 {
         decoded
-            .timestamp()
-            .or(decoded.pts())
+            .pts
             .map(|timestamp| self.timestamp_to_frame(timestamp))
             .filter(|frame| *frame <= self.frame_count.saturating_sub(1))
             .unwrap_or(self.next_frame_hint)
     }
 
-    fn frame_to_rgba(&mut self, decoded: &Video) -> Result<FrameImage, MediaError> {
-        let mut rgba = Video::empty();
-        self.scaler
-            .run(decoded, &mut rgba)
-            .map_err(|err| MediaError::Decode {
+    fn frame_to_image(&self, decoded: CpuVideoFrame) -> Result<FrameImage, MediaError> {
+        let row_bytes = (decoded.width as usize).saturating_mul(4);
+        if decoded.stride != row_bytes {
+            return Err(MediaError::Decode {
                 media_source: self.source.clone(),
-                details: format!("pixel format conversion failed: {err}"),
-            })?;
-
-        let row_bytes = usize::try_from(self.width)
-            .unwrap_or_default()
-            .saturating_mul(4);
-        let total_bytes =
-            row_bytes.saturating_mul(usize::try_from(self.height).unwrap_or_default());
-        let mut output = vec![0_u8; total_bytes];
-        let stride = rgba.stride(0);
-        let data = rgba.data(0);
-
-        for row in 0..usize::try_from(self.height).unwrap_or_default() {
-            let src_start = row.saturating_mul(stride);
-            let src_end = src_start.saturating_add(row_bytes);
-            let dst_start = row.saturating_mul(row_bytes);
-            let dst_end = dst_start.saturating_add(row_bytes);
-            if src_end > data.len() || dst_end > output.len() {
-                return Err(MediaError::Decode {
-                    media_source: self.source.clone(),
-                    details: "decoded frame buffer dimensions are invalid".to_string(),
-                });
-            }
-            output[dst_start..dst_end].copy_from_slice(&data[src_start..src_end]);
+                details: format!(
+                    "decoded frame stride {} does not match expected RGBA stride {row_bytes}",
+                    decoded.stride
+                ),
+            });
         }
 
         Ok(FrameImage {
             source: self.source.clone(),
-            width: self.width,
-            height: self.height,
-            rgba: output,
+            width: decoded.width,
+            height: decoded.height,
+            rgba: decoded.data,
+            premultiply: false,
         })
     }
 
@@ -328,8 +294,18 @@ impl LibavStreamDecoder {
 
     fn seek_to_frame(&mut self, target_frame: u32) -> Result<(), MediaError> {
         let timestamp = self.frame_to_timestamp(target_frame);
-        if self.format.seek(timestamp, ..).is_err() {
+        if self
+            .input
+            .seek_stream(self.stream_index, timestamp)
+            .is_err()
+        {
             self.reopen()?;
+            self.input
+                .seek_stream(self.stream_index, timestamp)
+                .map_err(|err| MediaError::Decode {
+                    media_source: self.source.clone(),
+                    details: format!("seek failed: {err}"),
+                })?;
         }
         self.decoder.flush();
         self.sent_eof = false;
@@ -355,7 +331,7 @@ impl LibavStreamDecoder {
 
     fn reopen(&mut self) -> Result<(), MediaError> {
         let components = Self::open_components(&self.source, self.prefer_hardware_decode)?;
-        self.format = components.format;
+        self.input = components.input;
         self.stream_index = components.stream_index;
         self.width = components.width;
         self.height = components.height;
@@ -363,7 +339,7 @@ impl LibavStreamDecoder {
         self.fps = components.fps;
         self.time_base_seconds = components.time_base_seconds;
         self.decoder = components.decoder;
-        self.scaler = components.scaler;
+        self.gpu_decode_status = components.gpu_decode_status;
         self.next_frame_hint = 0;
         self.sent_eof = false;
         Ok(())
@@ -566,18 +542,13 @@ impl VideoFrameResolver for FfmpegVideoResolver {
     }
 }
 
-fn resolve_stream_fps(
-    stream: &ffmpeg::format::stream::Stream<'_>,
-    source: &str,
-) -> Result<f64, MediaError> {
-    let fps = [
-        stream.avg_frame_rate(),
-        stream.rate(),
-        stream.time_base().invert(),
-    ]
-    .iter()
-    .find_map(|rational| rational_to_f64(*rational))
-    .unwrap_or(0.0);
+fn resolve_stream_fps(stream: &VideoStreamInfo, source: &str) -> Result<f64, MediaError> {
+    let fps = stream
+        .avg_frame_rate
+        .as_f64()
+        .filter(|fps| *fps > 0.0)
+        .or_else(|| invert_rational(stream.time_base))
+        .unwrap_or(0.0);
 
     if fps > 0.0 {
         Ok(fps)
@@ -589,16 +560,18 @@ fn resolve_stream_fps(
     }
 }
 
-fn resolve_frame_count(stream: &ffmpeg::format::stream::Stream<'_>, fps: f64) -> u32 {
-    let explicit = stream.frames();
-    if explicit > 0 {
+fn resolve_frame_count(stream: &VideoStreamInfo, fps: f64) -> u32 {
+    if let Some(explicit) = stream.frame_count {
         return u32::try_from(explicit).unwrap_or(u32::MAX);
     }
 
-    let duration = stream.duration();
-    let Some(time_base_seconds) = rational_to_f64(stream.time_base()) else {
+    let Some(duration) = stream.duration_ts else {
         return 1;
     };
+    let Some(time_base_seconds) = stream.time_base.as_f64() else {
+        return 1;
+    };
+
     if duration <= 0 || fps <= 0.0 {
         return 1;
     }
@@ -607,58 +580,40 @@ fn resolve_frame_count(stream: &ffmpeg::format::stream::Stream<'_>, fps: f64) ->
     estimated.clamp(1.0, f64::from(u32::MAX)) as u32
 }
 
-fn open_video_decoder(
-    parameters: codec::Parameters,
-    prefer_hardware_decode: bool,
-    source: &str,
-) -> Result<ffmpeg::decoder::Video, MediaError> {
-    if prefer_hardware_decode {
-        for codec_name in hardware_decoder_candidates(parameters.id()) {
-            if let Some(candidate) = find_by_name(codec_name) {
-                let Ok(context) = codec::context::Context::from_parameters(parameters.clone())
-                else {
-                    continue;
-                };
-                if let Ok(opened) = context.decoder().open_as(candidate)
-                    && let Ok(video_decoder) = opened.video()
-                {
-                    return Ok(video_decoder);
-                }
-            }
-        }
-    }
-
-    codec::context::Context::from_parameters(parameters)
-        .map_err(|err| MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!("failed creating decoder context: {err}"),
-        })?
-        .decoder()
-        .video()
-        .map_err(|err| MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!("failed opening software decoder: {err}"),
-        })
+fn invert_rational(value: Rational) -> Option<f64> {
+    (value.numerator != 0).then_some(value.denominator as f64 / value.numerator as f64)
 }
 
-fn hardware_decoder_candidates(codec_id: CodecId) -> &'static [&'static str] {
-    match codec_id {
-        CodecId::H264 => &[
-            "h264_videotoolbox",
-            "h264_nvdec",
-            "h264_cuvid",
-            "h264_qsv",
-            "h264_vaapi",
-        ],
-        CodecId::HEVC | CodecId::H265 => &[
-            "hevc_videotoolbox",
-            "hevc_nvdec",
-            "hevc_cuvid",
-            "hevc_qsv",
-            "hevc_vaapi",
-        ],
-        CodecId::VP9 => &["vp9_videotoolbox", "vp9_qsv", "vp9_vaapi"],
-        CodecId::AV1 => &["av1_videotoolbox", "av1_qsv", "av1_vaapi"],
-        _ => &[],
+fn probe_gpu_decode(
+    source: &str,
+    input: &InputContext,
+    stream: &VideoStreamInfo,
+    prefer_hardware_decode: bool,
+) -> GpuDecodeStatus {
+    if !prefer_hardware_decode {
+        return GpuDecodeStatus::NotRequested;
+    }
+
+    let backend = preferred_gpu_backend();
+    match VideoDecoder::open(
+        input,
+        VideoDecoderConfig {
+            stream_index: stream.stream_index,
+            mode: DecodeMode::Gpu(backend),
+        },
+    ) {
+        Ok(_) => GpuDecodeStatus::AvailableButNotImported { backend },
+        Err(error) => GpuDecodeStatus::Unavailable {
+            backend,
+            reason: format!("{source}: {error}"),
+        },
+    }
+}
+
+fn preferred_gpu_backend() -> GpuBackend {
+    if cfg!(target_os = "macos") {
+        GpuBackend::Metal
+    } else {
+        GpuBackend::Vulkan
     }
 }

@@ -46,6 +46,56 @@ impl VideoEncoderConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuTextureEncodeSupport {
+    pub backend: GpuBackend,
+    pub codec: VideoCodec,
+    pub encoder_name: Option<&'static str>,
+    pub available: bool,
+    pub direct_texture_path: bool,
+    pub reason: Option<String>,
+}
+
+pub fn gpu_texture_encode_support(
+    codec: VideoCodec,
+    backend: GpuBackend,
+) -> GpuTextureEncodeSupport {
+    let encoder_name = match (backend, codec) {
+        (GpuBackend::Metal, VideoCodec::H264) => Some("h264_videotoolbox"),
+        (GpuBackend::Metal, VideoCodec::Hevc) => Some("hevc_videotoolbox"),
+        (GpuBackend::Vulkan, VideoCodec::H264) => Some("h264_vulkan"),
+        (GpuBackend::Vulkan, VideoCodec::Hevc) => Some("hevc_vulkan"),
+        _ => None,
+    };
+
+    let encoder_available = encoder_name.is_some_and(|name| encoder_by_name(name).is_ok());
+    let reason = if !encoder_available {
+        Some(match encoder_name {
+            Some(name) => format!("FFmpeg encoder `{name}` is unavailable"),
+            None => format!("{backend:?} texture encode is unavailable for {codec:?}"),
+        })
+    } else if backend == GpuBackend::Metal {
+        Some(
+            "Metal texture encode needs CVPixelBuffer-backed render targets before it can avoid readback"
+                .to_string(),
+        )
+    } else {
+        Some(
+            "Vulkan texture encode needs exported AVVkFrame/image interop before it can avoid readback"
+                .to_string(),
+        )
+    };
+
+    GpuTextureEncodeSupport {
+        backend,
+        codec,
+        encoder_name,
+        available: encoder_available,
+        direct_texture_path: false,
+        reason,
+    }
+}
+
 pub struct OutputContext {
     path: String,
     ptr: *mut sys::AVFormatContext,
@@ -335,22 +385,7 @@ fn find_encoder(config: &VideoEncoderConfig) -> Result<*const sys::AVCodec> {
     };
 
     if let Some(name) = encoder_name {
-        let c_name = CString::new(name).map_err(|_| {
-            FfmpegError::new(
-                "avcodec_find_encoder_by_name",
-                "encoder name contains NUL byte",
-            )
-        })?;
-        let codec = unsafe { sys::avcodec_find_encoder_by_name(c_name.as_ptr()) };
-        if codec.is_null() {
-            Err(FfmpegError::new(
-                "avcodec_find_encoder_by_name",
-                format!("requested encoder `{name}` is unavailable"),
-            )
-            .with_codec(config.codec))
-        } else {
-            Ok(codec)
-        }
+        encoder_by_name(name).map_err(|error| error.with_codec(config.codec))
     } else {
         let codec = unsafe { sys::avcodec_find_encoder(config.codec.to_av_codec_id()) };
         if codec.is_null() {
@@ -361,6 +396,24 @@ fn find_encoder(config: &VideoEncoderConfig) -> Result<*const sys::AVCodec> {
         } else {
             Ok(codec)
         }
+    }
+}
+
+fn encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
+    let c_name = CString::new(name).map_err(|_| {
+        FfmpegError::new(
+            "avcodec_find_encoder_by_name",
+            "encoder name contains NUL byte",
+        )
+    })?;
+    let codec = unsafe { sys::avcodec_find_encoder_by_name(c_name.as_ptr()) };
+    if codec.is_null() {
+        Err(FfmpegError::new(
+            "avcodec_find_encoder_by_name",
+            format!("requested encoder `{name}` is unavailable"),
+        ))
+    } else {
+        Ok(codec)
     }
 }
 

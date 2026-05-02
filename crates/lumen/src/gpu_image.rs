@@ -1,5 +1,7 @@
 //! GPU-native image frame representation for immutable Skia image outputs.
 
+use std::sync::Arc;
+
 use skia_safe::{AlphaType, ColorType, Data, ImageInfo, image::CachingHint, images};
 
 use crate::error::RenderError;
@@ -85,6 +87,7 @@ impl RectI {
 #[derive(Debug, Clone)]
 pub struct GpuImageFrame {
     pub image: skia_safe::Image,
+    owned_pixels: Option<Arc<Vec<u8>>>,
     pub storage_width: u32,
     pub storage_height: u32,
     pub row_bytes: usize,
@@ -122,6 +125,7 @@ impl GpuImageFrame {
             .unwrap_or(0);
         let mut frame = Self {
             image,
+            owned_pixels: None,
             storage_width,
             storage_height,
             row_bytes,
@@ -161,6 +165,48 @@ impl GpuImageFrame {
         })?;
         let mut frame =
             Self::with_domain(image, storage_width, storage_height, format_rect, data_rect);
+        frame.alpha_mode = alpha_mode;
+        Ok(frame)
+    }
+
+    pub fn from_owned_cpu_decoded_rgba(
+        bytes: Vec<u8>,
+        storage_width: u32,
+        storage_height: u32,
+        row_bytes: usize,
+        alpha_mode: AlphaMode,
+        format_rect: RectI,
+        data_rect: RectI,
+    ) -> crate::Result<Self> {
+        let expected = rgba_byte_len(storage_width, storage_height).ok_or_else(|| {
+            RenderError::SurfaceAllocation {
+                width: storage_width,
+                height: storage_height,
+            }
+        })?;
+        if bytes.len() < expected || row_bytes < (storage_width as usize).saturating_mul(4) {
+            return Err(RenderError::SurfaceAllocation {
+                width: storage_width,
+                height: storage_height,
+            }
+            .into());
+        }
+
+        let owned_pixels = Arc::new(bytes);
+        let image = skia_image_from_owned_rgba_upload(
+            Arc::clone(&owned_pixels),
+            storage_width,
+            storage_height,
+            row_bytes,
+            alpha_mode,
+        )
+        .ok_or_else(|| RenderError::SurfaceAllocation {
+            width: storage_width,
+            height: storage_height,
+        })?;
+        let mut frame =
+            Self::with_domain(image, storage_width, storage_height, format_rect, data_rect);
+        frame.owned_pixels = Some(owned_pixels);
         frame.alpha_mode = alpha_mode;
         Ok(frame)
     }
@@ -264,6 +310,27 @@ pub fn skia_image_from_rgba_upload(
         None,
     );
     let data = Data::new_copy(bytes);
+    images::raster_from_data(&info, data, row_bytes)
+}
+
+pub fn skia_image_from_owned_rgba_upload(
+    bytes: Arc<Vec<u8>>,
+    width: u32,
+    height: u32,
+    row_bytes: usize,
+    alpha_mode: AlphaMode,
+) -> Option<skia_safe::Image> {
+    let expected = rgba_byte_len(width, height)?;
+    if bytes.len() < expected || row_bytes < (width as usize).saturating_mul(4) {
+        return None;
+    }
+    let info = ImageInfo::new(
+        (width as i32, height as i32),
+        ColorType::RGBA8888,
+        alpha_mode.to_skia(),
+        None,
+    );
+    let data = unsafe { Data::new_bytes(bytes.as_slice()) };
     images::raster_from_data(&info, data, row_bytes)
 }
 

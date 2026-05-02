@@ -207,6 +207,27 @@ impl InputContext {
         }
     }
 
+    pub fn seek_stream(&mut self, stream_index: usize, timestamp: i64) -> Result<()> {
+        unsafe {
+            if stream_index >= (*self.ptr).nb_streams as usize {
+                return Err(crate::FfmpegError::new(
+                    "av_seek_frame",
+                    "stream index out of range",
+                ));
+            }
+            ffi::check(
+                sys::av_seek_frame(
+                    self.ptr,
+                    stream_index as i32,
+                    timestamp,
+                    sys::AVSEEK_FLAG_BACKWARD,
+                ),
+                "av_seek_frame",
+            )
+            .map_err(|error| error.with_path(self.path.clone()))
+        }
+    }
+
     pub(crate) fn stream_parameters(
         &self,
         stream_index: usize,

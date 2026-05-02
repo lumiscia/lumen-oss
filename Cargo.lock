@@ -1067,6 +1067,7 @@ dependencies = [
  "ffmpeg-next",
  "glemu",
  "image",
+ "lumen-ffmpeg",
  "lumen-macros",
  "objc2",
  "objc2-metal",
@@ -1110,6 +1111,7 @@ dependencies = [
  "anyhow",
  "image",
  "lumen",
+ "lumen-ffmpeg",
  "serde_json",
  "tempfile",
 ]
