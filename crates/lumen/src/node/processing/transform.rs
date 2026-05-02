@@ -1,11 +1,11 @@
 use skia_safe::{FilterMode, Matrix, Point, Rect, SamplingOptions};
 
 use crate::{
+    gpu_image::{GpuImageFrame, RectI},
     node::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::{RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -71,7 +71,7 @@ impl Default for Transform {
 #[node_impl]
 impl Transform {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
         let source_alpha = source.alpha_mode();

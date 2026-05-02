@@ -16,5 +16,5 @@ metal = ["lumen/metal"]
 anyhow = "1.0.101"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 tempfile = "3.23.0"
-lumen = { path = "../lumen", features = ["ffmpeg", "image", "json", "embed-roboto"] }
+lumen = { path = "../lumen", features = ["ffmpeg", "image", "json", "embed-roboto", "metal"] }
 serde_json = "1.0.145"

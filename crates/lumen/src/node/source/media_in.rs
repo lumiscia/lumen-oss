@@ -3,9 +3,9 @@ use std::ops::Range;
 use crate::{
     error::MediaError,
     expr::ExpressionContext,
+    gpu_image::GpuImageFrame,
     media::MediaStore,
     node::{NodeId, NodeProperty},
-    raster::RasterFrame,
     render::{RenderContext, surface::SurfacePool},
 };
 use lumen_macros::{Node, node_impl};
@@ -75,7 +75,7 @@ impl Default for MediaIn {
 #[node_impl]
 impl MediaIn {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let kind = self.resolve_kind(ctx)?;
         let source = self.resolve_source(ctx)?;
         let range_start = self.resolve_range_start(ctx)?;
@@ -146,7 +146,7 @@ pub fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
 fn evaluate_image<S: SurfacePool, M: MediaStore>(
     image_id: &str,
     ctx: &mut RenderContext<'_, S, M>,
-) -> crate::Result<RasterFrame> {
+) -> crate::Result<GpuImageFrame> {
     let resolver = ctx
         .renderer
         .media_store
@@ -155,7 +155,7 @@ fn evaluate_image<S: SurfacePool, M: MediaStore>(
             media_source: image_id.to_string(),
         })?;
     let _meta = resolver.metadata();
-    let decoded = resolver.resolve_image()?;
+    let decoded = resolver.gpu_image()?;
     Ok((*decoded).clone())
 }
 
@@ -165,7 +165,7 @@ fn evaluate_video<S: SurfacePool, M: MediaStore>(
     speed: f32,
     loop_mode: LoopMode,
     ctx: &mut RenderContext<'_, S, M>,
-) -> crate::Result<RasterFrame> {
+) -> crate::Result<GpuImageFrame> {
     let resolver = ctx
         .renderer
         .media_store
@@ -183,7 +183,7 @@ fn evaluate_video<S: SurfacePool, M: MediaStore>(
         },
     )?;
 
-    let decoded = resolver.resolve_frame_image(source_frame)?;
+    let decoded = resolver.frame(source_frame)?;
     Ok((*decoded).clone())
 }
 

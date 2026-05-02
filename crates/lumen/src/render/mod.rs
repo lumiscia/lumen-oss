@@ -1,17 +1,19 @@
 pub mod context;
+pub mod orchestrator;
 pub mod stats;
 pub mod surface;
 
 pub use context::RenderContext;
+pub use orchestrator::{RenderOrchestrator, RenderOrchestratorConfig};
 
 use std::rc::Rc;
 
 use crate::{
     composition::Composition,
     error::GraphValidationError,
+    gpu_image::GpuImageFrame,
     media::MediaStore,
     node::{NodeResult, PortRef},
-    raster::RasterFrame,
     render::surface::SurfacePool,
 };
 
@@ -36,7 +38,7 @@ impl<'a, S: SurfacePool, M: MediaStore> LumenRenderer<'a, S, M> {
         })
     }
 
-    pub fn render(&mut self, frame: u32) -> crate::Result<RasterFrame> {
+    pub fn render(&mut self, frame: u32) -> crate::Result<GpuImageFrame> {
         let mut media_outputs =
             self.composition
                 .graph
@@ -58,7 +60,11 @@ impl<'a, S: SurfacePool, M: MediaStore> LumenRenderer<'a, S, M> {
         let raster = match Rc::try_unwrap(output) {
             Ok(NodeResult::Raster(raster)) => raster,
             Ok(NodeResult::Vector(_)) => {
-                return Err(ctx.invalid_node_output_type(output_node_id, "RasterFrame", "Vector"));
+                return Err(ctx.invalid_node_output_type(
+                    output_node_id,
+                    "GpuImageFrame",
+                    "Vector",
+                ));
             }
             Ok(NodeResult::None) => return Err(ctx.missing_node_output_error(output_node_id)),
             Err(shared) => match shared.as_ref() {
@@ -66,7 +72,7 @@ impl<'a, S: SurfacePool, M: MediaStore> LumenRenderer<'a, S, M> {
                 NodeResult::Vector(_) => {
                     return Err(ctx.invalid_node_output_type(
                         output_node_id,
-                        "RasterFrame",
+                        "GpuImageFrame",
                         "Vector",
                     ));
                 }

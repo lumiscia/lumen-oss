@@ -1,11 +1,11 @@
 use crate::{
     error::{LumenError, PropertyError},
+    gpu_image::{AlphaMode, GpuImageFrame, skia_image_from_rgba_upload},
     node::{
         NodeId, NodeProperty, PortRef,
+        processing::color_table::unit_to_byte,
         processing::gpu_shader::{ChildShader, apply_runtime_shader_with_children},
-        processing::raster_map::{byte_to_unit, unit_to_byte},
     },
-    raster::{AlphaMode, RasterFrame, make_skia_image},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -44,7 +44,7 @@ impl Default for Curves {
 #[node_impl]
 impl Curves {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let curve = parse_curve_property(self.id, "curve", &self.resolve_curve(ctx)?)?;
         let red_curve = parse_optional_curve_property(
             self.id,
@@ -142,14 +142,6 @@ impl Curve {
     }
 }
 
-pub(crate) fn apply_curves_bytes(pixels: &mut [u8], curves: [&Curve; 3]) {
-    for pixel in pixels.chunks_exact_mut(4) {
-        for channel in 0..3 {
-            pixel[channel] = unit_to_byte(curves[channel].evaluate(byte_to_unit(pixel[channel])));
-        }
-    }
-}
-
 fn curve_image(
     curves: [&Curve; 3],
     node_id: NodeId,
@@ -164,7 +156,7 @@ fn curve_image(
         pixels[offset + 2] = unit_to_byte(curves[2].evaluate(value));
         pixels[offset + 3] = 255;
     }
-    make_skia_image(
+    skia_image_from_rgba_upload(
         &pixels,
         CURVE_TABLE_SIZE as u32,
         1,
@@ -258,19 +250,7 @@ fn invalid_curve_shader(node_id: NodeId, frame: u32, details: impl Into<String>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{node::processing::test_support, raster::AlphaMode};
-
-    #[test]
-    fn curves_interpolate_channel_points() {
-        let red = parse_curve("0:0,0.5:1,1:1").unwrap();
-        let identity = parse_curve("").unwrap();
-        let mut pixels = vec![128, 128, 128, 255];
-
-        apply_curves_bytes(&mut pixels, [&red, &identity, &identity]);
-
-        assert_eq!(pixels, vec![255, 128, 128, 255]);
-    }
-
+    use crate::{gpu_image::AlphaMode, node::processing::test_support};
     #[test]
     fn curves_sksl_samples_curve_texture_per_channel() {
         let red = parse_curve("0:0,0.5:1,1:1").unwrap();

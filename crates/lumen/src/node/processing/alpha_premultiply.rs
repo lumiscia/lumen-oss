@@ -1,10 +1,10 @@
 use crate::{
     error::{LumenError, PropertyError},
+    gpu_image::{AlphaMode, GpuImageFrame},
     node::{
         NodeId, NodeProperty, PortRef,
         processing::gpu_shader::{ShaderUniform, apply_runtime_shader},
     },
-    raster::{AlphaMode, RasterFrame},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -33,7 +33,7 @@ impl Default for AlphaPremultiply {
 #[node_impl]
 impl AlphaPremultiply {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let operation = parse_alpha_operation(self.id, &self.resolve_mode(ctx)?)?;
         let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
@@ -83,29 +83,6 @@ impl AlphaOperation {
     }
 }
 
-pub(crate) fn apply_alpha_operation_bytes(pixels: &mut [u8], operation: AlphaOperation) {
-    for pixel in pixels.chunks_exact_mut(4) {
-        match operation {
-            AlphaOperation::Premultiply => {
-                let alpha = u16::from(pixel[3]);
-                for channel in &mut pixel[..3] {
-                    *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
-                }
-            }
-            AlphaOperation::Unpremultiply => {
-                let alpha = u16::from(pixel[3]);
-                if alpha == 0 {
-                    pixel[..3].fill(0);
-                } else {
-                    for channel in &mut pixel[..3] {
-                        *channel = ((u16::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn parse_alpha_operation(node_id: NodeId, mode: &str) -> crate::Result<AlphaOperation> {
     match mode.trim().to_ascii_lowercase().as_str() {
         "premultiply" | "premul" | "multiply" => Ok(AlphaOperation::Premultiply),
@@ -129,23 +106,7 @@ fn invalid_mode(node_id: NodeId) -> LumenError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{node::processing::test_support, raster::AlphaMode};
-
-    #[test]
-    fn alpha_premultiply_and_unpremultiply_have_expected_rgba() {
-        let mut premul = vec![100, 50, 25, 128];
-        apply_alpha_operation_bytes(&mut premul, AlphaOperation::Premultiply);
-        assert_eq!(premul, vec![50, 25, 13, 128]);
-
-        let mut straight = premul;
-        apply_alpha_operation_bytes(&mut straight, AlphaOperation::Unpremultiply);
-        assert_eq!(straight, vec![100, 50, 26, 128]);
-
-        let mut transparent = vec![100, 50, 25, 0];
-        apply_alpha_operation_bytes(&mut transparent, AlphaOperation::Unpremultiply);
-        assert_eq!(transparent, vec![0, 0, 0, 0]);
-    }
-
+    use crate::{gpu_image::AlphaMode, node::processing::test_support};
     #[test]
     fn alpha_premultiply_sksl_multiplies_rgb_by_alpha() {
         let source = test_support::frame_from_pixel([100, 50, 25, 128], AlphaMode::Unpremultiplied);

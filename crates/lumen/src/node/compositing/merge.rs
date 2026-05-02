@@ -2,12 +2,12 @@ use skia_safe::{Paint, Rect, SamplingOptions};
 
 use crate::{
     error::{LumenError, RenderError},
+    gpu_image::{GpuImageFrame, RectI},
     node::{
         NodeId, NodeProperty, PortRef,
         compositing::BlendMode,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::{RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -45,7 +45,7 @@ impl Default for Merge {
 #[node_impl]
 impl Merge {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let opacity = self.resolve_opacity(ctx)? as f32;
         let blend_mode =
             BlendMode::try_from(self.resolve_blend_mode(ctx)? as usize).map_err(|err| {

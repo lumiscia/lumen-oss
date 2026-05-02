@@ -1,7 +1,7 @@
 use crate::{
+    gpu_image::GpuImageFrame,
     media::MediaStore,
     node::{NodeId, NodeProperty, PortRef},
-    raster::RasterFrame,
     render::{RenderContext, surface::SurfacePool},
 };
 use lumen_macros::{Node, node_impl};
@@ -39,7 +39,7 @@ impl Default for TimeRemap {
 #[node_impl]
 impl TimeRemap {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let target_frame = remap_frame(TimeRemapSettings {
             frame: self.resolve_frame(ctx)?,
             loop_enabled: self.resolve_loop_enabled(ctx)?,

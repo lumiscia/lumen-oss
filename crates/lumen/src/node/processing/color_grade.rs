@@ -1,9 +1,9 @@
 use crate::{
+    gpu_image::{AlphaMode, GpuImageFrame, skia_image_from_rgba_upload},
     node::{
         NodeId, NodeProperty, PortRef,
         processing::gpu_shader::{ChildShader, ShaderUniform, apply_runtime_shader_with_children},
     },
-    raster::{AlphaMode, RasterFrame, make_skia_image},
     render::{RenderContext, surface::SurfacePool},
 };
 use lumen_macros::{Node, node_impl};
@@ -60,7 +60,7 @@ impl Default for ColorGrade {
 #[node_impl]
 impl ColorGrade {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
         let lut_source = self.resolve_lut_source(ctx)?;
@@ -80,14 +80,14 @@ impl ColorGrade {
 }
 
 pub fn apply_color_grade<S: SurfacePool, M: crate::media::MediaStore>(
-    source: &RasterFrame,
+    source: &GpuImageFrame,
     lut_source: &str,
     strength: f32,
     interpolation: LutInterpolation,
     node_id: NodeId,
     frame: u32,
     ctx: &mut RenderContext<'_, S, M>,
-) -> crate::Result<RasterFrame> {
+) -> crate::Result<GpuImageFrame> {
     let lut = Lut1d::parse(lut_source, node_id, frame)?;
     let strength = strength.clamp(0.0, 1.0);
 
@@ -208,14 +208,6 @@ impl Lut1d {
         self.stops == [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
     }
 
-    fn map(&self, color: [f32; 3], interpolation: LutInterpolation) -> [f32; 3] {
-        [
-            self.map_channel(color[0], 0, interpolation),
-            self.map_channel(color[1], 1, interpolation),
-            self.map_channel(color[2], 2, interpolation),
-        ]
-    }
-
     fn shader_image(
         &self,
         interpolation: LutInterpolation,
@@ -232,7 +224,7 @@ impl Lut1d {
             pixels[offset + 3] = 255;
         }
 
-        make_skia_image(
+        skia_image_from_rgba_upload(
             &pixels,
             LUT_TABLE_SIZE as u32,
             1,
@@ -284,12 +276,12 @@ fn lut_error(node_id: NodeId, frame: u32, details: impl Into<String>) -> crate::
 mod tests {
     use super::*;
     use crate::{
+        gpu_image::{AlphaMode, RectI},
         node::processing::test_support,
-        raster::{AlphaMode, RectI},
     };
 
-    fn frame_from_pixel(pixel: [u8; 4]) -> RasterFrame {
-        RasterFrame::from_rgba_bytes(
+    fn frame_from_pixel(pixel: [u8; 4]) -> GpuImageFrame {
+        GpuImageFrame::from_cpu_decoded_rgba(
             &pixel,
             1,
             1,
@@ -301,7 +293,7 @@ mod tests {
         .expect("test frame")
     }
 
-    fn read_first_pixel(frame: &RasterFrame) -> [u8; 4] {
+    fn read_first_pixel(frame: &GpuImageFrame) -> [u8; 4] {
         let mut pixel = [0; 4];
         frame.read_pixels_into(&mut pixel, 4).expect("read pixel");
         pixel

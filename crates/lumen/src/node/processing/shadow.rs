@@ -1,13 +1,13 @@
 use skia_safe::{Paint, image_filters};
 
 use crate::{
+    gpu_image::{GpuImageFrame, RectI},
     node::{
         NodeId, NodeProperty, PortRef,
         compositing::merge::union_rect,
         pixel_utils::{ClearMode, render_to_surface_ephemeral, to_skia_color},
         processing::filter_geometry::{expand_rect, filter_pad, offset_rect},
     },
-    raster::{RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -45,7 +45,7 @@ impl Default for Shadow {
 #[node_impl]
 impl Shadow {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
         let color = self.resolve_color(ctx)?;

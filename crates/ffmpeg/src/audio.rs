@@ -115,6 +115,10 @@ impl AudioDecoder {
         }
     }
 
+    pub fn flush(&mut self) {
+        unsafe { sys::avcodec_flush_buffers(self.context) };
+    }
+
     pub fn receive_frame(&mut self) -> Result<Option<DecodedAudioFrame>> {
         let mut frame = AvFrame::new()?;
         let result = unsafe { sys::avcodec_receive_frame(self.context, frame.as_mut_ptr()) };

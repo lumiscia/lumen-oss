@@ -5,12 +5,12 @@ use skia_safe::{
 
 use crate::{
     error::RenderError,
+    gpu_image::{AlphaMode, GpuImageFrame},
     media::MediaStore,
     node::{
         NodeId,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::{AlphaMode, RasterFrame},
     render::{RenderContext, surface::SurfacePool},
 };
 
@@ -29,7 +29,7 @@ pub(crate) struct ChildShader<'a> {
 }
 
 pub(crate) fn apply_runtime_shader<S: SurfacePool, M: MediaStore>(
-    source: &RasterFrame,
+    source: &GpuImageFrame,
     shader_source: &str,
     uniforms: &[ShaderUniform<'_>],
     alpha_mode: AlphaMode,
@@ -37,7 +37,7 @@ pub(crate) fn apply_runtime_shader<S: SurfacePool, M: MediaStore>(
     node_kind: &'static str,
     frame: u32,
     ctx: &mut RenderContext<'_, S, M>,
-) -> crate::Result<RasterFrame> {
+) -> crate::Result<GpuImageFrame> {
     apply_runtime_shader_with_children(
         source,
         shader_source,
@@ -52,7 +52,7 @@ pub(crate) fn apply_runtime_shader<S: SurfacePool, M: MediaStore>(
 }
 
 pub(crate) fn apply_runtime_shader_with_children<S: SurfacePool, M: MediaStore>(
-    source: &RasterFrame,
+    source: &GpuImageFrame,
     shader_source: &str,
     uniforms: &[ShaderUniform<'_>],
     child_shaders: &[ChildShader<'_>],
@@ -61,7 +61,7 @@ pub(crate) fn apply_runtime_shader_with_children<S: SurfacePool, M: MediaStore>(
     node_kind: &'static str,
     frame: u32,
     ctx: &mut RenderContext<'_, S, M>,
-) -> crate::Result<RasterFrame> {
+) -> crate::Result<GpuImageFrame> {
     let (image, width, height) = match source.image_parts() {
         Some(parts) => parts,
         None => return source.snapshot(),

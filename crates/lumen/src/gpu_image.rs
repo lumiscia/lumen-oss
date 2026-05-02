@@ -1,6 +1,6 @@
-//! Raster frame representation for immutable Skia image outputs.
+//! GPU-native image frame representation for immutable Skia image outputs.
 
-use skia_safe::{AlphaType, ColorType, Data, ImageInfo, image::CachingHint, images, surfaces};
+use skia_safe::{AlphaType, ColorType, Data, ImageInfo, image::CachingHint, images};
 
 use crate::error::RenderError;
 
@@ -83,7 +83,7 @@ impl RectI {
 }
 
 #[derive(Debug, Clone)]
-pub struct RasterFrame {
+pub struct GpuImageFrame {
     pub image: skia_safe::Image,
     pub storage_width: u32,
     pub storage_height: u32,
@@ -95,9 +95,7 @@ pub struct RasterFrame {
     pub data_rect: RectI,
 }
 
-pub type ImageFrame = RasterFrame;
-
-impl RasterFrame {
+impl GpuImageFrame {
     pub fn new(image: skia_safe::Image) -> Self {
         let storage_width = image.width().max(0) as u32;
         let storage_height = image.height().max(0) as u32;
@@ -137,7 +135,11 @@ impl RasterFrame {
         frame
     }
 
-    pub fn from_rgba_bytes(
+    /// Uploads CPU-decoded RGBA pixels into a Skia image.
+    ///
+    /// This is intentionally narrow: it exists for media decoders that cannot
+    /// provide a hardware/GPU frame directly.
+    pub fn from_cpu_decoded_rgba(
         bytes: &[u8],
         storage_width: u32,
         storage_height: u32,
@@ -146,11 +148,17 @@ impl RasterFrame {
         format_rect: RectI,
         data_rect: RectI,
     ) -> crate::Result<Self> {
-        let image = make_skia_image(bytes, storage_width, storage_height, row_bytes, alpha_mode)
-            .ok_or_else(|| RenderError::SurfaceAllocation {
-                width: storage_width,
-                height: storage_height,
-            })?;
+        let image = skia_image_from_rgba_upload(
+            bytes,
+            storage_width,
+            storage_height,
+            row_bytes,
+            alpha_mode,
+        )
+        .ok_or_else(|| RenderError::SurfaceAllocation {
+            width: storage_width,
+            height: storage_height,
+        })?;
         let mut frame =
             Self::with_domain(image, storage_width, storage_height, format_rect, data_rect);
         frame.alpha_mode = alpha_mode;
@@ -160,31 +168,6 @@ impl RasterFrame {
     pub fn image(image: skia_safe::Image, width: u32, height: u32) -> Self {
         let rect = RectI::from_size(width, height);
         Self::with_domain(image, width, height, rect, rect)
-    }
-
-    pub fn from_image_frame(frame: ImageFrame) -> Self {
-        frame
-    }
-
-    pub fn transparent(
-        storage_width: u32,
-        storage_height: u32,
-        format_rect: RectI,
-        data_rect: RectI,
-        alpha_mode: AlphaMode,
-    ) -> crate::Result<Self> {
-        let alloc_width = storage_width.max(1);
-        let alloc_height = storage_height.max(1);
-        let mut surface = surfaces::raster_n32_premul((alloc_width as i32, alloc_height as i32))
-            .ok_or_else(|| RenderError::SurfaceAllocation {
-                width: alloc_width,
-                height: alloc_height,
-            })?;
-        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
-        let image = surface.image_snapshot();
-        let mut frame = Self::with_domain(image, alloc_width, alloc_height, format_rect, data_rect);
-        frame.alpha_mode = alpha_mode;
-        Ok(frame)
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
@@ -243,7 +226,7 @@ impl RasterFrame {
         Some((self.image.clone(), self.storage_width, self.storage_height))
     }
 
-    pub fn snapshot_image(&self) -> ImageFrame {
+    pub fn snapshot_image(&self) -> GpuImageFrame {
         self.clone()
     }
 
@@ -263,7 +246,7 @@ impl RasterFrame {
     }
 }
 
-pub fn make_skia_image(
+pub fn skia_image_from_rgba_upload(
     bytes: &[u8],
     width: u32,
     height: u32,
@@ -311,6 +294,12 @@ fn read_pixels_into_image(
         None,
     );
     if image.read_pixels(&info, dst, row_bytes, (0, 0), CachingHint::Disallow) {
+        return Ok(());
+    }
+
+    if let Some(raster) = image.make_raster_image(None, CachingHint::Allow)
+        && raster.read_pixels(&info, dst, row_bytes, (0, 0), CachingHint::Disallow)
+    {
         Ok(())
     } else {
         Err(RenderError::PixelReadbackFailed { width, height }.into())

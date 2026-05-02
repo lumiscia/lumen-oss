@@ -3,14 +3,17 @@ use std::sync::Arc;
 use lumen::{
     composition::{Composition, RenderSettings, TimelineSettings},
     error::MediaError,
+    gpu_image::{AlphaMode, GpuImageFrame, RectI},
     media::{
         ImageResolver, MediaStore, VideoFrameResolver, VideoMetadata, collect_frame_requirements,
     },
     node::{
-        NodeId, NodeKind, NodeProperty, PortRef, media_output::MediaOutput,
-        source::media_in::MediaIn,
+        NodeId, NodeKind, NodeProperty, PortRef,
+        compositing::switch::Switch,
+        media_output::MediaOutput,
+        processing::time_remap::TimeRemap,
+        source::{media_in::MediaIn, solid_color::SolidColor},
     },
-    raster::ImageFrame,
 };
 
 #[derive(Debug, Default)]
@@ -50,12 +53,16 @@ impl VideoFrameResolver for TestVideoResolver {
         }
     }
 
-    fn resolve_frame_image(&self, frame: u32) -> Result<Arc<ImageFrame>, MediaError> {
-        Err(MediaError::FrameOutOfRange {
-            media_source: self.id.clone(),
-            frame,
-            frame_count: self.frame_count,
-        })
+    fn frame(&self, frame: u32) -> Result<Arc<GpuImageFrame>, MediaError> {
+        if frame >= self.frame_count {
+            return Err(MediaError::FrameOutOfRange {
+                media_source: self.id.clone(),
+                frame,
+                frame_count: self.frame_count,
+            });
+        }
+
+        Ok(Arc::new(test_frame()))
     }
 }
 
@@ -167,4 +174,142 @@ fn maps_video_requirements_with_range_speed_and_looping() {
     assert_eq!(requirements.videos.len(), 1);
     assert_eq!(requirements.videos[0].stream_id, "intro-video");
     assert_eq!(requirements.videos[0].frames, vec![12]);
+}
+
+#[test]
+fn time_remap_collects_requirements_from_remapped_frame() {
+    let media_id = NodeId::new(1);
+    let remap_id = NodeId::new(2);
+    let output_id = NodeId::new(3);
+    let mut graph = lumen::graph::Graph::new();
+    graph.nodes.insert(
+        media_id,
+        NodeKind::MediaIn(MediaIn {
+            id: media_id,
+            kind: NodeProperty::Int(1),
+            source: NodeProperty::String("remapped-video".to_string()),
+            ..MediaIn::default()
+        }),
+    );
+    graph.nodes.insert(
+        remap_id,
+        NodeKind::TimeRemap(TimeRemap {
+            id: remap_id,
+            frame: NodeProperty::Float(7.0),
+            loop_enabled: NodeProperty::Bool(false),
+            loop_start: NodeProperty::Int(0),
+            loop_end: NodeProperty::Int(0),
+            source: PortRef::new(media_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output_id,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output_id,
+            source: PortRef::new(remap_id, "output".to_string()),
+        }),
+    );
+    connect(&mut graph, media_id, "output", remap_id, "source");
+    connect(&mut graph, remap_id, "output", output_id, "source");
+
+    let requirements = collect_frame_requirements(
+        &base_composition(graph),
+        &TestMediaStore {
+            video_frame_count: 60,
+        },
+        15,
+    )
+    .expect("collect requirements");
+
+    assert_eq!(requirements.videos[0].stream_id, "remapped-video");
+    assert_eq!(requirements.videos[0].frames, vec![7]);
+}
+
+#[test]
+fn switch_collects_only_selected_branch_requirements() {
+    let red_id = NodeId::new(1);
+    let video_id = NodeId::new(2);
+    let switch_id = NodeId::new(3);
+    let output_id = NodeId::new(4);
+    let mut graph = lumen::graph::Graph::new();
+    graph.nodes.insert(
+        red_id,
+        NodeKind::SolidColor(SolidColor {
+            id: red_id,
+            color: NodeProperty::Color([255, 0, 0, 255]),
+            width: NodeProperty::Int(1),
+            height: NodeProperty::Int(1),
+        }),
+    );
+    graph.nodes.insert(
+        video_id,
+        NodeKind::MediaIn(MediaIn {
+            id: video_id,
+            kind: NodeProperty::Int(1),
+            source: NodeProperty::String("selected-video".to_string()),
+            ..MediaIn::default()
+        }),
+    );
+    graph.nodes.insert(
+        switch_id,
+        NodeKind::Switch(Switch {
+            id: switch_id,
+            map: [(0, 0..10), (1, 10..20)].into_iter().collect(),
+            layers: vec![
+                PortRef::new(red_id, "output".to_string()),
+                PortRef::new(video_id, "output".to_string()),
+            ],
+        }),
+    );
+    graph.nodes.insert(
+        output_id,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output_id,
+            source: PortRef::new(switch_id, "output".to_string()),
+        }),
+    );
+    connect(&mut graph, red_id, "output", switch_id, "layers");
+    connect(&mut graph, video_id, "output", switch_id, "layers");
+    connect(&mut graph, switch_id, "output", output_id, "source");
+
+    let frame_5 = collect_frame_requirements(
+        &base_composition(graph),
+        &TestMediaStore {
+            video_frame_count: 60,
+        },
+        5,
+    )
+    .expect("collect frame 5 requirements");
+
+    assert!(frame_5.videos.is_empty());
+}
+
+fn connect(
+    graph: &mut lumen::graph::Graph,
+    from_node: NodeId,
+    from_port: &str,
+    to_node: NodeId,
+    to_port: &str,
+) {
+    graph
+        .connect(lumen::graph::Connection {
+            from_node,
+            from_port: from_port.to_string(),
+            to_node,
+            to_port: to_port.to_string(),
+        })
+        .expect("connect nodes");
+}
+
+fn test_frame() -> GpuImageFrame {
+    GpuImageFrame::from_cpu_decoded_rgba(
+        &[0, 0, 0, 255],
+        1,
+        1,
+        4,
+        AlphaMode::Premultiplied,
+        RectI::from_size(1, 1),
+        RectI::from_size(1, 1),
+    )
+    .expect("test frame")
 }

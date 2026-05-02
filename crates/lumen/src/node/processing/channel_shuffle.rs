@@ -1,10 +1,10 @@
 use crate::{
     error::{LumenError, PropertyError},
+    gpu_image::GpuImageFrame,
     node::{
         NodeId, NodeProperty, PortRef,
         processing::gpu_shader::{ShaderUniform, apply_runtime_shader},
     },
-    raster::RasterFrame,
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -42,7 +42,7 @@ impl Default for ChannelShuffle {
 #[node_impl]
 impl ChannelShuffle {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let selectors = [
             parse_selector(self.id, "red", &self.resolve_red(ctx)?)?,
             parse_selector(self.id, "green", &self.resolve_green(ctx)?)?,
@@ -137,27 +137,6 @@ impl ChannelSelector {
     }
 }
 
-pub(crate) fn apply_channel_shuffle_bytes(pixels: &mut [u8], selectors: [ChannelSelector; 4]) {
-    for pixel in pixels.chunks_exact_mut(4) {
-        let input = [pixel[0], pixel[1], pixel[2], pixel[3]];
-        for (index, selector) in selectors.iter().enumerate() {
-            pixel[index] = selector.value(input);
-        }
-    }
-}
-
-impl ChannelSelector {
-    fn value(self, input: [u8; 4]) -> u8 {
-        match self {
-            Self::Red => input[0],
-            Self::Green => input[1],
-            Self::Blue => input[2],
-            Self::Alpha => input[3],
-            Self::Constant(value) => value,
-        }
-    }
-}
-
 fn parse_selector(
     node_id: NodeId,
     property_path: &str,
@@ -198,25 +177,7 @@ fn invalid_selector(node_id: NodeId, property_path: &str) -> LumenError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{node::processing::test_support, raster::AlphaMode};
-
-    #[test]
-    fn channel_shuffle_maps_channels_and_constants() {
-        let mut pixels = vec![10, 20, 30, 40];
-
-        apply_channel_shuffle_bytes(
-            &mut pixels,
-            [
-                ChannelSelector::Blue,
-                ChannelSelector::Green,
-                ChannelSelector::Red,
-                ChannelSelector::Constant(128),
-            ],
-        );
-
-        assert_eq!(pixels, vec![30, 20, 10, 128]);
-    }
-
+    use crate::{gpu_image::AlphaMode, node::processing::test_support};
     #[test]
     fn channel_shuffle_sksl_maps_channels_and_constants() {
         let source = test_support::frame_from_pixel([10, 20, 30, 40], AlphaMode::Premultiplied);

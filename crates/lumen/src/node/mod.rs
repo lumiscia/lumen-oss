@@ -5,8 +5,8 @@ use std::fmt;
 use crate::{
     error::{LumenError, PropertyError},
     expr::Expression,
+    gpu_image::GpuImageFrame,
     media::MediaStore,
-    raster::RasterFrame,
     render::{context::RenderContext, surface::SurfacePool},
 };
 
@@ -84,7 +84,7 @@ pub struct PropertyDef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum PortKind {
-    RasterFrame = 0,
+    GpuImageFrame = 0,
     Surface = 1,
     Vector = 2,
 }
@@ -254,19 +254,19 @@ impl NodeProperty {
 
 #[derive(Debug)]
 pub enum NodeResult {
-    Raster(RasterFrame),
+    Raster(GpuImageFrame),
     Vector(VectorData),
     None,
 }
 
 impl NodeResult {
-    pub fn as_raster(&self) -> crate::Result<&RasterFrame> {
+    pub fn as_raster(&self) -> crate::Result<&GpuImageFrame> {
         match self {
             Self::Raster(frame) => Ok(frame),
             Self::Vector(_) | Self::None => Err(LumenError::Property(PropertyError::InvalidType {
                 node_id: NodeId::new(0),
                 property_path: "result".to_string(),
-                expected: "RasterFrame",
+                expected: "GpuImageFrame",
                 actual: "non-raster",
             })),
         }
@@ -285,8 +285,8 @@ impl NodeResult {
     }
 }
 
-impl From<RasterFrame> for NodeResult {
-    fn from(value: RasterFrame) -> Self {
+impl From<GpuImageFrame> for NodeResult {
+    fn from(value: GpuImageFrame) -> Self {
         Self::Raster(value)
     }
 }

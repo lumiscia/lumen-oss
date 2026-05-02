@@ -38,7 +38,7 @@
 //! #[node_impl]
 //! impl Merge {
 //!     #[output(port = "raster_out", kind = Raster)]
-//!     fn eval_output(&self, ctx: &mut RenderContext) -> Result<RasterFrame, LumenError> {
+//!     fn eval_output(&self, ctx: &mut RenderContext) -> Result<GpuImageFrame, LumenError> {
 //!         let opacity = self.resolve_opacity(&ctx.expr_ctx)?;
 //!         let base = ctx.eval_node(&self.base)?.as_raster()?;
 //!         // ...
@@ -809,7 +809,7 @@ fn resolve_type_tokens(expected: &Ident) -> syn::Result<(proc_macro2::TokenStrea
 fn port_kind_ident(ident: &Ident) -> Ident {
     let s = ident.to_string();
     match s.as_str() {
-        "Raster" | "RasterFrame" => Ident::new("RasterFrame", ident.span()),
+        "Raster" | "GpuImageFrame" => Ident::new("GpuImageFrame", ident.span()),
         "Vector" => Ident::new("Vector", ident.span()),
         "Surface" => Ident::new("Surface", ident.span()),
         _ => ident.clone(),

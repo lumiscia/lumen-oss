@@ -1,10 +1,9 @@
 use crate::{
+    gpu_image::GpuImageFrame,
     node::{
         NodeId, NodeProperty, PortRef,
         processing::gpu_shader::{ShaderUniform, apply_runtime_shader},
-        processing::raster_map::{byte_to_unit, unit_to_byte},
     },
-    raster::RasterFrame,
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -45,7 +44,7 @@ impl Default for Levels {
 #[node_impl]
 impl Levels {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let black_point = self.resolve_black_point(ctx)? as f32;
         let white_point = self.resolve_white_point(ctx)? as f32;
         let gamma = self.resolve_gamma(ctx)? as f32;
@@ -91,59 +90,10 @@ half4 main(float2 coord) {
 }
 "#;
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct LevelsParams {
-    pub black_point: f32,
-    pub white_point: f32,
-    pub gamma: f32,
-    pub output_black: f32,
-    pub output_white: f32,
-}
-
-pub(crate) fn apply_levels_bytes(pixels: &mut [u8], params: LevelsParams) {
-    for pixel in pixels.chunks_exact_mut(4) {
-        for channel in &mut pixel[..3] {
-            *channel = apply_levels_channel(*channel, params);
-        }
-    }
-}
-
-fn apply_levels_channel(value: u8, params: LevelsParams) -> u8 {
-    let black = params.black_point.clamp(0.0, 1.0);
-    let mut white = params.white_point.clamp(0.0, 1.0);
-    if white <= black {
-        white = (black + f32::EPSILON).min(1.0);
-    }
-
-    let mut normalized = ((byte_to_unit(value) - black) / (white - black)).clamp(0.0, 1.0);
-    let gamma = params.gamma.max(0.0001);
-    normalized = normalized.powf(1.0 / gamma);
-
-    let out_black = params.output_black.clamp(0.0, 1.0);
-    let out_white = params.output_white.clamp(0.0, 1.0);
-    unit_to_byte(out_black + normalized * (out_white - out_black))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{node::processing::test_support, raster::AlphaMode};
-
-    #[test]
-    fn levels_remaps_black_white_and_gamma() {
-        let params = LevelsParams {
-            black_point: 64.0 / 255.0,
-            white_point: 192.0 / 255.0,
-            gamma: 2.0,
-            output_black: 0.0,
-            output_white: 1.0,
-        };
-        let mut pixels = vec![64, 128, 192, 255];
-
-        apply_levels_bytes(&mut pixels, params);
-
-        assert_eq!(pixels, vec![0, 180, 255, 255]);
-    }
+    use crate::{gpu_image::AlphaMode, node::processing::test_support};
 
     #[test]
     fn levels_sksl_remaps_black_white_gamma_and_output_range() {

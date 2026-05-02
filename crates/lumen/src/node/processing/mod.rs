@@ -2,6 +2,7 @@ pub mod alpha_premultiply;
 pub mod blur;
 pub mod channel_shuffle;
 pub mod color_grade;
+pub(crate) mod color_table;
 pub mod crop;
 pub mod curves;
 pub mod exposure;
@@ -11,7 +12,6 @@ pub mod hue_saturation;
 pub mod levels;
 pub mod matte_cleanup;
 pub mod memo;
-pub(crate) mod raster_map;
 pub mod resize;
 pub mod shadow;
 pub mod skia_shader;
@@ -22,11 +22,37 @@ pub mod transform;
 pub(crate) mod test_support {
     use crate::{
         composition::{Composition, RenderSettings, TimelineSettings},
+        gpu_image::{AlphaMode, GpuImageFrame, RectI},
         graph::Graph,
         media::{ImageResolver, MediaStore, VideoFrameResolver},
-        raster::{AlphaMode, RasterFrame, RectI},
-        render::{LumenRenderer, RenderContext, surface::DefaultSurfacePool},
+        render::{
+            LumenRenderer, RenderContext,
+            surface::{SurfacePool, SurfacePoolStats},
+        },
     };
+
+    #[derive(Debug)]
+    pub(crate) struct TestSurfacePool;
+
+    impl SurfacePool for TestSurfacePool {
+        fn with_surface<T>(
+            &self,
+            width: u32,
+            height: u32,
+            f: impl FnOnce(&mut skia_safe::Surface) -> crate::Result<T>,
+        ) -> crate::Result<T> {
+            let mut surface =
+                skia_safe::surfaces::raster_n32_premul((width.max(1) as i32, height.max(1) as i32))
+                    .ok_or(crate::error::RenderError::SurfaceAllocation { width, height })?;
+            f(&mut surface)
+        }
+
+        fn stats(&self) -> SurfacePoolStats {
+            SurfacePoolStats::default()
+        }
+
+        fn flush(&self) {}
+    }
 
     #[derive(Debug)]
     pub(crate) struct NullMediaStore;
@@ -46,8 +72,8 @@ pub(crate) mod test_support {
         width: u32,
         height: u32,
         alpha_mode: AlphaMode,
-    ) -> RasterFrame {
-        RasterFrame::from_rgba_bytes(
+    ) -> GpuImageFrame {
+        GpuImageFrame::from_cpu_decoded_rgba(
             pixels,
             width,
             height,
@@ -59,11 +85,11 @@ pub(crate) mod test_support {
         .expect("test frame")
     }
 
-    pub(crate) fn frame_from_pixel(pixel: [u8; 4], alpha_mode: AlphaMode) -> RasterFrame {
+    pub(crate) fn frame_from_pixel(pixel: [u8; 4], alpha_mode: AlphaMode) -> GpuImageFrame {
         frame_from_rgba(&pixel, 1, 1, alpha_mode)
     }
 
-    pub(crate) fn read_pixels(frame: &RasterFrame) -> Vec<u8> {
+    pub(crate) fn read_pixels(frame: &GpuImageFrame) -> Vec<u8> {
         let (width, height) = frame.storage_dimensions();
         let mut pixels = vec![0; width as usize * height as usize * 4];
         frame
@@ -72,7 +98,7 @@ pub(crate) mod test_support {
         pixels
     }
 
-    pub(crate) fn read_first_pixel(frame: &RasterFrame) -> [u8; 4] {
+    pub(crate) fn read_first_pixel(frame: &GpuImageFrame) -> [u8; 4] {
         read_pixels(frame)[..4].try_into().expect("first pixel")
     }
 
@@ -89,7 +115,7 @@ pub(crate) mod test_support {
     pub(crate) fn with_test_context<T>(
         width: u32,
         height: u32,
-        f: impl FnOnce(&mut RenderContext<'_, DefaultSurfacePool, NullMediaStore>) -> T,
+        f: impl FnOnce(&mut RenderContext<'_, TestSurfacePool, NullMediaStore>) -> T,
     ) -> T {
         let composition = Composition::new(
             Graph::new(),
@@ -103,7 +129,7 @@ pub(crate) mod test_support {
                 background_color: [0, 0, 0, 0],
             },
         );
-        let pool = DefaultSurfacePool::new();
+        let pool = TestSurfacePool;
         let media = NullMediaStore;
         let renderer = LumenRenderer::new(&composition, &pool, &media).unwrap();
         let mut ctx = RenderContext::new(&renderer, 0);

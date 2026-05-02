@@ -1,10 +1,9 @@
 use crate::{
+    gpu_image::GpuImageFrame,
     node::{
         NodeId, NodeProperty, PortRef,
         processing::gpu_shader::{ShaderUniform, apply_runtime_shader},
-        processing::raster_map::{byte_to_unit, unit_to_byte},
     },
-    raster::RasterFrame,
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -39,7 +38,7 @@ impl Default for HueSaturation {
 #[node_impl]
 impl HueSaturation {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let hue_degrees = self.resolve_hue_degrees(ctx)? as f32;
         let saturation = self.resolve_saturation(ctx)? as f32;
         let lightness = self.resolve_lightness(ctx)? as f32;
@@ -128,102 +127,10 @@ half4 main(float2 coord) {
 }
 "#;
 
-pub(crate) fn apply_hue_saturation_bytes(
-    pixels: &mut [u8],
-    hue_degrees: f32,
-    saturation: f32,
-    lightness: f32,
-) {
-    let hue_offset = hue_degrees / 360.0;
-    for pixel in pixels.chunks_exact_mut(4) {
-        let (mut h, mut s, mut l) = rgb_to_hsl(
-            byte_to_unit(pixel[0]),
-            byte_to_unit(pixel[1]),
-            byte_to_unit(pixel[2]),
-        );
-        h = (h + hue_offset).rem_euclid(1.0);
-        s = (s * saturation).clamp(0.0, 1.0);
-        l = (l + lightness).clamp(0.0, 1.0);
-        let (r, g, b) = hsl_to_rgb(h, s, l);
-        pixel[0] = unit_to_byte(r);
-        pixel[1] = unit_to_byte(g);
-        pixel[2] = unit_to_byte(b);
-    }
-}
-
-fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let l = (max + min) * 0.5;
-
-    if (max - min).abs() <= f32::EPSILON {
-        return (0.0, 0.0, l);
-    }
-
-    let d = max - min;
-    let s = if l > 0.5 {
-        d / (2.0 - max - min)
-    } else {
-        d / (max + min)
-    };
-    let h = if (max - r).abs() <= f32::EPSILON {
-        ((g - b) / d + if g < b { 6.0 } else { 0.0 }) / 6.0
-    } else if (max - g).abs() <= f32::EPSILON {
-        ((b - r) / d + 2.0) / 6.0
-    } else {
-        ((r - g) / d + 4.0) / 6.0
-    };
-
-    (h, s, l)
-}
-
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
-    if s <= f32::EPSILON {
-        return (l, l, l);
-    }
-
-    let q = if l < 0.5 {
-        l * (1.0 + s)
-    } else {
-        l + s - l * s
-    };
-    let p = 2.0 * l - q;
-    (
-        hue_to_rgb(p, q, h + 1.0 / 3.0),
-        hue_to_rgb(p, q, h),
-        hue_to_rgb(p, q, h - 1.0 / 3.0),
-    )
-}
-
-fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
-    t = t.rem_euclid(1.0);
-    if t < 1.0 / 6.0 {
-        p + (q - p) * 6.0 * t
-    } else if t < 1.0 / 2.0 {
-        q
-    } else if t < 2.0 / 3.0 {
-        p + (q - p) * (2.0 / 3.0 - t) * 6.0
-    } else {
-        p
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{node::processing::test_support, raster::AlphaMode};
-
-    #[test]
-    fn hue_saturation_changes_hue_and_saturation() {
-        let mut hue_pixels = vec![255, 0, 0, 255];
-        apply_hue_saturation_bytes(&mut hue_pixels, 120.0, 1.0, 0.0);
-        assert_eq!(hue_pixels, vec![0, 255, 0, 255]);
-
-        let mut saturation_pixels = vec![64, 128, 192, 255];
-        apply_hue_saturation_bytes(&mut saturation_pixels, 0.0, 0.0, 0.0);
-        assert_eq!(saturation_pixels, vec![128, 128, 128, 255]);
-    }
-
+    use crate::{gpu_image::AlphaMode, node::processing::test_support};
     #[test]
     fn hue_saturation_sksl_rotates_hue_and_preserves_alpha() {
         let source = test_support::frame_from_pixel([255, 0, 0, 170], AlphaMode::Premultiplied);

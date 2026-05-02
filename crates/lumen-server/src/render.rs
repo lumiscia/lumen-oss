@@ -14,7 +14,7 @@ use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen::{
     audio::{
         AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMetadata, AudioMixer, AudioResolver,
-        duration_samples, write_interleaved_channels_f32_bytes,
+        AudioSourceProvider, duration_samples, write_interleaved_channels_f32_bytes,
     },
     composition::Composition,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
@@ -314,7 +314,9 @@ impl MediaStore for LocalMediaStore {
         let resolver = self.video_resolver(&resolved)?;
         Some(Box::new(SharedVideoResolver(resolver)))
     }
+}
 
+impl AudioSourceProvider for LocalMediaStore {
     fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
         let resolved = self.resolve_source(source_id)?;
         let resolver = self.audio_resolver(&resolved)?;

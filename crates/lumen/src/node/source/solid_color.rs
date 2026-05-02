@@ -1,9 +1,9 @@
 use crate::{
+    gpu_image::{AlphaMode, GpuImageFrame, RectI},
     node::{
         NodeId, NodeProperty,
         pixel_utils::{ClearMode, render_to_surface_ephemeral, rgba_byte_len, to_skia_color},
     },
-    raster::{AlphaMode, RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -34,7 +34,7 @@ impl Default for SolidColor {
 #[node_impl]
 impl SolidColor {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let requested_width = self.resolve_width(ctx)?;
         let requested_height = self.resolve_height(ctx)?;
 

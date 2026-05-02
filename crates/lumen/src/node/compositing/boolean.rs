@@ -1,13 +1,13 @@
 use skia_safe::{Paint, canvas::SaveLayerRec};
 
 use crate::{
+    gpu_image::GpuImageFrame,
     node::{
         NodeId, NodeProperty, PortRef,
         compositing::merge::draw_frame_image,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
         vector::shape_renderer::{ShapeRenderer, rasterize_vector},
     },
-    raster::RasterFrame,
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -62,7 +62,7 @@ impl Default for Boolean {
 #[node_impl]
 impl Boolean {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
         let source_alpha = source.alpha_mode();

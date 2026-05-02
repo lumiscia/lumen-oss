@@ -91,14 +91,14 @@ pub enum ExpressionError {
 
 #[derive(Debug, Error, Clone)]
 pub enum MediaError {
-    #[error("media source not found")]
+    #[error("media source not found: {media_source}")]
     SourceNotFound { media_source: String },
-    #[error("media decoding failed")]
+    #[error("media decoding failed for {media_source}: {details}")]
     Decode {
         media_source: String,
         details: String,
     },
-    #[error("media frame is out of range")]
+    #[error("media frame {frame} is out of range for {media_source} ({frame_count} frames)")]
     FrameOutOfRange {
         media_source: String,
         frame: u32,

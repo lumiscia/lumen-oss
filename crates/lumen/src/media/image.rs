@@ -2,16 +2,14 @@ use std::{fs, path::Path, sync::Arc};
 
 use skia_safe::{Data, Image};
 
-use crate::{
-    error::MediaError,
-    media::{ImageMetadata, ImageResolver},
-    raster::ImageFrame,
-};
+use crate::{error::MediaError, gpu_image::GpuImageFrame};
+
+use super::{ImageMetadata, ImageResolver};
 
 #[derive(Debug, Clone)]
 struct CachedImage {
     metadata: ImageMetadata,
-    frame: Arc<ImageFrame>,
+    frame: Arc<GpuImageFrame>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,7 +35,7 @@ impl ImageResolver for ImageFileResolver {
         self.cached.metadata
     }
 
-    fn resolve_image(&self) -> Result<Arc<ImageFrame>, MediaError> {
+    fn gpu_image(&self) -> Result<Arc<GpuImageFrame>, MediaError> {
         Ok(Arc::clone(&self.cached.frame))
     }
 }
@@ -58,7 +56,7 @@ fn load_cached_image(source: &str) -> Result<CachedImage, MediaError> {
     };
     Ok(CachedImage {
         metadata,
-        frame: Arc::new(ImageFrame::new(image)),
+        frame: Arc::new(GpuImageFrame::new(image)),
     })
 }
 
@@ -86,8 +84,8 @@ mod tests {
         assert_eq!(metadata.width, 2);
         assert_eq!(metadata.height, 1);
 
-        let first = resolver.resolve_image().expect("first resolve");
-        let second = resolver.resolve_image().expect("second resolve");
+        let first = resolver.gpu_image().expect("first resolve");
+        let second = resolver.gpu_image().expect("second resolve");
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(first.storage_width, 2);
         assert_eq!(first.storage_height, 1);

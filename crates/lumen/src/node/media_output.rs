@@ -1,10 +1,10 @@
 use crate::{
+    gpu_image::{AlphaMode, GpuImageFrame, RectI},
     node::{
         NodeId, NodeResult, PortRef,
         compositing::merge::draw_frame_image,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::{AlphaMode, RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -29,11 +29,15 @@ impl Default for MediaOutput {
 #[node_impl]
 impl MediaOutput {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext<'_>) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext<'_>) -> crate::Result<GpuImageFrame> {
         let source = match ctx.eval_once(&self.source)? {
             NodeResult::Raster(raster) => raster,
             NodeResult::Vector(_) => {
-                return Err(ctx.invalid_node_output_type(self.source.id, "RasterFrame", "Vector"));
+                return Err(ctx.invalid_node_output_type(
+                    self.source.id,
+                    "GpuImageFrame",
+                    "Vector",
+                ));
             }
             NodeResult::None => return Err(ctx.missing_node_output_error(self.source.id)),
         };

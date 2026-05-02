@@ -1,11 +1,11 @@
 use skia_safe::{IRect, image::RequiredProperties};
 
 use crate::{
+    gpu_image::{GpuImageFrame, RectI},
     node::{
         NodeId, NodeProperty, PortRef,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::{ImageFrame, RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -43,7 +43,7 @@ impl Default for Crop {
 #[node_impl]
 impl Crop {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
         let x = self.resolve_x(ctx)?;
@@ -119,7 +119,7 @@ impl Crop {
         if let Some(cropped_image) =
             image.make_subset(None, &subset_rect, RequiredProperties::default())
         {
-            let mut frame = ImageFrame::with_domain(
+            let mut frame = GpuImageFrame::with_domain(
                 cropped_image,
                 crop_width,
                 crop_height,

@@ -1,21 +1,28 @@
 use std::{
+    collections::HashMap,
     env, fs,
     io::Write,
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::{Arc, RwLock, mpsc},
+    thread::{self, JoinHandle},
+    time::Instant,
 };
 
 use anyhow::{Context, Result, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen::{
-    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, duration_samples},
+    audio::{
+        AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, AudioSourceProvider,
+        duration_samples,
+    },
     composition::Composition,
     ffmpeg::{FfmpegAudioResolver, FfmpegVideoResolver},
+    gpu_image::GpuImageFrame,
     image::ImageFileResolver,
     media::{ImageResolver, MediaStore, VideoFrameResolver},
-    raster::RasterFrame,
     render::{
-        LumenRenderer,
+        RenderOrchestrator, RenderOrchestratorConfig,
         surface::{DefaultSurfacePool, SurfacePool},
     },
 };
@@ -29,14 +36,41 @@ struct CliArgs {
     frame: Option<u32>,
 }
 
-#[derive(Debug)]
+const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
+
+struct EncoderFrame {
+    frame: u32,
+    pixels: Vec<u8>,
+}
+
+struct FfmpegEncoder {
+    frame_tx: Option<mpsc::SyncSender<EncoderFrame>>,
+    writer_handle: Option<JoinHandle<Result<()>>>,
+}
+
 struct LocalMediaStore {
     root: PathBuf,
+    audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
+    images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
+    videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
+}
+
+impl std::fmt::Debug for LocalMediaStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalMediaStore")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LocalMediaStore {
     fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            audios: RwLock::new(HashMap::new()),
+            images: RwLock::new(HashMap::new()),
+            videos: RwLock::new(HashMap::new()),
+        }
     }
 
     fn resolve_source(&self, source: &str) -> Option<String> {
@@ -44,28 +78,162 @@ impl LocalMediaStore {
             .ok()
             .map(|path| path.to_string_lossy().to_string())
     }
+
+    fn image_resolver(&self, source: &str) -> Option<Arc<ImageFileResolver>> {
+        if let Ok(cache) = self.images.read()
+            && let Some(resolver) = cache.get(source)
+        {
+            return Some(Arc::clone(resolver));
+        }
+
+        let resolver = Arc::new(
+            ImageFileResolver::open(source.to_string())
+                .map_err(|error| {
+                    eprintln!("failed opening image resolver for {source}: {error}");
+                    error
+                })
+                .ok()?,
+        );
+        if let Ok(mut cache) = self.images.write() {
+            cache
+                .entry(source.to_string())
+                .or_insert_with(|| Arc::clone(&resolver));
+        }
+        Some(resolver)
+    }
+
+    fn video_resolver(&self, source: &str) -> Option<Arc<FfmpegVideoResolver>> {
+        if let Ok(cache) = self.videos.read()
+            && let Some(resolver) = cache.get(source)
+        {
+            return Some(Arc::clone(resolver));
+        }
+
+        let resolver = Arc::new(
+            FfmpegVideoResolver::open(source.to_string())
+                .map_err(|error| {
+                    eprintln!("failed opening video resolver for {source}: {error}");
+                    error
+                })
+                .ok()?,
+        );
+        if let Ok(mut cache) = self.videos.write() {
+            cache
+                .entry(source.to_string())
+                .or_insert_with(|| Arc::clone(&resolver));
+        }
+        Some(resolver)
+    }
+
+    fn audio_resolver(&self, source: &str) -> Option<Arc<FfmpegAudioResolver>> {
+        if let Ok(cache) = self.audios.read()
+            && let Some(resolver) = cache.get(source)
+        {
+            return Some(Arc::clone(resolver));
+        }
+
+        let resolver = Arc::new(
+            FfmpegAudioResolver::open(source.to_string())
+                .map_err(|error| {
+                    eprintln!("failed opening audio resolver for {source}: {error}");
+                    error
+                })
+                .ok()?,
+        );
+        if let Ok(mut cache) = self.audios.write() {
+            cache
+                .entry(source.to_string())
+                .or_insert_with(|| Arc::clone(&resolver));
+        }
+        Some(resolver)
+    }
 }
 
 impl MediaStore for LocalMediaStore {
     fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
         let resolved = self.resolve_source(source)?;
-        ImageFileResolver::open(resolved)
-            .ok()
-            .map(|r| Box::new(r) as _)
+        Some(Box::new(SharedImageResolver(
+            self.image_resolver(&resolved)?,
+        )))
     }
 
     fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
         let resolved = self.resolve_source(stream_id)?;
-        FfmpegVideoResolver::open(resolved)
-            .ok()
-            .map(|r| Box::new(r) as _)
+        Some(Box::new(SharedVideoResolver(
+            self.video_resolver(&resolved)?,
+        )))
     }
+}
 
+impl AudioSourceProvider for LocalMediaStore {
     fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
         let resolved = self.resolve_source(source_id)?;
-        FfmpegAudioResolver::open(resolved)
-            .ok()
-            .map(|r| Box::new(r) as _)
+        Some(Box::new(SharedAudioResolver(
+            self.audio_resolver(&resolved)?,
+        )))
+    }
+}
+
+#[derive(Clone)]
+struct SharedImageResolver(Arc<ImageFileResolver>);
+
+impl ImageResolver for SharedImageResolver {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+
+    fn metadata(&self) -> lumen::media::ImageMetadata {
+        self.0.metadata()
+    }
+
+    fn gpu_image(&self) -> Result<Arc<GpuImageFrame>, lumen::error::MediaError> {
+        self.0.gpu_image()
+    }
+}
+
+#[derive(Clone)]
+struct SharedVideoResolver(Arc<FfmpegVideoResolver>);
+
+impl VideoFrameResolver for SharedVideoResolver {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+
+    fn metadata(&self) -> lumen::media::VideoMetadata {
+        self.0.metadata()
+    }
+
+    fn enqueue_frame(&self, frame: u32) -> Result<(), lumen::error::MediaError> {
+        self.0.enqueue_frame(frame)
+    }
+
+    fn frame(&self, frame: u32) -> Result<Arc<GpuImageFrame>, lumen::error::MediaError> {
+        self.0.frame(frame)
+    }
+
+    fn retain_frames(&self, frames: &[u32]) {
+        self.0.retain_frames(frames);
+    }
+}
+
+#[derive(Clone)]
+struct SharedAudioResolver(Arc<FfmpegAudioResolver>);
+
+impl AudioResolver for SharedAudioResolver {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+
+    fn metadata(&self) -> lumen::audio::AudioMetadata {
+        self.0.metadata()
+    }
+
+    fn resolve_range(
+        &self,
+        start_sample: u64,
+        frames: usize,
+    ) -> Result<Arc<lumen::audio::AudioBuffer>, lumen::error::MediaError> {
+        self.0.resolve_range(start_sample, frames)
     }
 }
 
@@ -125,47 +293,43 @@ fn spawn_ffmpeg_encoder(
         .context("failed to spawn ffmpeg encoder")
 }
 
-fn write_frame_to_ffmpeg(
-    child: &mut Child,
-    frame: u32,
-    total_frames: u32,
-    expected_width: u32,
-    expected_height: u32,
-    raster: &RasterFrame,
-    frame_buffer: &mut [u8],
-) -> Result<()> {
-    let (storage_width, storage_height) = raster.storage_dimensions();
-    if storage_width != expected_width || storage_height != expected_height {
-        return Err(anyhow!(
-            "unexpected frame {frame} dimensions {}x{} (expected {}x{})",
-            storage_width,
-            storage_height,
-            expected_width,
-            expected_height
-        ));
-    }
-
-    raster
-        .read_pixels_into(frame_buffer, (expected_width as usize) * 4)
-        .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
-
-    let stdin = child
+fn start_ffmpeg_encoder(mut child: Child, total_frames: u32) -> Result<FfmpegEncoder> {
+    let mut stdin = child
         .stdin
-        .as_mut()
+        .take()
         .ok_or_else(|| anyhow!("ffmpeg stdin unavailable"))?;
-    stdin
-        .write_all(frame_buffer)
-        .with_context(|| format!("failed writing frame {frame} to ffmpeg"))?;
+    let (frame_tx, frame_rx) = mpsc::sync_channel::<EncoderFrame>(ENCODER_FRAME_QUEUE_CAPACITY);
+    let writer_handle = thread::spawn(move || {
+        while let Ok(encoded_frame) = frame_rx.recv() {
+            stdin
+                .write_all(encoded_frame.pixels.as_slice())
+                .with_context(|| {
+                    format!("failed writing frame {} to ffmpeg", encoded_frame.frame)
+                })?;
 
-    if frame == 0 || frame + 1 == total_frames || frame % 60 == 0 {
-        println!("progress frame={}/{}", frame + 1, total_frames);
-    }
+            if encoded_frame.frame == 0
+                || encoded_frame.frame + 1 == total_frames
+                || encoded_frame.frame % 60 == 0
+            {
+                println!(
+                    "progress frame={}/{}",
+                    encoded_frame.frame + 1,
+                    total_frames
+                );
+            }
+        }
 
-    Ok(())
+        drop(stdin);
+        finalize_ffmpeg_encoder(child)
+    });
+
+    Ok(FfmpegEncoder {
+        frame_tx: Some(frame_tx),
+        writer_handle: Some(writer_handle),
+    })
 }
 
-fn finalize_ffmpeg_encoder(mut child: Child) -> Result<()> {
-    let _ = child.stdin.take();
+fn finalize_ffmpeg_encoder(child: Child) -> Result<()> {
     let output = child
         .wait_with_output()
         .context("failed waiting for ffmpeg encoder")?;
@@ -177,6 +341,25 @@ fn finalize_ffmpeg_encoder(mut child: Child) -> Result<()> {
             "ffmpeg encode failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ))
+    }
+}
+
+impl FfmpegEncoder {
+    fn send(&self, frame: EncoderFrame) -> Result<()> {
+        self.frame_tx
+            .as_ref()
+            .ok_or_else(|| anyhow!("ffmpeg encoder writer unavailable"))?
+            .send(frame)
+            .map_err(|_| anyhow!("ffmpeg encoder writer stopped"))
+    }
+
+    fn finish(mut self) -> Result<()> {
+        self.frame_tx.take();
+        self.writer_handle
+            .take()
+            .ok_or_else(|| anyhow!("ffmpeg encoder writer thread missing"))?
+            .join()
+            .map_err(|_| anyhow!("ffmpeg encoder writer thread panicked"))?
     }
 }
 
@@ -333,10 +516,14 @@ fn render_single_png(
         ));
     }
 
-    let mut renderer = LumenRenderer::new(composition, surface_pool, media_store)
-        .context("failed to create renderer")?;
+    let orchestrator = RenderOrchestrator::new(
+        composition,
+        surface_pool,
+        media_store,
+        RenderOrchestratorConfig { lookahead_count: 8 },
+    );
 
-    let rendered = renderer
+    let rendered = orchestrator
         .render(frame)
         .with_context(|| format!("render failed at frame {frame}"))?;
     surface_pool.flush();
@@ -380,8 +567,12 @@ fn render_mp4(
     let width = composition.render_settings.width;
     let height = composition.render_settings.height;
     let total_frames = composition.timeline.duration_frames;
-    let mut renderer = LumenRenderer::new(&composition, &surface_pool, &media_store)
-        .context("failed to create renderer")?;
+    let orchestrator = RenderOrchestrator::new(
+        &composition,
+        &surface_pool,
+        &media_store,
+        RenderOrchestratorConfig { lookahead_count: 8 },
+    );
     let audio_path = if composition
         .audio
         .as_ref()
@@ -393,7 +584,7 @@ fn render_mp4(
     } else {
         None
     };
-    let mut child = spawn_ffmpeg_encoder(
+    let child = spawn_ffmpeg_encoder(
         output,
         width,
         height,
@@ -401,33 +592,46 @@ fn render_mp4(
         encoder.as_str(),
         audio_path.as_deref(),
     )?;
-    let mut frame_buffer = vec![0; (width as usize) * (height as usize) * 4];
+    let encoder = start_ffmpeg_encoder(child, total_frames)?;
+    let render_started = Instant::now();
+    let mut render_readback_ms = 0_u128;
 
     for frame in 0..total_frames {
-        let raster = renderer
+        let frame_started = Instant::now();
+        let raster = orchestrator
             .render(frame)
             .with_context(|| format!("render failed at frame {frame}"))?;
         surface_pool.flush();
-        write_frame_to_ffmpeg(
-            &mut child,
-            frame,
-            total_frames,
-            width,
-            height,
-            &raster,
-            frame_buffer.as_mut_slice(),
-        )?;
+        let (storage_width, storage_height) = raster.storage_dimensions();
+        if storage_width != width || storage_height != height {
+            return Err(anyhow!(
+                "unexpected frame {frame} dimensions {}x{} (expected {}x{})",
+                storage_width,
+                storage_height,
+                width,
+                height
+            ));
+        }
+        let mut pixels = vec![0; (width as usize) * (height as usize) * 4];
+        raster
+            .read_pixels_into(pixels.as_mut_slice(), (width as usize) * 4)
+            .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
+        render_readback_ms = render_readback_ms.saturating_add(frame_started.elapsed().as_millis());
+        encoder.send(EncoderFrame { frame, pixels })?;
     }
 
-    finalize_ffmpeg_encoder(child)?;
+    encoder.finish()?;
     if let Some(audio_path) = audio_path {
         let _ = fs::remove_file(audio_path);
     }
 
+    let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={}",
+        "render complete output={} frames={} render_readback_ms={} total_ms={}",
         output.display(),
         total_frames,
+        render_readback_ms,
+        total_ms,
     );
     Ok(())
 }

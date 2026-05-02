@@ -197,6 +197,16 @@ impl InputContext {
         Ok(Some(Packet { inner: packet }))
     }
 
+    pub fn seek(&mut self, timestamp: i64) -> Result<()> {
+        unsafe {
+            ffi::check(
+                sys::av_seek_frame(self.ptr, -1, timestamp, sys::AVSEEK_FLAG_BACKWARD),
+                "av_seek_frame",
+            )
+            .map_err(|error| error.with_path(self.path.clone()))
+        }
+    }
+
     pub(crate) fn stream_parameters(
         &self,
         stream_index: usize,

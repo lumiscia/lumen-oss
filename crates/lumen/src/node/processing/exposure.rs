@@ -1,10 +1,9 @@
 use crate::{
+    gpu_image::GpuImageFrame,
     node::{
         NodeId, NodeProperty, PortRef,
         processing::gpu_shader::{ShaderUniform, apply_runtime_shader},
-        processing::raster_map::{byte_to_unit, unit_to_byte},
     },
-    raster::RasterFrame,
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -39,7 +38,7 @@ impl Default for Exposure {
 #[node_impl]
 impl Exposure {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let exposure = self.resolve_exposure(ctx)? as f32;
         let contrast = self.resolve_contrast(ctx)? as f32;
         let offset = self.resolve_offset(ctx)? as f32;
@@ -76,30 +75,10 @@ half4 main(float2 coord) {
 }
 "#;
 
-pub(crate) fn apply_exposure_bytes(pixels: &mut [u8], exposure: f32, contrast: f32, offset: f32) {
-    let exposure_gain = 2.0_f32.powf(exposure);
-    for pixel in pixels.chunks_exact_mut(4) {
-        for channel in &mut pixel[..3] {
-            let value = byte_to_unit(*channel) * exposure_gain + offset;
-            let value = (value - 0.5) * contrast + 0.5;
-            *channel = unit_to_byte(value);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{node::processing::test_support, raster::AlphaMode};
-
-    #[test]
-    fn exposure_and_contrast_modify_channels() {
-        let mut pixels = vec![64, 128, 192, 255];
-
-        apply_exposure_bytes(&mut pixels, 1.0, 1.5, 0.0);
-
-        assert_eq!(pixels, vec![128, 255, 255, 255]);
-    }
+    use crate::{gpu_image::AlphaMode, node::processing::test_support};
 
     #[test]
     fn exposure_sksl_applies_gain_offset_and_contrast() {

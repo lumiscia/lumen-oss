@@ -1,9 +1,6 @@
-//! FFmpeg-backed media resolvers.
-
 use std::{
-    collections::{HashMap, VecDeque},
-    process::Command,
-    sync::{Arc, Mutex, OnceLock, mpsc},
+    collections::{BTreeSet, HashSet},
+    sync::{Arc, Mutex, mpsc},
     thread,
 };
 
@@ -13,321 +10,62 @@ use ffmpeg::{
     format::Pixel,
     media::Type,
     software::scaling::{context::Context as ScalingContext, flag::Flags},
-    util::{error::EAGAIN, frame::video::Video, rational::Rational},
+    util::{error::EAGAIN, frame::video::Video},
 };
 use ffmpeg_next as ffmpeg;
 
 use crate::{
-    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMetadata, AudioResolver},
     error::MediaError,
-    media::{VideoFrameResolver, VideoMetadata, premultiply_rgba_in_place_if_needed},
-    raster::{AlphaMode, ImageFrame, RectI},
+    gpu_image::GpuImageFrame,
+    media::{VideoFrameResolver, VideoMetadata},
 };
 
-const DEFAULT_LRU_CAPACITY: usize = 48;
-const DEFAULT_PREFETCH_WINDOW: u32 = 4;
+use super::{
+    ensure_ffmpeg_init,
+    image::{FrameImage, FrameLruCache},
+    rational_to_f64,
+};
+
 const SEEK_REOPEN_THRESHOLD: u32 = 120;
-
-static FFMPEG_INIT: OnceLock<Result<(), String>> = OnceLock::new();
-
-fn ensure_ffmpeg_init() -> Result<(), MediaError> {
-    let init_result = FFMPEG_INIT.get_or_init(|| ffmpeg::init().map_err(|err| err.to_string()));
-    init_result.clone().map_err(|details| MediaError::Decode {
-        media_source: "ffmpeg".to_string(),
-        details,
-    })
-}
-
-pub struct FfmpegAudioResolver {
-    id: String,
-    metadata: AudioMetadata,
-    decoded: Mutex<Option<Arc<AudioBuffer>>>,
-}
-
-impl FfmpegAudioResolver {
-    pub fn open(source: impl Into<String>) -> Result<Self, MediaError> {
-        ensure_ffmpeg_init()?;
-        let source = source.into();
-        let metadata = audio_metadata(&source)?;
-
-        Ok(Self {
-            id: source,
-            metadata,
-            decoded: Mutex::new(None),
-        })
-    }
-
-    fn decoded(&self) -> Result<Arc<AudioBuffer>, MediaError> {
-        if let Ok(cache) = self.decoded.lock()
-            && let Some(buffer) = cache.as_ref()
-        {
-            return Ok(Arc::clone(buffer));
-        }
-
-        let buffer = Arc::new(decode_audio_to_f32_stereo(&self.id)?);
-        if let Ok(mut cache) = self.decoded.lock() {
-            *cache = Some(Arc::clone(&buffer));
-        }
-        Ok(buffer)
-    }
-}
-
-impl AudioResolver for FfmpegAudioResolver {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn metadata(&self) -> AudioMetadata {
-        self.metadata
-    }
-
-    fn resolve_range(
-        &self,
-        start_sample: u64,
-        frames: usize,
-    ) -> Result<Arc<AudioBuffer>, MediaError> {
-        let decoded = self.decoded()?;
-        let start = usize::try_from(start_sample).unwrap_or(usize::MAX);
-        let mut channels = vec![vec![0.0; frames]; AUDIO_CHANNELS];
-        if start < decoded.frames() {
-            let end = start.saturating_add(frames).min(decoded.frames());
-            let copy_len = end.saturating_sub(start);
-            for (channel_index, channel) in channels.iter_mut().enumerate() {
-                let source = &decoded.channels()
-                    [channel_index.min(decoded.channel_count().saturating_sub(1))];
-                channel[..copy_len].copy_from_slice(&source[start..end]);
-            }
-        }
-
-        Ok(Arc::new(AudioBuffer::from_channels(
-            AUDIO_SAMPLE_RATE,
-            channels,
-        )))
-    }
-}
-
-fn audio_metadata(source: &str) -> Result<AudioMetadata, MediaError> {
-    let format = ffmpeg::format::input(source).map_err(|err| MediaError::Decode {
-        media_source: source.to_string(),
-        details: format!("failed opening audio source: {err}"),
-    })?;
-    let stream = format
-        .streams()
-        .best(Type::Audio)
-        .ok_or_else(|| MediaError::SourceNotFound {
-            media_source: source.to_string(),
-        })?;
-    let duration_seconds = if stream.duration() > 0 {
-        rational_to_f64(stream.time_base())
-            .map(|time_base| stream.duration() as f64 * time_base)
-            .unwrap_or(0.0)
-    } else if format.duration() > 0 {
-        format.duration() as f64 / f64::from(ffmpeg::ffi::AV_TIME_BASE)
-    } else {
-        0.0
-    };
-
-    Ok(AudioMetadata {
-        sample_rate: AUDIO_SAMPLE_RATE,
-        channels: AUDIO_CHANNELS as u16,
-        duration_samples: (duration_seconds.max(0.0) * f64::from(AUDIO_SAMPLE_RATE)).round() as u64,
-    })
-}
-
-fn decode_audio_to_f32_stereo(source: &str) -> Result<AudioBuffer, MediaError> {
-    let output = Command::new("ffmpeg")
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-i")
-        .arg(source)
-        .arg("-vn")
-        .arg("-f")
-        .arg("f32le")
-        .arg("-acodec")
-        .arg("pcm_f32le")
-        .arg("-ac")
-        .arg(AUDIO_CHANNELS.to_string())
-        .arg("-ar")
-        .arg(AUDIO_SAMPLE_RATE.to_string())
-        .arg("pipe:1")
-        .output()
-        .map_err(|err| MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!("failed spawning ffmpeg audio decoder: {err}"),
-        })?;
-
-    if !output.status.success() {
-        return Err(MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!(
-                "ffmpeg audio decode failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        });
-    }
-
-    let sample_count = output.stdout.len() / std::mem::size_of::<f32>();
-    let frame_count = sample_count / AUDIO_CHANNELS;
-    let mut channels = vec![vec![0.0; frame_count]; AUDIO_CHANNELS];
-    for frame in 0..frame_count {
-        for (channel_index, channel) in channels.iter_mut().enumerate() {
-            let byte_index = (frame * AUDIO_CHANNELS + channel_index) * 4;
-            let bytes = [
-                output.stdout[byte_index],
-                output.stdout[byte_index + 1],
-                output.stdout[byte_index + 2],
-                output.stdout[byte_index + 3],
-            ];
-            channel[frame] = f32::from_le_bytes(bytes);
-        }
-    }
-
-    Ok(AudioBuffer::from_channels(AUDIO_SAMPLE_RATE, channels))
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct FfmpegResolverOptions {
-    pub lru_capacity: usize,
-    pub prefetch_window: u32,
     pub prefer_hardware_decode: bool,
 }
 
 impl Default for FfmpegResolverOptions {
     fn default() -> Self {
         Self {
-            lru_capacity: DEFAULT_LRU_CAPACITY,
-            prefetch_window: DEFAULT_PREFETCH_WINDOW,
             prefer_hardware_decode: true,
         }
-    }
-}
-
-#[derive(Default)]
-struct FrameLruCache {
-    capacity: usize,
-    order: VecDeque<u32>,
-    entries: HashMap<u32, Arc<ImageFrame>>,
-}
-
-impl FrameLruCache {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            capacity: capacity.max(1),
-            order: VecDeque::new(),
-            entries: HashMap::new(),
-        }
-    }
-
-    fn get(&mut self, frame: u32) -> Option<Arc<ImageFrame>> {
-        let value = self.entries.get(&frame).cloned()?;
-        self.touch(frame);
-        Some(value)
-    }
-
-    fn contains(&self, frame: u32) -> bool {
-        self.entries.contains_key(&frame)
-    }
-
-    fn insert(&mut self, frame: u32, data: Arc<ImageFrame>) {
-        if let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(frame) {
-            entry.insert(data);
-            self.touch(frame);
-            return;
-        }
-
-        self.entries.insert(frame, data);
-        self.order.push_back(frame);
-
-        while self.entries.len() > self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn touch(&mut self, frame: u32) {
-        if let Some(index) = self.order.iter().position(|existing| *existing == frame) {
-            self.order.remove(index);
-        }
-        self.order.push_back(frame);
     }
 }
 
 struct VideoDecodeWorker {
     decoder: LibavStreamDecoder,
     cache: FrameLruCache,
-    prefetch_window: u32,
 }
 
 impl VideoDecodeWorker {
-    fn new(decoder: LibavStreamDecoder, options: FfmpegResolverOptions) -> Self {
+    fn new(decoder: LibavStreamDecoder) -> Self {
         Self {
             decoder,
-            cache: FrameLruCache::with_capacity(options.lru_capacity),
-            prefetch_window: options.prefetch_window,
+            cache: FrameLruCache::default(),
         }
     }
 
-    fn resolve_frame(&mut self, frame: u32) -> Result<Arc<ImageFrame>, MediaError> {
+    fn resolve_frame(&mut self, frame: u32) -> Result<Arc<GpuImageFrame>, MediaError> {
         if let Some(cached) = self.cache.get(frame) {
             return Ok(cached);
         }
 
-        let mut decoded = self.decoder.decode_frame(frame)?;
-        premultiply_rgba_in_place_if_needed(&mut decoded);
-        let decoded = Arc::new(
-            ImageFrame::from_rgba_bytes(
-                decoded.as_slice(),
-                self.decoder.width,
-                self.decoder.height,
-                (self.decoder.width as usize) * 4,
-                AlphaMode::Premultiplied,
-                RectI::from_size(self.decoder.width, self.decoder.height),
-                RectI::from_size(self.decoder.width, self.decoder.height),
-            )
-            .map_err(|error| MediaError::Decode {
-                media_source: self.decoder.source.clone(),
-                details: error.to_string(),
-            })?,
-        );
+        let decoded = self.decoder.decode_frame(frame)?.into_gpu_image()?;
         self.cache.insert(frame, Arc::clone(&decoded));
-        self.prefetch_after(frame);
         Ok(decoded)
     }
 
-    fn prefetch_after(&mut self, frame: u32) {
-        if self.prefetch_window == 0 {
-            return;
-        }
-
-        for offset in 1..=self.prefetch_window {
-            let candidate = frame.saturating_add(offset);
-            if candidate >= self.decoder.frame_count {
-                break;
-            }
-            if self.cache.contains(candidate) {
-                continue;
-            }
-            let Ok(mut decoded) = self.decoder.decode_frame(candidate) else {
-                break;
-            };
-            premultiply_rgba_in_place_if_needed(&mut decoded);
-            let Ok(decoded) = ImageFrame::from_rgba_bytes(
-                decoded.as_slice(),
-                self.decoder.width,
-                self.decoder.height,
-                (self.decoder.width as usize) * 4,
-                AlphaMode::Premultiplied,
-                RectI::from_size(self.decoder.width, self.decoder.height),
-                RectI::from_size(self.decoder.width, self.decoder.height),
-            ) else {
-                break;
-            };
-            self.cache.insert(candidate, Arc::new(decoded));
-        }
+    fn retain_frames(&mut self, frames: &[u32]) {
+        self.cache.retain(frames);
     }
 }
 
@@ -358,6 +96,7 @@ struct DecoderComponents {
     decoder: ffmpeg::decoder::Video,
     scaler: ScalingContext,
 }
+
 impl LibavStreamDecoder {
     fn open(source: impl Into<String>, prefer_hardware_decode: bool) -> Result<Self, MediaError> {
         ensure_ffmpeg_init()?;
@@ -385,7 +124,7 @@ impl LibavStreamDecoder {
         source: &str,
         prefer_hardware_decode: bool,
     ) -> Result<DecoderComponents, MediaError> {
-        let format = ffmpeg::format::input(&source).map_err(|err| MediaError::Decode {
+        let format = ffmpeg::format::input(source).map_err(|err| MediaError::Decode {
             media_source: source.to_string(),
             details: format!("failed opening media source: {err}"),
         })?;
@@ -433,7 +172,7 @@ impl LibavStreamDecoder {
         })
     }
 
-    fn decode_frame(&mut self, frame: u32) -> Result<Vec<u8>, MediaError> {
+    fn decode_frame(&mut self, frame: u32) -> Result<FrameImage, MediaError> {
         if frame >= self.frame_count {
             return Err(MediaError::FrameOutOfRange {
                 media_source: self.source.clone(),
@@ -462,7 +201,7 @@ impl LibavStreamDecoder {
         }
     }
 
-    fn decode_frame_inner(&mut self, target_frame: u32) -> Result<Vec<u8>, MediaError> {
+    fn decode_frame_inner(&mut self, target_frame: u32) -> Result<FrameImage, MediaError> {
         loop {
             if let Some(decoded) = self.receive_frames_until(target_frame)? {
                 return Ok(decoded);
@@ -506,7 +245,10 @@ impl LibavStreamDecoder {
         }
     }
 
-    fn receive_frames_until(&mut self, target_frame: u32) -> Result<Option<Vec<u8>>, MediaError> {
+    fn receive_frames_until(
+        &mut self,
+        target_frame: u32,
+    ) -> Result<Option<FrameImage>, MediaError> {
         let mut decoded = Video::empty();
         loop {
             match self.decoder.receive_frame(&mut decoded) {
@@ -539,7 +281,7 @@ impl LibavStreamDecoder {
             .unwrap_or(self.next_frame_hint)
     }
 
-    fn frame_to_rgba(&mut self, decoded: &Video) -> Result<Vec<u8>, MediaError> {
+    fn frame_to_rgba(&mut self, decoded: &Video) -> Result<FrameImage, MediaError> {
         let mut rgba = Video::empty();
         self.scaler
             .run(decoded, &mut rgba)
@@ -571,7 +313,12 @@ impl LibavStreamDecoder {
             output[dst_start..dst_end].copy_from_slice(&data[src_start..src_end]);
         }
 
-        Ok(output)
+        Ok(FrameImage {
+            source: self.source.clone(),
+            width: self.width,
+            height: self.height,
+            rgba: output,
+        })
     }
 
     fn should_seek(&self, target_frame: u32) -> bool {
@@ -622,10 +369,17 @@ impl LibavStreamDecoder {
         Ok(())
     }
 }
+
 enum WorkerRequest {
+    Enqueue {
+        frame: u32,
+    },
     Resolve {
         frame: u32,
-        response_tx: mpsc::Sender<Result<Arc<ImageFrame>, MediaError>>,
+        response_tx: mpsc::Sender<Result<Arc<GpuImageFrame>, MediaError>>,
+    },
+    Retain {
+        frames: Vec<u32>,
     },
     Shutdown,
 }
@@ -637,21 +391,57 @@ fn run_decode_worker(
 ) {
     let mut worker = match LibavStreamDecoder::open(source.clone(), options.prefer_hardware_decode)
     {
-        Ok(decoder) => Ok(VideoDecodeWorker::new(decoder, options)),
+        Ok(decoder) => Ok(VideoDecodeWorker::new(decoder)),
         Err(error) => Err(error),
     };
+    let mut pending = BTreeSet::new();
 
     while let Ok(request) = request_rx.recv() {
-        match request {
-            WorkerRequest::Resolve { frame, response_tx } => {
-                let result = match &mut worker {
-                    Ok(worker) => worker.resolve_frame(frame),
-                    Err(error) => Err(error.clone()),
-                };
-                let _ = response_tx.send(result);
-            }
-            WorkerRequest::Shutdown => break,
+        if handle_worker_request(request, &mut worker, &mut pending) {
+            break;
         }
+
+        while let Ok(request) = request_rx.try_recv() {
+            if handle_worker_request(request, &mut worker, &mut pending) {
+                return;
+            }
+        }
+
+        if let Some(frame) = pending.pop_first()
+            && let Ok(worker) = &mut worker
+        {
+            let _ = worker.resolve_frame(frame);
+        }
+    }
+}
+
+fn handle_worker_request(
+    request: WorkerRequest,
+    worker: &mut Result<VideoDecodeWorker, MediaError>,
+    pending: &mut BTreeSet<u32>,
+) -> bool {
+    match request {
+        WorkerRequest::Enqueue { frame } => {
+            pending.insert(frame);
+            false
+        }
+        WorkerRequest::Resolve { frame, response_tx } => {
+            pending.remove(&frame);
+            let result = match worker {
+                Ok(worker) => worker.resolve_frame(frame),
+                Err(error) => Err(error.clone()),
+            };
+            let _ = response_tx.send(result);
+            false
+        }
+        WorkerRequest::Retain { frames } => {
+            pending.retain(|frame| frames.binary_search(frame).is_ok());
+            if let Ok(worker) = worker {
+                worker.retain_frames(&frames);
+            }
+            false
+        }
+        WorkerRequest::Shutdown => true,
     }
 }
 
@@ -660,6 +450,7 @@ pub struct FfmpegVideoResolver {
     metadata: VideoMetadata,
     request_tx: mpsc::Sender<WorkerRequest>,
     worker_handle: Mutex<Option<thread::JoinHandle<()>>>,
+    scheduled_frames: Mutex<HashSet<u32>>,
 }
 
 impl FfmpegVideoResolver {
@@ -690,6 +481,7 @@ impl FfmpegVideoResolver {
             metadata,
             request_tx,
             worker_handle: Mutex::new(Some(worker_handle)),
+            scheduled_frames: Mutex::new(HashSet::new()),
         })
     }
 }
@@ -714,7 +506,30 @@ impl VideoFrameResolver for FfmpegVideoResolver {
         self.metadata
     }
 
-    fn resolve_frame_image(&self, frame: u32) -> Result<Arc<ImageFrame>, MediaError> {
+    fn enqueue_frame(&self, frame: u32) -> Result<(), MediaError> {
+        if frame >= self.metadata.frame_count {
+            return Err(MediaError::FrameOutOfRange {
+                media_source: self.id.clone(),
+                frame,
+                frame_count: self.metadata.frame_count,
+            });
+        }
+
+        if let Ok(mut scheduled) = self.scheduled_frames.lock()
+            && !scheduled.insert(frame)
+        {
+            return Ok(());
+        }
+
+        self.request_tx
+            .send(WorkerRequest::Enqueue { frame })
+            .map_err(|_| MediaError::Decode {
+                media_source: self.id.clone(),
+                details: "video decode worker is unavailable".to_string(),
+            })
+    }
+
+    fn frame(&self, frame: u32) -> Result<Arc<GpuImageFrame>, MediaError> {
         if frame >= self.metadata.frame_count {
             return Err(MediaError::FrameOutOfRange {
                 media_source: self.id.clone(),
@@ -733,8 +548,21 @@ impl VideoFrameResolver for FfmpegVideoResolver {
 
         response_rx.recv().map_err(|_| MediaError::Decode {
             media_source: self.id.clone(),
-            details: "video decode worker did not return a frame".to_string(),
+            details: format!("video decode worker did not return frame {frame}"),
         })?
+    }
+
+    fn retain_frames(&self, frames: &[u32]) {
+        let mut frames = frames.to_vec();
+        frames.sort_unstable();
+        frames.dedup();
+
+        if let Ok(mut scheduled) = self.scheduled_frames.lock() {
+            let keep: HashSet<_> = frames.iter().copied().collect();
+            scheduled.retain(|frame| keep.contains(frame));
+        }
+
+        let _ = self.request_tx.send(WorkerRequest::Retain { frames });
     }
 }
 
@@ -833,12 +661,4 @@ fn hardware_decoder_candidates(codec_id: CodecId) -> &'static [&'static str] {
         CodecId::AV1 => &["av1_videotoolbox", "av1_qsv", "av1_vaapi"],
         _ => &[],
     }
-}
-
-fn rational_to_f64(value: Rational) -> Option<f64> {
-    let denominator = value.denominator();
-    if denominator == 0 {
-        return None;
-    }
-    Some(f64::from(value.numerator()) / f64::from(denominator))
 }

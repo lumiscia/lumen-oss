@@ -2,6 +2,7 @@ use skia_safe::Paint;
 
 use crate::{
     error::{LumenError, RenderError},
+    gpu_image::{AlphaMode, GpuImageFrame, RectI},
     node::{
         NodeId, NodeProperty, PortRef,
         compositing::{
@@ -10,7 +11,6 @@ use crate::{
         },
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::{AlphaMode, RasterFrame, RectI},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -42,7 +42,7 @@ impl Default for RasterMultiMerge {
 #[node_impl]
 impl RasterMultiMerge {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let opacity = self.resolve_opacity(ctx)? as f32;
         let blend_mode =
             BlendMode::try_from(self.resolve_blend_mode(ctx)? as usize).map_err(|err| {
@@ -63,7 +63,7 @@ impl RasterMultiMerge {
             layer_results.push(result);
         }
 
-        let mut layer_refs: Vec<&RasterFrame> = Vec::new();
+        let mut layer_refs: Vec<&GpuImageFrame> = Vec::new();
         for result in &layer_results {
             layer_refs.push(result.as_raster()?);
         }
@@ -84,7 +84,7 @@ impl RasterMultiMerge {
             );
         };
 
-        let remaining: Vec<&RasterFrame> = iter.collect();
+        let remaining: Vec<&GpuImageFrame> = iter.collect();
         if opacity <= 0.0 || remaining.is_empty() {
             return first.snapshot();
         }

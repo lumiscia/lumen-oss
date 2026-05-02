@@ -11,7 +11,7 @@ use web_sys::WebGl2RenderingContext;
 
 use super::create_gpu_surface;
 use crate::error::RenderError;
-use crate::raster::ImageFrame;
+use crate::gpu_image::GpuImageFrame;
 
 thread_local! {
     static WEBGL_CONTEXT_ID: Cell<Option<gl::glemu::ContextId>> = const { Cell::new(None) };
@@ -99,7 +99,7 @@ pub fn image_frame_from_video_frame(
     video_frame: &web_sys::VideoFrame,
     width: u32,
     height: u32,
-) -> crate::Result<ImageFrame> {
+) -> crate::Result<GpuImageFrame> {
     match with_state_mut(|state| state.image_frame_from_video_frame(video_frame, width, height))? {
         Some(result) => result,
         None => Err(RenderError::SurfaceAllocation { width, height }.into()),
@@ -170,7 +170,7 @@ impl WebGlState {
         video_frame: &web_sys::VideoFrame,
         width: u32,
         height: u32,
-    ) -> crate::Result<ImageFrame> {
+    ) -> crate::Result<GpuImageFrame> {
         self.make_current();
 
         let texture_width = i32::try_from(width.max(1))
@@ -223,7 +223,7 @@ impl WebGlState {
         .ok_or(RenderError::SurfaceAllocation { width, height })?;
 
         self.context.flush_and_submit();
-        Ok(ImageFrame::image(image, width, height))
+        Ok(GpuImageFrame::image(image, width, height))
     }
 }
 

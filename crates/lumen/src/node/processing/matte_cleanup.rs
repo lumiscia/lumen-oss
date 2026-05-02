@@ -1,10 +1,9 @@
 use crate::{
+    gpu_image::GpuImageFrame,
     node::{
         NodeId, NodeProperty, PortRef,
         processing::gpu_shader::{ShaderUniform, apply_runtime_shader},
-        processing::raster_map::unit_to_byte,
     },
-    raster::RasterFrame,
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
@@ -39,7 +38,7 @@ impl Default for MatteCleanup {
 #[node_impl]
 impl MatteCleanup {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let threshold = self.resolve_threshold(ctx)? as f32;
         let shrink = self.resolve_shrink(ctx)?.max(0) as u32;
         let grow = self.resolve_grow(ctx)?.max(0) as u32;
@@ -125,130 +124,10 @@ half4 main(float2 coord) {{
     )
 }
 
-pub(crate) fn apply_matte_cleanup_bytes(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    row_bytes: usize,
-    threshold: f32,
-    shrink: u32,
-    grow: u32,
-) {
-    if width == 0 || height == 0 {
-        return;
-    }
-
-    let mut alpha = extract_alpha(pixels, width, height, row_bytes);
-    if threshold > 0.0 {
-        let threshold = unit_to_byte(threshold);
-        for value in &mut alpha {
-            *value = if *value >= threshold { 255 } else { 0 };
-        }
-    }
-    if shrink > 0 {
-        alpha = morphology_alpha(&alpha, width, height, shrink, Morphology::Erode);
-    }
-    if grow > 0 {
-        alpha = morphology_alpha(&alpha, width, height, grow, Morphology::Dilate);
-    }
-    write_alpha(pixels, width, height, row_bytes, &alpha);
-}
-
-fn extract_alpha(pixels: &[u8], width: u32, height: u32, row_bytes: usize) -> Vec<u8> {
-    let mut alpha = Vec::with_capacity((width as usize).saturating_mul(height as usize));
-    for y in 0..height as usize {
-        let row_start = y * row_bytes;
-        for x in 0..width as usize {
-            alpha.push(pixels[row_start + x * 4 + 3]);
-        }
-    }
-    alpha
-}
-
-fn write_alpha(pixels: &mut [u8], width: u32, height: u32, row_bytes: usize, alpha: &[u8]) {
-    for y in 0..height as usize {
-        let row_start = y * row_bytes;
-        for x in 0..width as usize {
-            pixels[row_start + x * 4 + 3] = alpha[y * width as usize + x];
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Morphology {
-    Erode,
-    Dilate,
-}
-
-fn morphology_alpha(
-    alpha: &[u8],
-    width: u32,
-    height: u32,
-    radius: u32,
-    mode: Morphology,
-) -> Vec<u8> {
-    let width_usize = width as usize;
-    let height_usize = height as usize;
-    let radius = radius as i32;
-    let mut output = vec![0; alpha.len()];
-
-    for y in 0..height_usize {
-        for x in 0..width_usize {
-            let mut result = match mode {
-                Morphology::Erode => 255,
-                Morphology::Dilate => 0,
-            };
-
-            for sample_y in y as i32 - radius..=y as i32 + radius {
-                if sample_y < 0 || sample_y >= height as i32 {
-                    continue;
-                }
-                for sample_x in x as i32 - radius..=x as i32 + radius {
-                    if sample_x < 0 || sample_x >= width as i32 {
-                        continue;
-                    }
-                    let value = alpha[sample_y as usize * width_usize + sample_x as usize];
-                    match mode {
-                        Morphology::Erode => result = result.min(value),
-                        Morphology::Dilate => result = result.max(value),
-                    }
-                }
-            }
-
-            output[y * width_usize + x] = result;
-        }
-    }
-
-    output
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{node::processing::test_support, raster::AlphaMode};
-
-    #[test]
-    fn matte_cleanup_threshold_and_grow_affect_alpha_geometry() {
-        let mut pixels = vec![10, 10, 10, 0, 10, 10, 10, 200, 10, 10, 10, 0];
-
-        apply_matte_cleanup_bytes(&mut pixels, 3, 1, 12, 0.5, 0, 1);
-
-        let alphas: Vec<u8> = pixels.chunks_exact(4).map(|pixel| pixel[3]).collect();
-        assert_eq!(alphas, vec![255, 255, 255]);
-    }
-
-    #[test]
-    fn matte_cleanup_shrink_erodes_alpha() {
-        let mut pixels = vec![
-            0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 0,
-        ];
-
-        apply_matte_cleanup_bytes(&mut pixels, 5, 1, 20, 0.0, 1, 0);
-
-        let alphas: Vec<u8> = pixels.chunks_exact(4).map(|pixel| pixel[3]).collect();
-        assert_eq!(alphas, vec![0, 0, 255, 0, 0]);
-    }
-
+    use crate::{gpu_image::AlphaMode, node::processing::test_support};
     #[test]
     fn matte_cleanup_sksl_thresholds_alpha() {
         let source = test_support::frame_from_pixel([10, 20, 30, 128], AlphaMode::Premultiplied);

@@ -2,12 +2,12 @@ use std::{collections::HashMap, ops::Range};
 
 use crate::{
     error::RenderError,
+    gpu_image::{AlphaMode, GpuImageFrame, RectI},
     media::MediaStore,
     node::{
         NodeId, PortRef,
         pixel_utils::{ClearMode, render_to_surface_ephemeral},
     },
-    raster::{AlphaMode, RasterFrame, RectI},
     render::{RenderContext, surface::SurfacePool},
 };
 use lumen_macros::{Node, node_impl};
@@ -31,7 +31,7 @@ impl Switch {
 
     fn transparent_output<S: SurfacePool, M: MediaStore>(
         ctx: &mut RenderContext<'_, S, M>,
-    ) -> crate::Result<RasterFrame> {
+    ) -> crate::Result<GpuImageFrame> {
         let w = ctx.renderer.composition.render_settings.width;
         let h = ctx.renderer.composition.render_settings.height;
         let pixel_count = w.checked_mul(h).ok_or(RenderError::SurfaceAllocation {
@@ -65,7 +65,7 @@ impl Default for Switch {
 #[node_impl]
 impl Switch {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let selected_index = self
             .map
             .iter()

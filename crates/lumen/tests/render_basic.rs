@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use lumen::{
     composition::{Composition, RenderSettings, TimelineSettings},
     error::LumenError,
+    gpu_image::GpuImageFrame,
     graph::{Connection, Graph},
     media::MediaStore,
     node::{
@@ -22,10 +23,9 @@ use lumen::{
             shape::Shape, shape_renderer::ShapeRenderer, vector_multimerge::VectorMultiMerge,
         },
     },
-    raster::RasterFrame,
     render::{
         LumenRenderer,
-        surface::{DefaultSurfacePool, SurfacePool},
+        surface::{DefaultSurfacePool, SurfacePool, SurfacePoolStats},
     },
 };
 
@@ -48,6 +48,29 @@ impl MediaStore for NullMediaStore {
 
 // ---- Test helpers ----
 
+#[derive(Debug)]
+struct TestSurfacePool;
+
+impl SurfacePool for TestSurfacePool {
+    fn with_surface<T>(
+        &self,
+        width: u32,
+        height: u32,
+        f: impl FnOnce(&mut skia_safe::Surface) -> Result<T, LumenError>,
+    ) -> Result<T, LumenError> {
+        let mut surface =
+            skia_safe::surfaces::raster_n32_premul((width.max(1) as i32, height.max(1) as i32))
+                .ok_or(lumen::error::RenderError::SurfaceAllocation { width, height })?;
+        f(&mut surface)
+    }
+
+    fn stats(&self) -> SurfacePoolStats {
+        SurfacePoolStats::default()
+    }
+
+    fn flush(&self) {}
+}
+
 fn node_id(id: u64) -> NodeId {
     NodeId::new(id)
 }
@@ -69,7 +92,7 @@ struct ReadbackFrame {
     storage_height: u32,
 }
 
-fn readback_frame(frame: RasterFrame) -> ReadbackFrame {
+fn readback_frame(frame: GpuImageFrame) -> ReadbackFrame {
     let (storage_width, storage_height) = frame.storage_dimensions();
     let mut pixels = vec![0; (storage_width as usize) * (storage_height as usize) * 4];
     frame
@@ -95,7 +118,7 @@ fn render_frame(graph: Graph, width: u32, height: u32, frame: u32) -> ReadbackFr
             background_color: [0, 0, 0, 0],
         },
     );
-    let pool = DefaultSurfacePool::new();
+    let pool = TestSurfacePool;
     let media = NullMediaStore;
     let mut renderer = LumenRenderer::new(&composition, &pool, &media).unwrap();
     let rendered = renderer.render(frame).unwrap();
@@ -1192,7 +1215,7 @@ fn shape_renderer_group_avoids_per_child_surface_allocations() {
             background_color: [0, 0, 0, 0],
         },
     );
-    let pool = DefaultSurfacePool::new();
+    let pool = TestSurfacePool;
     let media = NullMediaStore;
     let mut renderer = LumenRenderer::new(&composition, &pool, &media).unwrap();
     let rendered = renderer.render(0).unwrap();
@@ -1789,7 +1812,7 @@ fn vector_merge_json_builds_and_evaluates() {
     }"#;
 
     let composition = lumen::json::parse(json).expect("vector_merge JSON should parse");
-    let pool = DefaultSurfacePool::new();
+    let pool = TestSurfacePool;
     let media = NullMediaStore;
     let mut renderer = LumenRenderer::new(&composition, &pool, &media).unwrap();
     let bitmap = readback_frame(renderer.render(0).unwrap());

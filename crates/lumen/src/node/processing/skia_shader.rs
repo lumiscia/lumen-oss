@@ -1,10 +1,10 @@
 use crate::{
+    gpu_image::GpuImageFrame,
     media::MediaStore,
     node::{
         NodeId, NodeProperty, PortRef,
         processing::gpu_shader::{ShaderUniform, apply_runtime_shader},
     },
-    raster::RasterFrame,
     render::{RenderContext, surface::SurfacePool},
 };
 use lumen_macros::{Node, node_impl};
@@ -65,7 +65,7 @@ impl Default for SkiaShader {
 #[node_impl]
 impl SkiaShader {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let source_result = ctx.eval(&self.source)?;
         let source = source_result.as_raster()?;
         let shader_source = self.resolve_shader_source(ctx)?;
@@ -81,13 +81,13 @@ impl SkiaShader {
 }
 
 pub fn apply_skia_shader<S: SurfacePool, M: MediaStore>(
-    source: &RasterFrame,
+    source: &GpuImageFrame,
     shader_source: &str,
     uniforms: [f32; 4],
     node_id: NodeId,
     frame: u32,
     ctx: &mut RenderContext<'_, S, M>,
-) -> crate::Result<RasterFrame> {
+) -> crate::Result<GpuImageFrame> {
     let uniform0 = [uniforms[0]];
     let uniform1 = [uniforms[1]];
     let uniform2 = [uniforms[2]];
@@ -130,44 +130,14 @@ pub fn apply_skia_shader<S: SurfacePool, M: MediaStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        composition::{Composition, RenderSettings, TimelineSettings},
-        graph::Graph,
-        media::{ImageResolver, MediaStore, VideoFrameResolver},
-        raster::{AlphaMode, RectI},
-        render::{LumenRenderer, RenderContext, surface::DefaultSurfacePool},
-    };
+    use crate::{gpu_image::AlphaMode, node::processing::test_support};
 
-    #[derive(Debug)]
-    struct NullMediaStore;
-
-    impl MediaStore for NullMediaStore {
-        fn get_image_resolver(&self, _source: &str) -> Option<Box<dyn ImageResolver>> {
-            None
-        }
-
-        fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-            None
-        }
+    fn frame_from_pixel(pixel: [u8; 4]) -> GpuImageFrame {
+        test_support::frame_from_pixel(pixel, AlphaMode::Premultiplied)
     }
 
-    fn frame_from_pixel(pixel: [u8; 4]) -> RasterFrame {
-        RasterFrame::from_rgba_bytes(
-            &pixel,
-            1,
-            1,
-            4,
-            AlphaMode::Premultiplied,
-            RectI::from_size(1, 1),
-            RectI::from_size(1, 1),
-        )
-        .expect("test frame")
-    }
-
-    fn read_first_pixel(frame: &RasterFrame) -> [u8; 4] {
-        let mut pixel = [0; 4];
-        frame.read_pixels_into(&mut pixel, 4).expect("read pixel");
-        pixel
+    fn read_first_pixel(frame: &GpuImageFrame) -> [u8; 4] {
+        test_support::read_first_pixel(frame)
     }
 
     #[test]
@@ -185,31 +155,16 @@ mod tests {
             }
         "#;
         let source = frame_from_pixel([10, 20, 30, 255]);
-        let composition = Composition::new(
-            Graph::new(),
-            TimelineSettings {
-                fps: 30.0,
-                duration_frames: 1,
-            },
-            RenderSettings {
-                width: 1,
-                height: 1,
-                background_color: [0, 0, 0, 0],
-            },
-        );
-        let pool = DefaultSurfacePool::new();
-        let media = NullMediaStore;
-        let renderer = LumenRenderer::new(&composition, &pool, &media).unwrap();
-        let mut ctx = RenderContext::new(&renderer, 0);
-
-        let output = apply_skia_shader(
-            &source,
-            shader,
-            [1.0, 1.0, 1.0, 1.0],
-            NodeId::new(9),
-            0,
-            &mut ctx,
-        )
+        let output = test_support::with_test_context(1, 1, |ctx| {
+            apply_skia_shader(
+                &source,
+                shader,
+                [1.0, 1.0, 1.0, 1.0],
+                NodeId::new(9),
+                0,
+                ctx,
+            )
+        })
         .expect("shader output");
 
         assert_eq!(output.format_rect(), source.format_rect());

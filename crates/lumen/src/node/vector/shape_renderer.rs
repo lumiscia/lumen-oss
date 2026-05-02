@@ -1,6 +1,7 @@
 use skia_safe::{IRect, Paint, PaintStyle, Path, RRect, Rect, image::RequiredProperties};
 
 use crate::{
+    gpu_image::{AlphaMode, GpuImageFrame, RectI},
     media::MediaStore,
     node::{
         NodeId, NodeProperty, PortRef,
@@ -8,7 +9,6 @@ use crate::{
         source::text_layout::{TextLayoutStyle, build_paragraph},
         vector::{ShapeGeometry, VectorData, VectorStyle, VectorTextData},
     },
-    raster::{AlphaMode, ImageFrame, RasterFrame, RectI},
     render::{RenderContext, surface::SurfacePool},
 };
 use lumen_macros::{Node, node_impl};
@@ -49,11 +49,15 @@ impl Default for ShapeRenderer {
 #[node_impl]
 impl ShapeRenderer {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let vector = ctx.eval(&self.vector)?;
         let vector_data = match vector.as_ref() {
             crate::node::NodeResult::Raster(_) => {
-                return Err(ctx.invalid_node_output_type(self.vector.id, "Vector", "RasterFrame"));
+                return Err(ctx.invalid_node_output_type(
+                    self.vector.id,
+                    "Vector",
+                    "GpuImageFrame",
+                ));
             }
             crate::node::NodeResult::Vector(vector_data) => vector_data,
             crate::node::NodeResult::None => {
@@ -102,7 +106,7 @@ pub(crate) fn rasterize_vector<S: SurfacePool, M: MediaStore>(
     vector: &VectorData,
     renderer: &ShapeRenderer,
     ctx: &mut RenderContext<'_, S, M>,
-) -> RasterFrame {
+) -> GpuImageFrame {
     match resolve_renderer_style(renderer, ctx) {
         Ok(renderer_style) => rasterize_vector_with_style(vector, renderer_style, ctx),
         Err(_) => rasterize_vector_with_style(vector, ResolvedRendererStyle::default(), ctx),
@@ -113,7 +117,7 @@ fn rasterize_vector_with_style<S: SurfacePool, M: MediaStore>(
     vector: &VectorData,
     renderer_style: ResolvedRendererStyle,
     ctx: &mut RenderContext<'_, S, M>,
-) -> RasterFrame {
+) -> GpuImageFrame {
     let composition_width = ctx.renderer.composition.render_settings.width as f32;
     let Some(bounds) = measure_vector_bounds(
         vector,
@@ -515,7 +519,7 @@ fn transformed_bounds(transform: AffineTransform, bounds: Rect, pad: f32) -> Rec
 fn transparent_frame<S: SurfacePool, M: MediaStore>(
     ctx: &mut RenderContext<'_, S, M>,
     format_rect: RectI,
-) -> RasterFrame {
+) -> GpuImageFrame {
     render_to_surface_ephemeral(
         format_rect.width.max(1),
         format_rect.height.max(1),
@@ -526,19 +530,13 @@ fn transparent_frame<S: SurfacePool, M: MediaStore>(
         ClearMode::Transparent,
         |_| {},
     )
-    .unwrap_or_else(|_| {
-        ImageFrame::new(
-            skia_safe::surfaces::raster_n32_premul((1, 1))
-                .expect("1x1 raster surface")
-                .image_snapshot(),
-        )
-    })
+    .expect("transparent GPU image allocation")
 }
 
 fn clip_raster_to_output_rect<S: SurfacePool, M: MediaStore>(
-    frame: RasterFrame,
+    frame: GpuImageFrame,
     ctx: &mut RenderContext<'_, S, M>,
-) -> RasterFrame {
+) -> GpuImageFrame {
     let output_rect = RectI::from_size(
         ctx.renderer.composition.render_settings.width,
         ctx.renderer.composition.render_settings.height,
@@ -574,7 +572,7 @@ fn clip_raster_to_output_rect<S: SurfacePool, M: MediaStore>(
     if let Some(cropped_image) =
         image.make_subset(None, &subset_rect, RequiredProperties::default())
     {
-        let mut frame = ImageFrame::with_domain(
+        let mut frame = GpuImageFrame::with_domain(
             cropped_image,
             clipped_rect.width.max(1),
             clipped_rect.height.max(1),
@@ -715,8 +713,34 @@ mod tests {
             VectorPosition, VectorStroke, VectorTransformData,
             vector::vector_stroke_style::apply_style_defaults,
         },
-        render::{LumenRenderer, RenderContext, surface::DefaultSurfacePool},
+        render::{
+            LumenRenderer, RenderContext,
+            surface::{SurfacePool, SurfacePoolStats},
+        },
     };
+
+    #[derive(Debug)]
+    struct TestSurfacePool;
+
+    impl SurfacePool for TestSurfacePool {
+        fn with_surface<T>(
+            &self,
+            width: u32,
+            height: u32,
+            f: impl FnOnce(&mut skia_safe::Surface) -> crate::Result<T>,
+        ) -> crate::Result<T> {
+            let mut surface =
+                skia_safe::surfaces::raster_n32_premul((width.max(1) as i32, height.max(1) as i32))
+                    .ok_or(crate::error::RenderError::SurfaceAllocation { width, height })?;
+            f(&mut surface)
+        }
+
+        fn stats(&self) -> SurfacePoolStats {
+            SurfacePoolStats::default()
+        }
+
+        fn flush(&self) {}
+    }
 
     #[derive(Debug)]
     struct NullMediaStore;
@@ -731,7 +755,7 @@ mod tests {
         }
     }
 
-    fn render_vector(vector: VectorData) -> RasterFrame {
+    fn render_vector(vector: VectorData) -> GpuImageFrame {
         let composition = Composition::new(
             Graph::new(),
             TimelineSettings {
@@ -744,14 +768,14 @@ mod tests {
                 background_color: [0, 0, 0, 0],
             },
         );
-        let pool = DefaultSurfacePool::new();
+        let pool = TestSurfacePool;
         let media = NullMediaStore;
         let renderer = LumenRenderer::new(&composition, &pool, &media).unwrap();
         let mut ctx = RenderContext::new(&renderer, 0);
         rasterize_vector(&vector, &ShapeRenderer::default(), &mut ctx)
     }
 
-    fn read_pixels(frame: &RasterFrame) -> Vec<u8> {
+    fn read_pixels(frame: &GpuImageFrame) -> Vec<u8> {
         let (w, h) = frame.storage_dimensions();
         let mut pixels = vec![0; w as usize * h as usize * 4];
         frame

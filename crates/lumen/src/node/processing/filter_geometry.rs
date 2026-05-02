@@ -1,4 +1,4 @@
-use crate::raster::RectI;
+use crate::gpu_image::RectI;
 
 pub(crate) fn filter_pad(sigma: f32) -> i32 {
     if sigma <= 0.0 {

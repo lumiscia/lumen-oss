@@ -2,8 +2,6 @@ use skia_safe::Surface;
 
 use crate::error::RenderError;
 
-pub(crate) mod software;
-
 #[cfg(feature = "metal")]
 pub(crate) mod metal;
 
@@ -14,7 +12,6 @@ pub(crate) mod vulkan;
 pub(crate) mod webgl;
 
 pub(crate) struct SurfaceFactory {
-    software: software::SoftwareSurfaceFactory,
     #[cfg(feature = "metal")]
     metal: metal::MetalSurfaceFactory,
     #[cfg(feature = "vulkan")]
@@ -26,7 +23,6 @@ pub(crate) struct SurfaceFactory {
 impl SurfaceFactory {
     pub(crate) fn new() -> Self {
         Self {
-            software: software::SoftwareSurfaceFactory::new(),
             #[cfg(feature = "metal")]
             metal: metal::MetalSurfaceFactory::new(),
             #[cfg(feature = "vulkan")]
@@ -56,9 +52,7 @@ impl SurfaceFactory {
             return Ok(surface);
         }
 
-        self.software
-            .create_surface(width, height)
-            .ok_or(RenderError::SurfaceAllocation { width, height })
+        Err(RenderError::SurfaceAllocation { width, height })
     }
 
     pub(crate) fn flush(&mut self) {
@@ -70,8 +64,6 @@ impl SurfaceFactory {
 
         #[cfg(all(feature = "webgl", target_arch = "wasm32", target_os = "unknown"))]
         self.webgl.flush();
-
-        self.software.flush();
     }
 }
 

@@ -5,15 +5,15 @@ use std::{
 
 use crate::{
     error::PropertyError,
+    gpu_image::GpuImageFrame,
     node::{NodeId, NodeProperty, PortRef},
-    raster::{ImageFrame, RasterFrame},
     render::RenderContext,
 };
 use lumen_macros::{Node, node_impl};
 
 #[derive(Debug, Default)]
 pub struct MemoCache {
-    entries: Mutex<HashMap<String, ImageFrame>>,
+    entries: Mutex<HashMap<String, GpuImageFrame>>,
 }
 
 impl MemoCache {
@@ -21,11 +21,11 @@ impl MemoCache {
         Self::default()
     }
 
-    pub fn get(&self, cache_id: &str) -> Option<ImageFrame> {
+    pub fn get(&self, cache_id: &str) -> Option<GpuImageFrame> {
         lock(&self.entries).get(cache_id).cloned()
     }
 
-    pub fn insert(&self, cache_id: String, frame: ImageFrame) {
+    pub fn insert(&self, cache_id: String, frame: GpuImageFrame) {
         lock(&self.entries).insert(cache_id, frame);
     }
 }
@@ -60,7 +60,7 @@ impl Default for Memo {
 #[node_impl]
 impl Memo {
     #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<RasterFrame> {
+    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
         let cache_id = self.resolve_cache_id(ctx)?;
         if cache_id.trim().is_empty() {
             return Err(PropertyError::MissingProperty {

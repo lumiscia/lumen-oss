@@ -248,6 +248,10 @@ impl VideoDecoder {
         }
     }
 
+    pub fn flush(&mut self) {
+        unsafe { sys::avcodec_flush_buffers(self.context) };
+    }
+
     pub fn receive_cpu_frame(&mut self) -> Result<Option<CpuVideoFrame>> {
         if let DecodeMode::Gpu(backend) = self.mode {
             return Err(FfmpegError::new(
