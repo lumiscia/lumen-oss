@@ -135,10 +135,11 @@ pub(crate) fn apply_runtime_shader_with_children<S: SurfacePool, M: MediaStore>(
     )
 }
 
-pub(crate) fn apply_runtime_shader_dynamic<S: SurfacePool, M: MediaStore>(
+pub(crate) fn apply_runtime_shader_dynamic_with_children<S: SurfacePool, M: MediaStore>(
     source: &GpuImageFrame,
     shader_source: &str,
     uniforms: &[DynamicShaderUniform],
+    child_shaders: &[ChildShader<'_>],
     alpha_mode: AlphaMode,
     node_id: NodeId,
     node_kind: &'static str,
@@ -178,7 +179,14 @@ pub(crate) fn apply_runtime_shader_dynamic<S: SurfacePool, M: MediaStore>(
             )
         })?;
 
-    let children = build_children(&effect, source_shader, &[], node_id, node_kind, frame)?;
+    let children = build_children(
+        &effect,
+        source_shader,
+        child_shaders,
+        node_id,
+        node_kind,
+        frame,
+    )?;
     let uniform_data = build_dynamic_uniform_data(&effect, uniforms, width, height)
         .map_err(|details| shader_error(node_id, node_kind, frame, details))?;
     let shader = effect
@@ -214,10 +222,10 @@ fn build_children(
 
     for child in children {
         let name = child.name();
-        if name == SOURCE_CHILD_NAME || name == INPUT_CHILD_NAME {
-            resolved.push(ChildPtr::Shader(source_shader.clone()));
-        } else if let Some(child_shader) = child_shaders.iter().find(|shader| shader.name == name) {
+        if let Some(child_shader) = child_shaders.iter().find(|shader| shader.name == name) {
             resolved.push(ChildPtr::Shader(child_shader.shader.clone()));
+        } else if name == SOURCE_CHILD_NAME || name == INPUT_CHILD_NAME {
+            resolved.push(ChildPtr::Shader(source_shader.clone()));
         } else {
             return Err(shader_error(
                 node_id,

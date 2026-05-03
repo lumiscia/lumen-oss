@@ -237,7 +237,7 @@ fn build_skia_shader(
 
     let defs = SkiaShader::property_defs();
     let mut legacy_uniforms: Vec<(&str, String)> = Vec::new();
-    let mut has_uniforms_payload = false;
+    let mut has_bindings_payload = false;
 
     for (key, val) in props {
         if matches!(
@@ -249,7 +249,14 @@ fn build_skia_shader(
         }
 
         if key == "uniforms" {
-            has_uniforms_payload = true;
+            let prop = parse_property(val, None, key)?;
+            node.bindings = prop;
+            has_bindings_payload = true;
+            continue;
+        }
+
+        if key == "bindings" {
+            has_bindings_payload = true;
         }
 
         let def = defs.iter().find(|d| d.name == key.as_str());
@@ -259,8 +266,8 @@ fn build_skia_shader(
         }
     }
 
-    if !has_uniforms_payload && !legacy_uniforms.is_empty() {
-        node.uniforms = NodeProperty::String(
+    if !has_bindings_payload && !legacy_uniforms.is_empty() {
+        node.bindings = NodeProperty::String(
             legacy_uniforms
                 .into_iter()
                 .map(|(name, value)| format!("{name} = {value}"))
@@ -306,7 +313,13 @@ fn wire_node_kind(node: &mut NodeKind, port: &str, port_ref: PortRef) -> bool {
         NodeKind::Memo(n) => n.__wire_input(port, port_ref),
         NodeKind::Resize(n) => n.__wire_input(port, port_ref),
         NodeKind::Shadow(n) => n.__wire_input(port, port_ref),
-        NodeKind::SkiaShader(n) => n.__wire_input(port, port_ref),
+        NodeKind::SkiaShader(n) => n.__wire_input(
+            match port {
+                "source" | "input" => "inputs",
+                other => other,
+            },
+            port_ref,
+        ),
         NodeKind::TimeRemap(n) => n.__wire_input(port, port_ref),
         NodeKind::Transform(n) => n.__wire_input(port, port_ref),
         NodeKind::MediaIn(n) => n.__wire_input(port, port_ref),

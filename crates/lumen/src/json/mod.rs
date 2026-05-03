@@ -20,7 +20,7 @@ use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack},
     composition::{Composition, CompositionMetadata, RenderSettings, TimelineSettings},
     graph::{Connection, Graph},
-    node::NodeId,
+    node::{NodeId, NodeKind},
 };
 
 pub use property::parse_color;
@@ -86,11 +86,16 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
             .unwrap_or("output")
             .to_string();
         let to_node = parse_node_id(conn_obj.get("to_node").context("missing `to_node`")?)?;
-        let to_port = conn_obj
+        let mut to_port = conn_obj
             .get("to_port")
             .and_then(|v| v.as_str())
             .context("missing `to_port`")?
             .to_string();
+        if matches!(graph.nodes.get(&to_node), Some(NodeKind::SkiaShader(_)))
+            && matches!(to_port.as_str(), "source" | "input")
+        {
+            to_port = "inputs".to_string();
+        }
 
         graph
             .connect(Connection {
