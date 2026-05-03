@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
+use crate::media::CpuMediaFrame;
 use crate::node::{NodeId, PortRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +229,23 @@ pub struct CompiledComposition {
 pub struct BoundFrame {
     buffer_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
     texture_uploads: Vec<(lumen_gpu::TextureId, Vec<u8>, u32, u32)>,
+    media_textures: Vec<MediaTextureUpload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MediaTextureKey {
+    pub source: String,
+    pub frame: Option<u32>,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaTextureUpload {
+    pub texture: lumen_gpu::TextureId,
+    pub key: MediaTextureKey,
+    pub frame: Arc<CpuMediaFrame>,
+    pub size: lumen_gpu::Size,
 }
 
 impl BoundFrame {
@@ -248,6 +266,25 @@ impl BoundFrame {
     ) {
         self.texture_uploads
             .push((id, data.into(), bytes_per_row, rows_per_image));
+    }
+
+    pub fn use_media_texture(
+        &mut self,
+        texture: lumen_gpu::TextureId,
+        key: MediaTextureKey,
+        frame: Arc<CpuMediaFrame>,
+        size: lumen_gpu::Size,
+    ) {
+        self.media_textures.push(MediaTextureUpload {
+            texture,
+            key,
+            frame,
+            size,
+        });
+    }
+
+    pub fn media_textures(&self) -> &[MediaTextureUpload] {
+        &self.media_textures
     }
 
     pub fn frame_update(&self) -> lumen_gpu::FrameUpdate<'_> {

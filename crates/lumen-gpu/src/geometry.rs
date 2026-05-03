@@ -9,7 +9,7 @@ impl Size {
         Self { width, height }
     }
 
-    pub(crate) fn as_extent(self) -> wgpu::Extent3d {
+    pub fn as_extent(self) -> wgpu::Extent3d {
         wgpu::Extent3d {
             width: self.width.max(1),
             height: self.height.max(1),

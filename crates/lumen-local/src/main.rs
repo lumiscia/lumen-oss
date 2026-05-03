@@ -816,7 +816,7 @@ struct PendingGpuEncodeFrame {
     frame: u32,
     pixel_frame: MetalPixelBufferFrame,
     submission: lumen_gpu::wgpu::SubmissionIndex,
-    retained_texture: Option<lumen_gpu::wgpu::Texture>,
+    retained_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
 }
 
 #[cfg(target_os = "macos")]

@@ -349,10 +349,10 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
     let bound = FrameBindContext::with_media(&composition, 0, &store)
         .bind(&compiled)
         .unwrap();
-    let uploads = bound.frame_update();
-    assert!(
-        format!("{uploads:?}").contains("bytes_per_row: 1280"),
-        "media upload should use native 320px row bytes: {uploads:?}"
+    assert_eq!(bound.media_textures().len(), 1);
+    assert_eq!(
+        bound.media_textures()[0].size,
+        lumen_gpu::Size::new(320, 180)
     );
 }
 

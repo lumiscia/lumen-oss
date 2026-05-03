@@ -10,6 +10,6 @@ mod types;
 pub use compiler::{CompileContext, FrameBindContext, GpuCompileNode, GpuFrameBindNode};
 pub use renderer::GpuCompositionRenderer;
 pub use types::{
-    AlphaMode, BoundFrame, CompiledComposition, CompiledOutput, FrameBinding, RasterHandle,
-    RasterMetadata,
+    AlphaMode, BoundFrame, CompiledComposition, CompiledOutput, FrameBinding, MediaTextureKey,
+    RasterHandle, RasterMetadata,
 };

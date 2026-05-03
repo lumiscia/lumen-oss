@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -10,7 +10,7 @@ use crate::{
 };
 
 struct RuntimeTexture {
-    texture: wgpu::Texture,
+    texture: Arc<wgpu::Texture>,
     view: wgpu::TextureView,
     desc: TextureDesc,
 }
@@ -112,7 +112,13 @@ impl Renderer {
     pub fn texture(&self, id: TextureId) -> Option<&wgpu::Texture> {
         self.textures
             .get(id.0 as usize)
-            .map(|texture| &texture.texture)
+            .map(|texture| texture.texture.as_ref())
+    }
+
+    pub fn texture_arc(&self, id: TextureId) -> Option<Arc<wgpu::Texture>> {
+        self.textures
+            .get(id.0 as usize)
+            .map(|texture| Arc::clone(&texture.texture))
     }
 
     pub fn replace_texture(
@@ -120,7 +126,16 @@ impl Renderer {
         id: TextureId,
         texture: wgpu::Texture,
         desc: TextureDesc,
-    ) -> Result<wgpu::Texture> {
+    ) -> Result<Arc<wgpu::Texture>> {
+        self.replace_texture_arc(id, Arc::new(texture), desc)
+    }
+
+    pub fn replace_texture_arc(
+        &mut self,
+        id: TextureId,
+        texture: Arc<wgpu::Texture>,
+        desc: TextureDesc,
+    ) -> Result<Arc<wgpu::Texture>> {
         let runtime = self
             .textures
             .get_mut(id.0 as usize)
@@ -244,7 +259,7 @@ impl Renderer {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Ok(RuntimeTexture {
-            texture,
+            texture: Arc::new(texture),
             view,
             desc: resource.desc,
         })

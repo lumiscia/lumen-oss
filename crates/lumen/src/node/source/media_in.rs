@@ -1,12 +1,12 @@
 use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
-use crate::media::{CpuMediaFrame, MediaFrame};
+use crate::media::MediaFrame;
 use crate::node::{NodeId, NodeProperty};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, RasterMetadata,
+    MediaTextureKey, RasterHandle, RasterMetadata,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,13 +234,14 @@ impl GpuFrameBindNode for MediaIn {
             details: "media store is required for media input nodes".to_string(),
         })?;
         let kind = resolve_for_context(self, &ctx.expr_context(*node_id, "source"))?;
-        let frame = match kind {
+        let (frame, key_source, key_frame) = match kind {
             MediaInKind::Image { image_id } => media
                 .get_image_resolver(&image_id)
                 .ok_or_else(|| MediaError::SourceNotFound {
                     media_source: image_id.clone(),
                 })?
-                .frame()?,
+                .frame()
+                .map(|frame| (frame, image_id, None))?,
             MediaInKind::Video {
                 stream_id,
                 range,
@@ -267,7 +268,9 @@ impl GpuFrameBindNode for MediaIn {
                     frame: ctx.frame(),
                     frame_count: metadata.frame_count,
                 })?;
-                resolver.frame(source_frame)?
+                resolver
+                    .frame(source_frame)
+                    .map(|frame| (frame, stream_id, Some(source_frame)))?
             }
         };
         let MediaFrame::CpuRgba(frame) = frame else {
@@ -281,30 +284,17 @@ impl GpuFrameBindNode for MediaIn {
             }
             .into());
         };
-        let rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
-        bound.write_texture_rgba8(*texture, rgba, size.width * 4, size.height);
+        bound.use_media_texture(
+            *texture,
+            MediaTextureKey {
+                source: key_source,
+                frame: key_frame,
+                width: size.width,
+                height: size.height,
+            },
+            frame,
+            *size,
+        );
         Ok(())
     }
-}
-
-fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32) -> Vec<u8> {
-    if frame.width == width && frame.height == height && frame.row_bytes == width as usize * 4 {
-        return frame.rgba.as_ref().clone();
-    }
-
-    let mut out = vec![0; width as usize * height as usize * 4];
-    for y in 0..height {
-        let src_y = ((u64::from(y) * u64::from(frame.height)) / u64::from(height)) as usize;
-        for x in 0..width {
-            let src_x = ((u64::from(x) * u64::from(frame.width)) / u64::from(width)) as usize;
-            let src = src_y
-                .saturating_mul(frame.row_bytes)
-                .saturating_add(src_x.saturating_mul(4));
-            let dst = (y as usize)
-                .saturating_mul(width as usize * 4)
-                .saturating_add(x as usize * 4);
-            out[dst..dst + 4].copy_from_slice(&frame.rgba[src..src + 4]);
-        }
-    }
-    out
 }
