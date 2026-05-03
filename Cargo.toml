@@ -7,6 +7,7 @@ members = [
   "crates/lumen-local",
   "crates/lumen-generators",
   "crates/lumen-macros",
+  "crates/lumen-gpu",
 ]
 
 resolver = "3"
