@@ -1322,6 +1322,8 @@ dependencies = [
  "lumen",
  "lumen-ffmpeg",
  "lumen-gpu",
+ "objc2",
+ "objc2-metal",
  "pollster",
  "serde_json",
  "tempfile",

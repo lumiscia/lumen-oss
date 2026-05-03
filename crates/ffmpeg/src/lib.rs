@@ -19,7 +19,10 @@ pub use encode::{
 pub use format::{AudioStreamInfo, InputContext, MediaInfo, Rational, VideoStreamInfo};
 pub use gpu::{GpuBackend, GpuVideoFrame, GpuVideoInput};
 #[cfg(feature = "metal")]
-pub use gpu::{MetalDecodedFrame, MetalTextureCache, Objc2MetalDevice, Objc2MetalTexture};
+pub use gpu::{
+    MetalDecodedFrame, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache,
+    Objc2MetalDevice, Objc2MetalTexture,
+};
 pub use video::{
     CpuVideoFrame, DecodeMode, EncodeMode, PixelFormat, VideoCodec, VideoDecoder,
     VideoDecoderConfig,

@@ -19,5 +19,7 @@ tempfile = "3.23.0"
 lumen = { path = "../lumen", features = ["ffmpeg", "image", "json", "embed-roboto", "metal"] }
 lumen-gpu = { path = "../lumen-gpu" }
 lumen-ffmpeg = { version = "0.1.0", path = "../ffmpeg", features = ["metal", "vulkan"] }
+objc2 = "0.6.4"
+objc2-metal = "0.3.2"
 pollster = "0.4.0"
 serde_json = "1.0.145"

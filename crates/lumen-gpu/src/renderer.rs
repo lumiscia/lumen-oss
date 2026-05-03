@@ -115,6 +115,36 @@ impl Renderer {
             .map(|texture| &texture.texture)
     }
 
+    pub fn copy_texture_to_external(
+        &self,
+        source_id: TextureId,
+        destination: &wgpu::Texture,
+    ) -> Result<()> {
+        let source = self.runtime_texture(source_id)?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("lumen-gpu external texture copy"),
+            });
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &source.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: destination,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            source.desc.domain.storage_size.as_extent(),
+        );
+        self.queue.submit([encoder.finish()]);
+        Ok(())
+    }
+
     pub fn buffer(&self, id: BufferId) -> Option<&wgpu::Buffer> {
         self.buffers.get(id.0 as usize).map(|buffer| &buffer.buffer)
     }

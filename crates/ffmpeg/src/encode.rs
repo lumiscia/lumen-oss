@@ -1,6 +1,6 @@
 use std::{
     ffi::CString,
-    ptr,
+    ptr::{self, NonNull},
     time::{Duration, Instant},
 };
 
@@ -11,8 +11,15 @@ use crate::{
     video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec},
 };
 use sys::{
-    AVMediaType::AVMEDIA_TYPE_VIDEO, AVPixelFormat::AV_PIX_FMT_YUV420P, SwsFlags::SWS_BILINEAR,
+    AVMediaType::AVMEDIA_TYPE_VIDEO,
+    AVPixelFormat::{AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
+    SwsFlags::SWS_BILINEAR,
 };
+
+#[cfg(feature = "metal")]
+use objc2_core_foundation::CFRetained;
+#[cfg(feature = "metal")]
+use objc2_core_video::CVPixelBuffer;
 
 #[derive(Debug, Clone)]
 pub struct VideoEncoderConfig {
@@ -243,7 +250,12 @@ impl VideoEncoder {
                 num: config.fps as i32,
                 den: 1,
             };
-            (*context).pix_fmt = AV_PIX_FMT_YUV420P;
+            (*context).pix_fmt = match config.mode {
+                EncodeMode::GpuTexture(GpuBackend::Metal) => AV_PIX_FMT_VIDEOTOOLBOX,
+                EncodeMode::GpuTexture(GpuBackend::Vulkan) | EncodeMode::CpuUpload => {
+                    AV_PIX_FMT_YUV420P
+                }
+            };
             (*context).bit_rate = config.bit_rate;
             (*context).gop_size = config.fps as i32 * 2;
             if ((*(*output.ptr).oformat).flags & sys::AVFMT_GLOBALHEADER) != 0 {
@@ -261,36 +273,41 @@ impl VideoEncoder {
         }
 
         let mut frame = AvFrame::new()?;
-        unsafe {
-            (*frame.as_mut_ptr()).format = AV_PIX_FMT_YUV420P as i32;
-            (*frame.as_mut_ptr()).width = config.width as i32;
-            (*frame.as_mut_ptr()).height = config.height as i32;
-            ffi::check(
-                sys::av_frame_get_buffer(frame.as_mut_ptr(), 32),
-                "av_frame_get_buffer",
-            )?;
-        }
+        let scaler = if config.mode == EncodeMode::CpuUpload {
+            unsafe {
+                (*frame.as_mut_ptr()).format = AV_PIX_FMT_YUV420P as i32;
+                (*frame.as_mut_ptr()).width = config.width as i32;
+                (*frame.as_mut_ptr()).height = config.height as i32;
+                ffi::check(
+                    sys::av_frame_get_buffer(frame.as_mut_ptr(), 32),
+                    "av_frame_get_buffer",
+                )?;
+            }
 
-        let scaler = unsafe {
-            sys::sws_getContext(
-                config.width as i32,
-                config.height as i32,
-                PixelFormat::Rgba8.to_av_pixel_format(),
-                config.width as i32,
-                config.height as i32,
-                AV_PIX_FMT_YUV420P,
-                SWS_BILINEAR as i32,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null(),
-            )
+            let scaler = unsafe {
+                sys::sws_getContext(
+                    config.width as i32,
+                    config.height as i32,
+                    PixelFormat::Rgba8.to_av_pixel_format(),
+                    config.width as i32,
+                    config.height as i32,
+                    AV_PIX_FMT_YUV420P,
+                    SWS_BILINEAR as i32,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null(),
+                )
+            };
+            if scaler.is_null() {
+                return Err(FfmpegError::new(
+                    "sws_getContext",
+                    "failed to create encoder color conversion context",
+                ));
+            }
+            scaler
+        } else {
+            ptr::null_mut()
         };
-        if scaler.is_null() {
-            return Err(FfmpegError::new(
-                "sws_getContext",
-                "failed to create encoder color conversion context",
-            ));
-        }
 
         Ok(Self {
             stream_index: unsafe { (*stream).index as usize },
@@ -518,7 +535,7 @@ impl MuxedEncoder {
 impl VideoEncoder {
     fn send_gpu_frame(
         &mut self,
-        _output: &mut OutputContext,
+        output: &mut OutputContext,
         frame: &GpuVideoInput<'_>,
     ) -> Result<()> {
         if self.mode == EncodeMode::CpuUpload {
@@ -531,14 +548,97 @@ impl VideoEncoder {
         let upload = GpuUploadDescriptor::from_frame(frame);
         self.gpu_telemetry.record_upload_started(&upload);
         let started = Instant::now();
-        let error = FfmpegError::new(
-            "VideoEncoder::send_gpu_frame",
-            "GPU texture encode is reserved for the Metal/Vulkan backend implementation",
-        )
-        .with_backend(frame.backend());
-        self.gpu_telemetry
-            .record_upload_failed(&upload, started.elapsed(), error.message.clone());
-        Err(error)
+        match frame {
+            #[cfg(feature = "metal")]
+            GpuVideoInput::MetalPixelBuffer(frame) => {
+                self.gpu_telemetry
+                    .record_upload_finished(&upload, started.elapsed());
+                let encode_started = Instant::now();
+                self.gpu_telemetry.record_encode_started(&upload);
+                let result = self.send_metal_pixel_buffer_frame(output, frame);
+                match result {
+                    Ok(()) => {
+                        self.gpu_telemetry
+                            .record_encode_finished(&upload, encode_started.elapsed());
+                        Ok(())
+                    }
+                    Err(error) => {
+                        self.gpu_telemetry.record_encode_failed(
+                            &upload,
+                            encode_started.elapsed(),
+                            error.message.clone(),
+                        );
+                        Err(error)
+                    }
+                }
+            }
+            _ => {
+                let error = FfmpegError::new(
+                    "VideoEncoder::send_gpu_frame",
+                    "GPU texture encode needs a CVPixelBuffer-backed Metal frame",
+                )
+                .with_backend(frame.backend());
+                self.gpu_telemetry.record_upload_failed(
+                    &upload,
+                    started.elapsed(),
+                    error.message.clone(),
+                );
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(feature = "metal")]
+    fn send_metal_pixel_buffer_frame(
+        &mut self,
+        output: &mut OutputContext,
+        frame: &crate::gpu::MetalPixelBufferFrame,
+    ) -> Result<()> {
+        if self.mode != EncodeMode::GpuTexture(GpuBackend::Metal) {
+            return Err(FfmpegError::new(
+                "VideoEncoder::send_metal_pixel_buffer_frame",
+                "Metal pixel buffers require a Metal hardware texture encoder",
+            )
+            .with_backend(GpuBackend::Metal));
+        }
+        let mut av_frame = AvFrame::new()?;
+        unsafe {
+            (*av_frame.as_mut_ptr()).format = AV_PIX_FMT_VIDEOTOOLBOX as i32;
+            (*av_frame.as_mut_ptr()).width = frame.dimensions().0 as i32;
+            (*av_frame.as_mut_ptr()).height = frame.dimensions().1 as i32;
+            (*av_frame.as_mut_ptr()).pts = frame.pts().unwrap_or(self.next_pts);
+            (*av_frame.as_mut_ptr()).duration = 1;
+
+            let pixel_buffer = frame.pixel_buffer_ptr();
+            let retained: CFRetained<CVPixelBuffer> = CFRetained::retain(pixel_buffer);
+            let retained_ptr: NonNull<CVPixelBuffer> = CFRetained::into_raw(retained);
+            let buffer_ref = sys::av_buffer_create(
+                retained_ptr.as_ptr().cast::<u8>(),
+                1,
+                Some(release_cv_pixel_buffer),
+                retained_ptr.as_ptr().cast(),
+                0,
+            );
+            if buffer_ref.is_null() {
+                let _ = CFRetained::<CVPixelBuffer>::from_raw(retained_ptr);
+                return Err(FfmpegError::new(
+                    "av_buffer_create",
+                    "failed to create CVPixelBuffer lifetime reference",
+                )
+                .with_backend(GpuBackend::Metal));
+            }
+            (*av_frame.as_mut_ptr()).data[3] = pixel_buffer.as_ptr().cast::<u8>();
+            (*av_frame.as_mut_ptr()).buf[0] = buffer_ref;
+        }
+        self.next_pts = self.next_pts.saturating_add(1);
+        self.send_frame(output, av_frame.as_ptr())
+    }
+}
+
+#[cfg(feature = "metal")]
+unsafe extern "C" fn release_cv_pixel_buffer(opaque: *mut libc::c_void, _data: *mut u8) {
+    if let Some(pixel_buffer) = NonNull::new(opaque.cast::<CVPixelBuffer>()) {
+        let _ = unsafe { CFRetained::<CVPixelBuffer>::from_raw(pixel_buffer) };
     }
 }
 
