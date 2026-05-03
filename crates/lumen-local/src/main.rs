@@ -18,13 +18,9 @@ use lumen::{
     },
     composition::Composition,
     ffmpeg::{FfmpegAudioResolver, FfmpegVideoResolver},
-    gpu_image::GpuImageFrame,
+    gpu::GpuCompositionRenderer,
     image::ImageFileResolver,
-    media::{ImageResolver, MediaStore, VideoFrameResolver},
-    render::{
-        RenderOrchestrator, RenderOrchestratorConfig,
-        surface::{DefaultSurfacePool, SurfacePool},
-    },
+    media::{ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
 use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
 use lumen_ffmpeg::{GpuBackend, gpu_texture_encode_support};
@@ -200,8 +196,8 @@ impl ImageResolver for SharedImageResolver {
         self.0.metadata()
     }
 
-    fn gpu_image(&self) -> Result<Arc<GpuImageFrame>, lumen::error::MediaError> {
-        self.0.gpu_image()
+    fn frame(&self) -> Result<MediaFrame, lumen::error::MediaError> {
+        self.0.frame()
     }
 }
 
@@ -221,7 +217,7 @@ impl VideoFrameResolver for SharedVideoResolver {
         self.0.enqueue_frame(frame)
     }
 
-    fn frame(&self, frame: u32) -> Result<Arc<GpuImageFrame>, lumen::error::MediaError> {
+    fn frame(&self, frame: u32) -> Result<MediaFrame, lumen::error::MediaError> {
         self.0.frame(frame)
     }
 
@@ -420,7 +416,6 @@ fn run() -> Result<()> {
     let composition = load_composition(&args.composition)?;
     let media_root = media_root(args.media_root.as_deref())?;
     let media_store = LocalMediaStore::new(media_root);
-    let surface_pool = DefaultSurfacePool::new();
 
     let extension = args
         .output
@@ -430,20 +425,13 @@ fn run() -> Result<()> {
         .unwrap_or_default();
 
     match extension.as_str() {
-        "png" => render_single_png(
-            &composition,
-            &surface_pool,
-            &media_store,
-            &args.output,
-            args.frame,
-        ),
+        "png" => render_single_png(&composition, &media_store, &args.output, args.frame),
         "mp4" => {
             if args.frame.is_some() {
                 return Err(anyhow!("--frame is only supported when output is .png"));
             }
             render_mp4(
                 composition,
-                surface_pool,
                 media_store,
                 &args.output,
                 args.encoder.as_deref(),
@@ -466,7 +454,6 @@ fn load_composition(path: &Path) -> Result<Composition> {
 
 fn render_single_png(
     composition: &Composition,
-    surface_pool: &DefaultSurfacePool,
     media_store: &LocalMediaStore,
     output: &Path,
     frame_override: Option<u32>,
@@ -479,24 +466,19 @@ fn render_single_png(
         ));
     }
 
-    let orchestrator = RenderOrchestrator::new(
-        composition,
-        surface_pool,
-        media_store,
-        RenderOrchestratorConfig { lookahead_count: 8 },
-    );
-
-    let rendered = orchestrator
-        .render(frame)
+    let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
+        .context("failed to create GPU renderer")?;
+    renderer
+        .compile(composition)
+        .context("failed to compile composition")?;
+    let rendered = renderer
+        .render_frame(composition, frame, media_store)
         .with_context(|| format!("render failed at frame {frame}"))?;
-    surface_pool.flush();
-    let (width, height) = rendered.storage_dimensions();
-    let mut pixels = vec![0; (width as usize) * (height as usize) * 4];
-    rendered
-        .read_pixels_into(pixels.as_mut_slice(), (width as usize) * 4)
+    let size = rendered.domain.storage_size;
+    let pixels = read_texture_rgba8(renderer.gpu_renderer(), rendered.texture, size)
         .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
 
-    write_png(output, width, height, pixels.as_slice())?;
+    write_png(output, size.width, size.height, pixels.as_slice())?;
 
     println!("render complete output={} frame={frame}", output.display());
     Ok(())
@@ -504,7 +486,6 @@ fn render_single_png(
 
 fn render_mp4(
     composition: Composition,
-    surface_pool: DefaultSurfacePool,
     media_store: LocalMediaStore,
     output: &Path,
     override_encoder: Option<&str>,
@@ -530,12 +511,11 @@ fn render_mp4(
     let width = composition.render_settings.width;
     let height = composition.render_settings.height;
     let total_frames = composition.timeline.duration_frames;
-    let orchestrator = RenderOrchestrator::new(
-        &composition,
-        &surface_pool,
-        &media_store,
-        RenderOrchestratorConfig { lookahead_count: 8 },
-    );
+    let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
+        .context("failed to create GPU renderer")?;
+    renderer
+        .compile(&composition)
+        .context("failed to compile composition")?;
     let mut timings = RenderTiming::default();
     let audio_started = Instant::now();
     let audio_path = if composition
@@ -566,26 +546,29 @@ fn render_mp4(
         &encoder,
     )?;
     let render_started = Instant::now();
-    let pixel_buffer_len = (width as usize) * (height as usize) * 4;
-    let (pixel_recycle_tx, pixel_recycle_rx) =
+    let (pixel_recycle_tx, _pixel_recycle_rx) =
         mpsc::sync_channel::<Vec<u8>>(ENCODER_FRAME_QUEUE_CAPACITY + 2);
 
     for frame in 0..total_frames {
         let render_frame_started = Instant::now();
-        let raster = orchestrator
-            .render(frame)
+        let raster = renderer
+            .render_frame(&composition, frame, &media_store)
             .with_context(|| format!("render failed at frame {frame}"))?;
         timings.render_ms = timings
             .render_ms
             .saturating_add(render_frame_started.elapsed().as_millis());
 
         let flush_started = Instant::now();
-        surface_pool.flush();
+        renderer
+            .gpu_renderer()
+            .device
+            .poll(lumen_gpu::wgpu::PollType::Poll)?;
         timings.flush_ms = timings
             .flush_ms
             .saturating_add(flush_started.elapsed().as_millis());
 
-        let (storage_width, storage_height) = raster.storage_dimensions();
+        let storage_width = raster.domain.storage_size.width;
+        let storage_height = raster.domain.storage_size.height;
         if storage_width != width || storage_height != height {
             return Err(anyhow!(
                 "unexpected frame {frame} dimensions {}x{} (expected {}x{})",
@@ -595,22 +578,13 @@ fn render_mp4(
                 height
             ));
         }
-        let mut pixels = match pixel_recycle_rx.try_recv() {
-            Ok(mut pixels) => {
-                if pixels.len() != pixel_buffer_len {
-                    pixels.resize(pixel_buffer_len, 0);
-                }
-                pixels
-            }
-            Err(mpsc::TryRecvError::Empty) => vec![0; pixel_buffer_len],
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(anyhow!("encoder pixel recycle channel disconnected"));
-            }
-        };
         let readback_started = Instant::now();
-        raster
-            .read_pixels_into(pixels.as_mut_slice(), (width as usize) * 4)
-            .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
+        let pixels = read_texture_rgba8(
+            renderer.gpu_renderer(),
+            raster.texture,
+            raster.domain.storage_size,
+        )
+        .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
         timings.readback_ms = timings
             .readback_ms
             .saturating_add(readback_started.elapsed().as_millis());
@@ -769,6 +743,90 @@ fn report_gpu_encode_capabilities() {
             support.reason.as_deref().unwrap_or("none"),
         );
     }
+}
+
+fn read_texture_rgba8(
+    renderer: &lumen_gpu::Renderer,
+    id: lumen_gpu::TextureId,
+    size: lumen_gpu::Size,
+) -> Result<Vec<u8>> {
+    let bytes_per_pixel = 4;
+    let unpadded_bytes_per_row = size.width.saturating_mul(bytes_per_pixel);
+    let padded_bytes_per_row = align_to(
+        unpadded_bytes_per_row,
+        lumen_gpu::wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
+    );
+    let output_size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(size.height));
+    let output = renderer
+        .device
+        .create_buffer(&lumen_gpu::wgpu::BufferDescriptor {
+            label: Some("lumen-local readback"),
+            size: output_size.max(1),
+            usage: lumen_gpu::wgpu::BufferUsages::COPY_DST
+                | lumen_gpu::wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+    let mut encoder =
+        renderer
+            .device
+            .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
+                label: Some("lumen-local readback encoder"),
+            });
+    let texture = renderer
+        .texture(id)
+        .ok_or_else(|| anyhow!("render output texture {id:?} is unavailable"))?;
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        lumen_gpu::wgpu::TexelCopyBufferInfo {
+            buffer: &output,
+            layout: lumen_gpu::wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(size.height),
+            },
+        },
+        lumen_gpu::wgpu::Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        },
+    );
+    renderer.queue.submit([encoder.finish()]);
+
+    let slice = output.slice(..);
+    let (tx, rx) = mpsc::channel();
+    slice.map_async(lumen_gpu::wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
+    renderer
+        .device
+        .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())
+        .map_err(|error| anyhow!("GPU readback poll failed: {error}"))?;
+    rx.recv()
+        .map_err(|_| anyhow!("GPU readback channel closed"))?
+        .map_err(|error| anyhow!("GPU readback map failed: {error}"))?;
+
+    let mapped = slice.get_mapped_range();
+    let mut pixels = vec![
+        0;
+        (size.width as usize)
+            .saturating_mul(size.height as usize)
+            .saturating_mul(bytes_per_pixel as usize)
+    ];
+    for row in 0..size.height as usize {
+        let src_start = row.saturating_mul(padded_bytes_per_row as usize);
+        let src_end = src_start.saturating_add(unpadded_bytes_per_row as usize);
+        let dst_start = row.saturating_mul(unpadded_bytes_per_row as usize);
+        let dst_end = dst_start.saturating_add(unpadded_bytes_per_row as usize);
+        pixels[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
+    }
+    drop(mapped);
+    output.unmap();
+    Ok(pixels)
+}
+
+fn align_to(value: u32, alignment: u32) -> u32 {
+    value.div_ceil(alignment) * alignment
 }
 
 fn write_png(output: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
