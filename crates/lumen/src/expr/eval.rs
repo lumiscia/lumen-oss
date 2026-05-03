@@ -245,8 +245,7 @@ mod tests {
     use super::*;
     use crate::{
         expr::ast::{BuiltinFn, ExprNode, ExpressionId},
-        graph::Graph,
-        node::{NodeId, NodeKind, NodeProperty, source::text::Text},
+        node::NodeProperty,
     };
 
     fn test_context() -> ExpressionContext<'static> {
@@ -345,34 +344,19 @@ mod tests {
     }
 
     #[test]
-    fn text_measure_builtins_can_use_node_references() {
-        let mut graph = Graph::new();
-        let mut text = Text::default();
-        text.id = NodeId::new(8);
-        text.content = NodeProperty::String("Morning, update posted.".to_string());
-        text.font_size = NodeProperty::Float(32.0);
-        text.font_weight = NodeProperty::Int(500);
-        text.max_width = NodeProperty::Float(300.0);
-        graph.nodes.insert(text.id, NodeKind::Text(text));
+    fn text_measure_builtins_use_explicit_text_inputs() {
+        let ctx = test_context();
 
-        let ctx = ExpressionContext {
-            graph: Some(&graph),
-            ..test_context()
-        };
-
-        let from_node = Expression::parse("text_width(node(8))").unwrap();
+        let implicit = Expression::parse("text_width(\"Morning, update posted.\")").unwrap();
         let explicit = Expression::parse("text_width(node(8, \"content\"), 32, 300)").unwrap();
-        let from_node_height = Expression::parse("text_height(node(8))").unwrap();
+        let implicit_height =
+            Expression::parse("text_height(\"Morning, update posted.\")").unwrap();
         let explicit_height =
             Expression::parse("text_height(node(8, \"content\"), 32, 300)").unwrap();
 
-        assert_eq!(
-            from_node.evaluate(&ctx).unwrap(),
-            explicit.evaluate(&ctx).unwrap()
-        );
-        assert_eq!(
-            from_node_height.evaluate(&ctx).unwrap(),
-            explicit_height.evaluate(&ctx).unwrap()
-        );
+        assert!(implicit.evaluate(&ctx).is_ok());
+        assert!(explicit.evaluate(&ctx).is_err());
+        assert!(implicit_height.evaluate(&ctx).is_ok());
+        assert!(explicit_height.evaluate(&ctx).is_err());
     }
 }

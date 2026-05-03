@@ -192,6 +192,8 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 let metadata = resolver.metadata();
                 let source_frame = media_in::map_to_source_frame(
                     self.frame,
+                    self.composition.timeline.fps,
+                    metadata.fps,
                     metadata.frame_count,
                     range.as_ref(),
                     speed,

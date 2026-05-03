@@ -1,14 +1,11 @@
-use skia_safe::{FilterMode, Rect, SamplingOptions};
+use crate::node::{NodeId, NodeProperty, PortRef};
 
-use crate::{
-    gpu_image::{GpuImageFrame, RectI},
-    node::{
-        NodeId, NodeProperty, PortRef,
-        pixel_utils::{ClearMode, render_to_surface_ephemeral},
-    },
-    render::RenderContext,
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
+    RasterHandle, compiler,
 };
-use lumen_macros::{Node, node_impl};
+
+pub(crate) const SHADER: &str = include_str!("resize.wgsl");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i64)]
@@ -19,7 +16,7 @@ pub enum ResizeMode {
 }
 
 impl ResizeMode {
-    fn from_int(value: i64) -> Self {
+    pub fn from_int(value: i64) -> Self {
         match value {
             1 => Self::Fit,
             2 => Self::Fill,
@@ -36,28 +33,33 @@ pub enum ResizeSampling {
 }
 
 impl ResizeSampling {
-    fn from_int(value: i64) -> Self {
-        match value {
-            0 => Self::Nearest,
-            _ => Self::Linear,
+    pub fn from_int(value: i64) -> Self {
+        if value == Self::Nearest as i64 {
+            Self::Nearest
+        } else {
+            Self::Linear
         }
     }
 }
 
-#[derive(Debug, Clone, Node)]
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "resize",
+    label = "Resize",
+    description = "Resamples a raster into static output bounds.",
+    category = "processing"
+)]
 pub struct Resize {
     pub id: NodeId,
-
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub width: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub height: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub mode: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub sampling: NodeProperty,
-
-    #[input(kind = Raster)]
+    #[input()]
     pub source: PortRef,
 }
 
@@ -74,125 +76,104 @@ impl Default for Resize {
     }
 }
 
-#[node_impl]
-impl Resize {
-    #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
-        let source_result = ctx.eval(&self.source)?;
-        let source = source_result.as_raster()?;
-        let mode = ResizeMode::from_int(self.resolve_mode(ctx)?);
-        let sampling_mode = ResizeSampling::from_int(self.resolve_sampling(ctx)?);
-        let dest_width = self.resolve_width(ctx)?.max(1) as u32;
-        let dest_height = self.resolve_height(ctx)?.max(1) as u32;
-
-        let (source_width, source_height) = source.dimensions();
-        let source_alpha = source.alpha_mode();
-        let source_format = source.format_rect();
-
-        // Early return if dimensions already match.
-        if source_width == dest_width && source_height == dest_height {
-            return source.snapshot();
+impl GpuCompileNode for Resize {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        if port.port != "output" {
+            return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let output_rect = RectI::new(source_format.x, source_format.y, dest_width, dest_height);
-
-        // Handle empty source image by returning transparent buffer
-        if source_width == 0 || source_height == 0 {
-            return render_to_surface_ephemeral(
-                dest_width,
-                dest_height,
-                ctx,
-                output_rect,
-                output_rect,
-                source_alpha,
-                ClearMode::Transparent,
-                |_| {},
-            );
-        }
-
-        let (image, source_width, source_height) = match source.image_parts() {
-            Some(parts) => parts,
-            None => {
-                return render_to_surface_ephemeral(
-                    dest_width,
-                    dest_height,
-                    ctx,
-                    output_rect,
-                    output_rect,
-                    source_alpha,
-                    ClearMode::Transparent,
-                    |_| {},
-                );
-            }
-        };
-
-        let (source_rect, dest_rect) =
-            compute_rects(source_width, source_height, dest_width, dest_height, mode);
-        let sampling = match sampling_mode {
-            ResizeSampling::Nearest => SamplingOptions::default(),
-            ResizeSampling::Linear => SamplingOptions::from(FilterMode::Linear),
-        };
-        let clear_mode = match mode {
-            ResizeMode::Fit => ClearMode::Transparent,
-            ResizeMode::Stretch | ResizeMode::Fill => ClearMode::None,
-        };
-
-        render_to_surface_ephemeral(
-            dest_width,
-            dest_height,
-            ctx,
-            output_rect,
-            output_rect,
-            source_alpha,
-            clear_mode,
-            |canvas| {
-                canvas.draw_image_rect_with_sampling_options(
-                    &image,
-                    Some((&source_rect, skia_safe::canvas::SrcRectConstraint::Fast)),
-                    dest_rect,
-                    sampling,
-                    &skia_safe::Paint::default(),
-                );
+        let source = ctx
+            .compile_port(&self.source)?
+            .into_raster(self.source.id, &self.source.port)?;
+        let size = lumen_gpu::Size::new(
+            ctx.static_dimension(&self.width, self.id, "width")?,
+            ctx.static_dimension(&self.height, self.id, "height")?,
+        );
+        let texture = ctx.builder_mut().texture_for(
+            lumen_gpu::NodeKey(self.id.0),
+            Some(format!("resize:{}:output", self.id.0)),
+            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        );
+        let params = ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(self.id.0),
+            Some(format!("resize:{}:params", self.id.0)),
+            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ResizeParams>() as u64),
+        );
+        let program = ctx.spatial_program(self.id, "resize", SHADER);
+        ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
+            label: Some(format!("resize:{}:apply", self.id.0)),
+            owner: Some(lumen_gpu::NodeKey(self.id.0)),
+            program,
+            bindings: compiler::spatial_bindings(source.texture, params, texture),
+            dispatch: compiler::dispatch_for(size),
+        });
+        ctx.builder_mut().param(
+            lumen_gpu::ParamKey {
+                owner: lumen_gpu::NodeKey(self.id.0),
+                slot: 0,
             },
-        )
+            lumen_gpu::ParamTarget::Buffer(params),
+        );
+        ctx.push_frame_binding(FrameBinding::Resize {
+            node_id: self.id,
+            width: self.width.clone(),
+            height: self.height.clone(),
+            mode: self.mode.clone(),
+            sampling: self.sampling.clone(),
+            buffer: params,
+        });
+
+        Ok(CompiledOutput::Raster(RasterHandle {
+            texture,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: source.metadata,
+        }))
     }
 }
 
-fn compute_rects(
-    source_width: u32,
-    source_height: u32,
-    dest_width: u32,
-    dest_height: u32,
-    mode: ResizeMode,
-) -> (Rect, Rect) {
-    let source_rect = Rect::from_wh(source_width as f32, source_height as f32);
-    let dest_rect = Rect::from_wh(dest_width as f32, dest_height as f32);
-
-    match mode {
-        ResizeMode::Stretch => (source_rect, dest_rect),
-        ResizeMode::Fit => {
-            let scale = (dest_width as f32 / source_width as f32)
-                .min(dest_height as f32 / source_height as f32);
-            let scaled_width = source_width as f32 * scale;
-            let scaled_height = source_height as f32 * scale;
-            let x_offset = (dest_width as f32 - scaled_width) * 0.5;
-            let y_offset = (dest_height as f32 - scaled_height) * 0.5;
-            (
-                source_rect,
-                Rect::from_xywh(x_offset, y_offset, scaled_width, scaled_height),
-            )
-        }
-        ResizeMode::Fill => {
-            let scale = (dest_width as f32 / source_width as f32)
-                .max(dest_height as f32 / source_height as f32);
-            let crop_width = dest_width as f32 / scale;
-            let crop_height = dest_height as f32 / scale;
-            let x_offset = (source_width as f32 - crop_width) * 0.5;
-            let y_offset = (source_height as f32 - crop_height) * 0.5;
-            (
-                Rect::from_xywh(x_offset, y_offset, crop_width, crop_height),
-                dest_rect,
-            )
-        }
+impl GpuFrameBindNode for Resize {
+    fn bind_gpu_frame(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        binding: &FrameBinding,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        let FrameBinding::Resize {
+            node_id,
+            width,
+            height,
+            mode,
+            sampling,
+            buffer,
+        } = binding
+        else {
+            return Ok(());
+        };
+        let params = compiler::ResizeParams {
+            size: [
+                width
+                    .resolve_int(*node_id, "width", &ctx.expr_context(*node_id, "width"))?
+                    .max(1) as u32,
+                height
+                    .resolve_int(*node_id, "height", &ctx.expr_context(*node_id, "height"))?
+                    .max(1) as u32,
+            ],
+            mode: ResizeMode::from_int(mode.resolve_int(
+                *node_id,
+                "mode",
+                &ctx.expr_context(*node_id, "mode"),
+            )?) as u32,
+            sampling: ResizeSampling::from_int(sampling.resolve_int(
+                *node_id,
+                "sampling",
+                &ctx.expr_context(*node_id, "sampling"),
+            )?) as u32,
+        };
+        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
     }
 }

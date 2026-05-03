@@ -1,6 +1,6 @@
-//! Node construction from JSON: type dispatch, property application, and port wiring.
+//! Node construction from JSON for the renderer-agnostic node schema.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Range};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -8,117 +8,61 @@ use serde_json::Value;
 use crate::{
     graph::Graph,
     node::{
-        NodeDef, NodeId, NodeKind, NodeProperty, PortRef,
-        compositing::{
-            boolean::Boolean, merge::Merge, raster_multimerge::RasterMultiMerge, switch::Switch,
-        },
+        NodeId, NodeKind, NodeProperty, PortRef, PropertyDef,
+        compositing::{merge::Merge, switch::Switch},
         media_output::MediaOutput,
         processing::{
-            alpha_premultiply::AlphaPremultiply, blur::Blur, channel_shuffle::ChannelShuffle,
-            color_grade::ColorGrade, crop::Crop, curves::Curves, exposure::Exposure,
-            hue_saturation::HueSaturation, levels::Levels, matte_cleanup::MatteCleanup, memo::Memo,
-            resize::Resize, shadow::Shadow, skia_shader::SkiaShader, time_remap::TimeRemap,
+            alpha_premultiply::AlphaPremultiply, channel_shuffle::ChannelShuffle,
+            color_grade::ColorGrade, crop::Crop, exposure::Exposure, hue_saturation::HueSaturation,
+            levels::Levels, memo::Memo, resize::Resize, time_remap::TimeRemap,
             transform::Transform,
         },
-        source::{media_in::MediaIn, solid_color::SolidColor, text::Text},
-        vector::{
-            path::BezierPath, shape::Shape, shape_renderer::ShapeRenderer,
-            vector_merge::VectorMerge, vector_multimerge::VectorMultiMerge,
-            vector_stroke_style::VectorStrokeStyle, vector_text::VectorText,
-            vector_transform::VectorTransform,
-        },
+        source::{media_in::MediaIn, solid_color::SolidColor},
+        vector::{shape::Shape, text::Text},
     },
 };
 
 use super::property::parse_property;
 
-/// Build a [`NodeKind`] from its JSON type name, id, and object data.
 pub fn build_node(
     kind: &str,
     id: NodeId,
     obj: &serde_json::Map<String, Value>,
 ) -> Result<NodeKind> {
-    let properties = obj.get("properties").and_then(|v| v.as_object());
+    let properties = obj.get("properties").and_then(Value::as_object);
 
     match kind {
-        "boolean" => Ok(NodeKind::Boolean(build_typed::<Boolean>(id, properties)?)),
-        "merge" => Ok(NodeKind::Merge(build_typed::<Merge>(id, properties)?)),
-        "raster_multimerge" => Ok(NodeKind::RasterMultimerge(build_typed::<RasterMultiMerge>(
+        "media_in" => Ok(NodeKind::MediaIn(build_media_in(id, properties)?)),
+        "solid_color" => Ok(NodeKind::SolidColor(build_solid_color(id, properties)?)),
+        "text" => Ok(NodeKind::Text(build_text(id, properties)?)),
+        "shape" => Ok(NodeKind::Shape(build_shape(id, properties)?)),
+        "merge" => Ok(NodeKind::Merge(build_merge(id, properties)?)),
+        "alpha_premultiply" => Ok(NodeKind::AlphaPremultiply(build_alpha_premultiply(
             id, properties,
         )?)),
-        "switch" => {
-            let mut node = Switch::default();
-            node.id = id;
-            if let Some(map_val) = obj.get("map") {
-                node.map = parse_switch_map(map_val)?;
-            }
-            Ok(NodeKind::Switch(node))
-        }
-        "alpha_premultiply" => Ok(NodeKind::AlphaPremultiply(build_typed::<AlphaPremultiply>(
+        "channel_shuffle" => Ok(NodeKind::ChannelShuffle(build_channel_shuffle(
             id, properties,
         )?)),
-        "blur" => Ok(NodeKind::Blur(build_typed::<Blur>(id, properties)?)),
-        "channel_shuffle" => Ok(NodeKind::ChannelShuffle(build_typed::<ChannelShuffle>(
+        "color_grade" => Ok(NodeKind::ColorGrade(build_color_grade(id, properties)?)),
+        "exposure" => Ok(NodeKind::Exposure(build_exposure(id, properties)?)),
+        "hue_saturation" => Ok(NodeKind::HueSaturation(build_hue_saturation(
             id, properties,
         )?)),
-        "color_grade" => Ok(NodeKind::ColorGrade(build_typed::<ColorGrade>(
-            id, properties,
-        )?)),
-        "crop" => Ok(NodeKind::Crop(build_typed::<Crop>(id, properties)?)),
-        "curves" => Ok(NodeKind::Curves(build_typed::<Curves>(id, properties)?)),
-        "exposure" => Ok(NodeKind::Exposure(build_typed::<Exposure>(id, properties)?)),
-        "hue_saturation" | "hsl" => Ok(NodeKind::HueSaturation(build_typed::<HueSaturation>(
-            id, properties,
-        )?)),
-        "levels" => Ok(NodeKind::Levels(build_typed::<Levels>(id, properties)?)),
-        "matte_cleanup" => Ok(NodeKind::MatteCleanup(build_typed::<MatteCleanup>(
-            id, properties,
-        )?)),
-        "memo" => Ok(NodeKind::Memo(build_typed::<Memo>(id, properties)?)),
-        "resize" => Ok(NodeKind::Resize(build_typed::<Resize>(id, properties)?)),
-        "shadow" => Ok(NodeKind::Shadow(build_typed::<Shadow>(id, properties)?)),
-        "skia_shader" => Ok(NodeKind::SkiaShader(build_skia_shader(id, properties)?)),
-        "time_remap" => Ok(NodeKind::TimeRemap(build_typed::<TimeRemap>(
-            id, properties,
-        )?)),
-        "transform" => Ok(NodeKind::Transform(build_typed::<Transform>(
-            id, properties,
-        )?)),
-        "media_in" => Ok(NodeKind::MediaIn(build_typed::<MediaIn>(id, properties)?)),
-        "solid_color" => Ok(NodeKind::SolidColor(build_typed::<SolidColor>(
-            id, properties,
-        )?)),
-        "text" => Ok(NodeKind::Text(build_typed::<Text>(id, properties)?)),
-        "bezier_path" | "path" => Ok(NodeKind::BezierPath(build_typed::<BezierPath>(
-            id, properties,
-        )?)),
-        "shape" => Ok(NodeKind::Shape(build_typed::<Shape>(id, properties)?)),
-        "shape_renderer" => Ok(NodeKind::ShapeRenderer(build_typed::<ShapeRenderer>(
-            id, properties,
-        )?)),
-        "vector_stroke_style" => Ok(NodeKind::VectorStrokeStyle(
-            build_typed::<VectorStrokeStyle>(id, properties)?,
-        )),
-        "vector_transform" => Ok(NodeKind::VectorTransform(build_typed::<VectorTransform>(
-            id, properties,
-        )?)),
-        "vector_merge" => Ok(NodeKind::VectorMerge(build_typed::<VectorMerge>(
-            id, properties,
-        )?)),
-        "vector_multimerge" => Ok(NodeKind::VectorMultimerge(build_typed::<VectorMultiMerge>(
-            id, properties,
-        )?)),
-        "vector_text" => Ok(NodeKind::VectorText(build_typed::<VectorText>(
-            id, properties,
-        )?)),
-        "media_output" => Ok(NodeKind::MediaOutput(build_typed::<MediaOutput>(
-            id, properties,
-        )?)),
-        other => bail!("unknown node type `{other}`"),
+        "levels" => Ok(NodeKind::Levels(build_levels(id, properties)?)),
+        "memo" => Ok(NodeKind::Memo(build_memo(id, properties)?)),
+        "time_remap" => Ok(NodeKind::TimeRemap(build_time_remap(id, properties)?)),
+        "transform" => Ok(NodeKind::Transform(build_transform(id, properties)?)),
+        "crop" => Ok(NodeKind::Crop(build_crop(id, properties)?)),
+        "resize" => Ok(NodeKind::Resize(build_resize(id, properties)?)),
+        "switch" => Ok(NodeKind::Switch(build_switch(id, obj)?)),
+        "media_output" => Ok(NodeKind::MediaOutput(MediaOutput {
+            id,
+            ..MediaOutput::default()
+        })),
+        other => bail!("unknown or unsupported node type `{other}`"),
     }
 }
 
-/// Wire a connection's target port on the destination node.
 pub fn wire_port_ref(
     graph: &mut Graph,
     to_node: NodeId,
@@ -127,217 +71,522 @@ pub fn wire_port_ref(
     from_port: &str,
 ) -> Result<()> {
     let port_ref = PortRef::new(from_node, from_port.to_string());
-
     let node = graph
         .nodes
         .get_mut(&to_node)
         .with_context(|| format!("node {to_node} not found for wiring"))?;
 
-    let wired = wire_node_kind(node, to_port, port_ref);
+    let wired = match node {
+        NodeKind::AlphaPremultiply(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::ChannelShuffle(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::ColorGrade(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::Exposure(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::HueSaturation(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::Levels(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::Memo(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::TimeRemap(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::Transform(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::Crop(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::Resize(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::Merge(node) if to_port == "base" => {
+            node.base = port_ref;
+            true
+        }
+        NodeKind::Merge(node) if to_port == "overlay" => {
+            node.overlay = port_ref;
+            true
+        }
+        NodeKind::Merge(node) if to_port == "mask" => {
+            node.mask = port_ref;
+            true
+        }
+        NodeKind::Switch(node) if to_port == "layers" => {
+            node.layers.push(port_ref);
+            true
+        }
+        NodeKind::MediaOutput(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        _ => false,
+    };
+
     if !wired {
         bail!("unknown input port `{to_port}` on node {to_node}");
     }
+
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/// Trait bound for types that can be built from JSON via macro-generated methods.
-///
-/// Every node struct gets `__set_property` and `__wire_input` from `#[derive(Node)]`,
-/// plus `NodeDef` for static property/port definitions. We only need `Default` + `NodeDef`
-/// and the generated setters — no manual per-type boilerplate.
-trait JsonBuildable: Default + NodeDef {
-    fn set_id(&mut self, id: NodeId);
-    fn set_property(&mut self, name: &str, value: NodeProperty) -> bool;
-}
-
-/// Blanket-style macro: every node has `pub id: NodeId` and `__set_property`.
-macro_rules! impl_json_buildable {
-    ($($ty:ty),* $(,)?) => {
-        $(
-            impl JsonBuildable for $ty {
-                fn set_id(&mut self, id: NodeId) { self.id = id; }
-                fn set_property(&mut self, name: &str, value: NodeProperty) -> bool {
-                    self.__set_property(name, value)
-                }
-            }
-        )*
-    };
-}
-
-impl_json_buildable!(
-    AlphaPremultiply,
-    Boolean,
-    BezierPath,
-    Merge,
-    RasterMultiMerge,
-    Switch,
-    Blur,
-    ChannelShuffle,
-    ColorGrade,
-    Crop,
-    Curves,
-    Exposure,
-    HueSaturation,
-    Levels,
-    MatteCleanup,
-    Memo,
-    Resize,
-    Shadow,
-    SkiaShader,
-    TimeRemap,
-    Transform,
-    MediaIn,
-    SolidColor,
-    Text,
-    Shape,
-    ShapeRenderer,
-    VectorMerge,
-    VectorMultiMerge,
-    VectorStrokeStyle,
-    VectorTransform,
-    VectorText,
-    MediaOutput,
-);
-
-fn build_typed<T: JsonBuildable>(
+fn build_media_in(
     id: NodeId,
     properties: Option<&serde_json::Map<String, Value>>,
-) -> Result<T> {
-    let mut node = T::default();
-    node.set_id(id);
+) -> Result<MediaIn> {
+    let mut node = MediaIn {
+        id,
+        ..MediaIn::default()
+    };
 
-    if let Some(props) = properties {
-        let defs = T::property_defs();
-        for (key, val) in props {
-            let def = defs.iter().find(|d| d.name == key.as_str());
-            let prop = parse_property(val, def, key)?;
-            if !node.set_property(key, prop) {
-                bail!("unknown property `{key}` on node {id}");
-            }
-        }
-    }
-
+    set_property(properties, "kind", &mut node.kind, None)?;
+    set_property(properties, "source", &mut node.source, None)?;
+    set_property(properties, "range_start", &mut node.range_start, None)?;
+    set_property(properties, "range_end", &mut node.range_end, None)?;
+    set_property(properties, "speed", &mut node.speed, None)?;
+    set_property(properties, "loop_mode", &mut node.loop_mode, None)?;
+    reject_unknown(
+        properties,
+        &[
+            "kind",
+            "source",
+            "asset",
+            "range_start",
+            "range_end",
+            "speed",
+            "loop_mode",
+        ],
+        id,
+    )?;
     Ok(node)
 }
 
-fn build_skia_shader(
+fn build_solid_color(
     id: NodeId,
     properties: Option<&serde_json::Map<String, Value>>,
-) -> Result<SkiaShader> {
-    let mut node = SkiaShader::default();
-    node.id = id;
-
-    let Some(props) = properties else {
-        return Ok(node);
+) -> Result<SolidColor> {
+    let mut node = SolidColor {
+        id,
+        ..SolidColor::default()
     };
 
-    let defs = SkiaShader::property_defs();
-    let mut legacy_uniforms: Vec<(&str, String)> = Vec::new();
-    let mut has_bindings_payload = false;
+    set_property(
+        properties,
+        "color",
+        &mut node.color,
+        Some(PropertyDef {
+            name: "color",
+            expected: crate::node::PropertyKind::Color,
+        }),
+    )?;
+    set_property(properties, "width", &mut node.width, None)?;
+    set_property(properties, "height", &mut node.height, None)?;
+    reject_unknown(properties, &["color", "width", "height"], id)?;
+    Ok(node)
+}
 
-    for (key, val) in props {
-        if matches!(
-            key.as_str(),
-            "uniform0" | "uniform1" | "uniform2" | "uniform3"
-        ) {
-            legacy_uniforms.push((key.as_str(), legacy_uniform_value(val, key)?));
-            continue;
-        }
+fn build_text(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Text> {
+    let mut node = Text {
+        id,
+        ..Text::default()
+    };
 
-        if key == "uniforms" {
-            let prop = parse_property(val, None, key)?;
-            node.bindings = prop;
-            has_bindings_payload = true;
-            continue;
-        }
+    set_property(properties, "content", &mut node.content, None)?;
+    set_property(properties, "font_family", &mut node.font_family, None)?;
+    set_property(properties, "font_size", &mut node.font_size, None)?;
+    set_property(properties, "font_weight", &mut node.font_weight, None)?;
+    set_property(properties, "font_style", &mut node.font_style, None)?;
+    set_property(properties, "max_width", &mut node.max_width, None)?;
+    set_property(
+        properties,
+        "position",
+        &mut node.position,
+        Some(PropertyDef {
+            name: "position",
+            expected: crate::node::PropertyKind::Vec2,
+        }),
+    )?;
+    set_property(
+        properties,
+        "color",
+        &mut node.color,
+        Some(PropertyDef {
+            name: "color",
+            expected: crate::node::PropertyKind::Color,
+        }),
+    )?;
+    set_property(
+        properties,
+        "alignment_horizontal",
+        &mut node.alignment_horizontal,
+        None,
+    )?;
+    set_property(
+        properties,
+        "alignment_vertical",
+        &mut node.alignment_vertical,
+        None,
+    )?;
+    reject_unknown(
+        properties,
+        &[
+            "content",
+            "font_family",
+            "font_size",
+            "font_weight",
+            "font_style",
+            "max_width",
+            "position",
+            "color",
+            "alignment_horizontal",
+            "alignment_vertical",
+        ],
+        id,
+    )?;
+    Ok(node)
+}
 
-        if key == "bindings" {
-            has_bindings_payload = true;
-        }
+fn build_shape(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Shape> {
+    let mut node = Shape {
+        id,
+        ..Shape::default()
+    };
 
-        let def = defs.iter().find(|d| d.name == key.as_str());
-        let prop = parse_property(val, def, key)?;
-        if !node.__set_property(key, prop) {
+    set_property(properties, "geometry_kind", &mut node.geometry_kind, None)?;
+    set_property(properties, "width", &mut node.width, None)?;
+    set_property(properties, "height", &mut node.height, None)?;
+    set_property(properties, "border_radius", &mut node.border_radius, None)?;
+    set_property(properties, "polygon_points", &mut node.polygon_points, None)?;
+    set_property(
+        properties,
+        "position",
+        &mut node.position,
+        Some(PropertyDef {
+            name: "position",
+            expected: crate::node::PropertyKind::Vec2,
+        }),
+    )?;
+    set_property(properties, "fill_enabled", &mut node.fill_enabled, None)?;
+    set_property(
+        properties,
+        "fill_color",
+        &mut node.fill_color,
+        Some(PropertyDef {
+            name: "fill_color",
+            expected: crate::node::PropertyKind::Color,
+        }),
+    )?;
+    set_property(properties, "stroke_enabled", &mut node.stroke_enabled, None)?;
+    set_property(
+        properties,
+        "stroke_color",
+        &mut node.stroke_color,
+        Some(PropertyDef {
+            name: "stroke_color",
+            expected: crate::node::PropertyKind::Color,
+        }),
+    )?;
+    set_property(properties, "stroke_width", &mut node.stroke_width, None)?;
+    reject_unknown(
+        properties,
+        &[
+            "geometry_kind",
+            "width",
+            "height",
+            "border_radius",
+            "polygon_points",
+            "position",
+            "fill_enabled",
+            "fill_color",
+            "stroke_enabled",
+            "stroke_color",
+            "stroke_width",
+        ],
+        id,
+    )?;
+    Ok(node)
+}
+
+fn build_merge(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Merge> {
+    let mut node = Merge {
+        id,
+        ..Merge::default()
+    };
+
+    set_property(properties, "opacity", &mut node.opacity, None)?;
+    set_property(properties, "blend_mode", &mut node.blend_mode, None)?;
+    reject_unknown(properties, &["opacity", "blend_mode"], id)?;
+    Ok(node)
+}
+
+fn build_alpha_premultiply(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<AlphaPremultiply> {
+    let mut node = AlphaPremultiply {
+        id,
+        ..AlphaPremultiply::default()
+    };
+
+    set_property(properties, "mode", &mut node.mode, None)?;
+    reject_unknown(properties, &["mode"], id)?;
+    Ok(node)
+}
+
+fn build_channel_shuffle(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<ChannelShuffle> {
+    let mut node = ChannelShuffle {
+        id,
+        ..ChannelShuffle::default()
+    };
+
+    set_property(properties, "red", &mut node.red, None)?;
+    set_property(properties, "green", &mut node.green, None)?;
+    set_property(properties, "blue", &mut node.blue, None)?;
+    set_property(properties, "alpha", &mut node.alpha, None)?;
+    reject_unknown(properties, &["red", "green", "blue", "alpha"], id)?;
+    Ok(node)
+}
+
+fn build_color_grade(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<ColorGrade> {
+    let mut node = ColorGrade {
+        id,
+        ..ColorGrade::default()
+    };
+
+    set_property(properties, "lut_source", &mut node.lut_source, None)?;
+    set_property(properties, "strength", &mut node.strength, None)?;
+    set_property(properties, "interpolation", &mut node.interpolation, None)?;
+    reject_unknown(properties, &["lut_source", "strength", "interpolation"], id)?;
+    Ok(node)
+}
+
+fn build_exposure(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<Exposure> {
+    let mut node = Exposure {
+        id,
+        ..Exposure::default()
+    };
+
+    set_property(properties, "exposure", &mut node.exposure, None)?;
+    set_property(properties, "contrast", &mut node.contrast, None)?;
+    set_property(properties, "offset", &mut node.offset, None)?;
+    reject_unknown(properties, &["exposure", "contrast", "offset"], id)?;
+    Ok(node)
+}
+
+fn build_hue_saturation(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<HueSaturation> {
+    let mut node = HueSaturation {
+        id,
+        ..HueSaturation::default()
+    };
+
+    set_property(properties, "hue_degrees", &mut node.hue_degrees, None)?;
+    set_property(properties, "saturation", &mut node.saturation, None)?;
+    set_property(properties, "lightness", &mut node.lightness, None)?;
+    reject_unknown(properties, &["hue_degrees", "saturation", "lightness"], id)?;
+    Ok(node)
+}
+
+fn build_levels(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Levels> {
+    let mut node = Levels {
+        id,
+        ..Levels::default()
+    };
+
+    set_property(properties, "black_point", &mut node.black_point, None)?;
+    set_property(properties, "white_point", &mut node.white_point, None)?;
+    set_property(properties, "gamma", &mut node.gamma, None)?;
+    set_property(properties, "output_black", &mut node.output_black, None)?;
+    set_property(properties, "output_white", &mut node.output_white, None)?;
+    reject_unknown(
+        properties,
+        &[
+            "black_point",
+            "white_point",
+            "gamma",
+            "output_black",
+            "output_white",
+        ],
+        id,
+    )?;
+    Ok(node)
+}
+
+fn build_memo(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Memo> {
+    let mut node = Memo {
+        id,
+        ..Memo::default()
+    };
+
+    set_property(properties, "cache_id", &mut node.cache_id, None)?;
+    set_property(
+        properties,
+        "allow_expressions",
+        &mut node.allow_expressions,
+        None,
+    )?;
+    reject_unknown(properties, &["cache_id", "allow_expressions"], id)?;
+    Ok(node)
+}
+
+fn build_time_remap(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<TimeRemap> {
+    let mut node = TimeRemap {
+        id,
+        ..TimeRemap::default()
+    };
+
+    set_property(properties, "frame", &mut node.frame, None)?;
+    set_property(properties, "loop_enabled", &mut node.loop_enabled, None)?;
+    set_property(properties, "loop_start", &mut node.loop_start, None)?;
+    set_property(properties, "loop_end", &mut node.loop_end, None)?;
+    reject_unknown(
+        properties,
+        &["frame", "loop_enabled", "loop_start", "loop_end"],
+        id,
+    )?;
+    Ok(node)
+}
+
+fn build_transform(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<Transform> {
+    let mut node = Transform {
+        id,
+        ..Transform::default()
+    };
+
+    set_property(properties, "scale_x", &mut node.scale_x, None)?;
+    set_property(properties, "scale_y", &mut node.scale_y, None)?;
+    set_property(properties, "translate_x", &mut node.translate_x, None)?;
+    set_property(properties, "translate_y", &mut node.translate_y, None)?;
+    set_property(properties, "rotate", &mut node.rotate, None)?;
+    set_property(properties, "pivot_x", &mut node.pivot_x, None)?;
+    set_property(properties, "pivot_y", &mut node.pivot_y, None)?;
+    set_property(properties, "sampling", &mut node.sampling, None)?;
+    reject_unknown(
+        properties,
+        &[
+            "scale_x",
+            "scale_y",
+            "translate_x",
+            "translate_y",
+            "rotate",
+            "pivot_x",
+            "pivot_y",
+            "sampling",
+        ],
+        id,
+    )?;
+    Ok(node)
+}
+
+fn build_crop(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Crop> {
+    let mut node = Crop {
+        id,
+        ..Crop::default()
+    };
+
+    set_property(properties, "x", &mut node.x, None)?;
+    set_property(properties, "y", &mut node.y, None)?;
+    set_property(properties, "width", &mut node.width, None)?;
+    set_property(properties, "height", &mut node.height, None)?;
+    reject_unknown(properties, &["x", "y", "width", "height"], id)?;
+    Ok(node)
+}
+
+fn build_resize(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Resize> {
+    let mut node = Resize {
+        id,
+        ..Resize::default()
+    };
+
+    set_property(properties, "width", &mut node.width, None)?;
+    set_property(properties, "height", &mut node.height, None)?;
+    set_property(properties, "mode", &mut node.mode, None)?;
+    set_property(properties, "sampling", &mut node.sampling, None)?;
+    reject_unknown(properties, &["width", "height", "mode", "sampling"], id)?;
+    Ok(node)
+}
+
+fn build_switch(id: NodeId, obj: &serde_json::Map<String, Value>) -> Result<Switch> {
+    let mut node = Switch {
+        id,
+        ..Switch::default()
+    };
+    if let Some(map) = obj.get("map") {
+        node.map = parse_switch_map(map)?;
+    }
+    Ok(node)
+}
+
+fn set_property(
+    properties: Option<&serde_json::Map<String, Value>>,
+    name: &str,
+    target: &mut NodeProperty,
+    def: Option<PropertyDef>,
+) -> Result<()> {
+    let Some(value) = properties.and_then(|properties| properties.get(name)) else {
+        return Ok(());
+    };
+    *target = parse_property(value, def.as_ref(), name)?;
+    Ok(())
+}
+
+fn reject_unknown(
+    properties: Option<&serde_json::Map<String, Value>>,
+    known: &[&str],
+    id: NodeId,
+) -> Result<()> {
+    let Some(properties) = properties else {
+        return Ok(());
+    };
+
+    for key in properties.keys() {
+        if !known.iter().any(|known| known == &key.as_str()) {
             bail!("unknown property `{key}` on node {id}");
         }
     }
 
-    if !has_bindings_payload && !legacy_uniforms.is_empty() {
-        node.bindings = NodeProperty::String(
-            legacy_uniforms
-                .into_iter()
-                .map(|(name, value)| format!("{name} = {value}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-    }
-
-    Ok(node)
+    Ok(())
 }
 
-fn legacy_uniform_value(value: &Value, name: &str) -> Result<String> {
-    if let Some(number) = value.as_f64() {
-        return Ok(number.to_string());
-    }
-    if let Some(number) = value.as_i64() {
-        return Ok(number.to_string());
-    }
-    if let Some(expression) = value.as_str().filter(|value| value.starts_with('=')) {
-        return Ok(expression.to_string());
-    }
-
-    bail!("legacy skia shader `{name}` expected number or expression")
-}
-
-/// Dispatch `__wire_input` through `NodeKind` to the inner node struct.
-fn wire_node_kind(node: &mut NodeKind, port: &str, port_ref: PortRef) -> bool {
-    match node {
-        NodeKind::Boolean(n) => n.__wire_input(port, port_ref),
-        NodeKind::Merge(n) => n.__wire_input(port, port_ref),
-        NodeKind::RasterMultimerge(n) => n.__wire_input(port, port_ref),
-        NodeKind::Switch(n) => n.__wire_input(port, port_ref),
-        NodeKind::AlphaPremultiply(n) => n.__wire_input(port, port_ref),
-        NodeKind::Blur(n) => n.__wire_input(port, port_ref),
-        NodeKind::ChannelShuffle(n) => n.__wire_input(port, port_ref),
-        NodeKind::ColorGrade(n) => n.__wire_input(port, port_ref),
-        NodeKind::Crop(n) => n.__wire_input(port, port_ref),
-        NodeKind::Curves(n) => n.__wire_input(port, port_ref),
-        NodeKind::Exposure(n) => n.__wire_input(port, port_ref),
-        NodeKind::HueSaturation(n) => n.__wire_input(port, port_ref),
-        NodeKind::Levels(n) => n.__wire_input(port, port_ref),
-        NodeKind::MatteCleanup(n) => n.__wire_input(port, port_ref),
-        NodeKind::Memo(n) => n.__wire_input(port, port_ref),
-        NodeKind::Resize(n) => n.__wire_input(port, port_ref),
-        NodeKind::Shadow(n) => n.__wire_input(port, port_ref),
-        NodeKind::SkiaShader(n) => n.__wire_input(
-            match port {
-                "source" | "input" => "inputs",
-                other => other,
-            },
-            port_ref,
-        ),
-        NodeKind::TimeRemap(n) => n.__wire_input(port, port_ref),
-        NodeKind::Transform(n) => n.__wire_input(port, port_ref),
-        NodeKind::MediaIn(n) => n.__wire_input(port, port_ref),
-        NodeKind::SolidColor(n) => n.__wire_input(port, port_ref),
-        NodeKind::Text(n) => n.__wire_input(port, port_ref),
-        NodeKind::BezierPath(n) => n.__wire_input(port, port_ref),
-        NodeKind::Shape(n) => n.__wire_input(port, port_ref),
-        NodeKind::ShapeRenderer(n) => n.__wire_input(port, port_ref),
-        NodeKind::VectorMerge(n) => n.__wire_input(port, port_ref),
-        NodeKind::VectorMultimerge(n) => n.__wire_input(port, port_ref),
-        NodeKind::VectorStrokeStyle(n) => n.__wire_input(port, port_ref),
-        NodeKind::VectorTransform(n) => n.__wire_input(port, port_ref),
-        NodeKind::VectorText(n) => n.__wire_input(port, port_ref),
-        NodeKind::MediaOutput(n) => n.__wire_input(port, port_ref),
-    }
-}
-
-fn parse_switch_map(val: &Value) -> Result<HashMap<u16, std::ops::Range<u32>>> {
+fn parse_switch_map(val: &Value) -> Result<HashMap<u16, Range<u32>>> {
     let obj = val.as_object().context("switch `map` must be an object")?;
     let mut result = HashMap::new();
     for (key, range_val) in obj {

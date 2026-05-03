@@ -1,6 +1,34 @@
 use std::sync::Arc;
 
-use crate::{error::MediaError, gpu_image::GpuImageFrame};
+use crate::error::MediaError;
+
+#[derive(Debug, Clone)]
+pub struct CpuMediaFrame {
+    pub rgba: Arc<Vec<u8>>,
+    pub width: u32,
+    pub height: u32,
+    pub row_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum MediaFrame {
+    CpuRgba(Arc<CpuMediaFrame>),
+    ExternalTexture(ExternalTextureFrame),
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalTextureFrame {
+    pub width: u32,
+    pub height: u32,
+    pub format: lumen_gpu::wgpu::TextureFormat,
+    pub handle: ExternalTextureHandle,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExternalTextureHandle {
+    WgpuTexture(Arc<lumen_gpu::wgpu::Texture>),
+    Platform(String),
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImageMetadata {
@@ -13,6 +41,7 @@ pub struct VideoMetadata {
     pub width: u32,
     pub height: u32,
     pub frame_count: u32,
+    pub fps: f32,
 }
 
 pub trait ImageResolver: Send + Sync {
@@ -20,7 +49,7 @@ pub trait ImageResolver: Send + Sync {
 
     fn metadata(&self) -> ImageMetadata;
 
-    fn gpu_image(&self) -> Result<Arc<GpuImageFrame>, MediaError>;
+    fn frame(&self) -> Result<MediaFrame, MediaError>;
 }
 
 pub trait VideoFrameResolver: Send + Sync {
@@ -32,7 +61,7 @@ pub trait VideoFrameResolver: Send + Sync {
         Ok(())
     }
 
-    fn frame(&self, frame: u32) -> Result<Arc<GpuImageFrame>, MediaError>;
+    fn frame(&self, frame: u32) -> Result<MediaFrame, MediaError>;
 
     fn retain_frames(&self, _frames: &[u32]) {}
 }

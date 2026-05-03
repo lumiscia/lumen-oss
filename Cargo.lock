@@ -192,8 +192,6 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools",
- "log",
- "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -1266,17 +1264,15 @@ name = "lumen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ash",
+ "bytemuck",
  "ffmpeg-next",
  "glemu",
  "image",
  "lumen-ffmpeg",
+ "lumen-gpu",
  "lumen-macros",
- "objc2",
- "objc2-metal",
  "serde",
  "serde_json",
- "skia-safe",
  "smallvec",
  "thiserror",
  "web-sys",
@@ -1325,6 +1321,8 @@ dependencies = [
  "image",
  "lumen",
  "lumen-ffmpeg",
+ "lumen-gpu",
+ "pollster",
  "serde_json",
  "tempfile",
 ]
@@ -2253,15 +2251,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_spanned"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2303,33 +2292,6 @@ name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
-
-[[package]]
-name = "skia-bindings"
-version = "0.95.0"
-dependencies = [
- "bindgen",
- "cc",
- "heck",
- "pkg-config",
- "regex",
- "serde_json",
- "skia-wasm-shims",
- "toml",
-]
-
-[[package]]
-name = "skia-safe"
-version = "0.95.0"
-dependencies = [
- "bitflags",
- "glemu",
- "skia-bindings",
-]
-
-[[package]]
-name = "skia-wasm-shims"
-version = "0.1.0"
 
 [[package]]
 name = "slab"
@@ -2547,45 +2509,6 @@ dependencies = [
  "rustls",
  "tokio",
 ]
-
-[[package]]
-name = "toml"
-version = "1.1.2+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81f3d15e84cbcd896376e6730314d59fb5a87f31e4b038454184435cd57defee"
-dependencies = [
- "indexmap",
- "serde_core",
- "serde_spanned",
- "toml_datetime",
- "toml_parser",
- "toml_writer",
- "winnow",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "1.1.1+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
-name = "toml_parser"
-version = "1.1.2+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
-dependencies = [
- "winnow",
-]
-
-[[package]]
-name = "toml_writer"
-version = "1.1.1+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "tower"
@@ -3394,12 +3317,6 @@ name = "windows_x86_64_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
-
-[[package]]
-name = "winnow"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09dac053f1cd375980747450bfc7250c264eaae0583872e845c0c7cd578872b5"
 
 [[package]]
 name = "wit-bindgen"

@@ -11,8 +11,7 @@ use lumen_ffmpeg::{
 
 use crate::{
     error::MediaError,
-    gpu_image::GpuImageFrame,
-    media::{VideoFrameResolver, VideoMetadata},
+    media::{CpuMediaFrame, MediaFrame, VideoFrameResolver, VideoMetadata},
 };
 
 use super::image::{FrameImage, FrameLruCache};
@@ -45,12 +44,12 @@ impl VideoDecodeWorker {
         }
     }
 
-    fn resolve_frame(&mut self, frame: u32) -> Result<Arc<GpuImageFrame>, MediaError> {
+    fn resolve_frame(&mut self, frame: u32) -> Result<Arc<CpuMediaFrame>, MediaError> {
         if let Some(cached) = self.cache.get(frame) {
             return Ok(cached);
         }
 
-        let decoded = self.decoder.decode_frame(frame)?.into_gpu_image()?;
+        let decoded = self.decoder.decode_frame(frame)?.into_media_frame()?;
         self.cache.insert(frame, Arc::clone(&decoded));
         Ok(decoded)
     }
@@ -352,7 +351,7 @@ enum WorkerRequest {
     },
     Resolve {
         frame: u32,
-        response_tx: mpsc::Sender<Result<Arc<GpuImageFrame>, MediaError>>,
+        response_tx: mpsc::Sender<Result<Arc<CpuMediaFrame>, MediaError>>,
     },
     Retain {
         frames: Vec<u32>,
@@ -444,6 +443,7 @@ impl FfmpegVideoResolver {
             width: decoder.width,
             height: decoder.height,
             frame_count: decoder.frame_count,
+            fps: decoder.fps as f32,
         };
         drop(decoder);
 
@@ -505,7 +505,7 @@ impl VideoFrameResolver for FfmpegVideoResolver {
             })
     }
 
-    fn frame(&self, frame: u32) -> Result<Arc<GpuImageFrame>, MediaError> {
+    fn frame(&self, frame: u32) -> Result<MediaFrame, MediaError> {
         if frame >= self.metadata.frame_count {
             return Err(MediaError::FrameOutOfRange {
                 media_source: self.id.clone(),
@@ -522,10 +522,13 @@ impl VideoFrameResolver for FfmpegVideoResolver {
                 details: "video decode worker is unavailable".to_string(),
             })?;
 
-        response_rx.recv().map_err(|_| MediaError::Decode {
-            media_source: self.id.clone(),
-            details: format!("video decode worker did not return frame {frame}"),
-        })?
+        response_rx
+            .recv()
+            .map_err(|_| MediaError::Decode {
+                media_source: self.id.clone(),
+                details: format!("video decode worker did not return frame {frame}"),
+            })?
+            .map(MediaFrame::CpuRgba)
     }
 
     fn retain_frames(&self, frames: &[u32]) {

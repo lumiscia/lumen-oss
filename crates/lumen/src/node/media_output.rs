@@ -1,19 +1,22 @@
-use crate::{
-    gpu_image::{AlphaMode, GpuImageFrame, RectI},
-    node::{
-        NodeId, NodeResult, PortRef,
-        compositing::merge::draw_frame_image,
-        pixel_utils::{ClearMode, render_to_surface_ephemeral},
-    },
-    render::RenderContext,
-};
-use lumen_macros::{Node, node_impl};
+use crate::node::{NodeId, PortRef};
 
-#[derive(Debug, Clone, Node)]
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
+    RasterHandle, compiler,
+};
+
+pub(crate) const SHADER: &str = include_str!("media_output.wgsl");
+
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "media_output",
+    label = "Media Output",
+    description = "Copies the compiled raster into the final composition output.",
+    category = "output"
+)]
 pub struct MediaOutput {
     pub id: NodeId,
-
-    #[input(kind = Raster)]
+    #[input()]
     pub source: PortRef,
 }
 
@@ -26,86 +29,74 @@ impl Default for MediaOutput {
     }
 }
 
-#[node_impl]
-impl MediaOutput {
-    #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext<'_>) -> crate::Result<GpuImageFrame> {
-        let source = match ctx.eval_once(&self.source)? {
-            NodeResult::Raster(raster) => raster,
-            NodeResult::Vector(_) => {
-                return Err(ctx.invalid_node_output_type(
-                    self.source.id,
-                    "GpuImageFrame",
-                    "Vector",
-                ));
-            }
-            NodeResult::None => return Err(ctx.missing_node_output_error(self.source.id)),
-        };
+impl GpuCompileNode for MediaOutput {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        if port.port != "output" {
+            return Err(ctx.missing_output(self.id, &port.port));
+        }
 
-        let output_rect = RectI::from_size(
-            ctx.renderer.composition.render_settings.width,
-            ctx.renderer.composition.render_settings.height,
+        let source = ctx
+            .compile_port(&self.source)?
+            .into_raster(self.source.id, &self.source.port)?;
+        let size = lumen_gpu::Size::new(
+            ctx.composition().render_settings.width.max(1),
+            ctx.composition().render_settings.height.max(1),
         );
-        let (target_w, target_h) = (output_rect.width, output_rect.height);
-        let (source_w, source_h) = source.dimensions();
-        let source_format = source.format_rect();
-        let source_data = source.data_rect();
+        let output = ctx.builder_mut().texture_for(
+            lumen_gpu::NodeKey(self.id.0),
+            Some("media-output:final".to_string()),
+            compiler::copyable_texture_desc(size),
+        );
+        let program = ctx.builder_mut().program_for(
+            lumen_gpu::NodeKey(self.id.0),
+            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+                label: Some("media-output".to_string()),
+                shader: SHADER.to_string(),
+                entry: "cs_main".to_string(),
+                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
+                    lumen_gpu::BindingLayoutEntry::texture(
+                        0,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                    ),
+                    lumen_gpu::BindingLayoutEntry::storage_texture(
+                        1,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+                    ),
+                ]),
+            }),
+        );
+        ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
+            label: Some("media-output:copy".to_string()),
+            owner: Some(lumen_gpu::NodeKey(self.id.0)),
+            program,
+            bindings: vec![
+                lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
+                lumen_gpu::Binding::storage_texture(0, 1, output),
+            ],
+            dispatch: compiler::dispatch_for(size),
+        });
 
-        if source_w == target_w
-            && source_h == target_h
-            && source_format == output_rect
-            && source_data == output_rect
-        {
-            return Ok(source);
-        }
+        Ok(CompiledOutput::Raster(RasterHandle {
+            texture: output,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: source.metadata,
+        }))
+    }
+}
 
-        if target_w == 0 || target_h == 0 {
-            return render_to_surface_ephemeral(
-                target_w.max(1),
-                target_h.max(1),
-                ctx,
-                output_rect,
-                output_rect,
-                AlphaMode::Premultiplied,
-                ClearMode::Transparent,
-                |_| {},
-            );
-        }
-
-        let source_alpha = source.alpha_mode();
-        let Some((image, storage_w, storage_h)) = source.image_parts() else {
-            return render_to_surface_ephemeral(
-                target_w,
-                target_h,
-                ctx,
-                output_rect,
-                output_rect,
-                source_alpha,
-                ClearMode::Transparent,
-                |_| {},
-            );
-        };
-
-        render_to_surface_ephemeral(
-            target_w,
-            target_h,
-            ctx,
-            output_rect,
-            output_rect,
-            source_alpha,
-            ClearMode::Transparent,
-            |canvas| {
-                draw_frame_image(
-                    canvas,
-                    &image,
-                    storage_w,
-                    storage_h,
-                    source_format,
-                    source_data,
-                    output_rect,
-                    None,
-                );
-            },
-        )
+impl GpuFrameBindNode for MediaOutput {
+    fn bind_gpu_frame(
+        &self,
+        _ctx: &FrameBindContext<'_>,
+        _binding: &FrameBinding,
+        _bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        Ok(())
     }
 }

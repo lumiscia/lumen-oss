@@ -1,33 +1,31 @@
 use std::ops::Range;
 
-use crate::{
-    error::MediaError,
-    expr::ExpressionContext,
-    gpu_image::GpuImageFrame,
-    media::MediaStore,
-    node::{NodeId, NodeProperty},
-    render::{RenderContext, surface::SurfacePool},
+use crate::error::{MediaError, RenderError};
+use crate::media::{CpuMediaFrame, MediaFrame};
+use crate::node::{NodeId, NodeProperty};
+
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
+    RasterHandle, RasterMetadata,
 };
-use lumen_macros::{Node, node_impl};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopMode {
-    None,
+    Clamp,
     Repeat,
-    PingPong,
 }
 
 impl LoopMode {
     pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Repeat,
-            2 => Self::PingPong,
-            _ => Self::None,
+        if value == 1 {
+            Self::Repeat
+        } else {
+            Self::Clamp
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum MediaInKind {
     Image {
         image_id: String,
@@ -40,21 +38,26 @@ pub enum MediaInKind {
     },
 }
 
-#[derive(Debug, Clone, Node)]
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "media_in",
+    label = "Media In",
+    description = "Binds an external image or video frame as a GPU texture.",
+    category = "source"
+)]
 pub struct MediaIn {
     pub id: NodeId,
-
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub kind: NodeProperty,
-    #[property(expected = String)]
+    #[property(kind = "string")]
     pub source: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub range_start: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub range_end: NodeProperty,
-    #[property(expected = Float)]
+    #[property(kind = "float")]
     pub speed: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub loop_mode: NodeProperty,
 }
 
@@ -72,43 +75,9 @@ impl Default for MediaIn {
     }
 }
 
-#[node_impl]
-impl MediaIn {
-    #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
-        let kind = self.resolve_kind(ctx)?;
-        let source = self.resolve_source(ctx)?;
-        let range_start = self.resolve_range_start(ctx)?;
-        let range_end = self.resolve_range_end(ctx)?;
-        let speed = self.resolve_speed(ctx)? as f32;
-        let loop_mode = LoopMode::from_int(self.resolve_loop_mode(ctx)?);
-
-        let media = if kind == 0 {
-            MediaInKind::Image { image_id: source }
-        } else {
-            MediaInKind::Video {
-                stream_id: source,
-                range: resolve_range(range_start, range_end),
-                speed,
-                loop_mode,
-            }
-        };
-
-        match &media {
-            MediaInKind::Image { image_id } => evaluate_image(image_id, ctx),
-            MediaInKind::Video {
-                stream_id,
-                range,
-                speed,
-                loop_mode,
-            } => evaluate_video(stream_id, range.as_ref(), *speed, *loop_mode, ctx),
-        }
-    }
-}
-
 pub fn resolve_for_context(
     media_in: &MediaIn,
-    ctx: &ExpressionContext<'_>,
+    ctx: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<MediaInKind> {
     let kind = media_in.kind.resolve_int(media_in.id, "kind", ctx)?;
     let source = media_in.source.resolve_string(media_in.id, "source", ctx)?;
@@ -125,70 +94,29 @@ pub fn resolve_for_context(
         ctx,
     )?);
 
-    if kind == 0 {
-        Ok(MediaInKind::Image { image_id: source })
-    } else {
+    if kind == 1 {
         Ok(MediaInKind::Video {
             stream_id: source,
             range: resolve_range(range_start, range_end),
             speed,
             loop_mode,
         })
+    } else {
+        Ok(MediaInKind::Image { image_id: source })
     }
 }
 
 pub fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
-    let start = u32::try_from(start).ok()?;
-    let end = u32::try_from(end).ok()?;
-    (end > start).then_some(start..end)
-}
-
-fn evaluate_image<S: SurfacePool, M: MediaStore>(
-    image_id: &str,
-    ctx: &mut RenderContext<'_, S, M>,
-) -> crate::Result<GpuImageFrame> {
-    let resolver = ctx
-        .renderer
-        .media_store
-        .get_image_resolver(image_id)
-        .ok_or_else(|| MediaError::SourceNotFound {
-            media_source: image_id.to_string(),
-        })?;
-    let _meta = resolver.metadata();
-    let decoded = resolver.gpu_image()?;
-    Ok((*decoded).clone())
-}
-
-fn evaluate_video<S: SurfacePool, M: MediaStore>(
-    stream_id: &str,
-    range: Option<&Range<u32>>,
-    speed: f32,
-    loop_mode: LoopMode,
-    ctx: &mut RenderContext<'_, S, M>,
-) -> crate::Result<GpuImageFrame> {
-    let resolver = ctx
-        .renderer
-        .media_store
-        .get_video_resolver(stream_id)
-        .ok_or_else(|| MediaError::SourceNotFound {
-            media_source: stream_id.to_string(),
-        })?;
-    let meta = resolver.metadata();
-    let frame_count = meta.frame_count;
-    let source_frame = map_to_source_frame(ctx.frame, frame_count, range, speed, loop_mode).ok_or(
-        MediaError::FrameOutOfRange {
-            media_source: stream_id.to_string(),
-            frame: ctx.frame,
-            frame_count,
-        },
-    )?;
-
-    let decoded = resolver.frame(source_frame)?;
-    Ok((*decoded).clone())
+    if end <= start {
+        return None;
+    }
+    Some(start.max(0) as u32..end.max(0) as u32)
 }
 
 pub fn map_to_source_frame(
-    timeline_frame: u32,
+    frame: u32,
+    composition_fps: f32,
+    source_fps: f32,
     frame_count: u32,
     range: Option<&Range<u32>>,
     speed: f32,
@@ -197,43 +125,159 @@ pub fn map_to_source_frame(
     if frame_count == 0 {
         return None;
     }
-
-    let (start, end) = range
-        .map(|trim| (trim.start.min(frame_count), trim.end.min(frame_count)))
-        .unwrap_or((0, frame_count));
+    let start = range.map(|range| range.start).unwrap_or(0);
+    let end = range
+        .map(|range| range.end)
+        .unwrap_or(frame_count)
+        .min(frame_count);
     if end <= start {
         return None;
     }
-
-    let duration = u64::from(end - start);
-    let playback_speed = if speed.is_finite() && speed.abs() > f32::EPSILON {
-        speed as f64
-    } else {
-        1.0
+    let span = end - start;
+    let comp_fps = composition_fps.max(1.0);
+    let media_fps = source_fps.max(comp_fps);
+    let relative = (((frame as f64 / comp_fps as f64) * media_fps as f64) * speed.max(0.0) as f64)
+        .floor() as u32;
+    let mapped = match loop_mode {
+        LoopMode::Clamp => start + relative.min(span.saturating_sub(1)),
+        LoopMode::Repeat => start + (relative % span),
     };
-    let reverse = playback_speed.is_sign_negative();
-    let stepped = (f64::from(timeline_frame) * playback_speed.abs())
-        .floor()
-        .max(0.0) as u64;
+    (mapped < frame_count).then_some(mapped)
+}
 
-    let forward_offset = match loop_mode {
-        LoopMode::None => stepped.min(duration.saturating_sub(1)),
-        LoopMode::Repeat => stepped % duration,
-        LoopMode::PingPong => {
-            let cycle = duration.saturating_mul(2);
-            let pos = if cycle == 0 { 0 } else { stepped % cycle };
-            if pos < duration {
-                pos
-            } else {
-                cycle.saturating_sub(pos).saturating_sub(1)
-            }
+impl GpuCompileNode for MediaIn {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &crate::node::PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        if port.port != "output" {
+            return Err(ctx.missing_output(self.id, &port.port));
         }
-    };
 
-    let offset = if reverse {
-        duration.saturating_sub(1).saturating_sub(forward_offset)
-    } else {
-        forward_offset
-    };
-    u32::try_from(u64::from(start).saturating_add(offset)).ok()
+        let size = lumen_gpu::Size::new(
+            ctx.composition().render_settings.width.max(1),
+            ctx.composition().render_settings.height.max(1),
+        );
+        let texture = ctx.builder_mut().texture_for(
+            lumen_gpu::NodeKey(self.id.0),
+            Some(format!("media-in:{}:frame", self.id.0)),
+            lumen_gpu::TextureDesc::sampled(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        );
+        ctx.builder_mut().param(
+            lumen_gpu::ParamKey {
+                owner: lumen_gpu::NodeKey(self.id.0),
+                slot: 0,
+            },
+            lumen_gpu::ParamTarget::Texture(texture),
+        );
+        ctx.push_frame_binding(FrameBinding::MediaInput {
+            node_id: self.id,
+            source: self.source.clone(),
+            texture,
+        });
+
+        Ok(CompiledOutput::Raster(RasterHandle {
+            texture,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: RasterMetadata::default(),
+        }))
+    }
+}
+
+impl GpuFrameBindNode for MediaIn {
+    fn bind_gpu_frame(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        binding: &FrameBinding,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        let FrameBinding::MediaInput {
+            node_id, texture, ..
+        } = binding
+        else {
+            return Ok(());
+        };
+        let media = ctx.media().ok_or_else(|| RenderError::NodeEvaluation {
+            frame: ctx.frame(),
+            node_id: *node_id,
+            node_kind: "MediaIn",
+            details: "media store is required for media input nodes".to_string(),
+        })?;
+        let kind = resolve_for_context(self, &ctx.expr_context(*node_id, "source"))?;
+        let frame = match kind {
+            MediaInKind::Image { image_id } => media
+                .get_image_resolver(&image_id)
+                .ok_or_else(|| MediaError::SourceNotFound {
+                    media_source: image_id.clone(),
+                })?
+                .frame()?,
+            MediaInKind::Video {
+                stream_id,
+                range,
+                speed,
+                loop_mode,
+            } => {
+                let resolver = media.get_video_resolver(&stream_id).ok_or_else(|| {
+                    MediaError::SourceNotFound {
+                        media_source: stream_id.clone(),
+                    }
+                })?;
+                let metadata = resolver.metadata();
+                let source_frame = map_to_source_frame(
+                    ctx.frame(),
+                    ctx.expr_context(*node_id, "source").fps,
+                    metadata.fps,
+                    metadata.frame_count,
+                    range.as_ref(),
+                    speed,
+                    loop_mode,
+                )
+                .ok_or_else(|| MediaError::FrameOutOfRange {
+                    media_source: stream_id.clone(),
+                    frame: ctx.frame(),
+                    frame_count: metadata.frame_count,
+                })?;
+                resolver.frame(source_frame)?
+            }
+        };
+        let MediaFrame::CpuRgba(frame) = frame else {
+            return Err(RenderError::NodeEvaluation {
+                frame: ctx.frame(),
+                node_id: *node_id,
+                node_kind: "MediaIn",
+                details:
+                    "external texture media frames are not imported by the local GPU renderer yet"
+                        .to_string(),
+            }
+            .into());
+        };
+        let width = ctx.expr_context(*node_id, "source").width.max(1);
+        let height = ctx.expr_context(*node_id, "source").height.max(1);
+        let rgba = fit_frame_to_rgba8(&frame, width, height);
+        bound.write_texture_rgba8(*texture, rgba, width * 4, height);
+        Ok(())
+    }
+}
+
+fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32) -> Vec<u8> {
+    if frame.width == width && frame.height == height && frame.row_bytes == width as usize * 4 {
+        return frame.rgba.as_ref().clone();
+    }
+
+    let mut out = vec![0; width as usize * height as usize * 4];
+    for y in 0..height {
+        let src_y = ((u64::from(y) * u64::from(frame.height)) / u64::from(height)) as usize;
+        for x in 0..width {
+            let src_x = ((u64::from(x) * u64::from(frame.width)) / u64::from(width)) as usize;
+            let src = src_y
+                .saturating_mul(frame.row_bytes)
+                .saturating_add(src_x.saturating_mul(4));
+            let dst = (y as usize)
+                .saturating_mul(width as usize * 4)
+                .saturating_add(x as usize * 4);
+            out[dst..dst + 4].copy_from_slice(&frame.rgba[src..src + 4]);
+        }
+    }
+    out
 }

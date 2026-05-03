@@ -1,90 +1,86 @@
 use std::{collections::HashMap, ops::Range};
 
-use crate::{
-    error::RenderError,
-    gpu_image::{AlphaMode, GpuImageFrame, RectI},
-    media::MediaStore,
-    node::{
-        NodeId, PortRef,
-        pixel_utils::{ClearMode, render_to_surface_ephemeral},
-    },
-    render::{RenderContext, surface::SurfacePool},
-};
-use lumen_macros::{Node, node_impl};
+use crate::node::{NodeId, PortRef};
 
-#[derive(Debug, Clone, Node)]
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
+    compiler,
+};
+
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "switch",
+    label = "Switch",
+    description = "Selects one raster input according to configured frame ranges.",
+    category = "compositing"
+)]
 pub struct Switch {
     pub id: NodeId,
-    pub map: HashMap<u16, Range<u32>>,
-
-    #[input(kind = Raster, optional, variadic)]
+    #[input(optional, variadic)]
     pub layers: Vec<PortRef>,
-}
-
-impl Switch {
-    pub fn new(map: HashMap<u16, Range<u32>>) -> Self {
-        Self {
-            map,
-            ..Self::default()
-        }
-    }
-
-    fn transparent_output<S: SurfacePool, M: MediaStore>(
-        ctx: &mut RenderContext<'_, S, M>,
-    ) -> crate::Result<GpuImageFrame> {
-        let w = ctx.renderer.composition.render_settings.width;
-        let h = ctx.renderer.composition.render_settings.height;
-        let pixel_count = w.checked_mul(h).ok_or(RenderError::SurfaceAllocation {
-            width: w,
-            height: h,
-        })?;
-        let _ = pixel_count;
-        render_to_surface_ephemeral(
-            w,
-            h,
-            ctx,
-            RectI::from_size(w, h),
-            RectI::from_size(w, h),
-            AlphaMode::Premultiplied,
-            ClearMode::Transparent,
-            |_| {},
-        )
-    }
+    pub map: HashMap<u16, Range<u32>>,
 }
 
 impl Default for Switch {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            map: HashMap::new(),
             layers: Vec::new(),
+            map: HashMap::new(),
         }
     }
 }
 
-#[node_impl]
-impl Switch {
-    #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
-        let selected_index = self
-            .map
-            .iter()
-            .filter_map(|(index, frame_range)| frame_range.contains(&ctx.frame).then_some(*index))
-            .min();
-
-        let Some(index) = selected_index else {
-            return Self::transparent_output(ctx);
-        };
-
-        let Some(layer) = self.layers.get(index as usize) else {
-            return Self::transparent_output(ctx);
-        };
-
-        if layer.is_empty() {
-            return Self::transparent_output(ctx);
+impl GpuCompileNode for Switch {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        if port.port != "output" {
+            return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let value = ctx.eval(layer)?;
-        value.as_raster()?.snapshot()
+        let selected_layer = compiler::selected_switch_layer(self, 0);
+        ctx.push_frame_binding(FrameBinding::Switch {
+            node_id: self.id,
+            selected_layer,
+        });
+
+        let Some(index) = selected_layer else {
+            return Ok(ctx.compile_transparent(self.id));
+        };
+        let Some(layer) = self.layers.get(index) else {
+            return Ok(ctx.compile_transparent(self.id));
+        };
+        if layer.is_empty() {
+            return Ok(ctx.compile_transparent(self.id));
+        }
+        ctx.compile_port(layer)
+    }
+}
+
+impl GpuFrameBindNode for Switch {
+    fn bind_gpu_frame(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        binding: &FrameBinding,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        if let FrameBinding::SolidColor {
+            node_id,
+            color,
+            buffer,
+        } = binding
+        {
+            let color =
+                color.resolve_color(*node_id, "color", &ctx.expr_context(*node_id, "color"))?;
+            bound.write_buffer(
+                *buffer,
+                0,
+                bytemuck::bytes_of(&compiler::ColorParams::from_rgba8(color)),
+            );
+        }
+        Ok(())
     }
 }

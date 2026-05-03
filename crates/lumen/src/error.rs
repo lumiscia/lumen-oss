@@ -140,6 +140,8 @@ pub enum RenderError {
     BackendBusy { backend: &'static str },
     #[error("render cancelled")]
     Cancelled { frame: u32 },
+    #[error("GPU render failed: {details}")]
+    Gpu { details: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]

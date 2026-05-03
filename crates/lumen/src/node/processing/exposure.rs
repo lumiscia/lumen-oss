@@ -1,25 +1,28 @@
-use crate::{
-    gpu_image::GpuImageFrame,
-    node::{
-        NodeId, NodeProperty, PortRef,
-        processing::gpu_shader::{ShaderUniform, apply_runtime_shader},
-    },
-    render::RenderContext,
-};
-use lumen_macros::{Node, node_impl};
+use crate::node::{NodeId, NodeProperty, PortRef};
 
-#[derive(Debug, Clone, Node)]
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
+    RasterHandle, compiler,
+};
+
+pub(crate) const SHADER: &str = include_str!("exposure.wgsl");
+
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "exposure",
+    label = "Exposure",
+    description = "Adjusts raster exposure, contrast, and offset.",
+    category = "processing"
+)]
 pub struct Exposure {
     pub id: NodeId,
-
-    #[property(expected = Float)]
+    #[property(kind = "float")]
     pub exposure: NodeProperty,
-    #[property(expected = Float)]
+    #[property(kind = "float")]
     pub contrast: NodeProperty,
-    #[property(expected = Float)]
+    #[property(kind = "float")]
     pub offset: NodeProperty,
-
-    #[input(kind = Raster)]
+    #[input()]
     pub source: PortRef,
 }
 
@@ -35,76 +38,71 @@ impl Default for Exposure {
     }
 }
 
-#[node_impl]
-impl Exposure {
-    #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
-        let exposure = self.resolve_exposure(ctx)? as f32;
-        let contrast = self.resolve_contrast(ctx)? as f32;
-        let offset = self.resolve_offset(ctx)? as f32;
-        let source_result = ctx.eval(&self.source)?;
-        let source = source_result.as_raster()?;
-        let params = [exposure, contrast, offset];
-
-        apply_runtime_shader(
-            source,
-            EXPOSURE_SHADER,
-            &[ShaderUniform {
-                name: "params",
-                values: &params,
-            }],
-            source.alpha_mode(),
+impl GpuCompileNode for Exposure {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
-            "Exposure",
-            ctx.frame,
-            ctx,
-        )
+            &self.source,
+            port,
+            "exposure",
+            SHADER,
+            std::mem::size_of::<compiler::ExposureParams>() as u64,
+        )?;
+        ctx.push_frame_binding(FrameBinding::Exposure {
+            node_id: self.id,
+            exposure: self.exposure.clone(),
+            contrast: self.contrast.clone(),
+            offset: self.offset.clone(),
+            buffer: params,
+        });
+        Ok(CompiledOutput::Raster(RasterHandle {
+            texture,
+            domain: source.domain,
+            metadata: source.metadata,
+        }))
     }
 }
 
-const EXPOSURE_SHADER: &str = r#"
-uniform shader source;
-uniform float params[3];
-
-half4 main(float2 coord) {
-    half4 color = source.eval(coord);
-    float exposureGain = exp2(params[0]);
-    float3 rgb = float3(color.rgb) * exposureGain + params[2];
-    rgb = (rgb - 0.5) * params[1] + 0.5;
-    return half4(half3(clamp(rgb, 0.0, 1.0)), color.a);
-}
-"#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{gpu_image::AlphaMode, node::processing::test_support};
-
-    #[test]
-    fn exposure_sksl_applies_gain_offset_and_contrast() {
-        let source = test_support::frame_from_pixel([64, 128, 192, 200], AlphaMode::Premultiplied);
-        let params = [1.0, 1.5, 0.0];
-
-        let output = test_support::with_test_context(1, 1, |ctx| {
-            apply_runtime_shader(
-                &source,
-                EXPOSURE_SHADER,
-                &[ShaderUniform {
-                    name: "params",
-                    values: &params,
-                }],
-                source.alpha_mode(),
-                NodeId::new(1),
-                "Exposure",
-                ctx.frame,
-                ctx,
-            )
-        })
-        .expect("shader output");
-
-        assert_eq!(
-            test_support::read_first_pixel(&output),
-            [128, 255, 255, 200]
-        );
+impl GpuFrameBindNode for Exposure {
+    fn bind_gpu_frame(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        binding: &FrameBinding,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        let FrameBinding::Exposure {
+            node_id,
+            exposure,
+            contrast,
+            offset,
+            buffer,
+        } = binding
+        else {
+            return Ok(());
+        };
+        let params = compiler::ExposureParams {
+            exposure: exposure.resolve_float(
+                *node_id,
+                "exposure",
+                &ctx.expr_context(*node_id, "exposure"),
+            )? as f32,
+            contrast: contrast.resolve_float(
+                *node_id,
+                "contrast",
+                &ctx.expr_context(*node_id, "contrast"),
+            )? as f32,
+            offset: offset.resolve_float(
+                *node_id,
+                "offset",
+                &ctx.expr_context(*node_id, "offset"),
+            )? as f32,
+            _pad: 0.0,
+        };
+        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
     }
 }

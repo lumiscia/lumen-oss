@@ -1,6 +1,4 @@
-pub mod boolean;
 pub mod merge;
-pub mod raster_multimerge;
 pub mod switch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -13,19 +11,6 @@ pub enum BlendMode {
     Overlay = 3,
     Darken = 4,
     Lighten = 5,
-}
-
-impl From<BlendMode> for skia_safe::BlendMode {
-    fn from(value: BlendMode) -> Self {
-        match value {
-            BlendMode::Normal => Self::SrcOver,
-            BlendMode::Multiply => Self::Multiply,
-            BlendMode::Screen => Self::Screen,
-            BlendMode::Overlay => Self::Overlay,
-            BlendMode::Darken => Self::Darken,
-            BlendMode::Lighten => Self::Lighten,
-        }
-    }
 }
 
 impl TryFrom<usize> for BlendMode {

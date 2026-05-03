@@ -1,38 +1,56 @@
-use crate::{
-    node::{
-        NodeId, NodeProperty, ShapeGeometry, VectorData, VectorPosition, VectorStroke, VectorStyle,
-    },
-    render::RenderContext,
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
 };
-use lumen_macros::{Node, node_impl};
+use crate::node::{NodeId, NodeProperty, PortRef};
 
-#[derive(Debug, Clone, Node)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
+pub enum ShapeGeometryKind {
+    Rectangle = 0,
+    Ellipse = 1,
+    Polygon = 2,
+}
+
+impl ShapeGeometryKind {
+    pub fn from_int(value: i64) -> Self {
+        match value {
+            1 => Self::Ellipse,
+            2 => Self::Polygon,
+            _ => Self::Rectangle,
+        }
+    }
+}
+
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "shape",
+    label = "Shape",
+    description = "Produces a vector shape layer for GPU rasterization.",
+    category = "vector"
+)]
 pub struct Shape {
     pub id: NodeId,
-
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub geometry_kind: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub width: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub height: NodeProperty,
-    #[property(expected = Float)]
+    #[property(kind = "float")]
     pub border_radius: NodeProperty,
-    #[property(expected = String)]
+    #[property(kind = "string")]
     pub polygon_points: NodeProperty,
-
-    #[property(expected = Vec2)]
+    #[property(kind = "vec2")]
     pub position: NodeProperty,
-
-    #[property(expected = Bool)]
+    #[property(kind = "bool")]
     pub fill_enabled: NodeProperty,
-    #[property(expected = Color)]
+    #[property(kind = "color")]
     pub fill_color: NodeProperty,
-    #[property(expected = Bool)]
+    #[property(kind = "bool")]
     pub stroke_enabled: NodeProperty,
-    #[property(expected = Color)]
+    #[property(kind = "color")]
     pub stroke_color: NodeProperty,
-    #[property(expected = Float)]
+    #[property(kind = "float")]
     pub stroke_width: NodeProperty,
 }
 
@@ -40,13 +58,13 @@ impl Default for Shape {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            geometry_kind: NodeProperty::Int(0),
+            geometry_kind: NodeProperty::Int(ShapeGeometryKind::Rectangle as i64),
             width: NodeProperty::Int(1),
             height: NodeProperty::Int(1),
             border_radius: NodeProperty::Float(0.0),
             polygon_points: NodeProperty::String(String::new()),
             position: NodeProperty::Vec2((0.0, 0.0)),
-            fill_enabled: NodeProperty::Bool(false),
+            fill_enabled: NodeProperty::Bool(true),
             fill_color: NodeProperty::Color([255, 255, 255, 255]),
             stroke_enabled: NodeProperty::Bool(false),
             stroke_color: NodeProperty::Color([0, 0, 0, 255]),
@@ -55,104 +73,109 @@ impl Default for Shape {
     }
 }
 
-#[node_impl]
-impl Shape {
-    #[output(port = "vector", kind = Vector)]
-    fn eval_vector(&self, ctx: &mut RenderContext) -> crate::Result<VectorData> {
-        let width = self.resolve_width(ctx)?;
-        let height = self.resolve_height(ctx)?;
-        let border_radius = self.resolve_border_radius(ctx)? as f32;
-        let polygon_points = self.resolve_polygon_points(ctx)?;
-        let geometry = resolve_geometry(
-            self.resolve_geometry_kind(ctx)?,
+impl GpuCompileNode for Shape {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        crate::node::vector::renderer::VectorRenderer::new(ctx).compile_shape(self, port)
+    }
+}
+
+impl GpuFrameBindNode for Shape {
+    fn bind_gpu_frame(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        binding: &FrameBinding,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        let FrameBinding::Shape {
+            node_id,
+            geometry_kind,
             width,
             height,
             border_radius,
-            &polygon_points,
-        );
-
-        let (x, y) = self.resolve_position(ctx)?;
-        let position = VectorPosition {
-            x: x as f32,
-            y: y as f32,
-        };
-
-        let fill = if self.resolve_fill_enabled(ctx)? {
-            Some(self.resolve_fill_color(ctx)?)
-        } else {
-            None
-        };
-
-        let stroke = if self.resolve_stroke_enabled(ctx)? {
-            Some(VectorStroke {
-                color: self.resolve_stroke_color(ctx)?,
-                width: (self.resolve_stroke_width(ctx)? as f32).max(0.0),
-            })
-        } else {
-            None
-        };
-
-        Ok(VectorData::Shape {
-            geometry,
-            style: VectorStyle {
-                color: fill,
-                stroke,
-            },
             position,
-        })
+            fill_enabled,
+            fill_color,
+            stroke_enabled,
+            stroke_color,
+            stroke_width,
+            buffer,
+        } = binding
+        else {
+            return Ok(());
+        };
+        let (x, y) = position.resolve_vec2(
+            *node_id,
+            "position",
+            &ctx.expr_context(*node_id, "position"),
+        )?;
+        let fill = fill_color.resolve_color(
+            *node_id,
+            "fill_color",
+            &ctx.expr_context(*node_id, "fill_color"),
+        )?;
+        let stroke = stroke_color.resolve_color(
+            *node_id,
+            "stroke_color",
+            &ctx.expr_context(*node_id, "stroke_color"),
+        )?;
+        let mut flags = 0;
+        if fill_enabled.resolve_bool(
+            *node_id,
+            "fill_enabled",
+            &ctx.expr_context(*node_id, "fill_enabled"),
+        )? {
+            flags |= 1;
+        }
+        if stroke_enabled.resolve_bool(
+            *node_id,
+            "stroke_enabled",
+            &ctx.expr_context(*node_id, "stroke_enabled"),
+        )? {
+            flags |= 2;
+        }
+        let params = super::renderer::ShapeParams {
+            fill_color: rgba8_to_f32(fill),
+            stroke_color: rgba8_to_f32(stroke),
+            position: [x as f32, y as f32],
+            size: [
+                width
+                    .resolve_int(*node_id, "width", &ctx.expr_context(*node_id, "width"))?
+                    .max(1) as f32,
+                height
+                    .resolve_int(*node_id, "height", &ctx.expr_context(*node_id, "height"))?
+                    .max(1) as f32,
+            ],
+            border_radius: border_radius.resolve_float(
+                *node_id,
+                "border_radius",
+                &ctx.expr_context(*node_id, "border_radius"),
+            )? as f32,
+            stroke_width: stroke_width.resolve_float(
+                *node_id,
+                "stroke_width",
+                &ctx.expr_context(*node_id, "stroke_width"),
+            )? as f32,
+            geometry_kind: ShapeGeometryKind::from_int(geometry_kind.resolve_int(
+                *node_id,
+                "geometry_kind",
+                &ctx.expr_context(*node_id, "geometry_kind"),
+            )?) as u32,
+            flags,
+        };
+        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
     }
 }
 
-impl Shape {
-    pub fn with_color(mut self, color: [u8; 4]) -> Self {
-        self.fill_enabled = NodeProperty::Bool(true);
-        self.fill_color = NodeProperty::Color(color);
-        self
-    }
-
-    pub fn with_stroke(mut self, stroke: VectorStroke) -> Self {
-        self.stroke_enabled = NodeProperty::Bool(true);
-        self.stroke_color = NodeProperty::Color(stroke.color);
-        self.stroke_width = NodeProperty::Float(f64::from(stroke.width));
-        self
-    }
-
-    pub fn with_position(mut self, position: VectorPosition) -> Self {
-        self.position = NodeProperty::Vec2((f64::from(position.x), f64::from(position.y)));
-        self
-    }
-}
-
-fn resolve_geometry(
-    geometry_kind: i64,
-    width: i64,
-    height: i64,
-    border_radius: f32,
-    polygon_points: &str,
-) -> ShapeGeometry {
-    let width = width.max(1) as u32;
-    let height = height.max(1) as u32;
-
-    match geometry_kind {
-        1 => ShapeGeometry::Ellipse { width, height },
-        2 => ShapeGeometry::Polygon {
-            points: parse_polygon_points(polygon_points),
-        },
-        _ => ShapeGeometry::Rectangle {
-            width,
-            height,
-            border_radius,
-        },
-    }
-}
-
-fn parse_polygon_points(raw: &str) -> Vec<(f32, f32)> {
-    raw.split(';')
-        .filter_map(|pair| {
-            let mut parts = pair.trim().split(',');
-            let x = parts.next()?.trim().parse::<f32>().ok()?;
-            let y = parts.next()?.trim().parse::<f32>().ok()?;
-            Some((x, y))
-        })
-        .collect()
+fn rgba8_to_f32(color: [u8; 4]) -> [f32; 4] {
+    [
+        f32::from(color[0]) / 255.0,
+        f32::from(color[1]) / 255.0,
+        f32::from(color[2]) / 255.0,
+        f32::from(color[3]) / 255.0,
+    ]
 }
