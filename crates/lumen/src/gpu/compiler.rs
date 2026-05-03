@@ -33,18 +33,45 @@ pub trait GpuFrameBindNode {
 #[derive(Debug)]
 pub struct CompileContext<'a> {
     composition: &'a Composition,
+    media: Option<&'a dyn MediaStore>,
     builder: lumen_gpu::RenderPlanBuilder,
     outputs: HashMap<PortRef, CompiledOutput>,
     frame_bindings: Vec<FrameBinding>,
+    output_format: lumen_gpu::wgpu::TextureFormat,
 }
 
 impl<'a> CompileContext<'a> {
     pub fn new(composition: &'a Composition) -> Self {
+        Self::with_output_format(composition, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+    }
+
+    pub fn with_output_format(
+        composition: &'a Composition,
+        output_format: lumen_gpu::wgpu::TextureFormat,
+    ) -> Self {
+        Self::with_options(composition, None, output_format)
+    }
+
+    pub fn with_media<M: MediaStore>(
+        composition: &'a Composition,
+        media: &'a M,
+        output_format: lumen_gpu::wgpu::TextureFormat,
+    ) -> Self {
+        Self::with_options(composition, Some(media), output_format)
+    }
+
+    fn with_options(
+        composition: &'a Composition,
+        media: Option<&'a dyn MediaStore>,
+        output_format: lumen_gpu::wgpu::TextureFormat,
+    ) -> Self {
         Self {
             composition,
+            media,
             builder: lumen_gpu::RenderPlan::builder(),
             outputs: HashMap::new(),
             frame_bindings: Vec::new(),
+            output_format,
         }
     }
 
@@ -64,6 +91,14 @@ impl<'a> CompileContext<'a> {
 
     pub(crate) fn composition(&self) -> &Composition {
         self.composition
+    }
+
+    pub(crate) fn media(&self) -> Option<&dyn MediaStore> {
+        self.media
+    }
+
+    pub(crate) fn output_format(&self) -> lumen_gpu::wgpu::TextureFormat {
+        self.output_format
     }
 
     pub(crate) fn builder_mut(&mut self) -> &mut lumen_gpu::RenderPlanBuilder {
@@ -371,7 +406,11 @@ impl<'a> CompileContext<'a> {
         Ok(output)
     }
 
-    fn expr_context(&self, node_id: NodeId, property_path: &str) -> ExpressionContext<'_> {
+    pub(crate) fn expr_context(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+    ) -> ExpressionContext<'_> {
         ExpressionContext {
             frame: 0,
             fps: self.composition.timeline.fps,
@@ -639,10 +678,6 @@ pub(crate) fn spatial_bindings(
         lumen_gpu::Binding::uniform(0, 1, params),
         lumen_gpu::Binding::storage_texture(0, 2, output),
     ]
-}
-
-pub(crate) fn max_size(left: lumen_gpu::Size, right: lumen_gpu::Size) -> lumen_gpu::Size {
-    lumen_gpu::Size::new(left.width.max(right.width), left.height.max(right.height))
 }
 
 pub(crate) fn selected_switch_layer(

@@ -2,6 +2,10 @@ use lumen::{
     composition::{Composition, RenderSettings, TimelineSettings},
     gpu::{CompileContext, FrameBindContext, FrameBinding},
     graph::{Connection, Graph},
+    media::{
+        CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
+        VideoMetadata,
+    },
     node::{
         NodeId, NodeKind, NodeProperty, PortRef,
         compositing::{merge::Merge, switch::Switch},
@@ -16,7 +20,7 @@ use lumen::{
         vector::{shape::Shape, text::Text},
     },
 };
-use std::{collections::HashMap, ops::Range};
+use std::{collections::HashMap, ops::Range, sync::Arc};
 
 #[test]
 fn compiles_solid_color_exposure_media_output_to_gpu_plan() {
@@ -249,6 +253,106 @@ fn compiles_media_input_as_frame_texture_boundary() {
     assert_eq!(
         compiled.output.domain.storage_size,
         lumen_gpu::Size::new(16, 9)
+    );
+}
+
+#[test]
+fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
+    let base = NodeId::new(1);
+    let overlay = NodeId::new(2);
+    let merge = NodeId::new(3);
+    let output = NodeId::new(4);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        base,
+        NodeKind::SolidColor(SolidColor {
+            id: base,
+            width: NodeProperty::Int(1920),
+            height: NodeProperty::Int(1080),
+            color: NodeProperty::Color([0, 0, 0, 255]),
+        }),
+    );
+    graph.nodes.insert(
+        overlay,
+        NodeKind::MediaIn(MediaIn {
+            id: overlay,
+            source: NodeProperty::String("plate".to_string()),
+            ..MediaIn::default()
+        }),
+    );
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            base: PortRef::new(base, "output".to_string()),
+            overlay: PortRef::new(overlay, "output".to_string()),
+            ..Merge::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+
+    let composition = Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 24.0,
+            duration_frames: 12,
+        },
+        RenderSettings {
+            width: 1920,
+            height: 1080,
+            background_color: [0, 0, 0, 255],
+        },
+    );
+    let store = TestMediaStore::image("plate", 320, 180);
+    let compiled = CompileContext::with_media(
+        &composition,
+        &store,
+        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+    )
+    .compile()
+    .unwrap();
+
+    let media_raster = compiled
+        .node_outputs
+        .get(&PortRef::new(overlay, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(overlay, "output")
+        .unwrap();
+    let merge_raster = compiled
+        .node_outputs
+        .get(&PortRef::new(merge, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(merge, "output")
+        .unwrap();
+
+    assert_eq!(
+        media_raster.domain.storage_size,
+        lumen_gpu::Size::new(320, 180)
+    );
+    assert_eq!(
+        merge_raster.domain.storage_size,
+        lumen_gpu::Size::new(1920, 1080)
+    );
+    assert_eq!(
+        compiled.output.domain.storage_size,
+        lumen_gpu::Size::new(1920, 1080)
+    );
+
+    let bound = FrameBindContext::with_media(&composition, 0, &store)
+        .bind(&compiled)
+        .unwrap();
+    let uploads = bound.frame_update();
+    assert!(
+        format!("{uploads:?}").contains("bytes_per_row: 1280"),
+        "media upload should use native 320px row bytes: {uploads:?}"
     );
 }
 
@@ -707,4 +811,71 @@ fn test_composition(graph: Graph) -> Composition {
             background_color: [0, 0, 0, 255],
         },
     )
+}
+
+#[derive(Debug, Clone)]
+struct TestMediaStore {
+    id: String,
+    frame: Arc<CpuMediaFrame>,
+}
+
+impl TestMediaStore {
+    fn image(id: &str, width: u32, height: u32) -> Self {
+        let bytes = vec![255; width as usize * height as usize * 4];
+        Self {
+            id: id.to_string(),
+            frame: Arc::new(CpuMediaFrame {
+                rgba: Arc::new(bytes),
+                width,
+                height,
+                row_bytes: width as usize * 4,
+            }),
+        }
+    }
+}
+
+impl MediaStore for TestMediaStore {
+    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+        (source == self.id).then(|| Box::new(self.clone()) as Box<dyn ImageResolver>)
+    }
+
+    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        (stream_id == self.id).then(|| Box::new(self.clone()) as Box<dyn VideoFrameResolver>)
+    }
+}
+
+impl ImageResolver for TestMediaStore {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn metadata(&self) -> ImageMetadata {
+        ImageMetadata {
+            width: self.frame.width,
+            height: self.frame.height,
+        }
+    }
+
+    fn frame(&self) -> Result<MediaFrame, lumen::error::MediaError> {
+        Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
+    }
+}
+
+impl VideoFrameResolver for TestMediaStore {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn metadata(&self) -> VideoMetadata {
+        VideoMetadata {
+            width: self.frame.width,
+            height: self.frame.height,
+            frame_count: 1,
+            fps: 24.0,
+        }
+    }
+
+    fn frame(&self, _frame: u32) -> Result<MediaFrame, lumen::error::MediaError> {
+        Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
+    }
 }

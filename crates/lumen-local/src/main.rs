@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env, fs,
     io::Write,
     path::{Component, Path, PathBuf},
@@ -27,7 +27,7 @@ use lumen_ffmpeg::{
 };
 use lumen_ffmpeg::{GpuBackend, gpu_texture_encode_support};
 #[cfg(target_os = "macos")]
-use lumen_ffmpeg::{GpuVideoInput, MetalPixelBufferPool, MetalTextureCache};
+use lumen_ffmpeg::{GpuVideoInput, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache};
 
 #[derive(Debug)]
 struct CliArgs {
@@ -39,6 +39,7 @@ struct CliArgs {
 }
 
 const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
+const GPU_ENCODER_FRAMES_IN_FLIGHT: usize = 3;
 
 struct EncoderFrame {
     frame: u32,
@@ -54,6 +55,8 @@ struct LumenFfmpegEncoder {
 #[derive(Debug, Default, Clone)]
 struct RenderTiming {
     audio_mix_ms: u128,
+    bind_ms: u128,
+    upload_ms: u128,
     render_ms: u128,
     flush_ms: u128,
     readback_ms: u128,
@@ -529,7 +532,11 @@ fn render_mp4(
     let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
         .context("failed to create GPU renderer")?;
     renderer
-        .compile(&composition)
+        .compile_with_media(
+            &composition,
+            &media_store,
+            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+        )
         .context("failed to compile composition")?;
     let mut timings = RenderTiming::default();
     let audio_started = Instant::now();
@@ -565,10 +572,26 @@ fn render_mp4(
         mpsc::sync_channel::<Vec<u8>>(ENCODER_FRAME_QUEUE_CAPACITY + 2);
 
     for frame in 0..total_frames {
+        let bind_started = Instant::now();
+        let bound = renderer
+            .bind_frame(&composition, frame, &media_store)
+            .with_context(|| format!("frame bind failed at frame {frame}"))?;
+        timings.bind_ms = timings
+            .bind_ms
+            .saturating_add(bind_started.elapsed().as_millis());
+
+        let upload_started = Instant::now();
+        renderer
+            .upload_bound_frame(&bound)
+            .with_context(|| format!("frame upload failed at frame {frame}"))?;
+        timings.upload_ms = timings
+            .upload_ms
+            .saturating_add(upload_started.elapsed().as_millis());
+
         let render_frame_started = Instant::now();
-        let raster = renderer
-            .render_frame(&composition, frame, &media_store)
-            .with_context(|| format!("render failed at frame {frame}"))?;
+        let (raster, _submission) = renderer
+            .submit_render()
+            .with_context(|| format!("render submit failed at frame {frame}"))?;
         timings.render_ms = timings
             .render_ms
             .saturating_add(render_frame_started.elapsed().as_millis());
@@ -635,10 +658,12 @@ fn render_mp4(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} mux_ms={} total_ms={}",
+        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} mux_ms={} total_ms={}",
         output.display(),
         total_frames,
         timings.audio_mix_ms,
+        timings.bind_ms,
+        timings.upload_ms,
         timings.render_ms,
         timings.flush_ms,
         timings.readback_ms,
@@ -663,8 +688,16 @@ fn render_video_gpu_videotoolbox(
     let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
         .context("failed to create GPU renderer")?;
     renderer
-        .compile(&composition)
+        .compile_with_media(
+            &composition,
+            &media_store,
+            lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
+        )
         .context("failed to compile composition")?;
+    let output_handle = renderer
+        .compiled()
+        .ok_or_else(|| anyhow!("composition did not compile"))?
+        .output;
 
     let mut config = VideoEncoderConfig::h264_rgba(
         width,
@@ -687,15 +720,8 @@ fn render_video_gpu_videotoolbox(
 
     let mut timings = RenderTiming::default();
     let render_started = Instant::now();
+    let mut pending = VecDeque::<PendingGpuEncodeFrame>::new();
     for frame in 0..total_frames {
-        let render_frame_started = Instant::now();
-        let raster = renderer
-            .render_frame(&composition, frame, &media_store)
-            .with_context(|| format!("render failed at frame {frame}"))?;
-        timings.render_ms = timings
-            .render_ms
-            .saturating_add(render_frame_started.elapsed().as_millis());
-
         let pixel_frame = pixel_buffer_pool.create_frame(Some(i64::from(frame)))?;
         let metal_texture = pixel_frame.create_texture(
             &texture_cache,
@@ -709,28 +735,58 @@ fn render_video_gpu_videotoolbox(
             height,
             lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
         )?;
+        let old_texture = renderer.gpu_renderer_mut().replace_texture(
+            output_handle.texture,
+            output_texture,
+            external_output_texture_desc(
+                lumen_gpu::Size::new(width, height),
+                lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
+            ),
+        )?;
+        if let Some(previous) = pending.back_mut() {
+            previous.retained_texture = Some(old_texture);
+        }
 
-        let flush_started = Instant::now();
-        render_texture_to_external_bgra(renderer.gpu_renderer(), raster.texture, &output_texture)?;
+        let bind_started = Instant::now();
+        let bound = renderer
+            .bind_frame(&composition, frame, &media_store)
+            .with_context(|| format!("frame bind failed at frame {frame}"))?;
+        timings.bind_ms = timings
+            .bind_ms
+            .saturating_add(bind_started.elapsed().as_millis());
+
+        let upload_started = Instant::now();
         renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())?;
-        timings.flush_ms = timings
-            .flush_ms
-            .saturating_add(flush_started.elapsed().as_millis());
+            .upload_bound_frame(&bound)
+            .with_context(|| format!("frame upload failed at frame {frame}"))?;
+        timings.upload_ms = timings
+            .upload_ms
+            .saturating_add(upload_started.elapsed().as_millis());
 
-        let encode_send_started = Instant::now();
-        encoder
-            .write_gpu_frame(&GpuVideoInput::MetalPixelBuffer(&pixel_frame))
-            .map_err(|error| anyhow!("lumen-ffmpeg GPU encode failed at frame {frame}: {error}"))?;
-        timings.encode_send_ms = timings
-            .encode_send_ms
-            .saturating_add(encode_send_started.elapsed().as_millis());
+        let render_frame_started = Instant::now();
+        let (_raster, submission) = renderer
+            .submit_render()
+            .with_context(|| format!("render submit failed at frame {frame}"))?;
+        timings.render_ms = timings
+            .render_ms
+            .saturating_add(render_frame_started.elapsed().as_millis());
+
+        pending.push_back(PendingGpuEncodeFrame {
+            frame,
+            pixel_frame,
+            submission,
+            retained_texture: None,
+        });
+        if pending.len() >= GPU_ENCODER_FRAMES_IN_FLIGHT {
+            encode_ready_gpu_frame(&renderer, &mut encoder, &mut timings, &mut pending)?;
+        }
 
         if frame == 0 || frame + 1 == total_frames || frame % 60 == 0 {
             println!("progress frame={}/{}", frame + 1, total_frames);
         }
+    }
+    while !pending.is_empty() {
+        encode_ready_gpu_frame(&renderer, &mut encoder, &mut timings, &mut pending)?;
     }
 
     let encode_finish_started = Instant::now();
@@ -741,15 +797,63 @@ fn render_video_gpu_videotoolbox(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={}",
+        "render complete output={} frames={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={}",
         output.display(),
         total_frames,
+        timings.bind_ms,
+        timings.upload_ms,
         timings.render_ms,
         timings.flush_ms,
         timings.encode_send_ms,
         timings.encode_finish_ms,
         total_ms,
     );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+struct PendingGpuEncodeFrame {
+    frame: u32,
+    pixel_frame: MetalPixelBufferFrame,
+    submission: lumen_gpu::wgpu::SubmissionIndex,
+    retained_texture: Option<lumen_gpu::wgpu::Texture>,
+}
+
+#[cfg(target_os = "macos")]
+fn encode_ready_gpu_frame(
+    renderer: &GpuCompositionRenderer,
+    encoder: &mut MuxedEncoder,
+    timings: &mut RenderTiming,
+    pending: &mut VecDeque<PendingGpuEncodeFrame>,
+) -> Result<()> {
+    let PendingGpuEncodeFrame {
+        frame,
+        pixel_frame,
+        submission,
+        retained_texture,
+    } = pending
+        .pop_front()
+        .ok_or_else(|| anyhow!("no pending GPU frame to encode"))?;
+    let flush_started = Instant::now();
+    renderer
+        .gpu_renderer()
+        .device
+        .poll(lumen_gpu::wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: None,
+        })?;
+    timings.flush_ms = timings
+        .flush_ms
+        .saturating_add(flush_started.elapsed().as_millis());
+
+    let encode_send_started = Instant::now();
+    encoder
+        .write_gpu_frame(&GpuVideoInput::MetalPixelBuffer(&pixel_frame))
+        .map_err(|error| anyhow!("lumen-ffmpeg GPU encode failed at frame {}: {error}", frame))?;
+    timings.encode_send_ms = timings
+        .encode_send_ms
+        .saturating_add(encode_send_started.elapsed().as_millis());
+    drop(retained_texture);
     Ok(())
 }
 
@@ -820,173 +924,16 @@ fn import_metal_texture_as_wgpu(
 }
 
 #[cfg(target_os = "macos")]
-fn render_texture_to_external_bgra(
-    renderer: &lumen_gpu::Renderer,
-    source: lumen_gpu::TextureId,
-    destination: &lumen_gpu::wgpu::Texture,
-) -> Result<()> {
-    let source_view = renderer
-        .texture_view(source)
-        .ok_or_else(|| anyhow!("rendered output texture is missing"))?;
-    let destination_view =
-        destination.create_view(&lumen_gpu::wgpu::TextureViewDescriptor::default());
-    let sampler = renderer
-        .device
-        .create_sampler(&lumen_gpu::wgpu::SamplerDescriptor {
-            label: Some("lumen-local videotoolbox copy sampler"),
-            address_mode_u: lumen_gpu::wgpu::AddressMode::ClampToEdge,
-            address_mode_v: lumen_gpu::wgpu::AddressMode::ClampToEdge,
-            address_mode_w: lumen_gpu::wgpu::AddressMode::ClampToEdge,
-            mag_filter: lumen_gpu::wgpu::FilterMode::Nearest,
-            min_filter: lumen_gpu::wgpu::FilterMode::Nearest,
-            mipmap_filter: lumen_gpu::wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-    let shader = renderer
-        .device
-        .create_shader_module(lumen_gpu::wgpu::ShaderModuleDescriptor {
-            label: Some("lumen-local videotoolbox bgra blit shader"),
-            source: lumen_gpu::wgpu::ShaderSource::Wgsl(
-                r#"
-@group(0) @binding(0) var source_texture: texture_2d<f32>;
-@group(0) @binding(1) var source_sampler: sampler;
-
-struct VertexOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
-    let positions = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -3.0),
-        vec2<f32>(3.0, 1.0),
-        vec2<f32>(-1.0, 1.0),
-    );
-    let position = positions[vertex_index];
-    var out: VertexOut;
-    out.position = vec4<f32>(position, 0.0, 1.0);
-    out.uv = position * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
-    return out;
-}
-
-@fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    return textureSample(source_texture, source_sampler, in.uv);
-}
-"#
-                .into(),
-            ),
-        });
-    let bind_group_layout =
-        renderer
-            .device
-            .create_bind_group_layout(&lumen_gpu::wgpu::BindGroupLayoutDescriptor {
-                label: Some("lumen-local videotoolbox bgra blit bgl"),
-                entries: &[
-                    lumen_gpu::wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: lumen_gpu::wgpu::ShaderStages::FRAGMENT,
-                        ty: lumen_gpu::wgpu::BindingType::Texture {
-                            sample_type: lumen_gpu::wgpu::TextureSampleType::Float {
-                                filterable: true,
-                            },
-                            view_dimension: lumen_gpu::wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    lumen_gpu::wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: lumen_gpu::wgpu::ShaderStages::FRAGMENT,
-                        ty: lumen_gpu::wgpu::BindingType::Sampler(
-                            lumen_gpu::wgpu::SamplerBindingType::Filtering,
-                        ),
-                        count: None,
-                    },
-                ],
-            });
-    let bind_group = renderer
-        .device
-        .create_bind_group(&lumen_gpu::wgpu::BindGroupDescriptor {
-            label: Some("lumen-local videotoolbox bgra blit bg"),
-            layout: &bind_group_layout,
-            entries: &[
-                lumen_gpu::wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: lumen_gpu::wgpu::BindingResource::TextureView(source_view),
-                },
-                lumen_gpu::wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: lumen_gpu::wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-    let pipeline_layout =
-        renderer
-            .device
-            .create_pipeline_layout(&lumen_gpu::wgpu::PipelineLayoutDescriptor {
-                label: Some("lumen-local videotoolbox bgra blit layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
-    let pipeline =
-        renderer
-            .device
-            .create_render_pipeline(&lumen_gpu::wgpu::RenderPipelineDescriptor {
-                label: Some("lumen-local videotoolbox bgra blit pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: lumen_gpu::wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: lumen_gpu::wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: lumen_gpu::wgpu::MultisampleState::default(),
-                fragment: Some(lumen_gpu::wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(lumen_gpu::wgpu::ColorTargetState {
-                        format: lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
-                        blend: Some(lumen_gpu::wgpu::BlendState::REPLACE),
-                        write_mask: lumen_gpu::wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-    let mut encoder =
-        renderer
-            .device
-            .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
-                label: Some("lumen-local videotoolbox bgra blit encoder"),
-            });
-    {
-        let mut pass = encoder.begin_render_pass(&lumen_gpu::wgpu::RenderPassDescriptor {
-            label: Some("lumen-local videotoolbox bgra blit pass"),
-            color_attachments: &[Some(lumen_gpu::wgpu::RenderPassColorAttachment {
-                view: &destination_view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: lumen_gpu::wgpu::Operations {
-                    load: lumen_gpu::wgpu::LoadOp::Clear(lumen_gpu::wgpu::Color::TRANSPARENT),
-                    store: lumen_gpu::wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.draw(0..3, 0..1);
+fn external_output_texture_desc(
+    size: lumen_gpu::Size,
+    format: lumen_gpu::wgpu::TextureFormat,
+) -> lumen_gpu::TextureDesc {
+    lumen_gpu::TextureDesc {
+        domain: lumen_gpu::TextureDomain::full_frame(size),
+        format,
+        usage: lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT
+            | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING,
     }
-    renderer.queue.submit([encoder.finish()]);
-    Ok(())
 }
 
 fn render_audio_raw(

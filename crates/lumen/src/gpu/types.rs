@@ -188,6 +188,7 @@ pub enum FrameBinding {
         node_id: NodeId,
         source: crate::node::NodeProperty,
         texture: lumen_gpu::TextureId,
+        size: lumen_gpu::Size,
     },
 }
 

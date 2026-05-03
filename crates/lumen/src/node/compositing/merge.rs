@@ -66,7 +66,7 @@ impl GpuCompileNode for Merge {
             )
         };
 
-        let size = compiler::max_size(base.domain.storage_size, overlay.domain.storage_size);
+        let size = base.domain.storage_size;
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("merge:{}:output", self.id.0)),

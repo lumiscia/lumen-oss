@@ -115,11 +115,38 @@ impl Renderer {
             .map(|texture| &texture.texture)
     }
 
+    pub fn replace_texture(
+        &mut self,
+        id: TextureId,
+        texture: wgpu::Texture,
+        desc: TextureDesc,
+    ) -> Result<wgpu::Texture> {
+        let runtime = self
+            .textures
+            .get_mut(id.0 as usize)
+            .ok_or_else(|| anyhow!("unknown texture id {id:?}"))?;
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let old = std::mem::replace(&mut runtime.texture, texture);
+        runtime.view = view;
+        runtime.desc = desc;
+        Ok(old)
+    }
+
+    pub fn replace_texture_discard_old(
+        &mut self,
+        id: TextureId,
+        texture: wgpu::Texture,
+        desc: TextureDesc,
+    ) -> Result<()> {
+        let _ = self.replace_texture(id, texture, desc)?;
+        Ok(())
+    }
+
     pub fn copy_texture_to_external(
         &self,
         source_id: TextureId,
         destination: &wgpu::Texture,
-    ) -> Result<()> {
+    ) -> Result<wgpu::SubmissionIndex> {
         let source = self.runtime_texture(source_id)?;
         let mut encoder = self
             .device
@@ -141,7 +168,15 @@ impl Renderer {
             },
             source.desc.domain.storage_size.as_extent(),
         );
-        self.queue.submit([encoder.finish()]);
+        Ok(self.queue.submit([encoder.finish()]))
+    }
+
+    pub fn copy_texture_to_external_discard_submission(
+        &self,
+        source_id: TextureId,
+        destination: &wgpu::Texture,
+    ) -> Result<()> {
+        let _ = self.copy_texture_to_external(source_id, destination)?;
         Ok(())
     }
 
@@ -149,9 +184,26 @@ impl Renderer {
         self.buffers.get(id.0 as usize).map(|buffer| &buffer.buffer)
     }
 
-    pub fn execute(&mut self, plan: &RenderPlan, update: &FrameUpdate<'_>) -> Result<()> {
+    pub fn execute(
+        &mut self,
+        plan: &RenderPlan,
+        update: &FrameUpdate<'_>,
+    ) -> Result<wgpu::SubmissionIndex> {
+        self.apply_frame_update(plan, update)?;
+        self.submit_plan(plan)
+    }
+
+    pub fn apply_frame_update(
+        &mut self,
+        plan: &RenderPlan,
+        update: &FrameUpdate<'_>,
+    ) -> Result<()> {
         self.validate_prepared(plan)?;
-        self.apply_uploads(update)?;
+        self.apply_uploads(update)
+    }
+
+    pub fn submit_plan(&mut self, plan: &RenderPlan) -> Result<wgpu::SubmissionIndex> {
+        self.validate_prepared(plan)?;
 
         let mut encoder = self
             .device
@@ -167,7 +219,15 @@ impl Renderer {
             }
         }
 
-        self.queue.submit([encoder.finish()]);
+        Ok(self.queue.submit([encoder.finish()]))
+    }
+
+    pub fn execute_discard_submission(
+        &mut self,
+        plan: &RenderPlan,
+        update: &FrameUpdate<'_>,
+    ) -> Result<()> {
+        let _ = self.execute(plan, update)?;
         Ok(())
     }
 

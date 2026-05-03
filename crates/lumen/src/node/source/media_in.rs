@@ -155,10 +155,12 @@ impl GpuCompileNode for MediaIn {
             return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let size = lumen_gpu::Size::new(
-            ctx.composition().render_settings.width.max(1),
-            ctx.composition().render_settings.height.max(1),
-        );
+        let size = self.native_size(ctx).unwrap_or_else(|| {
+            lumen_gpu::Size::new(
+                ctx.composition().render_settings.width.max(1),
+                ctx.composition().render_settings.height.max(1),
+            )
+        });
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("media-in:{}:frame", self.id.0)),
@@ -175,6 +177,7 @@ impl GpuCompileNode for MediaIn {
             node_id: self.id,
             source: self.source.clone(),
             texture,
+            size,
         });
 
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -182,6 +185,29 @@ impl GpuCompileNode for MediaIn {
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: RasterMetadata::default(),
         }))
+    }
+}
+
+impl MediaIn {
+    fn native_size(&self, ctx: &crate::gpu::CompileContext<'_>) -> Option<lumen_gpu::Size> {
+        let media = ctx.media()?;
+        let kind = resolve_for_context(self, &ctx.expr_context(self.id, "source")).ok()?;
+        match kind {
+            MediaInKind::Image { image_id } => {
+                let metadata = media.get_image_resolver(&image_id)?.metadata();
+                Some(lumen_gpu::Size::new(
+                    metadata.width.max(1),
+                    metadata.height.max(1),
+                ))
+            }
+            MediaInKind::Video { stream_id, .. } => {
+                let metadata = media.get_video_resolver(&stream_id)?.metadata();
+                Some(lumen_gpu::Size::new(
+                    metadata.width.max(1),
+                    metadata.height.max(1),
+                ))
+            }
+        }
     }
 }
 
@@ -193,7 +219,10 @@ impl GpuFrameBindNode for MediaIn {
         bound: &mut BoundFrame,
     ) -> crate::Result<()> {
         let FrameBinding::MediaInput {
-            node_id, texture, ..
+            node_id,
+            texture,
+            size,
+            ..
         } = binding
         else {
             return Ok(());
@@ -252,10 +281,8 @@ impl GpuFrameBindNode for MediaIn {
             }
             .into());
         };
-        let width = ctx.expr_context(*node_id, "source").width.max(1);
-        let height = ctx.expr_context(*node_id, "source").height.max(1);
-        let rgba = fit_frame_to_rgba8(&frame, width, height);
-        bound.write_texture_rgba8(*texture, rgba, width * 4, height);
+        let rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
+        bound.write_texture_rgba8(*texture, rgba, size.width * 4, size.height);
         Ok(())
     }
 }
