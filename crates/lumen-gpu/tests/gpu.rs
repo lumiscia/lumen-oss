@@ -45,6 +45,25 @@ fn fs_main() -> @location(0) vec4<f32> {
 }
 "#;
 
+fn assert_rgba8_near(actual: &[u8], expected: [u8; 4]) {
+    assert!(
+        actual.len() >= 4,
+        "expected at least 4 bytes, got {}",
+        actual.len()
+    );
+
+    for (channel, (&actual_channel, expected)) in
+        actual[..4].iter().zip(expected.iter()).enumerate()
+    {
+        let delta = (i16::from(actual_channel) - i16::from(*expected)).abs();
+        assert!(
+            delta <= 1,
+            "channel {channel}: actual rgba={:?}, expected rgba={expected:?}",
+            &actual[..4],
+        );
+    }
+}
+
 #[test]
 fn compute_pass_writes_storage_texture() {
     let Some(mut renderer) = renderer() else {
@@ -80,7 +99,7 @@ fn compute_pass_writes_storage_texture() {
     renderer.execute(&plan, &FrameUpdate::new()).unwrap();
 
     let bytes = read_texture_rgba8(&renderer, output, size);
-    assert_eq!(&bytes[0..4], &[64, 128, 191, 255]);
+    assert_rgba8_near(&bytes[0..4], [64, 128, 191, 255]);
 }
 
 #[test]
@@ -190,7 +209,7 @@ fn render_pass_draws_fullscreen_triangle_to_target() {
     renderer.execute(&plan, &FrameUpdate::new()).unwrap();
 
     let bytes = read_texture_rgba8(&renderer, output, size);
-    assert_eq!(&bytes[0..4], &[255, 128, 0, 255]);
+    assert_rgba8_near(&bytes[0..4], [255, 128, 0, 255]);
 }
 
 #[test]

@@ -14,6 +14,8 @@ mod program;
 mod renderer;
 mod resource;
 mod update;
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+mod vulkan_export;
 
 pub use binding::*;
 pub use geometry::*;
@@ -24,6 +26,8 @@ pub use program::*;
 pub use renderer::*;
 pub use resource::*;
 pub use update::*;
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+pub use vulkan_export::*;
 pub use wgpu;
 
 #[cfg(test)]
