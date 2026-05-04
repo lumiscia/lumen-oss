@@ -109,6 +109,7 @@ export class LumenMediaStore extends WasmLumenMediaStore {
 }
 
 export class LumenRenderer extends WasmLumenRenderer {
+  private lookaheadCount = 8;
   private loadGeneration = 0;
   private readonly pendingWindows = new Map<number, Promise<void>>();
 
@@ -125,23 +126,24 @@ export class LumenRenderer extends WasmLumenRenderer {
   override renderFrame(
     frame: number,
     media: LumenMediaStore,
-    context: CanvasRenderingContext2D,
-  ): void {
-    super.renderFrame(frame, media, context);
+    canvas: HTMLCanvasElement,
+  ): Promise<void> {
+    return super.renderFrame(frame, media, canvas);
   }
 
   setLookaheadCount(lookaheadCount: number): void {
     super.setLookaheadCount(lookaheadCount);
+    this.lookaheadCount = Math.max(0, Math.floor(lookaheadCount));
     this.resetWindowLoads();
   }
 
   async renderFrameAsync(
     frame: number,
     media: LumenMediaStore,
-    context: CanvasRenderingContext2D,
+    canvas: HTMLCanvasElement,
   ): Promise<void> {
-    await this.loadWindow(frame, media);
-    super.renderFrame(frame, media, context);
+    await this.loadFrame(frame, media);
+    await super.renderFrame(frame, media, canvas);
     this.prefetchWindow(frame + 1, media);
   }
 
@@ -160,8 +162,21 @@ export class LumenRenderer extends WasmLumenRenderer {
   }
 
   private async loadWindow(frame: number, media: LumenMediaStore): Promise<void> {
+    await this.loadRequirementsForFrame(frame, media, true);
+  }
+
+  private async loadFrame(frame: number, media: LumenMediaStore): Promise<void> {
+    await this.loadRequirementsForFrame(frame, media, false);
+  }
+
+  private async loadRequirementsForFrame(
+    frame: number,
+    media: LumenMediaStore,
+    includeLookahead: boolean,
+  ): Promise<void> {
     const normalizedFrame = this.normalizeFrame(frame);
-    const existing = this.pendingWindows.get(normalizedFrame);
+    const key = includeLookahead ? normalizedFrame : -normalizedFrame - 1;
+    const existing = this.pendingWindows.get(key);
     if (existing) {
       await existing;
       return;
@@ -169,17 +184,19 @@ export class LumenRenderer extends WasmLumenRenderer {
 
     const generation = this.loadGeneration;
     const pending = (async () => {
-      const requirementsJson = super.frameRequirementsWindow(normalizedFrame, media);
+      const requirementsJson = includeLookahead
+        ? super.frameRequirementsWindow(normalizedFrame, media)
+        : super.frameRequirements(normalizedFrame, media);
       if (generation !== this.loadGeneration) {
         return;
       }
       await media.loadFrameRequirements(requirementsJson);
     })().finally(() => {
-      if (this.pendingWindows.get(normalizedFrame) === pending) {
-        this.pendingWindows.delete(normalizedFrame);
+      if (this.pendingWindows.get(key) === pending) {
+        this.pendingWindows.delete(key);
       }
     });
-    this.pendingWindows.set(normalizedFrame, pending);
+    this.pendingWindows.set(key, pending);
 
     try {
       await pending;
@@ -196,14 +213,25 @@ export class LumenRenderer extends WasmLumenRenderer {
       return;
     }
 
-    void this.loadWindow(frame, media).catch(() => {
+    void this.prefetchFrames(frame, media).catch(() => {
       // The foreground render path reports persistent media errors.
     });
+  }
+
+  private async prefetchFrames(frame: number, media: LumenMediaStore): Promise<void> {
+    const generation = this.loadGeneration;
+    for (let offset = 0; offset < this.lookaheadCount; offset += 1) {
+      if (generation !== this.loadGeneration) {
+        return;
+      }
+      await this.loadFrame(frame + offset, media);
+    }
   }
 }
 
 export class LumenPreviewController extends WasmLumenPreviewController {
   private readonly bridge = new LumenMediaBridge(this);
+  private lookaheadCount = 8;
   private loadGeneration = 0;
   private readonly pendingWindows = new Map<number, Promise<void>>();
 
@@ -286,36 +314,37 @@ export class LumenPreviewController extends WasmLumenPreviewController {
 
   setLookaheadCount(lookaheadCount: number): void {
     super.setLookaheadCount(lookaheadCount);
+    this.lookaheadCount = Math.max(0, Math.floor(lookaheadCount));
     this.resetWindowLoads();
   }
 
-  async renderNowAsync(context: CanvasRenderingContext2D): Promise<void> {
-    await this.loadWindow(super.currentFrame());
+  async renderNowAsync(canvas: HTMLCanvasElement): Promise<void> {
+    await this.loadFrame(super.currentFrame());
     try {
-      super.renderNow(context);
+      await super.renderNow(canvas);
     } catch (error) {
       if (!this.isRecoverableFrameMiss(error)) {
         throw error;
       }
-      await this.loadWindow(super.currentFrame());
-      super.renderNow(context);
+      await this.loadFrame(super.currentFrame());
+      await super.renderNow(canvas);
     }
     this.prefetchWindow(super.currentFrame() + 1);
   }
 
-  async tickAsync(nowMs: number, context: CanvasRenderingContext2D): Promise<boolean> {
+  async tickAsync(nowMs: number, canvas: HTMLCanvasElement): Promise<boolean> {
     const frame = super.currentFrame();
-    await this.loadWindow(frame);
     this.prefetchWindow(frame + 1);
+    await this.loadFrame(frame);
     let changed: boolean;
     try {
-      changed = super.tick(nowMs, context);
+      changed = await super.tick(nowMs, canvas);
     } catch (error) {
       if (!this.isRecoverableFrameMiss(error)) {
         throw error;
       }
-      await this.loadWindow(super.currentFrame());
-      super.renderNow(context);
+      await this.loadFrame(super.currentFrame());
+      await super.renderNow(canvas);
       changed = true;
     }
     this.prefetchWindow(super.currentFrame() + 1);
@@ -337,8 +366,17 @@ export class LumenPreviewController extends WasmLumenPreviewController {
   }
 
   private async loadWindow(frame: number): Promise<void> {
+    await this.loadRequirementsForFrame(frame, true);
+  }
+
+  private async loadFrame(frame: number): Promise<void> {
+    await this.loadRequirementsForFrame(frame, false);
+  }
+
+  private async loadRequirementsForFrame(frame: number, includeLookahead: boolean): Promise<void> {
     const normalizedFrame = this.normalizeFrame(frame);
-    const existing = this.pendingWindows.get(normalizedFrame);
+    const key = includeLookahead ? normalizedFrame : -normalizedFrame - 1;
+    const existing = this.pendingWindows.get(key);
     if (existing) {
       await existing;
       return;
@@ -346,17 +384,19 @@ export class LumenPreviewController extends WasmLumenPreviewController {
 
     const generation = this.loadGeneration;
     const pending = (async () => {
-      const requirementsJson = super.frameRequirementsWindow(normalizedFrame);
+      const requirementsJson = includeLookahead
+        ? super.frameRequirementsWindow(normalizedFrame)
+        : super.frameRequirements(normalizedFrame);
       if (generation !== this.loadGeneration) {
         return;
       }
       await this.bridge.loadFrameRequirements(requirementsJson);
     })().finally(() => {
-      if (this.pendingWindows.get(normalizedFrame) === pending) {
-        this.pendingWindows.delete(normalizedFrame);
+      if (this.pendingWindows.get(key) === pending) {
+        this.pendingWindows.delete(key);
       }
     });
-    this.pendingWindows.set(normalizedFrame, pending);
+    this.pendingWindows.set(key, pending);
 
     try {
       await pending;
@@ -373,9 +413,19 @@ export class LumenPreviewController extends WasmLumenPreviewController {
       return;
     }
 
-    void this.loadWindow(frame).catch(() => {
+    void this.prefetchFrames(frame).catch(() => {
       // The foreground render path reports persistent media errors.
     });
+  }
+
+  private async prefetchFrames(frame: number): Promise<void> {
+    const generation = this.loadGeneration;
+    for (let offset = 0; offset < this.lookaheadCount; offset += 1) {
+      if (generation !== this.loadGeneration) {
+        return;
+      }
+      await this.loadFrame(frame + offset);
+    }
   }
 
   private isRecoverableFrameMiss(error: unknown): boolean {

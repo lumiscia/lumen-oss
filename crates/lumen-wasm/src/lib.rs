@@ -3,7 +3,6 @@ mod preview;
 mod renderer;
 mod types;
 mod utils;
-mod webgl;
 
 use std::sync::Once;
 

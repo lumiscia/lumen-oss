@@ -1,8 +1,8 @@
 use lumen::{
     composition::Composition,
-    gpu_image::{AlphaMode, GpuImageFrame, RectI},
-    media::premultiply_rgba_in_place_if_needed,
+    media::{CpuMediaFrame, premultiply_rgba_in_place_if_needed},
 };
+use std::sync::Arc;
 
 pub fn validate_rgba_len(width: u32, height: u32, len: usize) -> bool {
     u64::from(width)
@@ -16,19 +16,18 @@ pub fn image_frame_from_rgba(
     width: u32,
     height: u32,
     mut rgba: Vec<u8>,
-) -> Result<GpuImageFrame, String> {
+) -> Result<CpuMediaFrame, String> {
     premultiply_rgba_in_place_if_needed(&mut rgba);
-    let rect = RectI::from_size(width, height);
-    GpuImageFrame::from_owned_cpu_decoded_rgba(
-        rgba,
+    let expected = width as usize * height as usize * 4;
+    if rgba.len() < expected {
+        return Err("RGBA buffer is smaller than frame dimensions".to_string());
+    }
+    Ok(CpuMediaFrame {
+        rgba: Arc::new(rgba),
         width,
         height,
-        (width as usize) * 4,
-        AlphaMode::Premultiplied,
-        rect,
-        rect,
-    )
-    .map_err(|e| e.to_string())
+        row_bytes: width as usize * 4,
+    })
 }
 
 pub fn composition_json_to_composition(composition_json: &str) -> Result<Composition, String> {

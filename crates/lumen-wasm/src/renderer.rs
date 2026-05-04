@@ -1,27 +1,18 @@
 use lumen::{
-    composition::Composition,
-    gpu_image::GpuImageFrame,
-    media::collect_frame_requirements,
-    render::{
-        RenderOrchestrator, RenderOrchestratorConfig,
-        surface::{DefaultSurfacePool, SurfacePool},
-    },
+    composition::Composition, gpu::GpuCompositionRenderer, media::collect_frame_requirements,
 };
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    install_panic_hook,
-    media::LumenMediaStore,
-    types::FrameRequirementsPayload,
+    debug_error, install_panic_hook, media::LumenMediaStore, types::FrameRequirementsPayload,
     utils::composition_json_to_composition,
-    webgl::{draw_output_frame_to_context, ensure_webgl_backend},
 };
-use web_sys::CanvasRenderingContext2d;
+use web_sys::HtmlCanvasElement;
 
 #[wasm_bindgen]
 pub struct LumenRenderer {
     composition: Option<Composition>,
-    surface_pool: DefaultSurfacePool,
+    renderer: Option<SurfaceCompositionRenderer>,
     width: usize,
     height: usize,
     duration_frames: u32,
@@ -33,10 +24,9 @@ impl LumenRenderer {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         install_panic_hook();
-        ensure_webgl_backend();
         Self {
             composition: None,
-            surface_pool: DefaultSurfacePool::new(),
+            renderer: None,
             width: 0,
             height: 0,
             duration_frames: 0,
@@ -53,6 +43,7 @@ impl LumenRenderer {
         self.height = composition.render_settings.height as usize;
         self.duration_frames = composition.timeline.duration_frames;
         self.composition = Some(composition);
+        self.renderer = None;
         Ok(())
     }
 
@@ -71,6 +62,7 @@ impl LumenRenderer {
 
     pub fn clear(&mut self) {
         self.composition = None;
+        self.renderer = None;
         self.width = 0;
         self.height = 0;
         self.duration_frames = 0;
@@ -81,23 +73,17 @@ impl LumenRenderer {
         self.lookahead_count = lookahead_count;
     }
 
-    /// Render a frame directly into the target 2D canvas context.
     #[wasm_bindgen(js_name = "renderFrame")]
-    pub fn render_frame(
+    pub async fn render_frame(
         &mut self,
         frame: u32,
         media: &LumenMediaStore,
-        context: CanvasRenderingContext2d,
+        canvas: HtmlCanvasElement,
     ) -> Result<(), JsValue> {
-        let raster = self.render_frame_to_image(frame, media)?;
-        let (width, height) = raster.storage_dimensions();
-        draw_output_frame_to_context(&raster, &context)?;
-        self.width = width as usize;
-        self.height = height as usize;
+        self.render_frame_to_canvas(frame, media, canvas).await?;
         Ok(())
     }
 
-    /// Returns frame media requirements as a JSON string.
     #[wasm_bindgen(js_name = "frameRequirements")]
     pub fn frame_requirements(
         &self,
@@ -134,28 +120,56 @@ impl LumenRenderer {
             .ok_or_else(|| JsValue::from_str("composition not loaded"))
     }
 
-    fn render_frame_to_image(
+    async fn ensure_renderer(
+        &mut self,
+        media: &LumenMediaStore,
+        canvas: HtmlCanvasElement,
+    ) -> Result<(), JsValue> {
+        if self.renderer.is_some() {
+            return Ok(());
+        }
+        let composition = self
+            .composition
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
+        self.renderer = Some(
+            create_surface_composition_renderer(
+                canvas,
+                composition,
+                media.as_wasm_store(),
+                self.width as u32,
+                self.height as u32,
+            )
+            .await?,
+        );
+        Ok(())
+    }
+
+    async fn render_frame_to_canvas(
         &mut self,
         frame: u32,
         media: &LumenMediaStore,
-    ) -> Result<GpuImageFrame, JsValue> {
+        canvas: HtmlCanvasElement,
+    ) -> Result<(), JsValue> {
         self.validate_frame(frame)?;
-        let composition = self.require_composition()?;
-        let store = media.as_wasm_store();
-
-        let orchestrator = RenderOrchestrator::new(
-            composition,
-            &self.surface_pool,
-            store,
-            RenderOrchestratorConfig {
-                lookahead_count: self.lookahead_count,
-            },
-        );
-        let raster = orchestrator
-            .render(frame)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        self.surface_pool.flush();
-        Ok(raster)
+        self.ensure_renderer(media, canvas).await?;
+        let composition = self
+            .composition
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("GPU renderer is unavailable"))?;
+        let size = renderer
+            .render_frame(composition, frame, media.as_wasm_store())
+            .map_err(|e| {
+                debug_error(&format!("[lumen-wasm] render frame={frame} error: {e}"));
+                JsValue::from_str(&e.to_string())
+            })?;
+        self.width = size.width as usize;
+        self.height = size.height as usize;
+        Ok(())
     }
 
     fn validate_frame(&self, frame: u32) -> Result<(), JsValue> {
@@ -167,6 +181,125 @@ impl LumenRenderer {
         }
         Ok(())
     }
+}
+
+pub(crate) struct SurfaceCompositionRenderer {
+    renderer: GpuCompositionRenderer,
+    surface: lumen_gpu::wgpu::Surface<'static>,
+}
+
+impl SurfaceCompositionRenderer {
+    pub fn render_frame<M: lumen::media::MediaStore>(
+        &mut self,
+        composition: &Composition,
+        frame: u32,
+        media: &M,
+    ) -> Result<lumen_gpu::Size, lumen::error::LumenError> {
+        let (raster, _render_submission) =
+            self.renderer
+                .render_frame_submitted(composition, frame, media)?;
+        let surface_texture = current_surface_texture(&self.surface)?;
+        self.renderer
+            .gpu_renderer()
+            .copy_texture_to_external(raster.texture, &surface_texture.texture)
+            .map_err(|error| lumen::error::RenderError::Gpu {
+                details: error.to_string(),
+            })?;
+        surface_texture.present();
+        Ok(raster.domain.storage_size)
+    }
+}
+
+fn current_surface_texture(
+    surface: &lumen_gpu::wgpu::Surface<'static>,
+) -> Result<lumen_gpu::wgpu::SurfaceTexture, lumen::error::LumenError> {
+    match surface.get_current_texture() {
+        lumen_gpu::wgpu::CurrentSurfaceTexture::Success(texture)
+        | lumen_gpu::wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Ok(texture),
+        other => Err(lumen::error::RenderError::Gpu {
+            details: format!("surface texture unavailable: {other:?}"),
+        }
+        .into()),
+    }
+}
+
+pub(crate) async fn create_surface_composition_renderer<M: lumen::media::MediaStore>(
+    canvas: HtmlCanvasElement,
+    composition: &Composition,
+    media: &M,
+    width: u32,
+    height: u32,
+) -> Result<SurfaceCompositionRenderer, JsValue> {
+    let width = width.max(1);
+    let height = height.max(1);
+    let (device, queue, surface, format) = create_surface_device(canvas, width, height).await?;
+    let mut renderer = GpuCompositionRenderer::from_device(device, queue);
+    renderer
+        .compile_with_media(composition, media, format)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(SurfaceCompositionRenderer { renderer, surface })
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn create_surface_device(
+    canvas: HtmlCanvasElement,
+    width: u32,
+    height: u32,
+) -> Result<
+    (
+        lumen_gpu::wgpu::Device,
+        lumen_gpu::wgpu::Queue,
+        lumen_gpu::wgpu::Surface<'static>,
+        lumen_gpu::wgpu::TextureFormat,
+    ),
+    JsValue,
+> {
+    let instance = lumen_gpu::wgpu::util::new_instance_with_webgpu_detection(
+        lumen_gpu::wgpu::InstanceDescriptor::new_without_display_handle(),
+    )
+    .await;
+    let surface = instance
+        .create_surface(lumen_gpu::wgpu::SurfaceTarget::Canvas(canvas))
+        .map_err(|error| JsValue::from_str(&format!("canvas GPU surface failed: {error}")))?;
+    let adapter = instance
+        .request_adapter(&lumen_gpu::wgpu::RequestAdapterOptions {
+            power_preference: lumen_gpu::wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        })
+        .await
+        .map_err(|error| JsValue::from_str(&format!("no compatible GPU adapter: {error}")))?;
+    let mut config = surface
+        .get_default_config(&adapter, width, height)
+        .ok_or_else(|| JsValue::from_str("GPU surface is not compatible with the adapter"))?;
+    config.usage |= lumen_gpu::wgpu::TextureUsages::COPY_DST;
+    config.desired_maximum_frame_latency = 1;
+    let format = config.format;
+    let (device, queue) = adapter
+        .request_device(&lumen_gpu::wgpu::DeviceDescriptor::default())
+        .await
+        .map_err(|error| JsValue::from_str(&format!("create GPU device failed: {error}")))?;
+    surface.configure(&device, &config);
+    Ok((device, queue, surface, format))
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn create_surface_device(
+    _canvas: HtmlCanvasElement,
+    _width: u32,
+    _height: u32,
+) -> Result<
+    (
+        lumen_gpu::wgpu::Device,
+        lumen_gpu::wgpu::Queue,
+        lumen_gpu::wgpu::Surface<'static>,
+        lumen_gpu::wgpu::TextureFormat,
+    ),
+    JsValue,
+> {
+    Err(JsValue::from_str(
+        "canvas GPU surfaces are only available on wasm",
+    ))
 }
 
 pub(crate) fn collect_requirement_window(
