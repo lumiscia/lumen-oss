@@ -5,6 +5,7 @@ members = [
   "crates/lumen-runpod",
   "crates/lumen-wasm",
   "crates/lumen-local",
+  "crates/lumen-bench",
   "crates/lumen-generators",
   "crates/lumen-macros",
   "crates/lumen-gpu",
