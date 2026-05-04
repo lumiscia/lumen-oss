@@ -6,8 +6,9 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    AudioDecoder, AudioResampler, AudioResamplerConfig, CpuVideoFrame, DecodeMode, InputContext,
-    MuxedEncoder, PixelFormat, VideoCodec, VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
+    AudioDecoder, AudioEncoderConfig, AudioFrame, AudioResampler, AudioResamplerConfig,
+    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, SampleFormat, VideoCodec,
+    VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
 };
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {
@@ -39,6 +40,26 @@ fn frame(width: u32, height: u32, pts: i64) -> CpuVideoFrame {
     }
 }
 
+fn audio_frame(sample_rate: u32, channels: u16, samples: usize, offset: usize) -> AudioFrame {
+    let channels_usize = channels as usize;
+    let mut interleaved_f32 = Vec::with_capacity(samples.saturating_mul(channels_usize));
+    for sample in 0..samples {
+        let t = (offset + sample) as f32 / sample_rate as f32;
+        let value = (t * 440.0 * std::f32::consts::TAU).sin() * 0.2;
+        for _ in 0..channels {
+            interleaved_f32.push(value);
+        }
+    }
+    AudioFrame {
+        sample_rate,
+        channels,
+        sample_format: SampleFormat::F32,
+        pts: Some(offset as i64),
+        samples,
+        interleaved_f32,
+    }
+}
+
 fn make_video(path: &PathBuf) -> bool {
     let config = VideoEncoderConfig {
         width: 32,
@@ -56,6 +77,31 @@ fn make_video(path: &PathBuf) -> bool {
             .expect("write frame");
     }
     encoder.finish().expect("finish encode");
+    true
+}
+
+fn make_muxed_video(path: &PathBuf) -> bool {
+    let video = VideoEncoderConfig::cpu_rgba(64, 36, 30, VideoCodec::H264);
+    let audio = AudioEncoderConfig::aac(48_000, 2);
+    let Ok(mut encoder) =
+        MuxedEncoder::create_with_audio(path.to_string_lossy().to_string(), video, Some(audio))
+    else {
+        return false;
+    };
+    for pts in 0..30 {
+        encoder
+            .write_video_frame(&frame(64, 36, pts))
+            .expect("write video frame");
+    }
+    let mut offset = 0;
+    while offset < 48_000 {
+        let samples = (48_000 - offset).min(1024);
+        encoder
+            .write_audio_frame(&audio_frame(48_000, 2, samples, offset))
+            .expect("write audio frame");
+        offset += samples;
+    }
+    encoder.finish().expect("finish muxed encode");
     true
 }
 
@@ -124,6 +170,66 @@ fn make_cuda_video_with_nvenc(path: &PathBuf, width: u32, height: u32) -> bool {
     true
 }
 
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+fn make_cuda_video_with_nvenc_and_audio(path: &PathBuf, width: u32, height: u32) -> bool {
+    use lumen_ffmpeg::{CudaDriver, EncodeMode, GpuBackend, GpuVideoInput};
+
+    let driver = match CudaDriver::load() {
+        Ok(driver) => driver,
+        Err(error) => {
+            eprintln!("CUDA driver unavailable; skipping CUDA NVENC audio mux test: {error}");
+            return false;
+        }
+    };
+    let context = match driver.create_primary_context() {
+        Ok(context) => context,
+        Err(error) => {
+            eprintln!("CUDA context unavailable; skipping CUDA NVENC audio mux test: {error}");
+            return false;
+        }
+    };
+    let frame = match driver.allocate_rgba_frame(width, height) {
+        Ok(frame) => frame,
+        Err(error) => {
+            eprintln!("CUDA frame allocation failed; skipping CUDA NVENC audio mux test: {error}");
+            return false;
+        }
+    };
+    if let Err(error) = context.set_current() {
+        eprintln!("CUDA context restore failed; skipping CUDA NVENC audio mux test: {error}");
+        return false;
+    }
+    if let Err(error) = frame.clear(0x7f) {
+        eprintln!("CUDA frame clear failed; skipping CUDA NVENC audio mux test: {error}");
+        return false;
+    }
+
+    let mut video = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::H264);
+    video.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
+    video.bit_rate = 2_000_000;
+    let audio = AudioEncoderConfig::aac(48_000, 2);
+    let Ok(mut encoder) =
+        MuxedEncoder::create_with_audio(path.to_string_lossy().to_string(), video, Some(audio))
+    else {
+        return false;
+    };
+    for pts in 0..30 {
+        let cuda_frame = frame.as_video_frame(Some(pts));
+        let input = GpuVideoInput::Cuda(&cuda_frame);
+        encoder.write_gpu_frame(&input).expect("write CUDA frame");
+    }
+    let mut offset = 0;
+    while offset < 48_000 {
+        let samples = (48_000 - offset).min(1024);
+        encoder
+            .write_audio_frame(&audio_frame(48_000, 2, samples, offset))
+            .expect("write audio frame");
+        offset += samples;
+    }
+    encoder.finish().expect("finish CUDA audio mux encode");
+    true
+}
+
 #[test]
 fn reports_missing_input_as_structured_error() {
     let error = InputContext::open("/definitely/not/a/media/file.mp4").expect_err("missing file");
@@ -182,6 +288,27 @@ fn encodes_opens_and_decodes_cpu_video() {
 }
 
 #[test]
+fn encodes_muxed_video_and_audio() {
+    let path = temp_path("muxed_roundtrip", "mp4");
+    if !make_muxed_video(&path) {
+        eprintln!("H.264/AAC encoder unavailable; skipping muxed roundtrip");
+        return;
+    }
+
+    let input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
+    let info = input.media_info();
+    assert_eq!(info.video_streams.len(), 1);
+    assert_eq!(info.audio_streams.len(), 1);
+    assert_eq!(info.video_streams[0].codec, VideoCodec::H264);
+    assert_eq!(info.video_streams[0].width, 64);
+    assert_eq!(info.video_streams[0].height, 36);
+    assert_eq!(info.audio_streams[0].sample_rate, 48_000);
+    assert_eq!(info.audio_streams[0].channels, 2);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn encodes_cpu_frames_with_nvenc_when_requested() {
     if std::env::var_os("LUMEN_FFMPEG_TEST_NVENC").is_none() {
         eprintln!("set LUMEN_FFMPEG_TEST_NVENC=1 to run NVENC hardware smoke test");
@@ -224,6 +351,35 @@ fn encodes_cuda_frames_with_nvenc_when_requested() {
     assert_eq!(info.video_streams[0].codec, VideoCodec::H264);
     assert_eq!(info.video_streams[0].width, 640);
     assert_eq!(info.video_streams[0].height, 360);
+
+    let _ = fs::remove_file(path);
+}
+
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+#[test]
+fn encodes_cuda_frames_with_nvenc_and_audio_when_requested() {
+    if std::env::var_os("LUMEN_FFMPEG_TEST_CUDA_NVENC_AUDIO").is_none() {
+        eprintln!(
+            "set LUMEN_FFMPEG_TEST_CUDA_NVENC_AUDIO=1 to run CUDA frame NVENC + AAC mux smoke test"
+        );
+        return;
+    }
+
+    let path = temp_path("cuda_nvenc_audio_roundtrip", "mp4");
+    if !make_cuda_video_with_nvenc_and_audio(&path, 640, 360) {
+        eprintln!("CUDA/NVENC/AAC unavailable; skipping CUDA frame NVENC audio mux roundtrip");
+        return;
+    }
+
+    let input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
+    let info = input.media_info();
+    assert_eq!(info.video_streams.len(), 1);
+    assert_eq!(info.audio_streams.len(), 1);
+    assert_eq!(info.video_streams[0].codec, VideoCodec::H264);
+    assert_eq!(info.video_streams[0].width, 640);
+    assert_eq!(info.video_streams[0].height, 360);
+    assert_eq!(info.audio_streams[0].sample_rate, 48_000);
+    assert_eq!(info.audio_streams[0].channels, 2);
 
     let _ = fs::remove_file(path);
 }

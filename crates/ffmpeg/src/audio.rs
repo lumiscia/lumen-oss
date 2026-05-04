@@ -213,11 +213,11 @@ impl AudioResampler {
         } as usize;
         let channels = self.config.channels as usize;
         let mut output = vec![0_f32; output_capacity.saturating_mul(channels)];
-        let mut output_ptr = output.as_mut_ptr() as *mut u8;
+        let output_ptr = output.as_mut_ptr() as *mut u8;
         let converted = unsafe {
             sys::swr_convert(
                 self.ptr,
-                &mut output_ptr,
+                &output_ptr,
                 output_capacity as i32,
                 (*source.frame.as_ptr()).data.as_ptr() as *mut *const u8,
                 source.frame.nb_samples() as i32,
