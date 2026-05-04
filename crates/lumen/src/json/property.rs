@@ -11,12 +11,12 @@ use crate::{
 /// Parse a JSON value into a [`NodeProperty`], using the definition for type guidance.
 pub fn parse_property(val: &Value, def: Option<&PropertyDef>, name: &str) -> Result<NodeProperty> {
     // Expression strings: values starting with `=` are parsed as expressions
-    if let Some(s) = val.as_str() {
-        if let Some(expr_src) = s.strip_prefix('=') {
-            let expr = Expression::parse(expr_src)
-                .map_err(|e| anyhow::anyhow!("expression parse error for `{name}`: {e}"))?;
-            return Ok(NodeProperty::Expr(expr));
-        }
+    if let Some(s) = val.as_str()
+        && let Some(expr_src) = s.strip_prefix('=')
+    {
+        let expr = Expression::parse(expr_src)
+            .map_err(|e| anyhow::anyhow!("expression parse error for `{name}`: {e}"))?;
+        return Ok(NodeProperty::Expr(expr));
     }
 
     if let Some(def) = def {
@@ -94,14 +94,14 @@ fn parse_typed(val: &Value, expected: PropertyKind, name: &str) -> Result<NodePr
 
 /// Parse a color from JSON: `[r, g, b]`, `[r, g, b, a]`, `"#RRGGBB"`, or `"#RRGGBBAA"`.
 pub fn parse_color(val: &Value) -> Option<[u8; 4]> {
-    if let Some(arr) = val.as_array() {
-        if arr.len() >= 3 {
-            let r = arr[0].as_u64()? as u8;
-            let g = arr[1].as_u64()? as u8;
-            let b = arr[2].as_u64()? as u8;
-            let a = arr.get(3).and_then(|v| v.as_u64()).unwrap_or(255) as u8;
-            return Some([r, g, b, a]);
-        }
+    if let Some(arr) = val.as_array()
+        && arr.len() >= 3
+    {
+        let r = arr[0].as_u64()? as u8;
+        let g = arr[1].as_u64()? as u8;
+        let b = arr[2].as_u64()? as u8;
+        let a = arr.get(3).and_then(|v| v.as_u64()).unwrap_or(255) as u8;
+        return Some([r, g, b, a]);
     }
     if let Some(s) = val.as_str() {
         let s = s.strip_prefix('#')?;
@@ -126,10 +126,11 @@ fn parse_color_or_vec(arr: &[Value], name: &str) -> Result<NodeProperty> {
         let y = arr[1].as_f64().with_context(|| format!("`{name}` vec2"))?;
         return Ok(NodeProperty::Vec2((x, y)));
     }
-    if arr.len() >= 3 && arr.len() <= 4 {
-        if let Some(c) = parse_color(&Value::Array(arr.to_vec())) {
-            return Ok(NodeProperty::Color(c));
-        }
+    if arr.len() >= 3
+        && arr.len() <= 4
+        && let Some(c) = parse_color(&Value::Array(arr.to_vec()))
+    {
+        return Ok(NodeProperty::Color(c));
     }
     bail!("cannot infer type for array property `{name}`")
 }
@@ -158,9 +159,9 @@ mod tests {
 
     #[test]
     fn typed_property() {
-        let v = serde_json::json!(3.14);
+        let v = serde_json::json!(1.25);
         let p = parse_property(&v, None, "test").unwrap();
-        assert!(matches!(p, NodeProperty::Float(f) if (f - 3.14).abs() < 1e-10));
+        assert!(matches!(p, NodeProperty::Float(f) if (f - 1.25).abs() < 1e-10));
     }
 
     #[test]

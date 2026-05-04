@@ -504,6 +504,12 @@ impl LumenMediaStore {
     }
 }
 
+impl Default for LumenMediaStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

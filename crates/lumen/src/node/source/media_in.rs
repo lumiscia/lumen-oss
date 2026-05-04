@@ -166,67 +166,6 @@ pub fn map_to_source_frame(
     (mapped < frame_count).then_some(mapped)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{LoopMode, map_to_source_frame};
-
-    #[test]
-    fn maps_negative_media_speed_in_reverse() {
-        assert_eq!(
-            map_to_source_frame(0, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
-            Some(6)
-        );
-        assert_eq!(
-            map_to_source_frame(3, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
-            Some(3)
-        );
-        assert_eq!(
-            map_to_source_frame(99, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn maps_ping_pong_loop_mode() {
-        let frames = (0..8)
-            .map(|frame| map_to_source_frame(frame, 30.0, 30.0, 4, None, 1.0, LoopMode::PingPong))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            frames,
-            vec![
-                Some(0),
-                Some(1),
-                Some(2),
-                Some(3),
-                Some(2),
-                Some(1),
-                Some(0),
-                Some(1)
-            ]
-        );
-    }
-
-    #[test]
-    fn maps_negative_ping_pong_loop_mode() {
-        let frames = (0..8)
-            .map(|frame| map_to_source_frame(frame, 30.0, 30.0, 4, None, -1.0, LoopMode::PingPong))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            frames,
-            vec![
-                Some(3),
-                Some(2),
-                Some(1),
-                Some(0),
-                Some(1),
-                Some(2),
-                Some(3),
-                Some(2)
-            ]
-        );
-    }
-}
-
 impl GpuCompileNode for MediaIn {
     fn compile_gpu(
         &self,
@@ -378,5 +317,66 @@ impl GpuFrameBindNode for MediaIn {
             *size,
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LoopMode, map_to_source_frame};
+
+    #[test]
+    fn maps_negative_media_speed_in_reverse() {
+        assert_eq!(
+            map_to_source_frame(0, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
+            Some(6)
+        );
+        assert_eq!(
+            map_to_source_frame(3, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
+            Some(3)
+        );
+        assert_eq!(
+            map_to_source_frame(99, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn maps_ping_pong_loop_mode() {
+        let frames = (0..8)
+            .map(|frame| map_to_source_frame(frame, 30.0, 30.0, 4, None, 1.0, LoopMode::PingPong))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            frames,
+            vec![
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(2),
+                Some(1),
+                Some(0),
+                Some(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn maps_negative_ping_pong_loop_mode() {
+        let frames = (0..8)
+            .map(|frame| map_to_source_frame(frame, 30.0, 30.0, 4, None, -1.0, LoopMode::PingPong))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            frames,
+            vec![
+                Some(3),
+                Some(2),
+                Some(1),
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(2)
+            ]
+        );
     }
 }

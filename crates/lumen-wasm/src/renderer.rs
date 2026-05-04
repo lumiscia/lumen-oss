@@ -113,6 +113,12 @@ impl LumenRenderer {
     }
 }
 
+impl Default for LumenRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LumenRenderer {
     fn require_composition(&self) -> Result<&Composition, JsValue> {
         self.composition

@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -116,7 +116,7 @@ fn max_rss_platform_units() -> i64 {
     }
 }
 
-fn make_video(path: &PathBuf, frames: i64) -> anyhow::Result<()> {
+fn make_video(path: &Path, frames: i64) -> anyhow::Result<()> {
     let config = VideoEncoderConfig::cpu_rgba(128, 72, 30, VideoCodec::H264);
     let mut encoder = MuxedEncoder::create(path.to_string_lossy().to_string(), config)
         .context("create source encoder")?;
@@ -147,7 +147,7 @@ fn frame(width: u32, height: u32, pts: i64) -> CpuVideoFrame {
     }
 }
 
-fn decode_with_crate(path: &PathBuf) -> anyhow::Result<usize> {
+fn decode_with_crate(path: &Path) -> anyhow::Result<usize> {
     let mut input = InputContext::open(path.to_string_lossy().to_string())?;
     let stream = input.best_video_stream()?;
     let mut decoder = VideoDecoder::open(

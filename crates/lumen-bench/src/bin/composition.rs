@@ -111,10 +111,10 @@ async fn main() -> anyhow::Result<()> {
             }
             let output = output_path(args.save.as_deref(), demo.name, mode, args.modes.len())?;
             let elapsed = run_mode(&composition, frames, mode, output.as_deref()).await?;
-            if args.save.is_none() {
-                if let Some(path) = output.as_deref() {
-                    let _ = std::fs::remove_file(path);
-                }
+            if args.save.is_none()
+                && let Some(path) = output.as_deref()
+            {
+                let _ = std::fs::remove_file(path);
             }
             println!(
                 "composition_bench composition={} mode={} frames={} elapsed_ms={} fps={:.2} output={}",

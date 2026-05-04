@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -60,7 +60,7 @@ fn audio_frame(sample_rate: u32, channels: u16, samples: usize, offset: usize) -
     }
 }
 
-fn make_video(path: &PathBuf) -> bool {
+fn make_video(path: &Path) -> bool {
     let config = VideoEncoderConfig {
         width: 32,
         height: 24,
@@ -80,7 +80,7 @@ fn make_video(path: &PathBuf) -> bool {
     true
 }
 
-fn make_muxed_video(path: &PathBuf) -> bool {
+fn make_muxed_video(path: &Path) -> bool {
     let video = VideoEncoderConfig::cpu_rgba(64, 36, 30, VideoCodec::H264);
     let audio = AudioEncoderConfig::aac(48_000, 2);
     let Ok(mut encoder) =
@@ -105,7 +105,7 @@ fn make_muxed_video(path: &PathBuf) -> bool {
     true
 }
 
-fn make_video_with_encoder(path: &PathBuf, width: u32, height: u32, encoder_name: &str) -> bool {
+fn make_video_with_encoder(path: &Path, width: u32, height: u32, encoder_name: &str) -> bool {
     let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::H264);
     config.encoder_name = Some(encoder_name.to_string());
     config.bit_rate = 2_000_000;

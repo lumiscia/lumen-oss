@@ -215,6 +215,11 @@ impl std::fmt::Debug for MetalPixelBufferFrame {
 
 #[cfg(feature = "metal")]
 impl MetalPixelBufferFrame {
+    /// Retains a Core Video pixel buffer for encoding.
+    ///
+    /// # Safety
+    ///
+    /// `pixel_buffer` must be a valid `CVPixelBuffer` pointer.
     pub unsafe fn retain_pixel_buffer(
         pixel_buffer: NonNull<CVPixelBuffer>,
         pts: Option<i64>,

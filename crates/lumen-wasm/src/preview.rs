@@ -369,15 +369,16 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "renderNow")]
     pub async fn render_now(&self, canvas: HtmlCanvasElement) -> Result<(), JsValue> {
-        let mut state = self
-            .state
-            .try_borrow_mut()
-            .map_err(|_| JsValue::from_str("preview controller is busy"))?;
-        if !state.ready() {
-            return Err(JsValue::from_str("composition not loaded"));
+        {
+            let mut state = self
+                .state
+                .try_borrow_mut()
+                .map_err(|_| JsValue::from_str("preview controller is busy"))?;
+            if !state.ready() {
+                return Err(JsValue::from_str("composition not loaded"));
+            }
+            state.dirty = true;
         }
-        state.dirty = true;
-        drop(state);
         render_preview_frame(&self.state, &self.media, canvas).await
     }
 
@@ -583,6 +584,12 @@ impl LumenPreviewController {
     }
 }
 
+impl Default for LumenPreviewController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn validate_frame(state: &PreviewState, frame: u32) -> Result<(), JsValue> {
     if state.duration_frames == 0 {
         return Ok(());
@@ -615,6 +622,9 @@ fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Resu
     Ok(images_ready && videos_ready)
 }
 
+// The renderer is created from a read-only composition borrow. The wasm preview controller is
+// single-threaded and rejects re-entrant mutable access while that render is in flight.
+#[allow(clippy::await_holding_refcell_ref)]
 async fn render_preview_frame(
     state_cell: &RefCell<PreviewState>,
     media: &WasmMediaStore,

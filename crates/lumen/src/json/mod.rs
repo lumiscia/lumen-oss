@@ -236,10 +236,8 @@ fn normalize_graph_node(node: &Value) -> Result<Value> {
 
 fn normalize_node_properties(kind: &Map<String, Value>, skip: &[&str]) -> Map<String, Value> {
     kind.iter()
-        .filter_map(|(key, value)| {
-            (!skip.iter().any(|skip_key| skip_key == &key.as_str()))
-                .then(|| (key.clone(), value.clone()))
-        })
+        .filter(|(key, _)| !skip.iter().any(|skip_key| skip_key == &key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
 }
 

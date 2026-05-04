@@ -160,10 +160,10 @@ fn parse_path_points(data: &str, max_points: usize) -> Vec<super::renderer::Path
         }
         previous = ch;
     }
-    if !token.is_empty() {
-        if let Ok(value) = token.parse::<f32>() {
-            numbers.push(value);
-        }
+    if !token.is_empty()
+        && let Ok(value) = token.parse::<f32>()
+    {
+        numbers.push(value);
     }
 
     numbers
