@@ -2,7 +2,7 @@
 members = [
   "crates/lumen",
   "crates/ffmpeg",
-  "crates/lumen-server",
+  "crates/lumen-runpod",
   "crates/lumen-wasm",
   "crates/lumen-local",
   "crates/lumen-generators",
