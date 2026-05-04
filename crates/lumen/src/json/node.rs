@@ -726,16 +726,44 @@ fn build_wgsl_shader(
     };
 
     set_property(properties, "shader", &mut node.shader, None)?;
-    set_property(properties, "value0", &mut node.value0, None)?;
-    set_property(properties, "value1", &mut node.value1, None)?;
-    set_property(properties, "value2", &mut node.value2, None)?;
-    set_property(properties, "value3", &mut node.value3, None)?;
+    set_property(properties, "shader_source", &mut node.shader, None)?;
+    set_property(properties, "bindings", &mut node.bindings, None)?;
+    if matches!(&node.bindings, NodeProperty::String(value) if value.is_empty()) {
+        node.bindings = legacy_value_bindings(properties);
+    }
     reject_unknown(
         properties,
-        &["shader", "value0", "value1", "value2", "value3"],
+        &[
+            "shader",
+            "shader_source",
+            "bindings",
+            "value0",
+            "value1",
+            "value2",
+            "value3",
+        ],
         id,
     )?;
     Ok(node)
+}
+
+fn legacy_value_bindings(properties: Option<&serde_json::Map<String, Value>>) -> NodeProperty {
+    let Some(properties) = properties else {
+        return NodeProperty::String(String::new());
+    };
+    let lines = ["value0", "value1", "value2", "value3"]
+        .into_iter()
+        .filter_map(|key| {
+            let value = properties.get(key)?;
+            let value = match value {
+                Value::Number(number) => number.to_string(),
+                Value::String(string) => string.clone(),
+                _ => return None,
+            };
+            Some(format!("{key} = {value}"))
+        })
+        .collect::<Vec<_>>();
+    NodeProperty::String(lines.join("\n"))
 }
 
 fn build_switch(id: NodeId, obj: &serde_json::Map<String, Value>) -> Result<Switch> {

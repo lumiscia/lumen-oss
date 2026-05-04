@@ -178,10 +178,8 @@ pub enum FrameBinding {
     },
     WgslShader {
         node_id: NodeId,
-        value0: crate::node::NodeProperty,
-        value1: crate::node::NodeProperty,
-        value2: crate::node::NodeProperty,
-        value3: crate::node::NodeProperty,
+        shader: crate::node::NodeProperty,
+        bindings: crate::node::NodeProperty,
         buffer: lumen_gpu::BufferId,
     },
     Boolean {
