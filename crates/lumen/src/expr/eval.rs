@@ -245,7 +245,8 @@ mod tests {
     use super::*;
     use crate::{
         expr::ast::{BuiltinFn, ExprNode, ExpressionId},
-        node::NodeProperty,
+        graph::Graph,
+        node::{NodeId, NodeKind, NodeProperty, vector::text::Text},
     };
 
     fn test_context() -> ExpressionContext<'static> {
@@ -348,15 +349,49 @@ mod tests {
         let ctx = test_context();
 
         let implicit = Expression::parse("text_width(\"Morning, update posted.\")").unwrap();
-        let explicit = Expression::parse("text_width(node(8, \"content\"), 32, 300)").unwrap();
+        let explicit =
+            Expression::parse("text_width(node(8, \"content\"), 32, 300, \"Roboto\")").unwrap();
         let implicit_height =
             Expression::parse("text_height(\"Morning, update posted.\")").unwrap();
         let explicit_height =
-            Expression::parse("text_height(node(8, \"content\"), 32, 300)").unwrap();
+            Expression::parse("text_height(node(8, \"content\"), 32, 300, \"Roboto\")").unwrap();
 
         assert!(implicit.evaluate(&ctx).is_ok());
         assert!(explicit.evaluate(&ctx).is_err());
         assert!(implicit_height.evaluate(&ctx).is_ok());
         assert!(explicit_height.evaluate(&ctx).is_err());
+    }
+
+    #[test]
+    fn text_measure_builtins_resolve_text_nodes_from_graph() {
+        let text_id = NodeId::new(8);
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            text_id,
+            NodeKind::Text(Text {
+                id: text_id,
+                content: NodeProperty::String("Morning, update posted.".to_string()),
+                font_family: NodeProperty::String("Roboto".to_string()),
+                font_size: NodeProperty::Float(32.0),
+                max_width: NodeProperty::Float(300.0),
+                ..Text::default()
+            }),
+        );
+        let ctx = ExpressionContext {
+            graph: Some(&graph),
+            ..test_context()
+        };
+
+        let width = Expression::parse("text_width(node(8))")
+            .unwrap()
+            .evaluate(&ctx)
+            .unwrap();
+        let height = Expression::parse("text_height(node(8))")
+            .unwrap()
+            .evaluate(&ctx)
+            .unwrap();
+
+        assert!(matches!(width, ExpressionValue::Number(value) if value > 0.0));
+        assert!(matches!(height, ExpressionValue::Number(value) if value > 32.0));
     }
 }

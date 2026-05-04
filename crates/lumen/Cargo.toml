@@ -35,6 +35,7 @@ anyhow = { version = "1.0.101", optional = true }
 smallvec = "1.15.1"
 lumen-ffmpeg = { version = "0.1.0", path = "../ffmpeg", optional = true }
 lumen-gpu = { version = "0.1.0", path = "../lumen-gpu" }
+lumen-text = { version = "0.1.0", path = "../lumen-text" }
 bytemuck = { version = "1.25.0", features = ["derive"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

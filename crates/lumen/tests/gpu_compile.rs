@@ -776,7 +776,7 @@ fn compiles_vector_text_and_shape_through_shared_renderer() {
         .bind(&compiled)
         .unwrap();
 
-    assert_eq!(compiled.plan.textures().len(), 4);
+    assert_eq!(compiled.plan.textures().len(), 5);
     assert_eq!(compiled.plan.programs().len(), 4);
     assert!(matches!(
         compiled.frame_bindings[0],
@@ -786,7 +786,7 @@ fn compiles_vector_text_and_shape_through_shared_renderer() {
         compiled.frame_bindings[1],
         FrameBinding::Text { .. }
     ));
-    assert_eq!(bound.frame_update().uploads().len(), 4);
+    assert_eq!(bound.frame_update().uploads().len(), 5);
 }
 
 fn solid(id: NodeId, color: [u8; 4]) -> NodeKind {

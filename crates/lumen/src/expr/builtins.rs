@@ -1,3 +1,5 @@
+use std::sync::{Mutex, OnceLock};
+
 use crate::{
     error::{ExpressionError, LumenError},
     expr::{
@@ -5,6 +7,7 @@ use crate::{
         ast::{BuiltinFn, ExprNode, ExpressionValue},
         eval::evaluate_expr,
     },
+    node::{NodeId, NodeKind, NodeProperty},
 };
 
 pub fn evaluate_builtin(
@@ -233,18 +236,26 @@ pub fn evaluate_text_measure_builtin(
         BuiltinFn::TextWidth => "text_width",
         _ => unreachable!(),
     };
-    if args.is_empty() || args.len() > 3 {
+    if args.is_empty() || args.len() > 4 {
         return Err(text_measure_error(
             ctx,
-            format!("{builtin_name} expects 1 to 3 arguments"),
+            format!("{builtin_name} expects 1 to 4 arguments"),
         ));
     }
 
-    if matches!(args.first(), Some(ExprNode::Node(_))) {
-        return Err(text_measure_error(
-            ctx,
-            format!("{builtin_name} no longer resolves text nodes in the renderer core"),
-        ));
+    if let Some(ExprNode::Node(node_id)) = args.first() {
+        if args.len() != 1 {
+            return Err(text_measure_error(
+                ctx,
+                format!("{builtin_name}(node(id)) does not accept override arguments"),
+            ));
+        }
+        let measurement = measure_text_node(*node_id, ctx)?;
+        return Ok(ExpressionValue::Number(match builtin {
+            BuiltinFn::TextHeight => f64::from(measurement.height),
+            BuiltinFn::TextWidth => f64::from(measurement.width),
+            _ => unreachable!(),
+        }));
     }
 
     let text = args
@@ -270,13 +281,146 @@ pub fn evaluate_text_measure_builtin(
         })
         .transpose()?
         .unwrap_or(16.0);
-    let width = text.chars().count() as f64 * font_size * 0.5;
-    let height = font_size * 1.2;
+    let max_width = args
+        .get(2)
+        .map(|arg| {
+            to_number(
+                &evaluate_expr(arg, ctx)?,
+                text_measure_error(
+                    ctx,
+                    format!("{builtin_name} optional third arg must be numeric max width"),
+                ),
+            )
+        })
+        .transpose()?
+        .unwrap_or(0.0);
+    let font_family = args
+        .get(3)
+        .map(|arg| {
+            to_string(
+                &evaluate_expr(arg, ctx)?,
+                text_measure_error(
+                    ctx,
+                    format!("{builtin_name} optional fourth arg must be a font family string"),
+                ),
+            )
+        })
+        .transpose()?
+        .unwrap_or_else(|| "sans-serif".to_string());
+    let measurement = measure_text_value(&text, &font_family, font_size as f32, max_width as f32)?;
     Ok(ExpressionValue::Number(match builtin {
-        BuiltinFn::TextHeight => height,
-        BuiltinFn::TextWidth => width,
+        BuiltinFn::TextHeight => f64::from(measurement.height),
+        BuiltinFn::TextWidth => f64::from(measurement.width),
         _ => unreachable!(),
     }))
+}
+
+fn measure_text_node(
+    node_id: NodeId,
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<lumen_text::TextMeasurement> {
+    let graph = ctx.graph.ok_or_else(|| {
+        text_measure_error(
+            ctx,
+            format!("no graph available to resolve text node `{}`", node_id.0),
+        )
+    })?;
+    let node = graph
+        .nodes
+        .get(&node_id)
+        .ok_or_else(|| text_measure_error(ctx, format!("text node `{}` not found", node_id.0)))?;
+    let NodeKind::Text(text) = node else {
+        return Err(text_measure_error(
+            ctx,
+            format!("node `{}` is not a text node", node_id.0),
+        ));
+    };
+
+    let content = resolve_string(node_id, "content", &text.content, ctx)?;
+    let font_family = resolve_string(node_id, "font_family", &text.font_family, ctx)?;
+    let font_size = resolve_number(node_id, "font_size", &text.font_size, ctx)? as f32;
+    let max_width = resolve_number(node_id, "max_width", &text.max_width, ctx)? as f32;
+    measure_text_value(&content, &font_family, font_size, max_width)
+}
+
+fn measure_text_value(
+    content: &str,
+    font_family: &str,
+    font_size: f32,
+    max_width: f32,
+) -> crate::Result<lumen_text::TextMeasurement> {
+    static TEXT_SYSTEM: OnceLock<Mutex<lumen_text::TextSystem>> = OnceLock::new();
+    let mut text_system = TEXT_SYSTEM
+        .get_or_init(|| Mutex::new(lumen_text::TextSystem::new()))
+        .lock()
+        .map_err(|_| {
+            LumenError::Expression(ExpressionError::Evaluate {
+                path: None,
+                details: "text system lock was poisoned".to_string(),
+            })
+        })?;
+    let mut request = lumen_text::TextLayoutRequest::new(content);
+    request.font_family = font_family.to_string();
+    request.font_size = font_size;
+    request.max_width = (max_width > 0.0).then_some(max_width);
+    Ok(text_system.measure(&request))
+}
+
+fn resolve_string(
+    node_id: NodeId,
+    property: &str,
+    value: &NodeProperty,
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<String> {
+    match value {
+        NodeProperty::String(text) => Ok(text.clone()),
+        NodeProperty::Expr(expr) => to_string(
+            &expr.evaluate(ctx)?,
+            text_measure_error(
+                ctx,
+                format!(
+                    "text node `{}` property `{property}` must be a string",
+                    node_id.0
+                ),
+            ),
+        ),
+        _ => Err(text_measure_error(
+            ctx,
+            format!(
+                "text node `{}` property `{property}` must be a string",
+                node_id.0
+            ),
+        )),
+    }
+}
+
+fn resolve_number(
+    node_id: NodeId,
+    property: &str,
+    value: &NodeProperty,
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<f64> {
+    match value {
+        NodeProperty::Float(number) => Ok(*number),
+        NodeProperty::Int(number) => Ok(*number as f64),
+        NodeProperty::Expr(expr) => to_number(
+            &expr.evaluate(ctx)?,
+            text_measure_error(
+                ctx,
+                format!(
+                    "text node `{}` property `{property}` must be numeric",
+                    node_id.0
+                ),
+            ),
+        ),
+        _ => Err(text_measure_error(
+            ctx,
+            format!(
+                "text node `{}` property `{property}` must be numeric",
+                node_id.0
+            ),
+        )),
+    }
 }
 
 fn text_measure_error(ctx: &ExpressionContext<'_>, details: String) -> LumenError {

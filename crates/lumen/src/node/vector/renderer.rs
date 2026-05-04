@@ -8,8 +8,11 @@ use crate::{
 use super::{shape::Shape, text::Text};
 
 pub(crate) const SHAPE_SHADER: &str = include_str!("shape_renderer.wgsl");
-pub(crate) const TEXT_SHADER: &str = include_str!("text_renderer.wgsl");
-pub(crate) const MAX_TEXT_CHARS: usize = 4096;
+pub(crate) const TEXT_ATLAS_SIZE: lumen_gpu::Size = lumen_gpu::Size {
+    width: 1024,
+    height: 1024,
+};
+pub(crate) const MAX_TEXT_GLYPHS: usize = 2048;
 
 pub(crate) struct VectorRenderer<'a, 'b> {
     ctx: &'a mut crate::gpu::CompileContext<'b>,
@@ -62,6 +65,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         if port.port != "output" {
             return Err(self.ctx.missing_output(text.id, &port.port));
         }
+        super::text::clear_text_cache_for(text.id);
 
         let size = lumen_gpu::Size::new(
             self.ctx.composition().render_settings.width.max(1),
@@ -70,74 +74,123 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         let texture = self.ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(text.id.0),
             Some(format!("text:{}:output", text.id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+            lumen_gpu::TextureDesc::render_target(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let params = self.ctx.builder_mut().buffer_for(
+        let atlas_texture = self.ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(text.id.0),
-            Some(format!("text:{}:params", text.id.0)),
-            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<TextParams>() as u64),
+            Some(format!("text:{}:atlas", text.id.0)),
+            lumen_gpu::TextureDesc::sampled(
+                TEXT_ATLAS_SIZE,
+                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            ),
         );
-        let text_buffer = self.ctx.builder_mut().buffer_for(
+        let globals_buffer =
+            self.ctx.builder_mut().buffer_for(
+                lumen_gpu::NodeKey(text.id.0),
+                Some(format!("text:{}:globals", text.id.0)),
+                lumen_gpu::BufferDesc::uniform(
+                    std::mem::size_of::<lumen_text::GpuTextGlobals>() as u64
+                ),
+            );
+        let instances_buffer = self.ctx.builder_mut().buffer_for(
             lumen_gpu::NodeKey(text.id.0),
-            Some(format!("text:{}:chars", text.id.0)),
-            lumen_gpu::BufferDesc::storage((MAX_TEXT_CHARS * std::mem::size_of::<u32>()) as u64),
+            Some(format!("text:{}:instances", text.id.0)),
+            lumen_gpu::BufferDesc::storage(
+                (MAX_TEXT_GLYPHS * std::mem::size_of::<lumen_text::GpuGlyphInstance>()) as u64,
+            ),
+        );
+        let atlas_sampler = self.ctx.builder_mut().sampler(
+            Some(format!("text:{}:atlas-sampler", text.id.0)),
+            lumen_gpu::wgpu::SamplerDescriptor {
+                label: Some("lumen text atlas sampler"),
+                address_mode_u: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+                address_mode_v: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+                address_mode_w: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+                mag_filter: lumen_gpu::wgpu::FilterMode::Linear,
+                min_filter: lumen_gpu::wgpu::FilterMode::Linear,
+                mipmap_filter: lumen_gpu::wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            },
         );
         let program = self.ctx.builder_mut().program_for(
             lumen_gpu::NodeKey(text.id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+            lumen_gpu::ProgramDesc::Render(lumen_gpu::RenderProgramDesc {
                 label: Some("text".to_string()),
-                shader: TEXT_SHADER.to_string(),
-                entry: "cs_main".to_string(),
+                shader: lumen_text::ALPHA_TEXT_SHADER.to_string(),
+                vertex_entry: "vs_main".to_string(),
+                fragment_entry: "fs_main".to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
                     lumen_gpu::BindingLayoutEntry::uniform(
                         0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                        lumen_gpu::wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
+                    lumen_gpu::BindingLayoutEntry::texture(
                         1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+                        lumen_gpu::wgpu::ShaderStages::FRAGMENT,
+                    ),
+                    lumen_gpu::BindingLayoutEntry::sampler(
+                        2,
+                        lumen_gpu::wgpu::ShaderStages::FRAGMENT,
                     ),
                     lumen_gpu::BindingLayoutEntry::storage(
-                        2,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                        3,
+                        lumen_gpu::wgpu::ShaderStages::VERTEX,
                         true,
                     ),
                 ]),
+                targets: vec![Some(lumen_gpu::wgpu::ColorTargetState {
+                    format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(lumen_gpu::wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: lumen_gpu::wgpu::ColorWrites::ALL,
+                })],
+                vertex_buffers: Vec::new(),
+                primitive: lumen_gpu::wgpu::PrimitiveState::default(),
             }),
         );
         self.ctx
             .builder_mut()
-            .compute_pass(lumen_gpu::ComputePassDesc {
-                label: Some(format!("text:{}:rasterize", text.id.0)),
+            .render_pass(lumen_gpu::RenderPassDesc {
+                label: Some(format!("text:{}:render", text.id.0)),
                 owner: Some(lumen_gpu::NodeKey(text.id.0)),
                 program,
+                targets: vec![lumen_gpu::RenderTargetRef {
+                    texture,
+                    load: lumen_gpu::LoadOp::Clear(lumen_gpu::wgpu::Color::TRANSPARENT),
+                    store: lumen_gpu::wgpu::StoreOp::Store,
+                }],
                 bindings: vec![
-                    lumen_gpu::Binding::uniform(0, 0, params),
-                    lumen_gpu::Binding::storage_texture(0, 1, texture),
-                    lumen_gpu::Binding::storage_buffer(0, 2, text_buffer),
+                    lumen_gpu::Binding::uniform(0, 0, globals_buffer),
+                    lumen_gpu::Binding::sampled_texture(0, 1, atlas_texture),
+                    lumen_gpu::Binding::sampler(0, 2, atlas_sampler),
+                    lumen_gpu::Binding::storage_buffer(0, 3, instances_buffer),
                 ],
-                dispatch: compiler::dispatch_for(size),
+                vertex_buffers: Vec::new(),
+                index_buffer: None,
+                draw: lumen_gpu::DrawCommand::Draw(lumen_gpu::Draw {
+                    vertices: 0..6,
+                    instances: 0..MAX_TEXT_GLYPHS as u32,
+                }),
+                scissor: None,
             });
-        self.ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(text.id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
         self.ctx.push_frame_binding(FrameBinding::Text {
             node_id: text.id,
             content: text.content.clone(),
+            font_family: text.font_family.clone(),
             font_size: text.font_size.clone(),
+            font_weight: text.font_weight.clone(),
+            font_style: text.font_style.clone(),
             max_width: text.max_width.clone(),
             position: text.position.clone(),
             color: text.color.clone(),
             alignment_horizontal: text.alignment_horizontal.clone(),
             alignment_vertical: text.alignment_vertical.clone(),
-            buffer: params,
-            text_buffer,
+            output_texture: texture,
+            atlas_texture,
+            globals_buffer,
+            instances_buffer,
+            atlas_size: TEXT_ATLAS_SIZE,
+            max_glyphs: MAX_TEXT_GLYPHS,
+            size,
         });
 
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -227,18 +280,4 @@ pub(crate) struct ShapeParams {
     pub(crate) stroke_width: f32,
     pub(crate) geometry_kind: u32,
     pub(crate) flags: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct TextParams {
-    pub(crate) color: [f32; 4],
-    pub(crate) position: [f32; 2],
-    pub(crate) font_size: f32,
-    pub(crate) max_width: f32,
-    pub(crate) content_len: u32,
-    pub(crate) line_count: u32,
-    pub(crate) alignment_horizontal: u32,
-    pub(crate) alignment_vertical: u32,
-    pub(crate) _pad: [u32; 4],
 }
