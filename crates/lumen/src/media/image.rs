@@ -1,15 +1,13 @@
 use std::{fs, path::Path, sync::Arc};
 
-use skia_safe::{Data, Image};
+use crate::error::MediaError;
 
-use crate::{error::MediaError, gpu_image::GpuImageFrame};
-
-use super::{ImageMetadata, ImageResolver};
+use super::{CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame};
 
 #[derive(Debug, Clone)]
 struct CachedImage {
     metadata: ImageMetadata,
-    frame: Arc<GpuImageFrame>,
+    frame: Arc<CpuMediaFrame>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,8 +33,8 @@ impl ImageResolver for ImageFileResolver {
         self.cached.metadata
     }
 
-    fn gpu_image(&self) -> Result<Arc<GpuImageFrame>, MediaError> {
-        Ok(Arc::clone(&self.cached.frame))
+    fn frame(&self) -> Result<MediaFrame, MediaError> {
+        Ok(MediaFrame::CpuRgba(Arc::clone(&self.cached.frame)))
     }
 }
 
@@ -45,18 +43,23 @@ fn load_cached_image(source: &str) -> Result<CachedImage, MediaError> {
         media_source: source.to_string(),
         details: format!("failed opening image source: {err}"),
     })?;
-    let data = Data::new_copy(encoded.as_slice());
-    let image = Image::from_encoded(data).ok_or_else(|| MediaError::Decode {
+    let image = image::load_from_memory(&encoded).map_err(|err| MediaError::Decode {
         media_source: source.to_string(),
-        details: "failed decoding image source with Skia".to_string(),
+        details: format!("failed decoding image source: {err}"),
     })?;
+    let rgba = image.to_rgba8();
     let metadata = ImageMetadata {
-        width: image.width().max(0) as u32,
-        height: image.height().max(0) as u32,
+        width: rgba.width(),
+        height: rgba.height(),
     };
     Ok(CachedImage {
         metadata,
-        frame: Arc::new(GpuImageFrame::new(image)),
+        frame: Arc::new(CpuMediaFrame {
+            row_bytes: metadata.width as usize * 4,
+            width: metadata.width,
+            height: metadata.height,
+            rgba: Arc::new(rgba.into_raw()),
+        }),
     })
 }
 
@@ -84,11 +87,15 @@ mod tests {
         assert_eq!(metadata.width, 2);
         assert_eq!(metadata.height, 1);
 
-        let first = resolver.gpu_image().expect("first resolve");
-        let second = resolver.gpu_image().expect("second resolve");
+        let MediaFrame::CpuRgba(first) = resolver.frame().expect("first resolve") else {
+            panic!("expected CPU frame");
+        };
+        let MediaFrame::CpuRgba(second) = resolver.frame().expect("second resolve") else {
+            panic!("expected CPU frame");
+        };
         assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(first.storage_width, 2);
-        assert_eq!(first.storage_height, 1);
+        assert_eq!(first.width, 2);
+        assert_eq!(first.height, 1);
 
         let _ = fs::remove_file(path);
     }

@@ -1,7 +1,8 @@
 use std::{env, path::PathBuf, time::Instant};
 
 use lumen_ffmpeg::{
-    DecodeMode, InputContext, MuxedEncoder, VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
+    DecodeMode, InputContext, MuxedEncoder, VideoCodec, VideoDecoder, VideoDecoderConfig,
+    VideoEncoderConfig,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,7 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(60.0)
         .round()
         .clamp(1.0, u32::MAX as f64) as u32;
-    let mut config = VideoEncoderConfig::h264_rgba(stream.width, stream.height, fps);
+    let mut config =
+        VideoEncoderConfig::cpu_rgba(stream.width, stream.height, fps, VideoCodec::H264);
     if let Some(encoder_name) = encoder_name {
         config.encoder_name = Some(encoder_name);
     }

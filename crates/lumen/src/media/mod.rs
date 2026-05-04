@@ -20,5 +20,8 @@ pub use pixels::premultiply_rgba_in_place_if_needed;
 pub use prediction::{
     FrameRequirements, RenderRequirements, VideoFrameRequirement, collect_frame_requirements,
 };
-pub use resolver::{ImageMetadata, ImageResolver, VideoFrameResolver, VideoMetadata};
+pub use resolver::{
+    CpuMediaFrame, ExternalTextureFrame, ExternalTextureHandle, ImageMetadata, ImageResolver,
+    MediaFrame, VideoFrameResolver, VideoMetadata,
+};
 pub use store::MediaStore;

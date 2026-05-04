@@ -1,29 +1,30 @@
-use skia_safe::{IRect, image::RequiredProperties};
+use crate::node::{NodeId, NodeProperty, PortRef};
 
-use crate::{
-    gpu_image::{GpuImageFrame, RectI},
-    node::{
-        NodeId, NodeProperty, PortRef,
-        pixel_utils::{ClearMode, render_to_surface_ephemeral},
-    },
-    render::RenderContext,
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
+    RasterHandle, compiler,
 };
-use lumen_macros::{Node, node_impl};
 
-#[derive(Debug, Clone, Node)]
+pub(crate) const SHADER: &str = include_str!("crop.wgsl");
+
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "crop",
+    label = "Crop",
+    description = "Extracts a fixed raster region into static output bounds.",
+    category = "processing"
+)]
 pub struct Crop {
     pub id: NodeId,
-
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub x: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub y: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub width: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub height: NodeProperty,
-
-    #[input(kind = Raster)]
+    #[input()]
     pub source: PortRef,
 }
 
@@ -40,108 +41,98 @@ impl Default for Crop {
     }
 }
 
-#[node_impl]
-impl Crop {
-    #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
-        let source_result = ctx.eval(&self.source)?;
-        let source = source_result.as_raster()?;
-        let x = self.resolve_x(ctx)?;
-        let y = self.resolve_y(ctx)?;
-        let width = self.resolve_width(ctx)?.max(0);
-        let height = self.resolve_height(ctx)?.max(0);
-
-        let (src_w, src_h) = source.dimensions();
-        let source_alpha = source.alpha_mode();
-        let source_format = source.format_rect();
-
-        let crop_left = x.clamp(0, src_w as i64) as i32;
-        let crop_top = y.clamp(0, src_h as i64) as i32;
-        let crop_right = (x + width).clamp(0, src_w as i64) as i32;
-        let crop_bottom = (y + height).clamp(0, src_h as i64) as i32;
-
-        if crop_left == 0
-            && crop_top == 0
-            && crop_right == src_w as i32
-            && crop_bottom == src_h as i32
-            && crop_right > crop_left
-            && crop_bottom > crop_top
-        {
-            return source.snapshot();
+impl GpuCompileNode for Crop {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        if port.port != "output" {
+            return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        if crop_right <= crop_left || crop_bottom <= crop_top {
-            let output_rect = RectI::new(
-                source_format.x + crop_left,
-                source_format.y + crop_top,
-                1,
-                1,
-            );
-            return render_to_surface_ephemeral(
-                1,
-                1,
-                ctx,
-                output_rect,
-                output_rect,
-                source_alpha,
-                ClearMode::Transparent,
-                |_| {},
-            );
-        }
-
-        let crop_width = (crop_right - crop_left) as u32;
-        let crop_height = (crop_bottom - crop_top) as u32;
-        let output_rect = RectI::new(
-            source_format.x + crop_left,
-            source_format.y + crop_top,
-            crop_width,
-            crop_height,
+        let source = ctx
+            .compile_port(&self.source)?
+            .into_raster(self.source.id, &self.source.port)?;
+        let size = lumen_gpu::Size::new(
+            ctx.static_dimension(&self.width, self.id, "width")?,
+            ctx.static_dimension(&self.height, self.id, "height")?,
         );
-
-        let image = match source.to_skia_image() {
-            Some(img) => img,
-            None => {
-                return render_to_surface_ephemeral(
-                    1,
-                    1,
-                    ctx,
-                    output_rect,
-                    output_rect,
-                    source_alpha,
-                    ClearMode::Transparent,
-                    |_| {},
-                );
-            }
-        };
-
-        // Try fast subset path
-        let subset_rect = IRect::from_ltrb(crop_left, crop_top, crop_right, crop_bottom);
-        if let Some(cropped_image) =
-            image.make_subset(None, &subset_rect, RequiredProperties::default())
-        {
-            let mut frame = GpuImageFrame::with_domain(
-                cropped_image,
-                crop_width,
-                crop_height,
-                output_rect,
-                output_rect,
-            );
-            frame.alpha_mode = source_alpha;
-            return Ok(frame);
-        }
-
-        // Fallback: render to surface
-        render_to_surface_ephemeral(
-            crop_width,
-            crop_height,
-            ctx,
-            output_rect,
-            output_rect,
-            source_alpha,
-            ClearMode::None,
-            |canvas| {
-                canvas.draw_image(&image, (-crop_left as f32, -crop_top as f32), None);
+        let texture = ctx.builder_mut().texture_for(
+            lumen_gpu::NodeKey(self.id.0),
+            Some(format!("crop:{}:output", self.id.0)),
+            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        );
+        let params = ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(self.id.0),
+            Some(format!("crop:{}:params", self.id.0)),
+            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::CropParams>() as u64),
+        );
+        let program = ctx.spatial_program(self.id, "crop", SHADER);
+        ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
+            label: Some(format!("crop:{}:apply", self.id.0)),
+            owner: Some(lumen_gpu::NodeKey(self.id.0)),
+            program,
+            bindings: compiler::spatial_bindings(source.texture, params, texture),
+            dispatch: compiler::dispatch_for(size),
+        });
+        ctx.builder_mut().param(
+            lumen_gpu::ParamKey {
+                owner: lumen_gpu::NodeKey(self.id.0),
+                slot: 0,
             },
-        )
+            lumen_gpu::ParamTarget::Buffer(params),
+        );
+        ctx.push_frame_binding(FrameBinding::Crop {
+            node_id: self.id,
+            x: self.x.clone(),
+            y: self.y.clone(),
+            width: self.width.clone(),
+            height: self.height.clone(),
+            buffer: params,
+        });
+
+        Ok(CompiledOutput::Raster(RasterHandle {
+            texture,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: source.metadata,
+        }))
+    }
+}
+
+impl GpuFrameBindNode for Crop {
+    fn bind_gpu_frame(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        binding: &FrameBinding,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        let FrameBinding::Crop {
+            node_id,
+            x,
+            y,
+            width,
+            height,
+            buffer,
+        } = binding
+        else {
+            return Ok(());
+        };
+        let params = compiler::CropParams {
+            origin: [
+                x.resolve_int(*node_id, "x", &ctx.expr_context(*node_id, "x"))? as i32,
+                y.resolve_int(*node_id, "y", &ctx.expr_context(*node_id, "y"))? as i32,
+            ],
+            size: [
+                width
+                    .resolve_int(*node_id, "width", &ctx.expr_context(*node_id, "width"))?
+                    .max(0) as u32,
+                height
+                    .resolve_int(*node_id, "height", &ctx.expr_context(*node_id, "height"))?
+                    .max(0) as u32,
+            ],
+        };
+        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
     }
 }

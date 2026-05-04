@@ -9,17 +9,22 @@ use crate::{
     format::{InputContext, Packet, Rational},
     gpu::{GpuBackend, GpuVideoFrame},
 };
+#[cfg(target_os = "linux")]
+use sys::SWS_BILINEAR;
+#[cfg(not(target_os = "linux"))]
+use sys::SwsFlags::SWS_BILINEAR;
 use sys::{
     AVCodecID::{
         AV_CODEC_ID_AV1, AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_NONE, AV_CODEC_ID_PRORES,
         AV_CODEC_ID_VP9,
     },
-    AVHWDeviceType::{AV_HWDEVICE_TYPE_VIDEOTOOLBOX, AV_HWDEVICE_TYPE_VULKAN},
-    AVPixelFormat::{
-        AV_PIX_FMT_BGRA, AV_PIX_FMT_NONE, AV_PIX_FMT_NV12, AV_PIX_FMT_P010BE, AV_PIX_FMT_P010LE,
-        AV_PIX_FMT_RGBA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_VULKAN,
+    AVHWDeviceType::{
+        AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_VIDEOTOOLBOX, AV_HWDEVICE_TYPE_VULKAN,
     },
-    SwsFlags::SWS_BILINEAR,
+    AVPixelFormat::{
+        AV_PIX_FMT_BGRA, AV_PIX_FMT_CUDA, AV_PIX_FMT_NONE, AV_PIX_FMT_NV12, AV_PIX_FMT_P010BE,
+        AV_PIX_FMT_P010LE, AV_PIX_FMT_RGBA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_VULKAN,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +39,7 @@ pub enum VideoCodec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
+    Cuda,
     Rgba8,
     Bgra8,
     Nv12,
@@ -120,6 +126,7 @@ impl PixelFormat {
     pub(crate) fn from_av_pixel_format(format: sys::AVPixelFormat) -> Self {
         match format {
             AV_PIX_FMT_RGBA => Self::Rgba8,
+            AV_PIX_FMT_CUDA => Self::Cuda,
             AV_PIX_FMT_BGRA => Self::Bgra8,
             AV_PIX_FMT_NV12 => Self::Nv12,
             AV_PIX_FMT_P010LE | AV_PIX_FMT_P010BE => Self::P010,
@@ -132,6 +139,7 @@ impl PixelFormat {
     pub(crate) fn to_av_pixel_format(self) -> sys::AVPixelFormat {
         match self {
             Self::Rgba8 => AV_PIX_FMT_RGBA,
+            Self::Cuda => AV_PIX_FMT_CUDA,
             Self::Bgra8 => AV_PIX_FMT_BGRA,
             Self::Nv12 => AV_PIX_FMT_NV12,
             Self::P010 => AV_PIX_FMT_P010LE,
@@ -191,6 +199,7 @@ impl VideoDecoder {
                 (*decoder.context).get_format = match backend {
                     GpuBackend::Metal => Some(force_metal_pixel_format),
                     GpuBackend::Vulkan => Some(force_vulkan_pixel_format),
+                    GpuBackend::Cuda => Some(force_cuda_pixel_format),
                 };
             }
         }
@@ -304,7 +313,7 @@ impl VideoDecoder {
         let stride = width as usize * 4;
         let mut data = vec![0; stride.saturating_mul(height as usize)];
         let src_format = match frame.format() {
-            AV_PIX_FMT_VULKAN | AV_PIX_FMT_VIDEOTOOLBOX => {
+            AV_PIX_FMT_CUDA | AV_PIX_FMT_VULKAN | AV_PIX_FMT_VIDEOTOOLBOX => {
                 let mut cpu_frame = AvFrame::new()?;
                 unsafe {
                     ffi::check(
@@ -371,6 +380,21 @@ impl VideoDecoder {
 
     fn frame_to_gpu(&self, frame: &AvFrame) -> Result<GpuVideoFrame> {
         match (self.mode, frame.format()) {
+            #[cfg(feature = "cuda")]
+            (DecodeMode::Gpu(GpuBackend::Cuda), AV_PIX_FMT_CUDA) => {
+                let _ = frame;
+                Err(FfmpegError::new(
+                    "receive_gpu_frame",
+                    "CUDA decode produced AV_PIX_FMT_CUDA, but CUDA frame wrapping is not implemented yet",
+                )
+                .with_backend(GpuBackend::Cuda))
+            }
+            #[cfg(not(feature = "cuda"))]
+            (DecodeMode::Gpu(GpuBackend::Cuda), AV_PIX_FMT_CUDA) => Err(FfmpegError::new(
+                "receive_gpu_frame",
+                "crate was built without the cuda feature",
+            )
+            .with_backend(GpuBackend::Cuda)),
             #[cfg(feature = "metal")]
             (DecodeMode::Gpu(GpuBackend::Metal), AV_PIX_FMT_VIDEOTOOLBOX) => {
                 self.frame_to_metal(frame)
@@ -435,6 +459,13 @@ unsafe extern "C" fn force_vulkan_pixel_format(
     force_pixel_format(formats, AV_PIX_FMT_VULKAN)
 }
 
+unsafe extern "C" fn force_cuda_pixel_format(
+    _context: *mut sys::AVCodecContext,
+    formats: *const sys::AVPixelFormat,
+) -> sys::AVPixelFormat {
+    force_pixel_format(formats, AV_PIX_FMT_CUDA)
+}
+
 fn force_pixel_format(
     formats: *const sys::AVPixelFormat,
     desired: sys::AVPixelFormat,
@@ -489,6 +520,7 @@ fn hw_device_type(backend: GpuBackend) -> sys::AVHWDeviceType {
     match backend {
         GpuBackend::Metal => AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
         GpuBackend::Vulkan => AV_HWDEVICE_TYPE_VULKAN,
+        GpuBackend::Cuda => AV_HWDEVICE_TYPE_CUDA,
     }
 }
 
@@ -496,6 +528,7 @@ fn hw_pixel_format(backend: GpuBackend) -> sys::AVPixelFormat {
     match backend {
         GpuBackend::Metal => AV_PIX_FMT_VIDEOTOOLBOX,
         GpuBackend::Vulkan => AV_PIX_FMT_VULKAN,
+        GpuBackend::Cuda => AV_PIX_FMT_CUDA,
     }
 }
 

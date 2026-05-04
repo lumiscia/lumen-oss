@@ -1,8 +1,7 @@
 //! JSON deserialization for Lumen compositions.
 //!
 //! Parses a JSON object into a [`Composition`] containing a validated [`Graph`]
-//! of nodes and connections. Uses [`NodeDef`](crate::node::NodeDef) to validate
-//! property types and port definitions at parse time.
+//! of renderer-agnostic nodes and connections.
 //!
 //! # Modules
 //!
@@ -20,7 +19,7 @@ use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack},
     composition::{Composition, CompositionMetadata, RenderSettings, TimelineSettings},
     graph::{Connection, Graph},
-    node::{NodeId, NodeKind},
+    node::NodeId,
 };
 
 pub use property::parse_color;
@@ -86,16 +85,11 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
             .unwrap_or("output")
             .to_string();
         let to_node = parse_node_id(conn_obj.get("to_node").context("missing `to_node`")?)?;
-        let mut to_port = conn_obj
+        let to_port = conn_obj
             .get("to_port")
             .and_then(|v| v.as_str())
             .context("missing `to_port`")?
             .to_string();
-        if matches!(graph.nodes.get(&to_node), Some(NodeKind::SkiaShader(_)))
-            && matches!(to_port.as_str(), "source" | "input")
-        {
-            to_port = "inputs".to_string();
-        }
 
         graph
             .connect(Connection {
@@ -497,15 +491,10 @@ mod tests {
             "render_settings": { "width": 800, "height": 600 },
             "nodes": [
                 { "id": 1, "type": "solid_color", "properties": { "color": "#FF0000", "width": 800, "height": 600 } },
-                { "id": 2, "type": "transform", "properties": {
-                    "translate_x": "=frame * 2",
-                    "translate_y": 0.0,
-                    "scale_x": 1.0,
-                    "scale_y": 1.0,
-                    "rotate": 0.0,
-                    "pivot_x": 0.5,
-                    "pivot_y": 0.5,
-                    "sampling": 1
+                { "id": 2, "type": "exposure", "properties": {
+                    "exposure": "=frame * 0.1",
+                    "contrast": 1.0,
+                    "offset": 0.0
                 }},
                 { "id": 3, "type": "media_output" }
             ],

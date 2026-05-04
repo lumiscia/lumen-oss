@@ -1,3 +1,5 @@
+use std::sync::{Mutex, OnceLock};
+
 use crate::{
     error::{ExpressionError, LumenError},
     expr::{
@@ -5,13 +7,7 @@ use crate::{
         ast::{BuiltinFn, ExprNode, ExpressionValue},
         eval::evaluate_expr,
     },
-    node::{
-        NodeId, NodeProperty, PropertyEval,
-        source::{
-            text::TextFontStyle,
-            text_layout::{TextLayoutStyle, measure_text, resolved_max_width},
-        },
-    },
+    node::{NodeId, NodeKind, NodeProperty},
 };
 
 pub fn evaluate_builtin(
@@ -240,192 +236,190 @@ pub fn evaluate_text_measure_builtin(
         BuiltinFn::TextWidth => "text_width",
         _ => unreachable!(),
     };
-    if args.is_empty() || args.len() > 3 {
+    if args.is_empty() || args.len() > 4 {
         return Err(text_measure_error(
             ctx,
-            format!("{builtin_name} expects 1 to 3 arguments"),
+            format!("{builtin_name} expects 1 to 4 arguments"),
         ));
     }
 
-    let mut input = match args.first() {
-        Some(ExprNode::Node(node_id)) => resolve_text_measure_node(*node_id, ctx, builtin_name)?,
-        Some(arg) => TextMeasureInput {
-            text: to_string(
+    if let Some(ExprNode::Node(node_id)) = args.first() {
+        if args.len() != 1 {
+            return Err(text_measure_error(
+                ctx,
+                format!("{builtin_name}(node(id)) does not accept override arguments"),
+            ));
+        }
+        let measurement = measure_text_node(*node_id, ctx)?;
+        return Ok(ExpressionValue::Number(match builtin {
+            BuiltinFn::TextHeight => f64::from(measurement.height),
+            BuiltinFn::TextWidth => f64::from(measurement.width),
+            _ => unreachable!(),
+        }));
+    }
+
+    let text = args
+        .first()
+        .map(|arg| {
+            to_string(
+                &evaluate_expr(arg, ctx)?,
+                text_measure_error(ctx, format!("{builtin_name} expects a string argument")),
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let font_size = args
+        .get(1)
+        .map(|arg| {
+            to_number(
                 &evaluate_expr(arg, ctx)?,
                 text_measure_error(
                     ctx,
-                    format!("{builtin_name} expects first arg as string or node reference"),
+                    format!("{builtin_name} optional second arg must be numeric font size"),
                 ),
-            )?,
-            style: TextLayoutStyle::default(),
-            wrap_width: None,
-        },
-        None => unreachable!(),
-    };
-
-    if let Some(font_size_arg) = args.get(1) {
-        input.style.font_size = to_number(
-            &evaluate_expr(font_size_arg, ctx)?,
-            text_measure_error(
-                ctx,
-                format!("{builtin_name} optional second arg must be numeric font size"),
-            ),
-        )? as f32;
-    }
-    if let Some(max_width_arg) = args.get(2) {
-        let max_width = to_number(
-            &evaluate_expr(max_width_arg, ctx)?,
-            text_measure_error(
-                ctx,
-                format!("{builtin_name} optional third arg must be numeric max width"),
-            ),
-        )? as f32;
-        input.wrap_width = resolved_max_width(max_width);
-    }
-
-    let (width, height) = measure_text(&input.text, &input.style, input.wrap_width, ctx.width);
+            )
+        })
+        .transpose()?
+        .unwrap_or(16.0);
+    let max_width = args
+        .get(2)
+        .map(|arg| {
+            to_number(
+                &evaluate_expr(arg, ctx)?,
+                text_measure_error(
+                    ctx,
+                    format!("{builtin_name} optional third arg must be numeric max width"),
+                ),
+            )
+        })
+        .transpose()?
+        .unwrap_or(0.0);
+    let font_family = args
+        .get(3)
+        .map(|arg| {
+            to_string(
+                &evaluate_expr(arg, ctx)?,
+                text_measure_error(
+                    ctx,
+                    format!("{builtin_name} optional fourth arg must be a font family string"),
+                ),
+            )
+        })
+        .transpose()?
+        .unwrap_or_else(|| "sans-serif".to_string());
+    let measurement = measure_text_value(&text, &font_family, font_size as f32, max_width as f32)?;
     Ok(ExpressionValue::Number(match builtin {
-        BuiltinFn::TextHeight => f64::from(height),
-        BuiltinFn::TextWidth => f64::from(width),
+        BuiltinFn::TextHeight => f64::from(measurement.height),
+        BuiltinFn::TextWidth => f64::from(measurement.width),
         _ => unreachable!(),
     }))
 }
 
-#[derive(Debug, Clone)]
-struct TextMeasureInput {
-    text: String,
-    style: TextLayoutStyle,
-    wrap_width: Option<f32>,
-}
-
-fn resolve_text_measure_node(
+fn measure_text_node(
     node_id: NodeId,
     ctx: &ExpressionContext<'_>,
-    builtin_name: &str,
-) -> crate::Result<TextMeasureInput> {
+) -> crate::Result<lumen_text::TextMeasurement> {
     let graph = ctx.graph.ok_or_else(|| {
         text_measure_error(
             ctx,
-            format!(
-                "{builtin_name} requires a graph to resolve node `{}`",
-                node_id.0
-            ),
+            format!("no graph available to resolve text node `{}`", node_id.0),
         )
     })?;
-    let node = graph.nodes.get(&node_id).ok_or_else(|| {
-        text_measure_error(
+    let node = graph
+        .nodes
+        .get(&node_id)
+        .ok_or_else(|| text_measure_error(ctx, format!("text node `{}` not found", node_id.0)))?;
+    let NodeKind::Text(text) = node else {
+        return Err(text_measure_error(
             ctx,
-            format!("{builtin_name} could not find node `{}`", node_id.0),
-        )
-    })?;
+            format!("node `{}` is not a text node", node_id.0),
+        ));
+    };
 
-    let text = resolve_required_node_string(node_id, node, "content", ctx, builtin_name)?;
-    let font_family =
-        resolve_optional_node_string(node_id, node, "font_family", ctx, builtin_name)?
-            .unwrap_or_else(|| TextLayoutStyle::default().font_family);
-    let font_size = resolve_optional_node_number(node_id, node, "font_size", ctx, builtin_name)?
-        .unwrap_or(TextLayoutStyle::default().font_size as f64) as f32;
-    let font_weight = resolve_optional_node_number(node_id, node, "font_weight", ctx, builtin_name)?
-        .unwrap_or(TextLayoutStyle::default().font_weight as f64) as i32;
-    let font_style = resolve_optional_node_number(node_id, node, "font_style", ctx, builtin_name)?
-        .map(|value| TextFontStyle::from_int(value as i64))
-        .unwrap_or(TextLayoutStyle::default().font_style);
-    let wrap_width = resolve_optional_node_number(node_id, node, "max_width", ctx, builtin_name)?
-        .map(|value| resolved_max_width(value as f32))
-        .unwrap_or(None);
-
-    Ok(TextMeasureInput {
-        text,
-        style: TextLayoutStyle::new(font_family, font_size, font_weight, font_style),
-        wrap_width,
-    })
+    let content = resolve_string(node_id, "content", &text.content, ctx)?;
+    let font_family = resolve_string(node_id, "font_family", &text.font_family, ctx)?;
+    let font_size = resolve_number(node_id, "font_size", &text.font_size, ctx)? as f32;
+    let max_width = resolve_number(node_id, "max_width", &text.max_width, ctx)? as f32;
+    measure_text_value(&content, &font_family, font_size, max_width)
 }
 
-fn resolve_required_node_string(
+fn measure_text_value(
+    content: &str,
+    font_family: &str,
+    font_size: f32,
+    max_width: f32,
+) -> crate::Result<lumen_text::TextMeasurement> {
+    static TEXT_SYSTEM: OnceLock<Mutex<lumen_text::TextSystem>> = OnceLock::new();
+    let mut text_system = TEXT_SYSTEM
+        .get_or_init(|| Mutex::new(lumen_text::TextSystem::new()))
+        .lock()
+        .map_err(|_| {
+            LumenError::Expression(ExpressionError::Evaluate {
+                path: None,
+                details: "text system lock was poisoned".to_string(),
+            })
+        })?;
+    let mut request = lumen_text::TextLayoutRequest::new(content);
+    request.font_family = font_family.to_string();
+    request.font_size = font_size;
+    request.max_width = (max_width > 0.0).then_some(max_width);
+    Ok(text_system.measure(&request))
+}
+
+fn resolve_string(
     node_id: NodeId,
-    node: &dyn PropertyEval,
-    property_path: &str,
+    property: &str,
+    value: &NodeProperty,
     ctx: &ExpressionContext<'_>,
-    builtin_name: &str,
 ) -> crate::Result<String> {
-    match node.get_property(property_path)? {
-        Some(property) => property.resolve_string(node_id, property_path, ctx).map_err(|_| {
+    match value {
+        NodeProperty::String(text) => Ok(text.clone()),
+        NodeProperty::Expr(expr) => to_string(
+            &expr.evaluate(ctx)?,
             text_measure_error(
                 ctx,
                 format!(
-                    "{builtin_name} expected node `{}` property `{property_path}` to resolve as string",
+                    "text node `{}` property `{property}` must be a string",
                     node_id.0
                 ),
-            )
-        }),
-        None => Err(text_measure_error(
+            ),
+        ),
+        _ => Err(text_measure_error(
             ctx,
             format!(
-                "{builtin_name} expected node `{}` to expose `{property_path}`",
+                "text node `{}` property `{property}` must be a string",
                 node_id.0
             ),
         )),
     }
 }
 
-fn resolve_optional_node_string(
+fn resolve_number(
     node_id: NodeId,
-    node: &dyn PropertyEval,
-    property_path: &str,
+    property: &str,
+    value: &NodeProperty,
     ctx: &ExpressionContext<'_>,
-    builtin_name: &str,
-) -> crate::Result<Option<String>> {
-    match node.get_property(property_path)? {
-        Some(property) => property
-            .resolve_string(node_id, property_path, ctx)
-            .map(Some)
-            .map_err(|_| {
-                text_measure_error(
-                    ctx,
-                    format!(
-                        "{builtin_name} expected node `{}` property `{property_path}` to resolve as string",
-                        node_id.0
-                    ),
-                )
-            }),
-        None => Ok(None),
-    }
-}
-
-fn resolve_optional_node_number(
-    node_id: NodeId,
-    node: &dyn PropertyEval,
-    property_path: &str,
-    ctx: &ExpressionContext<'_>,
-    builtin_name: &str,
-) -> crate::Result<Option<f64>> {
-    match node.get_property(property_path)? {
-        Some(NodeProperty::Expr(expr)) => expr
-            .evaluate(ctx)?
-            .as_f64()
-            .map(Some)
-            .ok_or_else(|| {
-                text_measure_error(
-                    ctx,
-                    format!(
-                        "{builtin_name} expected node `{}` property `{property_path}` to resolve as number",
-                        node_id.0
-                    ),
-                )
-            }),
-        Some(property) => property
-            .resolve_float(node_id, property_path, ctx)
-            .map(Some)
-            .map_err(|_| {
-                text_measure_error(
-                    ctx,
-                    format!(
-                        "{builtin_name} expected node `{}` property `{property_path}` to resolve as number",
-                        node_id.0
-                    ),
-                )
-            }),
-        None => Ok(None),
+) -> crate::Result<f64> {
+    match value {
+        NodeProperty::Float(number) => Ok(*number),
+        NodeProperty::Int(number) => Ok(*number as f64),
+        NodeProperty::Expr(expr) => to_number(
+            &expr.evaluate(ctx)?,
+            text_measure_error(
+                ctx,
+                format!(
+                    "text node `{}` property `{property}` must be numeric",
+                    node_id.0
+                ),
+            ),
+        ),
+        _ => Err(text_measure_error(
+            ctx,
+            format!(
+                "text node `{}` property `{property}` must be numeric",
+                node_id.0
+            ),
+        )),
     }
 }
 

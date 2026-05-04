@@ -12,16 +12,14 @@ ffmpeg = ["dep:ffmpeg-next", "dep:lumen-ffmpeg"]
 image = ["dep:image"]
 json = ["dep:anyhow", "dep:serde", "dep:serde_json"]
 embed-roboto = []
-webgl = ["skia-safe/gl"]
-metal = ["skia-safe/metal", "dep:objc2", "dep:objc2-metal"]
-vulkan = ["skia-safe/vulkan", "dep:ash"]
+webgl = []
+metal = ["lumen-ffmpeg?/metal"]
+vulkan = ["lumen-ffmpeg?/vulkan"]
+cuda = ["lumen-ffmpeg?/cuda"]
 
 [dependencies]
 thiserror = "2.0.18"
 lumen-macros = { path = "../lumen-macros" }
-skia-safe = { path = "../../../rust-skia/skia-safe", default-features = false, features = [
-  "textlayout",
-] }
 ffmpeg-next = { version = "8.0", optional = true }
 image = { version = "0.25.9", default-features = false, features = [
   "png",
@@ -36,13 +34,10 @@ serde = { version = "1.0.228", features = ["derive"], optional = true }
 serde_json = { version = "1.0.145", optional = true }
 anyhow = { version = "1.0.101", optional = true }
 smallvec = "1.15.1"
-ash = { version = "0.38.0", optional = true }
-objc2 = { version = "0.6.3", optional = true }
-objc2-metal = { version = "0.3.2", optional = true }
-lumen-ffmpeg = { version = "0.1.0", path = "../ffmpeg", features = [
-  "metal",
-  "vulkan",
-], optional = true }
+lumen-ffmpeg = { version = "0.1.0", path = "../ffmpeg", optional = true }
+lumen-gpu = { version = "0.1.0", path = "../lumen-gpu" }
+lumen-text = { version = "0.1.0", path = "../lumen-text" }
+bytemuck = { version = "1.25.0", features = ["derive"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 glemu = { version = "0.1.2", default-features = false, features = ["api", "video-frame"] }

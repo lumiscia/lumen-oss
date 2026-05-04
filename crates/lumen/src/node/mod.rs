@@ -1,26 +1,20 @@
-//! Node type system, shared value types, and enum-based node dispatch.
+//! Renderer-agnostic node schema and shared parameter types.
+//!
+//! Node structs stay intentionally small here: they describe graph shape and
+//! animatable parameters. GPU lowering lives in `crate::gpu`.
 
 use std::fmt;
 
 use crate::{
     error::{LumenError, PropertyError},
     expr::Expression,
-    gpu_image::GpuImageFrame,
-    media::MediaStore,
-    render::{context::RenderContext, surface::SurfacePool},
 };
 
 pub mod compositing;
 pub mod media_output;
-pub mod pixel_utils;
 pub mod processing;
 pub mod source;
 pub mod vector;
-
-pub use vector::{
-    ShapeGeometry, VectorData, VectorPosition, VectorStroke, VectorStyle, VectorTextData,
-    VectorTransformData,
-};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub u64);
@@ -51,6 +45,7 @@ impl fmt::Display for TrackId {
         write!(f, "{}", self.0)
     }
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputPortDef {
     pub name: &'static str,
@@ -58,6 +53,7 @@ pub struct InputPortDef {
     pub optional: bool,
     pub variadic: bool,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputPortDef {
     pub name: &'static str,
@@ -83,10 +79,34 @@ pub struct PropertyDef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+pub enum NodeCategory {
+    Compositing = 0,
+    Processing = 1,
+    Source = 2,
+    Output = 3,
+    Vector = 4,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeSchemaDef {
+    pub kind: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub category: NodeCategory,
+    pub inputs: &'static [InputPortDef],
+    pub properties: &'static [PropertyDef],
+    pub default_properties: Vec<(&'static str, NodeProperty)>,
+}
+
+pub trait NodeSchema: Default {
+    fn schema() -> NodeSchemaDef;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum PortKind {
-    GpuImageFrame = 0,
-    Surface = 1,
-    Vector = 2,
+    Raster = 0,
+    Vector = 1,
 }
 
 #[derive(Debug, Clone)]
@@ -157,10 +177,10 @@ impl NodeProperty {
                 .parse::<i64>()
                 .map_err(|_| Self::invalid_type(node_id, property_path, "Int", "String")),
             Self::Expr(expr) => {
-                let val = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
+                let value = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
                     Self::invalid_type(node_id, property_path, "Int", "expression")
                 })?;
-                Ok(val as i64)
+                Ok(value as i64)
             }
             _ => Err(Self::invalid_type(
                 node_id,
@@ -252,78 +272,22 @@ impl NodeProperty {
     }
 }
 
-#[derive(Debug)]
-pub enum NodeResult {
-    Raster(GpuImageFrame),
-    Vector(VectorData),
-    None,
-}
-
-impl NodeResult {
-    pub fn as_raster(&self) -> crate::Result<&GpuImageFrame> {
-        match self {
-            Self::Raster(frame) => Ok(frame),
-            Self::Vector(_) | Self::None => Err(LumenError::Property(PropertyError::InvalidType {
-                node_id: NodeId::new(0),
-                property_path: "result".to_string(),
-                expected: "GpuImageFrame",
-                actual: "non-raster",
-            })),
-        }
-    }
-
-    pub fn as_vector(&self) -> crate::Result<&VectorData> {
-        match self {
-            Self::Vector(vector) => Ok(vector),
-            Self::Raster(_) | Self::None => Err(LumenError::Property(PropertyError::InvalidType {
-                node_id: NodeId::new(0),
-                property_path: "result".to_string(),
-                expected: "Vector",
-                actual: "non-vector",
-            })),
-        }
-    }
-}
-
-impl From<GpuImageFrame> for NodeResult {
-    fn from(value: GpuImageFrame) -> Self {
-        Self::Raster(value)
-    }
-}
-
-impl From<VectorData> for NodeResult {
-    fn from(value: VectorData) -> Self {
-        Self::Vector(value)
+pub trait Node: Send + Sync {
+    fn id(&self) -> NodeId;
+    fn input_port_defs(&self) -> &'static [InputPortDef];
+    fn output_port_defs(&self) -> &'static [OutputPortDef] {
+        SINGLE_RASTER_OUTPUT
     }
 }
 
 pub trait PropertyEval {
-    fn property_defs(&self) -> &'static [PropertyDef];
-
     fn get_property(&self, id: &str) -> crate::Result<Option<NodeProperty>>;
 }
 
-pub trait NodeDef {
-    fn property_defs() -> &'static [PropertyDef];
-
-    fn input_port_defs() -> &'static [InputPortDef];
-
-    fn output_port_defs() -> &'static [OutputPortDef];
-}
-
-pub trait Node: PropertyEval + Send + Sync {
-    fn id(&self) -> NodeId;
-    fn input_port_defs(&self) -> &'static [InputPortDef];
-    fn output_port_defs(&self) -> &'static [OutputPortDef];
-}
-
-pub trait NodeEval<'a, S: SurfacePool, M: MediaStore>: PropertyEval + Send + Sync {
-    fn evaluate(
-        &self,
-        context: &mut RenderContext<'a, S, M>,
-        port: &str,
-    ) -> crate::Result<NodeResult>;
-}
+pub const SINGLE_RASTER_OUTPUT: &[OutputPortDef] = &[OutputPortDef {
+    name: "output",
+    kind: PortKind::Raster,
+}];
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PortRef {
@@ -339,7 +303,7 @@ impl PortRef {
     pub fn empty() -> Self {
         Self {
             id: NodeId::new(0),
-            port: Default::default(),
+            port: String::new(),
         }
     }
 
@@ -350,192 +314,167 @@ impl PortRef {
 
 #[derive(Debug)]
 pub enum NodeKind {
-    // compositing nodes
+    MediaIn(source::media_in::MediaIn),
+    SolidColor(source::solid_color::SolidColor),
+    Text(source::text::Text),
+    Path(vector::path::Path),
+    Shape(vector::shape::Shape),
     Boolean(compositing::boolean::Boolean),
     Merge(compositing::merge::Merge),
-    RasterMultimerge(compositing::raster_multimerge::RasterMultiMerge),
-    Switch(compositing::switch::Switch),
-
-    // processing nodes
+    RasterMultiMerge(compositing::raster_multimerge::RasterMultiMerge),
     AlphaPremultiply(processing::alpha_premultiply::AlphaPremultiply),
     Blur(processing::blur::Blur),
     ChannelShuffle(processing::channel_shuffle::ChannelShuffle),
     ColorGrade(processing::color_grade::ColorGrade),
-    Crop(processing::crop::Crop),
     Curves(processing::curves::Curves),
     Exposure(processing::exposure::Exposure),
     HueSaturation(processing::hue_saturation::HueSaturation),
     Levels(processing::levels::Levels),
-    MatteCleanup(processing::matte_cleanup::MatteCleanup),
     Memo(processing::memo::Memo),
-    Resize(processing::resize::Resize),
-    Shadow(processing::shadow::Shadow),
-    SkiaShader(processing::skia_shader::SkiaShader),
     TimeRemap(processing::time_remap::TimeRemap),
     Transform(processing::transform::Transform),
-
-    // source nodes
-    MediaIn(source::media_in::MediaIn),
-    SolidColor(source::solid_color::SolidColor),
-    Text(source::text::Text),
-
-    // vector nodes
-    BezierPath(vector::path::BezierPath),
-    Shape(vector::shape::Shape),
-    ShapeRenderer(vector::shape_renderer::ShapeRenderer),
-    VectorStrokeStyle(vector::vector_stroke_style::VectorStrokeStyle),
-    VectorTransform(vector::vector_transform::VectorTransform),
-    VectorMerge(vector::vector_merge::VectorMerge),
-    VectorMultimerge(vector::vector_multimerge::VectorMultiMerge),
-    VectorText(vector::vector_text::VectorText),
-
+    Crop(processing::crop::Crop),
+    Resize(processing::resize::Resize),
+    Shadow(processing::shadow::Shadow),
+    WgslShader(processing::wgsl_shader::WgslShader),
+    Switch(compositing::switch::Switch),
     MediaOutput(media_output::MediaOutput),
 }
 
 impl NodeKind {
-    pub fn as_node(&self) -> &dyn Node {
+    pub fn id(&self) -> NodeId {
         match self {
-            NodeKind::Boolean(boolean) => boolean,
-            NodeKind::Merge(merge) => merge,
-            NodeKind::RasterMultimerge(raster_multi_merge) => raster_multi_merge,
-            NodeKind::Switch(switch) => switch,
-            NodeKind::AlphaPremultiply(alpha_premultiply) => alpha_premultiply,
-            NodeKind::Blur(blur) => blur,
-            NodeKind::ChannelShuffle(channel_shuffle) => channel_shuffle,
-            NodeKind::ColorGrade(color_grade) => color_grade,
-            NodeKind::Crop(crop) => crop,
-            NodeKind::Curves(curves) => curves,
-            NodeKind::Exposure(exposure) => exposure,
-            NodeKind::HueSaturation(hue_saturation) => hue_saturation,
-            NodeKind::Levels(levels) => levels,
-            NodeKind::MatteCleanup(matte_cleanup) => matte_cleanup,
-            NodeKind::Memo(memo) => memo,
-            NodeKind::Resize(resize) => resize,
-            NodeKind::Shadow(shadow) => shadow,
-            NodeKind::SkiaShader(skia_shader) => skia_shader,
-            NodeKind::TimeRemap(time_remap) => time_remap,
-            NodeKind::Transform(transform) => transform,
-            NodeKind::MediaIn(media_in) => media_in,
-            NodeKind::SolidColor(solid_color) => solid_color,
-            NodeKind::Text(text) => text,
-            NodeKind::BezierPath(bezier_path) => bezier_path,
-            NodeKind::Shape(shape) => shape,
-            NodeKind::ShapeRenderer(shape_renderer) => shape_renderer,
-            NodeKind::VectorStrokeStyle(vector_stroke_style) => vector_stroke_style,
-            NodeKind::VectorTransform(vector_transform) => vector_transform,
-            NodeKind::VectorMerge(vector_merge) => vector_merge,
-            NodeKind::VectorMultimerge(vector_multi_merge) => vector_multi_merge,
-            NodeKind::VectorText(vector_text) => vector_text,
-            NodeKind::MediaOutput(media_output) => media_output,
+            Self::MediaIn(node) => node.id,
+            Self::SolidColor(node) => node.id,
+            Self::Text(node) => node.id,
+            Self::Path(node) => node.id,
+            Self::Shape(node) => node.id,
+            Self::Boolean(node) => node.id,
+            Self::Merge(node) => node.id,
+            Self::RasterMultiMerge(node) => node.id,
+            Self::AlphaPremultiply(node) => node.id,
+            Self::Blur(node) => node.id,
+            Self::ChannelShuffle(node) => node.id,
+            Self::ColorGrade(node) => node.id,
+            Self::Curves(node) => node.id,
+            Self::Exposure(node) => node.id,
+            Self::HueSaturation(node) => node.id,
+            Self::Levels(node) => node.id,
+            Self::Memo(node) => node.id,
+            Self::TimeRemap(node) => node.id,
+            Self::Transform(node) => node.id,
+            Self::Crop(node) => node.id,
+            Self::Resize(node) => node.id,
+            Self::Shadow(node) => node.id,
+            Self::WgslShader(node) => node.id,
+            Self::Switch(node) => node.id,
+            Self::MediaOutput(node) => node.id,
         }
     }
 
     pub fn as_property_eval(&self) -> &dyn PropertyEval {
-        match self {
-            NodeKind::Boolean(boolean) => boolean,
-            NodeKind::Merge(merge) => merge,
-            NodeKind::RasterMultimerge(raster_multi_merge) => raster_multi_merge,
-            NodeKind::Switch(switch) => switch,
-            NodeKind::AlphaPremultiply(alpha_premultiply) => alpha_premultiply,
-            NodeKind::Blur(blur) => blur,
-            NodeKind::ChannelShuffle(channel_shuffle) => channel_shuffle,
-            NodeKind::ColorGrade(color_grade) => color_grade,
-            NodeKind::Crop(crop) => crop,
-            NodeKind::Curves(curves) => curves,
-            NodeKind::Exposure(exposure) => exposure,
-            NodeKind::HueSaturation(hue_saturation) => hue_saturation,
-            NodeKind::Levels(levels) => levels,
-            NodeKind::MatteCleanup(matte_cleanup) => matte_cleanup,
-            NodeKind::Memo(memo) => memo,
-            NodeKind::Resize(resize) => resize,
-            NodeKind::Shadow(shadow) => shadow,
-            NodeKind::SkiaShader(skia_shader) => skia_shader,
-            NodeKind::TimeRemap(time_remap) => time_remap,
-            NodeKind::Transform(transform) => transform,
-            NodeKind::MediaIn(media_in) => media_in,
-            NodeKind::SolidColor(solid_color) => solid_color,
-            NodeKind::Text(text) => text,
-            NodeKind::BezierPath(bezier_path) => bezier_path,
-            NodeKind::Shape(shape) => shape,
-            NodeKind::ShapeRenderer(shape_renderer) => shape_renderer,
-            NodeKind::VectorStrokeStyle(vector_stroke_style) => vector_stroke_style,
-            NodeKind::VectorTransform(vector_transform) => vector_transform,
-            NodeKind::VectorMerge(vector_merge) => vector_merge,
-            NodeKind::VectorMultimerge(vector_multi_merge) => vector_multi_merge,
-            NodeKind::VectorText(vector_text) => vector_text,
-            NodeKind::MediaOutput(media_output) => media_output,
-        }
+        self
     }
 
-    pub fn as_node_eval<'a, S: SurfacePool, M: MediaStore>(&self) -> &dyn NodeEval<'a, S, M> {
-        match self {
-            NodeKind::Boolean(boolean) => boolean,
-            NodeKind::Merge(merge) => merge,
-            NodeKind::RasterMultimerge(raster_multi_merge) => raster_multi_merge,
-            NodeKind::Switch(switch) => switch,
-            NodeKind::AlphaPremultiply(alpha_premultiply) => alpha_premultiply,
-            NodeKind::Blur(blur) => blur,
-            NodeKind::ChannelShuffle(channel_shuffle) => channel_shuffle,
-            NodeKind::ColorGrade(color_grade) => color_grade,
-            NodeKind::Crop(crop) => crop,
-            NodeKind::Curves(curves) => curves,
-            NodeKind::Exposure(exposure) => exposure,
-            NodeKind::HueSaturation(hue_saturation) => hue_saturation,
-            NodeKind::Levels(levels) => levels,
-            NodeKind::MatteCleanup(matte_cleanup) => matte_cleanup,
-            NodeKind::Memo(memo) => memo,
-            NodeKind::Resize(resize) => resize,
-            NodeKind::Shadow(shadow) => shadow,
-            NodeKind::SkiaShader(skia_shader) => skia_shader,
-            NodeKind::TimeRemap(time_remap) => time_remap,
-            NodeKind::Transform(transform) => transform,
-            NodeKind::MediaIn(media_in) => media_in,
-            NodeKind::SolidColor(solid_color) => solid_color,
-            NodeKind::Text(text) => text,
-            NodeKind::BezierPath(bezier_path) => bezier_path,
-            NodeKind::Shape(shape) => shape,
-            NodeKind::ShapeRenderer(shape_renderer) => shape_renderer,
-            NodeKind::VectorStrokeStyle(vector_stroke_style) => vector_stroke_style,
-            NodeKind::VectorTransform(vector_transform) => vector_transform,
-            NodeKind::VectorMerge(vector_merge) => vector_merge,
-            NodeKind::VectorMultimerge(vector_multi_merge) => vector_multi_merge,
-            NodeKind::VectorText(vector_text) => vector_text,
-            NodeKind::MediaOutput(media_output) => media_output,
-        }
-    }
-}
-
-// such small performance loss for more readable code using dyn, don't really care
-impl PropertyEval for NodeKind {
-    fn property_defs(&self) -> &'static [PropertyDef] {
-        self.as_property_eval().property_defs()
-    }
-
-    fn get_property(&self, id: &str) -> crate::Result<Option<NodeProperty>> {
-        self.as_property_eval().get_property(id)
+    pub fn schemas() -> Vec<NodeSchemaDef> {
+        vec![
+            source::media_in::MediaIn::schema(),
+            source::solid_color::SolidColor::schema(),
+            source::text::Text::schema(),
+            vector::path::Path::schema(),
+            vector::shape::Shape::schema(),
+            compositing::boolean::Boolean::schema(),
+            compositing::merge::Merge::schema(),
+            compositing::raster_multimerge::RasterMultiMerge::schema(),
+            compositing::switch::Switch::schema(),
+            processing::memo::Memo::schema(),
+            processing::alpha_premultiply::AlphaPremultiply::schema(),
+            processing::blur::Blur::schema(),
+            processing::channel_shuffle::ChannelShuffle::schema(),
+            processing::color_grade::ColorGrade::schema(),
+            processing::curves::Curves::schema(),
+            processing::exposure::Exposure::schema(),
+            processing::hue_saturation::HueSaturation::schema(),
+            processing::levels::Levels::schema(),
+            processing::time_remap::TimeRemap::schema(),
+            processing::transform::Transform::schema(),
+            processing::crop::Crop::schema(),
+            processing::resize::Resize::schema(),
+            processing::shadow::Shadow::schema(),
+            processing::wgsl_shader::WgslShader::schema(),
+            media_output::MediaOutput::schema(),
+        ]
     }
 }
 
 impl Node for NodeKind {
     fn id(&self) -> NodeId {
-        self.as_node().id()
+        self.id()
     }
 
     fn input_port_defs(&self) -> &'static [InputPortDef] {
-        self.as_node().input_port_defs()
+        match self {
+            Self::MediaIn(node) => node.input_port_defs(),
+            Self::SolidColor(node) => node.input_port_defs(),
+            Self::Text(node) => node.input_port_defs(),
+            Self::Path(node) => node.input_port_defs(),
+            Self::Shape(node) => node.input_port_defs(),
+            Self::Boolean(node) => node.input_port_defs(),
+            Self::Merge(node) => node.input_port_defs(),
+            Self::RasterMultiMerge(node) => node.input_port_defs(),
+            Self::AlphaPremultiply(node) => node.input_port_defs(),
+            Self::Blur(node) => node.input_port_defs(),
+            Self::ChannelShuffle(node) => node.input_port_defs(),
+            Self::ColorGrade(node) => node.input_port_defs(),
+            Self::Curves(node) => node.input_port_defs(),
+            Self::Exposure(node) => node.input_port_defs(),
+            Self::HueSaturation(node) => node.input_port_defs(),
+            Self::Levels(node) => node.input_port_defs(),
+            Self::Memo(node) => node.input_port_defs(),
+            Self::TimeRemap(node) => node.input_port_defs(),
+            Self::Transform(node) => node.input_port_defs(),
+            Self::Crop(node) => node.input_port_defs(),
+            Self::Resize(node) => node.input_port_defs(),
+            Self::Shadow(node) => node.input_port_defs(),
+            Self::WgslShader(node) => node.input_port_defs(),
+            Self::Switch(node) => node.input_port_defs(),
+            Self::MediaOutput(node) => node.input_port_defs(),
+        }
     }
 
     fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        self.as_node().output_port_defs()
+        SINGLE_RASTER_OUTPUT
     }
 }
 
-impl<'a, S: SurfacePool, M: MediaStore> NodeEval<'a, S, M> for NodeKind {
-    fn evaluate(
-        &self,
-        context: &mut RenderContext<'a, S, M>,
-        port: &str,
-    ) -> crate::Result<NodeResult> {
-        self.as_node_eval().evaluate(context, port)
+impl PropertyEval for NodeKind {
+    fn get_property(&self, id: &str) -> crate::Result<Option<NodeProperty>> {
+        match self {
+            Self::MediaIn(node) => node.get_property(id),
+            Self::SolidColor(node) => node.get_property(id),
+            Self::Text(node) => node.get_property(id),
+            Self::Path(node) => node.get_property(id),
+            Self::Shape(node) => node.get_property(id),
+            Self::Boolean(node) => node.get_property(id),
+            Self::Merge(node) => node.get_property(id),
+            Self::RasterMultiMerge(node) => node.get_property(id),
+            Self::AlphaPremultiply(node) => node.get_property(id),
+            Self::Blur(node) => node.get_property(id),
+            Self::ChannelShuffle(node) => node.get_property(id),
+            Self::ColorGrade(node) => node.get_property(id),
+            Self::Curves(node) => node.get_property(id),
+            Self::Exposure(node) => node.get_property(id),
+            Self::HueSaturation(node) => node.get_property(id),
+            Self::Levels(node) => node.get_property(id),
+            Self::Memo(node) => node.get_property(id),
+            Self::TimeRemap(node) => node.get_property(id),
+            Self::Transform(node) => node.get_property(id),
+            Self::Crop(node) => node.get_property(id),
+            Self::Resize(node) => node.get_property(id),
+            Self::Shadow(node) => node.get_property(id),
+            Self::WgslShader(node) => node.get_property(id),
+            Self::Switch(node) => node.get_property(id),
+            Self::MediaOutput(node) => node.get_property(id),
+        }
     }
 }

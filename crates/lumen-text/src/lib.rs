@@ -1,0 +1,542 @@
+//! Text layout and GPU-facing text data for Lumen.
+//!
+//! This crate deliberately owns text shaping, measurement, atlas bookkeeping,
+//! and WGSL-facing buffer formats. Lumen nodes should depend on this layer
+//! rather than coupling directly to a specific renderer such as glyphon.
+
+use std::collections::HashMap;
+
+use bytemuck::{Pod, Zeroable};
+use cosmic_text::{
+    Align, Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, Style,
+    SwashCache, SwashContent, SwashImage, Weight, Wrap, fontdb,
+};
+
+pub const MSDF_TEXT_SHADER: &str = include_str!("shaders/msdf_text.wgsl");
+pub const ALPHA_TEXT_SHADER: &str = include_str!("shaders/alpha_text.wgsl");
+pub const DEFAULT_FONT_FAMILY: &str = "Roboto";
+
+const DEFAULT_ROBOTO_BYTES: &[u8] = include_bytes!("../../lumen/assets/roboto/Roboto-Regular.ttf");
+
+#[derive(Debug)]
+pub struct TextSystem {
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+}
+
+impl TextSystem {
+    pub fn new() -> Self {
+        let mut font_system = FontSystem::new_with_fonts(std::iter::empty());
+        load_default_fonts(&mut font_system);
+        Self {
+            font_system,
+            swash_cache: SwashCache::new(),
+        }
+    }
+
+    pub fn load_font_data(&mut self, data: Vec<u8>) {
+        self.font_system.db_mut().load_font_data(data);
+    }
+
+    pub fn measure(&mut self, request: &TextLayoutRequest) -> TextMeasurement {
+        self.layout(request).measurement
+    }
+
+    pub fn layout(&mut self, request: &TextLayoutRequest) -> TextLayout {
+        let metrics = Metrics::new(request.font_size.max(1.0), request.line_height());
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+        buffer.set_size(
+            &mut self.font_system,
+            request.max_width.filter(|width| *width > 0.0),
+            None,
+        );
+        buffer.set_wrap(
+            &mut self.font_system,
+            if request.max_width.is_some_and(|width| width > 0.0) {
+                Wrap::WordOrGlyph
+            } else {
+                Wrap::None
+            },
+        );
+        let attrs = Attrs::new()
+            .family(Family::Name(&request.font_family))
+            .weight(Weight(request.font_weight.clamp(1, 1000)))
+            .style(match request.font_style {
+                TextFontStyle::Italic => Style::Italic,
+                TextFontStyle::Oblique => Style::Oblique,
+                TextFontStyle::Normal => Style::Normal,
+            })
+            .cache_key_flags(if request.disable_hinting {
+                CacheKeyFlags::DISABLE_HINTING
+            } else {
+                CacheKeyFlags::empty()
+            });
+        buffer.set_text(
+            &mut self.font_system,
+            &request.content,
+            &attrs,
+            Shaping::Advanced,
+            Some(match request.align {
+                TextAlign::Left => Align::Left,
+                TextAlign::Center => Align::Center,
+                TextAlign::Right => Align::Right,
+                TextAlign::Justified => Align::Justified,
+            }),
+        );
+        buffer.shape_until_scroll(&mut self.font_system, true);
+
+        let mut glyphs = Vec::new();
+        let mut width: f32 = 0.0;
+        let mut height: f32 = 0.0;
+        for run in buffer.layout_runs() {
+            width = width.max(run.line_w);
+            height = height.max(run.line_top + run.line_height);
+            for glyph in run.glyphs {
+                let physical =
+                    glyph.physical((request.origin[0], request.origin[1] + run.line_y), 1.0);
+                glyphs.push(TextGlyph {
+                    key: GlyphKey(physical.cache_key),
+                    x: physical.x as f32,
+                    y: physical.y as f32,
+                    width: glyph.w,
+                    height: run.line_height,
+                    x_offset: glyph.x_offset,
+                    y_offset: glyph.y_offset,
+                    color: request.color,
+                });
+            }
+        }
+
+        TextLayout {
+            measurement: TextMeasurement { width, height },
+            glyphs,
+        }
+    }
+
+    pub fn render_alpha_atlas(
+        &mut self,
+        layout: &TextLayout,
+        config: AtlasConfig,
+        max_glyphs: usize,
+    ) -> AlphaAtlasRender {
+        let mut atlas = GlyphAtlas::new(config);
+        let mut pixels = vec![0_u8; config.width as usize * config.height as usize * 4];
+        let mut instances = Vec::with_capacity(max_glyphs.min(layout.glyphs.len()));
+        let mut glyph_count = 0;
+
+        for glyph in layout.glyphs.iter().take(max_glyphs) {
+            let Some(image) = self.glyph_image(glyph.key) else {
+                continue;
+            };
+            let glyph_size = [image.placement.width, image.placement.height];
+            let Some(entry) = atlas.ensure_glyph(glyph.key, glyph_size) else {
+                continue;
+            };
+            write_glyph_to_atlas(&mut pixels, config, entry, &image);
+            instances.push(glyph_instance_for(glyph, entry, &image));
+            glyph_count += 1;
+        }
+
+        AlphaAtlasRender {
+            atlas,
+            pixels,
+            instances,
+            glyph_count,
+        }
+    }
+
+    fn glyph_image(&mut self, key: GlyphKey) -> Option<SwashImage> {
+        self.swash_cache
+            .get_image(&mut self.font_system, key.0)
+            .as_ref()
+            .cloned()
+    }
+}
+
+impl Default for TextSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn load_default_fonts(font_system: &mut FontSystem) {
+    let db = font_system.db_mut();
+    db.load_font_data(DEFAULT_ROBOTO_BYTES.to_vec());
+    db.set_sans_serif_family(DEFAULT_FONT_FAMILY);
+}
+
+#[derive(Debug, Clone)]
+pub struct TextLayoutRequest {
+    pub content: String,
+    pub font_family: String,
+    pub font_size: f32,
+    pub font_weight: u16,
+    pub font_style: TextFontStyle,
+    pub max_width: Option<f32>,
+    pub line_height: Option<f32>,
+    pub align: TextAlign,
+    pub origin: [f32; 2],
+    pub color: [f32; 4],
+    pub disable_hinting: bool,
+}
+
+impl TextLayoutRequest {
+    pub fn new(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            font_family: DEFAULT_FONT_FAMILY.to_string(),
+            font_size: 16.0,
+            font_weight: 400,
+            font_style: TextFontStyle::Normal,
+            max_width: None,
+            line_height: None,
+            align: TextAlign::Left,
+            origin: [0.0, 0.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+            disable_hinting: true,
+        }
+    }
+
+    pub fn line_height(&self) -> f32 {
+        self.line_height.unwrap_or(self.font_size * 1.2).max(1.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextFontStyle {
+    Normal,
+    Italic,
+    Oblique,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextAlign {
+    Left,
+    Center,
+    Right,
+    Justified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextMeasurement {
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextLayout {
+    pub measurement: TextMeasurement,
+    pub glyphs: Vec<TextGlyph>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextGlyph {
+    pub key: GlyphKey,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub x_offset: f32,
+    pub y_offset: f32,
+    pub color: [f32; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct GlyphKey(pub CacheKey);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AtlasConfig {
+    pub width: u32,
+    pub height: u32,
+    pub px_range: u32,
+}
+
+impl Default for AtlasConfig {
+    fn default() -> Self {
+        Self {
+            width: 2048,
+            height: 2048,
+            px_range: 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GlyphAtlas {
+    config: AtlasConfig,
+    entries: HashMap<GlyphKey, AtlasEntry>,
+    cursor_x: u32,
+    cursor_y: u32,
+    row_height: u32,
+}
+
+impl GlyphAtlas {
+    pub fn new(config: AtlasConfig) -> Self {
+        Self {
+            config,
+            entries: HashMap::new(),
+            cursor_x: 0,
+            cursor_y: 0,
+            row_height: 0,
+        }
+    }
+
+    pub fn config(&self) -> AtlasConfig {
+        self.config
+    }
+
+    pub fn entry(&self, key: &GlyphKey) -> Option<AtlasEntry> {
+        self.entries.get(key).copied()
+    }
+
+    pub fn ensure_glyph(&mut self, key: GlyphKey, size: [u32; 2]) -> Option<AtlasEntry> {
+        if let Some(entry) = self.entry(&key) {
+            return Some(entry);
+        }
+        let padding = self.config.px_range.max(1);
+        let width = size[0].saturating_add(padding * 2).max(1);
+        let height = size[1].saturating_add(padding * 2).max(1);
+        if width > self.config.width || height > self.config.height {
+            return None;
+        }
+        if self.cursor_x + width > self.config.width {
+            self.cursor_x = 0;
+            self.cursor_y = self.cursor_y.saturating_add(self.row_height);
+            self.row_height = 0;
+        }
+        if self.cursor_y + height > self.config.height {
+            return None;
+        }
+        let entry = AtlasEntry {
+            origin: [self.cursor_x + padding, self.cursor_y + padding],
+            size,
+            uv_min: [
+                (self.cursor_x + padding) as f32 / self.config.width as f32,
+                (self.cursor_y + padding) as f32 / self.config.height as f32,
+            ],
+            uv_max: [
+                (self.cursor_x + padding + size[0]) as f32 / self.config.width as f32,
+                (self.cursor_y + padding + size[1]) as f32 / self.config.height as f32,
+            ],
+        };
+        self.cursor_x += width;
+        self.row_height = self.row_height.max(height);
+        self.entries.insert(key, entry);
+        Some(entry)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AlphaAtlasRender {
+    pub atlas: GlyphAtlas,
+    pub pixels: Vec<u8>,
+    pub instances: Vec<GpuGlyphInstance>,
+    pub glyph_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AtlasEntry {
+    pub origin: [u32; 2],
+    pub size: [u32; 2],
+    pub uv_min: [f32; 2],
+    pub uv_max: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct GpuTextGlobals {
+    pub target_size: [f32; 2],
+    pub px_range: f32,
+    pub glyph_count: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct GpuGlyphInstance {
+    pub rect: [f32; 4],
+    pub uv_rect: [f32; 4],
+    pub color: [f32; 4],
+}
+
+pub fn glyph_instance_for(
+    glyph: &TextGlyph,
+    atlas_entry: AtlasEntry,
+    image: &SwashImage,
+) -> GpuGlyphInstance {
+    let x = glyph.x + image.placement.left as f32;
+    let y = glyph.y - image.placement.top as f32;
+    GpuGlyphInstance {
+        rect: [
+            x,
+            y,
+            image.placement.width as f32,
+            image.placement.height as f32,
+        ],
+        uv_rect: [
+            atlas_entry.uv_min[0],
+            atlas_entry.uv_min[1],
+            atlas_entry.uv_max[0],
+            atlas_entry.uv_max[1],
+        ],
+        color: glyph.color,
+    }
+}
+
+fn write_glyph_to_atlas(
+    pixels: &mut [u8],
+    config: AtlasConfig,
+    entry: AtlasEntry,
+    image: &SwashImage,
+) {
+    match image.content {
+        SwashContent::Mask => {
+            for y in 0..image.placement.height as usize {
+                for x in 0..image.placement.width as usize {
+                    let src = y * image.placement.width as usize + x;
+                    let dst_x = entry.origin[0] as usize + x;
+                    let dst_y = entry.origin[1] as usize + y;
+                    let dst = (dst_y * config.width as usize + dst_x) * 4;
+                    let alpha = image.data[src];
+                    pixels[dst] = 255;
+                    pixels[dst + 1] = 255;
+                    pixels[dst + 2] = 255;
+                    pixels[dst + 3] = alpha;
+                }
+            }
+        }
+        SwashContent::Color => {
+            for y in 0..image.placement.height as usize {
+                for x in 0..image.placement.width as usize {
+                    let src = (y * image.placement.width as usize + x) * 4;
+                    let dst_x = entry.origin[0] as usize + x;
+                    let dst_y = entry.origin[1] as usize + y;
+                    let dst = (dst_y * config.width as usize + dst_x) * 4;
+                    pixels[dst..dst + 4].copy_from_slice(&image.data[src..src + 4]);
+                }
+            }
+        }
+        SwashContent::SubpixelMask => {
+            for y in 0..image.placement.height as usize {
+                for x in 0..image.placement.width as usize {
+                    let src = (y * image.placement.width as usize + x) * 3;
+                    let dst_x = entry.origin[0] as usize + x;
+                    let dst_y = entry.origin[1] as usize + y;
+                    let dst = (dst_y * config.width as usize + dst_x) * 4;
+                    let alpha = image.data[src]
+                        .max(image.data[src + 1])
+                        .max(image.data[src + 2]);
+                    pixels[dst] = 255;
+                    pixels[dst + 1] = 255;
+                    pixels[dst + 2] = 255;
+                    pixels[dst + 3] = alpha;
+                }
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn _assert_fontdb_is_reexported(_: fontdb::Weight) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn measures_roboto_text() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("External URL media");
+        request.font_size = 44.0;
+        request.max_width = Some(900.0);
+
+        let measurement = system.measure(&request);
+
+        assert!(measurement.width > 100.0);
+        assert!(measurement.height > 40.0);
+    }
+
+    #[test]
+    fn creates_gpu_glyph_instances_from_layout() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("Roboto");
+        request.font_size = 32.0;
+        let layout = system.layout(&request);
+        let render = system.render_alpha_atlas(&layout, AtlasConfig::default(), 128);
+        let instance = render
+            .instances
+            .iter()
+            .find(|instance| instance.rect[2] > 0.0)
+            .expect("expected a visible glyph instance");
+
+        assert!(instance.rect[2] > 0.0);
+        assert!(instance.uv_rect[2] > instance.uv_rect[0]);
+    }
+
+    #[test]
+    fn wraps_text_to_max_width() {
+        let mut system = TextSystem::new();
+        let mut unwrapped = TextLayoutRequest::new("one two three four five");
+        unwrapped.font_size = 24.0;
+        let mut wrapped = unwrapped.clone();
+        wrapped.max_width = Some(80.0);
+
+        let wide = system.measure(&unwrapped);
+        let narrow = system.measure(&wrapped);
+
+        assert!(wide.width > narrow.width);
+        assert!(narrow.height > wide.height);
+    }
+
+    #[test]
+    fn alpha_atlas_contains_non_empty_pixels() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("A");
+        request.font_size = 48.0;
+        let layout = system.layout(&request);
+        let render = system.render_alpha_atlas(
+            &layout,
+            AtlasConfig {
+                width: 128,
+                height: 128,
+                px_range: 2,
+            },
+            16,
+        );
+
+        assert_eq!(render.instances.len(), render.glyph_count);
+        assert!(render.glyph_count > 0);
+        assert!(render.pixels.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    }
+
+    #[test]
+    fn atlas_reuses_existing_glyph_entries() {
+        let key = {
+            let mut system = TextSystem::new();
+            let layout = system.layout(&TextLayoutRequest::new("A"));
+            layout.glyphs[0].key
+        };
+        let mut atlas = GlyphAtlas::new(AtlasConfig {
+            width: 64,
+            height: 64,
+            px_range: 2,
+        });
+
+        let first = atlas.ensure_glyph(key, [12, 16]).unwrap();
+        let second = atlas.ensure_glyph(key, [12, 16]).unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn gpu_structs_have_stable_sizes() {
+        assert_eq!(std::mem::size_of::<GpuTextGlobals>(), 16);
+        assert_eq!(std::mem::size_of::<GpuGlyphInstance>(), 48);
+    }
+
+    #[test]
+    fn exposes_wgsl_shader_sources() {
+        assert!(ALPHA_TEXT_SHADER.contains("@vertex"));
+        assert!(ALPHA_TEXT_SHADER.contains("textureSample"));
+        assert!(MSDF_TEXT_SHADER.contains("median3"));
+    }
+}

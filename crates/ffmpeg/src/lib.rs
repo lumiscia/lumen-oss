@@ -12,14 +12,28 @@ pub mod video;
 
 pub use audio::{AudioDecoder, AudioFrame, AudioResampler, AudioResamplerConfig, SampleFormat};
 pub use encode::{
-    GpuEncodeEvent, GpuEncodeOutcome, GpuEncodeStage, GpuEncodeTelemetry, GpuTextureEncodeSupport,
-    GpuUploadDescriptor, MuxedEncoder, OutputContext, VideoEncoder, VideoEncoderConfig,
-    gpu_texture_encode_support,
+    AudioEncoder, AudioEncoderConfig, GpuEncodeEvent, GpuEncodeOutcome, GpuEncodeStage,
+    GpuEncodeTelemetry, GpuTextureEncodeSupport, GpuUploadDescriptor, MuxedEncoder, OutputContext,
+    VideoEncoder, VideoEncoderConfig, gpu_texture_encode_support,
 };
 pub use format::{AudioStreamInfo, InputContext, MediaInfo, Rational, VideoStreamInfo};
+#[cfg(feature = "vulkan")]
+pub use gpu::VulkanVideoFrame;
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+pub use gpu::{
+    CudaContext, CudaDeviceAllocation, CudaDriver, ImportedCudaExternalImage,
+    import_owned_vulkan_opaque_fd_image, import_vulkan_opaque_fd_image,
+};
+#[cfg(feature = "cuda")]
+pub use gpu::{
+    CudaExternalMemoryHandle, CudaExternalSemaphoreHandle, CudaVideoFrame, VulkanToCudaExport,
+};
 pub use gpu::{GpuBackend, GpuVideoFrame, GpuVideoInput};
 #[cfg(feature = "metal")]
-pub use gpu::{MetalDecodedFrame, MetalTextureCache, Objc2MetalDevice, Objc2MetalTexture};
+pub use gpu::{
+    MetalDecodedFrame, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache,
+    Objc2MetalDevice, Objc2MetalTexture,
+};
 pub use video::{
     CpuVideoFrame, DecodeMode, EncodeMode, PixelFormat, VideoCodec, VideoDecoder,
     VideoDecoderConfig,

@@ -1,0 +1,13 @@
+[package]
+name = "lumen-text"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lumen_text"
+path = "src/lib.rs"
+
+[dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+cosmic-text = { version = "0.18.2", default-features = false, features = ["std", "swash"] }
+

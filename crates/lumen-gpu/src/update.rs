@@ -1,0 +1,79 @@
+use std::marker::PhantomData;
+
+use crate::{BufferId, NodeKey, TextureId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DynamicResource {
+    Texture(TextureId),
+    Buffer(BufferId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParamKey {
+    pub owner: NodeKey,
+    pub slot: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParamTarget {
+    Buffer(BufferId),
+    Texture(TextureId),
+}
+
+#[derive(Debug, Clone)]
+pub struct ParamSlot {
+    pub key: ParamKey,
+    pub target: ParamTarget,
+}
+
+#[derive(Debug, Clone)]
+pub enum Upload<'a> {
+    Buffer {
+        id: BufferId,
+        offset: u64,
+        data: &'a [u8],
+    },
+    TextureRgba8 {
+        id: TextureId,
+        data: &'a [u8],
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FrameUpdate<'a> {
+    pub(crate) uploads: Vec<Upload<'a>>,
+    _marker: PhantomData<&'a ()>,
+}
+
+impl<'a> FrameUpdate<'a> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn uploads(&self) -> &[Upload<'a>] {
+        &self.uploads
+    }
+
+    pub fn write_buffer(&mut self, id: BufferId, offset: u64, data: &'a [u8]) -> &mut Self {
+        self.uploads.push(Upload::Buffer { id, offset, data });
+        self
+    }
+
+    pub fn write_texture_rgba8(
+        &mut self,
+        id: TextureId,
+        data: &'a [u8],
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    ) -> &mut Self {
+        self.uploads.push(Upload::TextureRgba8 {
+            id,
+            data,
+            bytes_per_row,
+            rows_per_image,
+        });
+        self
+    }
+}

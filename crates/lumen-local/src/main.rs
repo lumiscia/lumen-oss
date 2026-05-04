@@ -1,9 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env, fs,
-    io::Write,
     path::{Component, Path, PathBuf},
-    process::Command,
     sync::{Arc, RwLock, mpsc},
     thread::{self, JoinHandle},
     time::Instant,
@@ -13,21 +11,22 @@ use anyhow::{Context, Result, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen::{
     audio::{
-        AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMixer, AudioResolver,
-        AudioSourceProvider, duration_samples,
+        AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, AudioSourceProvider,
+        duration_samples,
     },
     composition::Composition,
     ffmpeg::{FfmpegAudioResolver, FfmpegVideoResolver},
-    gpu_image::GpuImageFrame,
+    gpu::GpuCompositionRenderer,
     image::ImageFileResolver,
-    media::{ImageResolver, MediaStore, VideoFrameResolver},
-    render::{
-        RenderOrchestrator, RenderOrchestratorConfig,
-        surface::{DefaultSurfacePool, SurfacePool},
-    },
+    media::{ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
-use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
+use lumen_ffmpeg::{
+    AudioEncoderConfig, AudioFrame, CpuVideoFrame, EncodeMode, MuxedEncoder, PixelFormat,
+    SampleFormat, VideoCodec, VideoEncoderConfig,
+};
 use lumen_ffmpeg::{GpuBackend, gpu_texture_encode_support};
+#[cfg(target_os = "macos")]
+use lumen_ffmpeg::{GpuVideoInput, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache};
 
 #[derive(Debug)]
 struct CliArgs {
@@ -39,6 +38,7 @@ struct CliArgs {
 }
 
 const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
+const GPU_ENCODER_FRAMES_IN_FLIGHT: usize = 3;
 
 struct EncoderFrame {
     frame: u32,
@@ -46,20 +46,26 @@ struct EncoderFrame {
     recycle_tx: mpsc::SyncSender<Vec<u8>>,
 }
 
+enum EncoderMessage {
+    Video(EncoderFrame),
+    Audio(AudioFrame),
+}
+
 struct LumenFfmpegEncoder {
-    frame_tx: Option<mpsc::SyncSender<EncoderFrame>>,
+    message_tx: Option<mpsc::SyncSender<EncoderMessage>>,
     writer_handle: Option<JoinHandle<Result<()>>>,
 }
 
 #[derive(Debug, Default, Clone)]
 struct RenderTiming {
     audio_mix_ms: u128,
+    bind_ms: u128,
+    upload_ms: u128,
     render_ms: u128,
     flush_ms: u128,
     readback_ms: u128,
     encode_send_ms: u128,
     encode_finish_ms: u128,
-    mux_ms: u128,
 }
 
 struct LocalMediaStore {
@@ -200,8 +206,8 @@ impl ImageResolver for SharedImageResolver {
         self.0.metadata()
     }
 
-    fn gpu_image(&self) -> Result<Arc<GpuImageFrame>, lumen::error::MediaError> {
-        self.0.gpu_image()
+    fn frame(&self) -> Result<MediaFrame, lumen::error::MediaError> {
+        self.0.frame()
     }
 }
 
@@ -221,7 +227,7 @@ impl VideoFrameResolver for SharedVideoResolver {
         self.0.enqueue_frame(frame)
     }
 
-    fn frame(&self, frame: u32) -> Result<Arc<GpuImageFrame>, lumen::error::MediaError> {
+    fn frame(&self, frame: u32) -> Result<MediaFrame, lumen::error::MediaError> {
         self.0.frame(frame)
     }
 
@@ -252,19 +258,30 @@ impl AudioResolver for SharedAudioResolver {
 }
 
 impl LumenFfmpegEncoder {
-    fn create(output: &Path, width: u32, height: u32, fps: f32, encoder: &str) -> Result<Self> {
-        let mut config = VideoEncoderConfig::h264_rgba(width, height, fps.round().max(1.0) as u32);
-        config.codec = match encoder {
+    fn create(
+        output: &Path,
+        width: u32,
+        height: u32,
+        fps: f32,
+        encoder: &str,
+        include_audio: bool,
+    ) -> Result<Self> {
+        let codec = match encoder {
             "hevc" | "hevc_videotoolbox" | "libx265" => VideoCodec::Hevc,
             _ => VideoCodec::H264,
         };
+        let mut config =
+            VideoEncoderConfig::cpu_rgba(width, height, fps.round().max(1.0) as u32, codec);
         config.encoder_name = Some(encoder.to_string());
         config.bit_rate = 14_000_000;
-        let (frame_tx, frame_rx) = mpsc::sync_channel::<EncoderFrame>(ENCODER_FRAME_QUEUE_CAPACITY);
+        let audio = include_audio
+            .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
+        let (message_tx, message_rx) =
+            mpsc::sync_channel::<EncoderMessage>(ENCODER_FRAME_QUEUE_CAPACITY);
         let (startup_tx, startup_rx) = mpsc::sync_channel::<Result<()>>(1);
         let output = output.to_string_lossy().to_string();
         let writer_handle = thread::spawn(move || {
-            let mut encoder = match MuxedEncoder::create(output, config) {
+            let mut encoder = match MuxedEncoder::create_with_audio(output, config, audio) {
                 Ok(encoder) => {
                     let _ = startup_tx.send(Ok(()));
                     encoder
@@ -276,20 +293,27 @@ impl LumenFfmpegEncoder {
                     return Ok(());
                 }
             };
-            while let Ok(frame) = frame_rx.recv() {
-                let frame_index = frame.frame;
-                let cpu_frame = CpuVideoFrame {
-                    width,
-                    height,
-                    stride: (width as usize) * 4,
-                    pixel_format: PixelFormat::Rgba8,
-                    pts: Some(i64::from(frame_index)),
-                    data: frame.pixels,
-                };
-                encoder.write_video_frame(&cpu_frame).map_err(|error| {
-                    anyhow!("lumen-ffmpeg encode failed at frame {frame_index}: {error}")
-                })?;
-                recycle_pixels(cpu_frame.data, &frame.recycle_tx);
+            while let Ok(message) = message_rx.recv() {
+                match message {
+                    EncoderMessage::Video(frame) => {
+                        let frame_index = frame.frame;
+                        let cpu_frame = CpuVideoFrame {
+                            width,
+                            height,
+                            stride: (width as usize) * 4,
+                            pixel_format: PixelFormat::Rgba8,
+                            pts: Some(i64::from(frame_index)),
+                            data: frame.pixels,
+                        };
+                        encoder.write_video_frame(&cpu_frame).map_err(|error| {
+                            anyhow!("lumen-ffmpeg encode failed at frame {frame_index}: {error}")
+                        })?;
+                        recycle_pixels(cpu_frame.data, &frame.recycle_tx);
+                    }
+                    EncoderMessage::Audio(frame) => encoder
+                        .write_audio_frame(&frame)
+                        .map_err(|error| anyhow!("lumen-ffmpeg audio encode failed: {error}"))?,
+                }
             }
             encoder
                 .finish()
@@ -299,21 +323,29 @@ impl LumenFfmpegEncoder {
             .recv()
             .map_err(|_| anyhow!("lumen-ffmpeg encoder startup thread stopped"))??;
         Ok(Self {
-            frame_tx: Some(frame_tx),
+            message_tx: Some(message_tx),
             writer_handle: Some(writer_handle),
         })
     }
 
     fn send(&self, frame: EncoderFrame) -> Result<()> {
-        self.frame_tx
+        self.message_tx
             .as_ref()
             .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer unavailable"))?
-            .send(frame)
+            .send(EncoderMessage::Video(frame))
+            .map_err(|_| anyhow!("lumen-ffmpeg encoder writer stopped"))
+    }
+
+    fn send_audio(&self, frame: AudioFrame) -> Result<()> {
+        self.message_tx
+            .as_ref()
+            .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer unavailable"))?
+            .send(EncoderMessage::Audio(frame))
             .map_err(|_| anyhow!("lumen-ffmpeg encoder writer stopped"))
     }
 
     fn finish(mut self) -> Result<()> {
-        self.frame_tx.take();
+        self.message_tx.take();
         self.writer_handle
             .take()
             .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer thread missing"))?
@@ -420,7 +452,6 @@ fn run() -> Result<()> {
     let composition = load_composition(&args.composition)?;
     let media_root = media_root(args.media_root.as_deref())?;
     let media_store = LocalMediaStore::new(media_root);
-    let surface_pool = DefaultSurfacePool::new();
 
     let extension = args
         .output
@@ -430,20 +461,13 @@ fn run() -> Result<()> {
         .unwrap_or_default();
 
     match extension.as_str() {
-        "png" => render_single_png(
-            &composition,
-            &surface_pool,
-            &media_store,
-            &args.output,
-            args.frame,
-        ),
+        "png" => render_single_png(&composition, &media_store, &args.output, args.frame),
         "mp4" => {
             if args.frame.is_some() {
                 return Err(anyhow!("--frame is only supported when output is .png"));
             }
             render_mp4(
                 composition,
-                surface_pool,
                 media_store,
                 &args.output,
                 args.encoder.as_deref(),
@@ -466,7 +490,6 @@ fn load_composition(path: &Path) -> Result<Composition> {
 
 fn render_single_png(
     composition: &Composition,
-    surface_pool: &DefaultSurfacePool,
     media_store: &LocalMediaStore,
     output: &Path,
     frame_override: Option<u32>,
@@ -479,24 +502,19 @@ fn render_single_png(
         ));
     }
 
-    let orchestrator = RenderOrchestrator::new(
-        composition,
-        surface_pool,
-        media_store,
-        RenderOrchestratorConfig { lookahead_count: 8 },
-    );
-
-    let rendered = orchestrator
-        .render(frame)
+    let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
+        .context("failed to create GPU renderer")?;
+    renderer
+        .compile(composition)
+        .context("failed to compile composition")?;
+    let rendered = renderer
+        .render_frame(composition, frame, media_store)
         .with_context(|| format!("render failed at frame {frame}"))?;
-    surface_pool.flush();
-    let (width, height) = rendered.storage_dimensions();
-    let mut pixels = vec![0; (width as usize) * (height as usize) * 4];
-    rendered
-        .read_pixels_into(pixels.as_mut_slice(), (width as usize) * 4)
+    let size = rendered.domain.storage_size;
+    let pixels = read_texture_rgba8(renderer.gpu_renderer(), rendered.texture, size)
         .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
 
-    write_png(output, width, height, pixels.as_slice())?;
+    write_png(output, size.width, size.height, pixels.as_slice())?;
 
     println!("render complete output={} frame={frame}", output.display());
     Ok(())
@@ -504,7 +522,6 @@ fn render_single_png(
 
 fn render_mp4(
     composition: Composition,
-    surface_pool: DefaultSurfacePool,
     media_store: LocalMediaStore,
     output: &Path,
     override_encoder: Option<&str>,
@@ -530,62 +547,79 @@ fn render_mp4(
     let width = composition.render_settings.width;
     let height = composition.render_settings.height;
     let total_frames = composition.timeline.duration_frames;
-    let orchestrator = RenderOrchestrator::new(
-        &composition,
-        &surface_pool,
-        &media_store,
-        RenderOrchestratorConfig { lookahead_count: 8 },
-    );
+    if encoder == "h264_videotoolbox_gpu" || encoder == "hevc_videotoolbox_gpu" {
+        return render_video_gpu_videotoolbox(
+            composition,
+            media_store,
+            output,
+            width,
+            height,
+            total_frames,
+            &encoder,
+        );
+    }
+    let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
+        .context("failed to create GPU renderer")?;
+    renderer
+        .compile_with_media(
+            &composition,
+            &media_store,
+            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .context("failed to compile composition")?;
     let mut timings = RenderTiming::default();
-    let audio_started = Instant::now();
-    let audio_path = if composition
-        .audio
-        .as_ref()
-        .is_some_and(|audio| !audio.clips.is_empty())
-    {
-        let path = output.with_extension("audio.f32le.tmp");
-        render_audio_raw(&composition, &media_store, &path)?;
-        Some(path)
-    } else {
-        None
-    };
-    timings.audio_mix_ms = audio_started.elapsed().as_millis();
+    let include_audio = has_audio(&composition);
 
     report_gpu_encode_capabilities();
 
-    let encoded_video_output = if audio_path.is_some() {
-        temp_sidecar_path(output, "video", "mp4")
-    } else {
-        output.to_path_buf()
-    };
     let encoder_sink = LumenFfmpegEncoder::create(
-        &encoded_video_output,
+        output,
         width,
         height,
         composition.timeline.fps,
         &encoder,
+        include_audio,
     )?;
     let render_started = Instant::now();
-    let pixel_buffer_len = (width as usize) * (height as usize) * 4;
-    let (pixel_recycle_tx, pixel_recycle_rx) =
+    let (pixel_recycle_tx, _pixel_recycle_rx) =
         mpsc::sync_channel::<Vec<u8>>(ENCODER_FRAME_QUEUE_CAPACITY + 2);
 
     for frame in 0..total_frames {
+        let bind_started = Instant::now();
+        let bound = renderer
+            .bind_frame(&composition, frame, &media_store)
+            .with_context(|| format!("frame bind failed at frame {frame}"))?;
+        timings.bind_ms = timings
+            .bind_ms
+            .saturating_add(bind_started.elapsed().as_millis());
+
+        let upload_started = Instant::now();
+        renderer
+            .upload_bound_frame(&bound)
+            .with_context(|| format!("frame upload failed at frame {frame}"))?;
+        timings.upload_ms = timings
+            .upload_ms
+            .saturating_add(upload_started.elapsed().as_millis());
+
         let render_frame_started = Instant::now();
-        let raster = orchestrator
-            .render(frame)
-            .with_context(|| format!("render failed at frame {frame}"))?;
+        let (raster, _submission) = renderer
+            .submit_render()
+            .with_context(|| format!("render submit failed at frame {frame}"))?;
         timings.render_ms = timings
             .render_ms
             .saturating_add(render_frame_started.elapsed().as_millis());
 
         let flush_started = Instant::now();
-        surface_pool.flush();
+        renderer
+            .gpu_renderer()
+            .device
+            .poll(lumen_gpu::wgpu::PollType::Poll)?;
         timings.flush_ms = timings
             .flush_ms
             .saturating_add(flush_started.elapsed().as_millis());
 
-        let (storage_width, storage_height) = raster.storage_dimensions();
+        let storage_width = raster.domain.storage_size.width;
+        let storage_height = raster.domain.storage_size.height;
         if storage_width != width || storage_height != height {
             return Err(anyhow!(
                 "unexpected frame {frame} dimensions {}x{} (expected {}x{})",
@@ -595,22 +629,13 @@ fn render_mp4(
                 height
             ));
         }
-        let mut pixels = match pixel_recycle_rx.try_recv() {
-            Ok(mut pixels) => {
-                if pixels.len() != pixel_buffer_len {
-                    pixels.resize(pixel_buffer_len, 0);
-                }
-                pixels
-            }
-            Err(mpsc::TryRecvError::Empty) => vec![0; pixel_buffer_len],
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(anyhow!("encoder pixel recycle channel disconnected"));
-            }
-        };
         let readback_started = Instant::now();
-        raster
-            .read_pixels_into(pixels.as_mut_slice(), (width as usize) * 4)
-            .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
+        let pixels = read_texture_rgba8(
+            renderer.gpu_renderer(),
+            raster.texture,
+            raster.domain.storage_size,
+        )
+        .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
         timings.readback_ms = timings
             .readback_ms
             .saturating_add(readback_started.elapsed().as_millis());
@@ -630,41 +655,310 @@ fn render_mp4(
         }
     }
 
+    if include_audio {
+        let audio_started = Instant::now();
+        write_composited_audio(&composition, &media_store, &encoder_sink)?;
+        timings.audio_mix_ms = audio_started.elapsed().as_millis();
+    }
+
     let encode_finish_started = Instant::now();
     encoder_sink.finish()?;
     timings.encode_finish_ms = encode_finish_started.elapsed().as_millis();
 
-    if let Some(audio_path) = audio_path.as_deref() {
-        let mux_started = Instant::now();
-        mux_audio_with_ffmpeg_cli(&encoded_video_output, audio_path, output)?;
-        timings.mux_ms = mux_started.elapsed().as_millis();
-        let _ = fs::remove_file(&encoded_video_output);
-    }
-    if let Some(audio_path) = audio_path {
-        let _ = fs::remove_file(audio_path);
-    }
-
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} mux_ms={} total_ms={}",
+        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={}",
         output.display(),
         total_frames,
         timings.audio_mix_ms,
+        timings.bind_ms,
+        timings.upload_ms,
         timings.render_ms,
         timings.flush_ms,
         timings.readback_ms,
         timings.encode_send_ms,
         timings.encode_finish_ms,
-        timings.mux_ms,
         total_ms,
     );
     Ok(())
 }
 
-fn render_audio_raw(
+#[cfg(target_os = "macos")]
+fn render_video_gpu_videotoolbox(
+    composition: Composition,
+    media_store: LocalMediaStore,
+    output: &Path,
+    width: u32,
+    height: u32,
+    total_frames: u32,
+    encoder: &str,
+) -> Result<()> {
+    let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
+        .context("failed to create GPU renderer")?;
+    renderer
+        .compile_with_media(
+            &composition,
+            &media_store,
+            lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
+        )
+        .context("failed to compile composition")?;
+    let output_handle = renderer
+        .compiled()
+        .ok_or_else(|| anyhow!("composition did not compile"))?
+        .output;
+
+    let mut config = VideoEncoderConfig::cpu_rgba(
+        width,
+        height,
+        composition.timeline.fps.round().max(1.0) as u32,
+        if encoder.starts_with("hevc") {
+            VideoCodec::Hevc
+        } else {
+            VideoCodec::H264
+        },
+    );
+    config.mode = EncodeMode::GpuTexture(GpuBackend::Metal);
+    config.bit_rate = 14_000_000;
+    let include_audio = has_audio(&composition);
+    let audio =
+        include_audio.then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
+
+    let metal_device = metal_device_from_wgpu(&renderer.gpu_renderer().device)?;
+    let texture_cache = MetalTextureCache::create(&metal_device)?;
+    let pixel_buffer_pool = MetalPixelBufferPool::bgra8(width, height)?;
+    let mut encoder =
+        MuxedEncoder::create_with_audio(output.to_string_lossy().to_string(), config, audio)
+            .map_err(|error| anyhow!("lumen-ffmpeg GPU encoder failed to start: {error}"))?;
+
+    let mut timings = RenderTiming::default();
+    let render_started = Instant::now();
+    let mut pending = VecDeque::<PendingGpuEncodeFrame>::new();
+    for frame in 0..total_frames {
+        let pixel_frame = pixel_buffer_pool.create_frame(Some(i64::from(frame)))?;
+        let metal_texture = pixel_frame.create_texture(
+            &texture_cache,
+            objc2_metal::MTLPixelFormat::BGRA8Unorm,
+            0,
+        )?;
+        let output_texture = import_metal_texture_as_wgpu(
+            &renderer.gpu_renderer().device,
+            metal_texture,
+            width,
+            height,
+            lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
+        )?;
+        let old_texture = renderer.gpu_renderer_mut().replace_texture(
+            output_handle.texture,
+            output_texture,
+            external_output_texture_desc(
+                lumen_gpu::Size::new(width, height),
+                lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
+            ),
+        )?;
+        if let Some(previous) = pending.back_mut() {
+            previous.retained_texture = Some(old_texture);
+        }
+
+        let bind_started = Instant::now();
+        let bound = renderer
+            .bind_frame(&composition, frame, &media_store)
+            .with_context(|| format!("frame bind failed at frame {frame}"))?;
+        timings.bind_ms = timings
+            .bind_ms
+            .saturating_add(bind_started.elapsed().as_millis());
+
+        let upload_started = Instant::now();
+        renderer
+            .upload_bound_frame(&bound)
+            .with_context(|| format!("frame upload failed at frame {frame}"))?;
+        timings.upload_ms = timings
+            .upload_ms
+            .saturating_add(upload_started.elapsed().as_millis());
+
+        let render_frame_started = Instant::now();
+        let (_raster, submission) = renderer
+            .submit_render()
+            .with_context(|| format!("render submit failed at frame {frame}"))?;
+        timings.render_ms = timings
+            .render_ms
+            .saturating_add(render_frame_started.elapsed().as_millis());
+
+        pending.push_back(PendingGpuEncodeFrame {
+            frame,
+            pixel_frame,
+            submission,
+            retained_texture: None,
+        });
+        if pending.len() >= GPU_ENCODER_FRAMES_IN_FLIGHT {
+            encode_ready_gpu_frame(&renderer, &mut encoder, &mut timings, &mut pending)?;
+        }
+
+        if frame == 0 || frame + 1 == total_frames || frame % 60 == 0 {
+            println!("progress frame={}/{}", frame + 1, total_frames);
+        }
+    }
+    while !pending.is_empty() {
+        encode_ready_gpu_frame(&renderer, &mut encoder, &mut timings, &mut pending)?;
+    }
+
+    if include_audio {
+        let audio_started = Instant::now();
+        write_composited_audio_direct(&composition, &media_store, &mut encoder)?;
+        timings.audio_mix_ms = audio_started.elapsed().as_millis();
+    }
+
+    let encode_finish_started = Instant::now();
+    encoder
+        .finish()
+        .map_err(|error| anyhow!("lumen-ffmpeg GPU encoder finish failed: {error}"))?;
+    timings.encode_finish_ms = encode_finish_started.elapsed().as_millis();
+
+    let total_ms = render_started.elapsed().as_millis();
+    println!(
+        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={}",
+        output.display(),
+        total_frames,
+        timings.audio_mix_ms,
+        timings.bind_ms,
+        timings.upload_ms,
+        timings.render_ms,
+        timings.flush_ms,
+        timings.encode_send_ms,
+        timings.encode_finish_ms,
+        total_ms,
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+struct PendingGpuEncodeFrame {
+    frame: u32,
+    pixel_frame: MetalPixelBufferFrame,
+    submission: lumen_gpu::wgpu::SubmissionIndex,
+    retained_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
+}
+
+#[cfg(target_os = "macos")]
+fn encode_ready_gpu_frame(
+    renderer: &GpuCompositionRenderer,
+    encoder: &mut MuxedEncoder,
+    timings: &mut RenderTiming,
+    pending: &mut VecDeque<PendingGpuEncodeFrame>,
+) -> Result<()> {
+    let PendingGpuEncodeFrame {
+        frame,
+        pixel_frame,
+        submission,
+        retained_texture,
+    } = pending
+        .pop_front()
+        .ok_or_else(|| anyhow!("no pending GPU frame to encode"))?;
+    let flush_started = Instant::now();
+    renderer
+        .gpu_renderer()
+        .device
+        .poll(lumen_gpu::wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: None,
+        })?;
+    timings.flush_ms = timings
+        .flush_ms
+        .saturating_add(flush_started.elapsed().as_millis());
+
+    let encode_send_started = Instant::now();
+    encoder
+        .write_gpu_frame(&GpuVideoInput::MetalPixelBuffer(&pixel_frame))
+        .map_err(|error| anyhow!("lumen-ffmpeg GPU encode failed at frame {}: {error}", frame))?;
+    timings.encode_send_ms = timings
+        .encode_send_ms
+        .saturating_add(encode_send_started.elapsed().as_millis());
+    drop(retained_texture);
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn render_video_gpu_videotoolbox(
+    _composition: Composition,
+    _media_store: LocalMediaStore,
+    _output: &Path,
+    _width: u32,
+    _height: u32,
+    _total_frames: u32,
+    _encoder: &str,
+) -> Result<()> {
+    Err(anyhow!(
+        "VideoToolbox GPU texture encode is only available on macOS"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn metal_device_from_wgpu(
+    device: &lumen_gpu::wgpu::Device,
+) -> Result<objc2::rc::Retained<lumen_ffmpeg::Objc2MetalDevice>> {
+    let hal_device = unsafe { device.as_hal::<lumen_gpu::wgpu::hal::api::Metal>() }
+        .ok_or_else(|| anyhow!("wgpu device is not using the Metal backend"))?;
+    Ok(hal_device.raw_device().clone())
+}
+
+#[cfg(target_os = "macos")]
+fn import_metal_texture_as_wgpu(
+    device: &lumen_gpu::wgpu::Device,
+    texture: objc2::rc::Retained<lumen_ffmpeg::Objc2MetalTexture>,
+    width: u32,
+    height: u32,
+    format: lumen_gpu::wgpu::TextureFormat,
+) -> Result<lumen_gpu::wgpu::Texture> {
+    let hal_texture = unsafe {
+        lumen_gpu::wgpu::hal::metal::Device::texture_from_raw(
+            texture,
+            format,
+            objc2_metal::MTLTextureType::Type2D,
+            1,
+            1,
+            lumen_gpu::wgpu::hal::CopyExtent {
+                width,
+                height,
+                depth: 1,
+            },
+        )
+    };
+    let desc = lumen_gpu::wgpu::TextureDescriptor {
+        label: Some("lumen-local videotoolbox output texture"),
+        size: lumen_gpu::wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: lumen_gpu::wgpu::TextureDimension::D2,
+        format,
+        usage: lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT
+            | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    };
+    Ok(unsafe {
+        device.create_texture_from_hal::<lumen_gpu::wgpu::hal::api::Metal>(hal_texture, &desc)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn external_output_texture_desc(
+    size: lumen_gpu::Size,
+    format: lumen_gpu::wgpu::TextureFormat,
+) -> lumen_gpu::TextureDesc {
+    lumen_gpu::TextureDesc {
+        domain: lumen_gpu::TextureDomain::full_frame(size),
+        format,
+        usage: lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT
+            | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING,
+    }
+}
+
+fn write_composited_audio(
     composition: &Composition,
     media_store: &LocalMediaStore,
-    output: &Path,
+    encoder: &LumenFfmpegEncoder,
 ) -> Result<()> {
     let Some(audio) = composition.audio.as_ref() else {
         return Ok(());
@@ -675,8 +969,6 @@ fn render_audio_raw(
         composition.timeline.fps,
     );
     let mixer = AudioMixer::new(audio, media_store);
-    let mut file = fs::File::create(output)
-        .with_context(|| format!("failed to create audio temp {}", output.display()))?;
     let mut start_sample = 0_u64;
     let chunk_frames = (AUDIO_SAMPLE_RATE as usize).saturating_mul(30);
 
@@ -686,74 +978,61 @@ fn render_audio_raw(
         let mixed = mixer
             .mix_range(start_sample, frames)
             .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
-        write_interleaved_f32_le(&mut file, &mixed)?;
+        encoder.send_audio(audio_frame_from_buffer(&mixed, start_sample))?;
         start_sample = start_sample.saturating_add(frames as u64);
     }
 
     Ok(())
 }
 
-fn write_interleaved_f32_le(file: &mut fs::File, buffer: &AudioBuffer) -> Result<()> {
-    let frames = buffer.frames();
-    let channels = buffer.channel_count();
-    let mut bytes = Vec::with_capacity(
-        frames
-            .saturating_mul(channels)
-            .saturating_mul(std::mem::size_of::<f32>()),
+fn write_composited_audio_direct(
+    composition: &Composition,
+    media_store: &LocalMediaStore,
+    encoder: &mut MuxedEncoder,
+) -> Result<()> {
+    let Some(audio) = composition.audio.as_ref() else {
+        return Ok(());
+    };
+
+    let total_samples = duration_samples(
+        composition.timeline.duration_frames,
+        composition.timeline.fps,
     );
-    for frame in 0..frames {
-        for channel in 0..channels {
-            bytes.extend_from_slice(&buffer.channels()[channel][frame].to_le_bytes());
-        }
+    let mixer = AudioMixer::new(audio, media_store);
+    let mut start_sample = 0_u64;
+    let chunk_frames = (AUDIO_SAMPLE_RATE as usize).saturating_mul(30);
+
+    while start_sample < total_samples {
+        let frames = usize::try_from((total_samples - start_sample).min(chunk_frames as u64))
+            .unwrap_or(chunk_frames);
+        let mixed = mixer
+            .mix_range(start_sample, frames)
+            .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
+        encoder
+            .write_audio_frame(&audio_frame_from_buffer(&mixed, start_sample))
+            .map_err(|error| anyhow!("lumen-ffmpeg audio encode failed: {error}"))?;
+        start_sample = start_sample.saturating_add(frames as u64);
     }
-    file.write_all(bytes.as_slice())
-        .context("failed writing mixed audio")
+
+    Ok(())
 }
 
-fn mux_audio_with_ffmpeg_cli(video_path: &Path, audio_path: &Path, output: &Path) -> Result<()> {
-    let output_result = Command::new("ffmpeg")
-        .arg("-y")
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-nostdin")
-        .arg("-i")
-        .arg(video_path)
-        .arg("-f")
-        .arg("f32le")
-        .arg("-ar")
-        .arg(AUDIO_SAMPLE_RATE.to_string())
-        .arg("-ac")
-        .arg(AUDIO_CHANNELS.to_string())
-        .arg("-i")
-        .arg(audio_path)
-        .arg("-c:v")
-        .arg("copy")
-        .arg("-c:a")
-        .arg("aac")
-        .arg("-movflags")
-        .arg("+faststart")
-        .arg(output)
-        .output()
-        .context("failed to spawn ffmpeg audio muxer")?;
-
-    if output_result.status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "ffmpeg audio mux failed: {}",
-            String::from_utf8_lossy(&output_result.stderr)
-        ))
-    }
+fn has_audio(composition: &Composition) -> bool {
+    composition
+        .audio
+        .as_ref()
+        .is_some_and(|audio| !audio.clips.is_empty())
 }
 
-fn temp_sidecar_path(output: &Path, label: &str, extension: &str) -> PathBuf {
-    let parent = output.parent().unwrap_or_else(|| Path::new("."));
-    let stem = output
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("lumen-output");
-    parent.join(format!("{stem}.{label}.tmp.{extension}"))
+fn audio_frame_from_buffer(buffer: &lumen::audio::AudioBuffer, start_sample: u64) -> AudioFrame {
+    AudioFrame {
+        sample_rate: buffer.sample_rate(),
+        channels: buffer.channel_count() as u16,
+        sample_format: SampleFormat::F32,
+        pts: Some(start_sample as i64),
+        samples: buffer.frames(),
+        interleaved_f32: buffer.interleaved_f32(),
+    }
 }
 
 fn report_gpu_encode_capabilities() {
@@ -769,6 +1048,90 @@ fn report_gpu_encode_capabilities() {
             support.reason.as_deref().unwrap_or("none"),
         );
     }
+}
+
+fn read_texture_rgba8(
+    renderer: &lumen_gpu::Renderer,
+    id: lumen_gpu::TextureId,
+    size: lumen_gpu::Size,
+) -> Result<Vec<u8>> {
+    let bytes_per_pixel = 4;
+    let unpadded_bytes_per_row = size.width.saturating_mul(bytes_per_pixel);
+    let padded_bytes_per_row = align_to(
+        unpadded_bytes_per_row,
+        lumen_gpu::wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
+    );
+    let output_size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(size.height));
+    let output = renderer
+        .device
+        .create_buffer(&lumen_gpu::wgpu::BufferDescriptor {
+            label: Some("lumen-local readback"),
+            size: output_size.max(1),
+            usage: lumen_gpu::wgpu::BufferUsages::COPY_DST
+                | lumen_gpu::wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+    let mut encoder =
+        renderer
+            .device
+            .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
+                label: Some("lumen-local readback encoder"),
+            });
+    let texture = renderer
+        .texture(id)
+        .ok_or_else(|| anyhow!("render output texture {id:?} is unavailable"))?;
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        lumen_gpu::wgpu::TexelCopyBufferInfo {
+            buffer: &output,
+            layout: lumen_gpu::wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(size.height),
+            },
+        },
+        lumen_gpu::wgpu::Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        },
+    );
+    renderer.queue.submit([encoder.finish()]);
+
+    let slice = output.slice(..);
+    let (tx, rx) = mpsc::channel();
+    slice.map_async(lumen_gpu::wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
+    renderer
+        .device
+        .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())
+        .map_err(|error| anyhow!("GPU readback poll failed: {error}"))?;
+    rx.recv()
+        .map_err(|_| anyhow!("GPU readback channel closed"))?
+        .map_err(|error| anyhow!("GPU readback map failed: {error}"))?;
+
+    let mapped = slice.get_mapped_range();
+    let mut pixels = vec![
+        0;
+        (size.width as usize)
+            .saturating_mul(size.height as usize)
+            .saturating_mul(bytes_per_pixel as usize)
+    ];
+    for row in 0..size.height as usize {
+        let src_start = row.saturating_mul(padded_bytes_per_row as usize);
+        let src_end = src_start.saturating_add(unpadded_bytes_per_row as usize);
+        let dst_start = row.saturating_mul(unpadded_bytes_per_row as usize);
+        let dst_end = dst_start.saturating_add(unpadded_bytes_per_row as usize);
+        pixels[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
+    }
+    drop(mapped);
+    output.unmap();
+    Ok(pixels)
+}
+
+fn align_to(value: u32, alignment: u32) -> u32 {
+    value.div_ceil(alignment) * alignment
 }
 
 fn write_png(output: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {

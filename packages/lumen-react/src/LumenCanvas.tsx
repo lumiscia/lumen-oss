@@ -37,10 +37,6 @@ export function LumenCanvas({
   const animationFrameRef = useRef(0);
   const compositionLoadedRef = useRef(false);
 
-  function getCtx2d(): CanvasRenderingContext2D | null {
-    return canvasRef.current?.getContext("2d") ?? null;
-  }
-
   function describeError(error: unknown): string {
     if (error instanceof Error) {
       return error.stack ?? `${error.name}: ${error.message}`;
@@ -85,8 +81,8 @@ export function LumenCanvas({
   }
 
   async function renderOnce(controller: LumenPreviewController): Promise<void> {
-    const ctx = getCtx2d();
-    if (!ctx) {
+    const canvas = canvasRef.current;
+    if (!canvas) {
       return;
     }
     if (!hasLoadedComposition()) {
@@ -95,7 +91,7 @@ export function LumenCanvas({
 
     try {
       const startedAt = performance.now();
-      await controller.renderNowAsync(ctx);
+      await controller.renderNowAsync(canvas);
       preview.update({
         frame: controller.currentFrame(),
         renderMs: performance.now() - startedAt,
@@ -133,9 +129,9 @@ export function LumenCanvas({
 
     const loop = (now: number): void => {
       animationFrameRef.current = 0;
-      const ctx = getCtx2d();
+      const canvas = canvasRef.current;
 
-      if (ctx) {
+      if (canvas) {
         const audioEngine = audioEngineRef.current;
         const snapshot = preview.getSnapshot();
         const shouldRenderTick =
@@ -152,7 +148,7 @@ export function LumenCanvas({
               try {
                 controller.setFrame(targetFrame);
                 const startedAt = performance.now();
-                await controller.renderNowAsync(ctx);
+                await controller.renderNowAsync(canvas);
                 preview.update({
                   frame: targetFrame,
                   renderMs: performance.now() - startedAt,
@@ -167,7 +163,7 @@ export function LumenCanvas({
 
             try {
               const startedAt = performance.now();
-              const changed = await controller.tickAsync(now, ctx);
+              const changed = await controller.tickAsync(now, canvas);
               if (changed) {
                 const currentFrame = controller.currentFrame();
                 preview.update({

@@ -1,177 +1,185 @@
-use skia_safe::{Paint, canvas::SaveLayerRec};
+use crate::node::{NodeId, NodeProperty, PortRef};
 
-use crate::{
-    gpu_image::GpuImageFrame,
-    node::{
-        NodeId, NodeProperty, PortRef,
-        compositing::merge::draw_frame_image,
-        pixel_utils::{ClearMode, render_to_surface_ephemeral},
-        vector::shape_renderer::{ShapeRenderer, rasterize_vector},
-    },
-    render::RenderContext,
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
+    RasterHandle, compiler,
 };
-use lumen_macros::{Node, node_impl};
+
+pub(crate) const SHADER: &str = include_str!("boolean.wgsl");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i64)]
-#[non_exhaustive]
-pub enum MaskKind {
-    Alpha = 0,
-    Luma = 1,
+pub enum BooleanOperation {
+    Union = 0,
+    Intersect = 1,
+    Subtract = 2,
+    Xor = 3,
 }
 
-impl MaskKind {
-    fn from_int(value: i64) -> Self {
+impl BooleanOperation {
+    pub fn from_int(value: i64) -> Self {
         match value {
-            1 => Self::Luma,
-            _ => Self::Alpha,
+            1 => Self::Intersect,
+            2 => Self::Subtract,
+            3 => Self::Xor,
+            _ => Self::Union,
         }
     }
 }
 
-#[derive(Debug, Clone, Node)]
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "boolean",
+    label = "Boolean",
+    description = "Combines two raster alpha masks with boolean operations.",
+    category = "compositing"
+)]
 pub struct Boolean {
     pub id: NodeId,
-
-    #[property(expected = Int)]
-    pub mask_kind: NodeProperty,
-    #[property(expected = Bool)]
-    pub invert: NodeProperty,
-
-    #[input(kind = Raster)]
-    pub source: PortRef,
-    #[input(kind = Raster, optional)]
-    pub mask: PortRef,
-    #[input(kind = Vector, optional)]
-    pub vector: PortRef,
+    #[property(kind = "int")]
+    pub operation: NodeProperty,
+    #[property(kind = "float")]
+    pub threshold: NodeProperty,
+    #[input()]
+    pub a: PortRef,
+    #[input()]
+    pub b: PortRef,
 }
 
 impl Default for Boolean {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            mask_kind: NodeProperty::Int(MaskKind::Alpha as i64),
-            invert: NodeProperty::Bool(false),
-            source: PortRef::empty(),
-            mask: PortRef::empty(),
-            vector: PortRef::empty(),
+            operation: NodeProperty::Int(BooleanOperation::Union as i64),
+            threshold: NodeProperty::Float(0.0),
+            a: PortRef::empty(),
+            b: PortRef::empty(),
         }
     }
 }
 
-#[node_impl]
-impl Boolean {
-    #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
-        let source_result = ctx.eval(&self.source)?;
-        let source = source_result.as_raster()?;
-        let source_alpha = source.alpha_mode();
-        let source_format = source.format_rect();
-        let source_data = source.data_rect();
-
-        let (source_image, source_w, source_h) = match source.image_parts() {
-            Some(parts) => parts,
-            None => return source.snapshot(),
-        };
-
-        let mask_frame = if !self.mask.is_empty() {
-            let frame = ctx.eval(&self.mask)?;
-            Some(frame.as_raster()?.snapshot()?)
-        } else if !self.vector.is_empty() {
-            let vector = ctx.eval(&self.vector)?;
-            Some(rasterize_vector(
-                vector.as_vector()?,
-                &ShapeRenderer::default(),
-                ctx,
-            ))
-        } else {
-            None
-        };
-
-        let Some(mask_frame) = mask_frame else {
-            return source.snapshot();
-        };
-        let Some((mask_image, mask_w, mask_h)) = mask_frame.image_parts() else {
-            return source.snapshot();
-        };
-        let mask_format = mask_frame.format_rect();
-        let mask_data = mask_frame.data_rect();
-
-        let out_w = source_w;
-        let out_h = source_h;
-        if out_w == 0 || out_h == 0 {
-            return render_to_surface_ephemeral(
-                out_w.max(1),
-                out_h.max(1),
-                ctx,
-                source_format,
-                source_data,
-                source_alpha,
-                ClearMode::Transparent,
-                |_| {},
-            );
+impl GpuCompileNode for Boolean {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        if port.port != "output" {
+            return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let mask_kind = MaskKind::from_int(self.resolve_mask_kind(ctx)?);
-        let invert = self.resolve_invert(ctx)?;
-
-        render_to_surface_ephemeral(
-            out_w,
-            out_h,
-            ctx,
-            source_format,
-            source_data,
-            source_alpha,
-            ClearMode::Transparent,
-            |canvas| {
-                draw_frame_image(
-                    canvas,
-                    &source_image,
-                    source_w,
-                    source_h,
-                    source_format,
-                    source_data,
-                    source_format,
-                    None,
-                );
-
-                let blend_mode = if invert {
-                    skia_safe::BlendMode::DstOut
-                } else {
-                    skia_safe::BlendMode::DstIn
-                };
-                let mut layer_paint = Paint::default();
-                layer_paint.set_blend_mode(blend_mode);
-                canvas.save_layer(&SaveLayerRec::default().paint(&layer_paint));
-
-                if mask_kind == MaskKind::Luma {
-                    let luma_cf = skia_safe::ColorFilter::luma();
-                    let mut mask_paint = Paint::default();
-                    mask_paint.set_color_filter(luma_cf);
-                    draw_frame_image(
-                        canvas,
-                        &mask_image,
-                        mask_w,
-                        mask_h,
-                        mask_format,
-                        mask_data,
-                        source_format,
-                        Some(&mask_paint),
-                    );
-                } else {
-                    draw_frame_image(
-                        canvas,
-                        &mask_image,
-                        mask_w,
-                        mask_h,
-                        mask_format,
-                        mask_data,
-                        source_format,
-                        None,
-                    );
-                }
-                canvas.restore();
+        let a = ctx
+            .compile_port(&self.a)?
+            .into_raster(self.a.id, &self.a.port)?;
+        let b = ctx
+            .compile_port(&self.b)?
+            .into_raster(self.b.id, &self.b.port)?;
+        let size = a.domain.storage_size;
+        let texture = ctx.builder_mut().texture_for(
+            lumen_gpu::NodeKey(self.id.0),
+            Some(format!("boolean:{}:output", self.id.0)),
+            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        );
+        let params = ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(self.id.0),
+            Some(format!("boolean:{}:params", self.id.0)),
+            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::BooleanParams>() as u64),
+        );
+        let program = ctx.builder_mut().program_for(
+            lumen_gpu::NodeKey(self.id.0),
+            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+                label: Some("boolean".to_string()),
+                shader: SHADER.to_string(),
+                entry: "cs_main".to_string(),
+                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
+                    lumen_gpu::BindingLayoutEntry::texture(
+                        0,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                    ),
+                    lumen_gpu::BindingLayoutEntry::texture(
+                        1,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                    ),
+                    lumen_gpu::BindingLayoutEntry::uniform(
+                        2,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                    ),
+                    lumen_gpu::BindingLayoutEntry::storage_texture(
+                        3,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+                    ),
+                ]),
+            }),
+        );
+        ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
+            label: Some(format!("boolean:{}:apply", self.id.0)),
+            owner: Some(lumen_gpu::NodeKey(self.id.0)),
+            program,
+            bindings: vec![
+                lumen_gpu::Binding::sampled_texture(0, 0, a.texture),
+                lumen_gpu::Binding::sampled_texture(0, 1, b.texture),
+                lumen_gpu::Binding::uniform(0, 2, params),
+                lumen_gpu::Binding::storage_texture(0, 3, texture),
+            ],
+            dispatch: compiler::dispatch_for(size),
+        });
+        ctx.builder_mut().param(
+            lumen_gpu::ParamKey {
+                owner: lumen_gpu::NodeKey(self.id.0),
+                slot: 0,
             },
-        )
+            lumen_gpu::ParamTarget::Buffer(params),
+        );
+        ctx.push_frame_binding(FrameBinding::Boolean {
+            node_id: self.id,
+            operation: self.operation.clone(),
+            threshold: self.threshold.clone(),
+            buffer: params,
+        });
+
+        Ok(CompiledOutput::Raster(RasterHandle {
+            texture,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: a.metadata,
+        }))
+    }
+}
+
+impl GpuFrameBindNode for Boolean {
+    fn bind_gpu_frame(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        binding: &FrameBinding,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        let FrameBinding::Boolean {
+            node_id,
+            operation,
+            threshold,
+            buffer,
+        } = binding
+        else {
+            return Ok(());
+        };
+        let params = compiler::BooleanParams {
+            values: [
+                BooleanOperation::from_int(operation.resolve_int(
+                    *node_id,
+                    "operation",
+                    &ctx.expr_context(*node_id, "operation"),
+                )?) as u32 as f32,
+                threshold.resolve_float(
+                    *node_id,
+                    "threshold",
+                    &ctx.expr_context(*node_id, "threshold"),
+                )? as f32,
+                0.0,
+                0.0,
+            ],
+        };
+        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
     }
 }

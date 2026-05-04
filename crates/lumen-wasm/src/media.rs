@@ -5,13 +5,14 @@ use std::{
 
 use lumen::{
     error::MediaError,
-    gpu_image::GpuImageFrame,
-    media::{ImageMetadata, ImageResolver, MediaStore, VideoFrameResolver, VideoMetadata},
+    media::{
+        CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
+        VideoMetadata,
+    },
 };
 use wasm_bindgen::prelude::*;
 
 use crate::utils::{image_frame_from_rgba, validate_rgba_len};
-use crate::webgl::image_frame_from_video_frame;
 
 const DEFAULT_VIDEO_FRAME_CACHE_CAPACITY: usize = 96;
 
@@ -20,7 +21,7 @@ const DEFAULT_VIDEO_FRAME_CACHE_CAPACITY: usize = 96;
 #[derive(Debug, Clone)]
 pub(crate) struct VideoFrameCache {
     capacity: usize,
-    entries: HashMap<u32, Arc<GpuImageFrame>>,
+    entries: HashMap<u32, Arc<CpuMediaFrame>>,
     order: VecDeque<u32>,
     pinned: HashSet<u32>,
 }
@@ -49,11 +50,11 @@ impl VideoFrameCache {
         self.entries.contains_key(&frame)
     }
 
-    pub fn get(&self, frame: u32) -> Option<Arc<GpuImageFrame>> {
+    pub fn get(&self, frame: u32) -> Option<Arc<CpuMediaFrame>> {
         self.entries.get(&frame).cloned()
     }
 
-    pub fn insert(&mut self, frame: u32, image: Arc<GpuImageFrame>) {
+    pub fn insert(&mut self, frame: u32, image: Arc<CpuMediaFrame>) {
         self.entries.insert(frame, image);
         self.touch(frame);
         self.evict_over_capacity();
@@ -100,7 +101,7 @@ impl VideoFrameCache {
 #[derive(Debug, Clone)]
 struct StoredImage {
     metadata: ImageMetadata,
-    frame: Arc<GpuImageFrame>,
+    frame: Arc<CpuMediaFrame>,
 }
 
 #[derive(Debug, Clone)]
@@ -205,10 +206,10 @@ impl WasmMediaStore {
             .is_some_and(|video| video.frames.contains(frame))
     }
 
-    pub fn set_image(&self, source: String, frame: GpuImageFrame) -> Result<(), &'static str> {
+    pub fn set_image(&self, source: String, frame: CpuMediaFrame) -> Result<(), &'static str> {
         let metadata = ImageMetadata {
-            width: frame.storage_width,
-            height: frame.storage_height,
+            width: frame.width,
+            height: frame.height,
         };
         self.inner
             .images
@@ -243,7 +244,7 @@ impl WasmMediaStore {
         &self,
         stream_id: String,
         frame: u32,
-        image: GpuImageFrame,
+        image: CpuMediaFrame,
     ) -> Result<(), &'static str> {
         let mut videos = self
             .inner
@@ -251,8 +252,8 @@ impl WasmMediaStore {
             .write()
             .map_err(|_| "media store lock poisoned")?;
         let entry = videos.entry(stream_id).or_default();
-        entry.metadata.width = image.storage_width;
-        entry.metadata.height = image.storage_height;
+        entry.metadata.width = image.width;
+        entry.metadata.height = image.height;
         entry.metadata.frame_count = entry.metadata.frame_count.max(frame.saturating_add(1));
         entry.frames.insert(frame, Arc::new(image));
         Ok(())
@@ -297,7 +298,7 @@ impl ImageResolver for WasmImageResolver {
             .unwrap_or_default()
     }
 
-    fn gpu_image(&self) -> Result<Arc<GpuImageFrame>, MediaError> {
+    fn frame(&self) -> Result<MediaFrame, MediaError> {
         self.store
             .images
             .read()
@@ -309,6 +310,7 @@ impl ImageResolver for WasmImageResolver {
             .ok_or_else(|| MediaError::SourceNotFound {
                 media_source: self.id.clone(),
             })
+            .map(MediaFrame::CpuRgba)
     }
 }
 
@@ -336,7 +338,7 @@ impl VideoFrameResolver for WasmVideoResolver {
         Ok(())
     }
 
-    fn frame(&self, frame: u32) -> Result<Arc<GpuImageFrame>, MediaError> {
+    fn frame(&self, frame: u32) -> Result<MediaFrame, MediaError> {
         let videos = self
             .store
             .videos
@@ -349,11 +351,15 @@ impl VideoFrameResolver for WasmVideoResolver {
             .ok_or_else(|| MediaError::SourceNotFound {
                 media_source: self.id.clone(),
             })?;
-        entry.frames.get(frame).ok_or(MediaError::FrameOutOfRange {
-            media_source: self.id.clone(),
-            frame,
-            frame_count: entry.metadata.frame_count,
-        })
+        entry
+            .frames
+            .get(frame)
+            .ok_or(MediaError::FrameOutOfRange {
+                media_source: self.id.clone(),
+                frame,
+                frame_count: entry.metadata.frame_count,
+            })
+            .map(MediaFrame::CpuRgba)
     }
 
     fn retain_frames(&self, frames: &[u32]) {
@@ -463,24 +469,6 @@ impl LumenMediaStore {
             .map_err(JsValue::from_str)
     }
 
-    #[wasm_bindgen(js_name = "setVideoFrameObject")]
-    pub fn set_video_frame_object(
-        &self,
-        stream_id: &str,
-        frame: u32,
-        video_frame: &web_sys::VideoFrame,
-        width: u32,
-        height: u32,
-    ) -> Result<(), JsValue> {
-        if width == 0 || height == 0 {
-            return Err(JsValue::from_str("video frame dimensions must be > 0"));
-        }
-        let image = image_frame_from_video_frame(video_frame, width, height)?;
-        self.store
-            .set_video_frame(stream_id.to_string(), frame, image)
-            .map_err(JsValue::from_str)
-    }
-
     #[wasm_bindgen(js_name = "setVideoMetadata")]
     pub fn set_video_metadata(
         &self,
@@ -488,9 +476,13 @@ impl LumenMediaStore {
         width: u32,
         height: u32,
         frame_count: u32,
+        fps: f32,
     ) -> Result<(), JsValue> {
         if width == 0 || height == 0 {
             return Err(JsValue::from_str("video dimensions must be > 0"));
+        }
+        if !fps.is_finite() || fps <= 0.0 {
+            return Err(JsValue::from_str("video fps must be a finite value > 0"));
         }
         self.store
             .set_video_metadata(
@@ -499,6 +491,7 @@ impl LumenMediaStore {
                     width,
                     height,
                     frame_count,
+                    fps,
                 },
             )
             .map_err(JsValue::from_str)
@@ -557,6 +550,7 @@ mod tests {
                     width: 1920,
                     height: 1080,
                     frame_count: 240,
+                    fps: 30.0,
                 },
             )
             .expect("set metadata");
@@ -577,7 +571,7 @@ mod tests {
         ));
     }
 
-    fn test_frame() -> GpuImageFrame {
+    fn test_frame() -> CpuMediaFrame {
         crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame")
     }
 }

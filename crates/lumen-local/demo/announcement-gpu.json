@@ -1,0 +1,184 @@
+{
+  "timeline": {
+    "fps": 30,
+    "duration_frames": 180
+  },
+  "render_settings": {
+    "width": 1280,
+    "height": 720,
+    "background_color": [9, 17, 31, 255]
+  },
+  "metadata": {
+    "title": "Announcement GPU Demo",
+    "description": "A GPU-native translation of the editor announcement demo with animated expression-bound uniforms."
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "type": "solid_color",
+      "properties": {
+        "color": [9, 17, 31, 255],
+        "width": 1280,
+        "height": 720
+      }
+    },
+    {
+      "id": 2,
+      "type": "shape",
+      "properties": {
+        "geometry_kind": 1,
+        "width": 620,
+        "height": 620,
+        "position": [760, -140],
+        "fill_enabled": true,
+        "fill_color": [37, 99, 235, 68],
+        "stroke_enabled": false
+      }
+    },
+    {
+      "id": 3,
+      "type": "shape",
+      "properties": {
+        "geometry_kind": 0,
+        "width": 860,
+        "height": 310,
+        "border_radius": 28,
+        "position": [210, 190],
+        "fill_enabled": true,
+        "fill_color": [15, 27, 49, 255],
+        "stroke_enabled": true,
+        "stroke_color": [71, 85, 105, 255],
+        "stroke_width": 1.5
+      }
+    },
+    {
+      "id": 4,
+      "type": "text",
+      "properties": {
+        "content": "GPU-native previews.",
+        "font_family": "Helvetica Neue",
+        "font_size": 42,
+        "font_weight": 700,
+        "font_style": 0,
+        "max_width": 700,
+        "position": [260, 255],
+        "color": [248, 250, 252, 255],
+        "alignment_horizontal": 0,
+        "alignment_vertical": 0
+      }
+    },
+    {
+      "id": 5,
+      "type": "text",
+      "properties": {
+        "content": "Expressions update uniforms per frame.",
+        "font_family": "Helvetica Neue",
+        "font_size": 21,
+        "font_weight": 500,
+        "font_style": 0,
+        "max_width": 730,
+        "position": [260, 350],
+        "color": [148, 163, 184, 255],
+        "alignment_horizontal": 0,
+        "alignment_vertical": 0
+      }
+    },
+    {
+      "id": 6,
+      "type": "shape",
+      "properties": {
+        "geometry_kind": 0,
+        "width": "=text_width(\"Open editor\", 20) + 48",
+        "height": "=text_height(\"Open editor\", 20) + 32",
+        "border_radius": 999,
+        "position": [260, 420],
+        "fill_enabled": true,
+        "fill_color": [37, 99, 235, 255],
+        "stroke_enabled": false
+      }
+    },
+    {
+      "id": 7,
+      "type": "text",
+      "properties": {
+        "content": "Open editor",
+        "font_family": "Helvetica Neue",
+        "font_size": 20,
+        "font_weight": 700,
+        "font_style": 0,
+        "max_width": 0,
+        "position": [284, 433],
+        "color": [255, 255, 255, 255],
+        "alignment_horizontal": 0,
+        "alignment_vertical": 0
+      }
+    },
+    {
+      "id": 8,
+      "type": "merge",
+      "properties": {
+        "opacity": "=smoothstep(0, 20, frame) * (1 - smoothstep(150, 180, frame))",
+        "blend_mode": 0
+      }
+    },
+    {
+      "id": 9,
+      "type": "merge",
+      "properties": {
+        "opacity": "=smoothstep(0, 24, frame)",
+        "blend_mode": 0
+      }
+    },
+    {
+      "id": 10,
+      "type": "merge",
+      "properties": {
+        "opacity": "=smoothstep(18, 48, frame)",
+        "blend_mode": 0
+      }
+    },
+    {
+      "id": 11,
+      "type": "merge",
+      "properties": {
+        "opacity": "=smoothstep(22, 54, frame)",
+        "blend_mode": 0
+      }
+    },
+    {
+      "id": 12,
+      "type": "merge",
+      "properties": {
+        "opacity": "=smoothstep(30, 60, frame)",
+        "blend_mode": 0
+      }
+    },
+    {
+      "id": 13,
+      "type": "merge",
+      "properties": {
+        "opacity": "=smoothstep(32, 64, frame)",
+        "blend_mode": 0
+      }
+    },
+    {
+      "id": 14,
+      "type": "media_output"
+    }
+  ],
+  "connections": [
+    { "from_node": 1, "from_port": "output", "to_node": 8, "to_port": "base" },
+    { "from_node": 2, "from_port": "output", "to_node": 8, "to_port": "overlay" },
+    { "from_node": 8, "from_port": "output", "to_node": 9, "to_port": "base" },
+    { "from_node": 3, "from_port": "output", "to_node": 9, "to_port": "overlay" },
+    { "from_node": 9, "from_port": "output", "to_node": 10, "to_port": "base" },
+    { "from_node": 4, "from_port": "output", "to_node": 10, "to_port": "overlay" },
+    { "from_node": 10, "from_port": "output", "to_node": 11, "to_port": "base" },
+    { "from_node": 5, "from_port": "output", "to_node": 11, "to_port": "overlay" },
+    { "from_node": 11, "from_port": "output", "to_node": 12, "to_port": "base" },
+    { "from_node": 6, "from_port": "output", "to_node": 12, "to_port": "overlay" },
+    { "from_node": 12, "from_port": "output", "to_node": 13, "to_port": "base" },
+    { "from_node": 7, "from_port": "output", "to_node": 13, "to_port": "overlay" },
+    { "from_node": 13, "from_port": "output", "to_node": 14, "to_port": "source" }
+  ]
+}

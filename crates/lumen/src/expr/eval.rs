@@ -345,34 +345,53 @@ mod tests {
     }
 
     #[test]
-    fn text_measure_builtins_can_use_node_references() {
-        let mut graph = Graph::new();
-        let mut text = Text::default();
-        text.id = NodeId::new(8);
-        text.content = NodeProperty::String("Morning, update posted.".to_string());
-        text.font_size = NodeProperty::Float(32.0);
-        text.font_weight = NodeProperty::Int(500);
-        text.max_width = NodeProperty::Float(300.0);
-        graph.nodes.insert(text.id, NodeKind::Text(text));
+    fn text_measure_builtins_use_explicit_text_inputs() {
+        let ctx = test_context();
 
+        let implicit = Expression::parse("text_width(\"Morning, update posted.\")").unwrap();
+        let explicit =
+            Expression::parse("text_width(node(8, \"content\"), 32, 300, \"Roboto\")").unwrap();
+        let implicit_height =
+            Expression::parse("text_height(\"Morning, update posted.\")").unwrap();
+        let explicit_height =
+            Expression::parse("text_height(node(8, \"content\"), 32, 300, \"Roboto\")").unwrap();
+
+        assert!(implicit.evaluate(&ctx).is_ok());
+        assert!(explicit.evaluate(&ctx).is_err());
+        assert!(implicit_height.evaluate(&ctx).is_ok());
+        assert!(explicit_height.evaluate(&ctx).is_err());
+    }
+
+    #[test]
+    fn text_measure_builtins_resolve_text_nodes_from_graph() {
+        let text_id = NodeId::new(8);
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            text_id,
+            NodeKind::Text(Text {
+                id: text_id,
+                content: NodeProperty::String("Morning, update posted.".to_string()),
+                font_family: NodeProperty::String("Roboto".to_string()),
+                font_size: NodeProperty::Float(32.0),
+                max_width: NodeProperty::Float(300.0),
+                ..Text::default()
+            }),
+        );
         let ctx = ExpressionContext {
             graph: Some(&graph),
             ..test_context()
         };
 
-        let from_node = Expression::parse("text_width(node(8))").unwrap();
-        let explicit = Expression::parse("text_width(node(8, \"content\"), 32, 300)").unwrap();
-        let from_node_height = Expression::parse("text_height(node(8))").unwrap();
-        let explicit_height =
-            Expression::parse("text_height(node(8, \"content\"), 32, 300)").unwrap();
+        let width = Expression::parse("text_width(node(8))")
+            .unwrap()
+            .evaluate(&ctx)
+            .unwrap();
+        let height = Expression::parse("text_height(node(8))")
+            .unwrap()
+            .evaluate(&ctx)
+            .unwrap();
 
-        assert_eq!(
-            from_node.evaluate(&ctx).unwrap(),
-            explicit.evaluate(&ctx).unwrap()
-        );
-        assert_eq!(
-            from_node_height.evaluate(&ctx).unwrap(),
-            explicit_height.evaluate(&ctx).unwrap()
-        );
+        assert!(matches!(width, ExpressionValue::Number(value) if value > 0.0));
+        assert!(matches!(height, ExpressionValue::Number(value) if value > 32.0));
     }
 }

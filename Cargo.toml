@@ -2,11 +2,14 @@
 members = [
   "crates/lumen",
   "crates/ffmpeg",
-  "crates/lumen-server",
+  "crates/lumen-runpod",
   "crates/lumen-wasm",
   "crates/lumen-local",
+  "crates/lumen-bench",
   "crates/lumen-generators",
   "crates/lumen-macros",
+  "crates/lumen-gpu",
+  "crates/lumen-text",
 ]
 
 resolver = "3"

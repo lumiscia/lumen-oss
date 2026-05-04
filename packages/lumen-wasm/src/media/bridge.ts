@@ -217,7 +217,13 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
       return metadata;
     }
 
-    this.target.setVideoMetadata(streamId, metadata.width, metadata.height, metadata.frameCount);
+    this.target.setVideoMetadata(
+      streamId,
+      metadata.width,
+      metadata.height,
+      metadata.frameCount,
+      metadata.fps,
+    );
     current.syncedMetadata = metadata;
     current.syncedMetadataVersion = version;
     current.syncedFrames.clear();

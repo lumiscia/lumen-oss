@@ -1,41 +1,40 @@
-use crate::{
-    error::{LumenError, PropertyError},
-    node::{
-        NodeId, NodeProperty, ShapeGeometry, VectorData, VectorPosition, VectorStroke, VectorStyle,
-    },
-    render::RenderContext,
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
 };
-use lumen_macros::{Node, node_impl};
+use crate::node::{NodeId, NodeProperty, PortRef};
 
-#[derive(Debug, Clone, Node)]
-pub struct BezierPath {
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "path",
+    label = "Path",
+    description = "Produces a rasterized vector path source.",
+    category = "vector"
+)]
+pub struct Path {
     pub id: NodeId,
-
-    #[property(expected = String)]
-    pub commands: NodeProperty,
-
-    #[property(expected = Vec2)]
+    #[property(kind = "string")]
+    pub data: NodeProperty,
+    #[property(kind = "vec2")]
     pub position: NodeProperty,
-
-    #[property(expected = Bool)]
+    #[property(kind = "bool")]
     pub fill_enabled: NodeProperty,
-    #[property(expected = Color)]
+    #[property(kind = "color")]
     pub fill_color: NodeProperty,
-    #[property(expected = Bool)]
+    #[property(kind = "bool")]
     pub stroke_enabled: NodeProperty,
-    #[property(expected = Color)]
+    #[property(kind = "color")]
     pub stroke_color: NodeProperty,
-    #[property(expected = Float)]
+    #[property(kind = "float")]
     pub stroke_width: NodeProperty,
 }
 
-impl Default for BezierPath {
+impl Default for Path {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            commands: NodeProperty::String(String::new()),
+            data: NodeProperty::String("M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string()),
             position: NodeProperty::Vec2((0.0, 0.0)),
-            fill_enabled: NodeProperty::Bool(false),
+            fill_enabled: NodeProperty::Bool(true),
             fill_color: NodeProperty::Color([255, 255, 255, 255]),
             stroke_enabled: NodeProperty::Bool(false),
             stroke_color: NodeProperty::Color([0, 0, 0, 255]),
@@ -44,73 +43,143 @@ impl Default for BezierPath {
     }
 }
 
-#[node_impl]
-impl BezierPath {
-    #[output(port = "vector", kind = Vector)]
-    fn eval_vector(&self, ctx: &mut RenderContext) -> crate::Result<VectorData> {
-        let commands = self.resolve_commands(ctx)?;
-        validate_path_commands(self.id, &commands)?;
+impl GpuCompileNode for Path {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        crate::node::vector::renderer::VectorRenderer::new(ctx).compile_path(self, port)
+    }
+}
 
-        let (x, y) = self.resolve_position(ctx)?;
-        let fill = if self.resolve_fill_enabled(ctx)? {
-            Some(self.resolve_fill_color(ctx)?)
-        } else {
-            None
-        };
-        let stroke = if self.resolve_stroke_enabled(ctx)? {
-            Some(VectorStroke {
-                color: self.resolve_stroke_color(ctx)?,
-                width: (self.resolve_stroke_width(ctx)? as f32).max(0.0),
-            })
-        } else {
-            None
+impl GpuFrameBindNode for Path {
+    fn bind_gpu_frame(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        binding: &FrameBinding,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        let FrameBinding::Path {
+            node_id,
+            data,
+            position,
+            fill_enabled,
+            fill_color,
+            stroke_enabled,
+            stroke_color,
+            stroke_width,
+            params_buffer,
+            points_buffer,
+            max_points,
+        } = binding
+        else {
+            return Ok(());
         };
 
-        Ok(VectorData::Shape {
-            geometry: ShapeGeometry::Path { commands },
-            style: VectorStyle {
-                color: fill,
-                stroke,
-            },
-            position: VectorPosition {
-                x: x as f32,
-                y: y as f32,
-            },
+        let path_data =
+            data.resolve_string(*node_id, "data", &ctx.expr_context(*node_id, "data"))?;
+        let points = parse_path_points(&path_data, *max_points);
+        let (x, y) = position.resolve_vec2(
+            *node_id,
+            "position",
+            &ctx.expr_context(*node_id, "position"),
+        )?;
+        let fill = fill_color.resolve_color(
+            *node_id,
+            "fill_color",
+            &ctx.expr_context(*node_id, "fill_color"),
+        )?;
+        let stroke = stroke_color.resolve_color(
+            *node_id,
+            "stroke_color",
+            &ctx.expr_context(*node_id, "stroke_color"),
+        )?;
+        let mut flags = 0;
+        if fill_enabled.resolve_bool(
+            *node_id,
+            "fill_enabled",
+            &ctx.expr_context(*node_id, "fill_enabled"),
+        )? {
+            flags |= 1;
+        }
+        if stroke_enabled.resolve_bool(
+            *node_id,
+            "stroke_enabled",
+            &ctx.expr_context(*node_id, "stroke_enabled"),
+        )? {
+            flags |= 2;
+        }
+
+        let params = super::renderer::PathParams {
+            fill_color: rgba8_to_f32(fill),
+            stroke_color: rgba8_to_f32(stroke),
+            position: [x as f32, y as f32],
+            stroke_width: stroke_width.resolve_float(
+                *node_id,
+                "stroke_width",
+                &ctx.expr_context(*node_id, "stroke_width"),
+            )? as f32,
+            flags,
+            point_count: points.len() as u32,
+            _pad: [0; 3],
+        };
+        bound.write_buffer(*params_buffer, 0, bytemuck::bytes_of(&params));
+        if !points.is_empty() {
+            bound.write_buffer(*points_buffer, 0, bytemuck::cast_slice(&points));
+        }
+        Ok(())
+    }
+}
+
+// Pragmatic fallback: this accepts SVG-like path strings by flattening every
+// numeric coordinate pair into a polygon. Curves/arcs are treated as straight
+// point chains until a full path tessellator lands here.
+fn parse_path_points(data: &str, max_points: usize) -> Vec<super::renderer::PathPoint> {
+    let mut numbers = Vec::new();
+    let mut token = String::new();
+    let mut previous = '\0';
+
+    for ch in data.chars() {
+        let starts_exponent = matches!(previous, 'e' | 'E') && matches!(ch, '+' | '-');
+        if matches!(ch, '-' | '+') && !starts_exponent {
+            if !token.is_empty() {
+                if let Ok(value) = token.parse::<f32>() {
+                    numbers.push(value);
+                }
+                token.clear();
+            }
+            token.push(ch);
+        } else if ch.is_ascii_digit() || ch == '.' || starts_exponent || matches!(ch, 'e' | 'E') {
+            token.push(ch);
+        } else if !token.is_empty() {
+            if let Ok(value) = token.parse::<f32>() {
+                numbers.push(value);
+            }
+            token.clear();
+        }
+        previous = ch;
+    }
+    if !token.is_empty() {
+        if let Ok(value) = token.parse::<f32>() {
+            numbers.push(value);
+        }
+    }
+
+    numbers
+        .chunks_exact(2)
+        .take(max_points)
+        .map(|pair| super::renderer::PathPoint {
+            position: [pair[0], pair[1]],
         })
-    }
+        .collect()
 }
 
-pub fn validate_path_commands(node_id: NodeId, commands: &str) -> crate::Result<()> {
-    let Some(path) = skia_safe::Path::from_svg(commands) else {
-        return Err(invalid_path(node_id));
-    };
-    let bounds = path.compute_tight_bounds();
-    if bounds.is_empty() || !bounds.is_finite() {
-        return Err(invalid_path(node_id));
-    }
-    Ok(())
-}
-
-fn invalid_path(node_id: NodeId) -> LumenError {
-    LumenError::Property(PropertyError::InvalidType {
-        node_id,
-        property_path: "commands".to_string(),
-        expected: "valid SVG path commands",
-        actual: "String",
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_invalid_path_commands() {
-        assert!(validate_path_commands(NodeId::new(7), "M 0 0 L nope").is_err());
-    }
-
-    #[test]
-    fn accepts_negative_and_non_zero_local_coordinates() {
-        assert!(validate_path_commands(NodeId::new(7), "M -5 10 C 2 12 8 18 12 20").is_ok());
-    }
+fn rgba8_to_f32(color: [u8; 4]) -> [f32; 4] {
+    [
+        f32::from(color[0]) / 255.0,
+        f32::from(color[1]) / 255.0,
+        f32::from(color[2]) / 255.0,
+        f32::from(color[3]) / 255.0,
+    ]
 }

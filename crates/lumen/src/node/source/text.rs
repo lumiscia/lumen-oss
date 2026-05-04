@@ -1,25 +1,24 @@
-use skia_safe::textlayout::Paragraph;
-
-use crate::{
-    gpu_image::{AlphaMode, GpuImageFrame, RectI},
-    node::{
-        NodeId, NodeProperty,
-        pixel_utils::{ClearMode, render_to_surface_ephemeral},
-        source::text_layout::{TextLayoutStyle, build_paragraph, resolved_max_width},
-    },
-    render::RenderContext,
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
 };
-use lumen_macros::{Node, node_impl};
+
+use crate::error::{LumenError, RenderError};
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
+};
+use crate::node::{NodeId, NodeProperty, PortRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(i64)]
 pub enum TextFontStyle {
-    Normal,
-    Italic,
-    Oblique,
+    Normal = 0,
+    Italic = 1,
+    Oblique = 2,
 }
 
 impl TextFontStyle {
-    pub(crate) fn from_int(value: i64) -> Self {
+    pub fn from_int(value: i64) -> Self {
         match value {
             1 => Self::Italic,
             2 => Self::Oblique,
@@ -29,15 +28,16 @@ impl TextFontStyle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
 pub enum TextAlignmentHorizontal {
-    Left,
-    Center,
-    Right,
-    Justify,
+    Left = 0,
+    Center = 1,
+    Right = 2,
+    Justify = 3,
 }
 
 impl TextAlignmentHorizontal {
-    fn from_int(value: i64) -> Self {
+    pub fn from_int(value: i64) -> Self {
         match value {
             1 => Self::Center,
             2 => Self::Right,
@@ -48,14 +48,15 @@ impl TextAlignmentHorizontal {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
 pub enum TextAlignmentVertical {
-    Top,
-    Middle,
-    Bottom,
+    Top = 0,
+    Middle = 1,
+    Bottom = 2,
 }
 
 impl TextAlignmentVertical {
-    fn from_int(value: i64) -> Self {
+    pub fn from_int(value: i64) -> Self {
         match value {
             1 => Self::Middle,
             2 => Self::Bottom,
@@ -64,42 +65,34 @@ impl TextAlignmentVertical {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TextAlignment {
-    pub horizontal: TextAlignmentHorizontal,
-    pub vertical: TextAlignmentVertical,
-}
-
-impl Default for TextAlignment {
-    fn default() -> Self {
-        Self {
-            horizontal: TextAlignmentHorizontal::Left,
-            vertical: TextAlignmentVertical::Top,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Node)]
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "text",
+    label = "Text",
+    description = "Produces a text raster source.",
+    category = "source"
+)]
 pub struct Text {
     pub id: NodeId,
-
-    #[property(expected = String)]
+    #[property(kind = "string")]
     pub content: NodeProperty,
-    #[property(expected = String)]
+    #[property(kind = "string")]
     pub font_family: NodeProperty,
-    #[property(expected = Float)]
+    #[property(kind = "float")]
     pub font_size: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub font_weight: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub font_style: NodeProperty,
-    #[property(expected = Float)]
+    #[property(kind = "float")]
     pub max_width: NodeProperty,
-    #[property(expected = Color)]
+    #[property(kind = "vec2")]
+    pub position: NodeProperty,
+    #[property(kind = "color")]
     pub color: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub alignment_horizontal: NodeProperty,
-    #[property(expected = Int)]
+    #[property(kind = "int")]
     pub alignment_vertical: NodeProperty,
 }
 
@@ -108,74 +101,243 @@ impl Default for Text {
         Self {
             id: NodeId::new(0),
             content: NodeProperty::String(String::new()),
-            font_family: NodeProperty::String("sans-serif".to_string()),
+            font_family: NodeProperty::String(lumen_text::DEFAULT_FONT_FAMILY.to_string()),
             font_size: NodeProperty::Float(16.0),
             font_weight: NodeProperty::Int(400),
-            font_style: NodeProperty::Int(0),
+            font_style: NodeProperty::Int(TextFontStyle::Normal as i64),
             max_width: NodeProperty::Float(0.0),
+            position: NodeProperty::Vec2((0.0, 0.0)),
             color: NodeProperty::Color([255, 255, 255, 255]),
-            alignment_horizontal: NodeProperty::Int(0),
-            alignment_vertical: NodeProperty::Int(0),
+            alignment_horizontal: NodeProperty::Int(TextAlignmentHorizontal::Left as i64),
+            alignment_vertical: NodeProperty::Int(TextAlignmentVertical::Top as i64),
         }
     }
 }
 
-#[node_impl]
-impl Text {
-    #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
-        let content = self.resolve_content(ctx)?;
-        let font_family = self.resolve_font_family(ctx)?;
-        let font_size = self.resolve_font_size(ctx)? as f32;
-        let font_weight = self.resolve_font_weight(ctx)? as i32;
-        let font_style = TextFontStyle::from_int(self.resolve_font_style(ctx)?);
-        let max_width = resolved_max_width(self.resolve_max_width(ctx)? as f32);
-        let color = self.resolve_color(ctx)?;
-        let alignment = TextAlignment {
-            horizontal: TextAlignmentHorizontal::from_int(self.resolve_alignment_horizontal(ctx)?),
-            vertical: TextAlignmentVertical::from_int(self.resolve_alignment_vertical(ctx)?),
-        };
-
-        let layout_width = max_width
-            .unwrap_or(ctx.renderer.composition.render_settings.width as f32)
-            .clamp(1.0, u32::MAX as f32);
-        let text_style = TextLayoutStyle::new(font_family, font_size, font_weight, font_style);
-        let mut paragraph: Paragraph =
-            build_paragraph(&content, &text_style, color, alignment.horizontal);
-        paragraph.layout(layout_width);
-
-        let rendered_width = if max_width.is_some() {
-            paragraph.longest_line()
-        } else {
-            paragraph.max_intrinsic_width()
-        }
-        .max(1.0)
-        .min(layout_width);
-
-        let horizontal_offset = match alignment.horizontal {
-            TextAlignmentHorizontal::Left | TextAlignmentHorizontal::Justify => 0.0,
-            TextAlignmentHorizontal::Center => ((layout_width - rendered_width) * 0.5).max(0.0),
-            TextAlignmentHorizontal::Right => (layout_width - rendered_width).max(0.0),
-        };
-
-        let width = rendered_width.ceil().max(1.0) as u32;
-        let height = paragraph.height().ceil().max(1.0) as u32;
-        let vertical_offset = match alignment.vertical {
-            TextAlignmentVertical::Top => 0.0,
-            TextAlignmentVertical::Middle => (height as f32 - paragraph.height()).max(0.0) * 0.5,
-            TextAlignmentVertical::Bottom => (height as f32 - paragraph.height()).max(0.0),
-        };
-        render_to_surface_ephemeral(
-            width,
-            height,
-            ctx,
-            RectI::from_size(width, height),
-            RectI::from_size(width, height),
-            AlphaMode::Premultiplied,
-            ClearMode::Transparent,
-            |canvas| {
-                paragraph.paint(canvas, (-horizontal_offset, vertical_offset));
-            },
-        )
+impl GpuCompileNode for Text {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        crate::node::vector::renderer::VectorRenderer::new(ctx).compile_text(self, port)
     }
+}
+
+impl GpuFrameBindNode for Text {
+    fn bind_gpu_frame(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        binding: &FrameBinding,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        let FrameBinding::Text {
+            node_id,
+            content,
+            font_family,
+            font_size,
+            font_weight,
+            font_style,
+            max_width,
+            position,
+            color,
+            alignment_horizontal,
+            alignment_vertical,
+            output_texture: _output_texture,
+            atlas_texture,
+            globals_buffer,
+            instances_buffer,
+            atlas_size,
+            max_glyphs,
+            size,
+        } = binding
+        else {
+            return Ok(());
+        };
+
+        let content =
+            content.resolve_string(*node_id, "content", &ctx.expr_context(*node_id, "content"))?;
+        let font_family = font_family.resolve_string(
+            *node_id,
+            "font_family",
+            &ctx.expr_context(*node_id, "font_family"),
+        )?;
+        let color = color.resolve_color(*node_id, "color", &ctx.expr_context(*node_id, "color"))?;
+        let (position_x, position_y) = position.resolve_vec2(
+            *node_id,
+            "position",
+            &ctx.expr_context(*node_id, "position"),
+        )?;
+        let font_size = font_size.resolve_float(
+            *node_id,
+            "font_size",
+            &ctx.expr_context(*node_id, "font_size"),
+        )? as f32;
+        let max_width = max_width.resolve_float(
+            *node_id,
+            "max_width",
+            &ctx.expr_context(*node_id, "max_width"),
+        )? as f32;
+        let alignment_horizontal =
+            TextAlignmentHorizontal::from_int(alignment_horizontal.resolve_int(
+                *node_id,
+                "alignment_horizontal",
+                &ctx.expr_context(*node_id, "alignment_horizontal"),
+            )?);
+        let alignment_vertical = TextAlignmentVertical::from_int(alignment_vertical.resolve_int(
+            *node_id,
+            "alignment_vertical",
+            &ctx.expr_context(*node_id, "alignment_vertical"),
+        )?);
+        let font_weight = font_weight.resolve_int(
+            *node_id,
+            "font_weight",
+            &ctx.expr_context(*node_id, "font_weight"),
+        )?;
+        let font_style = TextFontStyle::from_int(font_style.resolve_int(
+            *node_id,
+            "font_style",
+            &ctx.expr_context(*node_id, "font_style"),
+        )?);
+
+        let mut request = lumen_text::TextLayoutRequest::new(content.clone());
+        request.font_family = font_family.clone();
+        request.font_size = font_size;
+        request.font_weight = font_weight.clamp(1, 1000) as u16;
+        request.font_style = match font_style {
+            TextFontStyle::Italic => lumen_text::TextFontStyle::Italic,
+            TextFontStyle::Oblique => lumen_text::TextFontStyle::Oblique,
+            TextFontStyle::Normal => lumen_text::TextFontStyle::Normal,
+        };
+        request.max_width = (max_width > 0.0).then_some(max_width);
+        request.origin = [position_x as f32, position_y as f32];
+        let color_f32 = rgba8_to_f32(color);
+        request.color = color_f32;
+        request.align = match alignment_horizontal {
+            TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
+            TextAlignmentHorizontal::Right => lumen_text::TextAlign::Right,
+            TextAlignmentHorizontal::Justify => lumen_text::TextAlign::Justified,
+            TextAlignmentHorizontal::Left => lumen_text::TextAlign::Left,
+        };
+
+        let cache_key = TextCacheKey {
+            content,
+            font_family,
+            font_size_bits: font_size.to_bits(),
+            font_weight: request.font_weight,
+            font_style,
+            max_width_bits: max_width.to_bits(),
+            position_x_bits: request.origin[0].to_bits(),
+            position_y_bits: request.origin[1].to_bits(),
+            color,
+            alignment_horizontal,
+            alignment_vertical,
+            atlas_width: atlas_size.width,
+            atlas_height: atlas_size.height,
+            output_width: size.width,
+            output_height: size.height,
+            max_glyphs: *max_glyphs,
+        };
+        if text_cache()?
+            .get(&node_id.0)
+            .is_some_and(|cached| cached == &cache_key)
+        {
+            return Ok(());
+        }
+
+        let mut text_system = text_system()?;
+        let measurement = text_system.measure(&request);
+        request.origin[1] = match alignment_vertical {
+            TextAlignmentVertical::Top => request.origin[1],
+            TextAlignmentVertical::Middle => request.origin[1] - measurement.height * 0.5,
+            TextAlignmentVertical::Bottom => request.origin[1] - measurement.height,
+        };
+        let layout = text_system.layout(&request);
+        let atlas = text_system.render_alpha_atlas(
+            &layout,
+            lumen_text::AtlasConfig {
+                width: atlas_size.width,
+                height: atlas_size.height,
+                px_range: 1,
+            },
+            *max_glyphs,
+        );
+        let globals = lumen_text::GpuTextGlobals {
+            target_size: [size.width as f32, size.height as f32],
+            px_range: 1.0,
+            glyph_count: atlas.glyph_count as u32,
+        };
+
+        bound.write_buffer(*globals_buffer, 0, bytemuck::bytes_of(&globals));
+        if !atlas.instances.is_empty() {
+            bound.write_buffer(*instances_buffer, 0, bytemuck::cast_slice(&atlas.instances));
+        }
+        bound.write_texture_rgba8(
+            *atlas_texture,
+            atlas.pixels,
+            atlas_size.width * 4,
+            atlas_size.height,
+        );
+        text_cache()?.insert(node_id.0, cache_key);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextCacheKey {
+    content: String,
+    font_family: String,
+    font_size_bits: u32,
+    font_weight: u16,
+    font_style: TextFontStyle,
+    max_width_bits: u32,
+    position_x_bits: u32,
+    position_y_bits: u32,
+    color: [u8; 4],
+    alignment_horizontal: TextAlignmentHorizontal,
+    alignment_vertical: TextAlignmentVertical,
+    atlas_width: u32,
+    atlas_height: u32,
+    output_width: u32,
+    output_height: u32,
+    max_glyphs: usize,
+}
+
+fn text_system() -> crate::Result<std::sync::MutexGuard<'static, lumen_text::TextSystem>> {
+    static TEXT_SYSTEM: OnceLock<Mutex<lumen_text::TextSystem>> = OnceLock::new();
+    TEXT_SYSTEM
+        .get_or_init(|| Mutex::new(lumen_text::TextSystem::new()))
+        .lock()
+        .map_err(|_| {
+            LumenError::Render(RenderError::Gpu {
+                details: "text system lock was poisoned".to_string(),
+            })
+        })
+}
+
+fn text_cache() -> crate::Result<std::sync::MutexGuard<'static, HashMap<u64, TextCacheKey>>> {
+    static TEXT_CACHE: OnceLock<Mutex<HashMap<u64, TextCacheKey>>> = OnceLock::new();
+    TEXT_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| {
+            LumenError::Render(RenderError::Gpu {
+                details: "text cache lock was poisoned".to_string(),
+            })
+        })
+}
+
+pub(crate) fn clear_text_cache_for(node_id: NodeId) {
+    if let Ok(mut cache) = text_cache() {
+        cache.remove(&node_id.0);
+    }
+}
+
+fn rgba8_to_f32(color: [u8; 4]) -> [f32; 4] {
+    [
+        f32::from(color[0]) / 255.0,
+        f32::from(color[1]) / 255.0,
+        f32::from(color[2]) / 255.0,
+        f32::from(color[3]) / 255.0,
+    ]
 }

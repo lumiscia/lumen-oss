@@ -1,28 +1,30 @@
-use crate::{
-    error::{LumenError, PropertyError},
-    gpu_image::GpuImageFrame,
-    node::{
-        NodeId, NodeProperty, PortRef,
-        processing::gpu_shader::{ShaderUniform, apply_runtime_shader},
-    },
-    render::RenderContext,
-};
-use lumen_macros::{Node, node_impl};
+use crate::node::{NodeId, NodeProperty, PortRef};
 
-#[derive(Debug, Clone, Node)]
+use crate::gpu::{
+    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
+    RasterHandle, compiler,
+};
+
+pub(crate) const SHADER: &str = include_str!("channel_shuffle.wgsl");
+
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(
+    kind = "channel_shuffle",
+    label = "Channel Shuffle",
+    description = "Remaps source raster color channels.",
+    category = "processing"
+)]
 pub struct ChannelShuffle {
     pub id: NodeId,
-
-    #[property(expected = String)]
+    #[property(kind = "string")]
     pub red: NodeProperty,
-    #[property(expected = String)]
+    #[property(kind = "string")]
     pub green: NodeProperty,
-    #[property(expected = String)]
+    #[property(kind = "string")]
     pub blue: NodeProperty,
-    #[property(expected = String)]
+    #[property(kind = "string")]
     pub alpha: NodeProperty,
-
-    #[input(kind = Raster)]
+    #[input()]
     pub source: PortRef,
 }
 
@@ -39,180 +41,81 @@ impl Default for ChannelShuffle {
     }
 }
 
-#[node_impl]
-impl ChannelShuffle {
-    #[output(port = "output", kind = Raster)]
-    fn eval_output(&self, ctx: &mut RenderContext) -> crate::Result<GpuImageFrame> {
-        let selectors = [
-            parse_selector(self.id, "red", &self.resolve_red(ctx)?)?,
-            parse_selector(self.id, "green", &self.resolve_green(ctx)?)?,
-            parse_selector(self.id, "blue", &self.resolve_blue(ctx)?)?,
-            parse_selector(self.id, "alpha", &self.resolve_alpha(ctx)?)?,
-        ];
-        let source_result = ctx.eval(&self.source)?;
-        let source = source_result.as_raster()?;
-        let selector_indices = selectors.map(|selector| selector.shader_index());
-        let selector_values = selectors.map(|selector| selector.shader_value());
-
-        apply_runtime_shader(
-            source,
-            CHANNEL_SHUFFLE_SHADER,
-            &[
-                ShaderUniform {
-                    name: "selector_indices",
-                    values: &selector_indices,
-                },
-                ShaderUniform {
-                    name: "selector_values",
-                    values: &selector_values,
-                },
-            ],
-            source.alpha_mode(),
+impl GpuCompileNode for ChannelShuffle {
+    fn compile_gpu(
+        &self,
+        ctx: &mut crate::gpu::CompileContext<'_>,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
-            "ChannelShuffle",
-            ctx.frame,
-            ctx,
-        )
+            &self.source,
+            port,
+            "channel-shuffle",
+            SHADER,
+            std::mem::size_of::<compiler::ChannelShuffleParams>() as u64,
+        )?;
+        ctx.push_frame_binding(FrameBinding::ChannelShuffle {
+            node_id: self.id,
+            red: self.red.clone(),
+            green: self.green.clone(),
+            blue: self.blue.clone(),
+            alpha: self.alpha.clone(),
+            buffer: params,
+        });
+        Ok(CompiledOutput::Raster(RasterHandle {
+            texture,
+            domain: source.domain,
+            metadata: source.metadata,
+        }))
     }
 }
 
-const CHANNEL_SHUFFLE_SHADER: &str = r#"
-uniform shader source;
-uniform float selector_indices[4];
-uniform float selector_values[4];
-
-float select_channel(float4 color, float selectorIndex, float selectorValue) {
-    if (selectorIndex < 0.5) {
-        return color.r;
-    }
-    if (selectorIndex < 1.5) {
-        return color.g;
-    }
-    if (selectorIndex < 2.5) {
-        return color.b;
-    }
-    if (selectorIndex < 3.5) {
-        return color.a;
-    }
-    return selectorValue;
-}
-
-half4 main(float2 coord) {
-    half4 color = source.eval(coord);
-    float4 rgba = float4(color);
-    return half4(
-        select_channel(rgba, selector_indices[0], selector_values[0]),
-        select_channel(rgba, selector_indices[1], selector_values[1]),
-        select_channel(rgba, selector_indices[2], selector_values[2]),
-        select_channel(rgba, selector_indices[3], selector_values[3])
-    );
-}
-"#;
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum ChannelSelector {
-    Red,
-    Green,
-    Blue,
-    Alpha,
-    Constant(u8),
-}
-
-impl ChannelSelector {
-    fn shader_index(self) -> f32 {
-        match self {
-            Self::Red => 0.0,
-            Self::Green => 1.0,
-            Self::Blue => 2.0,
-            Self::Alpha => 3.0,
-            Self::Constant(_) => 4.0,
-        }
-    }
-
-    fn shader_value(self) -> f32 {
-        match self {
-            Self::Constant(value) => f32::from(value) / 255.0,
-            _ => 0.0,
-        }
-    }
-}
-
-fn parse_selector(
-    node_id: NodeId,
-    property_path: &str,
-    spec: &str,
-) -> crate::Result<ChannelSelector> {
-    let normalized = spec.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "r" | "red" => Ok(ChannelSelector::Red),
-        "g" | "green" => Ok(ChannelSelector::Green),
-        "b" | "blue" => Ok(ChannelSelector::Blue),
-        "a" | "alpha" => Ok(ChannelSelector::Alpha),
-        "zero" => Ok(ChannelSelector::Constant(0)),
-        "one" => Ok(ChannelSelector::Constant(255)),
-        _ => normalized
-            .parse::<f32>()
-            .ok()
-            .map(|value| {
-                if value <= 1.0 {
-                    ChannelSelector::Constant((value.clamp(0.0, 1.0) * 255.0).round() as u8)
-                } else {
-                    ChannelSelector::Constant(value.clamp(0.0, 255.0).round() as u8)
-                }
-            })
-            .ok_or_else(|| invalid_selector(node_id, property_path)),
-    }
-}
-
-fn invalid_selector(node_id: NodeId, property_path: &str) -> LumenError {
-    PropertyError::InvalidType {
-        node_id,
-        property_path: property_path.to_string(),
-        expected: "channel name or numeric constant",
-        actual: "String",
-    }
-    .into()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{gpu_image::AlphaMode, node::processing::test_support};
-    #[test]
-    fn channel_shuffle_sksl_maps_channels_and_constants() {
-        let source = test_support::frame_from_pixel([10, 20, 30, 40], AlphaMode::Premultiplied);
+impl GpuFrameBindNode for ChannelShuffle {
+    fn bind_gpu_frame(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        binding: &FrameBinding,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()> {
+        let FrameBinding::ChannelShuffle {
+            node_id,
+            red,
+            green,
+            blue,
+            alpha,
+            buffer,
+        } = binding
+        else {
+            return Ok(());
+        };
         let selectors = [
-            ChannelSelector::Blue,
-            ChannelSelector::Green,
-            ChannelSelector::Red,
-            ChannelSelector::Constant(128),
+            compiler::channel_selector(
+                *node_id,
+                "red",
+                &red.resolve_string(*node_id, "red", &ctx.expr_context(*node_id, "red"))?,
+            )?,
+            compiler::channel_selector(
+                *node_id,
+                "green",
+                &green.resolve_string(*node_id, "green", &ctx.expr_context(*node_id, "green"))?,
+            )?,
+            compiler::channel_selector(
+                *node_id,
+                "blue",
+                &blue.resolve_string(*node_id, "blue", &ctx.expr_context(*node_id, "blue"))?,
+            )?,
+            compiler::channel_selector(
+                *node_id,
+                "alpha",
+                &alpha.resolve_string(*node_id, "alpha", &ctx.expr_context(*node_id, "alpha"))?,
+            )?,
         ];
-        let selector_indices = selectors.map(|selector| selector.shader_index());
-        let selector_values = selectors.map(|selector| selector.shader_value());
-
-        let output = test_support::with_test_context(1, 1, |ctx| {
-            apply_runtime_shader(
-                &source,
-                CHANNEL_SHUFFLE_SHADER,
-                &[
-                    ShaderUniform {
-                        name: "selector_indices",
-                        values: &selector_indices,
-                    },
-                    ShaderUniform {
-                        name: "selector_values",
-                        values: &selector_values,
-                    },
-                ],
-                source.alpha_mode(),
-                NodeId::new(1),
-                "ChannelShuffle",
-                ctx.frame,
-                ctx,
-            )
-        })
-        .expect("shader output");
-
-        assert_eq!(test_support::read_first_pixel(&output), [30, 20, 10, 128]);
+        let params = compiler::ChannelShuffleParams {
+            selector_indices: selectors.map(|selector| selector.index),
+            selector_values: selectors.map(|selector| selector.value),
+        };
+        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
     }
 }
