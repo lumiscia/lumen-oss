@@ -555,15 +555,14 @@ impl LumenPreviewController {
         width: u32,
         height: u32,
         frame_count: u32,
+        fps: f32,
     ) -> Result<(), JsValue> {
         if width == 0 || height == 0 {
             return Err(JsValue::from_str("video dimensions must be > 0"));
         }
-        let fps = self
-            .state
-            .try_borrow()
-            .map(|state| state.fps as f32)
-            .unwrap_or(30.0);
+        if !fps.is_finite() || fps <= 0.0 {
+            return Err(JsValue::from_str("video fps must be a finite value > 0"));
+        }
         self.media
             .set_video_metadata(
                 stream_id.to_string(),

@@ -476,9 +476,13 @@ impl LumenMediaStore {
         width: u32,
         height: u32,
         frame_count: u32,
+        fps: f32,
     ) -> Result<(), JsValue> {
         if width == 0 || height == 0 {
             return Err(JsValue::from_str("video dimensions must be > 0"));
+        }
+        if !fps.is_finite() || fps <= 0.0 {
+            return Err(JsValue::from_str("video fps must be a finite value > 0"));
         }
         self.store
             .set_video_metadata(
@@ -487,7 +491,7 @@ impl LumenMediaStore {
                     width,
                     height,
                     frame_count,
-                    fps: 30.0,
+                    fps,
                 },
             )
             .map_err(JsValue::from_str)

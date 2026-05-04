@@ -112,7 +112,13 @@ export interface LumenMediaTarget {
   hasImage(imageId: string): boolean;
   hasVideoFrame(streamId: string, frame: number): boolean;
   setImage(imageId: string, width: number, height: number, rgba: Uint8Array): void;
-  setVideoMetadata(streamId: string, width: number, height: number, frameCount: number): void;
+  setVideoMetadata(
+    streamId: string,
+    width: number,
+    height: number,
+    frameCount: number,
+    fps: number,
+  ): void;
   setVideoFrame(
     streamId: string,
     frame: number,
