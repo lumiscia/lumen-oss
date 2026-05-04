@@ -329,7 +329,51 @@ pub fn render_index_dts(manifest: &MetaManifest) -> Result<String> {
         .collect::<Vec<_>>()
         .join(" | ");
     Ok(format!(
-        "export type NodeKind = {kinds};\nexport declare const NODE_KINDS: readonly NodeKind[];\nexport declare const NODE_SPECS: Readonly<Record<NodeKind, unknown>>;\n"
+        r#"export type NodeKind = {kinds};
+export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
+export type NodePortKind = "raster_frame" | "vector";
+export type NodePropertyKind = "bool" | "color" | "float" | "int" | "string" | "vec2";
+export type NodeLiteralValue = boolean | number | string | readonly [number, number] | readonly [number, number, number, number];
+
+export interface NodeInputPortSpec {{
+  readonly name: string;
+  readonly kind: NodePortKind;
+  readonly optional: boolean;
+  readonly variadic: boolean;
+}}
+
+export interface NodeOutputPortSpec {{
+  readonly name: string;
+  readonly kind: NodePortKind;
+}}
+
+export interface NodePropertySpec {{
+  readonly name: string;
+  readonly kind: NodePropertyKind;
+  readonly defaultValue: NodeLiteralValue;
+}}
+
+export interface NodeSpec {{
+  readonly kind: NodeKind;
+  readonly label: string;
+  readonly description: string;
+  readonly category: NodeCategory;
+  readonly inputs: readonly NodeInputPortSpec[];
+  readonly outputs: readonly NodeOutputPortSpec[];
+  readonly properties: readonly NodePropertySpec[];
+  readonly defaultProperties: Readonly<Record<string, NodeLiteralValue>>;
+}}
+
+export interface MetaManifest {{
+  readonly schemaVersion: number;
+  readonly nodeKinds: readonly NodeKind[];
+  readonly nodeSpecs: Readonly<Record<NodeKind, NodeSpec>>;
+}}
+
+export declare const NODE_SCHEMA: MetaManifest;
+export declare const NODE_KINDS: readonly NodeKind[];
+export declare const NODE_SPECS: Readonly<Record<NodeKind, NodeSpec>>;
+"#
     ))
 }
 
