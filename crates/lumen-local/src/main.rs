@@ -256,11 +256,12 @@ impl AudioResolver for SharedAudioResolver {
 
 impl LumenFfmpegEncoder {
     fn create(output: &Path, width: u32, height: u32, fps: f32, encoder: &str) -> Result<Self> {
-        let mut config = VideoEncoderConfig::h264_rgba(width, height, fps.round().max(1.0) as u32);
-        config.codec = match encoder {
+        let codec = match encoder {
             "hevc" | "hevc_videotoolbox" | "libx265" => VideoCodec::Hevc,
             _ => VideoCodec::H264,
         };
+        let mut config =
+            VideoEncoderConfig::cpu_rgba(width, height, fps.round().max(1.0) as u32, codec);
         config.encoder_name = Some(encoder.to_string());
         config.bit_rate = 14_000_000;
         let (frame_tx, frame_rx) = mpsc::sync_channel::<EncoderFrame>(ENCODER_FRAME_QUEUE_CAPACITY);
@@ -699,16 +700,16 @@ fn render_video_gpu_videotoolbox(
         .ok_or_else(|| anyhow!("composition did not compile"))?
         .output;
 
-    let mut config = VideoEncoderConfig::h264_rgba(
+    let mut config = VideoEncoderConfig::cpu_rgba(
         width,
         height,
         composition.timeline.fps.round().max(1.0) as u32,
+        if encoder.starts_with("hevc") {
+            VideoCodec::Hevc
+        } else {
+            VideoCodec::H264
+        },
     );
-    config.codec = if encoder.starts_with("hevc") {
-        VideoCodec::Hevc
-    } else {
-        VideoCodec::H264
-    };
     config.mode = EncodeMode::GpuTexture(GpuBackend::Metal);
     config.bit_rate = 14_000_000;
 

@@ -15,6 +15,7 @@ embed-roboto = []
 webgl = []
 metal = ["lumen-ffmpeg?/metal"]
 vulkan = ["lumen-ffmpeg?/vulkan"]
+cuda = ["lumen-ffmpeg?/cuda"]
 
 [dependencies]
 thiserror = "2.0.18"

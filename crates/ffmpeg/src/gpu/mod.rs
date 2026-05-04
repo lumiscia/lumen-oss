@@ -1,54 +1,40 @@
+#[cfg(feature = "cuda")]
+pub mod cuda;
 #[cfg(feature = "metal")]
 pub mod metal;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;
 
-#[cfg(feature = "metal")]
-use std::ptr::NonNull;
-
-#[cfg(feature = "metal")]
-use objc2::rc::Retained;
-#[cfg(feature = "metal")]
-use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFType};
-
-#[cfg(feature = "metal")]
-use crate::{FfmpegError, Result};
-#[cfg(feature = "metal")]
-use objc2_core_video::{
-    CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBuffer,
-    CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane, CVPixelBufferGetPixelFormatType,
-    CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth, CVPixelBufferGetWidthOfPlane,
-    CVPixelBufferPool, kCVPixelBufferHeightKey, kCVPixelBufferIOSurfacePropertiesKey,
-    kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey,
-    kCVPixelFormatType_32BGRA, kCVPixelFormatType_32RGBA, kCVReturnSuccess,
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+pub use cuda::{
+    CudaContext, CudaDeviceAllocation, CudaDriver, ImportedCudaExternalImage,
+    import_owned_vulkan_opaque_fd_image, import_vulkan_opaque_fd_image,
 };
+#[cfg(feature = "metal")]
+pub use metal::{
+    MetalDecodedFrame, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache,
+    Objc2MetalDevice, Objc2MetalTexture,
+};
+#[cfg(feature = "vulkan")]
+pub use vulkan::VulkanVideoFrame;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuBackend {
+    Cuda,
     Metal,
     Vulkan,
 }
 
-#[cfg(feature = "metal")]
-pub type Objc2MetalTexture = objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>;
-
-#[cfg(feature = "metal")]
-pub type Objc2MetalDevice = objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>;
-
 #[derive(Debug)]
 pub enum GpuVideoInput<'a> {
+    #[cfg(feature = "cuda")]
+    Cuda(&'a CudaVideoFrame),
     #[cfg(feature = "metal")]
     Metal(&'a Objc2MetalTexture),
     #[cfg(feature = "metal")]
     MetalPixelBuffer(&'a MetalPixelBufferFrame),
     #[cfg(feature = "vulkan")]
-    Vulkan {
-        image: ash::vk::Image,
-        image_view: ash::vk::ImageView,
-        memory: ash::vk::DeviceMemory,
-        format: ash::vk::Format,
-        extent: ash::vk::Extent3D,
-    },
+    Vulkan(&'a VulkanVideoFrame),
     #[doc(hidden)]
     __NonExhaustive(std::marker::PhantomData<&'a ()>),
 }
@@ -56,16 +42,20 @@ pub enum GpuVideoInput<'a> {
 impl<'a> GpuVideoInput<'a> {
     pub fn backend(&self) -> GpuBackend {
         match self {
+            #[cfg(feature = "cuda")]
+            Self::Cuda(_) => GpuBackend::Cuda,
             #[cfg(feature = "metal")]
             Self::Metal(_) | Self::MetalPixelBuffer(_) => GpuBackend::Metal,
             #[cfg(feature = "vulkan")]
-            Self::Vulkan { .. } => GpuBackend::Vulkan,
+            Self::Vulkan(_) => GpuBackend::Vulkan,
             Self::__NonExhaustive(_) => unreachable!("hidden GPU frame variant"),
         }
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
+            #[cfg(feature = "cuda")]
+            Self::Cuda(frame) => frame.dimensions(),
             #[cfg(feature = "metal")]
             Self::Metal(texture) => {
                 use objc2_metal::MTLTexture;
@@ -75,7 +65,7 @@ impl<'a> GpuVideoInput<'a> {
             #[cfg(feature = "metal")]
             Self::MetalPixelBuffer(frame) => frame.dimensions(),
             #[cfg(feature = "vulkan")]
-            Self::Vulkan { extent, .. } => (extent.width, extent.height),
+            Self::Vulkan(frame) => frame.dimensions(),
             Self::__NonExhaustive(_) => unreachable!("hidden GPU frame variant"),
         }
     }
@@ -91,34 +81,38 @@ impl<'a> GpuVideoInput<'a> {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum GpuVideoFrame {
+    #[cfg(feature = "cuda")]
+    Cuda(CudaVideoFrame),
     #[cfg(feature = "metal")]
     Metal(MetalDecodedFrame),
+    #[cfg(feature = "vulkan")]
+    Vulkan(VulkanVideoFrame),
+    #[doc(hidden)]
+    __NonExhaustive,
 }
 
 impl GpuVideoFrame {
     pub fn backend(&self) -> GpuBackend {
-        #[cfg(feature = "metal")]
-        {
-            match self {
-                Self::Metal(_) => GpuBackend::Metal,
-            }
-        }
-        #[cfg(not(feature = "metal"))]
-        {
-            match *self {}
+        match self {
+            #[cfg(feature = "cuda")]
+            Self::Cuda(_) => GpuBackend::Cuda,
+            #[cfg(feature = "metal")]
+            Self::Metal(_) => GpuBackend::Metal,
+            #[cfg(feature = "vulkan")]
+            Self::Vulkan(_) => GpuBackend::Vulkan,
+            Self::__NonExhaustive => unreachable!("hidden GPU frame variant"),
         }
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
-        #[cfg(feature = "metal")]
-        {
-            match self {
-                Self::Metal(frame) => frame.dimensions(),
-            }
-        }
-        #[cfg(not(feature = "metal"))]
-        {
-            match *self {}
+        match self {
+            #[cfg(feature = "cuda")]
+            Self::Cuda(frame) => frame.dimensions(),
+            #[cfg(feature = "metal")]
+            Self::Metal(frame) => frame.dimensions(),
+            #[cfg(feature = "vulkan")]
+            Self::Vulkan(frame) => frame.dimensions(),
+            Self::__NonExhaustive => unreachable!("hidden GPU frame variant"),
         }
     }
 
@@ -130,447 +124,52 @@ impl GpuVideoFrame {
     }
 }
 
-#[cfg(feature = "metal")]
-pub struct MetalTextureCache {
-    inner: CFRetained<CVMetalTextureCache>,
-}
-
-#[cfg(feature = "metal")]
-impl std::fmt::Debug for MetalTextureCache {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("MetalTextureCache")
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "metal")]
-impl MetalTextureCache {
-    pub fn create(device: &Objc2MetalDevice) -> Result<Self> {
-        let mut cache = std::ptr::null_mut();
-        let status = unsafe {
-            CVMetalTextureCache::create(
-                None,
-                None,
-                device,
-                None,
-                NonNull::new_unchecked(&mut cache),
-            )
-        };
-        if status != kCVReturnSuccess {
-            return Err(FfmpegError::new(
-                "CVMetalTextureCacheCreate",
-                format!("CoreVideo returned {status}"),
-            )
-            .with_backend(GpuBackend::Metal));
-        }
-        let cache = NonNull::new(cache).ok_or_else(|| {
-            FfmpegError::new(
-                "CVMetalTextureCacheCreate",
-                "CoreVideo returned a null cache",
-            )
-            .with_backend(GpuBackend::Metal)
-        })?;
-        Ok(Self {
-            inner: unsafe { CFRetained::from_raw(cache) },
-        })
-    }
-
-    pub fn flush(&self) {
-        self.inner.flush(0);
-    }
-}
-
-#[cfg(feature = "metal")]
-pub struct MetalPixelBufferPool {
-    inner: CFRetained<CVPixelBufferPool>,
-    width: u32,
-    height: u32,
-    pixel_format: u32,
-}
-
-#[cfg(feature = "metal")]
-impl std::fmt::Debug for MetalPixelBufferPool {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("MetalPixelBufferPool")
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .field("pixel_format", &self.pixel_format)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "metal")]
-impl MetalPixelBufferPool {
-    pub fn rgba8(width: u32, height: u32) -> Result<Self> {
-        Self::create(width, height, kCVPixelFormatType_32RGBA)
-    }
-
-    pub fn bgra8(width: u32, height: u32) -> Result<Self> {
-        Self::create(width, height, kCVPixelFormatType_32BGRA)
-    }
-
-    pub fn create(width: u32, height: u32, pixel_format: u32) -> Result<Self> {
-        if width == 0 || height == 0 {
-            return Err(FfmpegError::new(
-                "CVPixelBufferPoolCreate",
-                "width and height must be greater than zero",
-            )
-            .with_backend(GpuBackend::Metal));
-        }
-
-        let width_value = CFNumber::new_i32(width.min(i32::MAX as u32) as i32);
-        let height_value = CFNumber::new_i32(height.min(i32::MAX as u32) as i32);
-        let pixel_format_value = CFNumber::new_i32(pixel_format as i32);
-        let metal_compatible = CFBoolean::new(true);
-        let io_surface_properties = CFDictionary::<CFType, CFType>::empty();
-        let keys: [&CFType; 5] = unsafe {
-            [
-                kCVPixelBufferWidthKey.as_ref(),
-                kCVPixelBufferHeightKey.as_ref(),
-                kCVPixelBufferPixelFormatTypeKey.as_ref(),
-                kCVPixelBufferMetalCompatibilityKey.as_ref(),
-                kCVPixelBufferIOSurfacePropertiesKey.as_ref(),
-            ]
-        };
-        let values: [&CFType; 5] = [
-            width_value.as_ref(),
-            height_value.as_ref(),
-            pixel_format_value.as_ref(),
-            metal_compatible.as_ref(),
-            io_surface_properties.as_ref(),
-        ];
-        let attributes = CFDictionary::<CFType, CFType>::from_slices(&keys, &values);
-
-        let mut pool: *mut CVPixelBufferPool = std::ptr::null_mut();
-        let status = unsafe {
-            CVPixelBufferPool::create(
-                None,
-                None,
-                Some(attributes.as_ref()),
-                NonNull::new_unchecked(&mut pool),
-            )
-        };
-        if status != kCVReturnSuccess {
-            return Err(FfmpegError::new(
-                "CVPixelBufferPoolCreate",
-                format!("CoreVideo returned {status}"),
-            )
-            .with_backend(GpuBackend::Metal));
-        }
-        let pool = NonNull::new(pool).ok_or_else(|| {
-            FfmpegError::new("CVPixelBufferPoolCreate", "CoreVideo returned a null pool")
-                .with_backend(GpuBackend::Metal)
-        })?;
-        Ok(Self {
-            inner: unsafe { CFRetained::from_raw(pool) },
-            width,
-            height,
-            pixel_format,
-        })
-    }
-
-    pub fn create_frame(&self, pts: Option<i64>) -> Result<MetalPixelBufferFrame> {
-        let mut pixel_buffer: *mut CVPixelBuffer = std::ptr::null_mut();
-        let status = unsafe {
-            CVPixelBufferPool::create_pixel_buffer(
-                None,
-                &self.inner,
-                NonNull::new_unchecked(&mut pixel_buffer),
-            )
-        };
-        if status != kCVReturnSuccess {
-            return Err(FfmpegError::new(
-                "CVPixelBufferPoolCreatePixelBuffer",
-                format!("CoreVideo returned {status}"),
-            )
-            .with_backend(GpuBackend::Metal));
-        }
-        let pixel_buffer = NonNull::new(pixel_buffer).ok_or_else(|| {
-            FfmpegError::new(
-                "CVPixelBufferPoolCreatePixelBuffer",
-                "CoreVideo returned a null pixel buffer",
-            )
-            .with_backend(GpuBackend::Metal)
-        })?;
-        Ok(unsafe { MetalPixelBufferFrame::from_retained_pixel_buffer(pixel_buffer, pts) })
-    }
-
-    pub fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    pub fn pixel_format(&self) -> u32 {
-        self.pixel_format
-    }
-}
-
-#[cfg(feature = "metal")]
-pub struct MetalPixelBufferFrame {
-    pixel_buffer: CFRetained<CVPixelBuffer>,
-    width: u32,
-    height: u32,
-    pixel_format: u32,
-    pts: Option<i64>,
-}
-
-#[cfg(feature = "metal")]
-impl std::fmt::Debug for MetalPixelBufferFrame {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("MetalPixelBufferFrame")
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .field("pixel_format", &self.pixel_format)
-            .field("pts", &self.pts)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "metal")]
-impl MetalPixelBufferFrame {
-    pub unsafe fn retain_pixel_buffer(
-        pixel_buffer: NonNull<CVPixelBuffer>,
-        pts: Option<i64>,
-    ) -> Self {
-        let pixel_buffer = unsafe { CFRetained::retain(pixel_buffer) };
-        Self::from_pixel_buffer(pixel_buffer, pts)
-    }
-
-    unsafe fn from_retained_pixel_buffer(
-        pixel_buffer: NonNull<CVPixelBuffer>,
-        pts: Option<i64>,
-    ) -> Self {
-        let pixel_buffer = unsafe { CFRetained::from_raw(pixel_buffer) };
-        Self::from_pixel_buffer(pixel_buffer, pts)
-    }
-
-    fn from_pixel_buffer(pixel_buffer: CFRetained<CVPixelBuffer>, pts: Option<i64>) -> Self {
-        let width = CVPixelBufferGetWidth(&pixel_buffer).min(u32::MAX as usize) as u32;
-        let height = CVPixelBufferGetHeight(&pixel_buffer).min(u32::MAX as usize) as u32;
-        let pixel_format = CVPixelBufferGetPixelFormatType(&pixel_buffer);
-        Self {
-            pixel_buffer,
-            width,
-            height,
-            pixel_format,
-            pts,
-        }
-    }
-
-    pub fn pixel_buffer(&self) -> &CVPixelBuffer {
-        &self.pixel_buffer
-    }
-
-    pub fn pixel_buffer_ptr(&self) -> NonNull<CVPixelBuffer> {
-        CFRetained::as_ptr(&self.pixel_buffer)
-    }
-
-    pub fn pixel_format(&self) -> u32 {
-        self.pixel_format
-    }
-
-    pub fn plane_count(&self) -> usize {
-        CVPixelBufferGetPlaneCount(&self.pixel_buffer)
-    }
-
-    pub fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    pub fn pts(&self) -> Option<i64> {
-        self.pts
-    }
-
-    pub fn create_texture(
-        &self,
-        cache: &MetalTextureCache,
-        pixel_format: objc2_metal::MTLPixelFormat,
-        plane_index: usize,
-    ) -> Result<Retained<Objc2MetalTexture>> {
-        create_metal_texture_from_pixel_buffer(
-            &self.pixel_buffer,
-            self.width,
-            self.height,
-            self.plane_count(),
-            cache,
-            pixel_format,
-            plane_index,
-        )
-    }
-}
-
-#[cfg(feature = "metal")]
-pub struct MetalDecodedFrame {
-    pixel_buffer: CFRetained<CVPixelBuffer>,
-    width: u32,
-    height: u32,
-    pixel_format: u32,
-    pts: Option<i64>,
-}
-
-#[cfg(feature = "metal")]
-impl std::fmt::Debug for MetalDecodedFrame {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("MetalDecodedFrame")
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .field("pixel_format", &self.pixel_format)
-            .field("pts", &self.pts)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "metal")]
-impl MetalDecodedFrame {
-    pub(crate) unsafe fn retain_from_video_toolbox_frame(
-        pixel_buffer: NonNull<CVPixelBuffer>,
-        pts: Option<i64>,
-    ) -> Self {
-        let pixel_buffer = unsafe { CFRetained::retain(pixel_buffer) };
-        let width = CVPixelBufferGetWidth(&pixel_buffer).min(u32::MAX as usize) as u32;
-        let height = CVPixelBufferGetHeight(&pixel_buffer).min(u32::MAX as usize) as u32;
-        let pixel_format = CVPixelBufferGetPixelFormatType(&pixel_buffer);
-        Self {
-            pixel_buffer,
-            width,
-            height,
-            pixel_format,
-            pts,
-        }
-    }
-
-    pub fn pixel_buffer(&self) -> &CVPixelBuffer {
-        &self.pixel_buffer
-    }
-
-    pub fn pixel_format(&self) -> u32 {
-        self.pixel_format
-    }
-
-    pub fn plane_count(&self) -> usize {
-        CVPixelBufferGetPlaneCount(&self.pixel_buffer)
-    }
-
-    pub fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    pub fn pts(&self) -> Option<i64> {
-        self.pts
-    }
-
-    pub fn create_texture(
-        &self,
-        cache: &MetalTextureCache,
-        pixel_format: objc2_metal::MTLPixelFormat,
-        plane_index: usize,
-    ) -> Result<Retained<Objc2MetalTexture>> {
-        create_metal_texture_from_pixel_buffer(
-            &self.pixel_buffer,
-            self.width,
-            self.height,
-            self.plane_count(),
-            cache,
-            pixel_format,
-            plane_index,
-        )
-    }
-}
-
-#[cfg(feature = "metal")]
-fn create_metal_texture_from_pixel_buffer(
-    pixel_buffer: &CVPixelBuffer,
-    width: u32,
-    height: u32,
-    plane_count: usize,
-    cache: &MetalTextureCache,
-    pixel_format: objc2_metal::MTLPixelFormat,
-    plane_index: usize,
-) -> Result<Retained<Objc2MetalTexture>> {
-    let (width, height) = if plane_count == 0 {
-        (width as usize, height as usize)
-    } else {
-        (
-            CVPixelBufferGetWidthOfPlane(pixel_buffer, plane_index),
-            CVPixelBufferGetHeightOfPlane(pixel_buffer, plane_index),
-        )
-    };
-    let mut cv_texture: *mut CVMetalTexture = std::ptr::null_mut();
-    let status = unsafe {
-        CVMetalTextureCache::create_texture_from_image(
-            None,
-            &cache.inner,
-            pixel_buffer,
-            None,
-            pixel_format,
-            width,
-            height,
-            plane_index,
-            NonNull::new_unchecked(&mut cv_texture),
-        )
-    };
-    if status != kCVReturnSuccess {
-        return Err(FfmpegError::new(
-            "CVMetalTextureCacheCreateTextureFromImage",
-            format!("CoreVideo returned {status}"),
-        )
-        .with_backend(GpuBackend::Metal));
-    }
-    let cv_texture = NonNull::new(cv_texture).ok_or_else(|| {
-        FfmpegError::new(
-            "CVMetalTextureCacheCreateTextureFromImage",
-            "CoreVideo returned a null texture",
-        )
-        .with_backend(GpuBackend::Metal)
-    })?;
-    let cv_texture = unsafe { CFRetained::from_raw(cv_texture) };
-    CVMetalTextureGetTexture(&cv_texture).ok_or_else(|| {
-        FfmpegError::new(
-            "CVMetalTextureGetTexture",
-            "CoreVideo returned a null MTLTexture",
-        )
-        .with_backend(GpuBackend::Metal)
-    })
-}
-
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_video_frame_reports_shape() {
+        use super::*;
+
+        let frame = CudaVideoFrame::from_device_ptr(0xCAFE, 1920, 1080, 8192, Some(7));
+        let input = GpuVideoInput::Cuda(&frame);
+
+        assert_eq!(input.backend(), GpuBackend::Cuda);
+        assert_eq!(input.dimensions(), (1920, 1080));
+        assert_eq!(frame.device_ptr(), 0xCAFE);
+        assert_eq!(frame.pitch(), 8192);
+        assert_eq!(frame.pts(), Some(7));
+    }
+
     #[cfg(feature = "vulkan")]
     #[test]
-    fn ash_vulkan_frame_reports_shape() {
+    fn vulkan_video_frame_reports_shape() {
         use ash::vk::Handle;
 
         use super::*;
 
-        let frame = GpuVideoInput::Vulkan {
-            image: ash::vk::Image::from_raw(11),
-            image_view: ash::vk::ImageView::from_raw(22),
-            memory: ash::vk::DeviceMemory::from_raw(33),
-            format: ash::vk::Format::R8G8B8A8_UNORM,
-            extent: ash::vk::Extent3D {
+        let frame = VulkanVideoFrame::new(
+            ash::vk::Image::from_raw(11),
+            ash::vk::ImageView::from_raw(22),
+            ash::vk::DeviceMemory::from_raw(33),
+            ash::vk::Format::R8G8B8A8_UNORM,
+            ash::vk::Extent3D {
                 width: 640,
                 height: 480,
                 depth: 1,
             },
-        };
+        );
+        let input = GpuVideoInput::Vulkan(&frame);
 
-        assert_eq!(frame.backend(), GpuBackend::Vulkan);
-        assert_eq!(frame.dimensions(), (640, 480));
-        if let GpuVideoInput::Vulkan {
-            image,
-            image_view,
-            memory,
-            format,
-            ..
-        } = frame
-        {
-            assert_eq!(image.as_raw(), 11);
-            assert_eq!(image_view.as_raw(), 22);
-            assert_eq!(memory.as_raw(), 33);
-            assert_eq!(format, ash::vk::Format::R8G8B8A8_UNORM);
-        }
+        assert_eq!(input.backend(), GpuBackend::Vulkan);
+        assert_eq!(input.dimensions(), (640, 480));
+        assert_eq!(frame.image().as_raw(), 11);
+        assert_eq!(frame.image_view().as_raw(), 22);
+        assert_eq!(frame.memory().as_raw(), 33);
+        assert_eq!(frame.format(), ash::vk::Format::R8G8B8A8_UNORM);
     }
 }
+#[cfg(feature = "cuda")]
+pub use cuda::{
+    CudaExternalMemoryHandle, CudaExternalSemaphoreHandle, CudaVideoFrame, VulkanToCudaExport,
+};

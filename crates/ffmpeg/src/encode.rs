@@ -1,8 +1,11 @@
 use std::{
     ffi::CString,
-    ptr::{self, NonNull},
+    ptr,
     time::{Duration, Instant},
 };
+
+#[cfg(feature = "metal")]
+use std::ptr::NonNull;
 
 use crate::{
     FfmpegError, Result,
@@ -10,10 +13,16 @@ use crate::{
     gpu::{GpuBackend, GpuVideoInput},
     video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec},
 };
+#[cfg(target_os = "linux")]
+use sys::SWS_BILINEAR;
+#[cfg(not(target_os = "linux"))]
+use sys::SwsFlags::SWS_BILINEAR;
 use sys::{
+    AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
     AVMediaType::AVMEDIA_TYPE_VIDEO,
-    AVPixelFormat::{AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
-    SwsFlags::SWS_BILINEAR,
+    AVPixelFormat::{
+        AV_PIX_FMT_CUDA, AV_PIX_FMT_RGBA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P,
+    },
 };
 
 #[cfg(feature = "metal")]
@@ -33,12 +42,12 @@ pub struct VideoEncoderConfig {
 }
 
 impl VideoEncoderConfig {
-    pub fn h264_rgba(width: u32, height: u32, fps: u32) -> Self {
+    pub fn cpu_rgba(width: u32, height: u32, fps: u32, codec: VideoCodec) -> Self {
         Self {
             width,
             height,
             fps,
-            codec: VideoCodec::H264,
+            codec,
             encoder_name: None,
             mode: EncodeMode::CpuUpload,
             bit_rate: 8_000_000,
@@ -48,7 +57,7 @@ impl VideoEncoderConfig {
     pub fn h264_videotoolbox(width: u32, height: u32, fps: u32) -> Self {
         Self {
             encoder_name: Some("h264_videotoolbox".to_string()),
-            ..Self::h264_rgba(width, height, fps)
+            ..Self::cpu_rgba(width, height, fps, VideoCodec::H264)
         }
     }
 }
@@ -68,6 +77,9 @@ pub fn gpu_texture_encode_support(
     backend: GpuBackend,
 ) -> GpuTextureEncodeSupport {
     let encoder_name = match (backend, codec) {
+        (GpuBackend::Cuda, VideoCodec::H264) => Some("h264_nvenc"),
+        (GpuBackend::Cuda, VideoCodec::Hevc) => Some("hevc_nvenc"),
+        (GpuBackend::Cuda, VideoCodec::Av1) => Some("av1_nvenc"),
         (GpuBackend::Metal, VideoCodec::H264) => Some("h264_videotoolbox"),
         (GpuBackend::Metal, VideoCodec::Hevc) => Some("hevc_videotoolbox"),
         (GpuBackend::Vulkan, VideoCodec::H264) => Some("h264_vulkan"),
@@ -81,15 +93,20 @@ pub fn gpu_texture_encode_support(
             Some(name) => format!("FFmpeg encoder `{name}` is unavailable"),
             None => format!("{backend:?} texture encode is unavailable for {codec:?}"),
         })
-    } else if backend == GpuBackend::Metal {
-        Some(
-            "Metal texture encode needs CVPixelBuffer-backed render targets before it can avoid readback"
-                .to_string(),
-        )
     } else {
         Some(
+            match backend {
+                GpuBackend::Cuda => {
+                    "CUDA frame encode is available; Vulkan texture encode uses external memory import plus a GPU-side copy into linear CUDA frame memory"
+                }
+                GpuBackend::Metal => {
+            "Metal texture encode needs CVPixelBuffer-backed render targets before it can avoid readback"
+            }
+                GpuBackend::Vulkan => {
             "Vulkan texture encode needs exported AVVkFrame/image interop before it can avoid readback"
-                .to_string(),
+                }
+            }
+            .to_string(),
         )
     };
 
@@ -198,6 +215,8 @@ pub struct VideoEncoder {
     context: *mut sys::AVCodecContext,
     frame: AvFrame,
     scaler: *mut sys::SwsContext,
+    _hw_device: Option<AvBufferRef>,
+    _hw_frames: Option<AvBufferRef>,
     next_pts: i64,
     mode: EncodeMode,
     gpu_telemetry: GpuEncodeTelemetry,
@@ -240,6 +259,8 @@ impl VideoEncoder {
             num: 1,
             den: config.fps as i32,
         };
+        let hw_contexts = create_encoder_hw_contexts(&config)?;
+
         unsafe {
             (*context).codec_id = config.codec.to_av_codec_id();
             (*context).codec_type = AVMEDIA_TYPE_VIDEO;
@@ -251,6 +272,7 @@ impl VideoEncoder {
                 den: 1,
             };
             (*context).pix_fmt = match config.mode {
+                EncodeMode::GpuTexture(GpuBackend::Cuda) => sys::AVPixelFormat::AV_PIX_FMT_CUDA,
                 EncodeMode::GpuTexture(GpuBackend::Metal) => AV_PIX_FMT_VIDEOTOOLBOX,
                 EncodeMode::GpuTexture(GpuBackend::Vulkan) | EncodeMode::CpuUpload => {
                     AV_PIX_FMT_YUV420P
@@ -258,6 +280,19 @@ impl VideoEncoder {
             };
             (*context).bit_rate = config.bit_rate;
             (*context).gop_size = config.fps as i32 * 2;
+            if let Some(frames) = hw_contexts
+                .as_ref()
+                .and_then(|contexts| contexts.frames.as_ref())
+            {
+                (*context).hw_frames_ctx = sys::av_buffer_ref(frames.ptr);
+                if (*context).hw_frames_ctx.is_null() {
+                    return Err(FfmpegError::new(
+                        "av_buffer_ref",
+                        "failed to reference encoder hardware frames context",
+                    )
+                    .with_backend(GpuBackend::Cuda));
+                }
+            }
             if ((*(*output.ptr).oformat).flags & sys::AVFMT_GLOBALHEADER) != 0 {
                 (*context).flags |= sys::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
             }
@@ -315,6 +350,10 @@ impl VideoEncoder {
             context,
             frame,
             scaler,
+            _hw_device: hw_contexts
+                .as_ref()
+                .and_then(|contexts| contexts.device.clone_ref()),
+            _hw_frames: hw_contexts.and_then(|contexts| contexts.frames),
             next_pts: 0,
             mode: config.mode,
             gpu_telemetry: GpuEncodeTelemetry::default(),
@@ -468,6 +507,9 @@ fn hardware_encoder_name(codec: VideoCodec, backend: GpuBackend) -> Result<&'sta
     match (backend, codec) {
         (GpuBackend::Metal, VideoCodec::H264) => Ok("h264_videotoolbox"),
         (GpuBackend::Metal, VideoCodec::Hevc) => Ok("hevc_videotoolbox"),
+        (GpuBackend::Cuda, VideoCodec::H264) => Ok("h264_nvenc"),
+        (GpuBackend::Cuda, VideoCodec::Hevc) => Ok("hevc_nvenc"),
+        (GpuBackend::Cuda, VideoCodec::Av1) => Ok("av1_nvenc"),
         (GpuBackend::Vulkan, _) => Err(FfmpegError::new(
             "VideoEncoder::create",
             format!("{backend:?} hardware texture encode is not available yet"),
@@ -535,7 +577,7 @@ impl MuxedEncoder {
 impl VideoEncoder {
     fn send_gpu_frame(
         &mut self,
-        output: &mut OutputContext,
+        _output: &mut OutputContext,
         frame: &GpuVideoInput<'_>,
     ) -> Result<()> {
         if self.mode == EncodeMode::CpuUpload {
@@ -555,7 +597,30 @@ impl VideoEncoder {
                     .record_upload_finished(&upload, started.elapsed());
                 let encode_started = Instant::now();
                 self.gpu_telemetry.record_encode_started(&upload);
-                let result = self.send_metal_pixel_buffer_frame(output, frame);
+                let result = self.send_metal_pixel_buffer_frame(_output, frame);
+                match result {
+                    Ok(()) => {
+                        self.gpu_telemetry
+                            .record_encode_finished(&upload, encode_started.elapsed());
+                        Ok(())
+                    }
+                    Err(error) => {
+                        self.gpu_telemetry.record_encode_failed(
+                            &upload,
+                            encode_started.elapsed(),
+                            error.message.clone(),
+                        );
+                        Err(error)
+                    }
+                }
+            }
+            #[cfg(feature = "cuda")]
+            GpuVideoInput::Cuda(frame) => {
+                self.gpu_telemetry
+                    .record_upload_finished(&upload, started.elapsed());
+                let encode_started = Instant::now();
+                self.gpu_telemetry.record_encode_started(&upload);
+                let result = self.send_cuda_frame(_output, frame);
                 match result {
                     Ok(()) => {
                         self.gpu_telemetry
@@ -575,7 +640,7 @@ impl VideoEncoder {
             _ => {
                 let error = FfmpegError::new(
                     "VideoEncoder::send_gpu_frame",
-                    "GPU texture encode needs a CVPixelBuffer-backed Metal frame",
+                    "GPU texture encode currently supports CVPixelBuffer-backed Metal frames only",
                 )
                 .with_backend(frame.backend());
                 self.gpu_telemetry.record_upload_failed(
@@ -586,6 +651,79 @@ impl VideoEncoder {
                 Err(error)
             }
         }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn send_cuda_frame(
+        &mut self,
+        output: &mut OutputContext,
+        frame: &crate::gpu::CudaVideoFrame,
+    ) -> Result<()> {
+        if self.mode != EncodeMode::GpuTexture(GpuBackend::Cuda) {
+            return Err(FfmpegError::new(
+                "VideoEncoder::send_cuda_frame",
+                "CUDA frames require a CUDA/NVENC hardware texture encoder",
+            )
+            .with_backend(GpuBackend::Cuda));
+        }
+        let Some(hw_frames) = self._hw_frames.as_ref() else {
+            return Err(FfmpegError::new(
+                "VideoEncoder::send_cuda_frame",
+                "CUDA/NVENC encoder was created without a CUDA hardware frames context",
+            )
+            .with_backend(GpuBackend::Cuda));
+        };
+        let (width, height) = frame.dimensions();
+        unsafe {
+            if (*self.context).width != width as i32 || (*self.context).height != height as i32 {
+                return Err(FfmpegError::new(
+                    "VideoEncoder::send_cuda_frame",
+                    format!(
+                        "CUDA frame dimensions {width}x{height} do not match encoder dimensions {}x{}",
+                        (*self.context).width,
+                        (*self.context).height,
+                    ),
+                )
+                .with_backend(GpuBackend::Cuda));
+            }
+        }
+
+        let mut av_frame = AvFrame::new()?;
+        unsafe {
+            (*av_frame.as_mut_ptr()).format = AV_PIX_FMT_CUDA as i32;
+            (*av_frame.as_mut_ptr()).width = width as i32;
+            (*av_frame.as_mut_ptr()).height = height as i32;
+            (*av_frame.as_mut_ptr()).pts = frame.pts().unwrap_or(self.next_pts);
+            (*av_frame.as_mut_ptr()).duration = 1;
+            (*av_frame.as_mut_ptr()).hw_frames_ctx = sys::av_buffer_ref(hw_frames.ptr);
+            if (*av_frame.as_mut_ptr()).hw_frames_ctx.is_null() {
+                return Err(FfmpegError::new(
+                    "av_buffer_ref",
+                    "failed to reference CUDA hardware frames context for frame",
+                )
+                .with_backend(GpuBackend::Cuda));
+            }
+
+            let data_ptr = frame.device_ptr() as usize as *mut u8;
+            (*av_frame.as_mut_ptr()).data[0] = data_ptr;
+            (*av_frame.as_mut_ptr()).linesize[0] = frame.pitch() as i32;
+            (*av_frame.as_mut_ptr()).buf[0] = sys::av_buffer_create(
+                data_ptr,
+                1,
+                Some(release_external_cuda_frame),
+                ptr::null_mut(),
+                0,
+            );
+            if (*av_frame.as_mut_ptr()).buf[0].is_null() {
+                return Err(FfmpegError::new(
+                    "av_buffer_create",
+                    "failed to create external CUDA frame lifetime reference",
+                )
+                .with_backend(GpuBackend::Cuda));
+            }
+        }
+        self.next_pts = self.next_pts.saturating_add(1);
+        self.send_frame(output, av_frame.as_ptr())
     }
 
     #[cfg(feature = "metal")]
@@ -635,10 +773,102 @@ impl VideoEncoder {
     }
 }
 
+#[cfg(feature = "cuda")]
+unsafe extern "C" fn release_external_cuda_frame(_opaque: *mut libc::c_void, _data: *mut u8) {}
+
 #[cfg(feature = "metal")]
 unsafe extern "C" fn release_cv_pixel_buffer(opaque: *mut libc::c_void, _data: *mut u8) {
     if let Some(pixel_buffer) = NonNull::new(opaque.cast::<CVPixelBuffer>()) {
         let _ = unsafe { CFRetained::<CVPixelBuffer>::from_raw(pixel_buffer) };
+    }
+}
+
+struct EncoderHwContexts {
+    device: AvBufferRef,
+    frames: Option<AvBufferRef>,
+}
+
+fn create_encoder_hw_contexts(config: &VideoEncoderConfig) -> Result<Option<EncoderHwContexts>> {
+    match config.mode {
+        EncodeMode::GpuTexture(GpuBackend::Cuda) => {
+            let device = AvBufferRef::new_hw_device(AV_HWDEVICE_TYPE_CUDA, GpuBackend::Cuda)?;
+            let frames = AvBufferRef::new_hw_frames(
+                &device,
+                GpuBackend::Cuda,
+                AV_PIX_FMT_CUDA,
+                AV_PIX_FMT_RGBA,
+                config.width,
+                config.height,
+            )?;
+            Ok(Some(EncoderHwContexts {
+                device,
+                frames: Some(frames),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+struct AvBufferRef {
+    ptr: *mut sys::AVBufferRef,
+}
+
+impl AvBufferRef {
+    fn new_hw_device(device_type: sys::AVHWDeviceType, backend: GpuBackend) -> Result<Self> {
+        let mut ptr = ptr::null_mut();
+        unsafe {
+            ffi::check(
+                sys::av_hwdevice_ctx_create(&mut ptr, device_type, ptr::null(), ptr::null_mut(), 0),
+                "av_hwdevice_ctx_create",
+            )
+            .map_err(|error| error.with_backend(backend))?;
+        }
+        Ok(Self { ptr })
+    }
+
+    fn new_hw_frames(
+        device: &Self,
+        backend: GpuBackend,
+        format: sys::AVPixelFormat,
+        sw_format: sys::AVPixelFormat,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
+        let ptr = unsafe { sys::av_hwframe_ctx_alloc(device.ptr) };
+        if ptr.is_null() {
+            return Err(FfmpegError::new(
+                "av_hwframe_ctx_alloc",
+                "failed to allocate encoder hardware frames context",
+            )
+            .with_backend(backend));
+        }
+        unsafe {
+            let frames = (*ptr).data.cast::<sys::AVHWFramesContext>();
+            (*frames).format = format;
+            (*frames).sw_format = sw_format;
+            (*frames).width = width as i32;
+            (*frames).height = height as i32;
+            (*frames).initial_pool_size = 8;
+            if let Err(error) = ffi::check(sys::av_hwframe_ctx_init(ptr), "av_hwframe_ctx_init")
+                .map_err(|error| error.with_backend(backend))
+            {
+                let mut ptr = ptr;
+                sys::av_buffer_unref(&mut ptr);
+                return Err(error);
+            }
+        }
+        Ok(Self { ptr })
+    }
+
+    fn clone_ref(&self) -> Option<Self> {
+        let ptr = unsafe { sys::av_buffer_ref(self.ptr) };
+        (!ptr.is_null()).then_some(Self { ptr })
+    }
+}
+
+impl Drop for AvBufferRef {
+    fn drop(&mut self) {
+        unsafe { sys::av_buffer_unref(&mut self.ptr) };
     }
 }
 
@@ -650,6 +880,7 @@ pub struct GpuEncodeTelemetry {
     pub encode_attempts: u64,
     pub encode_successes: u64,
     pub encode_failures: u64,
+    pub cuda_frames: u64,
     pub metal_frames: u64,
     pub vulkan_frames: u64,
     pub estimated_upload_bytes: u64,
@@ -668,6 +899,7 @@ impl GpuEncodeTelemetry {
             .estimated_upload_bytes
             .saturating_add(descriptor.estimated_bytes);
         match descriptor.backend {
+            GpuBackend::Cuda => self.cuda_frames = self.cuda_frames.saturating_add(1),
             GpuBackend::Metal => self.metal_frames = self.metal_frames.saturating_add(1),
             GpuBackend::Vulkan => self.vulkan_frames = self.vulkan_frames.saturating_add(1),
         }
@@ -851,22 +1083,23 @@ mod tests {
 
         use ash::vk::Handle;
 
-        use crate::gpu::GpuVideoInput;
+        use crate::gpu::{GpuVideoInput, VulkanVideoFrame};
 
         use super::*;
 
-        let frame = GpuVideoInput::Vulkan {
-            image: ash::vk::Image::from_raw(1),
-            image_view: ash::vk::ImageView::from_raw(2),
-            memory: ash::vk::DeviceMemory::from_raw(3),
-            format: ash::vk::Format::R8G8B8A8_UNORM,
-            extent: ash::vk::Extent3D {
+        let frame = VulkanVideoFrame::new(
+            ash::vk::Image::from_raw(1),
+            ash::vk::ImageView::from_raw(2),
+            ash::vk::DeviceMemory::from_raw(3),
+            ash::vk::Format::R8G8B8A8_UNORM,
+            ash::vk::Extent3D {
                 width: 1280,
                 height: 720,
                 depth: 1,
             },
-        };
-        let descriptor = GpuUploadDescriptor::from_frame(&frame);
+        );
+        let input = GpuVideoInput::Vulkan(&frame);
+        let descriptor = GpuUploadDescriptor::from_frame(&input);
         let mut telemetry = GpuEncodeTelemetry::default();
 
         telemetry.record_upload_started(&descriptor);
@@ -883,6 +1116,30 @@ mod tests {
         assert_eq!(telemetry.recent_events.len(), 4);
     }
 
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_telemetry_tracks_upload_attempts() {
+        use std::time::Duration;
+
+        use crate::gpu::{CudaVideoFrame, GpuVideoInput};
+
+        use super::*;
+
+        let frame = CudaVideoFrame::from_device_ptr(0xABCD, 1920, 1080, 8192, Some(12));
+        let input = GpuVideoInput::Cuda(&frame);
+        let descriptor = GpuUploadDescriptor::from_frame(&input);
+        let mut telemetry = GpuEncodeTelemetry::default();
+
+        telemetry.record_upload_started(&descriptor);
+        telemetry.record_upload_failed(&descriptor, Duration::from_micros(25), "not imported");
+
+        assert_eq!(telemetry.upload_attempts, 1);
+        assert_eq!(telemetry.upload_failures, 1);
+        assert_eq!(telemetry.cuda_frames, 1);
+        assert_eq!(telemetry.last_error.as_deref(), Some("not imported"));
+        assert_eq!(telemetry.recent_events.len(), 2);
+    }
+
     #[cfg(feature = "vulkan")]
     #[test]
     fn cpu_upload_encoder_rejects_gpu_input() {
@@ -894,32 +1151,33 @@ mod tests {
 
         use ash::vk::Handle;
 
-        use crate::gpu::GpuVideoInput;
+        use crate::gpu::{GpuVideoInput, VulkanVideoFrame};
 
         use super::*;
 
         let path = temp_path("gpu_failure", "mp4");
         let Ok(mut encoder) = MuxedEncoder::create(
             path.to_string_lossy().to_string(),
-            VideoEncoderConfig::h264_rgba(16, 16, 30),
+            VideoEncoderConfig::cpu_rgba(16, 16, 30, VideoCodec::H264),
         ) else {
             eprintln!("H.264 encoder unavailable; skipping GPU input mismatch test");
             return;
         };
-        let frame = GpuVideoInput::Vulkan {
-            image: ash::vk::Image::from_raw(1),
-            image_view: ash::vk::ImageView::from_raw(2),
-            memory: ash::vk::DeviceMemory::from_raw(3),
-            format: ash::vk::Format::R8G8B8A8_UNORM,
-            extent: ash::vk::Extent3D {
+        let frame = VulkanVideoFrame::new(
+            ash::vk::Image::from_raw(1),
+            ash::vk::ImageView::from_raw(2),
+            ash::vk::DeviceMemory::from_raw(3),
+            ash::vk::Format::R8G8B8A8_UNORM,
+            ash::vk::Extent3D {
                 width: 16,
                 height: 16,
                 depth: 1,
             },
-        };
+        );
+        let input = GpuVideoInput::Vulkan(&frame);
 
         let error = encoder
-            .write_gpu_frame(&frame)
+            .write_gpu_frame(&input)
             .expect_err("CPU encoder should reject GPU input");
         assert_eq!(error.backend, Some(GpuBackend::Vulkan));
         assert_eq!(encoder.gpu_telemetry().upload_attempts, 0);
@@ -948,7 +1206,7 @@ mod tests {
         use super::*;
 
         let path = temp_path("gpu_create_failure", "mp4");
-        let mut config = VideoEncoderConfig::h264_rgba(16, 16, 30);
+        let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, VideoCodec::H264);
         config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
 
         let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {

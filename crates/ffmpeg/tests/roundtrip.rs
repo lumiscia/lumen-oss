@@ -45,7 +45,7 @@ fn make_video(path: &PathBuf) -> bool {
         height: 24,
         fps: 24,
         codec: VideoCodec::H264,
-        ..VideoEncoderConfig::h264_rgba(32, 24, 24)
+        ..VideoEncoderConfig::cpu_rgba(32, 24, 24, VideoCodec::H264)
     };
     let Ok(mut encoder) = MuxedEncoder::create(path.to_string_lossy().to_string(), config) else {
         return false;
@@ -56,6 +56,71 @@ fn make_video(path: &PathBuf) -> bool {
             .expect("write frame");
     }
     encoder.finish().expect("finish encode");
+    true
+}
+
+fn make_video_with_encoder(path: &PathBuf, width: u32, height: u32, encoder_name: &str) -> bool {
+    let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::H264);
+    config.encoder_name = Some(encoder_name.to_string());
+    config.bit_rate = 2_000_000;
+    let Ok(mut encoder) = MuxedEncoder::create(path.to_string_lossy().to_string(), config) else {
+        return false;
+    };
+    for pts in 0..30 {
+        encoder
+            .write_video_frame(&frame(width, height, pts))
+            .expect("write frame");
+    }
+    encoder.finish().expect("finish encode");
+    true
+}
+
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+fn make_cuda_video_with_nvenc(path: &PathBuf, width: u32, height: u32) -> bool {
+    use lumen_ffmpeg::{CudaDriver, EncodeMode, GpuBackend, GpuVideoInput};
+
+    let driver = match CudaDriver::load() {
+        Ok(driver) => driver,
+        Err(error) => {
+            eprintln!("CUDA driver unavailable; skipping CUDA NVENC test: {error}");
+            return false;
+        }
+    };
+    let _context = match driver.create_primary_context() {
+        Ok(context) => context,
+        Err(error) => {
+            eprintln!("CUDA context unavailable; skipping CUDA NVENC test: {error}");
+            return false;
+        }
+    };
+    let frame = match driver.allocate_rgba_frame(width, height) {
+        Ok(frame) => frame,
+        Err(error) => {
+            eprintln!("CUDA frame allocation failed; skipping CUDA NVENC test: {error}");
+            return false;
+        }
+    };
+    if let Err(error) = _context.set_current() {
+        eprintln!("CUDA context restore failed; skipping CUDA NVENC test: {error}");
+        return false;
+    }
+    if let Err(error) = frame.clear(0x7f) {
+        eprintln!("CUDA frame clear failed; skipping CUDA NVENC test: {error}");
+        return false;
+    }
+
+    let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::H264);
+    config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
+    config.bit_rate = 2_000_000;
+    let Ok(mut encoder) = MuxedEncoder::create(path.to_string_lossy().to_string(), config) else {
+        return false;
+    };
+    for pts in 0..30 {
+        let cuda_frame = frame.as_video_frame(Some(pts));
+        let input = GpuVideoInput::Cuda(&cuda_frame);
+        encoder.write_gpu_frame(&input).expect("write CUDA frame");
+    }
+    encoder.finish().expect("finish CUDA encode");
     true
 }
 
@@ -112,6 +177,53 @@ fn encodes_opens_and_decodes_cpu_video() {
     assert_eq!(decoded.height, 24);
     assert_eq!(decoded.stride, 32 * 4);
     assert_eq!(decoded.data.len(), 32 * 24 * 4);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn encodes_cpu_frames_with_nvenc_when_requested() {
+    if std::env::var_os("LUMEN_FFMPEG_TEST_NVENC").is_none() {
+        eprintln!("set LUMEN_FFMPEG_TEST_NVENC=1 to run NVENC hardware smoke test");
+        return;
+    }
+
+    let path = temp_path("nvenc_roundtrip", "mp4");
+    if !make_video_with_encoder(&path, 640, 360, "h264_nvenc") {
+        eprintln!("h264_nvenc unavailable; skipping NVENC video roundtrip");
+        return;
+    }
+
+    let input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
+    let info = input.media_info();
+    assert_eq!(info.video_streams.len(), 1);
+    assert_eq!(info.video_streams[0].codec, VideoCodec::H264);
+    assert_eq!(info.video_streams[0].width, 640);
+    assert_eq!(info.video_streams[0].height, 360);
+
+    let _ = fs::remove_file(path);
+}
+
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+#[test]
+fn encodes_cuda_frames_with_nvenc_when_requested() {
+    if std::env::var_os("LUMEN_FFMPEG_TEST_CUDA_NVENC").is_none() {
+        eprintln!("set LUMEN_FFMPEG_TEST_CUDA_NVENC=1 to run CUDA frame NVENC smoke test");
+        return;
+    }
+
+    let path = temp_path("cuda_nvenc_roundtrip", "mp4");
+    if !make_cuda_video_with_nvenc(&path, 640, 360) {
+        eprintln!("CUDA/NVENC unavailable; skipping CUDA frame NVENC roundtrip");
+        return;
+    }
+
+    let input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
+    let info = input.media_info();
+    assert_eq!(info.video_streams.len(), 1);
+    assert_eq!(info.video_streams[0].codec, VideoCodec::H264);
+    assert_eq!(info.video_streams[0].width, 640);
+    assert_eq!(info.video_streams[0].height, 360);
 
     let _ = fs::remove_file(path);
 }
