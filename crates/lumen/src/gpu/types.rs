@@ -98,6 +98,19 @@ pub enum FrameBinding {
         max_glyphs: usize,
         size: lumen_gpu::Size,
     },
+    Path {
+        node_id: NodeId,
+        data: crate::node::NodeProperty,
+        position: crate::node::NodeProperty,
+        fill_enabled: crate::node::NodeProperty,
+        fill_color: crate::node::NodeProperty,
+        stroke_enabled: crate::node::NodeProperty,
+        stroke_color: crate::node::NodeProperty,
+        stroke_width: crate::node::NodeProperty,
+        params_buffer: lumen_gpu::BufferId,
+        points_buffer: lumen_gpu::BufferId,
+        max_points: usize,
+    },
     AlphaPremultiply {
         node_id: NodeId,
         mode: crate::node::NodeProperty,
@@ -140,6 +153,47 @@ pub enum FrameBinding {
         gamma: crate::node::NodeProperty,
         output_black: crate::node::NodeProperty,
         output_white: crate::node::NodeProperty,
+        buffer: lumen_gpu::BufferId,
+    },
+    Blur {
+        node_id: NodeId,
+        radius: crate::node::NodeProperty,
+        buffer: lumen_gpu::BufferId,
+    },
+    Curves {
+        node_id: NodeId,
+        curve_source: crate::node::NodeProperty,
+        strength: crate::node::NodeProperty,
+        params_buffer: lumen_gpu::BufferId,
+        curve_buffer: lumen_gpu::BufferId,
+    },
+    Shadow {
+        node_id: NodeId,
+        offset_x: crate::node::NodeProperty,
+        offset_y: crate::node::NodeProperty,
+        radius: crate::node::NodeProperty,
+        color: crate::node::NodeProperty,
+        opacity: crate::node::NodeProperty,
+        buffer: lumen_gpu::BufferId,
+    },
+    WgslShader {
+        node_id: NodeId,
+        value0: crate::node::NodeProperty,
+        value1: crate::node::NodeProperty,
+        value2: crate::node::NodeProperty,
+        value3: crate::node::NodeProperty,
+        buffer: lumen_gpu::BufferId,
+    },
+    Boolean {
+        node_id: NodeId,
+        operation: crate::node::NodeProperty,
+        threshold: crate::node::NodeProperty,
+        buffer: lumen_gpu::BufferId,
+    },
+    RasterMultiMerge {
+        node_id: NodeId,
+        opacity: crate::node::NodeProperty,
+        blend_mode: crate::node::NodeProperty,
         buffer: lumen_gpu::BufferId,
     },
     Merge {
@@ -207,12 +261,19 @@ impl FrameBinding {
             Self::SolidColor { node_id, .. }
             | Self::Shape { node_id, .. }
             | Self::Text { node_id, .. }
+            | Self::Path { node_id, .. }
             | Self::AlphaPremultiply { node_id, .. }
             | Self::ChannelShuffle { node_id, .. }
             | Self::ColorGrade { node_id, .. }
             | Self::Exposure { node_id, .. }
             | Self::HueSaturation { node_id, .. }
             | Self::Levels { node_id, .. }
+            | Self::Blur { node_id, .. }
+            | Self::Curves { node_id, .. }
+            | Self::Shadow { node_id, .. }
+            | Self::WgslShader { node_id, .. }
+            | Self::Boolean { node_id, .. }
+            | Self::RasterMultiMerge { node_id, .. }
             | Self::Merge { node_id, .. }
             | Self::Memo { node_id, .. }
             | Self::TimeRemap { node_id, .. }

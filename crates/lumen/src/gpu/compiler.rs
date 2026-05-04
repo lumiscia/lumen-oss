@@ -114,24 +114,29 @@ impl<'a> CompileContext<'a> {
             return Ok(output.clone());
         }
 
-        let node =
-            self.composition
-                .graph
-                .nodes
-                .get(&port.id)
-                .ok_or_else(|| RenderError::MissingNode {
-                    frame: 0,
-                    node_id: port.id,
-                })?;
+        let node = self
+            .composition
+            .graph
+            .nodes
+            .get(&port.id)
+            .ok_or(RenderError::MissingNode {
+                frame: 0,
+                node_id: port.id,
+            })?;
         let output = match node {
             NodeKind::MediaIn(node) => node.compile_gpu(self, port)?,
             NodeKind::SolidColor(node) => node.compile_gpu(self, port)?,
             NodeKind::Text(node) => node.compile_gpu(self, port)?,
+            NodeKind::Path(node) => node.compile_gpu(self, port)?,
             NodeKind::Shape(node) => node.compile_gpu(self, port)?,
+            NodeKind::Boolean(node) => node.compile_gpu(self, port)?,
             NodeKind::Merge(node) => node.compile_gpu(self, port)?,
+            NodeKind::RasterMultiMerge(node) => node.compile_gpu(self, port)?,
             NodeKind::AlphaPremultiply(node) => node.compile_gpu(self, port)?,
+            NodeKind::Blur(node) => node.compile_gpu(self, port)?,
             NodeKind::ChannelShuffle(node) => node.compile_gpu(self, port)?,
             NodeKind::ColorGrade(node) => node.compile_gpu(self, port)?,
+            NodeKind::Curves(node) => node.compile_gpu(self, port)?,
             NodeKind::Exposure(node) => node.compile_gpu(self, port)?,
             NodeKind::HueSaturation(node) => node.compile_gpu(self, port)?,
             NodeKind::Levels(node) => node.compile_gpu(self, port)?,
@@ -140,6 +145,8 @@ impl<'a> CompileContext<'a> {
             NodeKind::Transform(node) => node.compile_gpu(self, port)?,
             NodeKind::Crop(node) => node.compile_gpu(self, port)?,
             NodeKind::Resize(node) => node.compile_gpu(self, port)?,
+            NodeKind::Shadow(node) => node.compile_gpu(self, port)?,
+            NodeKind::WgslShader(node) => node.compile_gpu(self, port)?,
             NodeKind::Switch(node) => node.compile_gpu(self, port)?,
             NodeKind::MediaOutput(node) => node.compile_gpu(self, port)?,
         };
@@ -463,23 +470,33 @@ impl<'a> FrameBindContext<'a> {
         let mut bound = BoundFrame::new();
         for binding in &compiled.frame_bindings {
             let node_id = binding.node_id();
-            let node = self.composition.graph.nodes.get(&node_id).ok_or_else(|| {
-                RenderError::MissingNode {
-                    frame: self.frame,
-                    node_id,
-                }
-            })?;
+            let node =
+                self.composition
+                    .graph
+                    .nodes
+                    .get(&node_id)
+                    .ok_or(RenderError::MissingNode {
+                        frame: self.frame,
+                        node_id,
+                    })?;
             match node {
                 NodeKind::MediaIn(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::SolidColor(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::Text(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
+                NodeKind::Path(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::Shape(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
+                NodeKind::Boolean(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::Merge(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
+                NodeKind::RasterMultiMerge(node) => {
+                    node.bind_gpu_frame(self, binding, &mut bound)?
+                }
                 NodeKind::AlphaPremultiply(node) => {
                     node.bind_gpu_frame(self, binding, &mut bound)?
                 }
+                NodeKind::Blur(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::ChannelShuffle(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::ColorGrade(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
+                NodeKind::Curves(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::Exposure(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::HueSaturation(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::Levels(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
@@ -488,6 +505,8 @@ impl<'a> FrameBindContext<'a> {
                 NodeKind::Transform(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::Crop(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::Resize(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
+                NodeKind::Shadow(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
+                NodeKind::WgslShader(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::Switch(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
                 NodeKind::MediaOutput(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
             }
@@ -542,8 +561,7 @@ impl ColorParams {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct AlphaPremultiplyParams {
-    pub(crate) operation: f32,
-    pub(crate) _pad: [f32; 3],
+    pub(crate) values: [f32; 4],
 }
 
 #[repr(C)]
@@ -619,11 +637,75 @@ pub(crate) struct LevelsParams {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct BlurParams {
+    pub(crate) values: [u32; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct CurvesParams {
+    pub(crate) values: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct CurvesTable {
+    entries: [[f32; 4]; LUT_TABLE_SIZE],
+}
+
+impl CurvesTable {
+    pub(crate) fn parse(node_id: NodeId, frame: u32, source: &str) -> crate::Result<Self> {
+        let stops = parse_lut_stops(node_id, frame, source)?;
+        let mut entries = [[0.0; 4]; LUT_TABLE_SIZE];
+        for (index, entry) in entries.iter_mut().enumerate() {
+            let value = index as f32 / (LUT_TABLE_SIZE - 1) as f32;
+            let scaled = value * (stops.len() - 1) as f32;
+            let low = scaled.floor() as usize;
+            let high = (low + 1).min(stops.len() - 1);
+            let t = scaled - low as f32;
+            *entry = [
+                stops[low][0] + (stops[high][0] - stops[low][0]) * t,
+                stops[low][1] + (stops[high][1] - stops[low][1]) * t,
+                stops[low][2] + (stops[high][2] - stops[low][2]) * t,
+                1.0,
+            ];
+        }
+        Ok(Self { entries })
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct ShadowParams {
+    pub(crate) color: [f32; 4],
+    pub(crate) values: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct WgslShaderParams {
+    pub(crate) values: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct MergeParams {
     pub(crate) opacity: f32,
     pub(crate) blend_mode: u32,
     pub(crate) has_mask: u32,
     pub(crate) _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct BooleanParams {
+    pub(crate) values: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct RasterMultiMergeParams {
+    pub(crate) values: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy)]

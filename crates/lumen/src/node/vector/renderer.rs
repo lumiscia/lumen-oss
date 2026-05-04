@@ -5,14 +5,18 @@ use crate::{
     node::{NodeId, PortRef},
 };
 
-use super::{shape::Shape, text::Text};
+use crate::node::source::text::Text;
+
+use super::{path::Path, shape::Shape};
 
 pub(crate) const SHAPE_SHADER: &str = include_str!("shape_renderer.wgsl");
+pub(crate) const PATH_SHADER: &str = include_str!("path_renderer.wgsl");
 pub(crate) const TEXT_ATLAS_SIZE: lumen_gpu::Size = lumen_gpu::Size {
     width: 1024,
     height: 1024,
 };
 pub(crate) const MAX_TEXT_GLYPHS: usize = 2048;
+pub(crate) const MAX_PATH_POINTS: usize = 128;
 
 pub(crate) struct VectorRenderer<'a, 'b> {
     ctx: &'a mut crate::gpu::CompileContext<'b>,
@@ -57,6 +61,102 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         }))
     }
 
+    pub(crate) fn compile_path(
+        &mut self,
+        path: &Path,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        if port.port != "output" {
+            return Err(self.ctx.missing_output(path.id, &port.port));
+        }
+
+        let size = lumen_gpu::Size::new(
+            self.ctx.composition().render_settings.width.max(1),
+            self.ctx.composition().render_settings.height.max(1),
+        );
+        let texture = self.ctx.builder_mut().texture_for(
+            lumen_gpu::NodeKey(path.id.0),
+            Some(format!("path:{}:output", path.id.0)),
+            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        );
+        let params = self.ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(path.id.0),
+            Some(format!("path:{}:params", path.id.0)),
+            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<PathParams>() as u64),
+        );
+        let points = self.ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(path.id.0),
+            Some(format!("path:{}:points", path.id.0)),
+            lumen_gpu::BufferDesc::storage(
+                (MAX_PATH_POINTS * std::mem::size_of::<PathPoint>()) as u64,
+            ),
+        );
+        let program = self.ctx.builder_mut().program_for(
+            lumen_gpu::NodeKey(path.id.0),
+            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+                label: Some("path".to_string()),
+                shader: PATH_SHADER.to_string(),
+                entry: "cs_main".to_string(),
+                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
+                    lumen_gpu::BindingLayoutEntry::uniform(
+                        0,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                    ),
+                    lumen_gpu::BindingLayoutEntry::storage(
+                        1,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                        true,
+                    ),
+                    lumen_gpu::BindingLayoutEntry::storage_texture(
+                        2,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+                    ),
+                ]),
+            }),
+        );
+        self.ctx
+            .builder_mut()
+            .compute_pass(lumen_gpu::ComputePassDesc {
+                label: Some(format!("path:{}:rasterize", path.id.0)),
+                owner: Some(lumen_gpu::NodeKey(path.id.0)),
+                program,
+                bindings: vec![
+                    lumen_gpu::Binding::uniform(0, 0, params),
+                    lumen_gpu::Binding::storage_buffer(0, 1, points),
+                    lumen_gpu::Binding::storage_texture(0, 2, texture),
+                ],
+                dispatch: compiler::dispatch_for(size),
+            });
+        self.ctx.builder_mut().param(
+            lumen_gpu::ParamKey {
+                owner: lumen_gpu::NodeKey(path.id.0),
+                slot: 0,
+            },
+            lumen_gpu::ParamTarget::Buffer(params),
+        );
+        self.ctx.push_frame_binding(FrameBinding::Path {
+            node_id: path.id,
+            data: path.data.clone(),
+            position: path.position.clone(),
+            fill_enabled: path.fill_enabled.clone(),
+            fill_color: path.fill_color.clone(),
+            stroke_enabled: path.stroke_enabled.clone(),
+            stroke_color: path.stroke_color.clone(),
+            stroke_width: path.stroke_width.clone(),
+            params_buffer: params,
+            points_buffer: points,
+            max_points: MAX_PATH_POINTS,
+        });
+
+        Ok(CompiledOutput::Raster(RasterHandle {
+            texture,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: RasterMetadata::default(),
+        }))
+    }
+
     pub(crate) fn compile_text(
         &mut self,
         text: &Text,
@@ -65,7 +165,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         if port.port != "output" {
             return Err(self.ctx.missing_output(text.id, &port.port));
         }
-        super::text::clear_text_cache_for(text.id);
+        crate::node::source::text::clear_text_cache_for(text.id);
 
         let size = lumen_gpu::Size::new(
             self.ctx.composition().render_settings.width.max(1),
@@ -280,4 +380,22 @@ pub(crate) struct ShapeParams {
     pub(crate) stroke_width: f32,
     pub(crate) geometry_kind: u32,
     pub(crate) flags: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct PathParams {
+    pub(crate) fill_color: [f32; 4],
+    pub(crate) stroke_color: [f32; 4],
+    pub(crate) position: [f32; 2],
+    pub(crate) stroke_width: f32,
+    pub(crate) flags: u32,
+    pub(crate) point_count: u32,
+    pub(crate) _pad: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct PathPoint {
+    pub(crate) position: [f32; 2],
 }

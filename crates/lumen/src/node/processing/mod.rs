@@ -1,11 +1,15 @@
 pub mod alpha_premultiply;
+pub mod blur;
 pub mod channel_shuffle;
 pub mod color_grade;
 pub mod crop;
+pub mod curves;
 pub mod exposure;
 pub mod hue_saturation;
 pub mod levels;
 pub mod memo;
 pub mod resize;
+pub mod shadow;
 pub mod time_remap;
 pub mod transform;
+pub mod wgsl_shader;

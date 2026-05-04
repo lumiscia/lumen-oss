@@ -8,7 +8,7 @@ use lumen::{
     },
     node::{
         NodeId, NodeKind, NodeProperty, PortRef,
-        compositing::{merge::Merge, switch::Switch},
+        compositing::{merge::Merge, raster_multimerge::RasterMultiMerge, switch::Switch},
         media_output::MediaOutput,
         processing::{
             alpha_premultiply::AlphaPremultiply, channel_shuffle::ChannelShuffle,
@@ -16,8 +16,8 @@ use lumen::{
             levels::Levels, memo::Memo, resize::Resize, time_remap::TimeRemap,
             transform::Transform,
         },
-        source::{media_in::MediaIn, solid_color::SolidColor},
-        vector::{shape::Shape, text::Text},
+        source::{media_in::MediaIn, solid_color::SolidColor, text::Text},
+        vector::{path::Path, shape::Shape},
     },
 };
 use std::{collections::HashMap, ops::Range, sync::Arc};
@@ -404,6 +404,54 @@ fn compiles_merge_to_gpu_blend_pass() {
 }
 
 #[test]
+fn compiles_raster_multimerge_with_blend_mode_binding() {
+    let first = NodeId::new(1);
+    let second = NodeId::new(2);
+    let third = NodeId::new(3);
+    let multi = NodeId::new(4);
+    let output = NodeId::new(5);
+    let mut graph = Graph::new();
+    graph.nodes.insert(first, solid(first, [255, 0, 0, 255]));
+    graph.nodes.insert(second, solid(second, [0, 255, 0, 128]));
+    graph.nodes.insert(third, solid(third, [0, 0, 255, 128]));
+    graph.nodes.insert(
+        multi,
+        NodeKind::RasterMultiMerge(RasterMultiMerge {
+            id: multi,
+            opacity: NodeProperty::Float(0.5),
+            blend_mode: NodeProperty::Int(2),
+            layers: vec![
+                PortRef::new(first, "output".to_string()),
+                PortRef::new(second, "output".to_string()),
+                PortRef::new(third, "output".to_string()),
+            ],
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(multi, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+
+    assert_eq!(compiled.plan.passes().len(), 6);
+    assert!(compiled.frame_bindings.iter().any(|binding| {
+        matches!(
+            binding,
+            FrameBinding::RasterMultiMerge {
+                node_id,
+                blend_mode,
+                ..
+            } if *node_id == multi && matches!(blend_mode, NodeProperty::Int(2))
+        )
+    }));
+}
+
+#[test]
 fn compiles_switch_as_selected_gpu_alias() {
     let first = NodeId::new(1);
     let second = NodeId::new(2);
@@ -726,7 +774,7 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
 }
 
 #[test]
-fn compiles_vector_text_and_shape_through_shared_renderer() {
+fn compiles_source_text_and_vector_shape_through_shared_renderer() {
     let shape = NodeId::new(1);
     let text = NodeId::new(2);
     let merge = NodeId::new(3);
@@ -787,6 +835,43 @@ fn compiles_vector_text_and_shape_through_shared_renderer() {
         FrameBinding::Text { .. }
     ));
     assert_eq!(bound.frame_update().uploads().len(), 5);
+}
+
+#[test]
+fn compiles_vector_path_through_shared_renderer() {
+    let path = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        path,
+        NodeKind::Path(Path {
+            id: path,
+            data: NodeProperty::String("M 1 1 L 6 1 L 6 3 L 1 3 Z".to_string()),
+            fill_color: NodeProperty::Color([0, 255, 0, 255]),
+            stroke_enabled: NodeProperty::Bool(true),
+            stroke_width: NodeProperty::Float(1.0),
+            ..Path::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(path, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let bound = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap();
+
+    assert!(matches!(
+        compiled.frame_bindings[0],
+        FrameBinding::Path { .. }
+    ));
+    assert_eq!(bound.frame_update().uploads().len(), 2);
 }
 
 fn solid(id: NodeId, color: [u8; 4]) -> NodeKind {

@@ -4,9 +4,10 @@ use lumen::node::{NodeCategory, NodeKind, NodeProperty, PropertyEval};
 fn node_schemas_are_derived_from_node_structs() {
     let schemas = NodeKind::schemas();
 
-    assert_eq!(schemas.len(), 18);
+    assert_eq!(schemas.len(), 25);
     assert!(schemas.iter().any(|schema| schema.kind == "media_output"));
     assert!(schemas.iter().any(|schema| schema.kind == "text"));
+    assert!(schemas.iter().any(|schema| schema.kind == "path"));
 
     let solid = schemas
         .iter()
@@ -38,6 +39,17 @@ fn node_schemas_are_derived_from_node_structs() {
     assert_eq!(merge.inputs.len(), 3);
     assert_eq!(merge.inputs[2].name, "mask");
     assert!(merge.inputs[2].optional);
+
+    let raster_multimerge = schemas
+        .iter()
+        .find(|schema| schema.kind == "raster_multimerge")
+        .unwrap();
+    assert!(
+        raster_multimerge
+            .properties
+            .iter()
+            .any(|property| property.name == "blend_mode")
+    );
 
     let shape = schemas
         .iter()

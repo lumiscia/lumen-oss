@@ -9,16 +9,18 @@ use crate::{
     graph::Graph,
     node::{
         NodeId, NodeKind, NodeProperty, PortRef, PropertyDef,
-        compositing::{merge::Merge, switch::Switch},
+        compositing::{
+            boolean::Boolean, merge::Merge, raster_multimerge::RasterMultiMerge, switch::Switch,
+        },
         media_output::MediaOutput,
         processing::{
-            alpha_premultiply::AlphaPremultiply, channel_shuffle::ChannelShuffle,
-            color_grade::ColorGrade, crop::Crop, exposure::Exposure, hue_saturation::HueSaturation,
-            levels::Levels, memo::Memo, resize::Resize, time_remap::TimeRemap,
-            transform::Transform,
+            alpha_premultiply::AlphaPremultiply, blur::Blur, channel_shuffle::ChannelShuffle,
+            color_grade::ColorGrade, crop::Crop, curves::Curves, exposure::Exposure,
+            hue_saturation::HueSaturation, levels::Levels, memo::Memo, resize::Resize,
+            shadow::Shadow, time_remap::TimeRemap, transform::Transform, wgsl_shader::WgslShader,
         },
-        source::{media_in::MediaIn, solid_color::SolidColor},
-        vector::{shape::Shape, text::Text},
+        source::{media_in::MediaIn, solid_color::SolidColor, text::Text},
+        vector::{path::Path, shape::Shape},
     },
 };
 
@@ -35,15 +37,22 @@ pub fn build_node(
         "media_in" => Ok(NodeKind::MediaIn(build_media_in(id, properties)?)),
         "solid_color" => Ok(NodeKind::SolidColor(build_solid_color(id, properties)?)),
         "text" => Ok(NodeKind::Text(build_text(id, properties)?)),
+        "path" => Ok(NodeKind::Path(build_path(id, properties)?)),
         "shape" => Ok(NodeKind::Shape(build_shape(id, properties)?)),
+        "boolean" => Ok(NodeKind::Boolean(build_boolean(id, properties)?)),
         "merge" => Ok(NodeKind::Merge(build_merge(id, properties)?)),
+        "raster_multimerge" => Ok(NodeKind::RasterMultiMerge(build_raster_multimerge(
+            id, properties,
+        )?)),
         "alpha_premultiply" => Ok(NodeKind::AlphaPremultiply(build_alpha_premultiply(
             id, properties,
         )?)),
+        "blur" => Ok(NodeKind::Blur(build_blur(id, properties)?)),
         "channel_shuffle" => Ok(NodeKind::ChannelShuffle(build_channel_shuffle(
             id, properties,
         )?)),
         "color_grade" => Ok(NodeKind::ColorGrade(build_color_grade(id, properties)?)),
+        "curves" => Ok(NodeKind::Curves(build_curves(id, properties)?)),
         "exposure" => Ok(NodeKind::Exposure(build_exposure(id, properties)?)),
         "hue_saturation" => Ok(NodeKind::HueSaturation(build_hue_saturation(
             id, properties,
@@ -54,6 +63,8 @@ pub fn build_node(
         "transform" => Ok(NodeKind::Transform(build_transform(id, properties)?)),
         "crop" => Ok(NodeKind::Crop(build_crop(id, properties)?)),
         "resize" => Ok(NodeKind::Resize(build_resize(id, properties)?)),
+        "shadow" => Ok(NodeKind::Shadow(build_shadow(id, properties)?)),
+        "wgsl_shader" => Ok(NodeKind::WgslShader(build_wgsl_shader(id, properties)?)),
         "switch" => Ok(NodeKind::Switch(build_switch(id, obj)?)),
         "media_output" => Ok(NodeKind::MediaOutput(MediaOutput {
             id,
@@ -81,11 +92,19 @@ pub fn wire_port_ref(
             node.source = port_ref;
             true
         }
+        NodeKind::Blur(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
         NodeKind::ChannelShuffle(node) if to_port == "source" => {
             node.source = port_ref;
             true
         }
         NodeKind::ColorGrade(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::Curves(node) if to_port == "source" => {
             node.source = port_ref;
             true
         }
@@ -121,6 +140,22 @@ pub fn wire_port_ref(
             node.source = port_ref;
             true
         }
+        NodeKind::Shadow(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::WgslShader(node) if to_port == "source" => {
+            node.source = port_ref;
+            true
+        }
+        NodeKind::Boolean(node) if to_port == "a" => {
+            node.a = port_ref;
+            true
+        }
+        NodeKind::Boolean(node) if to_port == "b" => {
+            node.b = port_ref;
+            true
+        }
         NodeKind::Merge(node) if to_port == "base" => {
             node.base = port_ref;
             true
@@ -131,6 +166,10 @@ pub fn wire_port_ref(
         }
         NodeKind::Merge(node) if to_port == "mask" => {
             node.mask = port_ref;
+            true
+        }
+        NodeKind::RasterMultiMerge(node) if to_port == "layers" => {
+            node.layers.push(port_ref);
             true
         }
         NodeKind::Switch(node) if to_port == "layers" => {
@@ -328,10 +367,93 @@ fn build_shape(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) 
     Ok(node)
 }
 
+fn build_path(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Path> {
+    let mut node = Path {
+        id,
+        ..Path::default()
+    };
+
+    set_property(properties, "data", &mut node.data, None)?;
+    set_property(
+        properties,
+        "position",
+        &mut node.position,
+        Some(PropertyDef {
+            name: "position",
+            expected: crate::node::PropertyKind::Vec2,
+        }),
+    )?;
+    set_property(properties, "fill_enabled", &mut node.fill_enabled, None)?;
+    set_property(
+        properties,
+        "fill_color",
+        &mut node.fill_color,
+        Some(PropertyDef {
+            name: "fill_color",
+            expected: crate::node::PropertyKind::Color,
+        }),
+    )?;
+    set_property(properties, "stroke_enabled", &mut node.stroke_enabled, None)?;
+    set_property(
+        properties,
+        "stroke_color",
+        &mut node.stroke_color,
+        Some(PropertyDef {
+            name: "stroke_color",
+            expected: crate::node::PropertyKind::Color,
+        }),
+    )?;
+    set_property(properties, "stroke_width", &mut node.stroke_width, None)?;
+    reject_unknown(
+        properties,
+        &[
+            "data",
+            "position",
+            "fill_enabled",
+            "fill_color",
+            "stroke_enabled",
+            "stroke_color",
+            "stroke_width",
+        ],
+        id,
+    )?;
+    Ok(node)
+}
+
 fn build_merge(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Merge> {
     let mut node = Merge {
         id,
         ..Merge::default()
+    };
+
+    set_property(properties, "opacity", &mut node.opacity, None)?;
+    set_property(properties, "blend_mode", &mut node.blend_mode, None)?;
+    reject_unknown(properties, &["opacity", "blend_mode"], id)?;
+    Ok(node)
+}
+
+fn build_boolean(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<Boolean> {
+    let mut node = Boolean {
+        id,
+        ..Boolean::default()
+    };
+
+    set_property(properties, "operation", &mut node.operation, None)?;
+    set_property(properties, "threshold", &mut node.threshold, None)?;
+    reject_unknown(properties, &["operation", "threshold"], id)?;
+    Ok(node)
+}
+
+fn build_raster_multimerge(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<RasterMultiMerge> {
+    let mut node = RasterMultiMerge {
+        id,
+        ..RasterMultiMerge::default()
     };
 
     set_property(properties, "opacity", &mut node.opacity, None)?;
@@ -351,6 +473,17 @@ fn build_alpha_premultiply(
 
     set_property(properties, "mode", &mut node.mode, None)?;
     reject_unknown(properties, &["mode"], id)?;
+    Ok(node)
+}
+
+fn build_blur(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Blur> {
+    let mut node = Blur {
+        id,
+        ..Blur::default()
+    };
+
+    set_property(properties, "radius", &mut node.radius, None)?;
+    reject_unknown(properties, &["radius"], id)?;
     Ok(node)
 }
 
@@ -384,6 +517,18 @@ fn build_color_grade(
     set_property(properties, "strength", &mut node.strength, None)?;
     set_property(properties, "interpolation", &mut node.interpolation, None)?;
     reject_unknown(properties, &["lut_source", "strength", "interpolation"], id)?;
+    Ok(node)
+}
+
+fn build_curves(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Curves> {
+    let mut node = Curves {
+        id,
+        ..Curves::default()
+    };
+
+    set_property(properties, "curve_source", &mut node.curve_source, None)?;
+    set_property(properties, "strength", &mut node.strength, None)?;
+    reject_unknown(properties, &["curve_source", "strength"], id)?;
     Ok(node)
 }
 
@@ -541,6 +686,55 @@ fn build_resize(id: NodeId, properties: Option<&serde_json::Map<String, Value>>)
     set_property(properties, "mode", &mut node.mode, None)?;
     set_property(properties, "sampling", &mut node.sampling, None)?;
     reject_unknown(properties, &["width", "height", "mode", "sampling"], id)?;
+    Ok(node)
+}
+
+fn build_shadow(id: NodeId, properties: Option<&serde_json::Map<String, Value>>) -> Result<Shadow> {
+    let mut node = Shadow {
+        id,
+        ..Shadow::default()
+    };
+
+    set_property(properties, "offset_x", &mut node.offset_x, None)?;
+    set_property(properties, "offset_y", &mut node.offset_y, None)?;
+    set_property(properties, "radius", &mut node.radius, None)?;
+    set_property(
+        properties,
+        "color",
+        &mut node.color,
+        Some(PropertyDef {
+            name: "color",
+            expected: crate::node::PropertyKind::Color,
+        }),
+    )?;
+    set_property(properties, "opacity", &mut node.opacity, None)?;
+    reject_unknown(
+        properties,
+        &["offset_x", "offset_y", "radius", "color", "opacity"],
+        id,
+    )?;
+    Ok(node)
+}
+
+fn build_wgsl_shader(
+    id: NodeId,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Result<WgslShader> {
+    let mut node = WgslShader {
+        id,
+        ..WgslShader::default()
+    };
+
+    set_property(properties, "shader", &mut node.shader, None)?;
+    set_property(properties, "value0", &mut node.value0, None)?;
+    set_property(properties, "value1", &mut node.value1, None)?;
+    set_property(properties, "value2", &mut node.value2, None)?;
+    set_property(properties, "value3", &mut node.value3, None)?;
+    reject_unknown(
+        properties,
+        &["shader", "value0", "value1", "value2", "value3"],
+        id,
+    )?;
     Ok(node)
 }
 

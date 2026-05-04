@@ -1,4 +1,6 @@
+pub mod boolean;
 pub mod merge;
+pub mod raster_multimerge;
 pub mod switch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

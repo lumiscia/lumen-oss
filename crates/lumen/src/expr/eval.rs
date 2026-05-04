@@ -246,7 +246,7 @@ mod tests {
     use crate::{
         expr::ast::{BuiltinFn, ExprNode, ExpressionId},
         graph::Graph,
-        node::{NodeId, NodeKind, NodeProperty, vector::text::Text},
+        node::{NodeId, NodeKind, NodeProperty, source::text::Text},
     };
 
     fn test_context() -> ExpressionContext<'static> {

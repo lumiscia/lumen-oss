@@ -13,14 +13,15 @@ use crate::gpu::{
 pub enum LoopMode {
     Clamp,
     Repeat,
+    PingPong,
 }
 
 impl LoopMode {
     pub fn from_int(value: i64) -> Self {
-        if value == 1 {
-            Self::Repeat
-        } else {
-            Self::Clamp
+        match value {
+            1 => Self::Repeat,
+            2 => Self::PingPong,
+            _ => Self::Clamp,
         }
     }
 }
@@ -136,13 +137,94 @@ pub fn map_to_source_frame(
     let span = end - start;
     let comp_fps = composition_fps.max(1.0);
     let media_fps = source_fps.max(comp_fps);
-    let relative = (((frame as f64 / comp_fps as f64) * media_fps as f64) * speed.max(0.0) as f64)
-        .floor() as u32;
+    let relative =
+        (((frame as f64 / comp_fps as f64) * media_fps as f64) * speed.abs() as f64).floor() as u32;
+    let forward = speed >= 0.0;
     let mapped = match loop_mode {
-        LoopMode::Clamp => start + relative.min(span.saturating_sub(1)),
-        LoopMode::Repeat => start + (relative % span),
+        LoopMode::Clamp => {
+            if forward {
+                start + relative.min(span.saturating_sub(1))
+            } else {
+                end - 1 - relative.min(span.saturating_sub(1))
+            }
+        }
+        LoopMode::Repeat => {
+            let offset = relative % span;
+            start + if forward { offset } else { span - 1 - offset }
+        }
+        LoopMode::PingPong => {
+            let period = span.saturating_mul(2).saturating_sub(2).max(1);
+            let offset = relative % period;
+            let offset = if offset < span {
+                offset
+            } else {
+                period - offset
+            };
+            start + if forward { offset } else { span - 1 - offset }
+        }
     };
     (mapped < frame_count).then_some(mapped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LoopMode, map_to_source_frame};
+
+    #[test]
+    fn maps_negative_media_speed_in_reverse() {
+        assert_eq!(
+            map_to_source_frame(0, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
+            Some(6)
+        );
+        assert_eq!(
+            map_to_source_frame(3, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
+            Some(3)
+        );
+        assert_eq!(
+            map_to_source_frame(99, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn maps_ping_pong_loop_mode() {
+        let frames = (0..8)
+            .map(|frame| map_to_source_frame(frame, 30.0, 30.0, 4, None, 1.0, LoopMode::PingPong))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            frames,
+            vec![
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(2),
+                Some(1),
+                Some(0),
+                Some(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn maps_negative_ping_pong_loop_mode() {
+        let frames = (0..8)
+            .map(|frame| map_to_source_frame(frame, 30.0, 30.0, 4, None, -1.0, LoopMode::PingPong))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            frames,
+            vec![
+                Some(3),
+                Some(2),
+                Some(1),
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(2)
+            ]
+        );
+    }
 }
 
 impl GpuCompileNode for MediaIn {

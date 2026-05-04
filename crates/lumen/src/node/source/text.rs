@@ -69,8 +69,8 @@ impl TextAlignmentVertical {
 #[node(
     kind = "text",
     label = "Text",
-    description = "Produces a vector text layer for GPU rasterization.",
-    category = "vector"
+    description = "Produces a text raster source.",
+    category = "source"
 )]
 pub struct Text {
     pub id: NodeId,
@@ -249,12 +249,8 @@ impl GpuFrameBindNode for Text {
         let measurement = text_system.measure(&request);
         request.origin[1] = match alignment_vertical {
             TextAlignmentVertical::Top => request.origin[1],
-            TextAlignmentVertical::Middle => {
-                request.origin[1] + ((size.height as f32 - measurement.height) * 0.5).max(0.0)
-            }
-            TextAlignmentVertical::Bottom => {
-                request.origin[1] + (size.height as f32 - measurement.height).max(0.0)
-            }
+            TextAlignmentVertical::Middle => request.origin[1] - measurement.height * 0.5,
+            TextAlignmentVertical::Bottom => request.origin[1] - measurement.height,
         };
         let layout = text_system.layout(&request);
         let atlas = text_system.render_alpha_atlas(

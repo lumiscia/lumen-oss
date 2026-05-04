@@ -90,8 +90,7 @@ impl GpuFrameBindNode for AlphaPremultiply {
         };
         let mode = mode.resolve_string(*node_id, "mode", &ctx.expr_context(*node_id, "mode"))?;
         let params = compiler::AlphaPremultiplyParams {
-            operation: compiler::alpha_operation(*node_id, &mode)?,
-            _pad: [0.0; 3],
+            values: [compiler::alpha_operation(*node_id, &mode)?, 0.0, 0.0, 0.0],
         };
         bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
