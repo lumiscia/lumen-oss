@@ -9,6 +9,19 @@ use crate::{
 };
 use web_sys::HtmlCanvasElement;
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[derive(Debug)]
+struct WebDisplayHandle;
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl lumen_gpu::wgpu::rwh::HasDisplayHandle for WebDisplayHandle {
+    fn display_handle(
+        &self,
+    ) -> Result<lumen_gpu::wgpu::rwh::DisplayHandle<'_>, lumen_gpu::wgpu::rwh::HandleError> {
+        Ok(lumen_gpu::wgpu::rwh::DisplayHandle::web())
+    }
+}
+
 #[wasm_bindgen]
 pub struct LumenRenderer {
     composition: Option<Composition>,
@@ -278,7 +291,8 @@ async fn create_surface_device(
     JsValue,
 > {
     let instance = lumen_gpu::wgpu::util::new_instance_with_webgpu_detection(
-        lumen_gpu::wgpu::InstanceDescriptor::new_without_display_handle(),
+        lumen_gpu::wgpu::InstanceDescriptor::new_without_display_handle()
+            .with_display_handle(Box::new(WebDisplayHandle)),
     )
     .await;
     let surface = instance
