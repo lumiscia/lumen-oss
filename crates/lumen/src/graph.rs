@@ -83,28 +83,6 @@ impl Graph {
             );
         }
 
-        for node in self.nodes.values() {
-            if let NodeKind::Switch(switch) = node {
-                let mut ranges: Vec<_> = switch.map.iter().collect();
-                ranges.sort_by_key(|(_, range)| (range.start, range.end));
-                for window in ranges.windows(2) {
-                    let [(_, first), (_, second)] = window else {
-                        continue;
-                    };
-                    if first.start < second.end && second.start < first.end {
-                        errors.push(
-                            GraphValidationError::SwitchRangeOverlap {
-                                node_id: switch.id,
-                                first: (*first).clone(),
-                                second: (*second).clone(),
-                            }
-                            .into(),
-                        );
-                    }
-                }
-            }
-        }
-
         for connection in &self.connections {
             let Some(from_node) = self.nodes.get(&connection.from_node) else {
                 errors.push(

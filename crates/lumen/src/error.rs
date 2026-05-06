@@ -1,7 +1,5 @@
 //! Error types and diagnostics for the Lumen compositing engine.
 
-use std::ops::Range;
-
 use thiserror::Error;
 
 use crate::node::{NodeId, PortKind};
@@ -42,12 +40,6 @@ pub enum GraphValidationError {
         to_node: NodeId,
         to_port: String,
         expected_kind: PortKind,
-    },
-    #[error("switch ranges overlap")]
-    SwitchRangeOverlap {
-        node_id: NodeId,
-        first: Range<u32>,
-        second: Range<u32>,
     },
     #[error("exactly one media output node is required")]
     MissingMediaOutput,

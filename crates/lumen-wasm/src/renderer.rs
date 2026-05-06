@@ -173,6 +173,12 @@ impl LumenRenderer {
                 debug_error(&format!("[lumen-wasm] render frame={frame} error: {e}"));
                 JsValue::from_str(&e.to_string())
             })?;
+        let _ = renderer.precompile_frame_window(
+            composition,
+            frame.saturating_add(1),
+            self.lookahead_count,
+            media.as_wasm_store(),
+        );
         self.width = size.width as usize;
         self.height = size.height as usize;
         Ok(())
@@ -213,6 +219,17 @@ impl SurfaceCompositionRenderer {
             })?;
         surface_texture.present();
         Ok(raster.domain.storage_size)
+    }
+
+    pub fn precompile_frame_window<M: lumen::media::MediaStore>(
+        &mut self,
+        composition: &Composition,
+        start_frame: u32,
+        frame_count: u32,
+        media: &M,
+    ) -> Result<(), lumen::error::LumenError> {
+        self.renderer
+            .precompile_frame_window(composition, start_frame, frame_count, media)
     }
 }
 

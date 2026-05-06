@@ -20,7 +20,7 @@ use lumen::{
         vector::{path::Path, shape::Shape},
     },
 };
-use std::{collections::HashMap, ops::Range, sync::Arc};
+use std::sync::Arc;
 
 #[test]
 fn compiles_solid_color_exposure_media_output_to_gpu_plan() {
@@ -464,11 +464,11 @@ fn compiles_switch_as_selected_gpu_alias() {
         switch,
         NodeKind::Switch(Switch {
             id: switch,
+            selected_layer: NodeProperty::Int(0),
             layers: vec![
                 PortRef::new(first, "output".to_string()),
                 PortRef::new(second, "output".to_string()),
             ],
-            map: HashMap::from([(0, Range { start: 0, end: 12 })]),
         }),
     );
     graph.nodes.insert(
@@ -500,6 +500,89 @@ fn compiles_switch_as_selected_gpu_alias() {
     assert_eq!(compiled.plan.passes().len(), 2);
     assert_eq!(compiled.frame_bindings.len(), 2);
     assert_eq!(switched.texture, selected.texture);
+}
+
+#[test]
+fn compiles_switch_expression_as_frame_selected_gpu_alias() {
+    let first = NodeId::new(1);
+    let second = NodeId::new(2);
+    let switch = NodeId::new(3);
+    let output = NodeId::new(4);
+    let mut graph = Graph::new();
+    graph.nodes.insert(first, solid(first, [255, 0, 0, 255]));
+    graph.nodes.insert(second, solid(second, [0, 255, 0, 255]));
+    graph.nodes.insert(
+        switch,
+        NodeKind::Switch(Switch {
+            id: switch,
+            selected_layer: NodeProperty::Expr(
+                lumen::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
+            ),
+            layers: vec![
+                PortRef::new(first, "output".to_string()),
+                PortRef::new(second, "output".to_string()),
+            ],
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(switch, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let frame_zero =
+        CompileContext::with_frame(&composition, 0, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+            .compile()
+            .unwrap();
+    let frame_ten =
+        CompileContext::with_frame(&composition, 10, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+            .compile()
+            .unwrap();
+
+    let first_output = frame_zero
+        .node_outputs
+        .get(&PortRef::new(first, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(first, "output")
+        .unwrap();
+    let frame_zero_switch = frame_zero
+        .node_outputs
+        .get(&PortRef::new(switch, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(switch, "output")
+        .unwrap();
+    let second_output = frame_ten
+        .node_outputs
+        .get(&PortRef::new(second, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(second, "output")
+        .unwrap();
+    let frame_ten_switch = frame_ten
+        .node_outputs
+        .get(&PortRef::new(switch, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(switch, "output")
+        .unwrap();
+
+    assert_eq!(frame_zero_switch.texture, first_output.texture);
+    assert_eq!(frame_ten_switch.texture, second_output.texture);
+    assert!(
+        !frame_zero
+            .node_outputs
+            .contains_key(&PortRef::new(second, "output".to_string()))
+    );
+    assert!(
+        !frame_ten
+            .node_outputs
+            .contains_key(&PortRef::new(first, "output".to_string()))
+    );
 }
 
 #[test]
@@ -569,6 +652,148 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_frame_bindings() {
     assert_eq!(compiled.frame_bindings.len(), 3);
     assert_eq!(remapped.texture, source.texture);
     assert_eq!(memoized.texture, source.texture);
+}
+
+#[test]
+fn time_remap_compiles_source_with_remapped_frame_context() {
+    let first = NodeId::new(1);
+    let second = NodeId::new(2);
+    let switch = NodeId::new(3);
+    let time_remap = NodeId::new(4);
+    let output = NodeId::new(5);
+    let mut graph = Graph::new();
+    graph.nodes.insert(first, solid(first, [255, 0, 0, 255]));
+    graph.nodes.insert(second, solid(second, [0, 255, 0, 255]));
+    graph.nodes.insert(
+        switch,
+        NodeKind::Switch(Switch {
+            id: switch,
+            selected_layer: NodeProperty::Expr(
+                lumen::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
+            ),
+            layers: vec![
+                PortRef::new(first, "output".to_string()),
+                PortRef::new(second, "output".to_string()),
+            ],
+        }),
+    );
+    graph.nodes.insert(
+        time_remap,
+        NodeKind::TimeRemap(TimeRemap {
+            id: time_remap,
+            frame: NodeProperty::Float(0.0),
+            loop_enabled: NodeProperty::Bool(false),
+            loop_start: NodeProperty::Int(0),
+            loop_end: NodeProperty::Int(0),
+            source: PortRef::new(switch, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(time_remap, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let compiled =
+        CompileContext::with_frame(&composition, 10, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+            .compile()
+            .unwrap();
+
+    let selected = compiled
+        .node_outputs
+        .get(&PortRef::new(first, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(first, "output")
+        .unwrap();
+    let remapped = compiled
+        .node_outputs
+        .get(&PortRef::new(time_remap, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(time_remap, "output")
+        .unwrap();
+
+    assert_eq!(remapped.texture, selected.texture);
+    assert!(
+        !compiled
+            .node_outputs
+            .contains_key(&PortRef::new(second, "output".to_string()))
+    );
+}
+
+#[test]
+fn time_remap_binds_source_expressions_with_remapped_frame_context() {
+    let solid_id = NodeId::new(1);
+    let exposure = NodeId::new(2);
+    let time_remap = NodeId::new(3);
+    let output = NodeId::new(4);
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(solid_id, solid(solid_id, [64, 128, 255, 255]));
+    graph.nodes.insert(
+        exposure,
+        NodeKind::Exposure(Exposure {
+            id: exposure,
+            exposure: NodeProperty::Expr(lumen::expr::Expression::parse("frame").unwrap()),
+            contrast: NodeProperty::Float(1.0),
+            offset: NodeProperty::Float(0.0),
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        time_remap,
+        NodeKind::TimeRemap(TimeRemap {
+            id: time_remap,
+            frame: NodeProperty::Float(8.0),
+            loop_enabled: NodeProperty::Bool(false),
+            loop_start: NodeProperty::Int(0),
+            loop_end: NodeProperty::Int(0),
+            source: PortRef::new(exposure, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(time_remap, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let compiled =
+        CompileContext::with_frame(&composition, 2, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+            .compile()
+            .unwrap();
+    let exposure_buffer = compiled
+        .frame_bindings
+        .iter()
+        .find_map(|binding| match binding {
+            FrameBinding::Exposure {
+                node_id, buffer, ..
+            } if *node_id == exposure => Some(*buffer),
+            _ => None,
+        })
+        .unwrap();
+    let bound = FrameBindContext::new(&composition, 2)
+        .bind(&compiled)
+        .unwrap();
+    let update = bound.frame_update();
+    let exposure_upload = update
+        .uploads()
+        .iter()
+        .find_map(|upload| match upload {
+            lumen_gpu::Upload::Buffer { id, data, .. } if *id == exposure_buffer => Some(*data),
+            _ => None,
+        })
+        .unwrap();
+    let exposure_value = f32::from_ne_bytes(exposure_upload[0..4].try_into().unwrap());
+
+    assert_eq!(exposure_value, 8.0);
 }
 
 #[test]

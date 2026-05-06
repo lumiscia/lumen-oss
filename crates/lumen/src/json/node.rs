@@ -1,7 +1,5 @@
 //! Node construction from JSON for the renderer-agnostic node schema.
 
-use std::{collections::HashMap, ops::Range};
-
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
@@ -771,9 +769,12 @@ fn build_switch(id: NodeId, obj: &serde_json::Map<String, Value>) -> Result<Swit
         id,
         ..Switch::default()
     };
-    if let Some(map) = obj.get("map") {
-        node.map = parse_switch_map(map)?;
-    }
+    set_property(
+        obj.get("properties").and_then(Value::as_object),
+        "selected_layer",
+        &mut node.selected_layer,
+        None,
+    )?;
     Ok(node)
 }
 
@@ -806,24 +807,4 @@ fn reject_unknown(
     }
 
     Ok(())
-}
-
-fn parse_switch_map(val: &Value) -> Result<HashMap<u16, Range<u32>>> {
-    let obj = val.as_object().context("switch `map` must be an object")?;
-    let mut result = HashMap::new();
-    for (key, range_val) in obj {
-        let index: u16 = key
-            .parse()
-            .with_context(|| format!("switch map key `{key}`"))?;
-        let arr = range_val
-            .as_array()
-            .with_context(|| format!("switch map value for `{key}` must be [start, end]"))?;
-        if arr.len() != 2 {
-            bail!("switch map range must be [start, end]");
-        }
-        let start = arr[0].as_u64().context("range start")? as u32;
-        let end = arr[1].as_u64().context("range end")? as u32;
-        result.insert(index, start..end);
-    }
-    Ok(result)
 }

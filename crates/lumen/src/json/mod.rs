@@ -215,14 +215,8 @@ fn normalize_graph_node(node: &Value) -> Result<Value> {
 
     let mut properties = match kind_type {
         "media_in" => normalize_media_in_properties(kind)?,
-        _ => normalize_node_properties(kind, &["type", "map"]),
+        _ => normalize_node_properties(kind, &["type"]),
     };
-
-    if kind_type == "switch"
-        && let Some(map) = kind.get("map").cloned()
-    {
-        normalized.insert("map".to_string(), map);
-    }
 
     if !properties.is_empty() {
         normalized.insert(
@@ -514,7 +508,7 @@ mod tests {
             "nodes": [
                 { "id": 1, "type": "solid_color", "properties": { "color": [255, 0, 0], "width": 100, "height": 100 } },
                 { "id": 2, "type": "solid_color", "properties": { "color": [0, 255, 0], "width": 100, "height": 100 } },
-                { "id": 3, "type": "switch", "map": { "0": [0, 30], "1": [30, 60] } },
+                { "id": 3, "type": "switch", "properties": { "selected_layer": "=if(frame < 30, 0, 1)" } },
                 { "id": 4, "type": "media_output" }
             ],
             "connections": [

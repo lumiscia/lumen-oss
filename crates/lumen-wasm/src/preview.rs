@@ -675,14 +675,21 @@ async fn render_preview_frame(
             .composition
             .as_ref()
             .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
-        renderer
+        let size = renderer
             .render_frame(composition, frame, media)
             .map_err(|e| {
                 debug_error(&format!(
                     "[lumen-wasm preview] GPU render frame={frame} error: {e}",
                 ));
                 JsValue::from_str(&e.to_string())
-            })?
+            })?;
+        let _ = renderer.precompile_frame_window(
+            composition,
+            frame.saturating_add(1),
+            state.lookahead_count,
+            media,
+        );
+        size
     };
 
     let mut state = state_cell

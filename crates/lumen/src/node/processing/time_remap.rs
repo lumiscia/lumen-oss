@@ -55,6 +55,22 @@ pub fn remap_frame(settings: TimeRemapSettings) -> u32 {
     frame.max(0) as u32
 }
 
+pub fn resolve_settings(
+    node_id: NodeId,
+    frame: &NodeProperty,
+    loop_enabled: &NodeProperty,
+    loop_start: &NodeProperty,
+    loop_end: &NodeProperty,
+    ctx: &crate::expr::ExpressionContext<'_>,
+) -> crate::Result<TimeRemapSettings> {
+    Ok(TimeRemapSettings {
+        frame: frame.resolve_float(node_id, "frame", ctx)?,
+        loop_enabled: loop_enabled.resolve_bool(node_id, "loop_enabled", ctx)?,
+        loop_start: loop_start.resolve_int(node_id, "loop_start", ctx)?,
+        loop_end: loop_end.resolve_int(node_id, "loop_end", ctx)?,
+    })
+}
+
 impl GpuCompileNode for TimeRemap {
     fn compile_gpu(
         &self,
@@ -64,7 +80,6 @@ impl GpuCompileNode for TimeRemap {
         if port.port != "output" {
             return Err(ctx.missing_output(self.id, &port.port));
         }
-        let source = ctx.compile_port(&self.source)?;
         ctx.push_frame_binding(FrameBinding::TimeRemap {
             node_id: self.id,
             frame: self.frame.clone(),
@@ -72,7 +87,15 @@ impl GpuCompileNode for TimeRemap {
             loop_start: self.loop_start.clone(),
             loop_end: self.loop_end.clone(),
         });
-        Ok(source)
+        let target_frame = remap_frame(resolve_settings(
+            self.id,
+            &self.frame,
+            &self.loop_enabled,
+            &self.loop_start,
+            &self.loop_end,
+            &ctx.expr_context(self.id, "frame"),
+        )?);
+        ctx.with_frame_context(target_frame, |ctx| ctx.compile_port(&self.source))
     }
 }
 
@@ -93,24 +116,14 @@ impl GpuFrameBindNode for TimeRemap {
         else {
             return Ok(());
         };
-        let _ = remap_frame(TimeRemapSettings {
-            frame: frame.resolve_float(*node_id, "frame", &ctx.expr_context(*node_id, "frame"))?,
-            loop_enabled: loop_enabled.resolve_bool(
-                *node_id,
-                "loop_enabled",
-                &ctx.expr_context(*node_id, "loop_enabled"),
-            )?,
-            loop_start: loop_start.resolve_int(
-                *node_id,
-                "loop_start",
-                &ctx.expr_context(*node_id, "loop_start"),
-            )?,
-            loop_end: loop_end.resolve_int(
-                *node_id,
-                "loop_end",
-                &ctx.expr_context(*node_id, "loop_end"),
-            )?,
-        });
+        let _ = remap_frame(resolve_settings(
+            *node_id,
+            frame,
+            loop_enabled,
+            loop_start,
+            loop_end,
+            &ctx.expr_context(*node_id, "frame"),
+        )?);
         Ok(())
     }
 }

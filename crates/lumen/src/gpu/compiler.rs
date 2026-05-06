@@ -31,12 +31,37 @@ pub trait GpuFrameBindNode {
 }
 
 #[derive(Debug)]
+struct CompiledPortKey {
+    port: PortRef,
+    frame: u32,
+}
+
+impl PartialEq for CompiledPortKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.frame == other.frame && self.port == other.port
+    }
+}
+
+impl Eq for CompiledPortKey {}
+
+impl std::hash::Hash for CompiledPortKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.port.hash(state);
+        self.frame.hash(state);
+    }
+}
+
+#[derive(Debug)]
 pub struct CompileContext<'a> {
     composition: &'a Composition,
+    frame: u32,
     media: Option<&'a dyn MediaStore>,
     builder: lumen_gpu::RenderPlanBuilder,
-    outputs: HashMap<PortRef, CompiledOutput>,
+    outputs: HashMap<CompiledPortKey, CompiledOutput>,
+    public_outputs: HashMap<PortRef, CompiledOutput>,
     frame_bindings: Vec<FrameBinding>,
+    frame_binding_frames: Vec<Option<u32>>,
+    frame_binding_frame_override: Option<u32>,
     output_format: lumen_gpu::wgpu::TextureFormat,
 }
 
@@ -49,7 +74,15 @@ impl<'a> CompileContext<'a> {
         composition: &'a Composition,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> Self {
-        Self::with_options(composition, None, output_format)
+        Self::with_options(composition, 0, None, output_format)
+    }
+
+    pub fn with_frame(
+        composition: &'a Composition,
+        frame: u32,
+        output_format: lumen_gpu::wgpu::TextureFormat,
+    ) -> Self {
+        Self::with_options(composition, frame, None, output_format)
     }
 
     pub fn with_media<M: MediaStore>(
@@ -57,20 +90,34 @@ impl<'a> CompileContext<'a> {
         media: &'a M,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> Self {
-        Self::with_options(composition, Some(media), output_format)
+        Self::with_media_for_frame(composition, 0, media, output_format)
+    }
+
+    pub fn with_media_for_frame<M: MediaStore>(
+        composition: &'a Composition,
+        frame: u32,
+        media: &'a M,
+        output_format: lumen_gpu::wgpu::TextureFormat,
+    ) -> Self {
+        Self::with_options(composition, frame, Some(media), output_format)
     }
 
     fn with_options(
         composition: &'a Composition,
+        frame: u32,
         media: Option<&'a dyn MediaStore>,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> Self {
         Self {
             composition,
+            frame,
             media,
             builder: lumen_gpu::RenderPlan::builder(),
             outputs: HashMap::new(),
+            public_outputs: HashMap::new(),
             frame_bindings: Vec::new(),
+            frame_binding_frames: Vec::new(),
+            frame_binding_frame_override: None,
             output_format,
         }
     }
@@ -84,8 +131,9 @@ impl<'a> CompileContext<'a> {
         Ok(CompiledComposition {
             plan: self.builder.build(),
             output,
-            node_outputs: self.outputs,
+            node_outputs: self.public_outputs,
             frame_bindings: self.frame_bindings,
+            frame_binding_frames: self.frame_binding_frames,
         })
     }
 
@@ -107,10 +155,16 @@ impl<'a> CompileContext<'a> {
 
     pub(crate) fn push_frame_binding(&mut self, binding: FrameBinding) {
         self.frame_bindings.push(binding);
+        self.frame_binding_frames
+            .push(self.frame_binding_frame_override);
     }
 
     pub(crate) fn compile_port(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
-        if let Some(output) = self.outputs.get(port) {
+        let key = CompiledPortKey {
+            port: port.clone(),
+            frame: self.frame,
+        };
+        if let Some(output) = self.outputs.get(&key) {
             return Ok(output.clone());
         }
 
@@ -151,8 +205,26 @@ impl<'a> CompileContext<'a> {
             NodeKind::MediaOutput(node) => node.compile_gpu(self, port)?,
         };
 
-        self.outputs.insert(port.clone(), output.clone());
+        self.outputs.insert(key, output.clone());
+        self.public_outputs
+            .entry(port.clone())
+            .or_insert_with(|| output.clone());
         Ok(output)
+    }
+
+    pub(crate) fn with_frame_context<T>(
+        &mut self,
+        frame: u32,
+        f: impl FnOnce(&mut Self) -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        let original_frame = self.frame;
+        let original_frame_override = self.frame_binding_frame_override;
+        self.frame = frame;
+        self.frame_binding_frame_override = Some(frame);
+        let result = f(self);
+        self.frame = original_frame;
+        self.frame_binding_frame_override = original_frame_override;
+        result
     }
 
     pub(crate) fn compile_unary_filter(
@@ -279,7 +351,7 @@ impl<'a> CompileContext<'a> {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        self.frame_bindings.push(FrameBinding::SolidColor {
+        self.push_frame_binding(FrameBinding::SolidColor {
             node_id,
             color: NodeProperty::Color([0, 0, 0, 0]),
             buffer: params,
@@ -419,7 +491,7 @@ impl<'a> CompileContext<'a> {
         property_path: &str,
     ) -> ExpressionContext<'_> {
         ExpressionContext {
-            frame: 0,
+            frame: self.frame,
             fps: self.composition.timeline.fps,
             width: self.composition.render_settings.width,
             height: self.composition.render_settings.height,
@@ -468,7 +540,18 @@ impl<'a> FrameBindContext<'a> {
 
     pub fn bind(&self, compiled: &CompiledComposition) -> crate::Result<BoundFrame> {
         let mut bound = BoundFrame::new();
-        for binding in &compiled.frame_bindings {
+        for (index, binding) in compiled.frame_bindings.iter().enumerate() {
+            let binding_frame = compiled
+                .frame_binding_frames
+                .get(index)
+                .copied()
+                .flatten()
+                .unwrap_or(self.frame);
+            let binding_context = Self {
+                composition: self.composition,
+                frame: binding_frame,
+                media: self.media,
+            };
             let node_id = binding.node_id();
             let node =
                 self.composition
@@ -480,35 +563,81 @@ impl<'a> FrameBindContext<'a> {
                         node_id,
                     })?;
             match node {
-                NodeKind::MediaIn(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::SolidColor(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Text(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Path(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Shape(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Boolean(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Merge(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
+                NodeKind::MediaIn(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::SolidColor(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Text(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Path(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Shape(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Boolean(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Merge(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
                 NodeKind::RasterMultiMerge(node) => {
-                    node.bind_gpu_frame(self, binding, &mut bound)?
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
                 }
                 NodeKind::AlphaPremultiply(node) => {
-                    node.bind_gpu_frame(self, binding, &mut bound)?
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
                 }
-                NodeKind::Blur(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::ChannelShuffle(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::ColorGrade(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Curves(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Exposure(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::HueSaturation(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Levels(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Memo(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::TimeRemap(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Transform(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Crop(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Resize(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Shadow(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::WgslShader(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::Switch(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
-                NodeKind::MediaOutput(node) => node.bind_gpu_frame(self, binding, &mut bound)?,
+                NodeKind::Blur(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::ChannelShuffle(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::ColorGrade(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Curves(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Exposure(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::HueSaturation(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Levels(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Memo(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::TimeRemap(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Transform(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Crop(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Resize(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Shadow(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::WgslShader(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::Switch(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
+                NodeKind::MediaOutput(node) => {
+                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
+                }
             }
         }
         Ok(bound)
@@ -760,16 +889,6 @@ pub(crate) fn spatial_bindings(
         lumen_gpu::Binding::uniform(0, 1, params),
         lumen_gpu::Binding::storage_texture(0, 2, output),
     ]
-}
-
-pub(crate) fn selected_switch_layer(
-    node: &crate::node::compositing::switch::Switch,
-    frame: u32,
-) -> Option<usize> {
-    node.map
-        .iter()
-        .filter_map(|(index, frame_range)| frame_range.contains(&frame).then_some(*index as usize))
-        .min()
 }
 
 pub(crate) fn alpha_operation(node_id: NodeId, mode: &str) -> crate::Result<f32> {

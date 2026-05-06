@@ -290,6 +290,7 @@ pub struct CompiledComposition {
     pub output: RasterHandle,
     pub node_outputs: HashMap<PortRef, CompiledOutput>,
     pub frame_bindings: Vec<FrameBinding>,
+    pub frame_binding_frames: Vec<Option<u32>>,
 }
 
 #[derive(Debug, Clone, Default)]

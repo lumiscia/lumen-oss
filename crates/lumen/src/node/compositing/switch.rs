@@ -1,34 +1,42 @@
-use std::{collections::HashMap, ops::Range};
-
-use crate::node::{NodeId, PortRef};
+use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    compiler,
 };
 
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(
     kind = "switch",
     label = "Switch",
-    description = "Selects one raster input according to configured frame ranges.",
+    description = "Selects one raster input according to a controlled layer index.",
     category = "compositing"
 )]
 pub struct Switch {
     pub id: NodeId,
+    #[property(kind = "int")]
+    pub selected_layer: NodeProperty,
     #[input(optional, variadic)]
     pub layers: Vec<PortRef>,
-    pub map: HashMap<u16, Range<u32>>,
 }
 
 impl Default for Switch {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
+            selected_layer: NodeProperty::Int(0),
             layers: Vec::new(),
-            map: HashMap::new(),
         }
     }
+}
+
+pub fn selected_layer_for_frame(
+    node: &Switch,
+    ctx: &crate::expr::ExpressionContext<'_>,
+) -> crate::Result<Option<usize>> {
+    let selected = node
+        .selected_layer
+        .resolve_int(node.id, "selected_layer", ctx)?;
+    Ok((selected >= 0).then_some(selected as usize))
 }
 
 impl GpuCompileNode for Switch {
@@ -41,7 +49,8 @@ impl GpuCompileNode for Switch {
             return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let selected_layer = compiler::selected_switch_layer(self, 0);
+        let selected_layer =
+            selected_layer_for_frame(self, &ctx.expr_context(self.id, "selected_layer"))?;
         ctx.push_frame_binding(FrameBinding::Switch {
             node_id: self.id,
             selected_layer,
@@ -63,24 +72,13 @@ impl GpuCompileNode for Switch {
 impl GpuFrameBindNode for Switch {
     fn bind_gpu_frame(
         &self,
-        ctx: &FrameBindContext<'_>,
+        _ctx: &FrameBindContext<'_>,
         binding: &FrameBinding,
-        bound: &mut BoundFrame,
+        _bound: &mut BoundFrame,
     ) -> crate::Result<()> {
-        if let FrameBinding::SolidColor {
-            node_id,
-            color,
-            buffer,
-        } = binding
-        {
-            let color =
-                color.resolve_color(*node_id, "color", &ctx.expr_context(*node_id, "color"))?;
-            bound.write_buffer(
-                *buffer,
-                0,
-                bytemuck::bytes_of(&compiler::ColorParams::from_rgba8(color)),
-            );
-        }
+        let FrameBinding::Switch { .. } = binding else {
+            return Ok(());
+        };
         Ok(())
     }
 }

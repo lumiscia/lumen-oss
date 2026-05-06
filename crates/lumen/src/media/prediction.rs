@@ -128,12 +128,11 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 })?;
             }
             NodeKind::Switch(switch) => {
-                if let Some(layer) = switch
-                    .map
-                    .iter()
-                    .filter_map(|(index, range)| range.contains(&self.frame).then_some(*index))
-                    .min()
-                    .and_then(|index| switch.layers.get(index as usize))
+                if let Some(layer) = crate::node::compositing::switch::selected_layer_for_frame(
+                    switch,
+                    &self.expr_context("switch_requirements"),
+                )?
+                .and_then(|index| switch.layers.get(index))
                 {
                     self.collect_port(layer, collector)?;
                 }
