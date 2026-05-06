@@ -177,10 +177,10 @@ impl AudioResampler {
             ffi::check(
                 sys::swr_alloc_set_opts2(
                     &mut ptr,
-                    &dst_layout,
+                    ptr::addr_of_mut!(dst_layout),
                     config.sample_format.to_av_sample_format(),
                     config.sample_rate as i32,
-                    &src_layout,
+                    ptr::addr_of_mut!(src_layout),
                     source.frame.sample_format(),
                     (*source.frame.as_ptr()).sample_rate,
                     0,
@@ -213,11 +213,11 @@ impl AudioResampler {
         } as usize;
         let channels = self.config.channels as usize;
         let mut output = vec![0_f32; output_capacity.saturating_mul(channels)];
-        let output_ptr = output.as_mut_ptr() as *mut u8;
+        let mut output_ptr = output.as_mut_ptr() as *mut u8;
         let converted = unsafe {
             sys::swr_convert(
                 self.ptr,
-                &output_ptr,
+                ptr::addr_of_mut!(output_ptr),
                 output_capacity as i32,
                 (*source.frame.as_ptr()).data.as_ptr() as *mut *const u8,
                 source.frame.nb_samples() as i32,

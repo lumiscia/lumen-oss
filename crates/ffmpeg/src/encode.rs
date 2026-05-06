@@ -438,7 +438,6 @@ impl VideoEncoder {
                 (*self.frame.as_mut_ptr()).linesize.as_mut_ptr(),
             );
             (*self.frame.as_mut_ptr()).pts = frame.pts.unwrap_or(self.next_pts);
-            (*self.frame.as_mut_ptr()).duration = 1;
         }
         self.next_pts = self.next_pts.saturating_add(1);
         self.send_frame(output, self.frame.as_ptr())
@@ -735,7 +734,6 @@ impl AudioEncoder {
             )?;
             fill_audio_frame(frame.as_mut_ptr(), samples, sample_count, self.channels)?;
             (*frame.as_mut_ptr()).pts = self.next_pts;
-            (*frame.as_mut_ptr()).duration = sample_count as i64;
         }
         self.next_pts = self.next_pts.saturating_add(sample_count as i64);
         self.send_frame(output, frame.as_ptr())
@@ -1063,7 +1061,6 @@ impl VideoEncoder {
             (*av_frame.as_mut_ptr()).width = width as i32;
             (*av_frame.as_mut_ptr()).height = height as i32;
             (*av_frame.as_mut_ptr()).pts = frame.pts().unwrap_or(self.next_pts);
-            (*av_frame.as_mut_ptr()).duration = 1;
             (*av_frame.as_mut_ptr()).hw_frames_ctx = sys::av_buffer_ref(hw_frames.ptr);
             if (*av_frame.as_mut_ptr()).hw_frames_ctx.is_null() {
                 return Err(FfmpegError::new(
@@ -1114,7 +1111,6 @@ impl VideoEncoder {
             (*av_frame.as_mut_ptr()).width = frame.dimensions().0 as i32;
             (*av_frame.as_mut_ptr()).height = frame.dimensions().1 as i32;
             (*av_frame.as_mut_ptr()).pts = frame.pts().unwrap_or(self.next_pts);
-            (*av_frame.as_mut_ptr()).duration = 1;
 
             let pixel_buffer = frame.pixel_buffer_ptr();
             let retained: CFRetained<CVPixelBuffer> = CFRetained::retain(pixel_buffer);

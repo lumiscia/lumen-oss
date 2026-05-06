@@ -42,7 +42,7 @@ pub(crate) fn error_from_code(operation: &'static str, code: i32) -> FfmpegError
 }
 
 pub(crate) fn av_error_string(code: i32) -> String {
-    let mut buffer = [0_i8; 256];
+    let mut buffer = [0 as libc::c_char; 256];
     unsafe {
         let result = sys::av_strerror(code, buffer.as_mut_ptr(), buffer.len());
         if result < 0 {
