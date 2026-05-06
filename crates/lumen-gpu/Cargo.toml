@@ -4,20 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-metal = ["wgpu/metal", "wgpu-hal/metal"]
-vulkan = []
+metal = ["dep:wgpu-hal", "wgpu/metal", "wgpu-hal/metal"]
+vulkan = ["dep:ash", "dep:wgpu-hal", "wgpu/vulkan", "wgpu-hal/vulkan"]
 
 [dependencies]
 anyhow = "1.0.102"
-ash = "0.38.0"
+ash = { version = "0.38.0", optional = true }
 bytemuck = { version = "1.25.0", features = ["derive"] }
-wgpu = { version = "29.0.3", default-features = false, features = [
-  "std",
-  "vulkan",
-  "webgl",
-  "wgsl",
-] }
-wgpu-hal = { version = "29.0.3", default-features = false, features = ["vulkan"] }
+wgpu = { version = "29.0.3", default-features = false, features = ["std", "webgl", "wgsl"] }
+wgpu-hal = { version = "29.0.3", default-features = false, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { version = "29.0.3", default-features = false, features = ["metal"] }
