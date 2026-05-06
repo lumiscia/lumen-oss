@@ -246,6 +246,42 @@ export class LumenPreviewController extends WasmLumenPreviewController {
     this.resetWindowLoads();
   }
 
+  currentFrame(): number {
+    return super.currentFrame();
+  }
+
+  durationFrames(): number {
+    return super.durationFrames();
+  }
+
+  height(): number {
+    return super.height();
+  }
+
+  isPlaying(): boolean {
+    return super.isPlaying();
+  }
+
+  pause(): void {
+    super.pause();
+  }
+
+  play(): void {
+    super.play();
+  }
+
+  setFrame(frame: number): void {
+    super.setFrame(frame);
+  }
+
+  targetFrameForTimeMs(timeMs: number): number {
+    return super.targetFrameForTimeMs(timeMs);
+  }
+
+  width(): number {
+    return super.width();
+  }
+
   override clearMedia(): void {
     super.clearMedia();
     this.bridge.clear();

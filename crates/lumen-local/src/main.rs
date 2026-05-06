@@ -1,5 +1,7 @@
+#[cfg(all(target_os = "macos", feature = "metal"))]
+use std::collections::VecDeque;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     env, fs,
     path::{Component, Path, PathBuf},
     sync::{Arc, RwLock, mpsc},
@@ -20,12 +22,14 @@ use lumen::{
     image::ImageFileResolver,
     media::{ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
+#[cfg(all(target_os = "macos", feature = "metal"))]
+use lumen_ffmpeg::EncodeMode;
 use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, CpuVideoFrame, EncodeMode, MuxedEncoder, PixelFormat,
-    SampleFormat, VideoCodec, VideoEncoderConfig,
+    AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, SampleFormat,
+    VideoCodec, VideoEncoderConfig,
 };
 use lumen_ffmpeg::{GpuBackend, gpu_texture_encode_support};
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_ffmpeg::{GpuVideoInput, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache};
 
 #[derive(Debug)]
@@ -38,6 +42,7 @@ struct CliArgs {
 }
 
 const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
+#[cfg(all(target_os = "macos", feature = "metal"))]
 const GPU_ENCODER_FRAMES_IN_FLIGHT: usize = 3;
 
 struct EncoderFrame {
@@ -683,7 +688,7 @@ fn render_mp4(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "metal"))]
 fn render_video_gpu_videotoolbox(
     composition: Composition,
     media_store: LocalMediaStore,
@@ -830,7 +835,7 @@ fn render_video_gpu_videotoolbox(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "metal"))]
 struct PendingGpuEncodeFrame {
     frame: u32,
     pixel_frame: MetalPixelBufferFrame,
@@ -838,7 +843,7 @@ struct PendingGpuEncodeFrame {
     retained_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "metal"))]
 fn encode_ready_gpu_frame(
     renderer: &GpuCompositionRenderer,
     encoder: &mut MuxedEncoder,
@@ -876,7 +881,7 @@ fn encode_ready_gpu_frame(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(all(target_os = "macos", feature = "metal")))]
 fn render_video_gpu_videotoolbox(
     _composition: Composition,
     _media_store: LocalMediaStore,
@@ -891,7 +896,7 @@ fn render_video_gpu_videotoolbox(
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "metal"))]
 fn metal_device_from_wgpu(
     device: &lumen_gpu::wgpu::Device,
 ) -> Result<objc2::rc::Retained<lumen_ffmpeg::Objc2MetalDevice>> {
@@ -900,7 +905,7 @@ fn metal_device_from_wgpu(
     Ok(hal_device.raw_device().clone())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "metal"))]
 fn import_metal_texture_as_wgpu(
     device: &lumen_gpu::wgpu::Device,
     texture: objc2::rc::Retained<lumen_ffmpeg::Objc2MetalTexture>,
@@ -942,7 +947,7 @@ fn import_metal_texture_as_wgpu(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "metal"))]
 fn external_output_texture_desc(
     size: lumen_gpu::Size,
     format: lumen_gpu::wgpu::TextureFormat,
@@ -985,6 +990,7 @@ fn write_composited_audio(
     Ok(())
 }
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
 fn write_composited_audio_direct(
     composition: &Composition,
     media_store: &LocalMediaStore,
