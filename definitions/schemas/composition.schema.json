@@ -1,0 +1,34 @@
+{
+  "$defs": {
+    "nodeKinds": [
+      "media_in",
+      "solid_color",
+      "text",
+      "path",
+      "shape",
+      "boolean",
+      "merge",
+      "raster_multimerge",
+      "switch",
+      "memo",
+      "alpha_premultiply",
+      "blur",
+      "channel_shuffle",
+      "color_grade",
+      "curves",
+      "exposure",
+      "hue_saturation",
+      "levels",
+      "time_remap",
+      "transform",
+      "crop",
+      "resize",
+      "shadow",
+      "wgsl_shader",
+      "media_output"
+    ]
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "type": "object"
+}

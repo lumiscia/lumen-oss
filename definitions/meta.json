@@ -1,0 +1,1271 @@
+{
+  "schemaVersion": 1,
+  "nodeKinds": [
+    "media_in",
+    "solid_color",
+    "text",
+    "path",
+    "shape",
+    "boolean",
+    "merge",
+    "raster_multimerge",
+    "switch",
+    "memo",
+    "alpha_premultiply",
+    "blur",
+    "channel_shuffle",
+    "color_grade",
+    "curves",
+    "exposure",
+    "hue_saturation",
+    "levels",
+    "time_remap",
+    "transform",
+    "crop",
+    "resize",
+    "shadow",
+    "wgsl_shader",
+    "media_output"
+  ],
+  "nodeSpecs": {
+    "alpha_premultiply": {
+      "kind": "alpha_premultiply",
+      "label": "Alpha Premultiply",
+      "description": "Converts raster alpha between premultiplied and unpremultiplied representations.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "mode",
+          "kind": "string",
+          "defaultValue": "premultiply"
+        }
+      ],
+      "defaultProperties": {
+        "mode": "premultiply"
+      }
+    },
+    "blur": {
+      "kind": "blur",
+      "label": "Blur",
+      "description": "Applies a simple box blur to a raster.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "radius",
+          "kind": "float",
+          "defaultValue": 4.0
+        }
+      ],
+      "defaultProperties": {
+        "radius": 4.0
+      }
+    },
+    "boolean": {
+      "kind": "boolean",
+      "label": "Boolean",
+      "description": "Combines two raster alpha masks with boolean operations.",
+      "category": "compositing",
+      "inputs": [
+        {
+          "name": "a",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "name": "b",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "operation",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "threshold",
+          "kind": "float",
+          "defaultValue": 0.0
+        }
+      ],
+      "defaultProperties": {
+        "operation": 0,
+        "threshold": 0.0
+      }
+    },
+    "channel_shuffle": {
+      "kind": "channel_shuffle",
+      "label": "Channel Shuffle",
+      "description": "Remaps source raster color channels.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "red",
+          "kind": "string",
+          "defaultValue": "red"
+        },
+        {
+          "name": "green",
+          "kind": "string",
+          "defaultValue": "green"
+        },
+        {
+          "name": "blue",
+          "kind": "string",
+          "defaultValue": "blue"
+        },
+        {
+          "name": "alpha",
+          "kind": "string",
+          "defaultValue": "alpha"
+        }
+      ],
+      "defaultProperties": {
+        "alpha": "alpha",
+        "blue": "blue",
+        "green": "green",
+        "red": "red"
+      }
+    },
+    "color_grade": {
+      "kind": "color_grade",
+      "label": "Color Grade",
+      "description": "Applies a LUT-driven color transform to a raster.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "lut_source",
+          "kind": "string",
+          "defaultValue": "identity"
+        },
+        {
+          "name": "strength",
+          "kind": "float",
+          "defaultValue": 1.0
+        },
+        {
+          "name": "interpolation",
+          "kind": "int",
+          "defaultValue": 1
+        }
+      ],
+      "defaultProperties": {
+        "interpolation": 1,
+        "lut_source": "identity",
+        "strength": 1.0
+      }
+    },
+    "crop": {
+      "kind": "crop",
+      "label": "Crop",
+      "description": "Extracts a fixed raster region into static output bounds.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "x",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "y",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "width",
+          "kind": "int",
+          "defaultValue": 1
+        },
+        {
+          "name": "height",
+          "kind": "int",
+          "defaultValue": 1
+        }
+      ],
+      "defaultProperties": {
+        "height": 1,
+        "width": 1,
+        "x": 0,
+        "y": 0
+      }
+    },
+    "curves": {
+      "kind": "curves",
+      "label": "Curves",
+      "description": "Applies a 1D RGB curve table to a raster.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "curve_source",
+          "kind": "string",
+          "defaultValue": "identity"
+        },
+        {
+          "name": "strength",
+          "kind": "float",
+          "defaultValue": 1.0
+        }
+      ],
+      "defaultProperties": {
+        "curve_source": "identity",
+        "strength": 1.0
+      }
+    },
+    "exposure": {
+      "kind": "exposure",
+      "label": "Exposure",
+      "description": "Adjusts raster exposure, contrast, and offset.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "exposure",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "contrast",
+          "kind": "float",
+          "defaultValue": 1.0
+        },
+        {
+          "name": "offset",
+          "kind": "float",
+          "defaultValue": 0.0
+        }
+      ],
+      "defaultProperties": {
+        "contrast": 1.0,
+        "exposure": 0.0,
+        "offset": 0.0
+      }
+    },
+    "hue_saturation": {
+      "kind": "hue_saturation",
+      "label": "Hue Saturation",
+      "description": "Adjusts raster hue, saturation, and lightness.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "hue_degrees",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "saturation",
+          "kind": "float",
+          "defaultValue": 1.0
+        },
+        {
+          "name": "lightness",
+          "kind": "float",
+          "defaultValue": 0.0
+        }
+      ],
+      "defaultProperties": {
+        "hue_degrees": 0.0,
+        "lightness": 0.0,
+        "saturation": 1.0
+      }
+    },
+    "levels": {
+      "kind": "levels",
+      "label": "Levels",
+      "description": "Remaps raster black, white, gamma, and output range.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "black_point",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "white_point",
+          "kind": "float",
+          "defaultValue": 1.0
+        },
+        {
+          "name": "gamma",
+          "kind": "float",
+          "defaultValue": 1.0
+        },
+        {
+          "name": "output_black",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "output_white",
+          "kind": "float",
+          "defaultValue": 1.0
+        }
+      ],
+      "defaultProperties": {
+        "black_point": 0.0,
+        "gamma": 1.0,
+        "output_black": 0.0,
+        "output_white": 1.0,
+        "white_point": 1.0
+      }
+    },
+    "media_in": {
+      "kind": "media_in",
+      "label": "Media In",
+      "description": "Binds an external image or video frame as a GPU texture.",
+      "category": "source",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "kind",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "source",
+          "kind": "string",
+          "defaultValue": ""
+        },
+        {
+          "name": "range_start",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "range_end",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "speed",
+          "kind": "float",
+          "defaultValue": 1.0
+        },
+        {
+          "name": "loop_mode",
+          "kind": "int",
+          "defaultValue": 0
+        }
+      ],
+      "defaultProperties": {
+        "kind": 0,
+        "loop_mode": 0,
+        "range_end": 0,
+        "range_start": 0,
+        "source": "",
+        "speed": 1.0
+      }
+    },
+    "media_output": {
+      "kind": "media_output",
+      "label": "Media Output",
+      "description": "Copies the compiled raster into the final composition output.",
+      "category": "output",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [],
+      "defaultProperties": {}
+    },
+    "memo": {
+      "kind": "memo",
+      "label": "Memo",
+      "description": "Aliases a raster input through a stable cache boundary.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "cache_id",
+          "kind": "string",
+          "defaultValue": ""
+        },
+        {
+          "name": "allow_expressions",
+          "kind": "bool",
+          "defaultValue": false
+        }
+      ],
+      "defaultProperties": {
+        "allow_expressions": false,
+        "cache_id": ""
+      }
+    },
+    "merge": {
+      "kind": "merge",
+      "label": "Merge",
+      "description": "Composites an overlay raster over a base raster.",
+      "category": "compositing",
+      "inputs": [
+        {
+          "name": "base",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "name": "overlay",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        },
+        {
+          "name": "mask",
+          "kind": "raster_frame",
+          "optional": true,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "opacity",
+          "kind": "float",
+          "defaultValue": 1.0
+        },
+        {
+          "name": "blend_mode",
+          "kind": "int",
+          "defaultValue": 0
+        }
+      ],
+      "defaultProperties": {
+        "blend_mode": 0,
+        "opacity": 1.0
+      }
+    },
+    "path": {
+      "kind": "path",
+      "label": "Path",
+      "description": "Produces a rasterized vector path source.",
+      "category": "vector",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "data",
+          "kind": "string",
+          "defaultValue": "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+        },
+        {
+          "name": "position",
+          "kind": "vec2",
+          "defaultValue": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "fill_enabled",
+          "kind": "bool",
+          "defaultValue": true
+        },
+        {
+          "name": "fill_color",
+          "kind": "color",
+          "defaultValue": [
+            255,
+            255,
+            255,
+            255
+          ]
+        },
+        {
+          "name": "stroke_enabled",
+          "kind": "bool",
+          "defaultValue": false
+        },
+        {
+          "name": "stroke_color",
+          "kind": "color",
+          "defaultValue": [
+            0,
+            0,
+            0,
+            255
+          ]
+        },
+        {
+          "name": "stroke_width",
+          "kind": "float",
+          "defaultValue": 1.0
+        }
+      ],
+      "defaultProperties": {
+        "data": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
+        "fill_color": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "fill_enabled": true,
+        "position": [
+          0.0,
+          0.0
+        ],
+        "stroke_color": [
+          0,
+          0,
+          0,
+          255
+        ],
+        "stroke_enabled": false,
+        "stroke_width": 1.0
+      }
+    },
+    "raster_multimerge": {
+      "kind": "raster_multimerge",
+      "label": "Raster Multi Merge",
+      "description": "Composites a variadic stack of raster layers in order.",
+      "category": "compositing",
+      "inputs": [
+        {
+          "name": "layers",
+          "kind": "raster_frame",
+          "optional": true,
+          "variadic": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "opacity",
+          "kind": "float",
+          "defaultValue": 1.0
+        },
+        {
+          "name": "blend_mode",
+          "kind": "int",
+          "defaultValue": 0
+        }
+      ],
+      "defaultProperties": {
+        "blend_mode": 0,
+        "opacity": 1.0
+      }
+    },
+    "resize": {
+      "kind": "resize",
+      "label": "Resize",
+      "description": "Resamples a raster into static output bounds.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "width",
+          "kind": "int",
+          "defaultValue": 1
+        },
+        {
+          "name": "height",
+          "kind": "int",
+          "defaultValue": 1
+        },
+        {
+          "name": "mode",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "sampling",
+          "kind": "int",
+          "defaultValue": 1
+        }
+      ],
+      "defaultProperties": {
+        "height": 1,
+        "mode": 0,
+        "sampling": 1,
+        "width": 1
+      }
+    },
+    "shadow": {
+      "kind": "shadow",
+      "label": "Shadow",
+      "description": "Composites a blurred alpha shadow behind a raster.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "offset_x",
+          "kind": "float",
+          "defaultValue": 8.0
+        },
+        {
+          "name": "offset_y",
+          "kind": "float",
+          "defaultValue": 8.0
+        },
+        {
+          "name": "radius",
+          "kind": "float",
+          "defaultValue": 8.0
+        },
+        {
+          "name": "color",
+          "kind": "color",
+          "defaultValue": [
+            0,
+            0,
+            0,
+            255
+          ]
+        },
+        {
+          "name": "opacity",
+          "kind": "float",
+          "defaultValue": 0.5
+        }
+      ],
+      "defaultProperties": {
+        "color": [
+          0,
+          0,
+          0,
+          255
+        ],
+        "offset_x": 8.0,
+        "offset_y": 8.0,
+        "opacity": 0.5,
+        "radius": 8.0
+      }
+    },
+    "shape": {
+      "kind": "shape",
+      "label": "Shape",
+      "description": "Produces a vector shape layer for GPU rasterization.",
+      "category": "vector",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "geometry_kind",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "width",
+          "kind": "int",
+          "defaultValue": 1
+        },
+        {
+          "name": "height",
+          "kind": "int",
+          "defaultValue": 1
+        },
+        {
+          "name": "border_radius",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "polygon_points",
+          "kind": "string",
+          "defaultValue": ""
+        },
+        {
+          "name": "position",
+          "kind": "vec2",
+          "defaultValue": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "fill_enabled",
+          "kind": "bool",
+          "defaultValue": true
+        },
+        {
+          "name": "fill_color",
+          "kind": "color",
+          "defaultValue": [
+            255,
+            255,
+            255,
+            255
+          ]
+        },
+        {
+          "name": "stroke_enabled",
+          "kind": "bool",
+          "defaultValue": false
+        },
+        {
+          "name": "stroke_color",
+          "kind": "color",
+          "defaultValue": [
+            0,
+            0,
+            0,
+            255
+          ]
+        },
+        {
+          "name": "stroke_width",
+          "kind": "float",
+          "defaultValue": 1.0
+        }
+      ],
+      "defaultProperties": {
+        "border_radius": 0.0,
+        "fill_color": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "fill_enabled": true,
+        "geometry_kind": 0,
+        "height": 1,
+        "polygon_points": "",
+        "position": [
+          0.0,
+          0.0
+        ],
+        "stroke_color": [
+          0,
+          0,
+          0,
+          255
+        ],
+        "stroke_enabled": false,
+        "stroke_width": 1.0,
+        "width": 1
+      }
+    },
+    "solid_color": {
+      "kind": "solid_color",
+      "label": "Solid Color",
+      "description": "Generates a solid raster texture.",
+      "category": "source",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "color",
+          "kind": "color",
+          "defaultValue": [
+            0,
+            0,
+            0,
+            255
+          ]
+        },
+        {
+          "name": "width",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "height",
+          "kind": "int",
+          "defaultValue": 0
+        }
+      ],
+      "defaultProperties": {
+        "color": [
+          0,
+          0,
+          0,
+          255
+        ],
+        "height": 0,
+        "width": 0
+      }
+    },
+    "switch": {
+      "kind": "switch",
+      "label": "Switch",
+      "description": "Selects one raster input according to a controlled layer index.",
+      "category": "compositing",
+      "inputs": [
+        {
+          "name": "layers",
+          "kind": "raster_frame",
+          "optional": true,
+          "variadic": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "selected_layer",
+          "kind": "int",
+          "defaultValue": 0
+        }
+      ],
+      "defaultProperties": {
+        "selected_layer": 0
+      }
+    },
+    "text": {
+      "kind": "text",
+      "label": "Text",
+      "description": "Produces a text raster source.",
+      "category": "source",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "content",
+          "kind": "string",
+          "defaultValue": ""
+        },
+        {
+          "name": "font_family",
+          "kind": "string",
+          "defaultValue": "Roboto"
+        },
+        {
+          "name": "font_size",
+          "kind": "float",
+          "defaultValue": 16.0
+        },
+        {
+          "name": "font_weight",
+          "kind": "int",
+          "defaultValue": 400
+        },
+        {
+          "name": "font_style",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "max_width",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "position",
+          "kind": "vec2",
+          "defaultValue": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "color",
+          "kind": "color",
+          "defaultValue": [
+            255,
+            255,
+            255,
+            255
+          ]
+        },
+        {
+          "name": "alignment_horizontal",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "alignment_vertical",
+          "kind": "int",
+          "defaultValue": 0
+        }
+      ],
+      "defaultProperties": {
+        "alignment_horizontal": 0,
+        "alignment_vertical": 0,
+        "color": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "content": "",
+        "font_family": "Roboto",
+        "font_size": 16.0,
+        "font_style": 0,
+        "font_weight": 400,
+        "max_width": 0.0,
+        "position": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "time_remap": {
+      "kind": "time_remap",
+      "label": "Time Remap",
+      "description": "Evaluates a raster input at another frame.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "frame",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "loop_enabled",
+          "kind": "bool",
+          "defaultValue": false
+        },
+        {
+          "name": "loop_start",
+          "kind": "int",
+          "defaultValue": 0
+        },
+        {
+          "name": "loop_end",
+          "kind": "int",
+          "defaultValue": 0
+        }
+      ],
+      "defaultProperties": {
+        "frame": 0.0,
+        "loop_enabled": false,
+        "loop_end": 0,
+        "loop_start": 0
+      }
+    },
+    "transform": {
+      "kind": "transform",
+      "label": "Transform",
+      "description": "Transforms a raster inside its existing static bounds.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "scale_x",
+          "kind": "float",
+          "defaultValue": 1.0
+        },
+        {
+          "name": "scale_y",
+          "kind": "float",
+          "defaultValue": 1.0
+        },
+        {
+          "name": "translate_x",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "translate_y",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "rotate",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "pivot_x",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "pivot_y",
+          "kind": "float",
+          "defaultValue": 0.0
+        },
+        {
+          "name": "sampling",
+          "kind": "int",
+          "defaultValue": 1
+        }
+      ],
+      "defaultProperties": {
+        "pivot_x": 0.0,
+        "pivot_y": 0.0,
+        "rotate": 0.0,
+        "sampling": 1,
+        "scale_x": 1.0,
+        "scale_y": 1.0,
+        "translate_x": 0.0,
+        "translate_y": 0.0
+      }
+    },
+    "wgsl_shader": {
+      "kind": "wgsl_shader",
+      "label": "WGSL Shader",
+      "description": "Runs a custom WGSL compute shader over a raster.",
+      "category": "processing",
+      "inputs": [
+        {
+          "name": "source",
+          "kind": "raster_frame",
+          "optional": false,
+          "variadic": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "kind": "raster_frame"
+        }
+      ],
+      "properties": [
+        {
+          "name": "shader",
+          "kind": "string",
+          "defaultValue": ""
+        },
+        {
+          "name": "bindings",
+          "kind": "string",
+          "defaultValue": ""
+        }
+      ],
+      "defaultProperties": {
+        "bindings": "",
+        "shader": ""
+      }
+    }
+  }
+}
