@@ -107,6 +107,7 @@ async function main() {
     containerRegistryAuthId:
       optionalEnv("RUNPOD_SERVERLESS_CONTAINER_REGISTRY_AUTH_ID") ??
       optionalEnv("RUNPOD_FLASH_CONTAINER_REGISTRY_AUTH_ID"),
+    dockerEntrypoint: [],
     dockerStartCmd: ["/usr/local/bin/lumen-runpod"],
     env: templateEnv,
     imageName,
