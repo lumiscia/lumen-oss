@@ -19,7 +19,7 @@ use crate::render::{
 use self::{
     artifact::{upload_artifact, validate_artifact_staging},
     media::stage_remote_media,
-    progress::{ProgressMetadata, post_progress_async, post_progress_sync},
+    progress::{ProgressMetadata, post_progress_async, post_progress_detached},
     util::sanitize_error_message,
 };
 
@@ -98,20 +98,14 @@ async fn execute_render_job(input: RenderJobInput) -> Result<RenderJobResponse, 
     let staged_media = stage_remote_media(input.project, input.media, allowed_media_hosts).await?;
     let media_stage_ms = stage_started.elapsed().as_millis();
     tracing::info!(job_id, media_stage_ms, "staged render media");
-    post_progress_async(
+    post_progress_detached(
         &input.progress_callback,
         0.02,
         "media_staged",
         "processing",
         None,
         None,
-    )
-    .await
-    .map_err(|err| RenderJobError {
-        code: "progress_callback_failed".to_string(),
-        message: sanitize_error_message(&format!("media_staged progress callback failed: {err}")),
-        retryable: true,
-    })?;
+    );
 
     let bundle = convert_project_payload(&staged_media.project).map_err(map_execution_error)?;
     tracing::info!(
@@ -128,7 +122,7 @@ async fn execute_render_job(input: RenderJobInput) -> Result<RenderJobResponse, 
         video_encoder: None,
     };
 
-    post_progress_sync(
+    post_progress_detached(
         &input.progress_callback,
         0.05,
         "accepted",
@@ -246,7 +240,7 @@ impl ProgressReporter {
             "render progress"
         );
         let progress = 0.05 + (0.90 * event.ratio.clamp(0.0, 1.0));
-        post_progress_sync(
+        post_progress_detached(
             &self.callback,
             progress,
             event.stage,

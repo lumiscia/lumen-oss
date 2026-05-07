@@ -28,7 +28,7 @@ pub(super) struct ProgressMetadata<'a> {
     pub resolution: Option<String>,
 }
 
-pub(super) fn post_progress_sync(
+pub(super) fn post_progress_detached(
     callback: &Option<ProgressCallback>,
     progress: f32,
     stage: &str,
@@ -56,6 +56,8 @@ pub(super) fn post_progress_sync(
     );
 
     let callback = callback.clone();
+    let stage = stage.to_string();
+    let state = state.to_string();
     let mut payload = serde_json::Map::from_iter([
         (
             "progress".to_string(),
@@ -72,18 +74,16 @@ pub(super) fn post_progress_sync(
     }
     let payload = serde_json::Value::Object(payload);
     let callback_url = callback.url.clone();
-    let result = std::thread::spawn(move || post_progress_payload_blocking(&callback, payload))
-        .join()
-        .unwrap_or_else(|_| Err("progress callback thread panicked".to_string()));
-
-    if let Err(err) = result {
-        tracing::warn!(
-            callback_url,
-            stage,
-            state,
-            "failed to post render progress callback: {err}"
-        );
-    }
+    std::thread::spawn(move || {
+        if let Err(err) = post_progress_payload_blocking(&callback, payload) {
+            tracing::warn!(
+                callback_url,
+                stage,
+                state,
+                "failed to post detached render progress callback: {err}"
+            );
+        }
+    });
 }
 
 pub(super) async fn post_progress_async(
