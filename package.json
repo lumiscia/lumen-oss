@@ -8,6 +8,8 @@
     "build": "pnpm -r build",
     "check": "pnpm -r check",
     "clean": "pnpm -r clean",
+    "download:bindings": "pnpm --filter @lumiscia/download-wasm download",
+    "download:wasm": "pnpm --filter @lumiscia/download-wasm download",
     "generate:types": "pnpm --filter @lumiscia/generate-types generate"
   },
   "devDependencies": {
