@@ -1,4 +1,10 @@
 packages:
-  - "packages/lumen"
+  - "examples/*"
+  - "packages/lumen-bindings"
+  - "packages/lumen-node"
+  - "packages/lumen-react"
+  - "packages/lumen-shared"
+  - "packages/lumen-svelte"
   - "packages/lumen-types"
+  - "packages/lumen-preview"
   - "tooling/*"
