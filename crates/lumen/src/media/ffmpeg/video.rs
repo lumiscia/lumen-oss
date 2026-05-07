@@ -103,6 +103,42 @@ enum GpuDecodeStatus {
     Unavailable { backend: GpuBackend, reason: String },
 }
 
+impl GpuDecodeStatus {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::NotRequested => "cpu_not_requested",
+            Self::Active {
+                backend: GpuBackend::Cuda,
+            } => "gpu_cuda",
+            Self::Active {
+                backend: GpuBackend::Metal,
+            } => "gpu_metal",
+            Self::Active {
+                backend: GpuBackend::Vulkan,
+            } => "gpu_vulkan",
+            Self::Unavailable {
+                backend: GpuBackend::Cuda,
+                ..
+            } => "cpu_cuda_unavailable",
+            Self::Unavailable {
+                backend: GpuBackend::Metal,
+                ..
+            } => "cpu_metal_unavailable",
+            Self::Unavailable {
+                backend: GpuBackend::Vulkan,
+                ..
+            } => "cpu_vulkan_unavailable",
+        }
+    }
+
+    fn unavailable_reason(&self) -> Option<&str> {
+        match self {
+            Self::Unavailable { reason, .. } => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+}
+
 impl LibavStreamDecoder {
     fn open(source: impl Into<String>, prefer_hardware_decode: bool) -> Result<Self, MediaError> {
         let source = source.into();
@@ -455,6 +491,7 @@ fn handle_worker_request(
 pub struct FfmpegVideoResolver {
     id: String,
     metadata: VideoMetadata,
+    decode_status: GpuDecodeStatus,
     request_tx: mpsc::Sender<WorkerRequest>,
     worker_handle: Mutex<Option<thread::JoinHandle<()>>>,
     scheduled_frames: Mutex<HashSet<u32>>,
@@ -477,6 +514,7 @@ impl FfmpegVideoResolver {
             frame_count: decoder.frame_count,
             fps: decoder.fps as f32,
         };
+        let decode_status = decoder.gpu_decode_status.clone();
         drop(decoder);
 
         let (request_tx, request_rx) = mpsc::channel::<WorkerRequest>();
@@ -487,10 +525,19 @@ impl FfmpegVideoResolver {
         Ok(Self {
             id: source,
             metadata,
+            decode_status,
             request_tx,
             worker_handle: Mutex::new(Some(worker_handle)),
             scheduled_frames: Mutex::new(HashSet::new()),
         })
+    }
+
+    pub fn decode_mode_label(&self) -> &'static str {
+        self.decode_status.label()
+    }
+
+    pub fn decode_unavailable_reason(&self) -> Option<&str> {
+        self.decode_status.unavailable_reason()
     }
 }
 

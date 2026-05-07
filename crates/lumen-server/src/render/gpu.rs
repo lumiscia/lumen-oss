@@ -1,5 +1,8 @@
 use std::{env, fs, sync::mpsc};
 
+#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+use std::time::{Duration, Instant};
+
 use anyhow::Context;
 use lumen::{composition::Composition, gpu::GpuCompositionRenderer, media::MediaStore};
 use lumen_ffmpeg::VideoCodec;
@@ -14,6 +17,64 @@ use super::{
 };
 
 const MEDIA_PREFETCH_LOOKAHEAD_FRAMES: u32 = 30;
+#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+const FRAME_TIMING_LOG_INTERVAL: u32 = 60;
+
+#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+#[derive(Default)]
+struct FrameTimingTotals {
+    frames: u32,
+    prefetch: Duration,
+    render_submit: Duration,
+    precompile: Duration,
+    gpu_wait: Duration,
+    cuda_copy: Duration,
+    encode_write: Duration,
+    progress: Duration,
+}
+
+#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+impl FrameTimingTotals {
+    fn add(&mut self, timing: FrameTiming) {
+        self.frames = self.frames.saturating_add(1);
+        self.prefetch += timing.prefetch;
+        self.render_submit += timing.render_submit;
+        self.precompile += timing.precompile;
+        self.gpu_wait += timing.gpu_wait;
+        self.cuda_copy += timing.cuda_copy;
+        self.encode_write += timing.encode_write;
+        self.progress += timing.progress;
+    }
+
+    fn log(&self, frame: u32, total_frames: u32, label: &str) {
+        tracing::info!(
+            label,
+            frame,
+            total_frames,
+            frames_measured = self.frames,
+            prefetch_ms = self.prefetch.as_millis(),
+            render_submit_ms = self.render_submit.as_millis(),
+            precompile_ms = self.precompile.as_millis(),
+            gpu_wait_ms = self.gpu_wait.as_millis(),
+            cuda_copy_ms = self.cuda_copy.as_millis(),
+            encode_write_ms = self.encode_write.as_millis(),
+            progress_callback_ms = self.progress.as_millis(),
+            "render frame timing"
+        );
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+#[derive(Default)]
+struct FrameTiming {
+    prefetch: Duration,
+    render_submit: Duration,
+    precompile: Duration,
+    gpu_wait: Duration,
+    cuda_copy: Duration,
+    encode_write: Duration,
+    progress: Duration,
+}
 
 pub fn render_project_mp4(
     bundle: &ProjectBundle,
@@ -548,8 +609,14 @@ fn render_project_mp4_cuda(
         total_frames,
         "using Vulkan-to-CUDA NVENC render path"
     );
+    let mut timing_totals = FrameTimingTotals::default();
     for frame in 0..total_frames {
+        let mut timing = FrameTiming::default();
+        let started = Instant::now();
         prefetch_media_frames(composition, media_store, frame);
+        timing.prefetch = started.elapsed();
+
+        let started = Instant::now();
         let (raster, _) = renderer
             .render_frame_submitted(composition, frame, media_store)
             .map_err(|err| RenderError {
@@ -557,12 +624,18 @@ fn render_project_mp4_cuda(
                 message: format!("render failed at frame {frame}: {err}"),
                 retryable: true,
             })?;
+        timing.render_submit = started.elapsed();
+
+        let started = Instant::now();
         let _ = renderer.precompile_frame_window(
             composition,
             frame.saturating_add(1),
             MEDIA_PREFETCH_LOOKAHEAD_FRAMES,
             media_store,
         );
+        timing.precompile = started.elapsed();
+
+        let started = Instant::now();
         renderer
             .gpu_renderer()
             .copy_texture_to_external(raster.texture, exportable.texture())
@@ -580,6 +653,9 @@ fn render_project_mp4_cuda(
                 message: format!("GPU poll failed at frame {frame}: {err}"),
                 retryable: true,
             })?;
+        timing.gpu_wait = started.elapsed();
+
+        let started = Instant::now();
         context.set_current().map_err(|err| RenderError {
             code: "encode_failed",
             message: format!("failed to restore CUDA context: {err}"),
@@ -592,6 +668,9 @@ fn render_project_mp4_cuda(
                 message: format!("failed to copy Vulkan frame into CUDA frame: {err}"),
                 retryable: true,
             })?;
+        timing.cuda_copy = started.elapsed();
+
+        let started = Instant::now();
         let frame_ref = cuda_frame.as_video_frame(Some(i64::from(frame)));
         encoder
             .write_gpu_frame(&GpuVideoInput::Cuda(&frame_ref))
@@ -600,18 +679,27 @@ fn render_project_mp4_cuda(
                 message: err.to_string(),
                 retryable: true,
             })?;
+        timing.encode_write = started.elapsed();
 
         let completed = frame.saturating_add(1);
         let ratio = (completed as f32 / total_frames as f32).clamp(0.0, 1.0);
+        let started = Instant::now();
         on_progress(RenderProgress {
             stage: "rendering",
             frame: completed,
             total_frames,
             ratio,
         });
+        timing.progress = started.elapsed();
+        timing_totals.add(timing);
+        if completed % FRAME_TIMING_LOG_INTERVAL == 0 || completed == total_frames {
+            timing_totals.log(completed, total_frames, "cuda_nvenc");
+        }
     }
 
+    let finish_started = Instant::now();
     if include_audio {
+        let audio_started = Instant::now();
         super::encoder::write_composited_audio_with(composition, media_store, |frame| {
             encoder
                 .write_audio_frame(&frame)
@@ -622,18 +710,36 @@ fn render_project_mp4_cuda(
             message: err.to_string(),
             retryable: true,
         })?;
+        tracing::info!(
+            audio_ms = audio_started.elapsed().as_millis(),
+            "finished composited audio write"
+        );
     }
 
+    let encoder_finish_started = Instant::now();
     encoder.finish().map_err(|err| RenderError {
         code: "encode_failed",
         message: err.to_string(),
         retryable: true,
     })?;
-    fs::read(&output_path).map_err(|err| RenderError {
-        code: "encode_failed",
-        message: format!("failed to read encoded output: {err}"),
-        retryable: true,
-    })
+    let encoder_finish_ms = encoder_finish_started.elapsed().as_millis();
+
+    let read_started = Instant::now();
+    fs::read(&output_path)
+        .map_err(|err| RenderError {
+            code: "encode_failed",
+            message: format!("failed to read encoded output: {err}"),
+            retryable: true,
+        })
+        .inspect(|bytes| {
+            tracing::info!(
+                encoder_finish_ms,
+                read_output_ms = read_started.elapsed().as_millis(),
+                finalization_ms = finish_started.elapsed().as_millis(),
+                output_bytes = bytes.len(),
+                "finished CUDA/NVENC render finalization"
+            );
+        })
 }
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]

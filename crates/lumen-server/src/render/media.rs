@@ -26,9 +26,16 @@ pub(super) struct LocalMediaStore {
 
 impl LocalMediaStore {
     pub(super) fn new(root: PathBuf) -> Self {
+        let video_options = video_resolver_options_from_env();
+        tracing::info!(
+            media_root = %root.display(),
+            prefer_hardware_decode = video_options.prefer_hardware_decode,
+            hardware_decode_env = env::var(HARDWARE_DECODE_ENV).ok().as_deref().unwrap_or("<unset>"),
+            "created local media store"
+        );
         Self {
             root,
-            video_options: video_resolver_options_from_env(),
+            video_options,
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
             videos: RwLock::new(HashMap::new()),
@@ -71,6 +78,16 @@ impl LocalMediaStore {
         let resolver = Arc::new(
             FfmpegVideoResolver::open_with_options(source.to_string(), self.video_options).ok()?,
         );
+        tracing::info!(
+            source,
+            width = resolver.metadata().width,
+            height = resolver.metadata().height,
+            frames = resolver.metadata().frame_count,
+            fps = resolver.metadata().fps,
+            decode_mode = resolver.decode_mode_label(),
+            decode_unavailable_reason = resolver.decode_unavailable_reason(),
+            "opened video media resolver"
+        );
         if let Ok(mut cache) = self.videos.write() {
             cache
                 .entry(source.to_string())
@@ -106,11 +123,11 @@ impl std::fmt::Debug for LocalMediaStore {
 }
 
 fn video_resolver_options_from_env() -> FfmpegResolverOptions {
-    FfmpegResolverOptions {
-        prefer_hardware_decode: env::var(HARDWARE_DECODE_ENV)
-            .ok()
-            .map(|value| matches_env_flag(&value))
-            .unwrap_or_default(),
+    match env::var(HARDWARE_DECODE_ENV) {
+        Ok(value) => FfmpegResolverOptions {
+            prefer_hardware_decode: matches_env_flag(&value),
+        },
+        Err(_) => FfmpegResolverOptions::default(),
     }
 }
 

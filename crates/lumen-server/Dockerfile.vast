@@ -49,6 +49,7 @@ WORKDIR /app
 COPY --from=builder /workspace/lumen/target/release/lumen-vast /usr/local/bin/lumen-vast
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 ENV NVIDIA_VISIBLE_DEVICES=all
+ENV LUMEN_HARDWARE_DECODE=1
 ENV XDG_RUNTIME_DIR=/tmp/lumen-runtime
 EXPOSE 8080
 CMD ["/usr/local/bin/lumen-vast"]

@@ -49,5 +49,6 @@ WORKDIR /app
 COPY --from=builder /workspace/lumen/target/release/lumen-runpod /usr/local/bin/lumen-runpod
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 ENV NVIDIA_VISIBLE_DEVICES=all
+ENV LUMEN_HARDWARE_DECODE=1
 ENV XDG_RUNTIME_DIR=/tmp/lumen-runtime
 CMD ["/usr/local/bin/lumen-runpod"]
