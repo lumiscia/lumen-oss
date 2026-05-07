@@ -1,0 +1,40 @@
+[package]
+name = "lumen-server"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "lumen_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lumen-runpod"
+path = "src/bin/lumen-runpod.rs"
+
+[[bin]]
+name = "lumen-vast"
+path = "src/bin/lumen-vast.rs"
+
+[features]
+legacy-decode-tests = []
+metal = ["lumen/metal", "lumen-ffmpeg/metal"]
+vulkan = ["lumen/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
+cuda = ["lumen/cuda", "lumen-ffmpeg/cuda"]
+
+[dependencies]
+anyhow = "1.0.101"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"] }
+tokio = { version = "1.49.0", features = ["full"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+axum = { version = "0.8.7", default-features = false, features = ["http1", "json", "tokio"] }
+lumen = { path = "../lumen", features = ["ffmpeg", "image", "json"] }
+lumen-gpu = { path = "../lumen-gpu" }
+lumen-ffmpeg = { version = "0.1.0", path = "../ffmpeg" }
+reqwest = { version = "0.12.24", default-features = false, features = [
+  "json",
+  "rustls-tls",
+  "blocking",
+] }
+tempfile = "3.25.0"
