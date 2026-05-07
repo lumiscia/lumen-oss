@@ -1,5 +1,5 @@
 {
-  "name": "@lumiscia/lumen-types",
+  "name": "@lumiscia/lumen-shared",
   "version": "0.0.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -18,5 +18,8 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@lumiscia/lumen-types": "workspace:*"
   }
 }
