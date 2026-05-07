@@ -1,4 +1,5 @@
 use std::{
+    ffi::CStr,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     sync::Arc,
 };
@@ -13,6 +14,18 @@ pub struct ExportableVulkanTexture {
     memory_fd: OwnedFd,
     allocation_size: u64,
     row_pitch: u64,
+    device_info: VulkanDeviceInfo,
+    memory_type_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VulkanDeviceInfo {
+    pub name: String,
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub device_type: String,
+    pub device_uuid: [u8; 16],
+    pub driver_uuid: [u8; 16],
 }
 
 impl ExportableVulkanTexture {
@@ -39,6 +52,14 @@ impl ExportableVulkanTexture {
     pub fn row_pitch(&self) -> u64 {
         self.row_pitch
     }
+
+    pub fn device_info(&self) -> &VulkanDeviceInfo {
+        &self.device_info
+    }
+
+    pub fn memory_type_index(&self) -> u32 {
+        self.memory_type_index
+    }
 }
 
 impl Renderer {
@@ -55,6 +76,8 @@ impl Renderer {
         let hal_device = &*hal_device;
         let raw_device = hal_device.raw_device();
         let raw_instance = hal_device.shared_instance().raw_instance();
+        let physical_device = hal_device.raw_physical_device();
+        let device_info = vulkan_device_info(raw_instance, physical_device);
 
         let vk_format = map_texture_format(format)?;
         let vk_extent = vk::Extent3D {
@@ -82,7 +105,7 @@ impl Renderer {
         let requirements = unsafe { raw_device.get_image_memory_requirements(image) };
         let memory_type_index = find_device_local_memory_type(
             raw_instance,
-            hal_device.raw_physical_device(),
+            physical_device,
             requirements.memory_type_bits,
         )?;
         let mut export_allocate = vk::ExportMemoryAllocateInfo::default()
@@ -169,7 +192,32 @@ impl Renderer {
             memory_fd,
             allocation_size: requirements.size,
             row_pitch: u64::from(size.width).saturating_mul(4),
+            device_info,
+            memory_type_index,
         })
+    }
+}
+
+fn vulkan_device_info(
+    raw_instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> VulkanDeviceInfo {
+    let properties = unsafe { raw_instance.get_physical_device_properties(physical_device) };
+    let mut id_properties = vk::PhysicalDeviceIDProperties::default();
+    let mut properties2 = vk::PhysicalDeviceProperties2::default().push_next(&mut id_properties);
+    unsafe {
+        raw_instance.get_physical_device_properties2(physical_device, &mut properties2);
+    }
+
+    VulkanDeviceInfo {
+        name: unsafe { CStr::from_ptr(properties.device_name.as_ptr()) }
+            .to_string_lossy()
+            .into_owned(),
+        vendor_id: properties.vendor_id,
+        device_id: properties.device_id,
+        device_type: format!("{:?}", properties.device_type),
+        device_uuid: id_properties.device_uuid,
+        driver_uuid: id_properties.driver_uuid,
     }
 }
 

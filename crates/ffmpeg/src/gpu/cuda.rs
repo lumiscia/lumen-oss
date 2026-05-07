@@ -70,7 +70,11 @@ impl CudaVideoFrame {
 
 #[cfg(target_os = "linux")]
 mod driver {
-    use std::{ffi::c_void, mem::MaybeUninit, os::fd::OwnedFd};
+    use std::{
+        ffi::{CStr, c_char, c_void},
+        mem::MaybeUninit,
+        os::fd::OwnedFd,
+    };
 
     use libloading::Library;
 
@@ -90,6 +94,20 @@ mod driver {
     const CU_MEMORYTYPE_ARRAY: u32 = 0x03;
     const CU_AD_FORMAT_UNSIGNED_INT8: u32 = 0x01;
     const CUDA_ARRAY3D_COLOR_ATTACHMENT: u32 = 0x20;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CuUuid {
+        bytes: [c_char; 16],
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CudaDeviceInfo {
+        pub ordinal: i32,
+        pub name: String,
+        pub uuid: [u8; 16],
+        pub pci_bus_id: String,
+    }
 
     #[repr(C)]
     union CudaExternalMemoryHandleUnion {
@@ -156,7 +174,14 @@ mod driver {
     pub struct CudaDriver {
         _library: Library,
         cu_init: unsafe extern "C" fn(u32) -> CuResult,
+        cu_driver_get_version: unsafe extern "C" fn(*mut i32) -> CuResult,
+        cu_get_error_name: unsafe extern "C" fn(CuResult, *mut *const c_char) -> CuResult,
+        cu_get_error_string: unsafe extern "C" fn(CuResult, *mut *const c_char) -> CuResult,
+        cu_device_get_count: unsafe extern "C" fn(*mut i32) -> CuResult,
         cu_device_get: unsafe extern "C" fn(*mut CuDevice, i32) -> CuResult,
+        cu_device_get_name: unsafe extern "C" fn(*mut c_char, i32, CuDevice) -> CuResult,
+        cu_device_get_uuid: unsafe extern "C" fn(*mut CuUuid, CuDevice) -> CuResult,
+        cu_device_get_pci_bus_id: unsafe extern "C" fn(*mut c_char, i32, CuDevice) -> CuResult,
         cu_ctx_create: unsafe extern "C" fn(*mut CuContext, u32, CuDevice) -> CuResult,
         cu_ctx_destroy: unsafe extern "C" fn(CuContext) -> CuResult,
         cu_ctx_set_current: unsafe extern "C" fn(CuContext) -> CuResult,
@@ -194,9 +219,40 @@ mod driver {
                 let cu_init = *library
                     .get::<unsafe extern "C" fn(u32) -> CuResult>(b"cuInit\0")
                     .map_err(|error| format!("failed loading cuInit: {error}"))?;
+                let cu_driver_get_version = *library
+                    .get::<unsafe extern "C" fn(*mut i32) -> CuResult>(b"cuDriverGetVersion\0")
+                    .map_err(|error| format!("failed loading cuDriverGetVersion: {error}"))?;
+                let cu_get_error_name = *library
+                    .get::<unsafe extern "C" fn(CuResult, *mut *const c_char) -> CuResult>(
+                        b"cuGetErrorName\0",
+                    )
+                    .map_err(|error| format!("failed loading cuGetErrorName: {error}"))?;
+                let cu_get_error_string = *library
+                    .get::<unsafe extern "C" fn(CuResult, *mut *const c_char) -> CuResult>(
+                        b"cuGetErrorString\0",
+                    )
+                    .map_err(|error| format!("failed loading cuGetErrorString: {error}"))?;
+                let cu_device_get_count = *library
+                    .get::<unsafe extern "C" fn(*mut i32) -> CuResult>(b"cuDeviceGetCount\0")
+                    .map_err(|error| format!("failed loading cuDeviceGetCount: {error}"))?;
                 let cu_device_get = *library
                     .get::<unsafe extern "C" fn(*mut CuDevice, i32) -> CuResult>(b"cuDeviceGet\0")
                     .map_err(|error| format!("failed loading cuDeviceGet: {error}"))?;
+                let cu_device_get_name = *library
+                    .get::<unsafe extern "C" fn(*mut c_char, i32, CuDevice) -> CuResult>(
+                        b"cuDeviceGetName\0",
+                    )
+                    .map_err(|error| format!("failed loading cuDeviceGetName: {error}"))?;
+                let cu_device_get_uuid = *library
+                    .get::<unsafe extern "C" fn(*mut CuUuid, CuDevice) -> CuResult>(
+                        b"cuDeviceGetUuid\0",
+                    )
+                    .map_err(|error| format!("failed loading cuDeviceGetUuid: {error}"))?;
+                let cu_device_get_pci_bus_id = *library
+                    .get::<unsafe extern "C" fn(*mut c_char, i32, CuDevice) -> CuResult>(
+                        b"cuDeviceGetPCIBusId\0",
+                    )
+                    .map_err(|error| format!("failed loading cuDeviceGetPCIBusId: {error}"))?;
                 let cu_ctx_create = *library
                     .get::<unsafe extern "C" fn(*mut CuContext, u32, CuDevice) -> CuResult>(
                         b"cuCtxCreate_v2\0",
@@ -281,7 +337,14 @@ mod driver {
                 Ok(Self {
                     _library: library,
                     cu_init,
+                    cu_driver_get_version,
+                    cu_get_error_name,
+                    cu_get_error_string,
+                    cu_device_get_count,
                     cu_device_get,
+                    cu_device_get_name,
+                    cu_device_get_uuid,
+                    cu_device_get_pci_bus_id,
                     cu_ctx_create,
                     cu_ctx_destroy,
                     cu_ctx_set_current,
@@ -300,10 +363,17 @@ mod driver {
         }
 
         pub fn create_primary_context(&self) -> Result<CudaContext<'_>, String> {
+            self.create_primary_context_for_ordinal(0)
+        }
+
+        pub fn create_primary_context_for_ordinal(
+            &self,
+            ordinal: i32,
+        ) -> Result<CudaContext<'_>, String> {
             check(unsafe { (self.cu_init)(0) }, "cuInit")?;
             let mut device = MaybeUninit::<CuDevice>::uninit();
             check(
-                unsafe { (self.cu_device_get)(device.as_mut_ptr(), 0) },
+                unsafe { (self.cu_device_get)(device.as_mut_ptr(), ordinal) },
                 "cuDeviceGet",
             )?;
             let device = unsafe { device.assume_init() };
@@ -318,8 +388,102 @@ mod driver {
                 driver: self,
                 raw,
                 device,
+                ordinal,
                 release_primary: true,
             })
+        }
+
+        pub fn driver_version(&self) -> Result<i32, String> {
+            check(unsafe { (self.cu_init)(0) }, "cuInit")?;
+            let mut version = MaybeUninit::<i32>::uninit();
+            check(
+                unsafe { (self.cu_driver_get_version)(version.as_mut_ptr()) },
+                "cuDriverGetVersion",
+            )?;
+            Ok(unsafe { version.assume_init() })
+        }
+
+        pub fn devices(&self) -> Result<Vec<CudaDeviceInfo>, String> {
+            check(unsafe { (self.cu_init)(0) }, "cuInit")?;
+            let mut count = MaybeUninit::<i32>::uninit();
+            check(
+                unsafe { (self.cu_device_get_count)(count.as_mut_ptr()) },
+                "cuDeviceGetCount",
+            )?;
+            let count = unsafe { count.assume_init() };
+            let mut devices = Vec::new();
+            for ordinal in 0..count {
+                let mut device = MaybeUninit::<CuDevice>::uninit();
+                check(
+                    unsafe { (self.cu_device_get)(device.as_mut_ptr(), ordinal) },
+                    "cuDeviceGet",
+                )?;
+                let device = unsafe { device.assume_init() };
+
+                let mut name = [0 as c_char; 256];
+                check(
+                    unsafe {
+                        (self.cu_device_get_name)(name.as_mut_ptr(), name.len() as i32, device)
+                    },
+                    "cuDeviceGetName",
+                )?;
+
+                let mut uuid = MaybeUninit::<CuUuid>::uninit();
+                check(
+                    unsafe { (self.cu_device_get_uuid)(uuid.as_mut_ptr(), device) },
+                    "cuDeviceGetUuid",
+                )?;
+                let uuid = unsafe { uuid.assume_init() };
+
+                let mut pci_bus_id = [0 as c_char; 64];
+                check(
+                    unsafe {
+                        (self.cu_device_get_pci_bus_id)(
+                            pci_bus_id.as_mut_ptr(),
+                            pci_bus_id.len() as i32,
+                            device,
+                        )
+                    },
+                    "cuDeviceGetPCIBusId",
+                )?;
+
+                devices.push(CudaDeviceInfo {
+                    ordinal,
+                    name: unsafe { CStr::from_ptr(name.as_ptr()) }
+                        .to_string_lossy()
+                        .into_owned(),
+                    uuid: uuid.bytes.map(|byte| byte as u8),
+                    pci_bus_id: unsafe { CStr::from_ptr(pci_bus_id.as_ptr()) }
+                        .to_string_lossy()
+                        .into_owned(),
+                });
+            }
+            Ok(devices)
+        }
+
+        pub fn describe_error(&self, result: CuResult) -> String {
+            let mut name = std::ptr::null();
+            let mut description = std::ptr::null();
+            let name = if unsafe { (self.cu_get_error_name)(result, &mut name) } == CUDA_SUCCESS
+                && !name.is_null()
+            {
+                unsafe { CStr::from_ptr(name) }
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                "UNKNOWN_CUDA_ERROR".to_string()
+            };
+            let description = if unsafe { (self.cu_get_error_string)(result, &mut description) }
+                == CUDA_SUCCESS
+                && !description.is_null()
+            {
+                unsafe { CStr::from_ptr(description) }
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                "no CUDA error description available".to_string()
+            };
+            format!("{name} ({result}): {description}")
         }
 
         #[allow(dead_code)]
@@ -340,6 +504,7 @@ mod driver {
                 driver: self,
                 raw: unsafe { context.assume_init() },
                 device,
+                ordinal: 0,
                 release_primary: false,
             })
         }
@@ -406,10 +571,15 @@ mod driver {
         driver: &'a CudaDriver,
         raw: CuContext,
         device: CuDevice,
+        ordinal: i32,
         release_primary: bool,
     }
 
     impl CudaContext<'_> {
+        pub fn ordinal(&self) -> i32 {
+            self.ordinal
+        }
+
         pub fn set_current(&self) -> Result<(), String> {
             check(
                 unsafe { (self.driver.cu_ctx_set_current)(self.raw) },
@@ -506,12 +676,15 @@ mod driver {
             reserved: [0; 16],
         };
         let mut external_memory = MaybeUninit::<CuExternalMemory>::uninit();
-        check(
-            unsafe {
-                (driver.cu_import_external_memory)(external_memory.as_mut_ptr(), &handle_desc)
-            },
-            "cuImportExternalMemory",
-        )?;
+        let result = unsafe {
+            (driver.cu_import_external_memory)(external_memory.as_mut_ptr(), &handle_desc)
+        };
+        if result != CUDA_SUCCESS {
+            return Err(format!(
+                "cuImportExternalMemory failed with {}",
+                driver.describe_error(result)
+            ));
+        }
         let external_memory = unsafe { external_memory.assume_init() };
         let array_desc = CudaExternalMemoryMipmappedArrayDesc {
             offset: 0,
@@ -588,6 +761,6 @@ mod driver {
 
 #[cfg(target_os = "linux")]
 pub use driver::{
-    CudaContext, CudaDeviceAllocation, CudaDriver, ImportedCudaExternalImage,
+    CudaContext, CudaDeviceAllocation, CudaDeviceInfo, CudaDriver, ImportedCudaExternalImage,
     import_owned_vulkan_opaque_fd_image, import_vulkan_opaque_fd_image,
 };
