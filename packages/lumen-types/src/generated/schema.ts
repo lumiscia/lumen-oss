@@ -1,37 +1,6 @@
 import type {
   Color,
-  AlphaPremultiplyNode,
-  BezierPathNode,
-  BlurNode,
-  BooleanNode,
-  ChannelShuffleNode,
-  ColorGradeNode,
-  CropNode,
-  CurvesNode,
-  ExposureNode,
-  HueSaturationNode,
-  LevelsNode,
-  MatteCleanupNode,
-  MediaInNode,
-  MediaOutputNode,
-  MemoNode,
-  MergeNode,
-  RasterMultimergeNode,
-  ResizeNode,
-  ShadowNode,
-  ShapeNode,
-  ShapeRendererNode,
-  SkiaShaderNode,
-  SolidColorNode,
-  SwitchNode,
-  TextNode,
-  TimeRemapNode,
-  TransformNode,
-  VectorMergeNode,
-  VectorMultimergeNode,
-  VectorStrokeStyleNode,
-  VectorTextNode,
-  VectorTransformNode
+  CompositionNode
 } from "./meta.js";
 
 export interface Connection {
@@ -45,56 +14,23 @@ export interface Connection {
 // Do not edit by hand.
 
 export interface LumenComposition {
-  $schema?: string;
-  connections: Connection[];
-  lumenSchemaVersion?: string;
-  metadata?: {
-    name?: string;
-    [k: string]: unknown;
+  readonly $schema?: string;
+  readonly connections: readonly Connection[];
+  readonly lumenSchemaVersion?: string;
+  readonly metadata?: {
+    readonly name?: string;
+    readonly [key: string]: unknown;
   };
-  nodes: (
-    | BooleanNode
-    | MergeNode
-    | RasterMultimergeNode
-    | SwitchNode
-    | AlphaPremultiplyNode
-    | BlurNode
-    | ChannelShuffleNode
-    | ColorGradeNode
-    | CropNode
-    | CurvesNode
-    | ExposureNode
-    | HueSaturationNode
-    | LevelsNode
-    | MatteCleanupNode
-    | MemoNode
-    | ResizeNode
-    | ShadowNode
-    | SkiaShaderNode
-    | TimeRemapNode
-    | TransformNode
-    | MediaInNode
-    | SolidColorNode
-    | TextNode
-    | BezierPathNode
-    | ShapeNode
-    | ShapeRendererNode
-    | VectorMergeNode
-    | VectorMultimergeNode
-    | VectorStrokeStyleNode
-    | VectorTextNode
-    | VectorTransformNode
-    | MediaOutputNode
-  )[];
-  render_settings: {
-    background_color?: Color;
-    height: number;
-    width: number;
+  readonly nodes: readonly CompositionNode[];
+  readonly render_settings: {
+    readonly background_color?: Color;
+    readonly height: number;
+    readonly width: number;
   };
-  schemaVersion?: string;
-  timeline: {
-    duration_frames: number;
-    fps: number;
+  readonly schemaVersion?: string;
+  readonly timeline: {
+    readonly duration_frames: number;
+    readonly fps: number;
   };
-  [k: string]: unknown;
+  readonly [key: string]: unknown;
 }

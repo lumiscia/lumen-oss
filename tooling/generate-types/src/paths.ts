@@ -7,12 +7,7 @@ export const repoRoot = path.resolve(dirname, "../../..");
 
 export const metaPath = path.join(
   repoRoot,
-  "vendor/lumen-definitions/definitions/meta.json",
-);
-
-export const compositionSchemaPath = path.join(
-  repoRoot,
-  "vendor/lumen-definitions/schemas/composition.schema.json",
+  "vendor/lumen-definitions/meta.json",
 );
 
 export const generatedSchemaTypesPath = path.join(
