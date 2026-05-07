@@ -17,7 +17,7 @@ use lumen::{
         duration_samples,
     },
     composition::Composition,
-    ffmpeg::{FfmpegAudioResolver, FfmpegVideoResolver},
+    ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     gpu::GpuCompositionRenderer,
     image::ImageFileResolver,
     media::{ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
@@ -75,6 +75,7 @@ struct RenderTiming {
 
 struct LocalMediaStore {
     root: PathBuf,
+    video_options: FfmpegResolverOptions,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
     videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
@@ -84,6 +85,7 @@ impl std::fmt::Debug for LocalMediaStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalMediaStore")
             .field("root", &self.root)
+            .field("video_options", &self.video_options)
             .finish_non_exhaustive()
     }
 }
@@ -92,6 +94,7 @@ impl LocalMediaStore {
     fn new(root: PathBuf) -> Self {
         Self {
             root,
+            video_options: video_resolver_options_from_env(),
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
             videos: RwLock::new(HashMap::new()),
@@ -135,7 +138,7 @@ impl LocalMediaStore {
         }
 
         let resolver = Arc::new(
-            FfmpegVideoResolver::open(source.to_string())
+            FfmpegVideoResolver::open_with_options(source.to_string(), self.video_options)
                 .map_err(|error| {
                     eprintln!("failed opening video resolver for {source}: {error}");
                     error
@@ -1162,6 +1165,22 @@ fn media_root(override_root: Option<&Path>) -> Result<PathBuf> {
     };
     root.canonicalize()
         .with_context(|| format!("failed to canonicalize media root {}", root.display()))
+}
+
+fn video_resolver_options_from_env() -> FfmpegResolverOptions {
+    FfmpegResolverOptions {
+        prefer_hardware_decode: env::var("LUMEN_HARDWARE_DECODE")
+            .ok()
+            .map(|value| matches_flag(&value))
+            .unwrap_or_default(),
+    }
+}
+
+fn matches_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn resolve_local_path_with_root(source: &str, root: &Path) -> Result<PathBuf> {

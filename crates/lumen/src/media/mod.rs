@@ -20,6 +20,8 @@ pub use pixels::premultiply_rgba_in_place_if_needed;
 pub use prediction::{
     FrameRequirements, RenderRequirements, VideoFrameRequirement, collect_frame_requirements,
 };
+#[cfg(feature = "ffmpeg")]
+pub use resolver::GpuVideoMediaFrame;
 pub use resolver::{
     CpuMediaFrame, ExternalTextureFrame, ExternalTextureHandle, ImageMetadata, ImageResolver,
     MediaFrame, VideoFrameResolver, VideoMetadata,

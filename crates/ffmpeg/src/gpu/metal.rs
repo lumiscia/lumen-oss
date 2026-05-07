@@ -300,6 +300,13 @@ pub struct MetalDecodedFrame {
     pts: Option<i64>,
 }
 
+// The retained CoreVideo pixel buffer owns the decoded image storage. Consumers create Metal
+// textures from it on the active render thread before use.
+#[cfg(feature = "metal")]
+unsafe impl Send for MetalDecodedFrame {}
+#[cfg(feature = "metal")]
+unsafe impl Sync for MetalDecodedFrame {}
+
 #[cfg(feature = "metal")]
 impl std::fmt::Debug for MetalDecodedFrame {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

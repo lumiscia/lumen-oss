@@ -1,6 +1,6 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
-use crate::media::CpuMediaFrame;
+use crate::media::MediaFrame;
 use crate::node::{NodeId, PortRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,7 +312,7 @@ pub struct MediaTextureKey {
 pub struct MediaTextureUpload {
     pub texture: lumen_gpu::TextureId,
     pub key: MediaTextureKey,
-    pub frame: Arc<CpuMediaFrame>,
+    pub frame: MediaFrame,
     pub size: lumen_gpu::Size,
 }
 
@@ -340,7 +340,7 @@ impl BoundFrame {
         &mut self,
         texture: lumen_gpu::TextureId,
         key: MediaTextureKey,
-        frame: Arc<CpuMediaFrame>,
+        frame: MediaFrame,
         size: lumen_gpu::Size,
     ) {
         self.media_textures.push(MediaTextureUpload {

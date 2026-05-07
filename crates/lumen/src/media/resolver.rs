@@ -13,7 +13,22 @@ pub struct CpuMediaFrame {
 #[derive(Debug, Clone)]
 pub enum MediaFrame {
     CpuRgba(Arc<CpuMediaFrame>),
+    #[cfg(feature = "ffmpeg")]
+    GpuVideo(Arc<GpuVideoMediaFrame>),
     ExternalTexture(ExternalTextureFrame),
+}
+
+#[cfg(feature = "ffmpeg")]
+#[derive(Debug)]
+pub struct GpuVideoMediaFrame {
+    pub frame: lumen_ffmpeg::GpuVideoFrame,
+}
+
+#[cfg(feature = "ffmpeg")]
+impl GpuVideoMediaFrame {
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.frame.dimensions()
+    }
 }
 
 #[derive(Debug, Clone)]

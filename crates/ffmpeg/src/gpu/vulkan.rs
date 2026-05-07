@@ -52,6 +52,10 @@ impl VulkanVideoFrame {
         (self.extent.width, self.extent.height)
     }
 
+    pub fn pts(&self) -> Option<i64> {
+        None
+    }
+
     pub fn backend(&self) -> GpuBackend {
         GpuBackend::Vulkan
     }

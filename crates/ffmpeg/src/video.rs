@@ -271,6 +271,16 @@ impl VideoDecoder {
             .with_codec(self.codec)
             .with_stream_index(self.stream_index));
         }
+        self.receive_rgba_frame()
+    }
+
+    /// Receives the next decoded frame as RGBA8.
+    ///
+    /// CPU decoders convert their native software frame with swscale. Hardware decoders first
+    /// transfer the decoded frame into software memory, then use the same RGBA8 conversion path.
+    /// This keeps callers independent from FFmpeg's platform-specific GPU frame handles while still
+    /// allowing decode itself to use VideoToolbox/NVDEC/Vulkan when available.
+    pub fn receive_rgba_frame(&mut self) -> Result<Option<CpuVideoFrame>> {
         let mut frame = AvFrame::new()?;
         match self.receive_frame(&mut frame)? {
             ReceiveStatus::Again => Ok(None),
@@ -290,7 +300,7 @@ impl VideoDecoder {
         let mut frame = AvFrame::new()?;
         match self.receive_frame(&mut frame)? {
             ReceiveStatus::Again => Ok(None),
-            ReceiveStatus::Frame => self.frame_to_gpu(&frame).map(Some),
+            ReceiveStatus::Frame => self.frame_to_gpu(frame).map(Some),
         }
     }
 
@@ -378,17 +388,10 @@ impl VideoDecoder {
         })
     }
 
-    fn frame_to_gpu(&self, frame: &AvFrame) -> Result<GpuVideoFrame> {
+    fn frame_to_gpu(&self, frame: AvFrame) -> Result<GpuVideoFrame> {
         match (self.mode, frame.format()) {
             #[cfg(feature = "cuda")]
-            (DecodeMode::Gpu(GpuBackend::Cuda), AV_PIX_FMT_CUDA) => {
-                let _ = frame;
-                Err(FfmpegError::new(
-                    "receive_gpu_frame",
-                    "CUDA decode produced AV_PIX_FMT_CUDA, but CUDA frame wrapping is not implemented yet",
-                )
-                .with_backend(GpuBackend::Cuda))
-            }
+            (DecodeMode::Gpu(GpuBackend::Cuda), AV_PIX_FMT_CUDA) => self.frame_to_cuda(frame),
             #[cfg(not(feature = "cuda"))]
             (DecodeMode::Gpu(GpuBackend::Cuda), AV_PIX_FMT_CUDA) => Err(FfmpegError::new(
                 "receive_gpu_frame",
@@ -397,7 +400,7 @@ impl VideoDecoder {
             .with_backend(GpuBackend::Cuda)),
             #[cfg(feature = "metal")]
             (DecodeMode::Gpu(GpuBackend::Metal), AV_PIX_FMT_VIDEOTOOLBOX) => {
-                self.frame_to_metal(frame)
+                self.frame_to_metal(&frame)
             }
             #[cfg(not(feature = "metal"))]
             (DecodeMode::Gpu(GpuBackend::Metal), AV_PIX_FMT_VIDEOTOOLBOX) => Err(FfmpegError::new(
@@ -442,6 +445,37 @@ impl VideoDecoder {
                 frame.pts(),
             )
         }))
+    }
+
+    #[cfg(feature = "cuda")]
+    fn frame_to_cuda(&self, frame: AvFrame) -> Result<GpuVideoFrame> {
+        let device_ptr = frame.data(0) as u64;
+        let pitch = frame.line_size(0);
+        let width = frame.width();
+        let height = frame.height();
+        let pts = frame.pts();
+        if device_ptr == 0 || pitch <= 0 {
+            return Err(FfmpegError::new(
+                "receive_gpu_frame",
+                "CUDA decoded frame did not contain a valid device pointer and pitch",
+            )
+            .with_backend(GpuBackend::Cuda));
+        }
+        let pixel_format = frame
+            .hw_sw_format()
+            .map(PixelFormat::from_av_pixel_format)
+            .unwrap_or(PixelFormat::Unknown);
+        Ok(GpuVideoFrame::Cuda(
+            crate::gpu::CudaDecodedFrame::from_av_frame(
+                frame,
+                device_ptr,
+                width,
+                height,
+                pitch as u64,
+                pixel_format,
+                pts,
+            ),
+        ))
     }
 }
 

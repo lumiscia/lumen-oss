@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     error::MediaError,
-    media::{CpuMediaFrame, premultiply_rgba_in_place_if_needed},
+    media::{CpuMediaFrame, MediaFrame, premultiply_rgba_in_place_if_needed},
 };
 
 pub(super) struct FrameImage {
@@ -36,15 +36,15 @@ impl FrameImage {
 
 #[derive(Default)]
 pub(super) struct FrameLruCache {
-    entries: HashMap<u32, Arc<CpuMediaFrame>>,
+    entries: HashMap<u32, MediaFrame>,
 }
 
 impl FrameLruCache {
-    pub fn get(&mut self, frame: u32) -> Option<Arc<CpuMediaFrame>> {
+    pub fn get(&mut self, frame: u32) -> Option<MediaFrame> {
         self.entries.get(&frame).cloned()
     }
 
-    pub fn insert(&mut self, frame: u32, data: Arc<CpuMediaFrame>) {
+    pub fn insert(&mut self, frame: u32, data: MediaFrame) {
         self.entries.insert(frame, data);
     }
 

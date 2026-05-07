@@ -5,10 +5,12 @@ pub mod metal;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;
 
+#[cfg(feature = "cuda")]
+pub use cuda::CudaDecodedFrame;
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 pub use cuda::{
-    CudaContext, CudaDeviceAllocation, CudaDriver, ImportedCudaExternalImage,
-    import_owned_vulkan_opaque_fd_image, import_vulkan_opaque_fd_image,
+    CudaContext, CudaDeviceAllocation, CudaDriver, CudaNv12ToRgbaConverter,
+    ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image, import_vulkan_opaque_fd_image,
 };
 #[cfg(feature = "metal")]
 pub use metal::{
@@ -70,6 +72,20 @@ impl<'a> GpuVideoInput<'a> {
         }
     }
 
+    pub fn pts(&self) -> Option<i64> {
+        match self {
+            #[cfg(feature = "cuda")]
+            Self::Cuda(frame) => frame.pts(),
+            #[cfg(feature = "metal")]
+            Self::Metal(_) => None,
+            #[cfg(feature = "metal")]
+            Self::MetalPixelBuffer(frame) => frame.pts(),
+            #[cfg(feature = "vulkan")]
+            Self::Vulkan(frame) => frame.pts(),
+            Self::__NonExhaustive(_) => unreachable!("hidden GPU frame variant"),
+        }
+    }
+
     pub fn estimated_rgba_bytes(&self) -> u64 {
         let (width, height) = self.dimensions();
         u64::from(width)
@@ -82,7 +98,7 @@ impl<'a> GpuVideoInput<'a> {
 #[non_exhaustive]
 pub enum GpuVideoFrame {
     #[cfg(feature = "cuda")]
-    Cuda(CudaVideoFrame),
+    Cuda(CudaDecodedFrame),
     #[cfg(feature = "metal")]
     Metal(MetalDecodedFrame),
     #[cfg(feature = "vulkan")]
@@ -112,6 +128,18 @@ impl GpuVideoFrame {
             Self::Metal(frame) => frame.dimensions(),
             #[cfg(feature = "vulkan")]
             Self::Vulkan(frame) => frame.dimensions(),
+            Self::__NonExhaustive => unreachable!("hidden GPU frame variant"),
+        }
+    }
+
+    pub fn pts(&self) -> Option<i64> {
+        match self {
+            #[cfg(feature = "cuda")]
+            Self::Cuda(frame) => frame.pts(),
+            #[cfg(feature = "metal")]
+            Self::Metal(frame) => frame.pts(),
+            #[cfg(feature = "vulkan")]
+            Self::Vulkan(frame) => frame.pts(),
             Self::__NonExhaustive => unreachable!("hidden GPU frame variant"),
         }
     }

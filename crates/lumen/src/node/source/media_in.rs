@@ -1,7 +1,6 @@
 use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
-use crate::media::MediaFrame;
 use crate::node::{NodeId, NodeProperty};
 
 use crate::gpu::{
@@ -293,17 +292,6 @@ impl GpuFrameBindNode for MediaIn {
                     .frame(source_frame)
                     .map(|frame| (frame, stream_id, Some(source_frame)))?
             }
-        };
-        let MediaFrame::CpuRgba(frame) = frame else {
-            return Err(RenderError::NodeEvaluation {
-                frame: ctx.frame(),
-                node_id: *node_id,
-                node_kind: "MediaIn",
-                details:
-                    "external texture media frames are not imported by the local GPU renderer yet"
-                        .to_string(),
-            }
-            .into());
         };
         bound.use_media_texture(
             *texture,

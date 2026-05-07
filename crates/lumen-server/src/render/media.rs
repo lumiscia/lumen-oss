@@ -8,15 +8,17 @@ use std::{
 use anyhow::{Context, anyhow};
 use lumen::{
     audio::{AudioBuffer, AudioResolver, AudioSourceProvider},
-    ffmpeg::{FfmpegAudioResolver, FfmpegVideoResolver},
+    ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
     media::{ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
 
 pub const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
+pub const HARDWARE_DECODE_ENV: &str = "LUMEN_HARDWARE_DECODE";
 
 pub(super) struct LocalMediaStore {
     root: PathBuf,
+    video_options: FfmpegResolverOptions,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
     videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
@@ -26,6 +28,7 @@ impl LocalMediaStore {
     pub(super) fn new(root: PathBuf) -> Self {
         Self {
             root,
+            video_options: video_resolver_options_from_env(),
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
             videos: RwLock::new(HashMap::new()),
@@ -65,7 +68,9 @@ impl LocalMediaStore {
             return Some(Arc::clone(resolver));
         }
 
-        let resolver = Arc::new(FfmpegVideoResolver::open(source.to_string()).ok()?);
+        let resolver = Arc::new(
+            FfmpegVideoResolver::open_with_options(source.to_string(), self.video_options).ok()?,
+        );
         if let Ok(mut cache) = self.videos.write() {
             cache
                 .entry(source.to_string())
@@ -95,8 +100,25 @@ impl std::fmt::Debug for LocalMediaStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalMediaStore")
             .field("root", &self.root)
+            .field("video_options", &self.video_options)
             .finish_non_exhaustive()
     }
+}
+
+fn video_resolver_options_from_env() -> FfmpegResolverOptions {
+    FfmpegResolverOptions {
+        prefer_hardware_decode: env::var(HARDWARE_DECODE_ENV)
+            .ok()
+            .map(|value| matches_env_flag(&value))
+            .unwrap_or_default(),
+    }
+}
+
+fn matches_env_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 #[derive(Debug, Clone)]

@@ -126,9 +126,26 @@ impl AvFrame {
         (pts != sys::AV_NOPTS_VALUE).then_some(pts)
     }
 
-    #[cfg(feature = "metal")]
     pub(crate) fn data(&self, plane: usize) -> *mut u8 {
         unsafe { (*self.ptr.as_ptr()).data[plane] }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub(crate) fn line_size(&self, plane: usize) -> i32 {
+        unsafe { (*self.ptr.as_ptr()).linesize[plane] }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub(crate) fn hw_sw_format(&self) -> Option<sys::AVPixelFormat> {
+        let frame = unsafe { self.ptr.as_ref() };
+        if frame.hw_frames_ctx.is_null() {
+            return None;
+        }
+        let frames = unsafe { (*frame.hw_frames_ctx).data }.cast::<sys::AVHWFramesContext>();
+        if frames.is_null() {
+            return None;
+        }
+        Some(unsafe { (*frames).sw_format })
     }
 
     pub(crate) fn width(&self) -> u32 {

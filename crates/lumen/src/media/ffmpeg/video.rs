@@ -5,13 +5,13 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    CpuVideoFrame, DecodeMode, GpuBackend, InputContext, Rational, VideoDecoder,
+    CpuVideoFrame, DecodeMode, GpuBackend, GpuVideoFrame, InputContext, Rational, VideoDecoder,
     VideoDecoderConfig, VideoStreamInfo,
 };
 
 use crate::{
     error::MediaError,
-    media::{CpuMediaFrame, MediaFrame, VideoFrameResolver, VideoMetadata},
+    media::{GpuVideoMediaFrame, MediaFrame, VideoFrameResolver, VideoMetadata},
 };
 
 use super::image::{FrameImage, FrameLruCache};
@@ -26,9 +26,17 @@ pub struct FfmpegResolverOptions {
 impl Default for FfmpegResolverOptions {
     fn default() -> Self {
         Self {
-            prefer_hardware_decode: true,
+            prefer_hardware_decode: default_hardware_decode(),
         }
     }
+}
+
+fn default_hardware_decode() -> bool {
+    cfg!(all(
+        target_os = "linux",
+        feature = "cuda",
+        feature = "vulkan"
+    ))
 }
 
 struct VideoDecodeWorker {
@@ -44,13 +52,13 @@ impl VideoDecodeWorker {
         }
     }
 
-    fn resolve_frame(&mut self, frame: u32) -> Result<Arc<CpuMediaFrame>, MediaError> {
+    fn resolve_frame(&mut self, frame: u32) -> Result<MediaFrame, MediaError> {
         if let Some(cached) = self.cache.get(frame) {
             return Ok(cached);
         }
 
-        let decoded = self.decoder.decode_frame(frame)?.into_media_frame()?;
-        self.cache.insert(frame, Arc::clone(&decoded));
+        let decoded = self.decoder.decode_frame(frame)?;
+        self.cache.insert(frame, decoded.clone());
         Ok(decoded)
     }
 
@@ -91,7 +99,7 @@ struct DecoderComponents {
 #[allow(dead_code)]
 enum GpuDecodeStatus {
     NotRequested,
-    AvailableButNotImported { backend: GpuBackend },
+    Active { backend: GpuBackend },
     Unavailable { backend: GpuBackend, reason: String },
 }
 
@@ -137,18 +145,8 @@ impl LibavStreamDecoder {
         let width = stream.width;
         let height = stream.height;
         let frame_count = resolve_frame_count(&stream, fps);
-        let gpu_decode_status = probe_gpu_decode(source, &input, &stream, prefer_hardware_decode);
-        let decoder = VideoDecoder::open(
-            &input,
-            VideoDecoderConfig {
-                stream_index,
-                mode: DecodeMode::Cpu,
-            },
-        )
-        .map_err(|err| MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!("failed opening CPU video decoder: {err}"),
-        })?;
+        let (decoder, gpu_decode_status) =
+            open_video_decoder(source, &input, &stream, prefer_hardware_decode)?;
 
         Ok(DecoderComponents {
             input,
@@ -163,7 +161,7 @@ impl LibavStreamDecoder {
         })
     }
 
-    fn decode_frame(&mut self, frame: u32) -> Result<FrameImage, MediaError> {
+    fn decode_frame(&mut self, frame: u32) -> Result<MediaFrame, MediaError> {
         if frame >= self.frame_count {
             return Err(MediaError::FrameOutOfRange {
                 media_source: self.source.clone(),
@@ -192,7 +190,7 @@ impl LibavStreamDecoder {
         }
     }
 
-    fn decode_frame_inner(&mut self, target_frame: u32) -> Result<FrameImage, MediaError> {
+    fn decode_frame_inner(&mut self, target_frame: u32) -> Result<MediaFrame, MediaError> {
         loop {
             if let Some(decoded) = self.receive_frames_until(target_frame)? {
                 return Ok(decoded);
@@ -235,23 +233,49 @@ impl LibavStreamDecoder {
     fn receive_frames_until(
         &mut self,
         target_frame: u32,
-    ) -> Result<Option<FrameImage>, MediaError> {
+    ) -> Result<Option<MediaFrame>, MediaError> {
         loop {
-            match self.decoder.receive_cpu_frame() {
-                Ok(Some(decoded)) => {
-                    let decoded_frame = self.map_frame_index(&decoded);
-                    self.next_frame_hint = decoded_frame.saturating_add(1);
-                    if decoded_frame < target_frame {
-                        continue;
+            if matches!(self.gpu_decode_status, GpuDecodeStatus::Active { .. }) {
+                match self.decoder.receive_gpu_frame() {
+                    Ok(Some(decoded)) => {
+                        let decoded_frame = self.map_gpu_frame_index(&decoded);
+                        self.next_frame_hint = decoded_frame.saturating_add(1);
+                        if decoded_frame < target_frame {
+                            continue;
+                        }
+                        return Ok(Some(MediaFrame::GpuVideo(Arc::new(GpuVideoMediaFrame {
+                            frame: decoded,
+                        }))));
                     }
-                    return self.frame_to_image(decoded).map(Some);
+                    Ok(None) => return Ok(None),
+                    Err(err) => {
+                        return Err(MediaError::Decode {
+                            media_source: self.source.clone(),
+                            details: format!("failed receiving decoded GPU frame: {err}"),
+                        });
+                    }
                 }
-                Ok(None) => return Ok(None),
-                Err(err) => {
-                    return Err(MediaError::Decode {
-                        media_source: self.source.clone(),
-                        details: format!("failed receiving decoded frame: {err}"),
-                    });
+            } else {
+                match self.decoder.receive_rgba_frame() {
+                    Ok(Some(decoded)) => {
+                        let decoded_frame = self.map_frame_index(&decoded);
+                        self.next_frame_hint = decoded_frame.saturating_add(1);
+                        if decoded_frame < target_frame {
+                            continue;
+                        }
+                        return self
+                            .frame_to_image(decoded)
+                            .and_then(FrameImage::into_media_frame)
+                            .map(MediaFrame::CpuRgba)
+                            .map(Some);
+                    }
+                    Ok(None) => return Ok(None),
+                    Err(err) => {
+                        return Err(MediaError::Decode {
+                            media_source: self.source.clone(),
+                            details: format!("failed receiving decoded frame: {err}"),
+                        });
+                    }
                 }
             }
         }
@@ -260,6 +284,14 @@ impl LibavStreamDecoder {
     fn map_frame_index(&self, decoded: &CpuVideoFrame) -> u32 {
         decoded
             .pts
+            .map(|timestamp| self.timestamp_to_frame(timestamp))
+            .filter(|frame| *frame <= self.frame_count.saturating_sub(1))
+            .unwrap_or(self.next_frame_hint)
+    }
+
+    fn map_gpu_frame_index(&self, decoded: &GpuVideoFrame) -> u32 {
+        decoded
+            .pts()
             .map(|timestamp| self.timestamp_to_frame(timestamp))
             .filter(|frame| *frame <= self.frame_count.saturating_sub(1))
             .unwrap_or(self.next_frame_hint)
@@ -351,7 +383,7 @@ enum WorkerRequest {
     },
     Resolve {
         frame: u32,
-        response_tx: mpsc::Sender<Result<Arc<CpuMediaFrame>, MediaError>>,
+        response_tx: mpsc::Sender<Result<MediaFrame, MediaError>>,
     },
     Retain {
         frames: Vec<u32>,
@@ -522,13 +554,10 @@ impl VideoFrameResolver for FfmpegVideoResolver {
                 details: "video decode worker is unavailable".to_string(),
             })?;
 
-        response_rx
-            .recv()
-            .map_err(|_| MediaError::Decode {
-                media_source: self.id.clone(),
-                details: format!("video decode worker did not return frame {frame}"),
-            })?
-            .map(MediaFrame::CpuRgba)
+        response_rx.recv().map_err(|_| MediaError::Decode {
+            media_source: self.id.clone(),
+            details: format!("video decode worker did not return frame {frame}"),
+        })?
     }
 
     fn retain_frames(&self, frames: &[u32]) {
@@ -587,36 +616,74 @@ fn invert_rational(value: Rational) -> Option<f64> {
     (value.numerator != 0).then_some(value.denominator as f64 / value.numerator as f64)
 }
 
-fn probe_gpu_decode(
+fn open_video_decoder(
     source: &str,
     input: &InputContext,
     stream: &VideoStreamInfo,
     prefer_hardware_decode: bool,
-) -> GpuDecodeStatus {
-    if !prefer_hardware_decode {
-        return GpuDecodeStatus::NotRequested;
+) -> Result<(VideoDecoder, GpuDecodeStatus), MediaError> {
+    let stream_index = stream.stream_index;
+    if prefer_hardware_decode {
+        let backend = preferred_gpu_backend();
+        match VideoDecoder::open(
+            input,
+            VideoDecoderConfig {
+                stream_index,
+                mode: DecodeMode::Gpu(backend),
+            },
+        ) {
+            Ok(decoder) => return Ok((decoder, GpuDecodeStatus::Active { backend })),
+            Err(error) => {
+                let decoder = open_cpu_video_decoder(source, input, stream_index)?;
+                return Ok((
+                    decoder,
+                    GpuDecodeStatus::Unavailable {
+                        backend,
+                        reason: format!("{source}: {error}"),
+                    },
+                ));
+            }
+        }
     }
 
-    let backend = preferred_gpu_backend();
-    match VideoDecoder::open(
+    Ok((
+        open_cpu_video_decoder(source, input, stream_index)?,
+        GpuDecodeStatus::NotRequested,
+    ))
+}
+
+fn open_cpu_video_decoder(
+    source: &str,
+    input: &InputContext,
+    stream_index: usize,
+) -> Result<VideoDecoder, MediaError> {
+    VideoDecoder::open(
         input,
         VideoDecoderConfig {
-            stream_index: stream.stream_index,
-            mode: DecodeMode::Gpu(backend),
+            stream_index,
+            mode: DecodeMode::Cpu,
         },
-    ) {
-        Ok(_) => GpuDecodeStatus::AvailableButNotImported { backend },
-        Err(error) => GpuDecodeStatus::Unavailable {
-            backend,
-            reason: format!("{source}: {error}"),
-        },
-    }
+    )
+    .map_err(|err| MediaError::Decode {
+        media_source: source.to_string(),
+        details: format!("failed opening CPU video decoder: {err}"),
+    })
 }
 
 fn preferred_gpu_backend() -> GpuBackend {
     if cfg!(target_os = "macos") {
         GpuBackend::Metal
     } else {
-        GpuBackend::Vulkan
+        preferred_non_macos_gpu_backend()
     }
+}
+
+#[cfg(all(target_os = "linux", feature = "cuda"))]
+fn preferred_non_macos_gpu_backend() -> GpuBackend {
+    GpuBackend::Cuda
+}
+
+#[cfg(not(all(target_os = "linux", feature = "cuda")))]
+fn preferred_non_macos_gpu_backend() -> GpuBackend {
+    GpuBackend::Vulkan
 }

@@ -17,12 +17,14 @@ pub use encode::{
     VideoEncoder, VideoEncoderConfig, gpu_texture_encode_support,
 };
 pub use format::{AudioStreamInfo, InputContext, MediaInfo, Rational, VideoStreamInfo};
+#[cfg(feature = "cuda")]
+pub use gpu::CudaDecodedFrame;
 #[cfg(feature = "vulkan")]
 pub use gpu::VulkanVideoFrame;
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 pub use gpu::{
-    CudaContext, CudaDeviceAllocation, CudaDriver, ImportedCudaExternalImage,
-    import_owned_vulkan_opaque_fd_image, import_vulkan_opaque_fd_image,
+    CudaContext, CudaDeviceAllocation, CudaDriver, CudaNv12ToRgbaConverter,
+    ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image, import_vulkan_opaque_fd_image,
 };
 #[cfg(feature = "cuda")]
 pub use gpu::{
