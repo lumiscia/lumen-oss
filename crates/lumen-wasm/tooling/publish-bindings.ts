@@ -186,7 +186,7 @@ async function putObject(
     return;
   }
 
-  await $`vp exec wrangler r2 object put ${`${bucket}/${key}`} --file ${file} --content-type ${uploadOptions.contentType} --cache-control ${uploadOptions.cacheControl}`;
+  await $`vp exec --filter ./apps/api -- wrangler r2 object put ${`${bucket}/${key}`} --file ${file} --content-type ${uploadOptions.contentType} --cache-control ${uploadOptions.cacheControl} --remote`;
 }
 
 async function writeGithubOutputs(wasmSha256: string) {
