@@ -1,6 +1,7 @@
 {
   "name": "lumen-bindings",
   "version": "0.0.0",
+  "license": "Apache-2.0",
   "type": "module",
   "sideEffects": [
     "./src/bundler/lumen_wasm.js",
