@@ -8,10 +8,10 @@ use std::time::Instant;
 
 pub use types::{
     ArtifactOutput, ArtifactStaging, ProgressCallback, RenderJobError, RenderJobInput,
-    RenderJobMetrics, RenderJobResponse, RenderProfile,
+    RenderJobMetrics, RenderJobResponse,
 };
 
-use crate::render::{
+use lumen_server::render::{
     RenderError as RenderPipelineError, RenderOptions, RenderProgress, convert_project_payload,
     render_project_mp4,
 };

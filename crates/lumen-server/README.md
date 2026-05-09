@@ -16,6 +16,10 @@ applications.
 - a library target, `lumen_server`, for embedding in custom render platforms
 - a generic binary target, `lumen-server`, for local HTTP rendering
 
+The exposed Axum API is intentionally binary-owned. Its request shape supports
+remote media manifests, progress callbacks, and artifact upload URLs, which are
+useful compatibility tools but should not define the public library API.
+
 The binary exposes:
 
 - `GET /health`
@@ -43,11 +47,15 @@ The crate includes small local building blocks:
 - `InMemoryRenderQueue` for tests and single-process development.
 - `LocalRenderExecutor` for executing renders in the current process.
 - `NoopProgressSink` for callers that do not need progress events.
+- `CallbackProgressSink` for generic HTTP progress callbacks.
+- `PresignedUrlArtifactStore` for S3-compatible or R2-style pre-signed uploads.
+- `RenderService::process_next` for leasing, executing, storing, and acking one queued job.
 
-Production users should provide their own implementations. For example, a hosted
-platform can keep a private crate that implements a RunPod executor, a Cloudflare
-or S3-compatible artifact store, and a durable queue, while still depending on
-the public `lumen-server` service traits and render types.
+Production users should provide their own durable implementations. For example,
+a hosted platform can keep a private crate that implements a RunPod executor,
+a Cloudflare Queue or SQS-backed `RenderQueue`, and any account/auth/billing
+policy, while still depending on the public `lumen-server` service traits and
+render types.
 
 ## Example Shape
 
@@ -63,6 +71,11 @@ let service = RenderService::new(
     NoopProgressSink,
 );
 ```
+
+The standalone binary keeps the compatibility HTTP adapter private to the
+executable. Downstream applications that need different job contracts should
+build their own API around the service traits instead of depending on the
+binary request/response types.
 
 ## What Belongs Outside This Crate
 

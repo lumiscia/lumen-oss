@@ -13,7 +13,7 @@ path = "src/bin/lumen-server.rs"
 required-features = ["cli"]
 
 [features]
-cli = ["dep:clap"]
+cli = ["dep:axum", "dep:clap", "dep:tracing-subscriber"]
 legacy-decode-tests = []
 metal = ["lumen/metal", "lumen-ffmpeg/metal"]
 vulkan = ["lumen/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
@@ -22,11 +22,11 @@ cuda = ["lumen/cuda", "lumen-ffmpeg/cuda"]
 [dependencies]
 anyhow = "1.0.101"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"] }
+tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"], optional = true }
 tokio = { version = "1.49.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-axum = { version = "0.8.7", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "0.8.7", default-features = false, features = ["http1", "json", "tokio"], optional = true }
 lumen = { path = "../lumen", features = ["ffmpeg", "image", "json"] }
 lumen-gpu = { path = "../lumen-gpu" }
 lumen-ffmpeg = { version = "0.1.0", path = "../lumen-ffmpeg" }

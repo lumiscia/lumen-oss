@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
 
+mod server;
+
 use axum::{
     Json, Router,
     extract::State,
@@ -8,8 +10,9 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use lumen_server::server::{RenderJobError, RenderJobInput, RenderJobResponse, handle_render_job};
 use serde::Serialize;
+
+use self::server::{RenderJobError, RenderJobInput, RenderJobResponse, handle_render_job};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Run a provider-neutral Lumen render HTTP server.")]
