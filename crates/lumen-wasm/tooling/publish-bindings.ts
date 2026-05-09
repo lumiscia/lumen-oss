@@ -1,5 +1,5 @@
 import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
-import { basename, extname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 type BunFile = {
   readonly size: number;
@@ -32,10 +32,10 @@ const bindingsDir = options.bindingsDir;
 const outDir = options.outDir;
 const wasmName = "lumen_wasm";
 const sharedWasmName = `${wasmName}_bg.wasm`;
-const bucket = options.dryRun ? (process.env.R2_BUCKET ?? "dry-run") : requiredEnv("R2_BUCKET");
-const gitSha = options.dryRun ? (process.env.GITHUB_SHA ?? "dry-run") : requiredEnv("GITHUB_SHA");
+const gitSha = process.env.GITHUB_SHA ?? "local";
 const releaseTag = process.env.RELEASE_TAG;
-const baseUrl = process.env.LUMEN_WASM_PUBLIC_BASE_URL ?? "https://artifacts.lumiscia.com";
+const repository = process.env.GITHUB_REPOSITORY ?? "lumiscia/lumen";
+const baseUrl = `https://github.com/${repository}/releases/download`;
 const shaKey = `lumen/sha-${gitSha}`;
 const targets = ["bundler", "browser", "node", "no-modules"] as const;
 
@@ -46,18 +46,9 @@ const files = await artifactFiles();
 const wasmSha256 = requiredFile(files, sharedWasmName).sha256;
 
 await writeManifest(files);
-await uploadArtifacts(shaKey, files);
 
 if (releaseTag) {
   await writeReleasePointer(wasmSha256);
-  await putObject(`lumen/${releaseTag}.json`, join(outDir, "release-pointer.json"), {
-    cacheControl: "public, max-age=300",
-    contentType: "application/json",
-  });
-  await putObject("lumen/latest.json", join(outDir, "release-pointer.json"), {
-    cacheControl: "public, max-age=300",
-    contentType: "application/json",
-  });
 }
 
 await writeGithubOutputs(wasmSha256);
@@ -152,41 +143,12 @@ async function writeManifest(files: ArtifactFile[]) {
 async function writeReleasePointer(wasmSha256: string) {
   await writeJson(join(outDir, "release-pointer.json"), {
     baseUrl,
-    version: shaKey,
+    version: releaseTag,
     release: releaseTag,
     gitSha,
-    manifestUrl: `${baseUrl}/${shaKey}/manifest.json`,
+    manifestUrl: `${baseUrl}/${releaseTag}/manifest.json`,
     wasmSha256,
   });
-}
-
-async function uploadArtifacts(key: string, files: ArtifactFile[]) {
-  const manifestFile: ArtifactFile = {
-    path: join(outDir, "manifest.json"),
-    rel: "manifest.json",
-    sha256: await hashFile(Bun.file(join(outDir, "manifest.json"))),
-    size: Bun.file(join(outDir, "manifest.json")).size,
-  };
-
-  for (const file of [...files, manifestFile]) {
-    await putObject(`${key}/${file.rel}`, file.path, {
-      cacheControl: "public, max-age=31536000, immutable",
-      contentType: contentType(file.rel),
-    });
-  }
-}
-
-async function putObject(
-  key: string,
-  file: string,
-  uploadOptions: { cacheControl: string; contentType: string },
-) {
-  if (options.dryRun) {
-    console.log(`[dry-run] upload ${file} -> ${bucket}/${key}`);
-    return;
-  }
-
-  await $`vp exec --filter ./apps/api -- wrangler r2 object put ${`${bucket}/${key}`} --file ${file} --content-type ${uploadOptions.contentType} --cache-control ${uploadOptions.cacheControl} --remote`;
 }
 
 async function writeGithubOutputs(wasmSha256: string) {
@@ -209,32 +171,12 @@ async function writeSummary(wasmSha256: string) {
     [
       "## Lumen WASM published",
       "",
-      `- Bucket: \`${bucket}\``,
-      `- SHA key: \`${shaKey}/\``,
-      ...(releaseTag
-        ? [
-            `- Release pointer: \`lumen/${releaseTag}.json\``,
-            "- Latest pointer: `lumen/latest.json`",
-          ]
-        : []),
-      `- WASM: \`${shaKey}/${sharedWasmName}\``,
+      `- Release: \`${releaseTag ?? "local"}\``,
+      `- WASM: \`${sharedWasmName}\``,
       `- WASM SHA-256: \`${wasmSha256}\``,
       "",
     ].join("\n"),
   );
-}
-
-function contentType(path: string) {
-  switch (extname(path)) {
-    case ".wasm":
-      return "application/wasm";
-    case ".js":
-      return "text/javascript";
-    case ".json":
-      return "application/json";
-    default:
-      return "text/plain";
-  }
 }
 
 function requiredFile(files: ArtifactFile[], rel: string) {
@@ -245,17 +187,8 @@ function requiredFile(files: ArtifactFile[], rel: string) {
   return file;
 }
 
-function requiredEnv(name: string) {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return value;
-}
-
 function parseArgs() {
   let bindingsDir: string | undefined;
-  let dryRun = false;
   let outDir: string | undefined;
   const args = process.argv.slice(2);
 
@@ -271,10 +204,7 @@ function parseArgs() {
       index += 1;
       continue;
     }
-    if (arg === "--dry-run") {
-      dryRun = true;
-      continue;
-    }
+    if (arg === "--dry-run") continue;
 
     throw new Error(`Unknown argument: ${arg}`);
   }
@@ -286,7 +216,7 @@ function parseArgs() {
     throw new Error("Missing required --out-dir <path>.");
   }
 
-  return { bindingsDir, dryRun, outDir };
+  return { bindingsDir, outDir };
 }
 
 function requiredValue(args: string[], index: number) {
