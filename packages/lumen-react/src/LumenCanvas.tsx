@@ -1,17 +1,19 @@
 import { useEffect, useRef } from "react";
 
 import type { CSSProperties } from "react";
+import { LumenAudioEngine, createLumenPreviewRuntime } from "lumen-preview";
 import type {
   AudioEngineTimeline,
   AudioSourceRegistration,
-  LumenAudioEngine,
+  LumenPreviewBindings,
   LumenPreviewController,
-} from "lumen-wasm";
+} from "lumen-preview";
 
 import type { LumenPreviewContext } from "./preview.ts";
 
 export interface LumenCanvasProps {
   preview: LumenPreviewContext;
+  bindings: LumenPreviewBindings;
   audioSources?: AudioSourceRegistration[];
   audioTimeline?: AudioEngineTimeline | null;
   compositionJson?: string | null;
@@ -22,6 +24,7 @@ export interface LumenCanvasProps {
 
 export function LumenCanvas({
   preview,
+  bindings,
   audioSources = [],
   audioTimeline = null,
   compositionJson = null,
@@ -115,10 +118,12 @@ export function LumenCanvas({
         totalFrames: controller.durationFrames(),
         width: controller.width(),
         height: controller.height(),
+        isLoaded: true,
         error: null,
       });
     } catch (error) {
       compositionLoadedRef.current = false;
+      preview.update({ isLoaded: false });
       reportError("loadComposition", error);
     }
   }
@@ -188,15 +193,16 @@ export function LumenCanvas({
 
   useEffect(() => {
     let cancelled = false;
+    const { LumenPreviewController: PreviewController } = createLumenPreviewRuntime(bindings);
 
-    void import("lumen-wasm")
-      .then(({ LumenAudioEngine: AudioEngine, LumenPreviewController: PreviewController }) => {
+    Promise.resolve()
+      .then(() => {
         if (cancelled) {
           return;
         }
 
         const controller = new PreviewController();
-        const audioEngine = new AudioEngine();
+        const audioEngine = new LumenAudioEngine();
         compositionLoadedRef.current = false;
         audioEngineRef.current = audioEngine;
         controllerRef.current = controller;
@@ -221,11 +227,15 @@ export function LumenCanvas({
             seek: (frame) => audioEngine.seekMs((frame / Math.max(fps, 1)) * 1000),
           },
         );
+        if (compositionJson) {
+          handleLoadComposition(controller, compositionJson, fps);
+          queueRender(() => renderOnce(controller));
+        }
         startLoop(controller);
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          reportError("import lumen-wasm", error);
+          reportError("initialize lumen-preview", error);
         }
       });
 
@@ -240,7 +250,7 @@ export function LumenCanvas({
       compositionLoadedRef.current = false;
       preview._detach();
     };
-  }, [preview]);
+  }, [preview, bindings, compositionJson, fps]);
 
   useEffect(() => {
     const audioEngine = audioEngineRef.current;
@@ -258,6 +268,7 @@ export function LumenCanvas({
     const controller = controllerRef.current;
     if (!controller || !compositionJson) {
       compositionLoadedRef.current = false;
+      preview.update({ isLoaded: false });
       return;
     }
 

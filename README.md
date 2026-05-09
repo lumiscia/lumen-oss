@@ -1,6 +1,6 @@
 # Lumen
 
-Lumen is a node-based media rendering engine with Rust renderer crates, WebAssembly bindings, and small framework packages for browser previews.
+Lumen is a node-based media rendering engine with Rust renderer crates, WebAssembly bindings, schema-derived TypeScript packages, and framework preview components.
 
 This repository is an open-source extraction of the engine, runtime, package, and documentation history. Product application code, hosted-service API code, billing/auth flows, and private frontend work are intentionally excluded.
 
@@ -10,8 +10,13 @@ This repository is an open-source extraction of the engine, runtime, package, an
 - `crates/lumen-gpu`: GPU render planning and resource management
 - `crates/lumen-wasm`: WebAssembly-facing renderer bindings
 - `crates/lumen-server`: native render worker/server components
-- `packages/lumen-wasm`: browser media bridge and wasm package surface
-- `packages/lumen-react` and `packages/lumen-svelte`: preview components
+- `definitions`: generated node metadata and JSON schemas
+- `packages/lumen-types`: generated TypeScript types for schemas and metadata
+- `packages/lumen-shared`: dependency-light composition helpers
+- `packages/lumen-preview`: browser preview engine and media bridge
+- `packages/lumen-bindings`: generated WASM binding package surface
+- `packages/lumen-react` and `packages/lumen-svelte`: framework preview wrappers
+- `examples/vite-react` and `examples/vite-svelte`: local preview examples
 - `docs` and `specs`: architecture notes, render specs, and migration plans
 
 ## Development
@@ -37,4 +42,11 @@ Build generated bindings and metadata:
 just release
 just generate-node-specs
 just generate-definitions
+vp run generate:types
+```
+
+WASM release artifacts are intended to be uploaded to GitHub Releases:
+
+```bash
+just release-artifacts
 ```

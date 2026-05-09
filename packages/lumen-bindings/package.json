@@ -1,0 +1,50 @@
+{
+  "name": "lumen-bindings",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": [
+    "./src/bundler/lumen_wasm.js",
+    "./src/browser/lumen_wasm.js",
+    "./src/node/lumen_wasm.js",
+    "./src/no-modules/lumen_wasm.js"
+  ],
+  "main": "./src/bundler/lumen_wasm.js",
+  "types": "./src/bundler/lumen_wasm.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/bundler/lumen_wasm.d.ts",
+      "default": "./src/bundler/lumen_wasm.js"
+    },
+    "./bundler": {
+      "types": "./src/bundler/lumen_wasm.d.ts",
+      "default": "./src/bundler/lumen_wasm.js"
+    },
+    "./browser": {
+      "types": "./src/browser/lumen_wasm.d.ts",
+      "default": "./src/browser/lumen_wasm.js"
+    },
+    "./web": {
+      "types": "./src/browser/lumen_wasm.d.ts",
+      "default": "./src/browser/lumen_wasm.js"
+    },
+    "./node": {
+      "types": "./src/node/lumen_wasm.d.ts",
+      "default": "./src/node/lumen_wasm.js"
+    },
+    "./nodejs": {
+      "types": "./src/node/lumen_wasm.d.ts",
+      "default": "./src/node/lumen_wasm.js"
+    },
+    "./no-modules": {
+      "default": "./src/no-modules/lumen_wasm.js"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "check": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  }
+}

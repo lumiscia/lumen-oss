@@ -1,0 +1,18 @@
+{
+  "name": "@lumiscia/download-wasm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "download-lumen-wasm": "./dist/index.js"
+  },
+  "scripts": {
+    "download": "vp run build && node dist/index.js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}

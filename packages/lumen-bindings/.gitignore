@@ -1,0 +1,5 @@
+src/bundler/*
+src/browser/*
+src/node/*
+src/no-modules/*
+!src/**/.gitignore

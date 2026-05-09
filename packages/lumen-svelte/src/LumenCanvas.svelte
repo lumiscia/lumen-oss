@@ -1,10 +1,12 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import type { LumenPreviewController } from "lumen-wasm";
+    import { createLumenPreviewRuntime } from "lumen-preview";
+    import type { LumenPreviewBindings, LumenPreviewController } from "lumen-preview";
     import type { LumenPreviewContext } from "./preview.svelte.js";
 
     type Props = {
         preview: LumenPreviewContext;
+        bindings: LumenPreviewBindings;
         compositionJson?: string | null;
         fps?: number;
         class?: string;
@@ -13,6 +15,7 @@
 
     let {
         preview,
+        bindings,
         compositionJson = null,
         fps = 30,
         class: className,
@@ -40,7 +43,7 @@
 
     function reportError(scope: string, error: unknown): void {
         console.error(`[LumenCanvas] ${scope}`, error);
-        preview.error = describeError(error);
+        preview.update({ error: describeError(error) });
     }
 
     function queueRender(operation: () => Promise<void>): void {
@@ -74,10 +77,12 @@
         try {
             const t0 = performance.now();
             await controller.renderNowAsync(ctx);
-            preview.renderMs = performance.now() - t0;
-            preview.frame = controller.currentFrame();
-            preview.isPlaying = controller.isPlaying();
-            preview.error = null;
+            preview.update({
+                renderMs: performance.now() - t0,
+                frame: controller.currentFrame(),
+                isPlaying: controller.isPlaying(),
+                error: null,
+            });
         } catch (e: unknown) {
             reportError("renderOnce", e);
         }
@@ -91,10 +96,12 @@
         try {
             controller.loadComposition(json, f);
             compositionLoaded = true;
-            preview.totalFrames = controller.durationFrames();
-            preview.width = controller.width();
-            preview.height = controller.height();
-            preview.error = null;
+            preview.update({
+                totalFrames: controller.durationFrames(),
+                width: controller.width(),
+                height: controller.height(),
+                error: null,
+            });
         } catch (e: unknown) {
             compositionLoaded = false;
             reportError("loadComposition", e);
@@ -119,11 +126,13 @@
                         const t0 = performance.now();
                         const changed = await controller.tickAsync(now, ctx);
                         if (changed) {
-                            preview.renderMs = performance.now() - t0;
-                            preview.frame = controller.currentFrame();
-                            preview.isPlaying = controller.isPlaying();
+                            preview.update({
+                                renderMs: performance.now() - t0,
+                                frame: controller.currentFrame(),
+                                isPlaying: controller.isPlaying(),
+                            });
                         }
-                        preview.error = null;
+                        preview.update({ error: null });
                     } catch (e: unknown) {
                         reportError("animation tick", e);
                         // Don't return — keep the loop alive so transient errors
@@ -141,9 +150,10 @@
     onMount(() => {
         let cancelled = false;
 
-        import("lumen-wasm")
-            .then(({ LumenPreviewController }) => {
+        Promise.resolve()
+            .then(() => {
                 if (cancelled) return;
+                const { LumenPreviewController } = createLumenPreviewRuntime(bindings);
                 const controller = new LumenPreviewController();
                 compositionLoaded = false;
                 preview._attach(controller, (frame) => {
@@ -161,7 +171,7 @@
             })
             .catch((e: unknown) => {
                 if (!cancelled) {
-                    reportError("import lumen-wasm", e);
+                    reportError("initialize lumen-preview", e);
                 }
             });
 

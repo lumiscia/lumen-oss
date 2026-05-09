@@ -4,10 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "ready": "vp check && vp run -r test && vp run -r build",
+    "ready": "vp check && vp test && vp run -r build",
     "build:wasm": "just release",
+    "release:wasm": "just release-artifacts",
     "build:meta:package": "just generate-node-specs",
     "build:definitions": "just generate-definitions",
+    "download:wasm": "vp run --filter @lumiscia/download-wasm download",
+    "generate:types": "vp run --filter @lumiscia/generate-types generate",
     "prepare": "vp config"
   },
   "devDependencies": {

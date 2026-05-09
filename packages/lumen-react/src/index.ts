@@ -1,7 +1,7 @@
-export { LumenCanvas, type LumenCanvasProps } from "./LumenCanvas.tsx";
+export { LumenCanvas, type LumenCanvasProps } from "./LumenCanvas.js";
 export {
   LumenPreviewContext,
   createLumenPreview,
   useLumenPreview,
   type LumenPreviewState,
-} from "./preview.ts";
+} from "./preview.js";
