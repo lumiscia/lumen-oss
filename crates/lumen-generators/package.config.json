@@ -1,7 +1,0 @@
-{
-  "name": "lumen-node-specs",
-  "version": "0.1.0",
-  "description": "Generated canonical node metadata for Lumen.",
-  "keywords": ["lumen", "graphics", "node-graph", "schema"],
-  "publishAccess": "public"
-}

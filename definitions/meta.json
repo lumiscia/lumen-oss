@@ -622,7 +622,10 @@
         {
           "name": "position",
           "kind": "vec2",
-          "defaultValue": [0.0, 0.0]
+          "defaultValue": [
+            0.0,
+            0.0
+          ]
         },
         {
           "name": "fill_enabled",
@@ -632,7 +635,12 @@
         {
           "name": "fill_color",
           "kind": "color",
-          "defaultValue": [255, 255, 255, 255]
+          "defaultValue": [
+            255,
+            255,
+            255,
+            255
+          ]
         },
         {
           "name": "stroke_enabled",
@@ -642,7 +650,12 @@
         {
           "name": "stroke_color",
           "kind": "color",
-          "defaultValue": [0, 0, 0, 255]
+          "defaultValue": [
+            0,
+            0,
+            0,
+            255
+          ]
         },
         {
           "name": "stroke_width",
@@ -652,10 +665,23 @@
       ],
       "defaultProperties": {
         "data": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
-        "fill_color": [255, 255, 255, 255],
+        "fill_color": [
+          255,
+          255,
+          255,
+          255
+        ],
         "fill_enabled": true,
-        "position": [0.0, 0.0],
-        "stroke_color": [0, 0, 0, 255],
+        "position": [
+          0.0,
+          0.0
+        ],
+        "stroke_color": [
+          0,
+          0,
+          0,
+          255
+        ],
         "stroke_enabled": false,
         "stroke_width": 1.0
       }
@@ -782,7 +808,12 @@
         {
           "name": "color",
           "kind": "color",
-          "defaultValue": [0, 0, 0, 255]
+          "defaultValue": [
+            0,
+            0,
+            0,
+            255
+          ]
         },
         {
           "name": "opacity",
@@ -791,7 +822,12 @@
         }
       ],
       "defaultProperties": {
-        "color": [0, 0, 0, 255],
+        "color": [
+          0,
+          0,
+          0,
+          255
+        ],
         "offset_x": 8.0,
         "offset_y": 8.0,
         "opacity": 0.5,
@@ -839,7 +875,10 @@
         {
           "name": "position",
           "kind": "vec2",
-          "defaultValue": [0.0, 0.0]
+          "defaultValue": [
+            0.0,
+            0.0
+          ]
         },
         {
           "name": "fill_enabled",
@@ -849,7 +888,12 @@
         {
           "name": "fill_color",
           "kind": "color",
-          "defaultValue": [255, 255, 255, 255]
+          "defaultValue": [
+            255,
+            255,
+            255,
+            255
+          ]
         },
         {
           "name": "stroke_enabled",
@@ -859,7 +903,12 @@
         {
           "name": "stroke_color",
           "kind": "color",
-          "defaultValue": [0, 0, 0, 255]
+          "defaultValue": [
+            0,
+            0,
+            0,
+            255
+          ]
         },
         {
           "name": "stroke_width",
@@ -869,13 +918,26 @@
       ],
       "defaultProperties": {
         "border_radius": 0.0,
-        "fill_color": [255, 255, 255, 255],
+        "fill_color": [
+          255,
+          255,
+          255,
+          255
+        ],
         "fill_enabled": true,
         "geometry_kind": 0,
         "height": 1,
         "polygon_points": "",
-        "position": [0.0, 0.0],
-        "stroke_color": [0, 0, 0, 255],
+        "position": [
+          0.0,
+          0.0
+        ],
+        "stroke_color": [
+          0,
+          0,
+          0,
+          255
+        ],
         "stroke_enabled": false,
         "stroke_width": 1.0,
         "width": 1
@@ -897,7 +959,12 @@
         {
           "name": "color",
           "kind": "color",
-          "defaultValue": [0, 0, 0, 255]
+          "defaultValue": [
+            0,
+            0,
+            0,
+            255
+          ]
         },
         {
           "name": "width",
@@ -911,7 +978,12 @@
         }
       ],
       "defaultProperties": {
-        "color": [0, 0, 0, 255],
+        "color": [
+          0,
+          0,
+          0,
+          255
+        ],
         "height": 0,
         "width": 0
       }
@@ -992,12 +1064,20 @@
         {
           "name": "position",
           "kind": "vec2",
-          "defaultValue": [0.0, 0.0]
+          "defaultValue": [
+            0.0,
+            0.0
+          ]
         },
         {
           "name": "color",
           "kind": "color",
-          "defaultValue": [255, 255, 255, 255]
+          "defaultValue": [
+            255,
+            255,
+            255,
+            255
+          ]
         },
         {
           "name": "alignment_horizontal",
@@ -1013,14 +1093,22 @@
       "defaultProperties": {
         "alignment_horizontal": 0,
         "alignment_vertical": 0,
-        "color": [255, 255, 255, 255],
+        "color": [
+          255,
+          255,
+          255,
+          255
+        ],
         "content": "",
         "font_family": "Roboto",
         "font_size": 16.0,
         "font_style": 0,
         "font_weight": 400,
         "max_width": 0.0,
-        "position": [0.0, 0.0]
+        "position": [
+          0.0,
+          0.0
+        ]
       }
     },
     "time_remap": {

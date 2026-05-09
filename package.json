@@ -13,8 +13,8 @@
     "build": "pnpm -r build",
     "build:wasm": "just release",
     "release:wasm": "just release-artifacts",
-    "build:meta:package": "just generate-node-specs",
     "build:definitions": "just generate-definitions",
+    "check:definitions": "just verify-definitions",
     "generate:types": "pnpm --filter @lumiscia/generate-types generate"
   },
   "devDependencies": {

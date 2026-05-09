@@ -79,7 +79,6 @@ Build generated bindings and metadata:
 
 ```bash
 just release
-just generate-node-specs
 just generate-definitions
 pnpm generate:types
 ```

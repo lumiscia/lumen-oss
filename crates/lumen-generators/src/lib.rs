@@ -5,49 +5,21 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde::Serialize;
+use serde_json::{Value, json};
 
-pub const DEFAULT_CONFIG_PATH: &str = "crates/lumen-generators/package.config.json";
-pub const DEFAULT_OUTPUT_DIR: &str = "packages/lumen-node-specs";
-pub const DEFAULT_DEFINITIONS_OUTPUT_DIR: &str = "generated/lumen-definitions";
+pub const DEFAULT_DEFINITIONS_OUTPUT_DIR: &str = "definitions";
 pub const META_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliArgs {
     pub target: GenerateTarget,
-    pub config: PathBuf,
     pub out_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenerateTarget {
     Definitions,
-    MetaPackage,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PackageConfig {
-    pub name: String,
-    pub version: String,
-    pub description: String,
-    #[serde(default)]
-    pub author: Option<String>,
-    #[serde(default)]
-    pub license: Option<String>,
-    #[serde(default)]
-    pub homepage: Option<String>,
-    #[serde(default)]
-    pub repository: Option<String>,
-    #[serde(default)]
-    pub bugs: Option<String>,
-    #[serde(default)]
-    pub keywords: Vec<String>,
-    #[serde(default)]
-    pub publish_access: Option<String>,
-    #[serde(default)]
-    pub private: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -138,26 +110,13 @@ pub fn parse_args_from<I>(args: I) -> Result<CliArgs>
 where
     I: IntoIterator<Item = String>,
 {
-    let mut config = PathBuf::from(DEFAULT_CONFIG_PATH);
-    let mut out_dir = PathBuf::from(DEFAULT_OUTPUT_DIR);
-    let mut target = GenerateTarget::MetaPackage;
+    let mut out_dir = PathBuf::from(DEFAULT_DEFINITIONS_OUTPUT_DIR);
+    let target = GenerateTarget::Definitions;
 
     let mut args = args.into_iter().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "definitions" => {
-                target = GenerateTarget::Definitions;
-                if out_dir == PathBuf::from(DEFAULT_OUTPUT_DIR) {
-                    out_dir = PathBuf::from(DEFAULT_DEFINITIONS_OUTPUT_DIR);
-                }
-            }
-            "meta-package" => target = GenerateTarget::MetaPackage,
-            "--config" => {
-                config = PathBuf::from(
-                    args.next()
-                        .ok_or_else(|| anyhow!("missing value for --config"))?,
-                );
-            }
+            "definitions" => {}
             "--out-dir" => {
                 out_dir = PathBuf::from(
                     args.next()
@@ -172,30 +131,16 @@ where
         }
     }
 
-    Ok(CliArgs {
-        target,
-        config,
-        out_dir,
-    })
+    Ok(CliArgs { target, out_dir })
 }
 
 pub fn print_usage() {
-    println!(
-        "Usage: cargo run -p lumen-generators -- [definitions|meta-package] [--config <path>] [--out-dir <path>]"
-    );
-}
-
-pub fn read_package_config(path: &Path) -> Result<PackageConfig> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read package config `{}`", path.display()))?;
-    serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse package config `{}`", path.display()))
+    println!("Usage: cargo run -p lumen-generators -- [definitions] [--out-dir <path>]");
 }
 
 pub fn generate(args: &CliArgs) -> Result<()> {
     match args.target {
         GenerateTarget::Definitions => generate_definitions(&args.out_dir),
-        GenerateTarget::MetaPackage => generate_meta_package(&args.config, &args.out_dir),
     }
 }
 
@@ -204,32 +149,6 @@ pub fn generate_definitions(out_dir: &Path) -> Result<()> {
     fs::create_dir_all(out_dir)
         .with_context(|| format!("failed to create output directory `{}`", out_dir.display()))?;
     write_if_changed(&out_dir.join("meta.json"), &artifacts.meta_json)?;
-    write_if_changed(
-        &out_dir.join("schemas/meta.schema.json"),
-        &artifacts.meta_schema_json,
-    )?;
-    write_if_changed(
-        &out_dir.join("schemas/composition.schema.json"),
-        &artifacts.composition_schema_json,
-    )?;
-    Ok(())
-}
-
-pub fn generate_meta_package(config_path: &Path, out_dir: &Path) -> Result<()> {
-    let config = read_package_config(config_path)?;
-    let artifacts = render_definition_artifacts()?;
-    fs::create_dir_all(out_dir)
-        .with_context(|| format!("failed to create output directory `{}`", out_dir.display()))?;
-    write_if_changed(
-        &out_dir.join("package.json"),
-        &render_package_json(&config)?,
-    )?;
-    write_if_changed(&out_dir.join("meta.json"), &artifacts.meta_json)?;
-    write_if_changed(&out_dir.join("index.js"), &render_index_js()?)?;
-    write_if_changed(
-        &out_dir.join("index.d.ts"),
-        &render_index_dts(&artifacts.manifest)?,
-    )?;
     write_if_changed(
         &out_dir.join("schemas/meta.schema.json"),
         &artifacts.meta_schema_json,
@@ -295,86 +214,8 @@ pub fn meta_manifest() -> Result<MetaManifest> {
     })
 }
 
-pub fn render_package_json(config: &PackageConfig) -> Result<String> {
-    let mut package = Map::new();
-    package.insert("name".to_string(), Value::String(config.name.clone()));
-    package.insert("version".to_string(), Value::String(config.version.clone()));
-    package.insert(
-        "description".to_string(),
-        Value::String(config.description.clone()),
-    );
-    package.insert("type".to_string(), Value::String("module".to_string()));
-    package.insert("main".to_string(), Value::String("./index.js".to_string()));
-    package.insert(
-        "types".to_string(),
-        Value::String("./index.d.ts".to_string()),
-    );
-    package.insert("sideEffects".to_string(), Value::Bool(false));
-    Ok(format!("{}\n", serde_json::to_string_pretty(&package)?))
-}
-
 pub fn render_meta_json(manifest: &MetaManifest) -> Result<String> {
     Ok(format!("{}\n", serde_json::to_string_pretty(manifest)?))
-}
-
-pub fn render_index_js() -> Result<String> {
-    Ok("import NODE_SCHEMA from \"./meta.json\" with { type: \"json\" };\nexport { NODE_SCHEMA };\nexport const NODE_KINDS = NODE_SCHEMA.nodeKinds;\nexport const NODE_SPECS = NODE_SCHEMA.nodeSpecs;\n".to_string())
-}
-
-pub fn render_index_dts(manifest: &MetaManifest) -> Result<String> {
-    let kinds = manifest
-        .node_kinds
-        .iter()
-        .map(|kind| format!("{kind:?}"))
-        .collect::<Vec<_>>()
-        .join(" | ");
-    Ok(format!(
-        r#"export type NodeKind = {kinds};
-export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
-export type NodePortKind = "raster_frame" | "vector";
-export type NodePropertyKind = "bool" | "color" | "float" | "int" | "string" | "vec2";
-export type NodeLiteralValue = boolean | number | string | readonly [number, number] | readonly [number, number, number, number];
-
-export interface NodeInputPortSpec {{
-  readonly name: string;
-  readonly kind: NodePortKind;
-  readonly optional: boolean;
-  readonly variadic: boolean;
-}}
-
-export interface NodeOutputPortSpec {{
-  readonly name: string;
-  readonly kind: NodePortKind;
-}}
-
-export interface NodePropertySpec {{
-  readonly name: string;
-  readonly kind: NodePropertyKind;
-  readonly defaultValue: NodeLiteralValue;
-}}
-
-export interface NodeSpec {{
-  readonly kind: NodeKind;
-  readonly label: string;
-  readonly description: string;
-  readonly category: NodeCategory;
-  readonly inputs: readonly NodeInputPortSpec[];
-  readonly outputs: readonly NodeOutputPortSpec[];
-  readonly properties: readonly NodePropertySpec[];
-  readonly defaultProperties: Readonly<Record<string, NodeLiteralValue>>;
-}}
-
-export interface MetaManifest {{
-  readonly schemaVersion: number;
-  readonly nodeKinds: readonly NodeKind[];
-  readonly nodeSpecs: Readonly<Record<NodeKind, NodeSpec>>;
-}}
-
-export declare const NODE_SCHEMA: MetaManifest;
-export declare const NODE_KINDS: readonly NodeKind[];
-export declare const NODE_SPECS: Readonly<Record<NodeKind, NodeSpec>>;
-"#
-    ))
 }
 
 pub fn render_meta_schema_json() -> Result<String> {

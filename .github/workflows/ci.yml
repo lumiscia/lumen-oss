@@ -35,6 +35,9 @@ jobs:
       - name: Build TypeScript workspace
         run: pnpm build
 
+      - name: Check generated definitions
+        run: just verify-definitions
+
       - name: Check Rust formatting
         run: cargo fmt -- --check
 

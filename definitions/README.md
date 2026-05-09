@@ -22,4 +22,10 @@ Reference the schemas directly from this repository, or vendor them into tooling
 
 ## Updates
 
-Changes are published from the upstream Lumen source repository. Each update PR includes the source commit used to generate the artifacts so schema changes can be traced back to the exact Lumen revision.
+Regenerate these files from the repository root with:
+
+```bash
+just generate-definitions
+```
+
+CI runs `just verify-definitions` to compare the committed files against freshly generated output. If a node schema changes, update the Rust source first, regenerate `definitions/`, and commit both changes together.

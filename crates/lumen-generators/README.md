@@ -13,8 +13,8 @@ This crate does not render media and does not require a GPU. It is part of the t
 Most generation should be run through the repository task runner:
 
 ```bash
-just generate-node-specs
 just generate-definitions
+just verify-definitions
 pnpm generate:types
 ```
 

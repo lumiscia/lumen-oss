@@ -20,7 +20,7 @@ cargo check
 cargo test
 ```
 
-Generated definitions and migrations should not be edited by hand. Use the generator commands in the `justfile`.
+Generated definitions and migrations should not be edited by hand. Use the generator commands in the `justfile`. CI runs `just verify-definitions` to make sure committed files in `definitions/` match the Rust node definitions.
 
 WASM bindings are generated into `packages/lumen-bindings/src` with:
 
