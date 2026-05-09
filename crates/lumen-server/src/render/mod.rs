@@ -1,4 +1,6 @@
 mod encoder;
+#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+mod frame_timing;
 mod gpu;
 mod media;
 
@@ -34,6 +36,7 @@ pub struct RenderProgress {
 #[derive(Debug, Clone, Default)]
 pub struct RenderOptions {
     pub media_root: Option<PathBuf>,
+    pub verbose_debug: bool,
     pub video_encoder: Option<String>,
 }
 

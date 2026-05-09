@@ -21,6 +21,7 @@ impl RenderExecutor for LocalRenderExecutor {
             let total_frames = bundle.project.duration_frames;
             let options = RenderOptions {
                 media_root: job.media_root,
+                verbose_debug: false,
                 video_encoder: job.video_encoder,
             };
             let job_id = job.id.clone();

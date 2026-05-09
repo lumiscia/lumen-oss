@@ -26,7 +26,12 @@ tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"], opt
 tokio = { version = "1.49.0", features = ["full"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-axum = { version = "0.8.7", default-features = false, features = ["http1", "json", "tokio"], optional = true }
+axum = { version = "0.8.7", default-features = false, features = [
+  "http1",
+  "json",
+  "tokio",
+  "ws",
+], optional = true }
 lumen = { path = "../lumen", features = ["ffmpeg", "image", "json"] }
 lumen-gpu = { path = "../lumen-gpu" }
 lumen-ffmpeg = { version = "0.1.0", path = "../lumen-ffmpeg" }
@@ -37,3 +42,4 @@ reqwest = { version = "0.12.24", default-features = false, features = [
 ] }
 tempfile = "3.25.0"
 clap = { version = "4.6.1", features = ["derive", "env"], optional = true }
+futures-util = "0.3.32"

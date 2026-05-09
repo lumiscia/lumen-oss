@@ -1,14 +1,14 @@
-mod artifact;
-mod media;
-mod progress;
+pub mod http;
+mod media_staging;
 mod types;
 mod util;
 
 use std::time::Instant;
 
 pub use types::{
-    ArtifactOutput, ArtifactStaging, ProgressCallback, RenderJobError, RenderJobInput,
-    RenderJobMetrics, RenderJobResponse,
+    ApiRenderJob, ArtifactOutput, CreateRenderResponse, GetRenderResponse, RenderJobError,
+    RenderJobInput, RenderJobMetrics, RenderJobResponse, RenderNotification,
+    RenderProgressResponse, RenderQueueState,
 };
 
 use lumen_server::render::{
@@ -16,96 +16,38 @@ use lumen_server::render::{
     render_project_mp4,
 };
 
-use self::{
-    artifact::{upload_artifact, validate_artifact_staging},
-    media::stage_remote_media,
-    progress::{ProgressMetadata, post_progress_async, post_progress_detached},
-    util::sanitize_error_message,
-};
+pub(super) use util::{current_timestamp, input_hash, new_render_id};
 
-pub async fn handle_render_job(input: RenderJobInput) -> RenderJobResponse {
-    let job_id = input.job_id.clone();
-    let progress_callback = input.progress_callback.clone();
-    match execute_render_job(input).await {
-        Ok(response) => {
-            tracing::info!(
-                job_id,
-                ok = response.ok,
-                artifact_bytes = response.artifact.as_ref().map(|artifact| artifact.bytes),
-                render_ms = response.metrics.as_ref().map(|metrics| metrics.render_ms),
-                total_frames = response
-                    .metrics
-                    .as_ref()
-                    .map(|metrics| metrics.total_frames),
-                "completed render request"
-            );
-            response
-        }
-        Err(error) => {
-            let error_code = error.code.clone();
-            let error_message = error.message.clone();
-            let retryable = error.retryable;
-            tracing::error!(
-                job_id,
-                code = error_code,
-                retryable,
-                message = %error_message,
-                "render request failed"
-            );
-            if let Err(callback_error) = post_progress_async(
-                &progress_callback,
-                1.0,
-                "failed",
-                "failed",
-                None,
-                Some(&error_message),
-            )
-            .await
-            {
-                tracing::warn!(
-                    job_id,
-                    code = error_code,
-                    "failed to post terminal failure progress callback: {callback_error}"
-                );
-            }
+use self::{media_staging::stage_remote_media, util::sanitize_error_message};
 
-            RenderJobResponse {
-                ok: false,
-                artifact: None,
-                metrics: None,
-                error: Some(error),
-            }
-        }
-    }
+pub struct CompletedRender {
+    pub artifact: ArtifactOutput,
+    pub bytes: Vec<u8>,
+    pub metrics: RenderJobMetrics,
+    pub render: ApiRenderJob,
 }
 
-async fn execute_render_job(input: RenderJobInput) -> Result<RenderJobResponse, RenderJobError> {
+pub async fn execute_render_job<F>(
+    input: RenderJobInput,
+    artifact_url: String,
+    verbose_debug: bool,
+    mut on_progress: F,
+) -> Result<CompletedRender, RenderJobError>
+where
+    F: FnMut(RenderProgress) + Send + 'static,
+{
     let stage_started = Instant::now();
-    let job_id = input.job_id.clone();
-    let allowed_media_hosts = input
-        .render_profile
-        .as_ref()
-        .map(|profile| profile.allowed_media_hosts.as_slice())
-        .unwrap_or(&[]);
+    let job_id = input.job_id.unwrap_or_else(new_render_id);
     tracing::info!(
         job_id,
         media_count = input.media.len(),
-        allowed_media_host_count = allowed_media_hosts.len(),
-        has_artifact_staging = input.artifact_staging.is_some(),
-        has_progress_callback = input.progress_callback.is_some(),
+        has_webhook = input.webhook_url.is_some(),
         "starting render request"
     );
-    let staged_media = stage_remote_media(input.project, input.media, allowed_media_hosts).await?;
+    let input_hash = input_hash(&input.composition, &input.media);
+    let staged_media = stage_remote_media(input.composition, input.media).await?;
     let media_stage_ms = stage_started.elapsed().as_millis();
     tracing::info!(job_id, media_stage_ms, "staged render media");
-    post_progress_detached(
-        &input.progress_callback,
-        0.02,
-        "media_staged",
-        "processing",
-        None,
-        None,
-    );
 
     let bundle = convert_project_payload(&staged_media.project).map_err(map_execution_error)?;
     tracing::info!(
@@ -115,23 +57,13 @@ async fn execute_render_job(input: RenderJobInput) -> Result<RenderJobResponse, 
         total_frames = bundle.project.duration_frames,
         "converted project payload"
     );
-    validate_artifact_staging(&input.artifact_staging)?;
 
     let options = RenderOptions {
         media_root: staged_media.media_root(),
+        verbose_debug,
         video_encoder: None,
     };
 
-    post_progress_detached(
-        &input.progress_callback,
-        0.05,
-        "accepted",
-        "processing",
-        None,
-        None,
-    );
-
-    let callback = input.progress_callback.clone();
     let output_width = bundle.project.width;
     let output_height = bundle.project.height;
     let total_frames = bundle.project.duration_frames;
@@ -143,10 +75,18 @@ async fn execute_render_job(input: RenderJobInput) -> Result<RenderJobResponse, 
         total_frames,
         "starting mp4 render"
     );
-    let mut progress_reporter = ProgressReporter::new(job_id.clone(), callback);
     let rendered_bytes = tokio::task::spawn_blocking(move || {
         let mut progress_callback = |event: RenderProgress| {
-            progress_reporter.report(event);
+            if verbose_debug {
+                tracing::debug!(
+                    stage = event.stage,
+                    frame = event.frame,
+                    total_frames = event.total_frames,
+                    ratio = event.ratio,
+                    "render progress"
+                );
+            }
+            on_progress(event);
         };
 
         render_project_mp4(&bundle, &options, &mut progress_callback)
@@ -166,38 +106,36 @@ async fn execute_render_job(input: RenderJobInput) -> Result<RenderJobResponse, 
         "finished mp4 render"
     );
 
-    let artifact = upload_artifact(&input.artifact_staging, &rendered_bytes).await?;
-    post_progress_async(
-        &input.progress_callback,
-        1.0,
-        "completed",
-        "succeeded",
-        Some(ProgressMetadata {
-            artifact_url: Some(&artifact.download_url),
-            duration_ms: Some(render_ms),
-            output_bytes: Some(artifact.bytes),
-            resolution: Some(format!("{output_width}x{output_height}")),
-        }),
-        None,
-    )
-    .await
-    .map_err(|err| RenderJobError {
-        code: "progress_callback_failed".to_string(),
-        message: sanitize_error_message(&format!(
-            "terminal success progress callback failed: {err}"
-        )),
-        retryable: true,
-    })?;
+    let artifact = ArtifactOutput {
+        download_url: artifact_url,
+        content_type: "video/mp4",
+        bytes: rendered_bytes.len(),
+    };
+    let metrics = RenderJobMetrics {
+        stage_ms: stage_started.elapsed().as_millis(),
+        render_ms,
+        total_frames: total_frames as u64,
+    };
+    let render = ApiRenderJob {
+        cost_cents: 0,
+        created_at: current_timestamp(),
+        id: job_id,
+        input_hash,
+        organization_id: "self-hosted".to_string(),
+        status: "succeeded",
+    };
 
-    Ok(RenderJobResponse {
-        ok: true,
-        artifact: Some(artifact),
-        metrics: Some(RenderJobMetrics {
-            stage_ms: stage_started.elapsed().as_millis(),
-            render_ms,
-            total_frames: total_frames as u64,
-        }),
-        error: None,
+    tracing::info!(
+        width = output_width,
+        height = output_height,
+        "completed self-hosted render"
+    );
+
+    Ok(CompletedRender {
+        artifact,
+        bytes: rendered_bytes,
+        metrics,
+        render,
     })
 }
 
@@ -206,62 +144,5 @@ fn map_execution_error(error: RenderPipelineError) -> RenderJobError {
         code: error.code.to_string(),
         message: sanitize_error_message(&error.message),
         retryable: error.retryable,
-    }
-}
-
-struct ProgressReporter {
-    callback: Option<ProgressCallback>,
-    job_id: String,
-    last_emit: Option<Instant>,
-    last_ratio: f32,
-}
-
-impl ProgressReporter {
-    fn new(job_id: String, callback: Option<ProgressCallback>) -> Self {
-        Self {
-            callback,
-            job_id,
-            last_emit: None,
-            last_ratio: 0.0,
-        }
-    }
-
-    fn report(&mut self, event: RenderProgress) {
-        if !self.should_emit(&event) {
-            return;
-        }
-
-        tracing::info!(
-            job_id = self.job_id,
-            stage = event.stage,
-            frame = event.frame,
-            total_frames = event.total_frames,
-            ratio = event.ratio,
-            "render progress"
-        );
-        let progress = 0.05 + (0.90 * event.ratio.clamp(0.0, 1.0));
-        post_progress_detached(
-            &self.callback,
-            progress,
-            event.stage,
-            "processing",
-            None,
-            None,
-        );
-        self.last_emit = Some(Instant::now());
-        self.last_ratio = event.ratio;
-    }
-
-    fn should_emit(&self, event: &RenderProgress) -> bool {
-        if event.frame <= 1 || event.frame >= event.total_frames {
-            return true;
-        }
-
-        if event.ratio - self.last_ratio >= 0.05 {
-            return true;
-        }
-
-        self.last_emit
-            .is_some_and(|last_emit| last_emit.elapsed().as_secs() >= 1)
     }
 }

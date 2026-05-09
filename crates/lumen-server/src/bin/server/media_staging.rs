@@ -28,14 +28,9 @@ impl StagedMedia {
 pub(super) async fn stage_remote_media(
     project: Value,
     media: HashMap<String, String>,
-    allowed_hosts: &[String],
 ) -> Result<StagedMedia, RenderJobError> {
     reject_inline_remote_media(&project, None)?;
-    tracing::info!(
-        media_count = media.len(),
-        allowed_media_host_count = allowed_hosts.len(),
-        "staging render media manifest"
-    );
+    tracing::info!(media_count = media.len(), "staging render media manifest");
     if media.is_empty() {
         return Ok(StagedMedia { project, dir: None });
     }
@@ -67,11 +62,9 @@ pub(super) async fn stage_remote_media(
             };
             validate_media_alias(&alias)?;
             let path = dir.path().join(&alias);
-            let allowed_hosts = allowed_hosts.to_vec();
             let client = client.clone();
             downloads.spawn(async move {
-                let bytes =
-                    download_remote_media(&client, &alias, &url, &path, &allowed_hosts).await?;
+                let bytes = download_remote_media(&client, &alias, &url, &path).await?;
                 Ok::<_, RenderJobError>((alias, path, bytes))
             });
         }
@@ -156,12 +149,11 @@ async fn download_remote_media(
     alias: &str,
     url: &str,
     path: &Path,
-    allowed_hosts: &[String],
 ) -> Result<u64, RenderJobError> {
     if url.starts_with("lumen:") {
         return Err(RenderJobError {
             code: "media_download_unresolved_lumen_media".to_string(),
-            message: "lumen media references must be resolved by the API before rendering"
+            message: "self-hosted renders require direct media URLs in the media manifest"
                 .to_string(),
             retryable: false,
         });
@@ -185,7 +177,7 @@ async fn download_remote_media(
         media_url_path = parsed.path(),
         "downloading render media source"
     );
-    validate_remote_media_host(&parsed, allowed_hosts).await?;
+    validate_remote_media_host(&parsed).await?;
 
     let media_url_host = parsed.host_str().unwrap_or_default().to_string();
     let started = Instant::now();
@@ -282,10 +274,7 @@ async fn download_remote_media(
     Ok(downloaded)
 }
 
-async fn validate_remote_media_host(
-    url: &reqwest::Url,
-    allowed_hosts: &[String],
-) -> Result<(), RenderJobError> {
+async fn validate_remote_media_host(url: &reqwest::Url) -> Result<(), RenderJobError> {
     let Some(host) = url.host_str() else {
         return Err(RenderJobError {
             code: "media_download_failed".to_string(),
@@ -293,10 +282,6 @@ async fn validate_remote_media_host(
             retryable: false,
         });
     };
-
-    if !is_allowed_media_host(host, allowed_hosts) {
-        return Err(forbidden_media_host_error());
-    }
 
     if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
         return Err(forbidden_media_host_error());
@@ -318,12 +303,6 @@ async fn validate_remote_media_host(
     }
 
     Ok(())
-}
-
-fn is_allowed_media_host(host: &str, allowed_hosts: &[String]) -> bool {
-    allowed_hosts
-        .iter()
-        .any(|allowed| host.eq_ignore_ascii_case(allowed.trim()))
 }
 
 fn forbidden_media_host_error() -> RenderJobError {
@@ -358,30 +337,7 @@ fn is_private_ip(ip: IpAddr) -> bool {
 mod tests {
     use serde_json::json;
 
-    use super::{is_allowed_media_host, is_media_source_key, reject_inline_remote_media};
-
-    #[test]
-    fn media_hosts_must_match_allowlist_exactly() {
-        let allowed = vec!["test-account.r2.cloudflarestorage.com".to_string()];
-
-        assert!(is_allowed_media_host(
-            "test-account.r2.cloudflarestorage.com",
-            &allowed
-        ));
-        assert!(is_allowed_media_host(
-            "TEST-ACCOUNT.r2.cloudflarestorage.com",
-            &allowed
-        ));
-        assert!(!is_allowed_media_host("cdn.example.com", &allowed));
-        assert!(!is_allowed_media_host(
-            "evil-test-account.r2.cloudflarestorage.com",
-            &allowed
-        ));
-        assert!(!is_allowed_media_host(
-            "test-account.r2.cloudflarestorage.com.evil.test",
-            &allowed
-        ));
-    }
+    use super::{is_media_source_key, reject_inline_remote_media};
 
     #[test]
     fn audio_source_ids_are_media_references() {
