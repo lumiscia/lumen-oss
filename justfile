@@ -8,10 +8,10 @@ ready: ci-typescript-artifacts verify-definitions
     pnpm build
 
 wasm-bindings-debug:
-    bun crates/lumen-wasm/tooling/generate-bindings.ts debug --out-dir {{ wasm_bindings_out }}
+    pnpm --filter @lumiscia/generate-bindings generate -- debug --out-dir {{ wasm_bindings_out }}
 
 wasm-bindings-release:
-    bun crates/lumen-wasm/tooling/generate-bindings.ts release --out-dir {{ wasm_bindings_out }}
+    pnpm --filter @lumiscia/generate-bindings generate -- release --out-dir {{ wasm_bindings_out }}
 
 generate-types: generate-definitions
     pnpm --filter @lumiscia/generate-types generate

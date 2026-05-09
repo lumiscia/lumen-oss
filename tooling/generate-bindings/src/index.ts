@@ -1,21 +1,11 @@
-import { rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile, rm } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 
-type BunFile = {
-  arrayBuffer(): Promise<ArrayBuffer>;
-};
-
-declare const Bun: {
-  $: {
-    (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown>;
-    cwd(path: string): void;
-    env(values: NodeJS.ProcessEnv): void;
-  };
-  file(path: string): BunFile;
-};
-
-const $ = Bun.$;
-const repoRoot = resolve(import.meta.dirname, "../../..");
+const dirnamePath = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(dirnamePath, "../../..");
 const wasmCrate = "lumen-wasm";
 const wasmName = "lumen_wasm";
 const wasmTarget = "wasm32-unknown-unknown";
@@ -35,27 +25,36 @@ const bindingsDir = options.outDir;
 const profile = mode === "release" ? "release" : "debug";
 const wasmPath = join(repoRoot, "target", wasmTarget, profile, `${wasmName}.wasm`);
 
-$.cwd(repoRoot);
-$.env({
-  ...process.env,
-  RUSTFLAGS: `-C link-arg=--initial-memory=${initialMemory} -C link-arg=--max-memory=${maxMemory}`,
-});
-
-await $`cargo build ${mode === "release" ? "--release" : ""} --package ${wasmCrate} --target ${wasmTarget}`;
+await run("cargo", [
+  "build",
+  ...(mode === "release" ? ["--release"] : []),
+  "--package",
+  wasmCrate,
+  "--target",
+  wasmTarget,
+]);
 
 await Promise.all(
   targets.map((target) => rm(join(bindingsDir, target.out), { recursive: true, force: true })),
 );
 
 for (const target of targets) {
-  const outDir = join(bindingsDir, target.out);
-  await $`wasm-bindgen ${bindgenArgs(mode)} --target ${target.bindgenTarget} --out-dir ${outDir} --out-name ${wasmName} ${wasmPath}`;
+  await run("wasm-bindgen", [
+    ...bindgenArgs(mode),
+    "--target",
+    target.bindgenTarget,
+    "--out-dir",
+    join(bindingsDir, target.out),
+    "--out-name",
+    wasmName,
+    wasmPath,
+  ]);
 }
 
 if (mode === "release") {
   for (const target of targets) {
     const wasm = join(bindingsDir, target.out, `${wasmName}_bg.wasm`);
-    await $`pnpm exec wasm-opt -Oz -o ${wasm} ${wasm}`;
+    await run("pnpm", ["exec", "wasm-opt", "-Oz", "-o", wasm, wasm]);
   }
 }
 
@@ -68,6 +67,9 @@ function parseArgs() {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--") {
+      continue;
+    }
     if (arg === "--out-dir") {
       outDir = resolve(repoRoot, requiredValue(args, index));
       index += 1;
@@ -116,7 +118,7 @@ function bindgenArgs(nextMode: "debug" | "release") {
 async function verifySharedWasm() {
   const hashes = new Map<string, string>();
   for (const target of targets) {
-    const wasm = Bun.file(join(bindingsDir, target.out, `${wasmName}_bg.wasm`));
+    const wasm = join(bindingsDir, target.out, `${wasmName}_bg.wasm`);
     const digest = await hashFile(wasm);
     hashes.set(target.out, digest);
   }
@@ -131,8 +133,31 @@ async function verifySharedWasm() {
   throw new Error(`Generated target wasm files differ:\n${lines}`);
 }
 
-async function hashFile(file: BunFile) {
-  const bytes = await file.arrayBuffer();
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+async function hashFile(path: string) {
+  const bytes = await readFile(path);
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function run(command: string, args: string[]) {
+  return new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(command, args, {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        RUSTFLAGS: `-C link-arg=--initial-memory=${initialMemory} -C link-arg=--max-memory=${maxMemory}`,
+      },
+      stdio: "inherit",
+    });
+
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        resolvePromise();
+        return;
+      }
+      reject(
+        new Error(`${command} ${args.join(" ")} failed with ${signal ?? `exit code ${code}`}`),
+      );
+    });
+  });
 }
