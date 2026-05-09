@@ -11,11 +11,12 @@
     "lint": "oxlint .",
     "test": "vitest run",
     "build": "pnpm -r build",
+    "build:ci": "pnpm -r --filter '!lumen' --filter '!lumen-bindings' build && pnpm --filter lumen-bindings check",
     "build:wasm": "just release",
     "release:wasm": "just release-artifacts",
     "build:definitions": "just generate-definitions",
     "check:definitions": "just verify-definitions",
-    "generate:types": "pnpm --filter @lumiscia/generate-types generate"
+    "generate:types": "just generate-types"
   },
   "devDependencies": {
     "@types/react": "catalog:",

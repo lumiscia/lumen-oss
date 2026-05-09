@@ -18,6 +18,8 @@ jobs:
         with:
           version: 10.33.0
 
+      - uses: oven-sh/setup-bun@v2
+
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -26,6 +28,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install WASM tooling
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.118 --locked
+
+      - name: Generate TypeScript artifacts
+        run: just ci-typescript-artifacts
+
       - name: Check TypeScript workspace
         run: pnpm check
 
@@ -33,7 +43,7 @@ jobs:
         run: pnpm test
 
       - name: Build TypeScript workspace
-        run: pnpm build
+        run: pnpm build:ci
 
       - name: Check generated definitions
         run: just verify-definitions
