@@ -1,0 +1,27 @@
+packages:
+  - packages/*
+
+catalog:
+  "@types/react": ^19.2.14
+  binaryen: ^129.0.0
+  mediabunny: ^1.40.1
+  react: ^19.2.1
+  svelte: ^5.45.6
+  typescript: ^5
+  vite: npm:@voidzero-dev/vite-plus-core@latest
+  vite-plus: latest
+  vitest: npm:@voidzero-dev/vite-plus-test@latest
+
+catalogMode: prefer
+overrides:
+  "@vitest/runner": "npm:@voidzero-dev/vite-plus-test@latest"
+  "@vitest/snapshot": "npm:@voidzero-dev/vite-plus-test@latest"
+  vite: "catalog:"
+  vitest: "catalog:"
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"
