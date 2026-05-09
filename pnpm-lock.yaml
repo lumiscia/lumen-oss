@@ -146,12 +146,6 @@ importers:
         specifier: ^1.40.1
         version: 1.44.1
 
-  tooling/download-wasm:
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.19.17
-
   tooling/generate-types:
     devDependencies:
       '@types/node':

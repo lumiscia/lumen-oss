@@ -1,6 +1,6 @@
 node_specs_out := justfile_directory() / "packages/lumen-node-specs"
 definitions_out := justfile_directory() / "generated/lumen-definitions"
-wasm_bindings_out := justfile_directory() / "generated/lumen-bindings/src"
+wasm_bindings_out := justfile_directory() / "packages/lumen-bindings/src"
 release_artifacts_out := justfile_directory() / "generated/release"
 generators_config := justfile_directory() / "crates/lumen-generators/package.config.json"
 

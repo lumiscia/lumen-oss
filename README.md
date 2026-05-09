@@ -14,7 +14,7 @@ This repository is an open-source extraction of the engine, runtime, package, an
 - `packages/lumen-types`: generated TypeScript types for schemas and metadata
 - `packages/lumen-shared`: dependency-light composition helpers
 - `packages/lumen-preview`: browser preview engine and media bridge
-- `packages/lumen-bindings`: generated WASM binding package surface
+- `packages/lumen-bindings`: generated WASM binding package surface with the compiled WASM included
 - `packages/lumen-react` and `packages/lumen-svelte`: framework preview wrappers
 - `examples/vite-react` and `examples/vite-svelte`: local preview examples
 - `docs` and `specs`: architecture notes, render specs, and migration plans
@@ -45,7 +45,7 @@ just generate-definitions
 vp run generate:types
 ```
 
-WASM release artifacts are intended to be uploaded to GitHub Releases:
+`just release` writes the generated WASM bindings directly into `packages/lumen-bindings/src`, so the package can be published without a separate download step. WASM release artifacts are also staged for GitHub Releases with:
 
 ```bash
 just release-artifacts

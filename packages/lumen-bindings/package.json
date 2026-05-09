@@ -44,7 +44,8 @@
     }
   },
   "scripts": {
-    "check": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "build": "just release",
+    "check": "test ! -f src/bundler/lumen_wasm.d.ts || tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf src/browser src/bundler src/node src/no-modules src/.cache *.tsbuildinfo"
   }
 }

@@ -9,7 +9,6 @@
     "release:wasm": "just release-artifacts",
     "build:meta:package": "just generate-node-specs",
     "build:definitions": "just generate-definitions",
-    "download:wasm": "vp run --filter @lumiscia/download-wasm download",
     "generate:types": "vp run --filter @lumiscia/generate-types generate",
     "prepare": "vp config"
   },
