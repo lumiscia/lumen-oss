@@ -25,14 +25,31 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - uses: extractions/setup-just@v3
+
+      - name: Install Rust targets
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libavcodec-dev \
+            libavdevice-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswresample-dev \
+            libswscale-dev \
+            pkg-config
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install WASM tooling
-        run: |
-          rustup target add wasm32-unknown-unknown
-          cargo install just --locked
-          cargo install wasm-bindgen-cli --version 0.2.118 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.118 --locked
 
       - name: Build release artifacts
         run: just release-artifacts
