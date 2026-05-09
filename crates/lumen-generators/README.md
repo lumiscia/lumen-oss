@@ -15,7 +15,7 @@ Most generation should be run through the repository task runner:
 ```bash
 just generate-definitions
 just verify-definitions
-pnpm generate:types
+just generate-types
 ```
 
 Direct Rust checks:

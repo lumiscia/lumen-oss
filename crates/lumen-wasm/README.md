@@ -19,7 +19,7 @@ The native Linux/macOS GPU targets do not apply directly here, but the renderer 
 
 ```bash
 cargo check -p lumen-wasm --target wasm32-unknown-unknown
-just release
+just wasm-bindings-release
 ```
 
-`just release` compiles this crate and writes generated package files into `packages/lumen-bindings/src`.
+`just wasm-bindings-release` compiles this crate and writes generated package files into `packages/lumen-bindings/src`.

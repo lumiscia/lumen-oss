@@ -86,12 +86,12 @@ cargo check -p lumen-server --features metal --lib
 Build generated bindings and metadata:
 
 ```bash
-just release
+just wasm-bindings-release
 just generate-definitions
-pnpm generate:types
+just generate-types
 ```
 
-`just release` compiles Rust to WebAssembly and writes generated bindings directly into `packages/lumen-bindings/src`, so it can take a while. The package can then be published without a separate download step. WASM release artifacts are also staged for GitHub Releases with:
+`just wasm-bindings-release` compiles Rust to WebAssembly and writes generated bindings directly into `packages/lumen-bindings/src`, so it can take a while. The package can then be published without a separate download step. WASM release artifacts are also staged for GitHub Releases with:
 
 ```bash
 just release-artifacts

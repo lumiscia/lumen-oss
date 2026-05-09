@@ -4,19 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "ready": "pnpm check && pnpm test && pnpm build",
+    "ready": "just ready",
     "check": "pnpm format:check && pnpm lint && pnpm -r check",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint .",
     "test": "vitest run",
-    "build": "pnpm -r build",
-    "build:ci": "pnpm -r --filter '!lumen' --filter '!lumen-bindings' build && pnpm --filter lumen-bindings check",
-    "build:wasm": "just release",
-    "release:wasm": "just release-artifacts",
-    "build:definitions": "just generate-definitions",
-    "check:definitions": "just verify-definitions",
-    "generate:types": "just generate-types"
+    "build": "pnpm -r --filter '!lumen' --filter '!lumen-bindings' build && pnpm --filter lumen-bindings check"
   },
   "devDependencies": {
     "@types/react": "catalog:",

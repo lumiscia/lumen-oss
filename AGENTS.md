@@ -8,9 +8,9 @@
   - `pnpm format` to apply formatting
   - `pnpm format:check` to verify formatting
   - `pnpm lint` to run Oxlint
-- Run `pnpm check`, `pnpm test`, and `pnpm build` before publishing substantial changes.
-- Generated TypeScript definition files must be regenerated with `pnpm generate:types`; do not hand-edit generated outputs.
-- WASM bindings are generated into `packages/lumen-bindings/src` with `just release`. This compiles the Rust WASM crate and can take a long time, especially on a clean checkout, so run it only when binding output or WASM-facing code needs to be validated.
+- Run `just ready` before publishing substantial changes.
+- Generated TypeScript definition files must be regenerated with `just generate-types`; do not hand-edit generated outputs.
+- WASM bindings are generated into `packages/lumen-bindings/src` with `just wasm-bindings-release`. This compiles the Rust WASM crate and can take a long time, especially on a clean checkout, so run it only when binding output or WASM-facing code needs to be validated.
 
 ## Definitions
 
@@ -33,7 +33,7 @@
 - Avoid introducing runtime dependencies into type-only packages unless they are truly needed.
 - Keep package exports narrow and intentional.
 - Do not rely on pre-commit hooks; CI is the source of truth for formatting, linting, tests, and builds.
-- If `lumen-bindings` imports fail during local TypeScript checks, generate the bindings with `just release` rather than adding handwritten stubs.
+- If `lumen-bindings` imports fail during local TypeScript checks, generate the bindings with `just wasm-bindings-debug` rather than adding handwritten stubs.
 
 ## Git
 

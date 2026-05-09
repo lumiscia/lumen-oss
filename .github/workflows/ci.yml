@@ -43,7 +43,7 @@ jobs:
         run: pnpm test
 
       - name: Build TypeScript workspace
-        run: pnpm build:ci
+        run: pnpm build
 
       - name: Check generated definitions
         run: just verify-definitions
