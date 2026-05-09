@@ -28,6 +28,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install WASM tooling
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install just --locked
+          cargo install wasm-bindgen-cli --version 0.2.118 --locked
+
       - name: Build release artifacts
         run: just release-artifacts
 

@@ -29,6 +29,7 @@ jobs:
       - name: Install WASM tooling
         run: |
           rustup target add wasm32-unknown-unknown
+          cargo install just --locked
           cargo install wasm-bindgen-cli --version 0.2.118 --locked
 
       - name: Generate TypeScript artifacts
