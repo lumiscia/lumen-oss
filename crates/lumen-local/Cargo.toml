@@ -20,7 +20,7 @@ image = { version = "0.25.9", default-features = false, features = ["png", "jpeg
 tempfile = "3.23.0"
 lumen = { path = "../lumen", features = ["ffmpeg", "image", "json", "embed-roboto"] }
 lumen-gpu = { path = "../lumen-gpu" }
-lumen-ffmpeg = { version = "0.1.0", path = "../ffmpeg", features = ["vulkan"] }
+lumen-ffmpeg = { version = "0.1.0", path = "../lumen-ffmpeg", features = ["vulkan"] }
 objc2 = { version = "0.6.4", optional = true }
 objc2-metal = { version = "0.3.2", optional = true }
 pollster = "0.4.0"

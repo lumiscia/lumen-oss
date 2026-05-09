@@ -16,7 +16,7 @@ libc = "0.2"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 lumen = { path = "../lumen", features = ["ffmpeg", "image", "json"] }
 lumen-gpu = { path = "../lumen-gpu" }
-lumen-ffmpeg = { path = "../ffmpeg" }
+lumen-ffmpeg = { path = "../lumen-ffmpeg" }
 
 [[bin]]
 name = "lumen-bench-composition"
