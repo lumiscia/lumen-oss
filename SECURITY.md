@@ -2,7 +2,7 @@
 
 Please do not report security issues in public GitHub issues.
 
-Email security reports to the project maintainers with:
+Email security reports to alex@lumiscia.com with:
 
 - a short description of the issue
 - affected versions or commits, if known

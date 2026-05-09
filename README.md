@@ -26,7 +26,15 @@ The intended production path is the hosted Lumiscia platform:
 - product UI and collaboration workflows
 - infrastructure maintained by the Lumiscia team
 
-Self-hosting is possible, but still hands-on. You will need GPU machines, an FFmpeg build/runtime, queueing, artifact storage, API/auth layers, deployment, monitoring, and provider-specific worker logic. `lumen-server` exposes service traits to help with that, but the hosted platform is the smoother production path today.
+Self-hosting is possible, but still hands-on. The hosted platform is the smoother production path today.
+
+## Self Hosting
+
+The self-hosted entry point is `crates/lumen-server`. It provides render service primitives plus a small local HTTP server that can accept hosted-style render payloads, download direct `http`/`https` media URLs, run a local render, expose progress, and return an MP4 artifact.
+
+For anything beyond local or single-process usage, expect to provide the surrounding infrastructure yourself: GPU machines, FFmpeg/runtime setup, queueing, durable artifact storage, API/auth layers, deployment, monitoring, and provider-specific worker logic.
+
+See [`crates/lumen-server`](crates/lumen-server/README.md) for the current self-hosted HTTP API, configuration, and limitations.
 
 ## What's Included
 
