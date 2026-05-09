@@ -7,7 +7,7 @@
     "build": "vite build",
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo",
-    "dev": "vp run --filter @lumiscia/lumen-shared build && vp run --filter @lumiscia/lumen-react build && vite"
+    "dev": "pnpm --filter @lumiscia/lumen-shared build && pnpm --filter @lumiscia/lumen-react build && vite"
   },
   "dependencies": {
     "@lumiscia/lumen-react": "workspace:*",

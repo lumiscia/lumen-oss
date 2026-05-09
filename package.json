@@ -4,18 +4,26 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "ready": "vp check && vp test && vp run -r build",
+    "ready": "pnpm check && pnpm test && pnpm build",
+    "check": "pnpm format:check && pnpm lint && pnpm -r check",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint .",
+    "test": "vitest run",
+    "build": "pnpm -r build",
     "build:wasm": "just release",
     "release:wasm": "just release-artifacts",
     "build:meta:package": "just generate-node-specs",
     "build:definitions": "just generate-definitions",
-    "generate:types": "vp run --filter @lumiscia/generate-types generate",
-    "prepare": "vp config"
+    "generate:types": "pnpm --filter @lumiscia/generate-types generate"
   },
   "devDependencies": {
     "@types/react": "catalog:",
     "binaryen": "catalog:",
-    "vite-plus": "catalog:"
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "engines": {
     "node": ">=22.12.0"

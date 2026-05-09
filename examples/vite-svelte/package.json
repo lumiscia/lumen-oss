@@ -7,7 +7,7 @@
     "build": "vite build",
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist .svelte-kit *.tsbuildinfo",
-    "dev": "vp run --filter @lumiscia/lumen-shared build && vite"
+    "dev": "pnpm --filter @lumiscia/lumen-shared build && vite"
   },
   "dependencies": {
     "@lumiscia/lumen-shared": "workspace:*",

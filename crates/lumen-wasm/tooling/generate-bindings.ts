@@ -55,7 +55,7 @@ for (const target of targets) {
 if (mode === "release") {
   for (const target of targets) {
     const wasm = join(bindingsDir, target.out, `${wasmName}_bg.wasm`);
-    await $`vp exec wasm-opt -Oz -o ${wasm} ${wasm}`;
+    await $`pnpm exec wasm-opt -Oz -o ${wasm} ${wasm}`;
   }
 }
 

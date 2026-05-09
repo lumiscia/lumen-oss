@@ -14,18 +14,26 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: voidzero-dev/setup-vp@v1
+      - uses: pnpm/action-setup@v4
         with:
-          cache: true
+          version: 10.33.0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
 
       - name: Install dependencies
-        run: vp install
+        run: pnpm install --frozen-lockfile
 
       - name: Check TypeScript workspace
-        run: vp check
+        run: pnpm check
 
       - name: Test TypeScript workspace
-        run: vp test
+        run: pnpm test
+
+      - name: Build TypeScript workspace
+        run: pnpm build
 
       - name: Check Rust formatting
         run: cargo fmt -- --check

@@ -21,17 +21,17 @@ This repository is an open-source extraction of the engine, runtime, package, an
 
 ## Development
 
-Install dependencies with Vite+:
+Install dependencies:
 
 ```bash
-vp install
+pnpm install
 ```
 
 Run checks and tests:
 
 ```bash
-vp check
-vp test
+pnpm check
+pnpm test
 cargo check
 cargo test
 ```
@@ -42,7 +42,7 @@ Build generated bindings and metadata:
 just release
 just generate-node-specs
 just generate-definitions
-vp run generate:types
+pnpm generate:types
 ```
 
 `just release` writes the generated WASM bindings directly into `packages/lumen-bindings/src`, so the package can be published without a separate download step. WASM release artifacts are also staged for GitHub Releases with:
