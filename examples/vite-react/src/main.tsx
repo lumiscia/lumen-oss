@@ -54,11 +54,7 @@ function App() {
 
   return (
     <main>
-      <LumenCanvas
-        preview={preview}
-        bindings={lumenBindings}
-        compositionJson={compositionJson}
-      />
+      <LumenCanvas preview={preview} bindings={lumenBindings} compositionJson={compositionJson} />
       <div className="controls">
         <button
           type="button"

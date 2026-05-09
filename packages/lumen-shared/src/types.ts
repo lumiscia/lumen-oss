@@ -91,32 +91,32 @@ export interface LumenApiError {
 
 export type RenderEvent =
   | {
-    readonly type: "render.queued";
-    readonly renderId: string;
-    readonly position?: number;
-  }
+      readonly type: "render.queued";
+      readonly renderId: string;
+      readonly position?: number;
+    }
   | {
-    readonly type: "render.started";
-    readonly renderId: string;
-  }
+      readonly type: "render.started";
+      readonly renderId: string;
+    }
   | {
-    readonly type: "render.progress";
-    readonly renderId: string;
-    readonly progress: number;
-    readonly frame?: number;
-    readonly totalFrames?: number;
-  }
+      readonly type: "render.progress";
+      readonly renderId: string;
+      readonly progress: number;
+      readonly frame?: number;
+      readonly totalFrames?: number;
+    }
   | {
-    readonly type: "render.completed";
-    readonly renderId: string;
-    readonly url?: string;
-    readonly artifactId?: string;
-  }
+      readonly type: "render.completed";
+      readonly renderId: string;
+      readonly url?: string;
+      readonly artifactId?: string;
+    }
   | {
-    readonly type: "render.failed";
-    readonly renderId: string;
-    readonly error: LumenApiError;
-  };
+      readonly type: "render.failed";
+      readonly renderId: string;
+      readonly error: LumenApiError;
+    };
 
 export interface RenderEventHandlers {
   readonly onEvent?: (event: RenderEvent) => void;

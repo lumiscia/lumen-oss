@@ -14,10 +14,6 @@
       "type": "integer"
     }
   },
-  "required": [
-    "schemaVersion",
-    "nodeKinds",
-    "nodeSpecs"
-  ],
+  "required": ["schemaVersion", "nodeKinds", "nodeSpecs"],
   "type": "object"
 }

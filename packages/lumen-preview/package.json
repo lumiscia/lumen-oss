@@ -29,11 +29,11 @@
       "default": "./src/preview.ts"
     }
   },
-  "dependencies": {
-    "mediabunny": "^1.40.1"
-  },
   "scripts": {
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "mediabunny": "^1.40.1"
   }
 }

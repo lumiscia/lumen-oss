@@ -2,6 +2,9 @@
   "name": "lumen-bindings",
   "version": "0.0.0",
   "license": "Apache-2.0",
+  "files": [
+    "src"
+  ],
   "type": "module",
   "sideEffects": [
     "./src/bundler/lumen_wasm.js",
@@ -40,9 +43,6 @@
       "default": "./src/no-modules/lumen_wasm.js"
     }
   },
-  "files": [
-    "src"
-  ],
   "scripts": {
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo"

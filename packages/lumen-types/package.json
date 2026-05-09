@@ -2,6 +2,10 @@
   "name": "@lumiscia/lumen-types",
   "version": "0.0.0",
   "license": "Apache-2.0",
+  "files": [
+    "dist",
+    "src"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./src/index.ts",
@@ -11,10 +15,6 @@
       "default": "./dist/index.js"
     }
   },
-  "files": [
-    "dist",
-    "src"
-  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",

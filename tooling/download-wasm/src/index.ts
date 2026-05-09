@@ -231,7 +231,10 @@ function readValue(args: string[], index: number, flag: string): string {
 }
 
 function buildDownloadUrl(baseUrl: string, version: string, fileName: string): string {
-  const url = new URL(`${trimSlashes(version)}/${trimSlashes(fileName)}`, ensureTrailingSlash(baseUrl));
+  const url = new URL(
+    `${trimSlashes(version)}/${trimSlashes(fileName)}`,
+    ensureTrailingSlash(baseUrl),
+  );
   return url.toString();
 }
 
@@ -243,7 +246,10 @@ function trimSlashes(value: string): string {
   return value.replace(/^\/+|\/+$/g, "");
 }
 
-async function downloadFile(url: string, output: string): Promise<{ bytes: number; sha256: string }> {
+async function downloadFile(
+  url: string,
+  output: string,
+): Promise<{ bytes: number; sha256: string }> {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Download failed with ${response.status} ${response.statusText}`);

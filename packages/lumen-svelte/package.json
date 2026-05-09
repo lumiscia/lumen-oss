@@ -12,15 +12,15 @@
       "default": "./src/index.ts"
     }
   },
+  "scripts": {
+    "check": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
   "dependencies": {
     "lumen-preview": "workspace:*"
   },
   "devDependencies": {
     "svelte": "^5.0.0"
-  },
-  "scripts": {
-    "check": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist *.tsbuildinfo"
   },
   "peerDependencies": {
     "svelte": ">=5"

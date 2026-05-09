@@ -72,7 +72,10 @@ export class Composition {
     });
   }
 
-  addImage(source: string | URL, options: Omit<MediaSourceOptions, "kind" | "source"> = {}): CompositionNode<"media_in"> {
+  addImage(
+    source: string | URL,
+    options: Omit<MediaSourceOptions, "kind" | "source"> = {},
+  ): CompositionNode<"media_in"> {
     return this.addMediaSource({
       ...options,
       kind: "image",
@@ -80,7 +83,10 @@ export class Composition {
     });
   }
 
-  addVideo(source: string | URL, options: Omit<MediaSourceOptions, "kind" | "source"> = {}): CompositionNode<"media_in"> {
+  addVideo(
+    source: string | URL,
+    options: Omit<MediaSourceOptions, "kind" | "source"> = {},
+  ): CompositionNode<"media_in"> {
     return this.addMediaSource({
       ...options,
       kind: "video",
@@ -115,7 +121,9 @@ export class Composition {
         ...(options.alignHorizontal !== undefined
           ? { alignment_horizontal: options.alignHorizontal }
           : {}),
-        ...(options.alignVertical !== undefined ? { alignment_vertical: options.alignVertical } : {}),
+        ...(options.alignVertical !== undefined
+          ? { alignment_vertical: options.alignVertical }
+          : {}),
       },
     });
   }
@@ -212,7 +220,9 @@ function nodeId(node: NodeReference): number {
   return typeof node === "number" ? node : node.id;
 }
 
-function renderSettings(input: RenderSettingsInput | undefined): LumenComposition["render_settings"] {
+function renderSettings(
+  input: RenderSettingsInput | undefined,
+): LumenComposition["render_settings"] {
   return {
     ...defaultRenderSettings,
     ...input,
