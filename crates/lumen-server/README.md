@@ -1,79 +1,79 @@
 # Lumen Server
 
-`lumen-server` is the shared GPU render server crate. Provider-specific binaries
-adapt queueing and HTTP surfaces onto the same render executor:
+`lumen-server` provides provider-neutral rendering service primitives for Lumen.
+It is intended to be used as a dependency by applications that want to build a
+self-hosted or hosted render platform around the Lumen renderer.
 
-- `lumen-runpod` polls RunPod Serverless jobs and posts RunPod results.
-- `lumen-vast` runs a small HTTP server for Vast instances. It listens on
-  `0.0.0.0:8080`, exposes `GET /health`, and accepts `POST /render` with a
-  `RenderJobInput` JSON body.
+The crate intentionally does not include assumptions about any infrastructure
+provider. RunPod, Vast, Cloudflare, object storage, durable queues, hosted auth,
+billing, and deployment automation should live in downstream crates or
+applications.
 
-Both Linux GPU images build with `--features vulkan,cuda` on Debian trixie and
-run on `debian:trixie-slim`. The runtime installs the Debian Vulkan loader,
-`vulkan-tools`, and FFmpeg 7 libraries, removes any baked NVIDIA ICD manifests,
-sets `NVIDIA_DRIVER_CAPABILITIES=all` and `NVIDIA_VISIBLE_DEVICES=all`, and lets
-the provider runtime inject and auto-discover the driver-matched NVIDIA Vulkan
-ICD.
+## Targets
 
-## RunPod
+`lumen-server` ships both:
 
-Build from the repository root:
+- a library target, `lumen_server`, for embedding in custom render platforms
+- a generic binary target, `lumen-server`, for local HTTP rendering
 
-```sh
-container build -f crates/lumen-server/Dockerfile.runpod -t lumen-runpod:latest .
-```
+The binary exposes:
 
-The `.github/workflows/deploy-runpod-serverless.yml` workflow publishes the
-RunPod image to GHCR and runs `bun tooling/deploy-runpod-serverless.ts`.
+- `GET /health`
+- `POST /render`
 
-Required GitHub secrets:
-
-- `RUNPOD_API_KEY`
-
-Optional GitHub variables:
-
-- `RUNPOD_ENDPOINT_ID` updates an existing endpoint when set
-- `RUNPOD_SERVERLESS_TEMPLATE_ID` updates an existing template when set
-- `RUNPOD_SERVERLESS_ENDPOINT_NAME` defaults to `lumen-render`
-- `RUNPOD_SERVERLESS_TEMPLATE_NAME` defaults to `lumen-render-template`
-- `RUNPOD_SERVERLESS_MIN_WORKERS` defaults to `0`
-- `RUNPOD_SERVERLESS_MAX_WORKERS` defaults to `2`
-- `RUNPOD_SERVERLESS_IDLE_TIMEOUT` defaults to `5`
-- `RUNPOD_SERVERLESS_EXECUTION_TIMEOUT_MS` defaults to `1800000`
-- `RUNPOD_SERVERLESS_MIN_CUDA_VERSION` defaults to `12.8`
-- `RUNPOD_SERVERLESS_GPU_TYPES` defaults to `NVIDIA RTX 2000 Ada Generation,NVIDIA RTX 4000 Ada Generation,NVIDIA L4`
-- `RUNPOD_SERVERLESS_CONTAINER_DISK_GB` defaults to `64`
-- `RUNPOD_SERVERLESS_TEMPLATE_ENV` optionally adds template env vars as JSON
-- `LUMEN_RUNPOD_CONCURRENCY` defaults to `2`
-- `LUMEN_VIDEO_ENCODER` optionally sets FFmpeg encoder, such as `h264_nvenc`
-
-## Vast
-
-Build from the repository root:
+By default it binds to `127.0.0.1:8080`. Override that with
+`--bind` or `LUMEN_SERVER_BIND`. Set `--token` or `LUMEN_SERVER_TOKEN` to
+require `Authorization: Bearer ...` for render requests.
 
 ```sh
-container build -f crates/lumen-server/Dockerfile.vast -t lumen-vast:latest .
+cargo run -p lumen-server --features cli --bin lumen-server -- --bind 127.0.0.1:8080
 ```
 
-The `.github/workflows/deploy-vast-template.yml` workflow publishes the Vast
-image to GHCR and runs `bun tooling/deploy-vast-template.ts`. Vast templates use
-`runtype=args`, publish port `8080`, and default to your requested GPU/price
-filters: RTX 5070 Ti through 5090, RTX 4070 Ti through 4090, L4, RTX 4000-6000
-Ada, and `dph_total <= 0.70`.
+## Architecture
 
-Required GitHub secrets:
+The public service layer is built around four extension points:
 
-- `VAST_API_KEY`
+- `RenderQueue`: enqueue, lease, acknowledge, retry, and heartbeat render jobs.
+- `RenderExecutor`: execute a leased render job.
+- `ArtifactStore`: persist render artifacts and return stable artifact refs.
+- `ProgressSink`: publish render progress events.
 
-Optional GitHub secrets and variables:
+The crate includes small local building blocks:
 
-- `LUMEN_VAST_API_TOKEN` protects `POST /render` with `Authorization: Bearer`
-- `VAST_TEMPLATE_HASH_ID` updates an existing template when set
-- `VAST_TEMPLATE_NAME` defaults to `lumen-render-vast`
-- `VAST_TEMPLATE_MAX_DPH_TOTAL` defaults to `0.70`
-- `VAST_TEMPLATE_DISK_GB` defaults to `64`
-- `VAST_TEMPLATE_EXTRA_FILTERS` overrides the default Vast search filters
-- `LUMEN_VIDEO_ENCODER` optionally sets FFmpeg encoder, such as `h264_nvenc`
+- `InMemoryRenderQueue` for tests and single-process development.
+- `LocalRenderExecutor` for executing renders in the current process.
+- `NoopProgressSink` for callers that do not need progress events.
 
-For local macOS GPU checks, build `lumen-runpod` or `lumen-vast` with
-`--features metal` instead.
+Production users should provide their own implementations. For example, a hosted
+platform can keep a private crate that implements a RunPod executor, a Cloudflare
+or S3-compatible artifact store, and a durable queue, while still depending on
+the public `lumen-server` service traits and render types.
+
+## Example Shape
+
+```rust
+use lumen_server::service::{
+    InMemoryRenderQueue, LocalRenderExecutor, NoopProgressSink, RenderService,
+};
+
+let service = RenderService::new(
+    InMemoryRenderQueue::new(),
+    LocalRenderExecutor,
+    my_artifact_store,
+    NoopProgressSink,
+);
+```
+
+## What Belongs Outside This Crate
+
+Provider adapters and hosted-platform concerns should be implemented outside
+`lumen-server`, including:
+
+- RunPod or Vast worker loops
+- Cloudflare Queues, Durable Objects, R2, or other cloud-specific bindings
+- billing, credits, accounts, teams, and dashboards
+- customer webhooks and hosted project storage
+- deployment scripts and provider-specific Docker images
+
+This keeps the open crate reusable without forcing the hosted Lumen platform's
+infrastructure choices onto self-hosted users.

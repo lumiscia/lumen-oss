@@ -8,14 +8,12 @@ name = "lumen_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "lumen-runpod"
-path = "src/bin/lumen-runpod.rs"
-
-[[bin]]
-name = "lumen-vast"
-path = "src/bin/lumen-vast.rs"
+name = "lumen-server"
+path = "src/bin/lumen-server.rs"
+required-features = ["cli"]
 
 [features]
+cli = ["dep:clap"]
 legacy-decode-tests = []
 metal = ["lumen/metal", "lumen-ffmpeg/metal"]
 vulkan = ["lumen/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
@@ -38,3 +36,4 @@ reqwest = { version = "0.12.24", default-features = false, features = [
   "blocking",
 ] }
 tempfile = "3.25.0"
+clap = { version = "4.6.1", features = ["derive", "env"], optional = true }

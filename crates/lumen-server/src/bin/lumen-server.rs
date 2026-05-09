@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr};
+use std::net::SocketAddr;
 
 use axum::{
     Json, Router,
@@ -7,8 +7,21 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use lumen_server::server::{RenderJobInput, RenderJobResponse, handle_render_job};
+use clap::Parser;
+use lumen_server::server::{RenderJobError, RenderJobInput, RenderJobResponse, handle_render_job};
 use serde::Serialize;
+
+#[derive(Debug, Parser)]
+#[command(version, about = "Run a provider-neutral Lumen render HTTP server.")]
+struct Args {
+    /// Address to bind the HTTP server to.
+    #[arg(long, env = "LUMEN_SERVER_BIND", default_value = "127.0.0.1:8080")]
+    bind: SocketAddr,
+
+    /// Optional bearer token required for render requests.
+    #[arg(long, env = "LUMEN_SERVER_TOKEN")]
+    token: Option<String>,
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -23,26 +36,24 @@ struct HealthResponse {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
-            env::var("RUST_LOG")
-                .unwrap_or_else(|_| "lumen_server=info,lumen_vast=info,warn".to_string()),
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "lumen_server=info,warn".to_string()),
         )
         .with_writer(std::io::stderr)
         .init();
 
-    let bind = env::var("LUMEN_VAST_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
-    let address: SocketAddr = bind.parse()?;
     let state = AppState {
-        api_token: env::var("LUMEN_VAST_API_TOKEN").ok(),
+        api_token: args.token,
     };
     let app = Router::new()
         .route("/health", get(health))
         .route("/render", post(render))
         .with_state(state);
 
-    tracing::info!(%address, "starting Vast render server");
-    let listener = tokio::net::TcpListener::bind(address).await?;
+    tracing::info!(address = %args.bind, "starting lumen render server");
+    let listener = tokio::net::TcpListener::bind(args.bind).await?;
     axum::serve(listener, app).await?;
 
     Ok(())
@@ -51,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         ok: true,
-        service: "lumen-vast",
+        service: "lumen-server",
     })
 }
 
@@ -72,9 +83,9 @@ async fn render(
                     ok: false,
                     artifact: None,
                     metrics: None,
-                    error: Some(lumen_server::server::RenderJobError {
+                    error: Some(RenderJobError {
                         code: "unauthorized".to_string(),
-                        message: "invalid Vast render API token".to_string(),
+                        message: "invalid render API token".to_string(),
                         retryable: false,
                     }),
                 }),
