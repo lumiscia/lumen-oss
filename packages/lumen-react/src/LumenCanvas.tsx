@@ -7,6 +7,7 @@ import type {
   AudioSourceRegistration,
   LumenPreviewBindings,
   LumenPreviewController,
+  MediaRegistration,
 } from "lumen-preview";
 
 import type { LumenPreviewContext } from "./preview.ts";
@@ -18,6 +19,7 @@ export interface LumenCanvasProps {
   audioTimeline?: AudioEngineTimeline | null;
   compositionJson?: string | null;
   fps?: number;
+  mediaSources?: MediaRegistration[];
   className?: string;
   style?: CSSProperties;
 }
@@ -29,6 +31,7 @@ export function LumenCanvas({
   audioTimeline = null,
   compositionJson = null,
   fps = 30,
+  mediaSources = [],
   className,
   style,
 }: LumenCanvasProps) {
@@ -227,6 +230,19 @@ export function LumenCanvas({
             seek: (frame) => audioEngine.seekMs((frame / Math.max(fps, 1)) * 1000),
           },
         );
+        if (mediaSources.length > 0) {
+          return controller.syncMediaSources(mediaSources).then(() => {
+            if (cancelled) {
+              return;
+            }
+            if (compositionJson) {
+              handleLoadComposition(controller, compositionJson, fps);
+              queueRender(() => renderOnce(controller));
+            }
+            startLoop(controller);
+          });
+        }
+
         if (compositionJson) {
           handleLoadComposition(controller, compositionJson, fps);
           queueRender(() => renderOnce(controller));
@@ -250,7 +266,7 @@ export function LumenCanvas({
       compositionLoadedRef.current = false;
       preview._detach();
     };
-  }, [preview, bindings, compositionJson, fps]);
+  }, [preview, bindings, compositionJson, fps, mediaSources]);
 
   useEffect(() => {
     const audioEngine = audioEngineRef.current;
@@ -272,9 +288,27 @@ export function LumenCanvas({
       return;
     }
 
-    handleLoadComposition(controller, compositionJson, fps);
-    queueRender(() => renderOnce(controller));
-  }, [compositionJson, fps, preview]);
+    let cancelled = false;
+
+    void controller
+      .syncMediaSources(mediaSources)
+      .then(() => {
+        if (cancelled) {
+          return;
+        }
+        handleLoadComposition(controller, compositionJson, fps);
+        queueRender(() => renderOnce(controller));
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          reportError("sync media sources", error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [compositionJson, fps, mediaSources, preview]);
 
   const snapshot = preview.getSnapshot();
 
