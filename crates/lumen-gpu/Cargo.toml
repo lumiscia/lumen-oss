@@ -23,5 +23,9 @@ wgpu-hal = { version = "29.0.3", default-features = false, optional = true }
 wgpu = { version = "29.0.3", default-features = false, features = ["metal"] }
 wgpu-hal = { version = "29.0.3", default-features = false, features = ["metal"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "29.0.3", default-features = false, features = ["vulkan"] }
+wgpu-hal = { version = "29.0.3", default-features = false, features = ["vulkan"] }
+
 [dev-dependencies]
 pollster = "0.4.0"

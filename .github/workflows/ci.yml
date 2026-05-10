@@ -41,6 +41,8 @@ jobs:
             libavutil-dev \
             libswresample-dev \
             libswscale-dev \
+            libvulkan1 \
+            mesa-vulkan-drivers \
             pkg-config
 
       - name: Install dependencies
@@ -71,4 +73,6 @@ jobs:
         run: cargo check
 
       - name: Test Rust workspace
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: cargo test
