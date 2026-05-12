@@ -16,10 +16,22 @@ pub(crate) const SHADER: &str = include_str!("wgsl_shader.wgsl");
 pub struct WgslShader {
     pub id: NodeId,
     /// Custom WGSL compute shader source.
-    #[property(kind = "string", name = "Shader source", format = "wgsl", multiline, recommended_rows = 10)]
+    #[property(
+        kind = "string",
+        name = "Shader source",
+        format = "wgsl",
+        multiline,
+        recommended_rows = 10
+    )]
     pub shader: NodeProperty,
     /// JSON object describing shader binding values.
-    #[property(kind = "string", name = "Shader bindings", format = "json", multiline, recommended_rows = 6)]
+    #[property(
+        kind = "string",
+        name = "Shader bindings",
+        format = "json",
+        multiline,
+        recommended_rows = 6
+    )]
     pub bindings: NodeProperty,
     #[input()]
     pub source: PortRef,

@@ -219,9 +219,7 @@ pub fn render_definition_artifacts() -> Result<DefinitionArtifacts> {
     })
 }
 
-pub fn validate_generated_artifacts(
-    composition_schema_json: &str,
-) -> Result<()> {
+pub fn validate_generated_artifacts(composition_schema_json: &str) -> Result<()> {
     let composition_schema: Value = serde_json::from_str(composition_schema_json)?;
     jsonschema::meta::validate(&composition_schema)
         .map_err(|error| anyhow!("generated composition schema is invalid: {error}"))?;
@@ -376,10 +374,16 @@ fn property_schema_json(property: &NodePropertySpec) -> Value {
         object.insert("x-lumen-kind".to_string(), json!(property.kind));
         object.insert("default".to_string(), json!(property.default_value));
         if !property.enum_options.is_empty() {
-            object.insert("x-lumen-enumOptions".to_string(), json!(property.enum_options));
+            object.insert(
+                "x-lumen-enumOptions".to_string(),
+                json!(property.enum_options),
+            );
         }
         if !property.constraints.is_empty() {
-            object.insert("x-lumen-constraints".to_string(), json!(property.constraints));
+            object.insert(
+                "x-lumen-constraints".to_string(),
+                json!(property.constraints),
+            );
         }
     }
     schema

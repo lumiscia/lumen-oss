@@ -39,7 +39,13 @@ pub struct Shape {
     #[property(kind = "float", min = 0, step = 1)]
     pub border_radius: NodeProperty,
     /// Polygon point list formatted as `x,y; x,y`.
-    #[property(kind = "string", name = "Polygon points", format = "point_list", multiline, recommended_rows = 3)]
+    #[property(
+        kind = "string",
+        name = "Polygon points",
+        format = "point_list",
+        multiline,
+        recommended_rows = 3
+    )]
     pub polygon_points: NodeProperty,
     /// Shape origin in pixels.
     #[property(kind = "vec2")]

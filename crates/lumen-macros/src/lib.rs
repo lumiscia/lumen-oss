@@ -431,7 +431,8 @@ fn parse_property_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<Prop
     Ok(Some(PropertyAttr {
         field: field.clone(),
         id: id.unwrap_or_else(|| LitStr::new(&field.to_string(), field.span())),
-        name: name.unwrap_or_else(|| LitStr::new(&title_from_ident(&field.to_string()), field.span())),
+        name: name
+            .unwrap_or_else(|| LitStr::new(&title_from_ident(&field.to_string()), field.span())),
         kind: required_value(kind, attr, "kind")?,
         enum_type,
         constraints,
@@ -465,9 +466,7 @@ fn property_def_tokens(property: &PropertyAttr) -> proc_macro2::TokenStream {
     }
 }
 
-fn property_constraints_tokens(
-    constraints: &PropertyConstraintsAttr,
-) -> proc_macro2::TokenStream {
+fn property_constraints_tokens(constraints: &PropertyConstraintsAttr) -> proc_macro2::TokenStream {
     let min = option_f64_tokens(constraints.min);
     let max = option_f64_tokens(constraints.max);
     let step = option_f64_tokens(constraints.step);
@@ -632,7 +631,10 @@ fn float_value(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<f64> {
     if value.peek(LitFloat) {
         value.parse::<LitFloat>()?.base10_parse()
     } else {
-        value.parse::<LitInt>()?.base10_parse::<i64>().map(|value| value as f64)
+        value
+            .parse::<LitInt>()?
+            .base10_parse::<i64>()
+            .map(|value| value as f64)
     }
 }
 

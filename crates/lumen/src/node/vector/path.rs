@@ -9,7 +9,13 @@ use crate::node::{NodeId, NodeProperty, PortRef};
 pub struct Path {
     pub id: NodeId,
     /// SVG-style path data.
-    #[property(kind = "string", name = "Path data", format = "path_data", multiline, recommended_rows = 5)]
+    #[property(
+        kind = "string",
+        name = "Path data",
+        format = "path_data",
+        multiline,
+        recommended_rows = 5
+    )]
     pub data: NodeProperty,
     /// Path origin in pixels.
     #[property(kind = "vec2")]
