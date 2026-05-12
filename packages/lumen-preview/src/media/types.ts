@@ -107,10 +107,13 @@ export interface LumenMediaTarget {
   clear(): void;
   clearVideos(): void;
   clearVideoSource(streamId: string): void;
+  removeFontFamily?(fontFamily: string): void;
   removeImageSource?(imageId: string): void;
   removeVideoSource?(streamId: string): void;
+  hasFont?(fontFamily: string): boolean;
   hasImage(imageId: string): boolean;
   hasVideoFrame(streamId: string, frame: number): boolean;
+  setFont?(fontFamily: string, bytes: Uint8Array): void;
   setImage(imageId: string, width: number, height: number, rgba: Uint8Array): void;
   setVideoMetadata(
     streamId: string,

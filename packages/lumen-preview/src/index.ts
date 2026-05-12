@@ -21,6 +21,7 @@ import type {
   VideoFrameMetadata,
   VideoSourceRegistration,
 } from "./media/index.js";
+import { toUint8Array } from "./media/index.js";
 
 export type {
   BlobMediaSourceInput,
@@ -64,8 +65,11 @@ export interface LumenMediaStoreBinding extends LumenMediaTarget {
   clear(): void;
   clearVideos(): void;
   clearVideoSource(streamId: string): void;
+  hasFont(fontFamily: string): boolean;
+  removeFontFamily(fontFamily: string): void;
   removeImageSource(imageId: string): void;
   removeVideoSource(streamId: string): void;
+  setFont(fontFamily: string, bytes: Uint8Array): void;
 }
 
 export interface LumenRendererBinding {
@@ -92,14 +96,17 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   frameRequirements(frame: number): string;
   frameRequirementsWindow(frame: number): string;
   height(): number;
+  hasFont(fontFamily: string): boolean;
   isPlaying(): boolean;
   loadComposition(compositionJson: string, fps: number): void;
   pause(): void;
   play(): void;
+  removeFontFamily(fontFamily: string): void;
   removeImageSource(imageId: string): void;
   removeVideoSource(streamId: string): void;
   renderNow(canvas: HTMLCanvasElement): Promise<void>;
   setFrame(frame: number): void;
+  setFont(fontFamily: string, bytes: Uint8Array): void;
   setLookaheadCount(lookaheadCount: number): void;
   targetFrameForTimeMs(timeMs: number): number;
   tick(nowMs: number, canvas: HTMLCanvasElement): Promise<boolean>;
@@ -113,6 +120,8 @@ export interface LumenPreviewBindings {
 }
 
 export interface LumenMediaStore extends LumenMediaStoreBinding {
+  registerFontFamily(fontFamily: string, bytes: BufferSource): void;
+  registerFontFamilyBytes(fontFamily: string, bytes: BufferSource): void;
   registerImageSource(imageId: string, source: MediaSourceInput): Promise<void>;
   registerVideoSource(
     streamId: string,
@@ -135,6 +144,8 @@ export interface LumenRenderer extends LumenRendererBinding {
 }
 
 export interface LumenPreviewController extends LumenPreviewControllerBinding {
+  registerFontFamily(fontFamily: string, bytes: BufferSource): void;
+  registerFontFamilyBytes(fontFamily: string, bytes: BufferSource): void;
   registerImageSource(imageId: string, source: MediaSourceInput): Promise<void>;
   registerVideoSource(
     streamId: string,
@@ -176,6 +187,14 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
     clearVideoSource(streamId: string): void {
       super.clearVideoSource(streamId);
       this.bridge.clearVideoSource(streamId);
+    }
+
+    registerFontFamily(fontFamily: string, bytes: BufferSource): void {
+      super.setFont(fontFamily, toUint8Array(bytes));
+    }
+
+    registerFontFamilyBytes(fontFamily: string, bytes: BufferSource): void {
+      this.registerFontFamily(fontFamily, bytes);
     }
 
     async registerImageSource(imageId: string, source: MediaSourceInput): Promise<void> {
@@ -412,6 +431,15 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       super.removeVideoSource(streamId);
       this.bridge.removeVideoSource(streamId, false);
       this.resetWindowLoads();
+    }
+
+    registerFontFamily(fontFamily: string, bytes: BufferSource): void {
+      this.resetWindowLoads();
+      super.setFont(fontFamily, toUint8Array(bytes));
+    }
+
+    registerFontFamilyBytes(fontFamily: string, bytes: BufferSource): void {
+      this.registerFontFamily(fontFamily, bytes);
     }
 
     async registerImageSource(imageId: string, source: MediaSourceInput): Promise<void> {

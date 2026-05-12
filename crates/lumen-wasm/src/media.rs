@@ -6,8 +6,8 @@ use std::{
 use lumen::{
     error::MediaError,
     media::{
-        CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
-        VideoMetadata,
+        CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
+        VideoFrameResolver, VideoMetadata,
     },
 };
 use wasm_bindgen::prelude::*;
@@ -110,6 +110,12 @@ struct StoredVideo {
     frames: VideoFrameCache,
 }
 
+#[derive(Debug, Clone)]
+struct StoredFont {
+    data: Arc<Vec<u8>>,
+    version: u64,
+}
+
 impl Default for StoredVideo {
     fn default() -> Self {
         Self {
@@ -128,6 +134,7 @@ pub(crate) struct WasmMediaStore {
 
 #[derive(Debug, Default)]
 struct WasmMediaStoreInner {
+    fonts: RwLock<HashMap<String, StoredFont>>,
     images: RwLock<HashMap<String, StoredImage>>,
     videos: RwLock<HashMap<String, StoredVideo>>,
 }
@@ -136,6 +143,11 @@ impl WasmMediaStore {
     pub fn clear(&self) -> Result<(), &'static str> {
         self.inner
             .images
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .clear();
+        self.inner
+            .fonts
             .write()
             .map_err(|_| "media store lock poisoned")?
             .clear();
@@ -189,12 +201,29 @@ impl WasmMediaStore {
         Ok(())
     }
 
+    pub fn remove_font(&self, font_family: &str) -> Result<(), &'static str> {
+        self.inner
+            .fonts
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .remove(font_family);
+        Ok(())
+    }
+
     pub fn has_image(&self, image_id: &str) -> bool {
         self.inner
             .images
             .read()
             .ok()
             .is_some_and(|images| images.contains_key(image_id))
+    }
+
+    pub fn has_font(&self, font_family: &str) -> bool {
+        self.inner
+            .fonts
+            .read()
+            .ok()
+            .is_some_and(|fonts| fonts.contains_key(font_family))
     }
 
     pub fn has_video_frame(&self, stream_id: &str, frame: u32) -> bool {
@@ -222,6 +251,34 @@ impl WasmMediaStore {
                     frame: Arc::new(frame),
                 },
             );
+        Ok(())
+    }
+
+    pub fn set_font(&self, font_family: String, data: Vec<u8>) -> Result<(), &'static str> {
+        let font_family = font_family.trim();
+        if font_family.is_empty() {
+            return Err("font family must not be empty");
+        }
+        if data.is_empty() {
+            return Err("font data must not be empty");
+        }
+
+        let mut fonts = self
+            .inner
+            .fonts
+            .write()
+            .map_err(|_| "media store lock poisoned")?;
+        let version = fonts
+            .get(font_family)
+            .map(|font| font.version.saturating_add(1))
+            .unwrap_or(1);
+        fonts.insert(
+            font_family.to_string(),
+            StoredFont {
+                data: Arc::new(data),
+                version,
+            },
+        );
         Ok(())
     }
 
@@ -272,6 +329,15 @@ impl MediaStore for WasmMediaStore {
         Some(Box::new(WasmVideoResolver {
             id: stream_id.to_string(),
             store: Arc::clone(&self.inner),
+        }))
+    }
+
+    fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
+        let fonts = self.inner.fonts.read().ok()?;
+        let font = fonts.get(font_family)?;
+        Some(Box::new(WasmFontResolver {
+            id: format!("wasm-font:{font_family}:{}", font.version),
+            data: Arc::clone(&font.data),
         }))
     }
 }
@@ -372,6 +438,22 @@ impl VideoFrameResolver for WasmVideoResolver {
     }
 }
 
+#[derive(Clone)]
+struct WasmFontResolver {
+    id: String,
+    data: Arc<Vec<u8>>,
+}
+
+impl FontResolver for WasmFontResolver {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
+        Ok(vec![self.data.as_ref().clone()])
+    }
+}
+
 // ── LumenMediaStore (wasm-bindgen public API) ─────────────────────────────────
 
 #[wasm_bindgen]
@@ -416,6 +498,13 @@ impl LumenMediaStore {
             .map_err(JsValue::from_str)
     }
 
+    #[wasm_bindgen(js_name = "removeFontFamily")]
+    pub fn remove_font_family(&self, font_family: &str) -> Result<(), JsValue> {
+        self.store
+            .remove_font(font_family)
+            .map_err(JsValue::from_str)
+    }
+
     #[wasm_bindgen(js_name = "hasImage")]
     pub fn has_image(&self, image_id: &str) -> bool {
         self.store.has_image(image_id)
@@ -424,6 +513,11 @@ impl LumenMediaStore {
     #[wasm_bindgen(js_name = "hasVideoFrame")]
     pub fn has_video_frame(&self, stream_id: &str, frame: u32) -> bool {
         self.store.has_video_frame(stream_id, frame)
+    }
+
+    #[wasm_bindgen(js_name = "hasFont")]
+    pub fn has_font(&self, font_family: &str) -> bool {
+        self.store.has_font(font_family)
     }
 
     #[wasm_bindgen(js_name = "setImage")]
@@ -444,6 +538,13 @@ impl LumenMediaStore {
             .map_err(|error| JsValue::from_str(&error))?;
         self.store
             .set_image(image_id.to_string(), frame)
+            .map_err(JsValue::from_str)
+    }
+
+    #[wasm_bindgen(js_name = "setFont")]
+    pub fn set_font(&self, font_family: &str, data: &[u8]) -> Result<(), JsValue> {
+        self.store
+            .set_font(font_family.to_string(), data.to_vec())
             .map_err(JsValue::from_str)
     }
 
@@ -575,6 +676,28 @@ mod tests {
             resolver.frame(0),
             Err(MediaError::FrameOutOfRange { .. })
         ));
+    }
+
+    #[test]
+    fn font_resolver_returns_registered_bytes_and_versions_updates() {
+        let store = WasmMediaStore::default();
+        store
+            .set_font("Inter".to_string(), vec![1, 2, 3])
+            .expect("set font");
+
+        let first = store
+            .get_font_resolver("Inter")
+            .expect("font resolver should exist");
+        assert_eq!(first.data().expect("font data"), vec![vec![1, 2, 3]]);
+
+        store
+            .set_font("Inter".to_string(), vec![4, 5, 6])
+            .expect("replace font");
+        let second = store
+            .get_font_resolver("Inter")
+            .expect("font resolver should still exist");
+        assert_ne!(first.id(), second.id());
+        assert_eq!(second.data().expect("font data"), vec![vec![4, 5, 6]]);
     }
 
     fn test_frame() -> CpuMediaFrame {

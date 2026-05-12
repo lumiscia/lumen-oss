@@ -486,6 +486,19 @@ impl LumenPreviewController {
         Ok(())
     }
 
+    #[wasm_bindgen(js_name = "removeFontFamily")]
+    pub fn remove_font_family(&self, font_family: &str) -> Result<(), JsValue> {
+        self.media
+            .remove_font(font_family)
+            .map_err(JsValue::from_str)?;
+        if let Ok(mut state) = self.state.try_borrow_mut() {
+            state.renderer = None;
+            state.render_generation = state.render_generation.wrapping_add(1);
+            state.dirty = true;
+        }
+        Ok(())
+    }
+
     #[wasm_bindgen(js_name = "hasImage")]
     pub fn has_image(&self, image_id: &str) -> bool {
         self.media.has_image(image_id)
@@ -494,6 +507,11 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "hasVideoFrame")]
     pub fn has_video_frame(&self, stream_id: &str, frame: u32) -> bool {
         self.media.has_video_frame(stream_id, frame)
+    }
+
+    #[wasm_bindgen(js_name = "hasFont")]
+    pub fn has_font(&self, font_family: &str) -> bool {
+        self.media.has_font(font_family)
     }
 
     #[wasm_bindgen(js_name = "setImage")]
@@ -514,6 +532,19 @@ impl LumenPreviewController {
             .map_err(|e| JsValue::from_str(&e))?;
         self.media
             .set_image(image_id.to_string(), frame)
+            .map_err(JsValue::from_str)?;
+        if let Ok(mut state) = self.state.try_borrow_mut() {
+            state.renderer = None;
+            state.render_generation = state.render_generation.wrapping_add(1);
+            state.dirty = true;
+        }
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = "setFont")]
+    pub fn set_font(&self, font_family: &str, data: &[u8]) -> Result<(), JsValue> {
+        self.media
+            .set_font(font_family.to_string(), data.to_vec())
             .map_err(JsValue::from_str)?;
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.renderer = None;
