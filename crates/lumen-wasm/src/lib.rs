@@ -26,16 +26,19 @@ pub(crate) fn debug_error(message: &str) {
 
 pub(crate) fn install_panic_hook() {
     INSTALL_RUNTIME_HOOKS.call_once(|| {
-        let mut tracing_config = wasm_tracing::WasmLayerConfig::new();
-        tracing_config
-            .set_max_level(tracing::Level::TRACE)
-            .set_show_fields(true);
-        let layer =
-            wasm_tracing::WasmLayer::new(tracing_config).with_filter(filter_fn(|metadata| {
-                lumen::log_level_enabled(*metadata.level())
-            }));
-        let subscriber = tracing_subscriber::registry().with(layer);
-        let _ = tracing::subscriber::set_global_default(subscriber);
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            let mut tracing_config = wasm_tracing::WasmLayerConfig::new();
+            tracing_config
+                .set_max_level(tracing::Level::TRACE)
+                .set_show_fields(true);
+            let layer =
+                wasm_tracing::WasmLayer::new(tracing_config).with_filter(filter_fn(|metadata| {
+                    lumen::log_level_enabled(*metadata.level())
+                }));
+            let subscriber = tracing_subscriber::registry().with(layer);
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        }
 
         std::panic::set_hook(Box::new(|panic_info| {
             let location = panic_info
