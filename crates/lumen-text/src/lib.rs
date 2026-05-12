@@ -24,8 +24,7 @@ pub const MSDF_TEXT_SHADER: &str = include_str!("shaders/msdf_text.wgsl");
 #[cfg(feature = "experimental-msdf")]
 pub const MSDF_GENERATOR_SHADER: &str = include_str!("shaders/msdf_generate.wgsl");
 pub const DEFAULT_FONT_FAMILY: &str = "Roboto";
-
-const DEFAULT_ROBOTO_BYTES: &[u8] = include_bytes!("../../lumen/assets/roboto/Roboto-Regular.ttf");
+pub const ROBOTO_REGULAR_BYTES: &[u8] = include_bytes!("../assets/roboto/Roboto-Regular.ttf");
 
 #[derive(Debug)]
 pub struct TextSystem {
@@ -314,7 +313,7 @@ pub fn rgba8_to_rgba16_float(pixels: &[u8]) -> Vec<u16> {
 
 fn load_default_fonts(font_system: &mut FontSystem) {
     let db = font_system.db_mut();
-    db.load_font_data(DEFAULT_ROBOTO_BYTES.to_vec());
+    db.load_font_data(ROBOTO_REGULAR_BYTES.to_vec());
     db.set_sans_serif_family(DEFAULT_FONT_FAMILY);
 }
 

@@ -20,7 +20,6 @@ Browser/WASM preview paths are separate and use WebGPU/WebGL-facing code.
 - `ffmpeg`: enable FFmpeg-backed media handling through `ffmpeg-next` and `lumen-ffmpeg`.
 - `image`: enable image decoding helpers.
 - `json`: enable JSON composition parsing and serialization helpers.
-- `embed-roboto`: embed the default Roboto font assets.
 - `webgl`: enable WebGL-related code paths.
 - `metal`: enable Metal support through `lumen-gpu` and optional FFmpeg interop.
 - `vulkan`: enable Vulkan support through `lumen-gpu` and optional FFmpeg interop.

@@ -13,7 +13,6 @@ The native Linux/macOS GPU targets do not apply directly here, but the renderer 
 ## Features
 
 - `json`: enables JSON support through `lumen/json`.
-- `embed-roboto`: embeds default Roboto font assets.
 
 ## Development
 

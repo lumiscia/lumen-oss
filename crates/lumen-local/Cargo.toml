@@ -18,7 +18,7 @@ vulkan = ["lumen/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
 anyhow = "1.0.101"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 tempfile = "3.23.0"
-lumen = { path = "../lumen", features = ["ffmpeg", "image", "json", "embed-roboto"] }
+lumen = { path = "../lumen", features = ["ffmpeg", "image", "json"] }
 lumen-gpu = { path = "../lumen-gpu" }
 lumen-ffmpeg = { version = "0.1.0", path = "../lumen-ffmpeg", features = ["vulkan"] }
 objc2 = { version = "0.6.4", optional = true }

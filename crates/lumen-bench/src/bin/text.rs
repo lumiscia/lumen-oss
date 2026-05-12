@@ -18,7 +18,7 @@ use nalgebra::{Affine2, Matrix3};
 use skrifa::{FontRef, GlyphId, MetadataProvider, prelude::Size, raw::TableProvider};
 
 const MAX_GLYPHS: usize = 4096;
-const ROBOTO_BYTES: &[u8] = include_bytes!("../../../lumen/assets/roboto/Roboto-Regular.ttf");
+const ROBOTO_BYTES: &[u8] = lumen_text::ROBOTO_REGULAR_BYTES;
 
 #[derive(Debug)]
 struct Args {

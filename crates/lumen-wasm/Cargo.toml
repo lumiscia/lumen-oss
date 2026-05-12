@@ -7,9 +7,8 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["json", "embed-roboto"]
+default = ["json"]
 json = ["lumen/json"]
-embed-roboto = ["lumen/embed-roboto"]
 
 [dependencies]
 js-sys = "0.3"
