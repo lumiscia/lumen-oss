@@ -7,22 +7,26 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("channel_shuffle.wgsl");
 
+/// Remaps source raster color channels.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(
     kind = "channel_shuffle",
-    label = "Channel Shuffle",
-    description = "Remaps source raster color channels.",
+    name = "Channel Shuffle",
     category = "processing"
 )]
 pub struct ChannelShuffle {
     pub id: NodeId,
-    #[property(kind = "string")]
+    /// Source channel mapped into the red output channel.
+    #[property(kind = "string", format = "channel_selector")]
     pub red: NodeProperty,
-    #[property(kind = "string")]
+    /// Source channel mapped into the green output channel.
+    #[property(kind = "string", format = "channel_selector")]
     pub green: NodeProperty,
-    #[property(kind = "string")]
+    /// Source channel mapped into the blue output channel.
+    #[property(kind = "string", format = "channel_selector")]
     pub blue: NodeProperty,
-    #[property(kind = "string")]
+    /// Source channel mapped into the alpha output channel.
+    #[property(kind = "string", format = "channel_selector")]
     pub alpha: NodeProperty,
     #[input()]
     pub source: PortRef,

@@ -7,18 +7,20 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("raster_multimerge.wgsl");
 
+/// Composites a variadic stack of raster layers in order.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(
     kind = "raster_multimerge",
-    label = "Raster Multi Merge",
-    description = "Composites a variadic stack of raster layers in order.",
+    name = "Raster Multi Merge",
     category = "compositing"
 )]
 pub struct RasterMultiMerge {
     pub id: NodeId,
-    #[property(kind = "float")]
+    /// Opacity applied to each layer as it is composited.
+    #[property(kind = "float", min = 0, max = 1, step = 0.05)]
     pub opacity: NodeProperty,
-    #[property(kind = "int")]
+    /// Blend mode used for each layer in the stack.
+    #[property(kind = "enum", enum_type = crate::node::compositing::BlendMode)]
     pub blend_mode: NodeProperty,
     #[input(optional, variadic)]
     pub layers: Vec<PortRef>,

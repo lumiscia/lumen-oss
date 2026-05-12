@@ -7,7 +7,7 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("transform.wgsl");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
 pub enum TransformSampling {
     Nearest = 0,
@@ -24,30 +24,34 @@ impl TransformSampling {
     }
 }
 
+/// Transforms a raster inside its existing static bounds.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "transform",
-    label = "Transform",
-    description = "Transforms a raster inside its existing static bounds.",
-    category = "processing"
-)]
+#[node(kind = "transform", name = "Transform", category = "processing")]
 pub struct Transform {
     pub id: NodeId,
-    #[property(kind = "float")]
+    /// Horizontal scale multiplier.
+    #[property(kind = "float", name = "Scale X", step = 0.1)]
     pub scale_x: NodeProperty,
-    #[property(kind = "float")]
+    /// Vertical scale multiplier.
+    #[property(kind = "float", name = "Scale Y", step = 0.1)]
     pub scale_y: NodeProperty,
-    #[property(kind = "float")]
+    /// Horizontal translation in pixels.
+    #[property(kind = "float", name = "Translate X", step = 1)]
     pub translate_x: NodeProperty,
-    #[property(kind = "float")]
+    /// Vertical translation in pixels.
+    #[property(kind = "float", name = "Translate Y", step = 1)]
     pub translate_y: NodeProperty,
-    #[property(kind = "float")]
+    /// Rotation in degrees.
+    #[property(kind = "float", name = "Rotate", step = 1)]
     pub rotate: NodeProperty,
-    #[property(kind = "float")]
+    /// Horizontal pivot point in pixels.
+    #[property(kind = "float", name = "Pivot X", step = 1)]
     pub pivot_x: NodeProperty,
-    #[property(kind = "float")]
+    /// Vertical pivot point in pixels.
+    #[property(kind = "float", name = "Pivot Y", step = 1)]
     pub pivot_y: NodeProperty,
-    #[property(kind = "int")]
+    /// Sampling filter used when transforming.
+    #[property(kind = "enum", enum_type = TransformSampling)]
     pub sampling: NodeProperty,
     #[input()]
     pub source: PortRef,

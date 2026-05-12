@@ -5,7 +5,7 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const repoRoot = path.resolve(dirname, "../../..");
 
-export const metaPath = path.join(repoRoot, "definitions/meta.json");
+export const compositionSchemaPath = path.join(repoRoot, "definitions/composition.schema.json");
 
 export const generatedSchemaTypesPath = path.join(
   repoRoot,

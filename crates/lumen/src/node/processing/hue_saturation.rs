@@ -7,20 +7,23 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("hue_saturation.wgsl");
 
+/// Adjusts raster hue, saturation, and lightness.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(
     kind = "hue_saturation",
-    label = "Hue Saturation",
-    description = "Adjusts raster hue, saturation, and lightness.",
+    name = "Hue Saturation",
     category = "processing"
 )]
 pub struct HueSaturation {
     pub id: NodeId,
-    #[property(kind = "float")]
+    /// Hue rotation in degrees.
+    #[property(kind = "float", name = "Hue", step = 1)]
     pub hue_degrees: NodeProperty,
-    #[property(kind = "float")]
+    /// Saturation multiplier.
+    #[property(kind = "float", step = 0.01)]
     pub saturation: NodeProperty,
-    #[property(kind = "float")]
+    /// Lightness offset.
+    #[property(kind = "float", step = 0.01)]
     pub lightness: NodeProperty,
     #[input()]
     pub source: PortRef,

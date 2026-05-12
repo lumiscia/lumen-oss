@@ -4,22 +4,22 @@ use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
 };
 
+/// Evaluates a raster input at another frame.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "time_remap",
-    label = "Time Remap",
-    description = "Evaluates a raster input at another frame.",
-    category = "processing"
-)]
+#[node(kind = "time_remap", name = "Time Remap", category = "processing")]
 pub struct TimeRemap {
     pub id: NodeId,
-    #[property(kind = "float")]
+    /// Source frame to sample.
+    #[property(kind = "float", min = 0, step = 1)]
     pub frame: NodeProperty,
+    /// Enables looping between the configured loop bounds.
     #[property(kind = "bool")]
     pub loop_enabled: NodeProperty,
-    #[property(kind = "int")]
+    /// First frame in the loop range.
+    #[property(kind = "int", min = 0, step = 1)]
     pub loop_start: NodeProperty,
-    #[property(kind = "int")]
+    /// Last frame in the loop range.
+    #[property(kind = "int", min = 0, step = 1)]
     pub loop_end: NodeProperty,
     #[input()]
     pub source: PortRef,

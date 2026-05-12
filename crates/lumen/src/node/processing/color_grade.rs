@@ -9,20 +9,19 @@ pub(crate) const SHADER: &str = include_str!("color_grade.wgsl");
 
 pub const IDENTITY_LUT: &str = "identity";
 
+/// Applies a LUT-driven color transform to a raster.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "color_grade",
-    label = "Color Grade",
-    description = "Applies a LUT-driven color transform to a raster.",
-    category = "processing"
-)]
+#[node(kind = "color_grade", name = "Color Grade", category = "processing")]
 pub struct ColorGrade {
     pub id: NodeId,
-    #[property(kind = "string")]
+    /// LUT data source or named LUT preset.
+    #[property(kind = "string", name = "LUT source", role = "lut_source", multiline, recommended_rows = 4)]
     pub lut_source: NodeProperty,
-    #[property(kind = "float")]
+    /// Blend amount for the LUT transform.
+    #[property(kind = "float", min = 0, max = 1, step = 0.01)]
     pub strength: NodeProperty,
-    #[property(kind = "int")]
+    /// Sampling filter used when reading LUT data.
+    #[property(kind = "int", format = "sampling_mode")]
     pub interpolation: NodeProperty,
     #[input()]
     pub source: PortRef,

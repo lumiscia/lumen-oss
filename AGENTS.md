@@ -15,7 +15,7 @@
 ## Definitions
 
 - Lumen schema and node metadata live under `definitions/`.
-- Treat `definitions/meta.json` as the source input for SDK type generation.
+- Treat `definitions/composition.schema.json` as the source input for SDK type generation.
 - Regenerate definitions with `just generate-definitions` after changing Rust node schemas, and use `just verify-definitions` to check that committed definitions are fresh.
 - Keep generated SDK types in `packages/lumen-types/src/generated/`.
 - If generated output is wrong, fix the generator or the upstream definitions rather than patching generated code by hand.

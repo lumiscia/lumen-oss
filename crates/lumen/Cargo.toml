@@ -11,6 +11,7 @@ path = "src/lib.rs"
 ffmpeg = ["dep:ffmpeg-next", "dep:lumen-ffmpeg"]
 image = ["dep:image"]
 json = ["dep:anyhow", "dep:serde", "dep:serde_json"]
+metadata = []
 embed-roboto = []
 webgl = []
 metal = ["lumen-ffmpeg?/metal", "lumen-gpu/metal"]

@@ -4,17 +4,15 @@ use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
 };
 
+/// Aliases a raster input through a stable cache boundary.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "memo",
-    label = "Memo",
-    description = "Aliases a raster input through a stable cache boundary.",
-    category = "processing"
-)]
+#[node(kind = "memo", name = "Memo", category = "processing")]
 pub struct Memo {
     pub id: NodeId,
-    #[property(kind = "string")]
+    /// Stable cache identifier for this memo boundary.
+    #[property(kind = "string", name = "Cache key", role = "cache_id")]
     pub cache_id: NodeProperty,
+    /// Allows property expressions to be evaluated across this memo boundary.
     #[property(kind = "bool")]
     pub allow_expressions: NodeProperty,
     #[input()]

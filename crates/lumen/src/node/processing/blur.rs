@@ -7,16 +7,13 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("blur.wgsl");
 
+/// Applies a simple box blur to a raster.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "blur",
-    label = "Blur",
-    description = "Applies a simple box blur to a raster.",
-    category = "processing"
-)]
+#[node(kind = "blur", name = "Blur", category = "processing")]
 pub struct Blur {
     pub id: NodeId,
-    #[property(kind = "float")]
+    /// Blur radius in pixels.
+    #[property(kind = "float", min = 0, step = 0.5)]
     pub radius: NodeProperty,
     #[input()]
     pub source: PortRef,

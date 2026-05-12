@@ -3,28 +3,31 @@ use crate::gpu::{
 };
 use crate::node::{NodeId, NodeProperty, PortRef};
 
+/// Produces a rasterized vector path source.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "path",
-    label = "Path",
-    description = "Produces a rasterized vector path source.",
-    category = "vector"
-)]
+#[node(kind = "path", name = "Path", category = "vector")]
 pub struct Path {
     pub id: NodeId,
-    #[property(kind = "string")]
+    /// SVG-style path data.
+    #[property(kind = "string", name = "Path data", format = "path_data", multiline, recommended_rows = 5)]
     pub data: NodeProperty,
+    /// Path origin in pixels.
     #[property(kind = "vec2")]
     pub position: NodeProperty,
+    /// Enables fill rendering.
     #[property(kind = "bool")]
     pub fill_enabled: NodeProperty,
+    /// Fill color.
     #[property(kind = "color")]
     pub fill_color: NodeProperty,
+    /// Enables stroke rendering.
     #[property(kind = "bool")]
     pub stroke_enabled: NodeProperty,
+    /// Stroke color.
     #[property(kind = "color")]
     pub stroke_color: NodeProperty,
-    #[property(kind = "float")]
+    /// Stroke width in pixels.
+    #[property(kind = "float", min = 0, step = 0.5)]
     pub stroke_width: NodeProperty,
 }
 

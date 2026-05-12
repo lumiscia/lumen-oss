@@ -1,3 +1,5 @@
+#![cfg(feature = "metadata")]
+
 use lumen::node::{NodeCategory, NodeKind, NodeProperty, PropertyEval};
 
 #[test]
@@ -19,7 +21,7 @@ fn node_schemas_are_derived_from_node_structs() {
         solid
             .properties
             .iter()
-            .map(|property| property.name)
+            .map(|property| property.id)
             .collect::<Vec<_>>(),
         vec!["color", "width", "height"]
     );
@@ -36,9 +38,18 @@ fn node_schemas_are_derived_from_node_structs() {
         .iter()
         .find(|schema| schema.kind == "merge")
         .unwrap();
+    assert_eq!(merge.name, "Merge");
     assert_eq!(merge.inputs.len(), 3);
     assert_eq!(merge.inputs[2].name, "mask");
     assert!(merge.inputs[2].optional);
+    let opacity = merge
+        .properties
+        .iter()
+        .find(|property| property.id == "opacity")
+        .unwrap();
+    assert_eq!(opacity.name, "Opacity");
+    assert_eq!(opacity.constraints.min, Some(0.0));
+    assert_eq!(opacity.constraints.max, Some(1.0));
 
     let raster_multimerge = schemas
         .iter()
@@ -48,7 +59,7 @@ fn node_schemas_are_derived_from_node_structs() {
         raster_multimerge
             .properties
             .iter()
-            .any(|property| property.name == "blend_mode")
+            .any(|property| property.id == "blend_mode")
     );
 
     let shape = schemas
@@ -61,7 +72,7 @@ fn node_schemas_are_derived_from_node_structs() {
         shape
             .properties
             .iter()
-            .any(|property| property.name == "position")
+            .any(|property| property.id == "position")
     );
 }
 

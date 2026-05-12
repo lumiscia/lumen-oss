@@ -8,7 +8,7 @@ use crate::gpu::{
     MediaTextureKey, RasterHandle, RasterMetadata,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 pub enum LoopMode {
     Clamp,
     Repeat,
@@ -25,6 +25,13 @@ impl LoopMode {
     }
 }
 
+#[cfg(any(feature = "json", feature = "metadata"))]
+#[derive(lumen_macros::NodeEnum)]
+pub enum MediaInSourceKind {
+    Image = 0,
+    Video = 1,
+}
+
 #[derive(Debug, Clone)]
 pub enum MediaInKind {
     Image {
@@ -38,26 +45,28 @@ pub enum MediaInKind {
     },
 }
 
+/// Binds an external image or video frame as a GPU texture.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "media_in",
-    label = "Media In",
-    description = "Binds an external image or video frame as a GPU texture.",
-    category = "source"
-)]
+#[node(kind = "media_in", name = "Media In", category = "source")]
 pub struct MediaIn {
     pub id: NodeId,
-    #[property(kind = "int")]
+    /// Type of external media source.
+    #[property(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
     pub kind: NodeProperty,
-    #[property(kind = "string")]
+    /// External media source identifier.
+    #[property(kind = "string", role = "source_id")]
     pub source: NodeProperty,
-    #[property(kind = "int")]
+    /// First source frame to include.
+    #[property(kind = "int", min = 0, step = 1)]
     pub range_start: NodeProperty,
-    #[property(kind = "int")]
+    /// Last source frame to include.
+    #[property(kind = "int", min = 0, step = 1)]
     pub range_end: NodeProperty,
-    #[property(kind = "float")]
+    /// Playback speed multiplier.
+    #[property(kind = "float", step = 0.1)]
     pub speed: NodeProperty,
-    #[property(kind = "int")]
+    /// Behavior when playback leaves the source range.
+    #[property(kind = "enum", enum_type = LoopMode)]
     pub loop_mode: NodeProperty,
 }
 

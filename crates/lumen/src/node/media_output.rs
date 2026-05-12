@@ -8,13 +8,9 @@ use crate::gpu::{
 pub(crate) const SHADER: &str = include_str!("media_output.wgsl");
 pub(crate) const RENDER_SHADER: &str = include_str!("media_output_render.wgsl");
 
+/// Copies the compiled raster into the final composition output.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "media_output",
-    label = "Media Output",
-    description = "Copies the compiled raster into the final composition output.",
-    category = "output"
-)]
+#[node(kind = "media_output", name = "Media Output", category = "output")]
 pub struct MediaOutput {
     pub id: NodeId,
     #[input()]

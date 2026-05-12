@@ -20,7 +20,7 @@ pub fn parse_property(val: &Value, def: Option<&PropertyDef>, name: &str) -> Res
     }
 
     if let Some(def) = def {
-        return parse_typed(val, def.expected, name);
+        return parse_typed(val, def, name);
     }
 
     // Fallback: infer type from JSON shape
@@ -39,8 +39,8 @@ pub fn parse_property(val: &Value, def: Option<&PropertyDef>, name: &str) -> Res
     }
 }
 
-fn parse_typed(val: &Value, expected: PropertyKind, name: &str) -> Result<NodeProperty> {
-    match expected {
+fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<NodeProperty> {
+    match def.expected {
         PropertyKind::Float => {
             let f = val
                 .as_f64()
@@ -88,6 +88,20 @@ fn parse_typed(val: &Value, expected: PropertyKind, name: &str) -> Result<NodePr
                 .as_f64()
                 .with_context(|| format!("`{name}[1]` expected number"))?;
             Ok(NodeProperty::Vec2((x, y)))
+        }
+        PropertyKind::Enum => {
+            let enum_def = def
+                .enum_def
+                .with_context(|| format!("`{name}` missing enum definition"))?;
+            let enum_name = val
+                .as_str()
+                .with_context(|| format!("`{name}` expected enum string"))?;
+            let option = enum_def
+                .options
+                .iter()
+                .find(|option| option.name == enum_name)
+                .with_context(|| format!("`{name}` unknown enum value `{enum_name}`"))?;
+            Ok(NodeProperty::Int(option.value))
         }
     }
 }

@@ -3,7 +3,7 @@ use crate::gpu::{
 };
 use crate::node::{NodeId, NodeProperty, PortRef};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
 pub enum ShapeGeometryKind {
     Rectangle = 0,
@@ -21,36 +21,43 @@ impl ShapeGeometryKind {
     }
 }
 
+/// Produces a vector shape layer for GPU rasterization.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "shape",
-    label = "Shape",
-    description = "Produces a vector shape layer for GPU rasterization.",
-    category = "vector"
-)]
+#[node(kind = "shape", name = "Shape", category = "vector")]
 pub struct Shape {
     pub id: NodeId,
-    #[property(kind = "int")]
+    /// Geometry primitive to rasterize.
+    #[property(kind = "enum", enum_type = ShapeGeometryKind)]
     pub geometry_kind: NodeProperty,
-    #[property(kind = "int")]
+    /// Shape width in pixels.
+    #[property(kind = "int", min = 1, step = 1)]
     pub width: NodeProperty,
-    #[property(kind = "int")]
+    /// Shape height in pixels.
+    #[property(kind = "int", min = 1, step = 1)]
     pub height: NodeProperty,
-    #[property(kind = "float")]
+    /// Corner radius for rectangle geometry.
+    #[property(kind = "float", min = 0, step = 1)]
     pub border_radius: NodeProperty,
-    #[property(kind = "string")]
+    /// Polygon point list formatted as `x,y; x,y`.
+    #[property(kind = "string", name = "Polygon points", format = "point_list", multiline, recommended_rows = 3)]
     pub polygon_points: NodeProperty,
+    /// Shape origin in pixels.
     #[property(kind = "vec2")]
     pub position: NodeProperty,
+    /// Enables fill rendering.
     #[property(kind = "bool")]
     pub fill_enabled: NodeProperty,
+    /// Fill color.
     #[property(kind = "color")]
     pub fill_color: NodeProperty,
+    /// Enables stroke rendering.
     #[property(kind = "bool")]
     pub stroke_enabled: NodeProperty,
+    /// Stroke color.
     #[property(kind = "color")]
     pub stroke_color: NodeProperty,
-    #[property(kind = "float")]
+    /// Stroke width in pixels.
+    #[property(kind = "float", min = 0, step = 0.5)]
     pub stroke_width: NodeProperty,
 }
 

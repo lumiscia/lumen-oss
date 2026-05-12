@@ -7,24 +7,25 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("shadow.wgsl");
 
+/// Composites a blurred alpha shadow behind a raster.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "shadow",
-    label = "Shadow",
-    description = "Composites a blurred alpha shadow behind a raster.",
-    category = "processing"
-)]
+#[node(kind = "shadow", name = "Shadow", category = "processing")]
 pub struct Shadow {
     pub id: NodeId,
-    #[property(kind = "float")]
+    /// Horizontal shadow offset in pixels.
+    #[property(kind = "float", name = "Offset X", step = 1)]
     pub offset_x: NodeProperty,
-    #[property(kind = "float")]
+    /// Vertical shadow offset in pixels.
+    #[property(kind = "float", name = "Offset Y", step = 1)]
     pub offset_y: NodeProperty,
-    #[property(kind = "float")]
+    /// Shadow blur radius in pixels.
+    #[property(kind = "float", name = "Blur radius", min = 0, step = 0.5)]
     pub radius: NodeProperty,
+    /// Shadow color.
     #[property(kind = "color")]
     pub color: NodeProperty,
-    #[property(kind = "float")]
+    /// Shadow opacity.
+    #[property(kind = "float", min = 0, max = 1, step = 0.05)]
     pub opacity: NodeProperty,
     #[input()]
     pub source: PortRef,

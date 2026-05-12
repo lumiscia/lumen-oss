@@ -7,18 +7,16 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("curves.wgsl");
 
+/// Applies a 1D RGB curve table to a raster.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "curves",
-    label = "Curves",
-    description = "Applies a 1D RGB curve table to a raster.",
-    category = "processing"
-)]
+#[node(kind = "curves", name = "Curves", category = "processing")]
 pub struct Curves {
     pub id: NodeId,
-    #[property(kind = "string")]
+    /// Curve table data source or named curve preset.
+    #[property(kind = "string", name = "Curve", role = "curve_source", multiline, recommended_rows = 4)]
     pub curve_source: NodeProperty,
-    #[property(kind = "float")]
+    /// Blend amount for the curve adjustment.
+    #[property(kind = "float", min = 0, max = 1, step = 0.01)]
     pub strength: NodeProperty,
     #[input()]
     pub source: PortRef,

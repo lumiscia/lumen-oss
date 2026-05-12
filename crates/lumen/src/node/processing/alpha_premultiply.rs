@@ -7,16 +7,17 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("alpha_premultiply.wgsl");
 
+/// Converts raster alpha between premultiplied and unpremultiplied representations.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(
     kind = "alpha_premultiply",
-    label = "Alpha Premultiply",
-    description = "Converts raster alpha between premultiplied and unpremultiplied representations.",
+    name = "Alpha Premultiply",
     category = "processing"
 )]
 pub struct AlphaPremultiply {
     pub id: NodeId,
-    #[property(kind = "string")]
+    /// Alpha conversion mode.
+    #[property(kind = "string", format = "alpha_premultiply_mode")]
     pub mode: NodeProperty,
     #[input()]
     pub source: PortRef,

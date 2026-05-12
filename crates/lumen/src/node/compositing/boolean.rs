@@ -7,7 +7,7 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("boolean.wgsl");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
 pub enum BooleanOperation {
     Union = 0,
@@ -27,18 +27,16 @@ impl BooleanOperation {
     }
 }
 
+/// Combines two raster alpha masks with boolean operations.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "boolean",
-    label = "Boolean",
-    description = "Combines two raster alpha masks with boolean operations.",
-    category = "compositing"
-)]
+#[node(kind = "boolean", name = "Boolean", category = "compositing")]
 pub struct Boolean {
     pub id: NodeId,
-    #[property(kind = "int")]
+    /// Boolean operation used to combine the two input masks.
+    #[property(kind = "enum", enum_type = BooleanOperation)]
     pub operation: NodeProperty,
-    #[property(kind = "float")]
+    /// Alpha cutoff used before evaluating the boolean operation.
+    #[property(kind = "float", min = 0, max = 1, step = 0.01)]
     pub threshold: NodeProperty,
     #[input()]
     pub a: PortRef,

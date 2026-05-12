@@ -4,16 +4,13 @@ use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
 };
 
+/// Selects one raster input according to a controlled layer index.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "switch",
-    label = "Switch",
-    description = "Selects one raster input according to a controlled layer index.",
-    category = "compositing"
-)]
+#[node(kind = "switch", name = "Switch", category = "compositing")]
 pub struct Switch {
     pub id: NodeId,
-    #[property(kind = "int")]
+    /// Zero-based input index to route to the output.
+    #[property(kind = "int", name = "Selected layer", min = 0, step = 1)]
     pub selected_layer: NodeProperty,
     #[input(optional, variadic)]
     pub layers: Vec<PortRef>,

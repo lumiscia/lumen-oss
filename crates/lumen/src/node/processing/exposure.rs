@@ -7,20 +7,19 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("exposure.wgsl");
 
+/// Adjusts raster exposure, contrast, and offset.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "exposure",
-    label = "Exposure",
-    description = "Adjusts raster exposure, contrast, and offset.",
-    category = "processing"
-)]
+#[node(kind = "exposure", name = "Exposure", category = "processing")]
 pub struct Exposure {
     pub id: NodeId,
-    #[property(kind = "float")]
+    /// Exposure offset in stops.
+    #[property(kind = "float", step = 0.01)]
     pub exposure: NodeProperty,
-    #[property(kind = "float")]
+    /// Contrast multiplier.
+    #[property(kind = "float", min = 0, step = 0.01)]
     pub contrast: NodeProperty,
-    #[property(kind = "float")]
+    /// Linear color offset.
+    #[property(kind = "float", step = 0.01)]
     pub offset: NodeProperty,
     #[input()]
     pub source: PortRef,

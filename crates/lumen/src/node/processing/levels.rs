@@ -7,24 +7,25 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("levels.wgsl");
 
+/// Remaps raster black, white, gamma, and output range.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "levels",
-    label = "Levels",
-    description = "Remaps raster black, white, gamma, and output range.",
-    category = "processing"
-)]
+#[node(kind = "levels", name = "Levels", category = "processing")]
 pub struct Levels {
     pub id: NodeId,
-    #[property(kind = "float")]
+    /// Input black point.
+    #[property(kind = "float", min = 0, max = 1, step = 0.01)]
     pub black_point: NodeProperty,
-    #[property(kind = "float")]
+    /// Input white point.
+    #[property(kind = "float", min = 0, max = 1, step = 0.01)]
     pub white_point: NodeProperty,
-    #[property(kind = "float")]
+    /// Midtone gamma adjustment.
+    #[property(kind = "float", min = 0.01, step = 0.01)]
     pub gamma: NodeProperty,
-    #[property(kind = "float")]
+    /// Output black level.
+    #[property(kind = "float", min = 0, max = 1, step = 0.01)]
     pub output_black: NodeProperty,
-    #[property(kind = "float")]
+    /// Output white level.
+    #[property(kind = "float", min = 0, max = 1, step = 0.01)]
     pub output_white: NodeProperty,
     #[input()]
     pub source: PortRef,

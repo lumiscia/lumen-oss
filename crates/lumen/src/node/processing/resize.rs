@@ -7,7 +7,7 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("resize.wgsl");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
 pub enum ResizeMode {
     Stretch = 0,
@@ -25,7 +25,7 @@ impl ResizeMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
 pub enum ResizeSampling {
     Nearest = 0,
@@ -42,22 +42,22 @@ impl ResizeSampling {
     }
 }
 
+/// Resamples a raster into static output bounds.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "resize",
-    label = "Resize",
-    description = "Resamples a raster into static output bounds.",
-    category = "processing"
-)]
+#[node(kind = "resize", name = "Resize", category = "processing")]
 pub struct Resize {
     pub id: NodeId,
-    #[property(kind = "int")]
+    /// Output width in pixels.
+    #[property(kind = "int", min = 1, step = 1)]
     pub width: NodeProperty,
-    #[property(kind = "int")]
+    /// Output height in pixels.
+    #[property(kind = "int", min = 1, step = 1)]
     pub height: NodeProperty,
-    #[property(kind = "int")]
+    /// How the source raster should fit the output bounds.
+    #[property(kind = "enum", enum_type = ResizeMode)]
     pub mode: NodeProperty,
-    #[property(kind = "int")]
+    /// Sampling filter used when resizing.
+    #[property(kind = "enum", enum_type = ResizeSampling)]
     pub sampling: NodeProperty,
     #[input()]
     pub source: PortRef,

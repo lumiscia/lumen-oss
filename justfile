@@ -38,6 +38,4 @@ verify-definitions:
     trap 'rm -rf "$tmpdir"' EXIT
     cargo run -p lumen-generators -- definitions --out-dir "$tmpdir"
     pnpm exec oxfmt --write "$tmpdir"
-    diff -u {{ definitions_out }}/meta.json "$tmpdir/meta.json"
-    diff -u {{ definitions_out }}/schemas/meta.schema.json "$tmpdir/schemas/meta.schema.json"
-    diff -u {{ definitions_out }}/schemas/composition.schema.json "$tmpdir/schemas/composition.schema.json"
+    diff -u {{ definitions_out }}/composition.schema.json "$tmpdir/composition.schema.json"

@@ -7,18 +7,16 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("merge.wgsl");
 
+/// Composites an overlay raster over a base raster.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "merge",
-    label = "Merge",
-    description = "Composites an overlay raster over a base raster.",
-    category = "compositing"
-)]
+#[node(kind = "merge", name = "Merge", category = "compositing")]
 pub struct Merge {
     pub id: NodeId,
-    #[property(kind = "float")]
+    /// Overlay opacity applied before compositing.
+    #[property(kind = "float", min = 0, max = 1, step = 0.05)]
     pub opacity: NodeProperty,
-    #[property(kind = "int")]
+    /// Blend mode used when combining the overlay with the base raster.
+    #[property(kind = "enum", enum_type = BlendMode)]
     pub blend_mode: NodeProperty,
     #[input()]
     pub base: PortRef,

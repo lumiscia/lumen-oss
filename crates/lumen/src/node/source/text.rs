@@ -9,7 +9,7 @@ use crate::gpu::{
 };
 use crate::node::{NodeId, NodeProperty, PortRef};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, lumen_macros::NodeEnum)]
 #[repr(i64)]
 pub enum TextFontStyle {
     Normal = 0,
@@ -27,7 +27,7 @@ impl TextFontStyle {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
 pub enum TextAlignmentHorizontal {
     Left = 0,
@@ -47,7 +47,7 @@ impl TextAlignmentHorizontal {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
 pub enum TextAlignmentVertical {
     Top = 0,
@@ -65,34 +65,40 @@ impl TextAlignmentVertical {
     }
 }
 
+/// Produces a text raster source.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "text",
-    label = "Text",
-    description = "Produces a text raster source.",
-    category = "source"
-)]
+#[node(kind = "text", name = "Text", category = "source")]
 pub struct Text {
     pub id: NodeId,
-    #[property(kind = "string")]
+    /// Text content to render.
+    #[property(kind = "string", multiline, recommended_rows = 4)]
     pub content: NodeProperty,
-    #[property(kind = "string")]
+    /// Font family name.
+    #[property(kind = "string", format = "font_family")]
     pub font_family: NodeProperty,
-    #[property(kind = "float")]
+    /// Font size in pixels.
+    #[property(kind = "float", min = 1, step = 1)]
     pub font_size: NodeProperty,
-    #[property(kind = "int")]
+    /// Font weight.
+    #[property(kind = "int", min = 100, max = 900, step = 100)]
     pub font_weight: NodeProperty,
-    #[property(kind = "int")]
+    /// Font style.
+    #[property(kind = "enum", enum_type = TextFontStyle)]
     pub font_style: NodeProperty,
-    #[property(kind = "float")]
+    /// Maximum line width in pixels. Use 0 for automatic width.
+    #[property(kind = "float", min = 0, step = 1)]
     pub max_width: NodeProperty,
+    /// Text origin in pixels.
     #[property(kind = "vec2")]
     pub position: NodeProperty,
+    /// Text color.
     #[property(kind = "color")]
     pub color: NodeProperty,
-    #[property(kind = "int")]
+    /// Horizontal text alignment.
+    #[property(kind = "enum", enum_type = TextAlignmentHorizontal)]
     pub alignment_horizontal: NodeProperty,
-    #[property(kind = "int")]
+    /// Vertical text alignment.
+    #[property(kind = "enum", enum_type = TextAlignmentVertical)]
     pub alignment_vertical: NodeProperty,
 }
 

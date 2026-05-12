@@ -7,22 +7,22 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("crop.wgsl");
 
+/// Extracts a fixed raster region into static output bounds.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "crop",
-    label = "Crop",
-    description = "Extracts a fixed raster region into static output bounds.",
-    category = "processing"
-)]
+#[node(kind = "crop", name = "Crop", category = "processing")]
 pub struct Crop {
     pub id: NodeId,
-    #[property(kind = "int")]
+    /// Left edge of the crop region in pixels.
+    #[property(kind = "int", step = 1)]
     pub x: NodeProperty,
-    #[property(kind = "int")]
+    /// Top edge of the crop region in pixels.
+    #[property(kind = "int", step = 1)]
     pub y: NodeProperty,
-    #[property(kind = "int")]
+    /// Width of the crop region in pixels.
+    #[property(kind = "int", min = 0, step = 1)]
     pub width: NodeProperty,
-    #[property(kind = "int")]
+    /// Height of the crop region in pixels.
+    #[property(kind = "int", min = 0, step = 1)]
     pub height: NodeProperty,
     #[input()]
     pub source: PortRef,

@@ -10,18 +10,16 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("wgsl_shader.wgsl");
 
+/// Runs a custom WGSL compute shader over a raster.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "wgsl_shader",
-    label = "WGSL Shader",
-    description = "Runs a custom WGSL compute shader over a raster.",
-    category = "processing"
-)]
+#[node(kind = "wgsl_shader", name = "WGSL Shader", category = "processing")]
 pub struct WgslShader {
     pub id: NodeId,
-    #[property(kind = "string")]
+    /// Custom WGSL compute shader source.
+    #[property(kind = "string", name = "Shader source", format = "wgsl", multiline, recommended_rows = 10)]
     pub shader: NodeProperty,
-    #[property(kind = "string")]
+    /// JSON object describing shader binding values.
+    #[property(kind = "string", name = "Shader bindings", format = "json", multiline, recommended_rows = 6)]
     pub bindings: NodeProperty,
     #[input()]
     pub source: PortRef,

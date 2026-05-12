@@ -7,20 +7,19 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("solid_color.wgsl");
 
+/// Generates a solid raster texture.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(
-    kind = "solid_color",
-    label = "Solid Color",
-    description = "Generates a solid raster texture.",
-    category = "source"
-)]
+#[node(kind = "solid_color", name = "Solid Color", category = "source")]
 pub struct SolidColor {
     pub id: NodeId,
+    /// Fill color.
     #[property(kind = "color")]
     pub color: NodeProperty,
-    #[property(kind = "int")]
+    /// Output width in pixels. Use 0 to match the composition width.
+    #[property(kind = "int", min = 0, step = 1)]
     pub width: NodeProperty,
-    #[property(kind = "int")]
+    /// Output height in pixels. Use 0 to match the composition height.
+    #[property(kind = "int", min = 0, step = 1)]
     pub height: NodeProperty,
 }
 

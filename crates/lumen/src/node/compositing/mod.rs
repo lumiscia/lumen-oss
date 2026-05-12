@@ -3,7 +3,7 @@ pub mod merge;
 pub mod raster_multimerge;
 pub mod switch;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, lumen_macros::NodeEnum)]
 #[repr(u8)]
 #[non_exhaustive]
 pub enum BlendMode {

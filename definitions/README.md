@@ -1,12 +1,10 @@
 # Lumen Definitions
 
-Generated JSON schemas and metadata for Lumen compositions.
+Generated JSON schema and metadata annotations for Lumen compositions.
 
 This repository contains machine-readable artifacts generated from the canonical Lumen source:
 
-- `meta.json` - node kinds, node specs, ports, properties, defaults, and schema metadata
-- `schemas/meta.schema.json` - JSON Schema for `meta.json`
-- `schemas/composition.schema.json` - JSON Schema for Lumen composition documents
+- `composition.schema.json` - JSON Schema for Lumen composition documents, including `x-lumen-*` annotations for node metadata, property metadata, defaults, ports, and enum labels
 
 These files are generated automatically and should not be edited by hand.
 
@@ -16,7 +14,7 @@ Reference the schemas directly from this repository, or vendor them into tooling
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/lumiscia/lumen/main/definitions/schemas/composition.schema.json"
+  "$schema": "https://raw.githubusercontent.com/lumiscia/lumen/main/definitions/composition.schema.json"
 }
 ```
 
