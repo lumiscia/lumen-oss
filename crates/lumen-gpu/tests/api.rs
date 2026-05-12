@@ -155,7 +155,7 @@ fn plan_records_pass_order_across_render_compute_and_copy() {
         owner: None,
         program: compute,
         bindings: Vec::new(),
-        dispatch: Dispatch { x: 1, y: 1, z: 1 },
+        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
     });
     builder.render_pass(RenderPassDesc {
         label: Some("second".to_string()),
@@ -238,7 +238,9 @@ fn frame_update_records_buffer_and_texture_uploads_in_order() {
             assert_eq!(*offset, 8);
             assert_eq!(*data, buffer_bytes);
         }
-        Upload::TextureRgba8 { .. } => panic!("expected buffer upload first"),
+        Upload::TextureRgba8 { .. } | Upload::TextureRgba16Float { .. } => {
+            panic!("expected buffer upload first")
+        }
     }
     match &update.uploads()[1] {
         Upload::TextureRgba8 {
@@ -252,7 +254,9 @@ fn frame_update_records_buffer_and_texture_uploads_in_order() {
             assert_eq!(*bytes_per_row, 8);
             assert_eq!(*rows_per_image, 2);
         }
-        Upload::Buffer { .. } => panic!("expected texture upload second"),
+        Upload::Buffer { .. } | Upload::TextureRgba16Float { .. } => {
+            panic!("expected texture upload second")
+        }
     }
 }
 

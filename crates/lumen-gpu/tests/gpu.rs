@@ -91,7 +91,7 @@ fn compute_pass_writes_storage_texture() {
         owner: None,
         program,
         bindings: vec![Binding::storage_texture(0, 0, output)],
-        dispatch: Dispatch { x: 1, y: 1, z: 1 },
+        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
     });
     let plan = builder.build();
 
@@ -136,7 +136,7 @@ fn uniform_upload_updates_compute_shader_output_without_replanning() {
             Binding::uniform(0, 0, uniforms),
             Binding::storage_texture(0, 1, output),
         ],
-        dispatch: Dispatch { x: 1, y: 1, z: 1 },
+        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
     });
     let plan = builder.build();
     renderer.prepare_plan(&plan).unwrap();

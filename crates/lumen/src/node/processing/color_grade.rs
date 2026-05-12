@@ -15,7 +15,13 @@ pub const IDENTITY_LUT: &str = "identity";
 pub struct ColorGrade {
     pub id: NodeId,
     /// LUT data source or named LUT preset.
-    #[property(kind = "string", name = "LUT source", role = "lut_source", multiline, recommended_rows = 4)]
+    #[property(
+        kind = "string",
+        name = "LUT source",
+        role = "lut_source",
+        multiline,
+        recommended_rows = 4
+    )]
     pub lut_source: NodeProperty,
     /// Blend amount for the LUT transform.
     #[property(kind = "float", min = 0, max = 1, step = 0.01)]
@@ -110,7 +116,7 @@ impl GpuCompileNode for ColorGrade {
                 lumen_gpu::Binding::storage_buffer(0, 2, lut),
                 lumen_gpu::Binding::storage_texture(0, 3, texture),
             ],
-            dispatch: compiler::dispatch_for(size),
+            dispatch: compiler::dispatch_for(size).into(),
         });
         ctx.builder_mut().param(
             lumen_gpu::ParamKey {

@@ -78,7 +78,7 @@ impl GpuCompileNode for MediaOutput {
                     lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
                     lumen_gpu::Binding::storage_texture(0, 1, output),
                 ],
-                dispatch: compiler::dispatch_for(size),
+                dispatch: compiler::dispatch_for(size).into(),
             });
         } else {
             let sampler = ctx.builder_mut().sampler(

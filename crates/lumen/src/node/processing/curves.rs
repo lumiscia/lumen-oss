@@ -13,7 +13,13 @@ pub(crate) const SHADER: &str = include_str!("curves.wgsl");
 pub struct Curves {
     pub id: NodeId,
     /// Curve table data source or named curve preset.
-    #[property(kind = "string", name = "Curve", role = "curve_source", multiline, recommended_rows = 4)]
+    #[property(
+        kind = "string",
+        name = "Curve",
+        role = "curve_source",
+        multiline,
+        recommended_rows = 4
+    )]
     pub curve_source: NodeProperty,
     /// Blend amount for the curve adjustment.
     #[property(kind = "float", min = 0, max = 1, step = 0.01)]
@@ -101,7 +107,7 @@ impl GpuCompileNode for Curves {
                 lumen_gpu::Binding::storage_buffer(0, 2, curve),
                 lumen_gpu::Binding::storage_texture(0, 3, texture),
             ],
-            dispatch: compiler::dispatch_for(size),
+            dispatch: compiler::dispatch_for(size).into(),
         });
         ctx.builder_mut().param(
             lumen_gpu::ParamKey {

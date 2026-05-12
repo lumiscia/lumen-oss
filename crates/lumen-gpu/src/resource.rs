@@ -74,6 +74,13 @@ impl BufferDesc {
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
         }
     }
+
+    pub fn indirect(size: u64) -> Self {
+        Self {
+            size,
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

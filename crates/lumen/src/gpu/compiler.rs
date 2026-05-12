@@ -287,7 +287,7 @@ impl<'a> CompileContext<'a> {
                 lumen_gpu::Binding::uniform(0, 1, params),
                 lumen_gpu::Binding::storage_texture(0, 2, texture),
             ],
-            dispatch: dispatch_for(size),
+            dispatch: dispatch_for(size).into(),
         });
         self.builder.param(
             lumen_gpu::ParamKey {
@@ -342,7 +342,7 @@ impl<'a> CompileContext<'a> {
                 lumen_gpu::Binding::uniform(0, 0, params),
                 lumen_gpu::Binding::storage_texture(0, 1, texture),
             ],
-            dispatch: dispatch_for(size),
+            dispatch: dispatch_for(size).into(),
         });
         self.builder.param(
             lumen_gpu::ParamKey {
@@ -453,7 +453,7 @@ impl<'a> CompileContext<'a> {
             owner: Some(lumen_gpu::NodeKey(node_id.0)),
             program,
             bindings: spatial_bindings(source.texture, params, texture),
-            dispatch: dispatch_for(size),
+            dispatch: dispatch_for(size).into(),
         });
         self.builder.param(
             lumen_gpu::ParamKey {

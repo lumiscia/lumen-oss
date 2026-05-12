@@ -39,6 +39,12 @@ pub enum Upload<'a> {
         bytes_per_row: u32,
         rows_per_image: u32,
     },
+    TextureRgba16Float {
+        id: TextureId,
+        data: &'a [u16],
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -69,6 +75,22 @@ impl<'a> FrameUpdate<'a> {
         rows_per_image: u32,
     ) -> &mut Self {
         self.uploads.push(Upload::TextureRgba8 {
+            id,
+            data,
+            bytes_per_row,
+            rows_per_image,
+        });
+        self
+    }
+
+    pub fn write_texture_rgba16_float(
+        &mut self,
+        id: TextureId,
+        data: &'a [u16],
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    ) -> &mut Self {
+        self.uploads.push(Upload::TextureRgba16Float {
             id,
             data,
             bytes_per_row,

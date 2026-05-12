@@ -115,7 +115,7 @@ impl GpuCompileNode for RasterMultiMerge {
                     lumen_gpu::Binding::uniform(0, 2, params),
                     lumen_gpu::Binding::storage_texture(0, 3, texture),
                 ],
-                dispatch: compiler::dispatch_for(size),
+                dispatch: compiler::dispatch_for(size).into(),
             });
             current = RasterHandle {
                 texture,

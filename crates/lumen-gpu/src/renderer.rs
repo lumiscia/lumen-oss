@@ -4,9 +4,9 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::{
     BindGroupLayoutSpec, Binding, BindingResource, BufferDesc, BufferId, BufferResource,
-    ComputePassDesc, ComputeProgramDesc, CopyTextureDesc, DrawCommand, FrameUpdate, LoadOp,
-    PassDesc, Program, ProgramDesc, ProgramId, RenderPassDesc, RenderPlan, RenderProgramDesc,
-    SamplerId, TextureDesc, TextureId, TextureResource, Upload,
+    ComputeDispatch, ComputePassDesc, ComputeProgramDesc, CopyTextureDesc, DrawCommand,
+    FrameUpdate, LoadOp, PassDesc, Program, ProgramDesc, ProgramId, RenderPassDesc, RenderPlan,
+    RenderProgramDesc, SamplerId, TextureDesc, TextureId, TextureResource, Upload,
 };
 
 struct RuntimeTexture {
@@ -406,6 +406,24 @@ impl Renderer {
                         texture.desc.domain.storage_size.as_extent(),
                     );
                 }
+                Upload::TextureRgba16Float {
+                    id,
+                    data,
+                    bytes_per_row,
+                    rows_per_image,
+                } => {
+                    let texture = self.runtime_texture(*id)?;
+                    self.queue.write_texture(
+                        texture.texture.as_image_copy(),
+                        bytemuck::cast_slice(data),
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(*bytes_per_row),
+                            rows_per_image: Some(*rows_per_image),
+                        },
+                        texture.desc.domain.storage_size.as_extent(),
+                    );
+                }
             }
         }
         Ok(())
@@ -493,7 +511,15 @@ impl Renderer {
         for (group, bind_group) in bind_groups.iter().enumerate() {
             pass.set_bind_group(group as u32, bind_group, &[]);
         }
-        pass.dispatch_workgroups(desc.dispatch.x, desc.dispatch.y, desc.dispatch.z);
+        match desc.dispatch {
+            ComputeDispatch::Direct(dispatch) => {
+                pass.dispatch_workgroups(dispatch.x, dispatch.y, dispatch.z);
+            }
+            ComputeDispatch::Indirect { buffer, offset } => {
+                let buffer = &self.runtime_buffer(buffer)?.buffer;
+                pass.dispatch_workgroups_indirect(buffer, offset);
+            }
+        }
         Ok(())
     }
 

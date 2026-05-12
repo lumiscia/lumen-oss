@@ -122,7 +122,7 @@ impl GpuCompileNode for Merge {
                 lumen_gpu::Binding::uniform(0, 3, params),
                 lumen_gpu::Binding::storage_texture(0, 4, texture),
             ],
-            dispatch: compiler::dispatch_for(size),
+            dispatch: compiler::dispatch_for(size).into(),
         });
         ctx.builder_mut().param(
             lumen_gpu::ParamKey {

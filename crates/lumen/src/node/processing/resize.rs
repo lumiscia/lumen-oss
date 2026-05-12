@@ -109,7 +109,7 @@ impl GpuCompileNode for Resize {
             owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
             bindings: compiler::spatial_bindings(source.texture, params, texture),
-            dispatch: compiler::dispatch_for(size),
+            dispatch: compiler::dispatch_for(size).into(),
         });
         ctx.builder_mut().param(
             lumen_gpu::ParamKey {

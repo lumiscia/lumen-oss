@@ -85,7 +85,7 @@ impl GpuCompileNode for SolidColor {
                 lumen_gpu::Binding::uniform(0, 0, params),
                 lumen_gpu::Binding::storage_texture(0, 1, texture),
             ],
-            dispatch: compiler::dispatch_for(size),
+            dispatch: compiler::dispatch_for(size).into(),
         });
         ctx.builder_mut().param(
             lumen_gpu::ParamKey {
