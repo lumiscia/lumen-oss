@@ -10,4 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 bytemuck = { version = "1.25.0", features = ["derive"] }
 cosmic-text = { version = "0.18.2", default-features = false, features = ["std", "swash"] }
-
+fdsm = "0.8.0"
+fdsm-skrifa = "0.2.0"
+nalgebra = "0.34.1"
+skrifa = "0.40.0"

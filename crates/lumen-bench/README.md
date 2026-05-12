@@ -19,6 +19,7 @@ Linux-only benchmark modes such as `vk-cuda-export` and `vk-cuda-nvenc` require 
 
 - `lumen-bench-composition`: benchmark composition render and encode modes.
 - `lumen-bench-decode`: benchmark media decode paths.
+- `lumen-bench-text`: benchmark text layout, raster atlas, GPU hybrid atlas, color emoji, and raw glyph generation paths.
 
 ## Development
 
@@ -26,4 +27,5 @@ Linux-only benchmark modes such as `vk-cuda-export` and `vk-cuda-nvenc` require 
 cargo check -p lumen-bench
 cargo check -p lumen-bench --features vulkan,cuda
 cargo run -p lumen-bench --bin lumen-bench-composition -- --help
+cargo run -p lumen-bench --bin lumen-bench-text -- --iterations 20
 ```

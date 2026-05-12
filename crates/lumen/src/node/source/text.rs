@@ -143,12 +143,17 @@ impl GpuFrameBindNode for Text {
             color,
             alignment_horizontal,
             alignment_vertical,
-            output_texture: _output_texture,
             atlas_texture,
             globals_buffer,
             instances_buffer,
+            msdf_globals_buffer,
+            msdf_jobs_buffer,
+            msdf_segments_buffer,
+            msdf_pixel_jobs_buffer,
             atlas_size,
             max_glyphs,
+            max_msdf_segments,
+            max_msdf_pixels,
             size,
         } = binding
         else {
@@ -220,6 +225,9 @@ impl GpuFrameBindNode for Text {
             TextAlignmentHorizontal::Left => lumen_text::TextAlign::Left,
         };
 
+        let mut text_system = text_system()?;
+        load_font_family(&mut text_system, ctx, &font_family)?;
+
         let cache_key = TextCacheKey {
             content,
             font_family,
@@ -237,6 +245,8 @@ impl GpuFrameBindNode for Text {
             output_width: size.width,
             output_height: size.height,
             max_glyphs: *max_glyphs,
+            max_msdf_segments: *max_msdf_segments,
+            max_msdf_pixels: *max_msdf_pixels,
         };
         if text_cache()?
             .get(&node_id.0)
@@ -245,7 +255,6 @@ impl GpuFrameBindNode for Text {
             return Ok(());
         }
 
-        let mut text_system = text_system()?;
         let measurement = text_system.measure(&request);
         request.origin[1] = match alignment_vertical {
             TextAlignmentVertical::Top => request.origin[1],
@@ -253,24 +262,51 @@ impl GpuFrameBindNode for Text {
             TextAlignmentVertical::Bottom => request.origin[1] - measurement.height,
         };
         let layout = text_system.layout(&request);
-        let atlas = text_system.render_alpha_atlas(
+        let atlas_config = lumen_text::AtlasConfig {
+            width: atlas_size.width,
+            height: atlas_size.height,
+            ..lumen_text::AtlasConfig::default()
+        };
+        let atlas = text_system.render_gpu_hybrid_atlas(
             &layout,
-            lumen_text::AtlasConfig {
-                width: atlas_size.width,
-                height: atlas_size.height,
-                px_range: 1,
-            },
+            atlas_config,
             *max_glyphs,
+            *max_msdf_segments,
+            *max_msdf_pixels,
         );
         let globals = lumen_text::GpuTextGlobals {
             target_size: [size.width as f32, size.height as f32],
-            px_range: 1.0,
+            px_range: atlas_config.px_range as f32,
             glyph_count: atlas.glyph_count as u32,
+        };
+        let msdf_globals = lumen_text::GpuMsdfGlobals {
+            atlas_size: [atlas_size.width, atlas_size.height],
+            job_count: atlas.jobs.len() as u32,
+            dirty_pixel_count: atlas.msdf_pixel_count,
+            _padding: [0; 2],
         };
 
         bound.write_buffer(*globals_buffer, 0, bytemuck::bytes_of(&globals));
+        bound.write_buffer(*msdf_globals_buffer, 0, bytemuck::bytes_of(&msdf_globals));
         if !atlas.instances.is_empty() {
             bound.write_buffer(*instances_buffer, 0, bytemuck::cast_slice(&atlas.instances));
+        }
+        if !atlas.jobs.is_empty() {
+            bound.write_buffer(*msdf_jobs_buffer, 0, bytemuck::cast_slice(&atlas.jobs));
+        }
+        if !atlas.segments.is_empty() {
+            bound.write_buffer(
+                *msdf_segments_buffer,
+                0,
+                bytemuck::cast_slice(&atlas.segments),
+            );
+        }
+        if !atlas.pixel_jobs.is_empty() {
+            bound.write_buffer(
+                *msdf_pixel_jobs_buffer,
+                0,
+                bytemuck::cast_slice(&atlas.pixel_jobs),
+            );
         }
         bound.write_texture_rgba8(
             *atlas_texture,
@@ -301,6 +337,8 @@ struct TextCacheKey {
     output_width: u32,
     output_height: u32,
     max_glyphs: usize,
+    max_msdf_segments: usize,
+    max_msdf_pixels: u32,
 }
 
 fn text_system() -> crate::Result<std::sync::MutexGuard<'static, lumen_text::TextSystem>> {
@@ -311,6 +349,48 @@ fn text_system() -> crate::Result<std::sync::MutexGuard<'static, lumen_text::Tex
         .map_err(|_| {
             LumenError::Render(RenderError::Gpu {
                 details: "text system lock was poisoned".to_string(),
+            })
+        })
+}
+
+fn load_font_family(
+    text_system: &mut lumen_text::TextSystem,
+    ctx: &FrameBindContext<'_>,
+    font_family: &str,
+) -> crate::Result<()> {
+    if font_family.is_empty() {
+        return Ok(());
+    }
+    let Some(store) = ctx.media() else {
+        return Ok(());
+    };
+
+    let Some(resolver) = store.get_font_resolver(font_family) else {
+        return Ok(());
+    };
+    let resolver_id = resolver.id().to_string();
+    if loaded_fonts()?
+        .get(font_family)
+        .is_some_and(|loaded_id| loaded_id == &resolver_id)
+    {
+        return Ok(());
+    }
+    for data in resolver.data().map_err(LumenError::Media)? {
+        text_system.load_font_data(data);
+    }
+    loaded_fonts()?.insert(font_family.to_string(), resolver_id);
+    text_cache()?.clear();
+    Ok(())
+}
+
+fn loaded_fonts() -> crate::Result<std::sync::MutexGuard<'static, HashMap<String, String>>> {
+    static LOADED_FONTS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    LOADED_FONTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| {
+            LumenError::Render(RenderError::Gpu {
+                details: "loaded fonts lock was poisoned".to_string(),
             })
         })
 }

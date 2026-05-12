@@ -23,7 +23,7 @@ pub use prediction::{
 #[cfg(feature = "ffmpeg")]
 pub use resolver::GpuVideoMediaFrame;
 pub use resolver::{
-    CpuMediaFrame, ExternalTextureFrame, ExternalTextureHandle, ImageMetadata, ImageResolver,
-    MediaFrame, VideoFrameResolver, VideoMetadata,
+    CpuMediaFrame, ExternalTextureFrame, ExternalTextureHandle, FontResolver, ImageMetadata,
+    ImageResolver, MediaFrame, VideoFrameResolver, VideoMetadata,
 };
 pub use store::MediaStore;

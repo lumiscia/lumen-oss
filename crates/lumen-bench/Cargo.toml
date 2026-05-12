@@ -12,11 +12,18 @@ metal = ["lumen/metal", "lumen-ffmpeg/metal"]
 
 [dependencies]
 anyhow = "1.0.101"
+cosmic-text = { version = "0.18.2", default-features = false, features = ["std", "swash"] }
+fdsm = "0.8.0"
+fdsm-skrifa = "0.2.0"
+image = { version = "0.25.6", default-features = false }
 libc = "0.2"
+nalgebra = "0.34.1"
+skrifa = "0.40.0"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 lumen = { path = "../lumen", features = ["ffmpeg", "image", "json"] }
 lumen-gpu = { path = "../lumen-gpu" }
 lumen-ffmpeg = { path = "../lumen-ffmpeg" }
+lumen-text = { path = "../lumen-text" }
 
 [[bin]]
 name = "lumen-bench-composition"
@@ -25,3 +32,7 @@ path = "src/bin/composition.rs"
 [[bin]]
 name = "lumen-bench-decode"
 path = "src/bin/decode.rs"
+
+[[bin]]
+name = "lumen-bench-text"
+path = "src/bin/text.rs"

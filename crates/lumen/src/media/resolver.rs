@@ -80,3 +80,9 @@ pub trait VideoFrameResolver: Send + Sync {
 
     fn retain_frames(&self, _frames: &[u32]) {}
 }
+
+pub trait FontResolver: Send + Sync {
+    fn id(&self) -> &str;
+
+    fn data(&self) -> Result<Vec<Vec<u8>>, MediaError>;
+}

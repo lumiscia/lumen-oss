@@ -6,14 +6,18 @@
 
 use std::collections::HashMap;
 
-use bytemuck::{Pod, Zeroable};
 use cosmic_text::{
     Align, Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, Style,
-    SwashCache, SwashContent, SwashImage, Weight, Wrap, fontdb,
+    SwashCache, SwashContent, SwashImage, Weight, Wrap,
 };
 
+mod gpu;
+mod msdf;
+pub use gpu::*;
+pub use msdf::*;
+
 pub const MSDF_TEXT_SHADER: &str = include_str!("shaders/msdf_text.wgsl");
-pub const ALPHA_TEXT_SHADER: &str = include_str!("shaders/alpha_text.wgsl");
+pub const MSDF_GENERATOR_SHADER: &str = include_str!("shaders/msdf_generate.wgsl");
 pub const DEFAULT_FONT_FAMILY: &str = "Roboto";
 
 const DEFAULT_ROBOTO_BYTES: &[u8] = include_bytes!("../../lumen/assets/roboto/Roboto-Regular.ttf");
@@ -22,6 +26,7 @@ const DEFAULT_ROBOTO_BYTES: &[u8] = include_bytes!("../../lumen/assets/roboto/Ro
 pub struct TextSystem {
     font_system: FontSystem,
     swash_cache: SwashCache,
+    msdf_job_cache: HashMap<GlyphKey, Option<MsdfGlyphJob>>,
 }
 
 impl TextSystem {
@@ -31,11 +36,13 @@ impl TextSystem {
         Self {
             font_system,
             swash_cache: SwashCache::new(),
+            msdf_job_cache: HashMap::new(),
         }
     }
 
     pub fn load_font_data(&mut self, data: Vec<u8>) {
         self.font_system.db_mut().load_font_data(data);
+        self.msdf_job_cache.clear();
     }
 
     pub fn measure(&mut self, request: &TextLayoutRequest) -> TextMeasurement {
@@ -119,6 +126,95 @@ impl TextSystem {
         config: AtlasConfig,
         max_glyphs: usize,
     ) -> AlphaAtlasRender {
+        self.render_atlas(layout, config, max_glyphs)
+    }
+
+    pub fn render_gpu_hybrid_atlas(
+        &mut self,
+        layout: &TextLayout,
+        config: AtlasConfig,
+        max_glyphs: usize,
+        max_segments: usize,
+        max_msdf_pixels: u32,
+    ) -> GpuHybridAtlasRender {
+        let mut atlas = GlyphAtlas::new(config);
+        let mut pixels = vec![0_u8; config.width as usize * config.height as usize * 4];
+        let mut instances = Vec::with_capacity(max_glyphs.min(layout.glyphs.len()));
+        let mut jobs = Vec::new();
+        let mut segments = Vec::new();
+        let mut pixel_jobs = Vec::new();
+        let mut msdf_pixel_count = 0_u32;
+        let mut glyph_count = 0;
+
+        for glyph in layout.glyphs.iter().take(max_glyphs) {
+            if let Some(msdf) = self.glyph_msdf_job(glyph.key, config) {
+                let glyph_size = [msdf.placement.width, msdf.placement.height];
+                let Some(entry) = atlas.ensure_glyph(glyph.key, glyph_size) else {
+                    continue;
+                };
+                let glyph_pixels = entry.size[0].saturating_mul(entry.size[1]);
+                if !msdf.segments.is_empty()
+                    && segments.len().saturating_add(msdf.segments.len()) <= max_segments
+                    && msdf_pixel_count.saturating_add(glyph_pixels) <= max_msdf_pixels
+                {
+                    let segment_start = segments.len() as u32;
+                    let pixel_start = msdf_pixel_count;
+                    let job_index = jobs.len() as u32;
+                    segments.extend(msdf.segments);
+                    msdf_pixel_count = msdf_pixel_count.saturating_add(glyph_pixels);
+                    pixel_jobs.extend(std::iter::repeat(job_index).take(glyph_pixels as usize));
+                    jobs.push(GpuMsdfJob {
+                        atlas_rect: [
+                            entry.origin[0],
+                            entry.origin[1],
+                            entry.size[0],
+                            entry.size[1],
+                        ],
+                        segment_range: [segment_start, segments.len() as u32 - segment_start],
+                        pixel_range: [pixel_start, glyph_pixels],
+                        px_range: config.px_range.max(1) as f32,
+                        _padding: [0; 3],
+                    });
+                    instances.push(msdf_glyph_instance_for(glyph, entry, &msdf.placement));
+                } else {
+                    let Some(image) = self.glyph_image(glyph.key) else {
+                        continue;
+                    };
+                    write_glyph_to_atlas(&mut pixels, config, entry, &image);
+                    instances.push(glyph_instance_for(glyph, entry, &image));
+                }
+            } else {
+                let Some(image) = self.glyph_image(glyph.key) else {
+                    continue;
+                };
+                let glyph_size = [image.placement.width, image.placement.height];
+                let Some(entry) = atlas.ensure_glyph(glyph.key, glyph_size) else {
+                    continue;
+                };
+                write_glyph_to_atlas(&mut pixels, config, entry, &image);
+                instances.push(glyph_instance_for(glyph, entry, &image));
+            }
+            glyph_count += 1;
+        }
+
+        GpuHybridAtlasRender {
+            atlas,
+            pixels,
+            instances,
+            jobs,
+            segments,
+            pixel_jobs,
+            msdf_pixel_count,
+            glyph_count,
+        }
+    }
+
+    fn render_atlas(
+        &mut self,
+        layout: &TextLayout,
+        config: AtlasConfig,
+        max_glyphs: usize,
+    ) -> AlphaAtlasRender {
         let mut atlas = GlyphAtlas::new(config);
         let mut pixels = vec![0_u8; config.width as usize * config.height as usize * 4];
         let mut instances = Vec::with_capacity(max_glyphs.min(layout.glyphs.len()));
@@ -150,6 +246,25 @@ impl TextSystem {
             .get_image(&mut self.font_system, key.0)
             .as_ref()
             .cloned()
+    }
+
+    fn glyph_msdf_job(&mut self, key: GlyphKey, config: AtlasConfig) -> Option<MsdfGlyphJob> {
+        if let Some(cached) = self.msdf_job_cache.get(&key) {
+            return cached.clone();
+        }
+        self.font_system
+            .db()
+            .with_face_data(key.0.font_id, |data, face_index| {
+                generate_msdf_job(data, face_index, key.0, config)
+            })
+            .flatten()
+            .inspect(|job| {
+                self.msdf_job_cache.insert(key, Some(job.clone()));
+            })
+            .or_else(|| {
+                self.msdf_job_cache.insert(key, None);
+                None
+            })
     }
 }
 
@@ -256,7 +371,7 @@ impl Default for AtlasConfig {
         Self {
             width: 2048,
             height: 2048,
-            px_range: 4,
+            px_range: 8,
         }
     }
 }
@@ -334,52 +449,24 @@ pub struct AlphaAtlasRender {
     pub glyph_count: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct GpuHybridAtlasRender {
+    pub atlas: GlyphAtlas,
+    pub pixels: Vec<u8>,
+    pub instances: Vec<GpuGlyphInstance>,
+    pub jobs: Vec<GpuMsdfJob>,
+    pub segments: Vec<GpuMsdfSegment>,
+    pub pixel_jobs: Vec<u32>,
+    pub msdf_pixel_count: u32,
+    pub glyph_count: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AtlasEntry {
     pub origin: [u32; 2],
     pub size: [u32; 2],
     pub uv_min: [f32; 2],
     pub uv_max: [f32; 2],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct GpuTextGlobals {
-    pub target_size: [f32; 2],
-    pub px_range: f32,
-    pub glyph_count: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct GpuGlyphInstance {
-    pub rect: [f32; 4],
-    pub uv_rect: [f32; 4],
-    pub color: [f32; 4],
-}
-
-pub fn glyph_instance_for(
-    glyph: &TextGlyph,
-    atlas_entry: AtlasEntry,
-    image: &SwashImage,
-) -> GpuGlyphInstance {
-    let x = glyph.x + image.placement.left as f32;
-    let y = glyph.y - image.placement.top as f32;
-    GpuGlyphInstance {
-        rect: [
-            x,
-            y,
-            image.placement.width as f32,
-            image.placement.height as f32,
-        ],
-        uv_rect: [
-            atlas_entry.uv_min[0],
-            atlas_entry.uv_min[1],
-            atlas_entry.uv_max[0],
-            atlas_entry.uv_max[1],
-        ],
-        color: glyph.color,
-    }
 }
 
 fn write_glyph_to_atlas(
@@ -434,9 +521,6 @@ fn write_glyph_to_atlas(
         }
     }
 }
-
-#[allow(dead_code)]
-fn _assert_fontdb_is_reexported(_: fontdb::Weight) {}
 
 #[cfg(test)]
 mod tests {
@@ -509,6 +593,16 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_atlas_uses_msdf_for_outline_glyphs() {
+        let mut system = TextSystem::new();
+        let layout = system.layout(&TextLayoutRequest::new("A"));
+        let render =
+            system.render_gpu_hybrid_atlas(&layout, AtlasConfig::default(), 16, 4096, 4096);
+
+        assert!(render.instances.iter().any(is_msdf_instance));
+    }
+
+    #[test]
     fn atlas_reuses_existing_glyph_entries() {
         let key = {
             let mut system = TextSystem::new();
@@ -530,13 +624,16 @@ mod tests {
     #[test]
     fn gpu_structs_have_stable_sizes() {
         assert_eq!(std::mem::size_of::<GpuTextGlobals>(), 16);
-        assert_eq!(std::mem::size_of::<GpuGlyphInstance>(), 48);
+        assert_eq!(std::mem::size_of::<GpuGlyphInstance>(), 64);
+        assert_eq!(std::mem::size_of::<GpuMsdfGlobals>(), 24);
+        assert_eq!(std::mem::size_of::<GpuMsdfJob>(), 48);
+        assert_eq!(std::mem::size_of::<GpuMsdfSegment>(), 48);
     }
 
     #[test]
     fn exposes_wgsl_shader_sources() {
-        assert!(ALPHA_TEXT_SHADER.contains("@vertex"));
-        assert!(ALPHA_TEXT_SHADER.contains("textureSample"));
         assert!(MSDF_TEXT_SHADER.contains("median3"));
+        assert!(MSDF_TEXT_SHADER.contains("textureSample"));
+        assert!(MSDF_GENERATOR_SHADER.contains("pixel_jobs"));
     }
 }

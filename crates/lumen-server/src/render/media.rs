@@ -10,7 +10,7 @@ use lumen::{
     audio::{AudioBuffer, AudioResolver, AudioSourceProvider},
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
-    media::{ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
+    media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
 
 pub const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
@@ -18,6 +18,7 @@ pub const HARDWARE_DECODE_ENV: &str = "LUMEN_HARDWARE_DECODE";
 
 pub(super) struct LocalMediaStore {
     root: PathBuf,
+    font_root: Option<PathBuf>,
     video_options: FfmpegResolverOptions,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
@@ -27,14 +28,20 @@ pub(super) struct LocalMediaStore {
 impl LocalMediaStore {
     pub(super) fn new(root: PathBuf) -> Self {
         let video_options = video_resolver_options_from_env();
+        let font_root = env::var(MEDIA_ROOT_ENV)
+            .ok()
+            .and_then(|raw| PathBuf::from(raw).canonicalize().ok())
+            .filter(|font_root| font_root != &root);
         tracing::info!(
             media_root = %root.display(),
+            font_root = font_root.as_ref().map(|root| root.display().to_string()).as_deref().unwrap_or("<media-root>"),
             prefer_hardware_decode = video_options.prefer_hardware_decode,
             hardware_decode_env = env::var(HARDWARE_DECODE_ENV).ok().as_deref().unwrap_or("<unset>"),
             "created local media store"
         );
         Self {
             root,
+            font_root,
             video_options,
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
@@ -50,6 +57,81 @@ impl LocalMediaStore {
         resolve_local_path_with_root(source, &self.root)
             .ok()
             .map(|path| path.to_string_lossy().to_string())
+    }
+
+    fn resolve_font_family(&self, font_family: &str) -> Option<Vec<String>> {
+        if font_family.trim().is_empty() {
+            return None;
+        }
+
+        if let Some(direct) = self.resolve_font_source(font_family) {
+            return Some(vec![direct]);
+        }
+
+        let file_stem = font_family.replace(['/', '\\'], "");
+        let mut resolved = self.resolve_font_family_files(&file_stem);
+        for candidate in [
+            format!("fonts/{file_stem}.ttf"),
+            format!("fonts/{file_stem}.otf"),
+            format!("fonts/{file_stem}.ttc"),
+            format!("fonts/{file_stem}.otc"),
+            format!("fonts/{file_stem}-Regular.ttf"),
+            format!("fonts/{file_stem}-Regular.otf"),
+            format!("fonts/{file_stem}-Regular.ttc"),
+            format!("fonts/{file_stem}-Regular.otc"),
+        ] {
+            if let Some(path) = self.resolve_font_source(&candidate)
+                && !resolved.contains(&path)
+            {
+                resolved.push(path);
+            }
+        }
+        (!resolved.is_empty()).then_some(resolved)
+    }
+
+    fn resolve_font_source(&self, source: &str) -> Option<String> {
+        self.resolve_source(source).or_else(|| {
+            self.font_root
+                .as_ref()
+                .and_then(|root| resolve_local_path_with_root(source, root).ok())
+                .map(|path| path.to_string_lossy().to_string())
+        })
+    }
+
+    fn resolve_font_family_files(&self, file_stem: &str) -> Vec<String> {
+        let mut paths = [Some(&self.root), self.font_root.as_ref()]
+            .into_iter()
+            .flatten()
+            .flat_map(|root| {
+                let fonts_dir = root.join("fonts");
+                std::fs::read_dir(fonts_dir)
+                    .into_iter()
+                    .flat_map(|entries| entries.filter_map(Result::ok))
+                    .filter_map(|entry| {
+                        let path = entry.path();
+                        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+                        if !matches!(extension.as_str(), "ttf" | "otf" | "ttc" | "otc") {
+                            return None;
+                        }
+                        let stem = path.file_stem()?.to_str()?;
+                        if stem == file_stem || stem.starts_with(&format!("{file_stem}-")) {
+                            path.canonicalize()
+                                .ok()
+                                .map(|path| path.to_string_lossy().to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .fold(Vec::new(), |mut paths, path| {
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+                paths
+            });
+        paths.sort();
+        paths
     }
 
     fn image_resolver(&self, source: &str) -> Option<Arc<ImageFileResolver>> {
@@ -212,6 +294,43 @@ impl MediaStore for LocalMediaStore {
         let resolved = self.resolve_source(stream_id)?;
         let resolver = self.video_resolver(&resolved)?;
         Some(Box::new(SharedVideoResolver(resolver)))
+    }
+
+    fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
+        let paths = self.resolve_font_family(font_family)?;
+        tracing::info!(
+            font_family,
+            sources = paths.len(),
+            "opened font media resolver"
+        );
+        Some(Box::new(LocalFontResolver {
+            id: font_family.to_string(),
+            paths,
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct LocalFontResolver {
+    id: String,
+    paths: Vec<String>,
+}
+
+impl FontResolver for LocalFontResolver {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen::error::MediaError> {
+        self.paths
+            .iter()
+            .map(|path| {
+                std::fs::read(path).map_err(|err| lumen::error::MediaError::Decode {
+                    media_source: self.id.clone(),
+                    details: format!("failed reading font data `{path}`: {err}"),
+                })
+            })
+            .collect()
     }
 }
 
