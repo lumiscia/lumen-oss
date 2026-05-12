@@ -1050,7 +1050,7 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         .unwrap();
 
     assert_eq!(compiled.plan.textures().len(), 5);
-    assert_eq!(compiled.plan.programs().len(), 5);
+    assert_eq!(compiled.plan.programs().len(), 4);
     assert!(matches!(
         compiled.frame_bindings[0],
         FrameBinding::Shape { .. }
@@ -1059,7 +1059,12 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         compiled.frame_bindings[1],
         FrameBinding::Text { .. }
     ));
-    assert_eq!(bound.frame_update().uploads().len(), 9);
+    assert_eq!(bound.frame_update().uploads().len(), 5);
+
+    let unchanged = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap();
+    assert_eq!(unchanged.frame_update().uploads().len(), 2);
 }
 
 #[test]

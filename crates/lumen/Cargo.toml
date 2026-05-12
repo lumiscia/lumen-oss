@@ -17,6 +17,7 @@ webgl = []
 metal = ["lumen-ffmpeg?/metal", "lumen-gpu/metal"]
 vulkan = ["lumen-ffmpeg?/vulkan", "lumen-gpu/vulkan"]
 cuda = ["lumen-ffmpeg?/cuda"]
+experimental-msdf = ["lumen-text/experimental-msdf"]
 
 [dependencies]
 thiserror = "2.0.18"

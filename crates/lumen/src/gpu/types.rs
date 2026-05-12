@@ -93,14 +93,8 @@ pub enum FrameBinding {
         atlas_texture: lumen_gpu::TextureId,
         globals_buffer: lumen_gpu::BufferId,
         instances_buffer: lumen_gpu::BufferId,
-        msdf_globals_buffer: lumen_gpu::BufferId,
-        msdf_jobs_buffer: lumen_gpu::BufferId,
-        msdf_segments_buffer: lumen_gpu::BufferId,
-        msdf_pixel_jobs_buffer: lumen_gpu::BufferId,
         atlas_size: lumen_gpu::Size,
         max_glyphs: usize,
-        max_msdf_segments: usize,
-        max_msdf_pixels: u32,
         size: lumen_gpu::Size,
     },
     Path {
@@ -301,8 +295,24 @@ pub struct CompiledComposition {
 #[derive(Debug, Clone, Default)]
 pub struct BoundFrame {
     buffer_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
-    texture_uploads: Vec<(lumen_gpu::TextureId, Vec<u8>, u32, u32)>,
+    texture_uploads: Vec<TextureUpload>,
     media_textures: Vec<MediaTextureUpload>,
+}
+
+#[derive(Debug, Clone)]
+enum TextureUpload {
+    Rgba8 {
+        id: lumen_gpu::TextureId,
+        data: Vec<u8>,
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    },
+    Rgba16Float {
+        id: lumen_gpu::TextureId,
+        data: Vec<u16>,
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -337,8 +347,27 @@ impl BoundFrame {
         bytes_per_row: u32,
         rows_per_image: u32,
     ) {
-        self.texture_uploads
-            .push((id, data.into(), bytes_per_row, rows_per_image));
+        self.texture_uploads.push(TextureUpload::Rgba8 {
+            id,
+            data: data.into(),
+            bytes_per_row,
+            rows_per_image,
+        });
+    }
+
+    pub fn write_texture_rgba16_float(
+        &mut self,
+        id: lumen_gpu::TextureId,
+        data: impl Into<Vec<u16>>,
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    ) {
+        self.texture_uploads.push(TextureUpload::Rgba16Float {
+            id,
+            data: data.into(),
+            bytes_per_row,
+            rows_per_image,
+        });
     }
 
     pub fn use_media_texture(
@@ -365,8 +394,25 @@ impl BoundFrame {
         for (id, offset, data) in &self.buffer_uploads {
             update.write_buffer(*id, *offset, data);
         }
-        for (id, data, bytes_per_row, rows_per_image) in &self.texture_uploads {
-            update.write_texture_rgba8(*id, data, *bytes_per_row, *rows_per_image);
+        for upload in &self.texture_uploads {
+            match upload {
+                TextureUpload::Rgba8 {
+                    id,
+                    data,
+                    bytes_per_row,
+                    rows_per_image,
+                } => {
+                    update.write_texture_rgba8(*id, data, *bytes_per_row, *rows_per_image);
+                }
+                TextureUpload::Rgba16Float {
+                    id,
+                    data,
+                    bytes_per_row,
+                    rows_per_image,
+                } => {
+                    update.write_texture_rgba16_float(*id, data, *bytes_per_row, *rows_per_image);
+                }
+            }
         }
         update
     }

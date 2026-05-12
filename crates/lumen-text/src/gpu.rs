@@ -1,10 +1,13 @@
 use bytemuck::{Pod, Zeroable};
 use cosmic_text::{SwashContent, SwashImage};
 
-use crate::{AtlasEntry, MsdfGlyphPlacement, TextGlyph};
+#[cfg(feature = "experimental-msdf")]
+use crate::MsdfGlyphPlacement;
+use crate::{AtlasEntry, TextGlyph};
 
 const GLYPH_MODE_RASTER_MASK: u32 = 0;
 const GLYPH_MODE_RASTER_COLOR: u32 = 1;
+#[cfg(feature = "experimental-msdf")]
 const GLYPH_MODE_MSDF: u32 = 2;
 
 #[repr(C)]
@@ -25,6 +28,7 @@ pub struct GpuGlyphInstance {
     pub _padding: [u32; 3],
 }
 
+#[cfg(feature = "experimental-msdf")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct GpuMsdfGlobals {
@@ -34,6 +38,7 @@ pub struct GpuMsdfGlobals {
     pub _padding: [u32; 2],
 }
 
+#[cfg(feature = "experimental-msdf")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct GpuMsdfJob {
@@ -44,6 +49,7 @@ pub struct GpuMsdfJob {
     pub _padding: [u32; 3],
 }
 
+#[cfg(feature = "experimental-msdf")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct GpuMsdfSegment {
@@ -86,13 +92,14 @@ pub fn glyph_instance_for(
     }
 }
 
+#[cfg(feature = "experimental-msdf")]
 pub fn msdf_glyph_instance_for(
     glyph: &TextGlyph,
     atlas_entry: AtlasEntry,
     placement: &MsdfGlyphPlacement,
 ) -> GpuGlyphInstance {
-    let x = glyph.x + placement.left as f32;
-    let y = glyph.y - placement.top as f32;
+    let x = glyph.x + placement.left;
+    let y = glyph.y - placement.top;
     GpuGlyphInstance {
         rect: [x, y, placement.width as f32, placement.height as f32],
         uv_rect: [
@@ -107,6 +114,7 @@ pub fn msdf_glyph_instance_for(
     }
 }
 
+#[cfg(feature = "experimental-msdf")]
 pub fn is_msdf_instance(instance: &GpuGlyphInstance) -> bool {
     instance.mode == GLYPH_MODE_MSDF
 }

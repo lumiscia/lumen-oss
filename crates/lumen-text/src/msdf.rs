@@ -12,10 +12,10 @@ const MSDF_SEGMENT_LINE: u32 = 0;
 const MSDF_SEGMENT_QUAD: u32 = 1;
 const MSDF_SEGMENT_CUBIC: u32 = 2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MsdfGlyphPlacement {
-    pub left: i32,
-    pub top: i32,
+    pub left: f32,
+    pub top: f32,
     pub width: u32,
     pub height: u32,
 }
@@ -47,25 +47,24 @@ pub fn generate_msdf_job(
     let glyph_id = GlyphId::from(key.glyph_id);
     let metrics = glyph_metrics(&font, &axes, glyph_id, key, config)?;
     let shape = load_transformed_shape(&font, &axes, glyph_id, &metrics)?;
-    let colored_shape = Shape::edge_coloring_simple(shape, 0.03, u64::from(key.glyph_id));
     let mut segments = Vec::new();
-    for contour in colored_shape.contours {
+    for contour in shape.contours {
         for segment in contour.segments {
-            let order = segment.segment.order();
+            let order = segment.order();
             let kind = match order {
                 fdsm::bezier::Order::Linear => MSDF_SEGMENT_LINE,
                 fdsm::bezier::Order::Quadratic => MSDF_SEGMENT_QUAD,
                 fdsm::bezier::Order::Cubic => MSDF_SEGMENT_CUBIC,
             };
-            let p0 = segment.segment.control_point(0);
-            let p1 = segment.segment.control_point(1);
+            let p0 = segment.control_point(0);
+            let p1 = segment.control_point(1);
             let p2 = if kind >= MSDF_SEGMENT_QUAD {
-                segment.segment.control_point(2)
+                segment.control_point(2)
             } else {
                 p1
             };
             let p3 = if kind == MSDF_SEGMENT_CUBIC {
-                segment.segment.control_point(3)
+                segment.control_point(3)
             } else {
                 p2
             };
@@ -75,7 +74,7 @@ pub fn generate_msdf_job(
                 p2: [p2.x as f32, p2.y as f32],
                 p3: [p3.x as f32, p3.y as f32],
                 kind,
-                channels: segment.color.value() as u32,
+                channels: 7,
                 _padding: [0; 2],
             });
         }
@@ -107,6 +106,8 @@ fn glyph_metrics(
     }
     let scale = font_size / units_per_em;
     let range = f64::from(config.px_range.max(1));
+    let left = f64::from(bbox.x_min) * scale - range;
+    let top = f64::from(bbox.y_max) * scale + range;
     let width = ((f64::from(bbox.x_max - bbox.x_min) * scale) + 2.0 * range).ceil() as u32;
     let height = ((f64::from(bbox.y_max - bbox.y_min) * scale) + 2.0 * range).ceil() as u32;
     if width == 0 || height == 0 || width > config.width || height > config.height {
@@ -115,8 +116,8 @@ fn glyph_metrics(
 
     Some(MsdfGlyphMetrics {
         placement: MsdfGlyphPlacement {
-            left: (f64::from(bbox.x_min) * scale - range).floor() as i32,
-            top: (f64::from(bbox.y_max) * scale + range).ceil() as i32,
+            left: left as f32,
+            top: top as f32,
             width,
             height,
         },

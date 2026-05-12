@@ -1709,7 +1709,11 @@ dependencies = [
  "cosmic-text",
  "fdsm",
  "fdsm-skrifa",
+ "half",
+ "image",
+ "lumen-gpu",
  "nalgebra",
+ "pollster",
  "skrifa",
 ]
 
