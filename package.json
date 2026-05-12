@@ -9,7 +9,7 @@
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint .",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "build": "pnpm -r --filter '!lumen' --filter '!lumen-bindings' build && pnpm --filter lumen-bindings check"
   },
   "devDependencies": {

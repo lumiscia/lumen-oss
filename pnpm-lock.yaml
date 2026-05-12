@@ -178,12 +178,6 @@ importers:
 
   packages/lumen-types: {}
 
-  packages/lumen-wasm:
-    dependencies:
-      mediabunny:
-        specifier: ^1.40.1
-        version: 1.44.1
-
   tooling/generate-bindings:
     devDependencies:
       '@types/node':

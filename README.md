@@ -42,7 +42,6 @@ See [`crates/lumen-server`](crates/lumen-server/README.md) for the current self-
 - `crates/lumen-gpu`: lower-level `wgpu` renderer resources, programs, passes, and Vulkan export helpers
 - `crates/lumen-ffmpeg`: FFmpeg bindings for decode, encode, muxing, and GPU frame interop
 - `crates/lumen-server`: embeddable render service primitives and a small local HTTP binary
-- `crates/lumen-wasm`: WebAssembly bindings for browser preview/render integration
 - `crates/lumen-local`: local render/debug CLI
 - `crates/lumen-bench`: benchmark binaries for composition and decode paths
 - `crates/lumen-generators`: schema and metadata generators

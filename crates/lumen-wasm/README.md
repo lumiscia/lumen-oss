@@ -1,6 +1,6 @@
 # lumen-wasm
 
-`lumen-wasm` exposes Lumen renderer bindings for browser environments. It is used to build the generated WASM package consumed by the TypeScript preview packages.
+`lumen-wasm` is the Rust crate that exposes Lumen renderer bindings for browser environments. It is compiled by the binding generator into `packages/lumen-bindings`, which is the TypeScript package consumed by `lumen-preview` and the framework preview wrappers.
 
 This crate is experimental. Binding names, payload shapes, and browser render behavior may change.
 
@@ -22,4 +22,4 @@ cargo check -p lumen-wasm --target wasm32-unknown-unknown
 just wasm-bindings-release
 ```
 
-`just wasm-bindings-release` compiles this crate and writes generated package files into `packages/lumen-bindings/src`.
+`just wasm-bindings-release` compiles this crate and writes generated WASM, JavaScript, and declaration files into `packages/lumen-bindings/src`.
