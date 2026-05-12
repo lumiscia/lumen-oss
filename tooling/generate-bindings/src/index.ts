@@ -52,10 +52,13 @@ for (const target of targets) {
 }
 
 if (mode === "release") {
-  for (const target of targets) {
-    const wasm = join(bindingsDir, target.out, `${wasmName}_bg.wasm`);
-    await run("pnpm", ["exec", "wasm-opt", "-Oz", "-o", wasm, wasm]);
-  }
+  console.log("Running wasm-opt for generated WASM targets...");
+  await Promise.all(
+    targets.map(async (target) => {
+      const wasm = join(bindingsDir, target.out, `${wasmName}_bg.wasm`);
+      await run("pnpm", ["exec", "wasm-opt", "-Oz", "-o", wasm, wasm]);
+    }),
+  );
 }
 
 await verifySharedWasm();
