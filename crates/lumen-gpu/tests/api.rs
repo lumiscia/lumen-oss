@@ -238,7 +238,9 @@ fn frame_update_records_buffer_and_texture_uploads_in_order() {
             assert_eq!(*offset, 8);
             assert_eq!(*data, buffer_bytes);
         }
-        Upload::TextureRgba8 { .. } | Upload::TextureRgba16Float { .. } => {
+        Upload::TextureRgba8 { .. }
+        | Upload::TextureRgba8Region { .. }
+        | Upload::TextureRgba16Float { .. } => {
             panic!("expected buffer upload first")
         }
     }
@@ -254,7 +256,9 @@ fn frame_update_records_buffer_and_texture_uploads_in_order() {
             assert_eq!(*bytes_per_row, 8);
             assert_eq!(*rows_per_image, 2);
         }
-        Upload::Buffer { .. } | Upload::TextureRgba16Float { .. } => {
+        Upload::Buffer { .. }
+        | Upload::TextureRgba8Region { .. }
+        | Upload::TextureRgba16Float { .. } => {
             panic!("expected texture upload second")
         }
     }

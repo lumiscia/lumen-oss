@@ -406,6 +406,35 @@ impl Renderer {
                         texture.desc.domain.storage_size.as_extent(),
                     );
                 }
+                Upload::TextureRgba8Region {
+                    id,
+                    data,
+                    origin,
+                    size,
+                    bytes_per_row,
+                    rows_per_image,
+                } => {
+                    let texture = self.runtime_texture(*id)?;
+                    self.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &texture.texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d {
+                                x: origin[0],
+                                y: origin[1],
+                                z: origin[2],
+                            },
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        data,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(*bytes_per_row),
+                            rows_per_image: Some(*rows_per_image),
+                        },
+                        size.as_extent(),
+                    );
+                }
                 Upload::TextureRgba16Float {
                     id,
                     data,

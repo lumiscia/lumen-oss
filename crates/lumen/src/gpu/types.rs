@@ -307,6 +307,14 @@ enum TextureUpload {
         bytes_per_row: u32,
         rows_per_image: u32,
     },
+    Rgba8Region {
+        id: lumen_gpu::TextureId,
+        data: Vec<u8>,
+        origin: [u32; 3],
+        size: lumen_gpu::Size,
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    },
     Rgba16Float {
         id: lumen_gpu::TextureId,
         data: Vec<u16>,
@@ -350,6 +358,25 @@ impl BoundFrame {
         self.texture_uploads.push(TextureUpload::Rgba8 {
             id,
             data: data.into(),
+            bytes_per_row,
+            rows_per_image,
+        });
+    }
+
+    pub fn write_texture_rgba8_region(
+        &mut self,
+        id: lumen_gpu::TextureId,
+        data: impl Into<Vec<u8>>,
+        origin: [u32; 3],
+        size: lumen_gpu::Size,
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    ) {
+        self.texture_uploads.push(TextureUpload::Rgba8Region {
+            id,
+            data: data.into(),
+            origin,
+            size,
             bytes_per_row,
             rows_per_image,
         });
@@ -403,6 +430,23 @@ impl BoundFrame {
                     rows_per_image,
                 } => {
                     update.write_texture_rgba8(*id, data, *bytes_per_row, *rows_per_image);
+                }
+                TextureUpload::Rgba8Region {
+                    id,
+                    data,
+                    origin,
+                    size,
+                    bytes_per_row,
+                    rows_per_image,
+                } => {
+                    update.write_texture_rgba8_region(
+                        *id,
+                        data,
+                        *origin,
+                        *size,
+                        *bytes_per_row,
+                        *rows_per_image,
+                    );
                 }
                 TextureUpload::Rgba16Float {
                     id,
