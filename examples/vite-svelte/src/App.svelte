@@ -18,32 +18,39 @@
         },
     });
 
-    const background = composition.addSolidColor({
-        width: 1280,
-        height: 720,
-        color: [25, 28, 36, 255],
+    const background = composition.addNode({
+        type: "solid_color",
+        properties: {
+            width: 1280,
+            height: 720,
+            color: [25, 28, 36, 255],
+        },
     });
 
-    const title = composition.addText({
-        content: "Hello from Lumen Svelte",
-        fontFamily: "Inter",
-        fontSize: 76,
-        fontWeight: 700,
-        color: [255, 255, 255, 255],
-        maxWidth: 900,
+    const title = composition.addNode({
+        type: "text",
+        properties: {
+            content: "Hello from Lumen Svelte",
+            font_family: "Inter",
+            font_size: 76,
+            font_weight: 700,
+            color: [255, 255, 255, 255],
+            max_width: 900,
+        },
     });
 
     const merge = composition.addNode({
         type: "merge",
         properties: {
             opacity: 1,
-            blend_mode: 0,
+            blend_mode: "normal",
         },
     });
 
     composition.connect(background, merge, { toPort: "base" });
     composition.connect(title, merge, { toPort: "overlay" });
-    composition.addOutput(merge);
+    const output = composition.addNode({ type: "media_output" });
+    composition.connect(merge, output, { toPort: "source" });
 
     const preview = createLumenPreview();
     const compositionJson = JSON.stringify(composition.toJSON());

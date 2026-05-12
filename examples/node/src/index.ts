@@ -39,39 +39,51 @@ const composition = new Composition({
   },
 });
 
-const background = composition.addSolidColor({
-  width: 1920,
-  height: 1080,
-  color: [24, 28, 36, 255],
+const background = composition.addNode({
+  type: "solid_color",
+  properties: {
+    width: 1920,
+    height: 1080,
+    color: [24, 28, 36, 255],
+  },
 });
 
-const title = composition.addText({
-  content: textContent,
-  fontFamily,
-  fontSize: 96,
-  fontWeight: 700,
-  color: [255, 255, 255, 255],
-  maxWidth: 1280,
+const title = composition.addNode({
+  type: "text",
+  properties: {
+    content: textContent,
+    font_family: fontFamily,
+    font_size: 96,
+    font_weight: 700,
+    color: [255, 255, 255, 255],
+    max_width: 1280,
+  },
 });
 
-const image = composition.addImage(plateAlias, {
-  rangeStart: 0,
-  rangeEnd: 120,
-  loop: true,
+const image = composition.addNode({
+  type: "media_in",
+  properties: {
+    kind: "image",
+    source: plateAlias,
+    range_start: 0,
+    range_end: 120,
+    loop_mode: "repeat",
+  },
 });
 
 const merge = composition.addNode({
   type: "merge",
   properties: {
     opacity: 0.9,
-    blend_mode: 0,
+    blend_mode: "normal",
   },
 });
 
 composition.connect(background, merge, { toPort: "base" });
 composition.connect(image, merge, { toPort: "overlay" });
 composition.connect(title, merge, { toPort: "overlay" });
-composition.addOutput(merge);
+const output = composition.addNode({ type: "media_output" });
+composition.connect(merge, output, { toPort: "source" });
 
 console.log(JSON.stringify(composition.toJSON(), null, 2));
 

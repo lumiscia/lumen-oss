@@ -1,5 +1,4 @@
 import type {
-  Color,
   CompositionNode,
   CompositionNodeInput,
   LumenComposition,
@@ -40,38 +39,6 @@ export type RenderSettingsInput = Partial<LumenComposition["render_settings"]>;
 export type TimelineInput = Partial<LumenComposition["timeline"]> & {
   readonly durationSeconds?: number;
 };
-
-export type MediaSourceKind = "image" | "video";
-
-export type MediaLoopMode = "none" | "loop";
-
-export interface MediaSourceOptions {
-  readonly id?: number;
-  readonly kind?: MediaSourceKind;
-  readonly source: string | URL;
-  readonly rangeStart?: number;
-  readonly rangeEnd?: number;
-  readonly speed?: number;
-  readonly loop?: MediaLoopMode | boolean;
-}
-
-export interface SolidColorOptions extends Size {
-  readonly id?: number;
-  readonly color: Color;
-}
-
-export interface TextOptions {
-  readonly id?: number;
-  readonly content: string;
-  readonly fontFamily?: string;
-  readonly fontSize?: number;
-  readonly fontWeight?: number;
-  readonly fontStyle?: number;
-  readonly maxWidth?: number;
-  readonly color?: Color;
-  readonly alignHorizontal?: number;
-  readonly alignVertical?: number;
-}
 
 export interface RenderOptions {
   readonly signal?: AbortSignal;

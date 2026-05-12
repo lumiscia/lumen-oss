@@ -9,15 +9,10 @@ import type {
 import type {
   CompositionOptions,
   ConnectOptions,
-  MediaLoopMode,
-  MediaSourceKind,
-  MediaSourceOptions,
   NodeInput,
   NodeReference,
   RenderSettingsInput,
   Size,
-  SolidColorOptions,
-  TextOptions,
   TimelineInput,
 } from "./types.js";
 
@@ -55,89 +50,6 @@ export class Composition {
 
     this.#nodes.push(nextNode);
     return nextNode;
-  }
-
-  addMediaSource(options: MediaSourceOptions): CompositionNode<"media_in"> {
-    return this.addNode<"media_in">({
-      ...(options.id !== undefined ? { id: options.id } : {}),
-      type: "media_in",
-      properties: {
-        kind: mediaSourceKind(options.kind ?? "image"),
-        source: String(options.source),
-        ...(options.rangeStart !== undefined ? { range_start: options.rangeStart } : {}),
-        ...(options.rangeEnd !== undefined ? { range_end: options.rangeEnd } : {}),
-        ...(options.speed !== undefined ? { speed: options.speed } : {}),
-        ...(options.loop !== undefined ? { loop_mode: mediaLoopMode(options.loop) } : {}),
-      },
-    });
-  }
-
-  addImage(
-    source: string | URL,
-    options: Omit<MediaSourceOptions, "kind" | "source"> = {},
-  ): CompositionNode<"media_in"> {
-    return this.addMediaSource({
-      ...options,
-      kind: "image",
-      source,
-    });
-  }
-
-  addVideo(
-    source: string | URL,
-    options: Omit<MediaSourceOptions, "kind" | "source"> = {},
-  ): CompositionNode<"media_in"> {
-    return this.addMediaSource({
-      ...options,
-      kind: "video",
-      source,
-    });
-  }
-
-  addSolidColor(options: SolidColorOptions): CompositionNode<"solid_color"> {
-    return this.addNode<"solid_color">({
-      ...(options.id !== undefined ? { id: options.id } : {}),
-      type: "solid_color",
-      properties: {
-        color: options.color,
-        height: options.height,
-        width: options.width,
-      },
-    });
-  }
-
-  addText(options: TextOptions): CompositionNode<"text"> {
-    return this.addNode<"text">({
-      ...(options.id !== undefined ? { id: options.id } : {}),
-      type: "text",
-      properties: {
-        content: options.content,
-        ...(options.fontFamily !== undefined ? { font_family: options.fontFamily } : {}),
-        ...(options.fontSize !== undefined ? { font_size: options.fontSize } : {}),
-        ...(options.fontWeight !== undefined ? { font_weight: options.fontWeight } : {}),
-        ...(options.fontStyle !== undefined ? { font_style: options.fontStyle } : {}),
-        ...(options.maxWidth !== undefined ? { max_width: options.maxWidth } : {}),
-        ...(options.color !== undefined ? { color: options.color } : {}),
-        ...(options.alignHorizontal !== undefined
-          ? { alignment_horizontal: options.alignHorizontal }
-          : {}),
-        ...(options.alignVertical !== undefined
-          ? { alignment_vertical: options.alignVertical }
-          : {}),
-      },
-    });
-  }
-
-  addOutput(source?: NodeReference): CompositionNode<"media_output"> {
-    const output = this.addNode<"media_output">({
-      type: "media_output",
-    });
-
-    if (source !== undefined) {
-      this.connect(source, output, { toPort: "source" });
-    }
-
-    return output;
   }
 
   connect(from: NodeReference, to: NodeReference, options: ConnectOptions = {}): this {
@@ -240,21 +152,4 @@ function timeline(input: TimelineInput | undefined): LumenComposition["timeline"
         : Math.ceil(input.durationSeconds * fps),
     fps,
   };
-}
-
-function mediaSourceKind(kind: MediaSourceKind): number {
-  switch (kind) {
-    case "image":
-      return 0;
-    case "video":
-      return 1;
-  }
-}
-
-function mediaLoopMode(loop: MediaLoopMode | boolean): number {
-  if (loop === true || loop === "loop") {
-    return 1;
-  }
-
-  return 0;
 }
