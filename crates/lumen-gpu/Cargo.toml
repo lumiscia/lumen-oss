@@ -11,6 +11,7 @@ vulkan = ["dep:ash", "dep:wgpu-hal", "wgpu/vulkan", "wgpu-hal/vulkan"]
 anyhow = "1.0.102"
 ash = { version = "0.38.0", optional = true }
 bytemuck = { version = "1.25.0", features = ["derive"] }
+tracing = "0.1.44"
 wgpu = { version = "29.0.3", default-features = false, features = [
   "std",
   "webgpu",

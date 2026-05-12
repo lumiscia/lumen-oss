@@ -58,6 +58,7 @@ impl GpuCompositionRenderer {
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
+        tracing::debug!(target: "lumen_render", "created gpu composition renderer");
         Ok(Self {
             renderer,
             compiled_plans: HashMap::new(),
@@ -117,6 +118,13 @@ impl GpuCompositionRenderer {
     }
 
     fn reset_compiled(&mut self, output_format: lumen_gpu::wgpu::TextureFormat) {
+        tracing::debug!(
+            target: "lumen_render",
+            ?output_format,
+            cached_plans = self.compiled_plans.len(),
+            media_textures = self.media_texture_cache.len(),
+            "reset compiled composition"
+        );
         self.output_format = output_format;
         self.compiled_plans.clear();
         self.active_key = None;
@@ -127,6 +135,16 @@ impl GpuCompositionRenderer {
         key: CompiledPlanKey,
         compiled: CompiledComposition,
     ) -> crate::Result<()> {
+        tracing::debug!(
+            target: "lumen_render",
+            key_entries = key.0.len(),
+            textures = compiled.plan.textures().len(),
+            buffers = compiled.plan.buffers().len(),
+            programs = compiled.plan.programs().len(),
+            passes = compiled.plan.passes().len(),
+            frame_bindings = compiled.frame_bindings.len(),
+            "prepare compiled render plan"
+        );
         let mut renderer = lumen_gpu::Renderer::from_device(
             self.renderer.device.clone(),
             self.renderer.queue.clone(),
@@ -164,6 +182,12 @@ impl GpuCompositionRenderer {
         frame_count: u32,
         media: &M,
     ) -> crate::Result<()> {
+        tracing::trace!(
+            target: "lumen_render",
+            start_frame,
+            frame_count,
+            "precompile frame window"
+        );
         for offset in 0..frame_count {
             self.precompile_frame(composition, start_frame.saturating_add(offset), media)?;
         }
@@ -186,8 +210,18 @@ impl GpuCompositionRenderer {
         frame: u32,
         media: &M,
     ) -> crate::Result<(RasterHandle, lumen_gpu::wgpu::SubmissionIndex)> {
+        let span = tracing::trace_span!(target: "lumen_render", "render frame", frame);
+        let _entered = span.enter();
         self.ensure_compiled_for_frame(composition, frame, Some(media))?;
         let bound = self.bind_frame(composition, frame, media)?;
+        tracing::trace!(
+            target: "lumen_render",
+            frame,
+            buffer_uploads = bound.buffer_upload_count(),
+            texture_uploads = bound.texture_upload_count(),
+            media_textures = bound.media_textures().len(),
+            "bound frame"
+        );
         self.submit_bound_frame(&bound)
     }
 
@@ -211,6 +245,13 @@ impl GpuCompositionRenderer {
     }
 
     pub fn upload_bound_frame(&mut self, bound: &BoundFrame) -> crate::Result<()> {
+        tracing::trace!(
+            target: "lumen_render",
+            buffer_uploads = bound.buffer_upload_count(),
+            texture_uploads = bound.texture_upload_count(),
+            media_textures = bound.media_textures().len(),
+            "upload bound frame"
+        );
         self.upload_media_textures(bound)?;
         let update = bound.frame_update();
         let prepared = self.active_prepared_mut()?;
@@ -242,6 +283,15 @@ impl GpuCompositionRenderer {
         ))]
         let cuda_media = &mut self.cuda_media;
         for upload in bound.media_textures() {
+            tracing::trace!(
+                target: "lumen_render",
+                texture = ?upload.texture,
+                source = %upload.key.source,
+                frame = ?upload.key.frame,
+                width = upload.size.width,
+                height = upload.size.height,
+                "resolve media texture upload"
+            );
             #[cfg(all(
                 target_os = "linux",
                 feature = "ffmpeg",
@@ -277,6 +327,13 @@ impl GpuCompositionRenderer {
             };
 
             if upload.key.frame.is_some() {
+                tracing::trace!(
+                    target: "lumen_render",
+                    texture = ?upload.texture,
+                    source = %upload.key.source,
+                    frame = ?upload.key.frame,
+                    "upload uncached video frame"
+                );
                 let rgba = fit_frame_to_rgba8(frame, upload.size.width, upload.size.height);
                 prepared.renderer.queue.write_texture(
                     lumen_gpu::wgpu::TexelCopyTextureInfo {
@@ -306,12 +363,33 @@ impl GpuCompositionRenderer {
                 .get(&upload.texture)
                 .is_some_and(|current| current == &upload.key)
             {
+                tracing::trace!(
+                    target: "lumen_render",
+                    texture = ?upload.texture,
+                    source = %upload.key.source,
+                    frame = ?upload.key.frame,
+                    "reuse current media texture binding"
+                );
                 continue;
             }
 
             let texture = if let Some(texture) = media_texture_cache.get(&upload.key) {
+                tracing::trace!(
+                    target: "lumen_render",
+                    source = %upload.key.source,
+                    frame = ?upload.key.frame,
+                    "reuse cached media texture"
+                );
                 Arc::clone(texture)
             } else {
+                tracing::debug!(
+                    target: "lumen_render",
+                    source = %upload.key.source,
+                    frame = ?upload.key.frame,
+                    width = upload.size.width,
+                    height = upload.size.height,
+                    "cache media texture"
+                );
                 let texture = Arc::new(prepared.renderer.device.create_texture(
                     &lumen_gpu::wgpu::TextureDescriptor {
                         label: Some("lumen media cached frame"),
@@ -362,6 +440,11 @@ impl GpuCompositionRenderer {
         &mut self,
     ) -> crate::Result<(RasterHandle, lumen_gpu::wgpu::SubmissionIndex)> {
         let prepared = self.active_prepared_mut()?;
+        tracing::trace!(
+            target: "lumen_render",
+            passes = prepared.compiled.plan.passes().len(),
+            "submit render"
+        );
         let submission = prepared
             .renderer
             .submit_plan(&prepared.compiled.plan)
@@ -425,13 +508,26 @@ impl GpuCompositionRenderer {
     ) -> crate::Result<()> {
         let key = self.compiled_plan_key(composition, frame)?;
         if self.active_key.as_ref() == Some(&key) {
+            tracing::trace!(target: "lumen_render", frame, "reuse active compiled plan");
             return Ok(());
         }
         if self.compiled_plans.contains_key(&key) {
+            tracing::debug!(
+                target: "lumen_render",
+                frame,
+                key_entries = key.0.len(),
+                "switch to cached compiled plan"
+            );
             self.active_key = Some(key);
             return Ok(());
         }
 
+        tracing::debug!(
+            target: "lumen_render",
+            frame,
+            key_entries = key.0.len(),
+            "compile render plan for frame"
+        );
         let compiled = match media {
             Some(media) => {
                 CompileContext::with_media_for_frame(composition, frame, media, self.output_format)

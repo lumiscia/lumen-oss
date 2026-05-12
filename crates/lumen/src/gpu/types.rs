@@ -416,6 +416,14 @@ impl BoundFrame {
         &self.media_textures
     }
 
+    pub fn buffer_upload_count(&self) -> usize {
+        self.buffer_uploads.len()
+    }
+
+    pub fn texture_upload_count(&self) -> usize {
+        self.texture_uploads.len()
+    }
+
     pub fn frame_update(&self) -> lumen_gpu::FrameUpdate<'_> {
         let mut update = lumen_gpu::FrameUpdate::new();
         for (id, offset, data) in &self.buffer_uploads {

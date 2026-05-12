@@ -176,6 +176,14 @@ impl LumenPreviewController {
         state.render_generation = state.render_generation.wrapping_add(1);
         state.composition = Some(composition);
         state.composition_sync_ms = 0.0;
+        tracing::debug!(
+            target: "lumen_wasm",
+            width = state.width,
+            height = state.height,
+            duration_frames = state.duration_frames,
+            fps = state.fps,
+            "preview loaded composition"
+        );
         Ok(())
     }
 
@@ -188,7 +196,9 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "setLogLevel")]
     pub fn set_log_level(&self, level: &str) -> Result<(), JsValue> {
-        lumen::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))
+        lumen::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))?;
+        tracing::debug!(target: "lumen_wasm", level, "set log level");
+        Ok(())
     }
 
     pub fn clear(&self) {
@@ -655,7 +665,16 @@ fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Resu
             .all(|required_frame| media.has_video_frame(&video.stream_id, *required_frame))
     });
 
-    Ok(images_ready && videos_ready)
+    let ready = images_ready && videos_ready;
+    tracing::trace!(
+        target: "lumen_wasm",
+        frame,
+        ready,
+        images = requirements.images.len(),
+        videos = requirements.videos.len(),
+        "checked frame readiness"
+    );
+    Ok(ready)
 }
 
 // The renderer is created from a read-only composition borrow. The wasm preview controller is
@@ -675,9 +694,13 @@ async fn render_preview_frame(
         let renderer = state.renderer.take();
         (renderer, frame, generation)
     };
+    tracing::trace!(target: "lumen_wasm", frame, generation, "render preview frame");
 
     let mut renderer = match renderer.take() {
-        Some(renderer) => renderer,
+        Some(renderer) => {
+            tracing::trace!(target: "lumen_wasm", frame, "reuse preview surface renderer");
+            renderer
+        }
         None => {
             let state = state_cell
                 .try_borrow()
@@ -689,6 +712,7 @@ async fn render_preview_frame(
                 .composition
                 .as_ref()
                 .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
+            tracing::debug!(target: "lumen_wasm", frame, "create preview surface renderer");
             create_surface_composition_renderer(
                 canvas,
                 composition,
@@ -738,5 +762,12 @@ async fn render_preview_frame(
     state.width = size.width as usize;
     state.height = size.height as usize;
     state.dirty = false;
+    tracing::trace!(
+        target: "lumen_wasm",
+        frame,
+        width = state.width,
+        height = state.height,
+        "rendered preview frame"
+    );
     Ok(())
 }

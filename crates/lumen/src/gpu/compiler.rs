@@ -539,6 +539,12 @@ impl<'a> FrameBindContext<'a> {
     }
 
     pub fn bind(&self, compiled: &CompiledComposition) -> crate::Result<BoundFrame> {
+        tracing::trace!(
+            target: "lumen_bind",
+            frame = self.frame,
+            bindings = compiled.frame_bindings.len(),
+            "bind compiled frame"
+        );
         let mut bound = BoundFrame::new();
         for (index, binding) in compiled.frame_bindings.iter().enumerate() {
             let binding_frame = compiled
@@ -553,6 +559,14 @@ impl<'a> FrameBindContext<'a> {
                 media: self.media,
             };
             let node_id = binding.node_id();
+            tracing::trace!(
+                target: "lumen_bind",
+                frame = self.frame,
+                binding_frame,
+                node_id = node_id.0,
+                binding_index = index,
+                "bind frame resource"
+            );
             let node =
                 self.composition
                     .graph

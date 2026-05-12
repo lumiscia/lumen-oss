@@ -1655,6 +1655,7 @@ dependencies = [
  "ash",
  "bytemuck",
  "pollster",
+ "tracing",
  "wgpu",
  "wgpu-hal",
 ]

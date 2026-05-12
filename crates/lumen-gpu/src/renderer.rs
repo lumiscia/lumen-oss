@@ -59,6 +59,14 @@ impl Renderer {
             })
             .await
             .context("no compatible wgpu adapter")?;
+        let adapter_info = adapter.get_info();
+        tracing::info!(
+            target: "lumen_gpu",
+            adapter = %adapter_info.name,
+            backend = ?adapter_info.backend,
+            device_type = ?adapter_info.device_type,
+            "selected wgpu adapter"
+        );
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
@@ -78,6 +86,15 @@ impl Renderer {
     }
 
     pub fn prepare_plan(&mut self, plan: &RenderPlan) -> Result<()> {
+        tracing::debug!(
+            target: "lumen_gpu",
+            textures = plan.textures.len(),
+            buffers = plan.buffers.len(),
+            samplers = plan.samplers.len(),
+            programs = plan.programs.len(),
+            passes = plan.passes.len(),
+            "prepare render plan"
+        );
         self.textures = plan
             .textures
             .iter()
@@ -214,11 +231,21 @@ impl Renderer {
         update: &FrameUpdate<'_>,
     ) -> Result<()> {
         self.validate_prepared(plan)?;
+        tracing::trace!(
+            target: "lumen_gpu",
+            uploads = update.uploads().len(),
+            "apply frame update"
+        );
         self.apply_uploads(update)
     }
 
     pub fn submit_plan(&mut self, plan: &RenderPlan) -> Result<wgpu::SubmissionIndex> {
         self.validate_prepared(plan)?;
+        tracing::trace!(
+            target: "lumen_gpu",
+            passes = plan.passes.len(),
+            "submit render plan"
+        );
 
         let mut encoder = self
             .device
@@ -381,6 +408,13 @@ impl Renderer {
         for upload in update.uploads() {
             match upload {
                 Upload::Buffer { id, offset, data } => {
+                    tracing::trace!(
+                        target: "lumen_gpu",
+                        ?id,
+                        offset,
+                        bytes = data.len(),
+                        "upload buffer"
+                    );
                     let buffer = self.runtime_buffer(*id)?;
                     let end = offset.saturating_add(data.len() as u64);
                     if end > buffer.desc.size {
@@ -394,6 +428,14 @@ impl Renderer {
                     bytes_per_row,
                     rows_per_image,
                 } => {
+                    tracing::trace!(
+                        target: "lumen_gpu",
+                        ?id,
+                        bytes = data.len(),
+                        bytes_per_row,
+                        rows_per_image,
+                        "upload rgba8 texture"
+                    );
                     let texture = self.runtime_texture(*id)?;
                     self.queue.write_texture(
                         texture.texture.as_image_copy(),
@@ -414,6 +456,17 @@ impl Renderer {
                     bytes_per_row,
                     rows_per_image,
                 } => {
+                    tracing::trace!(
+                        target: "lumen_gpu",
+                        ?id,
+                        bytes = data.len(),
+                        origin_x = origin[0],
+                        origin_y = origin[1],
+                        origin_z = origin[2],
+                        width = size.width,
+                        height = size.height,
+                        "upload rgba8 texture region"
+                    );
                     let texture = self.runtime_texture(*id)?;
                     self.queue.write_texture(
                         wgpu::TexelCopyTextureInfo {
@@ -441,6 +494,14 @@ impl Renderer {
                     bytes_per_row,
                     rows_per_image,
                 } => {
+                    tracing::trace!(
+                        target: "lumen_gpu",
+                        ?id,
+                        bytes = data.len() * std::mem::size_of::<u16>(),
+                        bytes_per_row,
+                        rows_per_image,
+                        "upload rgba16f texture"
+                    );
                     let texture = self.runtime_texture(*id)?;
                     self.queue.write_texture(
                         texture.texture.as_image_copy(),
@@ -463,6 +524,14 @@ impl Renderer {
         desc: &RenderPassDesc,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<()> {
+        tracing::trace!(
+            target: "lumen_gpu",
+            label = desc.label.as_deref().unwrap_or(""),
+            targets = desc.targets.len(),
+            bind_groups = desc.bindings.len(),
+            vertex_buffers = desc.vertex_buffers.len(),
+            "encode render pass"
+        );
         let RuntimeProgram::Render(program) = self.runtime_program(desc.program)? else {
             bail!("program {:?} is not a render program", desc.program);
         };
@@ -527,6 +596,23 @@ impl Renderer {
         desc: &ComputePassDesc,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<()> {
+        match desc.dispatch {
+            ComputeDispatch::Direct(dispatch) => tracing::trace!(
+                target: "lumen_gpu",
+                label = desc.label.as_deref().unwrap_or(""),
+                x = dispatch.x,
+                y = dispatch.y,
+                z = dispatch.z,
+                "encode compute pass"
+            ),
+            ComputeDispatch::Indirect { buffer, offset } => tracing::trace!(
+                target: "lumen_gpu",
+                label = desc.label.as_deref().unwrap_or(""),
+                ?buffer,
+                offset,
+                "encode indirect compute pass"
+            ),
+        }
         let RuntimeProgram::Compute(program) = self.runtime_program(desc.program)? else {
             bail!("program {:?} is not a compute program", desc.program);
         };
@@ -557,6 +643,14 @@ impl Renderer {
         desc: &CopyTextureDesc,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<()> {
+        tracing::trace!(
+            target: "lumen_gpu",
+            source = ?desc.source,
+            destination = ?desc.destination,
+            width = desc.size.width,
+            height = desc.size.height,
+            "encode texture copy"
+        );
         let source = self.runtime_texture(desc.source)?;
         let destination = self.runtime_texture(desc.destination)?;
         encoder.copy_texture_to_texture(

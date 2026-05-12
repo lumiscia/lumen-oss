@@ -55,6 +55,13 @@ impl LumenRenderer {
         self.width = composition.render_settings.width as usize;
         self.height = composition.render_settings.height as usize;
         self.duration_frames = composition.timeline.duration_frames;
+        tracing::debug!(
+            target: "lumen_wasm",
+            width = self.width,
+            height = self.height,
+            duration_frames = self.duration_frames,
+            "renderer loaded composition"
+        );
         self.composition = Some(composition);
         self.renderer = None;
         Ok(())
@@ -88,7 +95,9 @@ impl LumenRenderer {
 
     #[wasm_bindgen(js_name = "setLogLevel")]
     pub fn set_log_level(&mut self, level: &str) -> Result<(), JsValue> {
-        lumen::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))
+        lumen::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))?;
+        tracing::debug!(target: "lumen_wasm", level, "set log level");
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = "renderFrame")]
@@ -175,6 +184,7 @@ impl LumenRenderer {
         media: &LumenMediaStore,
         canvas: HtmlCanvasElement,
     ) -> Result<(), JsValue> {
+        tracing::trace!(target: "lumen_wasm", frame, "render frame to canvas");
         self.validate_frame(frame)?;
         self.ensure_renderer(media, canvas).await?;
         let composition = self
@@ -199,6 +209,13 @@ impl LumenRenderer {
         );
         self.width = size.width as usize;
         self.height = size.height as usize;
+        tracing::trace!(
+            target: "lumen_wasm",
+            frame,
+            width = self.width,
+            height = self.height,
+            "rendered frame to canvas"
+        );
         Ok(())
     }
 

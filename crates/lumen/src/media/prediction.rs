@@ -75,6 +75,7 @@ pub fn collect_frame_requirements<M: MediaStore>(
     media_store: &M,
     frame: u32,
 ) -> Result<FrameRequirements, LumenError> {
+    tracing::trace!(target: "lumen_media", frame, "collect frame requirements");
     let output_port = media_output_port(composition)?;
     let mut collector = RenderRequirements::default();
     let mut context = RequirementContext {
@@ -83,7 +84,15 @@ pub fn collect_frame_requirements<M: MediaStore>(
         frame,
     };
     context.collect_port(&output_port, &mut collector)?;
-    Ok(collector.into())
+    let requirements = FrameRequirements::from(collector);
+    tracing::trace!(
+        target: "lumen_media",
+        frame,
+        images = requirements.images.len(),
+        videos = requirements.videos.len(),
+        "collected frame requirements"
+    );
+    Ok(requirements)
 }
 
 struct RequirementContext<'a, M: MediaStore> {
@@ -174,6 +183,12 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
             &self.expr_context("media_requirements"),
         )? {
             media_in::MediaInKind::Image { image_id } => {
+                tracing::trace!(
+                    target: "lumen_media",
+                    frame = self.frame,
+                    image_id = %image_id,
+                    "require image"
+                );
                 collector.add_image(image_id);
             }
             media_in::MediaInKind::Video {
@@ -203,6 +218,13 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                     frame: self.frame,
                     frame_count: metadata.frame_count,
                 })?;
+                tracing::trace!(
+                    target: "lumen_media",
+                    frame = self.frame,
+                    stream_id = %stream_id,
+                    source_frame,
+                    "require video frame"
+                );
                 collector.add_video_frame(stream_id, source_frame);
             }
         }
