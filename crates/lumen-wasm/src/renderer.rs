@@ -86,6 +86,11 @@ impl LumenRenderer {
         self.lookahead_count = lookahead_count;
     }
 
+    #[wasm_bindgen(js_name = "setLogLevel")]
+    pub fn set_log_level(&mut self, level: &str) -> Result<(), JsValue> {
+        lumen::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))
+    }
+
     #[wasm_bindgen(js_name = "renderFrame")]
     pub async fn render_frame(
         &mut self,

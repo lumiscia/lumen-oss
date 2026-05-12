@@ -5,6 +5,7 @@ import { LumenAudioEngine, createLumenPreviewRuntime } from "lumen-preview";
 import type {
   AudioEngineTimeline,
   AudioSourceRegistration,
+  LumenLogLevel,
   LumenPreviewBindings,
   LumenPreviewController,
   MediaRegistration,
@@ -20,6 +21,7 @@ export interface LumenCanvasProps {
   compositionJson?: string | null;
   fps?: number;
   mediaSources?: MediaRegistration[];
+  logLevel?: LumenLogLevel;
   className?: string;
   style?: CSSProperties;
 }
@@ -32,6 +34,7 @@ export function LumenCanvas({
   compositionJson = null,
   fps = 30,
   mediaSources = [],
+  logLevel = "off",
   className,
   style,
 }: LumenCanvasProps) {
@@ -205,6 +208,7 @@ export function LumenCanvas({
         }
 
         const controller = new PreviewController();
+        controller.setLogLevel(logLevel);
         const audioEngine = new LumenAudioEngine();
         compositionLoadedRef.current = false;
         audioEngineRef.current = audioEngine;
@@ -266,7 +270,11 @@ export function LumenCanvas({
       compositionLoadedRef.current = false;
       preview._detach();
     };
-  }, [preview, bindings, compositionJson, fps, mediaSources]);
+  }, [preview, bindings, compositionJson, fps, mediaSources, logLevel]);
+
+  useEffect(() => {
+    controllerRef.current?.setLogLevel(logLevel);
+  }, [logLevel]);
 
   useEffect(() => {
     const audioEngine = audioEngineRef.current;

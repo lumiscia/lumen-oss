@@ -448,6 +448,15 @@ impl GlyphAtlas {
         self.config
     }
 
+    pub fn used_size(&self) -> [u32; 2] {
+        [
+            self.config.width,
+            self.cursor_y
+                .saturating_add(self.row_height)
+                .min(self.config.height),
+        ]
+    }
+
     pub fn entry(&self, key: &GlyphKey) -> Option<AtlasEntry> {
         self.entries.get(key).copied()
     }

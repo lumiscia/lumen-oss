@@ -186,6 +186,11 @@ impl LumenPreviewController {
         }
     }
 
+    #[wasm_bindgen(js_name = "setLogLevel")]
+    pub fn set_log_level(&self, level: &str) -> Result<(), JsValue> {
+        lumen::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))
+    }
+
     pub fn clear(&self) {
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.clear();

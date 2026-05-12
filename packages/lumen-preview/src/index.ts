@@ -61,6 +61,8 @@ export {
 } from "./media/index.js";
 export { LumenMediaBridge } from "./media/index.js";
 
+export type LumenLogLevel = "off" | "error" | "warn" | "info" | "debug" | "trace";
+
 export interface LumenMediaStoreBinding extends LumenMediaTarget {
   clear(): void;
   clearVideos(): void;
@@ -84,6 +86,7 @@ export interface LumenRendererBinding {
     canvas: HTMLCanvasElement,
   ): Promise<void>;
   setLookaheadCount(lookaheadCount: number): void;
+  setLogLevel(level: LumenLogLevel): void;
 }
 
 export interface LumenPreviewControllerBinding extends LumenMediaTarget {
@@ -108,6 +111,7 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   setFrame(frame: number): void;
   setFont(fontFamily: string, bytes: Uint8Array): void;
   setLookaheadCount(lookaheadCount: number): void;
+  setLogLevel(level: LumenLogLevel): void;
   targetFrameForTimeMs(timeMs: number): number;
   tick(nowMs: number, canvas: HTMLCanvasElement): Promise<boolean>;
   width(): number;
@@ -161,6 +165,7 @@ export interface LumenPreviewController extends LumenPreviewControllerBinding {
   loadVideoFrame(streamId: string, frame: number): Promise<void>;
   loadFrameRequirements(requirementsJson: string): Promise<void>;
   renderNowAsync(canvas: HTMLCanvasElement): Promise<void>;
+  setLogLevel(level: LumenLogLevel): void;
   tickAsync(nowMs: number, canvas: HTMLCanvasElement): Promise<boolean>;
 }
 
@@ -482,6 +487,10 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       super.setLookaheadCount(lookaheadCount);
       this.lookaheadCount = Math.max(0, Math.floor(lookaheadCount));
       this.resetWindowLoads();
+    }
+
+    setLogLevel(level: LumenLogLevel): void {
+      super.setLogLevel(level);
     }
 
     async renderNowAsync(canvas: HTMLCanvasElement): Promise<void> {

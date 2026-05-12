@@ -1588,6 +1588,7 @@ dependencies = [
  "ffmpeg-next",
  "glemu",
  "image",
+ "js-sys",
  "lumen-ffmpeg",
  "lumen-gpu",
  "lumen-macros",
@@ -1596,6 +1597,8 @@ dependencies = [
  "serde_json",
  "smallvec",
  "thiserror",
+ "tracing",
+ "wasm-bindgen",
  "web-sys",
 ]
 
@@ -1726,8 +1729,11 @@ dependencies = [
  "lumen-gpu",
  "serde",
  "serde_json",
+ "tracing",
+ "tracing-subscriber",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-tracing",
  "web-sys",
 ]
 
@@ -3418,6 +3424,17 @@ dependencies = [
  "indexmap",
  "wasm-encoder",
  "wasmparser",
+]
+
+[[package]]
+name = "wasm-tracing"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11ab253baf6d3772bbdb37a0966b67d37ab80657ccd1a084b4d7b3de3232375d"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+ "wasm-bindgen",
 ]
 
 [[package]]

@@ -1,7 +1,11 @@
 use std::{
     collections::HashMap,
+    sync::atomic::{AtomicU64, Ordering},
     sync::{Mutex, OnceLock},
 };
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::time::Instant;
 
 use crate::error::{LumenError, RenderError};
 use crate::gpu::{
@@ -160,6 +164,7 @@ impl GpuFrameBindNode for Text {
             return Ok(());
         };
 
+        let trace_started = crate::log_level_enabled(tracing::Level::TRACE).then(trace_now_ms);
         let content =
             content.resolve_string(*node_id, "content", &ctx.expr_context(*node_id, "content"))?;
         let font_family = font_family.resolve_string(
@@ -259,24 +264,45 @@ impl GpuFrameBindNode for Text {
         let atlas_config = lumen_text::AtlasConfig {
             width: atlas_size.width,
             height: atlas_size.height,
-            ..lumen_text::AtlasConfig::default()
+            px_range: 1,
         };
         let mut cache = text_cache()?;
         let cached = cache.entry(node_id.0).or_default();
         let atlas_changed = cached.atlas_key.as_ref() != Some(&atlas_key);
+        let mut layout_ms = 0.0;
+        let mut atlas_ms = 0.0;
+        let mut upload_ms = 0.0;
         if atlas_changed {
+            let layout_started = trace_started.map(|_| trace_now_ms());
             let layout = text_system.layout(&request);
+            if let Some(started) = layout_started {
+                layout_ms = trace_now_ms() - started;
+            }
+            let atlas_started = trace_started.map(|_| trace_now_ms());
             let atlas = text_system.render_alpha_atlas(&layout, atlas_config, *max_glyphs);
+            if let Some(started) = atlas_started {
+                atlas_ms = trace_now_ms() - started;
+            }
             cached.atlas_key = Some(atlas_key.clone());
             cached.base_instances = atlas.instances;
             cached.glyph_count = atlas.glyph_count;
             cached.measurement_height = layout.measurement.height;
-            bound.write_texture_rgba8(
+            let used_size = atlas.atlas.used_size();
+            let upload_height = used_size[1].max(1);
+            let upload_len = atlas_size.width as usize * upload_height as usize * 4;
+            let upload_pixels = atlas.pixels[..upload_len.min(atlas.pixels.len())].to_vec();
+            let upload_started = trace_started.map(|_| trace_now_ms());
+            bound.write_texture_rgba8_region(
                 *atlas_texture,
-                atlas.pixels,
+                upload_pixels,
+                [0, 0, 0],
+                lumen_gpu::Size::new(atlas_size.width, upload_height),
                 atlas_size.width * 4,
-                atlas_size.height,
+                upload_height,
             );
+            if let Some(started) = upload_started {
+                upload_ms = trace_now_ms() - started;
+            }
         }
 
         let y_offset = match alignment_vertical {
@@ -301,6 +327,17 @@ impl GpuFrameBindNode for Text {
             bound.write_buffer(*instances_buffer, 0, bytemuck::cast_slice(&instances));
         }
         cached.frame_key = Some(frame_key);
+        if let Some(started) = trace_started {
+            trace_text_bind(
+                *node_id,
+                atlas_changed,
+                cached.glyph_count,
+                layout_ms,
+                atlas_ms,
+                upload_ms,
+                trace_now_ms() - started,
+            );
+        }
         Ok(())
     }
 }
@@ -427,6 +464,60 @@ pub(crate) fn clear_text_cache_for(node_id: NodeId) {
     if let Ok(mut cache) = text_cache() {
         cache.remove(&node_id.0);
     }
+    if crate::log_level_enabled(tracing::Level::TRACE) {
+        tracing::trace!(
+            target: "lumen_text",
+            node_id = node_id.0,
+            "text cache clear"
+        );
+    }
+}
+
+fn trace_text_bind(
+    node_id: NodeId,
+    atlas_changed: bool,
+    glyph_count: usize,
+    layout_ms: f64,
+    atlas_ms: f64,
+    upload_ms: f64,
+    total_ms: f64,
+) {
+    let should_log = atlas_changed || total_ms >= 1.0;
+    if !should_log {
+        return;
+    }
+    static BIND_COUNT: AtomicU64 = AtomicU64::new(0);
+    static ATLAS_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+    let bind_count = BIND_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let atlas_miss_count = if atlas_changed {
+        ATLAS_MISS_COUNT.fetch_add(1, Ordering::Relaxed) + 1
+    } else {
+        ATLAS_MISS_COUNT.load(Ordering::Relaxed)
+    };
+    tracing::trace!(
+        target: "lumen_text",
+        bind = bind_count,
+        atlas_misses = atlas_miss_count,
+        node_id = node_id.0,
+        atlas_miss = atlas_changed,
+        glyphs = glyph_count,
+        layout_ms,
+        atlas_ms,
+        atlas_upload_ms = upload_ms,
+        bind_ms = total_ms,
+        "text bind"
+    );
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn trace_now_ms() -> f64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn trace_now_ms() -> f64 {
+    js_sys::Date::now()
 }
 
 fn rgba8_to_f32(color: [u8; 4]) -> [f32; 4] {
