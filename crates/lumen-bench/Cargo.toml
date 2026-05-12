@@ -7,6 +7,7 @@ publish = false
 [features]
 default = []
 cuda = ["lumen/cuda", "lumen-ffmpeg/cuda"]
+experimental-msdf = ["lumen/experimental-msdf", "lumen-text/experimental-msdf"]
 vulkan = ["lumen/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
 metal = ["lumen/metal", "lumen-ffmpeg/metal"]
 

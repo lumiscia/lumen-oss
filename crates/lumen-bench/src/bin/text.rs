@@ -25,6 +25,7 @@ struct Args {
     iterations: usize,
     case: CaseSelection,
     text_repeats: usize,
+    px_range: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,7 @@ enum CaseSelection {
     All,
     Layout,
     Raster,
+    #[cfg(feature = "experimental-msdf")]
     GpuMsdf,
     Emoji,
     RawRaster,
@@ -45,7 +47,16 @@ impl CaseSelection {
             "all" => Ok(Self::All),
             "layout" => Ok(Self::Layout),
             "raster" => Ok(Self::Raster),
-            "gpu-msdf" => Ok(Self::GpuMsdf),
+            "gpu-msdf" => {
+                #[cfg(feature = "experimental-msdf")]
+                {
+                    Ok(Self::GpuMsdf)
+                }
+                #[cfg(not(feature = "experimental-msdf"))]
+                {
+                    Err(anyhow!("gpu-msdf requires --features experimental-msdf"))
+                }
+            }
             "emoji" => Ok(Self::Emoji),
             "raw-raster" => Ok(Self::RawRaster),
             "raw-fdsm" => Ok(Self::RawFdsm),
@@ -60,12 +71,21 @@ impl CaseSelection {
                 (self, case),
                 (Self::Layout, BenchCase::Layout)
                     | (Self::Raster, BenchCase::Raster)
-                    | (Self::GpuMsdf, BenchCase::GpuMsdf)
                     | (Self::Emoji, BenchCase::Emoji)
                     | (Self::RawRaster, BenchCase::RawRaster)
                     | (Self::RawFdsm, BenchCase::RawFdsm)
                     | (Self::RawFdsmBase, BenchCase::RawFdsmBase)
             )
+            || {
+                #[cfg(feature = "experimental-msdf")]
+                {
+                    matches!((self, case), (Self::GpuMsdf, BenchCase::GpuMsdf))
+                }
+                #[cfg(not(feature = "experimental-msdf"))]
+                {
+                    false
+                }
+            }
     }
 }
 
@@ -73,6 +93,7 @@ impl CaseSelection {
 enum BenchCase {
     Layout,
     Raster,
+    #[cfg(feature = "experimental-msdf")]
     GpuMsdf,
     Emoji,
     RawRaster,
@@ -85,6 +106,7 @@ impl BenchCase {
         match self {
             Self::Layout => "layout",
             Self::Raster => "raster_atlas",
+            #[cfg(feature = "experimental-msdf")]
             Self::GpuMsdf => "gpu_msdf_job_atlas",
             Self::Emoji => "emoji_color_atlas",
             Self::RawRaster => "raw_swash_raster_glyph",
@@ -96,11 +118,15 @@ impl BenchCase {
 
 fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
-    let atlas_config = lumen_text::AtlasConfig::default();
+    let atlas_config = lumen_text::AtlasConfig {
+        px_range: args.px_range,
+        ..lumen_text::AtlasConfig::default()
+    };
 
     for case in [
         BenchCase::Layout,
         BenchCase::Raster,
+        #[cfg(feature = "experimental-msdf")]
         BenchCase::GpuMsdf,
         BenchCase::Emoji,
         BenchCase::RawRaster,
@@ -180,7 +206,12 @@ fn run_once(
             let atlas = system.render_alpha_atlas(&layout, atlas_config, MAX_GLYPHS);
             std::hint::black_box(atlas);
         }
-        BenchCase::Emoji | BenchCase::GpuMsdf => {
+        BenchCase::Emoji => {
+            let atlas = system.render_alpha_atlas(&layout, atlas_config, MAX_GLYPHS);
+            std::hint::black_box(atlas);
+        }
+        #[cfg(feature = "experimental-msdf")]
+        BenchCase::GpuMsdf => {
             let atlas =
                 system.render_gpu_hybrid_atlas(&layout, atlas_config, MAX_GLYPHS, 32768, 262_144);
             std::hint::black_box(atlas);
@@ -213,6 +244,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut iterations = 100;
     let mut case = CaseSelection::All;
     let mut text_repeats = 1;
+    let mut px_range = lumen_text::AtlasConfig::default().px_range;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -229,6 +261,13 @@ fn parse_args() -> anyhow::Result<Args> {
                     .ok_or_else(|| anyhow!("--text-repeats requires a value"))?
                     .parse::<usize>()
                     .context("--text-repeats must be a positive integer")?;
+            }
+            "--px-range" => {
+                px_range = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--px-range requires a value"))?
+                    .parse::<u32>()
+                    .context("--px-range must be a positive integer")?;
             }
             "--case" => {
                 case = CaseSelection::parse(
@@ -254,12 +293,13 @@ fn parse_args() -> anyhow::Result<Args> {
         iterations,
         case,
         text_repeats,
+        px_range,
     })
 }
 
 fn print_help() {
     println!(
-        "usage: lumen-bench-text [--case all|layout|raster|gpu-msdf|emoji|raw-raster|raw-fdsm|raw-fdsm-base] [--iterations N] [--text-repeats N]"
+        "usage: lumen-bench-text [--case all|layout|raster|gpu-msdf|emoji|raw-raster|raw-fdsm|raw-fdsm-base] [--iterations N] [--text-repeats N] [--px-range N]"
     );
 }
 
