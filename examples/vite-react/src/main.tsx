@@ -1,6 +1,6 @@
 import { Composition } from "@lumiscia/lumen-shared";
 import { LumenCanvas, createLumenPreview, useLumenPreview } from "@lumiscia/lumen-react";
-import * as lumenBindings from "lumen-bindings/bundler";
+import * as lumenBindings from "@lumiscia/lumen-bindings/bundler";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 

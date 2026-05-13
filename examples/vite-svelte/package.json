@@ -12,7 +12,7 @@
   "dependencies": {
     "@lumiscia/lumen-shared": "workspace:*",
     "@lumiscia/lumen-svelte": "workspace:*",
-    "lumen-bindings": "workspace:*",
+    "@lumiscia/lumen-bindings": "workspace:*",
     "svelte": "^5.0.0"
   },
   "devDependencies": {

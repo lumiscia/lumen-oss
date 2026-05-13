@@ -1,5 +1,5 @@
 import type { Component } from "svelte";
-import type { LumenPreviewBindings } from "lumen-preview";
+import type { LumenPreviewBindings } from "@lumiscia/lumen-preview";
 import type { LumenPreviewContext } from "./preview.svelte.js";
 
 export type LumenCanvasProps = {

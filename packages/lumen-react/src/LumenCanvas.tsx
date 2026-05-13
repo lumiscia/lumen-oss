@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import type { CSSProperties } from "react";
-import { LumenAudioEngine, createLumenPreviewRuntime } from "lumen-preview";
+import { LumenAudioEngine, createLumenPreviewRuntime } from "@lumiscia/lumen-preview";
 import type {
   AudioEngineTimeline,
   AudioSourceRegistration,
@@ -9,7 +9,7 @@ import type {
   LumenPreviewBindings,
   LumenPreviewController,
   MediaRegistration,
-} from "lumen-preview";
+} from "@lumiscia/lumen-preview";
 
 import type { LumenPreviewContext } from "./preview.ts";
 

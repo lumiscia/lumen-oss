@@ -1,7 +1,7 @@
 <script lang="ts">
     import { Composition } from "@lumiscia/lumen-shared";
     import { LumenCanvas, createLumenPreview } from "@lumiscia/lumen-svelte";
-    import * as lumenBindings from "lumen-bindings/bundler";
+    import * as lumenBindings from "@lumiscia/lumen-bindings/bundler";
 
     const composition = new Composition({
         metadata: {

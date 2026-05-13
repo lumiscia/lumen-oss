@@ -7,8 +7,8 @@ import {
   type LumenPreviewPatch,
   type LumenPreviewState,
   type LumenPreviewTransport,
-} from "lumen-preview/preview";
-import type { LumenPreviewController } from "lumen-preview";
+} from "@lumiscia/lumen-preview/preview";
+import type { LumenPreviewController } from "@lumiscia/lumen-preview";
 
 export class LumenPreviewContext {
   readonly core: CoreLumenPreviewContext;

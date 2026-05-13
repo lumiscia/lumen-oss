@@ -1,0 +1,27 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.0.0/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [
+    [
+      "@lumiscia/lumen-bindings",
+      "@lumiscia/lumen-preview",
+      "@lumiscia/lumen-react",
+      "@lumiscia/lumen-sdk",
+      "@lumiscia/lumen-shared",
+      "@lumiscia/lumen-svelte",
+      "@lumiscia/lumen-types"
+    ]
+  ],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "@lumiscia/example-node",
+    "@lumiscia/example-vite-react",
+    "@lumiscia/example-vite-svelte",
+    "@lumiscia/generate-bindings",
+    "@lumiscia/generate-types"
+  ]
+}

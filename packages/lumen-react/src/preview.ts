@@ -7,9 +7,9 @@ export {
   type LumenPreviewPatch,
   type LumenPreviewState,
   type LumenPreviewTransport,
-} from "lumen-preview/preview";
+} from "@lumiscia/lumen-preview/preview";
 
-import type { LumenPreviewContext, LumenPreviewState } from "lumen-preview/preview";
+import type { LumenPreviewContext, LumenPreviewState } from "@lumiscia/lumen-preview/preview";
 
 export function useLumenPreview(preview: LumenPreviewContext): LumenPreviewState {
   return useSyncExternalStore(preview.subscribe, preview.getSnapshot, preview.getSnapshot);

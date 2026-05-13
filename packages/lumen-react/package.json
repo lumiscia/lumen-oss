@@ -21,7 +21,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "lumen-preview": "workspace:*"
+    "@lumiscia/lumen-preview": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.0.0"

@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { createLumenPreviewRuntime } from "lumen-preview";
-    import type { LumenPreviewBindings, LumenPreviewController } from "lumen-preview";
+    import { createLumenPreviewRuntime } from "@lumiscia/lumen-preview";
+    import type { LumenPreviewBindings, LumenPreviewController } from "@lumiscia/lumen-preview";
     import type { LumenPreviewContext } from "./preview.svelte.js";
 
     type Props = {
