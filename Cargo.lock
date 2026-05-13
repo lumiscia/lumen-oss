@@ -1580,7 +1580,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
-name = "lumen"
+name = "lumen-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cosmic-text",
+ "fdsm",
+ "fdsm-skrifa",
+ "image",
+ "libc",
+ "lumen-engine",
+ "lumen-engine-ffmpeg",
+ "lumen-engine-gpu",
+ "lumen-engine-text",
+ "nalgebra",
+ "skrifa",
+ "tokio",
+]
+
+[[package]]
+name = "lumen-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1589,10 +1608,10 @@ dependencies = [
  "glemu",
  "image",
  "js-sys",
- "lumen-ffmpeg",
- "lumen-gpu",
- "lumen-macros",
- "lumen-text",
+ "lumen-engine-ffmpeg",
+ "lumen-engine-gpu",
+ "lumen-engine-macros",
+ "lumen-engine-text",
  "serde",
  "serde_json",
  "smallvec",
@@ -1603,26 +1622,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "lumen-bench"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cosmic-text",
- "fdsm",
- "fdsm-skrifa",
- "image",
- "libc",
- "lumen",
- "lumen-ffmpeg",
- "lumen-gpu",
- "lumen-text",
- "nalgebra",
- "skrifa",
- "tokio",
-]
-
-[[package]]
-name = "lumen-ffmpeg"
+name = "lumen-engine-ffmpeg"
 version = "0.1.0"
 dependencies = [
  "ash",
@@ -1636,19 +1636,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "lumen-generators"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "jsonschema",
- "lumen",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "lumen-gpu"
+name = "lumen-engine-gpu"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1661,28 +1649,56 @@ dependencies = [
 ]
 
 [[package]]
-name = "lumen-local"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "image",
- "lumen",
- "lumen-ffmpeg",
- "lumen-gpu",
- "objc2",
- "objc2-metal",
- "pollster",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "lumen-macros"
+name = "lumen-engine-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "lumen-engine-text"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cosmic-text",
+ "fdsm",
+ "fdsm-skrifa",
+ "half",
+ "image",
+ "lumen-engine-gpu",
+ "nalgebra",
+ "pollster",
+ "skrifa",
+]
+
+[[package]]
+name = "lumen-generators"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jsonschema",
+ "lumen-engine",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "lumen-local"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "lumen-engine",
+ "lumen-engine-ffmpeg",
+ "lumen-engine-gpu",
+ "objc2",
+ "objc2-metal",
+ "pollster",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1693,9 +1709,9 @@ dependencies = [
  "axum",
  "clap",
  "futures-util",
- "lumen",
- "lumen-ffmpeg",
- "lumen-gpu",
+ "lumen-engine",
+ "lumen-engine-ffmpeg",
+ "lumen-engine-gpu",
  "reqwest",
  "serde",
  "serde_json",
@@ -1706,28 +1722,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "lumen-text"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "cosmic-text",
- "fdsm",
- "fdsm-skrifa",
- "half",
- "image",
- "lumen-gpu",
- "nalgebra",
- "pollster",
- "skrifa",
-]
-
-[[package]]
 name = "lumen-wasm"
 version = "0.1.0"
 dependencies = [
  "js-sys",
- "lumen",
- "lumen-gpu",
+ "lumen-engine",
+ "lumen-engine-gpu",
  "serde",
  "serde_json",
  "tracing",

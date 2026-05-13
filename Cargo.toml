@@ -1,18 +1,24 @@
 [workspace]
 members = [
-  "crates/lumen",
-  "crates/lumen-ffmpeg",
-  "crates/lumen-server",
-  "crates/lumen-wasm",
-  "crates/lumen-local",
-  "crates/lumen-bench",
-  "crates/lumen-generators",
-  "crates/lumen-macros",
-  "crates/lumen-gpu",
-  "crates/lumen-text",
+  "crates/engine",
+  "crates/ffmpeg",
+  "crates/server",
+  "crates/wasm",
+  "crates/local",
+  "crates/bench",
+  "crates/generators",
+  "crates/macros",
+  "crates/gpu",
+  "crates/text",
 ]
 
 resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/lumiscia/lumen-oss"
 
 [profile.release]
 lto = true

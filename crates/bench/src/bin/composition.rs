@@ -71,11 +71,11 @@ struct DemoComposition {
 const DEMOS: &[DemoComposition] = &[
     DemoComposition {
         name: "announcement_gpu",
-        source: include_str!("../../../lumen-local/demo/announcement-gpu.json"),
+        source: include_str!("../../../local/demo/announcement-gpu.json"),
     },
     DemoComposition {
         name: "feature_showcase",
-        source: include_str!("../../../lumen-local/demo/feature-showcase.json"),
+        source: include_str!("../../../local/demo/feature-showcase.json"),
     },
 ];
 

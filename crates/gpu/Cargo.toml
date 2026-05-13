@@ -1,7 +1,10 @@
 [package]
-name = "lumen-gpu"
-version = "0.1.0"
-edition = "2024"
+name = "lumen-engine-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GPU rendering infrastructure for the Lumen engine."
 
 [features]
 metal = ["dep:wgpu-hal", "wgpu/metal", "wgpu-hal/metal"]

@@ -1,7 +1,10 @@
 [package]
-name = "lumen-text"
-version = "0.1.0"
-edition = "2024"
+name = "lumen-engine-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Text layout and glyph data helpers for the Lumen engine."
 
 [lib]
 name = "lumen_text"
@@ -21,5 +24,5 @@ skrifa = { version = "0.40.0", optional = true }
 
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-lumen-gpu = { path = "../lumen-gpu" }
+lumen-gpu = { package = "lumen-engine-gpu", version = "0.1.0", path = "../gpu" }
 pollster = "0.4.0"

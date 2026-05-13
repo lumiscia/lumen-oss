@@ -1,7 +1,8 @@
 [package]
 name = "lumen-local"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+publish = false
 
 [[bin]]
 name = "lumen-local"
@@ -18,9 +19,9 @@ vulkan = ["lumen/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
 anyhow = "1.0.101"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 tempfile = "3.23.0"
-lumen = { path = "../lumen", features = ["ffmpeg", "image", "json"] }
-lumen-gpu = { path = "../lumen-gpu" }
-lumen-ffmpeg = { version = "0.1.0", path = "../lumen-ffmpeg", features = ["vulkan"] }
+lumen = { package = "lumen-engine", path = "../engine", features = ["ffmpeg", "image", "json"] }
+lumen-gpu = { package = "lumen-engine-gpu", path = "../gpu" }
+lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.1.0", path = "../ffmpeg", features = ["vulkan"] }
 objc2 = { version = "0.6.4", optional = true }
 objc2-metal = { version = "0.3.2", optional = true }
 pollster = "0.4.0"

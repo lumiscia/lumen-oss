@@ -1,6 +1,6 @@
-# lumen-ffmpeg
+# lumen-engine-ffmpeg
 
-`lumen-ffmpeg` is Lumen's lower-level FFmpeg integration crate. It wraps the FFmpeg C APIs needed for demuxing, decoding, encoding, muxing, and GPU video frame interop.
+`lumen-engine-ffmpeg` is Lumen's lower-level FFmpeg integration crate. It wraps the FFmpeg C APIs needed for demuxing, decoding, encoding, muxing, and GPU video frame interop.
 
 This crate is experimental. The API is built around Lumen's current renderer and server needs, and may change.
 
@@ -26,7 +26,7 @@ CPU decode/encode helpers exist, but Lumen's production renderer is GPU-first an
 ## Development
 
 ```bash
-cargo check -p lumen-ffmpeg
-cargo test -p lumen-ffmpeg
-cargo check -p lumen-ffmpeg --features vulkan,cuda
+cargo check -p lumen-engine-ffmpeg
+cargo test -p lumen-engine-ffmpeg
+cargo check -p lumen-engine-ffmpeg --features vulkan,cuda
 ```

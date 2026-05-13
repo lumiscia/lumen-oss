@@ -1,6 +1,6 @@
-# lumen-text
+# lumen-engine-text
 
-`lumen-text` contains text layout and glyph data helpers used by the renderer.
+`lumen-engine-text` contains text layout and glyph data helpers used by the renderer.
 
 This crate is experimental and currently tracks Lumen's renderer needs rather than a standalone text engine API.
 
@@ -11,6 +11,6 @@ This crate itself does not require a GPU, but its output is designed to feed GPU
 ## Development
 
 ```bash
-cargo check -p lumen-text
-cargo test -p lumen-text
+cargo check -p lumen-engine-text
+cargo test -p lumen-engine-text
 ```

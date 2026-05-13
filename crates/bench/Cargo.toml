@@ -1,7 +1,7 @@
 [package]
 name = "lumen-bench"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 publish = false
 
 [features]
@@ -21,10 +21,10 @@ libc = "0.2"
 nalgebra = "0.34.1"
 skrifa = "0.40.0"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
-lumen = { path = "../lumen", features = ["ffmpeg", "image", "json"] }
-lumen-gpu = { path = "../lumen-gpu" }
-lumen-ffmpeg = { path = "../lumen-ffmpeg" }
-lumen-text = { path = "../lumen-text" }
+lumen = { package = "lumen-engine", path = "../engine", features = ["ffmpeg", "image", "json"] }
+lumen-gpu = { package = "lumen-engine-gpu", path = "../gpu" }
+lumen-ffmpeg = { package = "lumen-engine-ffmpeg", path = "../ffmpeg" }
+lumen-text = { package = "lumen-engine-text", path = "../text" }
 
 [[bin]]
 name = "lumen-bench-composition"

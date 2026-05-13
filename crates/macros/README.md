@@ -1,6 +1,6 @@
-# lumen-macros
+# lumen-engine-macros
 
-`lumen-macros` contains internal procedural macros used by Lumen's Rust node definitions.
+`lumen-engine-macros` contains internal procedural macros used by Lumen's Rust node definitions.
 
 This crate is experimental and is not intended as a stable public macro API.
 
@@ -11,5 +11,5 @@ This crate does not render media and does not require a GPU. It is a compile-tim
 ## Development
 
 ```bash
-cargo check -p lumen-macros
+cargo check -p lumen-engine-macros
 ```

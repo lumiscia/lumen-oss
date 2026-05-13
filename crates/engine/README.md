@@ -6,7 +6,7 @@ This crate is experimental. Public APIs, node definitions, schema shapes, and re
 
 ## Platform Notes
 
-The main renderer paths require a GPU through `lumen-gpu`/`wgpu`.
+The main renderer paths require a GPU through `lumen-engine-gpu`/`wgpu`.
 
 Supported native render targets today are:
 
@@ -17,12 +17,12 @@ Browser/WASM preview paths are separate and use WebGPU/WebGL-facing code.
 
 ## Features
 
-- `ffmpeg`: enable FFmpeg-backed media handling through `ffmpeg-next` and `lumen-ffmpeg`.
+- `ffmpeg`: enable FFmpeg-backed media handling through `ffmpeg-next` and `lumen-engine-ffmpeg`.
 - `image`: enable image decoding helpers.
 - `json`: enable JSON composition parsing and serialization helpers.
 - `webgl`: enable WebGL-related code paths.
-- `metal`: enable Metal support through `lumen-gpu` and optional FFmpeg interop.
-- `vulkan`: enable Vulkan support through `lumen-gpu` and optional FFmpeg interop.
+- `metal`: enable Metal support through `lumen-engine-gpu` and optional FFmpeg interop.
+- `vulkan`: enable Vulkan support through `lumen-engine-gpu` and optional FFmpeg interop.
 - `cuda`: enable CUDA support through optional FFmpeg interop.
 
 ## Development

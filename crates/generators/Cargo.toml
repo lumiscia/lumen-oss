@@ -1,7 +1,8 @@
 [package]
 name = "lumen-generators"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+publish = false
 
 [lib]
 name = "lumen_generators"
@@ -14,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.101"
 jsonschema = { version = "0.46.3", default-features = false }
-lumen = { path = "../lumen", features = ["metadata"] }
+lumen = { package = "lumen-engine", path = "../engine", features = ["metadata"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 

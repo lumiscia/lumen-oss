@@ -1,7 +1,10 @@
 [package]
-name = "lumen-ffmpeg"
-version = "0.1.0"
-edition = "2024"
+name = "lumen-engine-ffmpeg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FFmpeg integration for media decode, encode, muxing, and GPU interop in Lumen."
 
 [lib]
 name = "lumen_ffmpeg"

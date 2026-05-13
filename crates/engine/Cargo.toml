@@ -1,7 +1,10 @@
 [package]
-name = "lumen"
-version = "0.1.0"
-edition = "2024"
+name = "lumen-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core composition model and rendering orchestration for Lumen."
 
 [lib]
 name = "lumen"
@@ -21,7 +24,7 @@ experimental-msdf = ["lumen-text/experimental-msdf"]
 [dependencies]
 thiserror = "2.0.18"
 tracing = "0.1.44"
-lumen-macros = { path = "../lumen-macros" }
+lumen-macros = { package = "lumen-engine-macros", version = "0.1.0", path = "../macros" }
 ffmpeg-next = { version = "8.0", optional = true }
 image = { version = "0.25.9", default-features = false, features = [
   "png",
@@ -36,9 +39,9 @@ serde = { version = "1.0.228", features = ["derive"], optional = true }
 serde_json = { version = "1.0.145", optional = true }
 anyhow = { version = "1.0.101", optional = true }
 smallvec = "1.15.1"
-lumen-ffmpeg = { version = "0.1.0", path = "../lumen-ffmpeg", optional = true }
-lumen-gpu = { version = "0.1.0", path = "../lumen-gpu" }
-lumen-text = { version = "0.1.0", path = "../lumen-text" }
+lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.1.0", path = "../ffmpeg", optional = true }
+lumen-gpu = { package = "lumen-engine-gpu", version = "0.1.0", path = "../gpu" }
+lumen-text = { package = "lumen-engine-text", version = "0.1.0", path = "../text" }
 bytemuck = { version = "1.25.0", features = ["derive"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

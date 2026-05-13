@@ -1,7 +1,10 @@
 [package]
 name = "lumen-server"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Embeddable render service primitives and local HTTP server for Lumen."
 
 [lib]
 name = "lumen_server"
@@ -32,9 +35,9 @@ axum = { version = "0.8.7", default-features = false, features = [
   "tokio",
   "ws",
 ], optional = true }
-lumen = { path = "../lumen", features = ["ffmpeg", "image", "json"] }
-lumen-gpu = { path = "../lumen-gpu" }
-lumen-ffmpeg = { version = "0.1.0", path = "../lumen-ffmpeg" }
+lumen = { package = "lumen-engine", version = "0.1.0", path = "../engine", features = ["ffmpeg", "image", "json"] }
+lumen-gpu = { package = "lumen-engine-gpu", version = "0.1.0", path = "../gpu" }
+lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.1.0", path = "../ffmpeg" }
 reqwest = { version = "0.12.24", default-features = false, features = [
   "json",
   "rustls-tls",

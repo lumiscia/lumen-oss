@@ -1,6 +1,6 @@
-# lumen-gpu
+# lumen-engine-gpu
 
-`lumen-gpu` contains the lower-level GPU rendering infrastructure used by `lumen`: renderer setup, texture and buffer resources, render/compute program descriptions, pass planning, and backend-specific interop helpers.
+`lumen-engine-gpu` contains the lower-level GPU rendering infrastructure used by `lumen-engine`: renderer setup, texture and buffer resources, render/compute program descriptions, pass planning, and backend-specific interop helpers.
 
 This crate is experimental and closely tracks the renderer internals.
 
@@ -23,7 +23,7 @@ The crate uses `wgpu` as its primary GPU abstraction. Vulkan export helpers are 
 ## Development
 
 ```bash
-cargo check -p lumen-gpu
-cargo check -p lumen-gpu --features vulkan
-cargo test -p lumen-gpu
+cargo check -p lumen-engine-gpu
+cargo check -p lumen-engine-gpu --features vulkan
+cargo test -p lumen-engine-gpu
 ```
