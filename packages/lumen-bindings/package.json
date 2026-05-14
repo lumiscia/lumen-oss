@@ -1,7 +1,25 @@
 {
   "name": "@lumiscia/lumen-bindings",
   "version": "0.0.0",
+  "description": "Generated WebAssembly bindings for Lumen browser and Node preview runtimes.",
+  "keywords": [
+    "gpu",
+    "lumen",
+    "lumiscia",
+    "rendering",
+    "wasm",
+    "webassembly"
+  ],
+  "homepage": "https://github.com/lumiscia/lumen-oss#readme",
+  "bugs": {
+    "url": "https://github.com/lumiscia/lumen-oss/issues"
+  },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lumiscia/lumen-oss.git",
+    "directory": "packages/lumen-bindings"
+  },
   "files": [
     "src"
   ],

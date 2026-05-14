@@ -333,7 +333,6 @@ export class Lumen {
   #headers(headers: Record<string, string> = {}): Headers {
     const nextHeaders = new Headers(headers);
     nextHeaders.set("authorization", `Bearer ${this.#apiKey}`);
-    nextHeaders.set("user-agent", "@lumiscia/lumen-sdk/0.0.0");
     return nextHeaders;
   }
 

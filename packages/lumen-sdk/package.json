@@ -1,21 +1,39 @@
 {
   "name": "@lumiscia/lumen-sdk",
   "version": "0.0.0",
+  "description": "TypeScript SDK for creating media and render jobs with Lumen.",
+  "keywords": [
+    "composition",
+    "lumen",
+    "lumiscia",
+    "media",
+    "rendering",
+    "sdk"
+  ],
+  "homepage": "https://github.com/lumiscia/lumen-oss#readme",
+  "bugs": {
+    "url": "https://github.com/lumiscia/lumen-oss/issues"
+  },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lumiscia/lumen-oss.git",
+    "directory": "packages/lumen-sdk"
+  },
   "files": [
     "dist",
     "src"
   ],
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./cloudflare": {
-      "types": "./src/cloudflare.ts",
+      "types": "./dist/cloudflare.d.ts",
       "default": "./dist/cloudflare.js"
     }
   },

@@ -48,7 +48,9 @@ async function publishCrate(crate: string): Promise<void> {
 }
 
 function shouldRetry(output: string): boolean {
-  return output.includes("no matching package named") || output.includes("failed to select a version");
+  return (
+    output.includes("no matching package named") || output.includes("failed to select a version")
+  );
 }
 
 function isAlreadyPublished(output: string): boolean {

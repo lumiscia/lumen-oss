@@ -10,9 +10,9 @@
     "dev": "pnpm --filter @lumiscia/lumen-shared build && pnpm --filter @lumiscia/lumen-react build && vite"
   },
   "dependencies": {
+    "@lumiscia/lumen-bindings": "workspace:*",
     "@lumiscia/lumen-react": "workspace:*",
     "@lumiscia/lumen-shared": "workspace:*",
-    "@lumiscia/lumen-bindings": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

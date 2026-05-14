@@ -10,9 +10,9 @@
     "dev": "pnpm --filter @lumiscia/lumen-shared build && vite"
   },
   "dependencies": {
+    "@lumiscia/lumen-bindings": "workspace:*",
     "@lumiscia/lumen-shared": "workspace:*",
     "@lumiscia/lumen-svelte": "workspace:*",
-    "@lumiscia/lumen-bindings": "workspace:*",
     "svelte": "^5.0.0"
   },
   "devDependencies": {

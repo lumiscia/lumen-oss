@@ -1,14 +1,32 @@
 {
   "name": "@lumiscia/lumen-svelte",
   "version": "0.0.0",
+  "description": "Svelte preview components and state helpers for Lumen compositions.",
+  "keywords": [
+    "lumen",
+    "lumiscia",
+    "media",
+    "preview",
+    "rendering",
+    "svelte"
+  ],
+  "homepage": "https://github.com/lumiscia/lumen-oss#readme",
+  "bugs": {
+    "url": "https://github.com/lumiscia/lumen-oss/issues"
+  },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lumiscia/lumen-oss.git",
+    "directory": "packages/lumen-svelte"
+  },
   "files": [
     "dist"
   ],
   "type": "module",
-  "svelte": "./dist/index.js",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "svelte": "./dist/index.js",
   "exports": {
     ".": {
       "svelte": "./dist/index.js",

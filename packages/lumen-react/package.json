@@ -1,17 +1,35 @@
 {
   "name": "@lumiscia/lumen-react",
   "version": "0.0.0",
+  "description": "React preview components and hooks for Lumen compositions.",
+  "keywords": [
+    "lumen",
+    "lumiscia",
+    "media",
+    "preview",
+    "react",
+    "rendering"
+  ],
+  "homepage": "https://github.com/lumiscia/lumen-oss#readme",
+  "bugs": {
+    "url": "https://github.com/lumiscia/lumen-oss/issues"
+  },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lumiscia/lumen-oss.git",
+    "directory": "packages/lumen-react"
+  },
   "files": [
     "dist",
     "src"
   ],
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
   },

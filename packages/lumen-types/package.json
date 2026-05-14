@@ -1,17 +1,35 @@
 {
   "name": "@lumiscia/lumen-types",
   "version": "0.0.0",
+  "description": "Generated TypeScript schema and metadata types for Lumen compositions.",
+  "keywords": [
+    "lumen",
+    "lumiscia",
+    "metadata",
+    "schema",
+    "types",
+    "typescript"
+  ],
+  "homepage": "https://github.com/lumiscia/lumen-oss#readme",
+  "bugs": {
+    "url": "https://github.com/lumiscia/lumen-oss/issues"
+  },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lumiscia/lumen-oss.git",
+    "directory": "packages/lumen-types"
+  },
   "files": [
     "dist",
     "src"
   ],
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
   },

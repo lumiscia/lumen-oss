@@ -4,8 +4,8 @@ packages:
   - tooling/*
 
 catalog:
-  '@changesets/cli': ^2.31.0
-  '@sveltejs/vite-plugin-svelte': ^6.2.4
+  "@changesets/cli": ^2.31.0
+  "@sveltejs/vite-plugin-svelte": ^6.2.4
   "@types/react": ^19.2.14
   binaryen: ^129.0.0
   mediabunny: ^1.40.1

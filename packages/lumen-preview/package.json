@@ -1,32 +1,50 @@
 {
   "name": "@lumiscia/lumen-preview",
   "version": "0.0.0",
+  "description": "Browser preview runtime and media bridge for Lumen compositions.",
+  "keywords": [
+    "gpu",
+    "lumen",
+    "lumiscia",
+    "media",
+    "preview",
+    "rendering"
+  ],
+  "homepage": "https://github.com/lumiscia/lumen-oss#readme",
+  "bugs": {
+    "url": "https://github.com/lumiscia/lumen-oss/issues"
+  },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lumiscia/lumen-oss.git",
+    "directory": "packages/lumen-preview"
+  },
   "files": [
     "dist",
     "src"
   ],
   "type": "module",
   "sideEffects": [
-    "./src/index.ts"
+    "./dist/index.js"
   ],
   "main": "./dist/index.js",
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./audio-engine": {
-      "types": "./src/audio-engine.ts",
+      "types": "./dist/audio-engine.d.ts",
       "default": "./dist/audio-engine.js"
     },
     "./media": {
-      "types": "./src/media/index.ts",
+      "types": "./dist/media/index.d.ts",
       "default": "./dist/media/index.js"
     },
     "./preview": {
-      "types": "./src/preview.ts",
+      "types": "./dist/preview.d.ts",
       "default": "./dist/preview.js"
     }
   },

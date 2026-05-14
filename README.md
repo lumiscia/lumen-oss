@@ -54,9 +54,8 @@ See [`crates/server`](crates/server/README.md) for the current self-hosted HTTP 
 - `packages/lumen-bindings`: generated WASM binding package with compiled WASM included
 - `packages/lumen-react` and `packages/lumen-svelte`: framework preview wrappers
 - `examples/vite-react` and `examples/vite-svelte`: local preview examples
-- `docs` and `specs`: architecture notes, render specs, and migration plans
 
-Product application code, hosted-service API code, billing/auth flows, and private frontend work live outside this open-source renderer repository.
+Product application code, hosted-service API code, billing/auth flows, and private frontend work live outside this open-source renderer repository. Project documentation lives in the public [lumiscia/docs](https://github.com/lumiscia/docs) repository.
 
 ## Development
 

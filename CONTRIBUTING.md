@@ -25,10 +25,10 @@ Generated definitions and migrations should not be edited by hand. Use the gener
 WASM bindings are generated into `packages/lumen-bindings/src` with:
 
 ```bash
-just release
+just wasm-bindings-debug
 ```
 
-This command compiles the Rust WASM crate and can take a long time on a clean checkout. Run it when working on WASM-facing code, binding exports, preview examples, or release artifacts. Do not add handwritten binding stubs to make local TypeScript checks pass.
+This command compiles the Rust WASM crate for local development and can take a long time on a clean checkout. Run it when working on WASM-facing code, binding exports, or preview examples. Do not add handwritten binding stubs to make local TypeScript checks pass.
 
 ## Scope
 
