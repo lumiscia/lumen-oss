@@ -1,6 +1,6 @@
-# lumen
+# lumen-engine
 
-`lumen` is the core composition and render orchestration crate. It defines the composition model, node system, media abstractions, JSON support, and the high-level GPU renderer used by the native server, local tools, and WASM bindings.
+`lumen-engine` is the core composition and render orchestration crate. It defines the composition model, node system, media abstractions, JSON support, and the high-level GPU renderer used by the native server, local tools, and WASM bindings.
 
 This crate is experimental. Public APIs, node definitions, schema shapes, and render behavior may change.
 
@@ -28,7 +28,7 @@ Browser/WASM preview paths are separate and use WebGPU/WebGL-facing code.
 ## Development
 
 ```bash
-cargo check -p lumen
-cargo test -p lumen
-cargo check -p lumen --features ffmpeg,image,json
+cargo check -p lumen-engine
+cargo test -p lumen-engine
+cargo check -p lumen-engine --features ffmpeg,image,json
 ```

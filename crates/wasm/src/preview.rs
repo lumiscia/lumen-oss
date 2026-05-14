@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 
-use lumen::{
+use lumen_engine::{
     composition::Composition,
     media::{VideoMetadata, collect_frame_requirements},
 };
@@ -196,7 +196,7 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "setLogLevel")]
     pub fn set_log_level(&self, level: &str) -> Result<(), JsValue> {
-        lumen::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))?;
+        lumen_engine::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))?;
         tracing::debug!(target: "lumen_wasm", level, "set log level");
         Ok(())
     }

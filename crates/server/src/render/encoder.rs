@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::anyhow;
-use lumen::{
+use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMixer, duration_samples},
     composition::Composition,
 };

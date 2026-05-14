@@ -10,18 +10,26 @@ path = "src/main.rs"
 
 [features]
 default = []
-cuda = ["lumen/cuda", "lumen-ffmpeg/cuda"]
-metal = ["dep:objc2", "dep:objc2-metal", "lumen/metal", "lumen-ffmpeg/metal", "lumen-gpu/metal"]
-vulkan = ["lumen/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
+cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
+metal = [
+  "dep:objc2",
+  "dep:objc2-metal",
+  "lumen-engine/metal",
+  "lumen-ffmpeg/metal",
+  "lumen-gpu/metal",
+]
+vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
 
 
 [dependencies]
 anyhow = "1.0.101"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 tempfile = "3.23.0"
-lumen = { package = "lumen-engine", path = "../engine", features = ["ffmpeg", "image", "json"] }
+lumen-engine = { path = "../engine", features = ["ffmpeg", "image", "json"] }
 lumen-gpu = { package = "lumen-engine-gpu", path = "../gpu" }
-lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.1.0", path = "../ffmpeg", features = ["vulkan"] }
+lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.1.0", path = "../ffmpeg", features = [
+  "vulkan",
+] }
 objc2 = { version = "0.6.4", optional = true }
 objc2-metal = { version = "0.3.2", optional = true }
 pollster = "0.4.0"

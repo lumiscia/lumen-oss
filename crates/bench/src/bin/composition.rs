@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use lumen::media::{ImageResolver, MediaStore, VideoFrameResolver};
+use lumen_engine::media::{ImageResolver, MediaStore, VideoFrameResolver};
 use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
     let demos = selected_compositions(&args.composition)?;
 
     for demo in demos {
-        let composition = lumen::json::parse(demo.source)
+        let composition = lumen_engine::json::parse(demo.source)
             .with_context(|| format!("failed to parse composition {}", demo.name))?;
         let frames = args
             .frames
@@ -264,7 +264,7 @@ fn output_path(
 }
 
 async fn run_mode(
-    composition: &lumen::composition::Composition,
+    composition: &lumen_engine::composition::Composition,
     frames: u32,
     mode: Mode,
     output: Option<&Path>,
@@ -293,7 +293,7 @@ async fn run_mode(
 }
 
 async fn benchmark_render_only(
-    composition: &lumen::composition::Composition,
+    composition: &lumen_engine::composition::Composition,
     frames: u32,
 ) -> anyhow::Result<Duration> {
     let media = EmptyMediaStore;
@@ -310,7 +310,7 @@ async fn benchmark_render_only(
 }
 
 async fn benchmark_render_readback(
-    composition: &lumen::composition::Composition,
+    composition: &lumen_engine::composition::Composition,
     frames: u32,
 ) -> anyhow::Result<Duration> {
     let media = EmptyMediaStore;
@@ -328,7 +328,7 @@ async fn benchmark_render_readback(
 }
 
 async fn benchmark_render_cpu_encode(
-    composition: &lumen::composition::Composition,
+    composition: &lumen_engine::composition::Composition,
     frames: u32,
     output: &Path,
 ) -> anyhow::Result<Duration> {
@@ -363,7 +363,7 @@ async fn benchmark_render_cpu_encode(
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 async fn benchmark_render_vk_cuda_export(
-    composition: &lumen::composition::Composition,
+    composition: &lumen_engine::composition::Composition,
     frames: u32,
 ) -> anyhow::Result<Duration> {
     let media = EmptyMediaStore;
@@ -400,7 +400,7 @@ async fn benchmark_render_vk_cuda_export(
 
 #[cfg(not(all(target_os = "linux", feature = "cuda", feature = "vulkan")))]
 async fn benchmark_render_vk_cuda_export(
-    _composition: &lumen::composition::Composition,
+    _composition: &lumen_engine::composition::Composition,
     _frames: u32,
 ) -> anyhow::Result<Duration> {
     Err(anyhow!(
@@ -410,7 +410,7 @@ async fn benchmark_render_vk_cuda_export(
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 async fn benchmark_render_vk_cuda_nvenc(
-    composition: &lumen::composition::Composition,
+    composition: &lumen_engine::composition::Composition,
     frames: u32,
     output: &Path,
 ) -> anyhow::Result<Duration> {
@@ -460,7 +460,7 @@ async fn benchmark_render_vk_cuda_nvenc(
 
 #[cfg(not(all(target_os = "linux", feature = "cuda", feature = "vulkan")))]
 async fn benchmark_render_vk_cuda_nvenc(
-    _composition: &lumen::composition::Composition,
+    _composition: &lumen_engine::composition::Composition,
     _frames: u32,
     _output: &Path,
 ) -> anyhow::Result<Duration> {
@@ -470,10 +470,10 @@ async fn benchmark_render_vk_cuda_nvenc(
 }
 
 async fn renderer(
-    composition: &lumen::composition::Composition,
-) -> anyhow::Result<lumen::gpu::GpuCompositionRenderer> {
+    composition: &lumen_engine::composition::Composition,
+) -> anyhow::Result<lumen_engine::gpu::GpuCompositionRenderer> {
     let media = EmptyMediaStore;
-    let mut renderer = lumen::gpu::GpuCompositionRenderer::new().await?;
+    let mut renderer = lumen_engine::gpu::GpuCompositionRenderer::new().await?;
     renderer.compile_with_media(
         composition,
         &media,
@@ -483,7 +483,7 @@ async fn renderer(
 }
 
 fn video_config(
-    composition: &lumen::composition::Composition,
+    composition: &lumen_engine::composition::Composition,
     codec: VideoCodec,
 ) -> VideoEncoderConfig {
     let mut config = VideoEncoderConfig::cpu_rgba(
@@ -497,7 +497,7 @@ fn video_config(
 }
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-fn composition_size(composition: &lumen::composition::Composition) -> lumen_gpu::Size {
+fn composition_size(composition: &lumen_engine::composition::Composition) -> lumen_gpu::Size {
     lumen_gpu::Size::new(
         composition.render_settings.width,
         composition.render_settings.height,

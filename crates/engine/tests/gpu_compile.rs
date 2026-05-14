@@ -1,4 +1,4 @@
-use lumen::{
+use lumen_engine::{
     composition::{Composition, RenderSettings, TimelineSettings},
     gpu::{CompileContext, FrameBindContext, FrameBinding},
     graph::{Connection, Graph},
@@ -115,7 +115,9 @@ fn frame_binding_updates_expression_uniforms_without_recompile() {
         exposure,
         NodeKind::Exposure(Exposure {
             id: exposure,
-            exposure: NodeProperty::Expr(lumen::expr::Expression::parse("frame / 10").unwrap()),
+            exposure: NodeProperty::Expr(
+                lumen_engine::expr::Expression::parse("frame / 10").unwrap(),
+            ),
             contrast: NodeProperty::Float(1.0),
             offset: NodeProperty::Float(0.0),
             source: PortRef::new(solid, "output".to_string()),
@@ -176,7 +178,7 @@ fn frame_binding_updates_expression_uniforms_without_recompile() {
 #[cfg(feature = "json")]
 #[test]
 fn compiles_gpu_plan_from_json_composition() {
-    let composition = lumen::json::parse(
+    let composition = lumen_engine::json::parse(
         r#"{
             "timeline": { "fps": 24, "duration_frames": 12 },
             "render_settings": { "width": 8, "height": 4 },
@@ -516,7 +518,7 @@ fn compiles_switch_expression_as_frame_selected_gpu_alias() {
         NodeKind::Switch(Switch {
             id: switch,
             selected_layer: NodeProperty::Expr(
-                lumen::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
+                lumen_engine::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
             ),
             layers: vec![
                 PortRef::new(first, "output".to_string()),
@@ -669,7 +671,7 @@ fn time_remap_compiles_source_with_remapped_frame_context() {
         NodeKind::Switch(Switch {
             id: switch,
             selected_layer: NodeProperty::Expr(
-                lumen::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
+                lumen_engine::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
             ),
             layers: vec![
                 PortRef::new(first, "output".to_string()),
@@ -739,7 +741,7 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
         exposure,
         NodeKind::Exposure(Exposure {
             id: exposure,
-            exposure: NodeProperty::Expr(lumen::expr::Expression::parse("frame").unwrap()),
+            exposure: NodeProperty::Expr(lumen_engine::expr::Expression::parse("frame").unwrap()),
             contrast: NodeProperty::Float(1.0),
             offset: NodeProperty::Float(0.0),
             source: PortRef::new(solid_id, "output".to_string()),
@@ -811,7 +813,9 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
         transform,
         NodeKind::Transform(Transform {
             id: transform,
-            translate_x: NodeProperty::Expr(lumen::expr::Expression::parse("frame").unwrap()),
+            translate_x: NodeProperty::Expr(
+                lumen_engine::expr::Expression::parse("frame").unwrap(),
+            ),
             translate_y: NodeProperty::Float(2.0),
             rotate: NodeProperty::Float(15.0),
             source: PortRef::new(solid_id, "output".to_string()),
@@ -938,7 +942,9 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         hue,
         NodeKind::HueSaturation(HueSaturation {
             id: hue,
-            hue_degrees: NodeProperty::Expr(lumen::expr::Expression::parse("frame * 10").unwrap()),
+            hue_degrees: NodeProperty::Expr(
+                lumen_engine::expr::Expression::parse("frame * 10").unwrap(),
+            ),
             saturation: NodeProperty::Float(0.75),
             lightness: NodeProperty::Float(0.1),
             source: PortRef::new(levels, "output".to_string()),
@@ -1171,7 +1177,7 @@ impl ImageResolver for TestMediaStore {
         }
     }
 
-    fn frame(&self) -> Result<MediaFrame, lumen::error::MediaError> {
+    fn frame(&self) -> Result<MediaFrame, lumen_engine::error::MediaError> {
         Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
     }
 }
@@ -1190,7 +1196,7 @@ impl VideoFrameResolver for TestMediaStore {
         }
     }
 
-    fn frame(&self, _frame: u32) -> Result<MediaFrame, lumen::error::MediaError> {
+    fn frame(&self, _frame: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
         Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
     }
 }

@@ -6,10 +6,10 @@ publish = false
 
 [features]
 default = []
-cuda = ["lumen/cuda", "lumen-ffmpeg/cuda"]
-experimental-msdf = ["lumen/experimental-msdf", "lumen-text/experimental-msdf"]
-vulkan = ["lumen/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
-metal = ["lumen/metal", "lumen-ffmpeg/metal"]
+cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
+experimental-msdf = ["lumen-engine/experimental-msdf", "lumen-text/experimental-msdf"]
+vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
+metal = ["lumen-engine/metal", "lumen-ffmpeg/metal"]
 
 [dependencies]
 anyhow = "1.0.101"
@@ -21,7 +21,7 @@ libc = "0.2"
 nalgebra = "0.34.1"
 skrifa = "0.40.0"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
-lumen = { package = "lumen-engine", path = "../engine", features = ["ffmpeg", "image", "json"] }
+lumen-engine = { path = "../engine", features = ["ffmpeg", "image", "json"] }
 lumen-gpu = { package = "lumen-engine-gpu", path = "../gpu" }
 lumen-ffmpeg = { package = "lumen-engine-ffmpeg", path = "../ffmpeg" }
 lumen-text = { package = "lumen-engine-text", path = "../text" }

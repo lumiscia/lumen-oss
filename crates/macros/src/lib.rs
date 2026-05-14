@@ -66,7 +66,7 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
         let optional = input.optional;
         let variadic = input.variadic;
         quote! {
-            ::lumen::node::InputPortDef {
+            ::lumen_engine::node::InputPortDef {
                 name: #name,
                 kind: #kind,
                 optional: #optional,
@@ -95,7 +95,7 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
         quote! {
             if let Some(value) = properties.and_then(|properties| properties.get(#name)) {
                 let def = #property_def;
-                node.#field = ::lumen::json::parse_property(value, Some(&def), #name)?;
+                node.#field = ::lumen_engine::json::parse_property(value, Some(&def), #name)?;
             }
         }
     });
@@ -125,13 +125,13 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
     let category = category_tokens(&node.category);
 
     Ok(quote! {
-        const #input_static: &[::lumen::node::InputPortDef] = &[#(#input_defs),*];
+        const #input_static: &[::lumen_engine::node::InputPortDef] = &[#(#input_defs),*];
 
         #[cfg(feature = "metadata")]
-        impl ::lumen::node::NodeSchema for #ident {
-            fn schema() -> ::lumen::node::NodeSchemaDef {
+        impl ::lumen_engine::node::NodeSchema for #ident {
+            fn schema() -> ::lumen_engine::node::NodeSchemaDef {
                 let defaults = <Self as ::core::default::Default>::default();
-                ::lumen::node::NodeSchemaDef {
+                ::lumen_engine::node::NodeSchemaDef {
                     kind: #kind,
                     name: #node_name,
                     description: #description,
@@ -144,9 +144,9 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
         }
 
         #[cfg(feature = "json")]
-        impl ::lumen::node::JsonNode for #ident {
+        impl ::lumen_engine::node::JsonNode for #ident {
             fn from_json(
-                id: ::lumen::node::NodeId,
+                id: ::lumen_engine::node::NodeId,
                 properties: Option<&::serde_json::Map<String, ::serde_json::Value>>,
             ) -> ::anyhow::Result<Self> {
                 let mut node = <Self as ::core::default::Default>::default();
@@ -168,7 +168,7 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
             fn set_input_json(
                 &mut self,
                 port: &str,
-                source: ::lumen::node::PortRef,
+                source: ::lumen_engine::node::PortRef,
             ) -> ::anyhow::Result<()> {
                 match port {
                     #(#json_input_matches,)*
@@ -177,23 +177,23 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
             }
         }
 
-        impl ::lumen::node::Node for #ident {
-            fn id(&self) -> ::lumen::node::NodeId {
+        impl ::lumen_engine::node::Node for #ident {
+            fn id(&self) -> ::lumen_engine::node::NodeId {
                 self.id
             }
 
-            fn input_port_defs(&self) -> &'static [::lumen::node::InputPortDef] {
+            fn input_port_defs(&self) -> &'static [::lumen_engine::node::InputPortDef] {
                 #input_static
             }
         }
 
-        impl ::lumen::node::PropertyEval for #ident {
+        impl ::lumen_engine::node::PropertyEval for #ident {
             fn get_property(
                 &self,
                 id: &str,
             ) -> ::core::result::Result<
-                ::core::option::Option<::lumen::node::NodeProperty>,
-                ::lumen::error::LumenError,
+                ::core::option::Option<::lumen_engine::node::NodeProperty>,
+                ::lumen_engine::error::LumenError,
             > {
                 Ok(match id {
                     #(#property_matches,)*
@@ -248,7 +248,7 @@ fn expand_node_enum(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
         let label = &option.label;
         let value = option.value;
         quote! {
-            ::lumen::node::EnumOptionDef {
+            ::lumen_engine::node::EnumOptionDef {
                 name: #name,
                 label: #label,
                 value: #value,
@@ -258,10 +258,10 @@ fn expand_node_enum(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
 
     Ok(quote! {
         #[cfg(any(feature = "json", feature = "metadata"))]
-        impl ::lumen::node::NodeEnum for #ident {
-            fn enum_def() -> &'static ::lumen::node::EnumDef {
-                const OPTIONS: &[::lumen::node::EnumOptionDef] = &[#(#option_tokens),*];
-                const DEF: ::lumen::node::EnumDef = ::lumen::node::EnumDef {
+        impl ::lumen_engine::node::NodeEnum for #ident {
+            fn enum_def() -> &'static ::lumen_engine::node::EnumDef {
+                const OPTIONS: &[::lumen_engine::node::EnumOptionDef] = &[#(#option_tokens),*];
+                const DEF: ::lumen_engine::node::EnumDef = ::lumen_engine::node::EnumDef {
                     name: #enum_name,
                     options: OPTIONS,
                 };
@@ -445,13 +445,13 @@ fn property_def_tokens(property: &PropertyAttr) -> proc_macro2::TokenStream {
     let name = &property.name;
     let kind = property_kind_tokens(&property.kind);
     let enum_def = match &property.enum_type {
-        Some(enum_type) => quote!(Some(<#enum_type as ::lumen::node::NodeEnum>::enum_def())),
+        Some(enum_type) => quote!(Some(<#enum_type as ::lumen_engine::node::NodeEnum>::enum_def())),
         None => quote!(None),
     };
     let description = doc_string(&property.docs);
     let constraints = property_constraints_tokens(&property.constraints);
     quote! {
-        ::lumen::node::PropertyDef {
+        ::lumen_engine::node::PropertyDef {
             id: #id,
             expected: #kind,
             #[cfg(any(feature = "json", feature = "metadata"))]
@@ -478,7 +478,7 @@ fn property_constraints_tokens(constraints: &PropertyConstraintsAttr) -> proc_ma
     };
     let role = option_lit_str_tokens(&constraints.role);
     quote! {
-        ::lumen::node::PropertyConstraints {
+        ::lumen_engine::node::PropertyConstraints {
             min: #min,
             max: #max,
             step: #step,
@@ -654,11 +654,11 @@ fn option_lit_str_tokens(value: &Option<LitStr>) -> proc_macro2::TokenStream {
 
 fn category_tokens(category: &Ident) -> proc_macro2::TokenStream {
     match category.to_string().as_str() {
-        "compositing" | "Compositing" => quote!(::lumen::node::NodeCategory::Compositing),
-        "processing" | "Processing" => quote!(::lumen::node::NodeCategory::Processing),
-        "source" | "Source" => quote!(::lumen::node::NodeCategory::Source),
-        "output" | "Output" => quote!(::lumen::node::NodeCategory::Output),
-        "vector" | "Vector" => quote!(::lumen::node::NodeCategory::Vector),
+        "compositing" | "Compositing" => quote!(::lumen_engine::node::NodeCategory::Compositing),
+        "processing" | "Processing" => quote!(::lumen_engine::node::NodeCategory::Processing),
+        "source" | "Source" => quote!(::lumen_engine::node::NodeCategory::Source),
+        "output" | "Output" => quote!(::lumen_engine::node::NodeCategory::Output),
+        "vector" | "Vector" => quote!(::lumen_engine::node::NodeCategory::Vector),
         _ => {
             let span = category.span();
             quote::quote_spanned!(span=> compile_error!("unknown node category"))
@@ -668,8 +668,8 @@ fn category_tokens(category: &Ident) -> proc_macro2::TokenStream {
 
 fn port_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
     match kind.to_string().as_str() {
-        "raster" | "Raster" => quote!(::lumen::node::PortKind::Raster),
-        "vector" | "Vector" => quote!(::lumen::node::PortKind::Vector),
+        "raster" | "Raster" => quote!(::lumen_engine::node::PortKind::Raster),
+        "vector" | "Vector" => quote!(::lumen_engine::node::PortKind::Vector),
         _ => {
             let span = kind.span();
             quote::quote_spanned!(span=> compile_error!("unknown port kind"))
@@ -679,13 +679,13 @@ fn port_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
 
 fn property_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
     match kind.to_string().as_str() {
-        "float" | "Float" => quote!(::lumen::node::PropertyKind::Float),
-        "int" | "Int" => quote!(::lumen::node::PropertyKind::Int),
-        "bool" | "Bool" => quote!(::lumen::node::PropertyKind::Bool),
-        "string" | "String" => quote!(::lumen::node::PropertyKind::String),
-        "color" | "Color" => quote!(::lumen::node::PropertyKind::Color),
-        "vec2" | "Vec2" => quote!(::lumen::node::PropertyKind::Vec2),
-        "enum" | "Enum" => quote!(::lumen::node::PropertyKind::Enum),
+        "float" | "Float" => quote!(::lumen_engine::node::PropertyKind::Float),
+        "int" | "Int" => quote!(::lumen_engine::node::PropertyKind::Int),
+        "bool" | "Bool" => quote!(::lumen_engine::node::PropertyKind::Bool),
+        "string" | "String" => quote!(::lumen_engine::node::PropertyKind::String),
+        "color" | "Color" => quote!(::lumen_engine::node::PropertyKind::Color),
+        "vec2" | "Vec2" => quote!(::lumen_engine::node::PropertyKind::Vec2),
+        "enum" | "Enum" => quote!(::lumen_engine::node::PropertyKind::Enum),
         _ => {
             let span = kind.span();
             quote::quote_spanned!(span=> compile_error!("unknown property kind"))

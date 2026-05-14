@@ -1,6 +1,6 @@
 //! Lumen compositing engine crate.
 
-extern crate self as lumen;
+extern crate self as lumen_engine;
 
 use std::sync::atomic::{AtomicU8, Ordering};
 

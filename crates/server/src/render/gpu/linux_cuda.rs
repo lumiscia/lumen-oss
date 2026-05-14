@@ -1,6 +1,6 @@
 use std::{fs, time::Instant};
 
-use lumen::composition::Composition;
+use lumen_engine::composition::Composition;
 use lumen_ffmpeg::{
     AudioEncoderConfig, CudaDriver, EncodeMode, GpuBackend, GpuVideoInput, MuxedEncoder,
     VideoCodec, VideoEncoderConfig, import_owned_vulkan_opaque_fd_image,
@@ -181,8 +181,8 @@ pub(super) fn render_project_mp4_cuda(
     config.bit_rate = 14_000_000;
     let audio = include_audio.then(|| {
         AudioEncoderConfig::aac(
-            lumen::audio::AUDIO_SAMPLE_RATE,
-            lumen::audio::AUDIO_CHANNELS as u16,
+            lumen_engine::audio::AUDIO_SAMPLE_RATE,
+            lumen_engine::audio::AUDIO_CHANNELS as u16,
         )
     });
     let mut encoder =

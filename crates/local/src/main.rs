@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
-use lumen::{
+use lumen_engine::{
     audio::{
         AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, AudioSourceProvider,
         duration_samples,
@@ -210,11 +210,11 @@ impl ImageResolver for SharedImageResolver {
         self.0.id()
     }
 
-    fn metadata(&self) -> lumen::media::ImageMetadata {
+    fn metadata(&self) -> lumen_engine::media::ImageMetadata {
         self.0.metadata()
     }
 
-    fn frame(&self) -> Result<MediaFrame, lumen::error::MediaError> {
+    fn frame(&self) -> Result<MediaFrame, lumen_engine::error::MediaError> {
         self.0.frame()
     }
 }
@@ -227,15 +227,15 @@ impl VideoFrameResolver for SharedVideoResolver {
         self.0.id()
     }
 
-    fn metadata(&self) -> lumen::media::VideoMetadata {
+    fn metadata(&self) -> lumen_engine::media::VideoMetadata {
         self.0.metadata()
     }
 
-    fn enqueue_frame(&self, frame: u32) -> Result<(), lumen::error::MediaError> {
+    fn enqueue_frame(&self, frame: u32) -> Result<(), lumen_engine::error::MediaError> {
         self.0.enqueue_frame(frame)
     }
 
-    fn frame(&self, frame: u32) -> Result<MediaFrame, lumen::error::MediaError> {
+    fn frame(&self, frame: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
         self.0.frame(frame)
     }
 
@@ -252,7 +252,7 @@ impl AudioResolver for SharedAudioResolver {
         self.0.id()
     }
 
-    fn metadata(&self) -> lumen::audio::AudioMetadata {
+    fn metadata(&self) -> lumen_engine::audio::AudioMetadata {
         self.0.metadata()
     }
 
@@ -260,7 +260,7 @@ impl AudioResolver for SharedAudioResolver {
         &self,
         start_sample: u64,
         frames: usize,
-    ) -> Result<Arc<lumen::audio::AudioBuffer>, lumen::error::MediaError> {
+    ) -> Result<Arc<lumen_engine::audio::AudioBuffer>, lumen_engine::error::MediaError> {
         self.0.resolve_range(start_sample, frames)
     }
 }
@@ -492,7 +492,7 @@ fn load_composition(path: &Path) -> Result<Composition> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read composition file {}", path.display()))?;
 
-    lumen::json::parse(&raw)
+    lumen_engine::json::parse(&raw)
         .with_context(|| format!("failed to parse composition {}", path.display()))
 }
 
@@ -1033,7 +1033,10 @@ fn has_audio(composition: &Composition) -> bool {
         .is_some_and(|audio| !audio.clips.is_empty())
 }
 
-fn audio_frame_from_buffer(buffer: &lumen::audio::AudioBuffer, start_sample: u64) -> AudioFrame {
+fn audio_frame_from_buffer(
+    buffer: &lumen_engine::audio::AudioBuffer,
+    start_sample: u64,
+) -> AudioFrame {
     AudioFrame {
         sample_rate: buffer.sample_rate(),
         channels: buffer.channel_count() as u16,

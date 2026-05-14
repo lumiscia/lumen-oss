@@ -1,4 +1,4 @@
-use lumen::{
+use lumen_engine::{
     composition::Composition, gpu::GpuCompositionRenderer, media::collect_frame_requirements,
 };
 use wasm_bindgen::prelude::*;
@@ -95,7 +95,7 @@ impl LumenRenderer {
 
     #[wasm_bindgen(js_name = "setLogLevel")]
     pub fn set_log_level(&mut self, level: &str) -> Result<(), JsValue> {
-        lumen::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))?;
+        lumen_engine::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))?;
         tracing::debug!(target: "lumen_wasm", level, "set log level");
         Ok(())
     }
@@ -236,12 +236,12 @@ pub(crate) struct SurfaceCompositionRenderer {
 }
 
 impl SurfaceCompositionRenderer {
-    pub fn render_frame<M: lumen::media::MediaStore>(
+    pub fn render_frame<M: lumen_engine::media::MediaStore>(
         &mut self,
         composition: &Composition,
         frame: u32,
         media: &M,
-    ) -> Result<lumen_gpu::Size, lumen::error::LumenError> {
+    ) -> Result<lumen_gpu::Size, lumen_engine::error::LumenError> {
         let (raster, _render_submission) =
             self.renderer
                 .render_frame_submitted(composition, frame, media)?;
@@ -249,20 +249,20 @@ impl SurfaceCompositionRenderer {
         self.renderer
             .gpu_renderer()
             .copy_texture_to_external(raster.texture, &surface_texture.texture)
-            .map_err(|error| lumen::error::RenderError::Gpu {
+            .map_err(|error| lumen_engine::error::RenderError::Gpu {
                 details: error.to_string(),
             })?;
         surface_texture.present();
         Ok(raster.domain.storage_size)
     }
 
-    pub fn precompile_frame_window<M: lumen::media::MediaStore>(
+    pub fn precompile_frame_window<M: lumen_engine::media::MediaStore>(
         &mut self,
         composition: &Composition,
         start_frame: u32,
         frame_count: u32,
         media: &M,
-    ) -> Result<(), lumen::error::LumenError> {
+    ) -> Result<(), lumen_engine::error::LumenError> {
         self.renderer
             .precompile_frame_window(composition, start_frame, frame_count, media)
     }
@@ -270,18 +270,18 @@ impl SurfaceCompositionRenderer {
 
 fn current_surface_texture(
     surface: &lumen_gpu::wgpu::Surface<'static>,
-) -> Result<lumen_gpu::wgpu::SurfaceTexture, lumen::error::LumenError> {
+) -> Result<lumen_gpu::wgpu::SurfaceTexture, lumen_engine::error::LumenError> {
     match surface.get_current_texture() {
         lumen_gpu::wgpu::CurrentSurfaceTexture::Success(texture)
         | lumen_gpu::wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Ok(texture),
-        other => Err(lumen::error::RenderError::Gpu {
+        other => Err(lumen_engine::error::RenderError::Gpu {
             details: format!("surface texture unavailable: {other:?}"),
         }
         .into()),
     }
 }
 
-pub(crate) async fn create_surface_composition_renderer<M: lumen::media::MediaStore>(
+pub(crate) async fn create_surface_composition_renderer<M: lumen_engine::media::MediaStore>(
     canvas: HtmlCanvasElement,
     composition: &Composition,
     media: &M,
@@ -367,7 +367,7 @@ pub(crate) fn collect_requirement_window(
     frame: u32,
     lookahead_count: u32,
 ) -> Result<FrameRequirementsPayload, JsValue> {
-    let mut requirements = lumen::media::FrameRequirements::default();
+    let mut requirements = lumen_engine::media::FrameRequirements::default();
     let duration = composition.timeline.duration_frames;
     let last_frame = if duration == 0 {
         frame
@@ -398,7 +398,7 @@ pub(crate) fn collect_requirement_window(
         .map(|(stream_id, mut frames)| {
             frames.sort_unstable();
             frames.dedup();
-            lumen::media::VideoFrameRequirement { stream_id, frames }
+            lumen_engine::media::VideoFrameRequirement { stream_id, frames }
         })
         .collect();
 

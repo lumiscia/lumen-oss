@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use lumen::{
+use lumen_engine::{
     audio::{AudioBuffer, AudioResolver, AudioSourceProvider},
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
@@ -228,11 +228,11 @@ impl ImageResolver for SharedImageResolver {
         self.0.id()
     }
 
-    fn metadata(&self) -> lumen::media::ImageMetadata {
+    fn metadata(&self) -> lumen_engine::media::ImageMetadata {
         self.0.metadata()
     }
 
-    fn frame(&self) -> Result<MediaFrame, lumen::error::MediaError> {
+    fn frame(&self) -> Result<MediaFrame, lumen_engine::error::MediaError> {
         self.0.frame()
     }
 }
@@ -245,15 +245,15 @@ impl VideoFrameResolver for SharedVideoResolver {
         self.0.id()
     }
 
-    fn metadata(&self) -> lumen::media::VideoMetadata {
+    fn metadata(&self) -> lumen_engine::media::VideoMetadata {
         self.0.metadata()
     }
 
-    fn enqueue_frame(&self, frame: u32) -> Result<(), lumen::error::MediaError> {
+    fn enqueue_frame(&self, frame: u32) -> Result<(), lumen_engine::error::MediaError> {
         self.0.enqueue_frame(frame)
     }
 
-    fn frame(&self, frame: u32) -> Result<MediaFrame, lumen::error::MediaError> {
+    fn frame(&self, frame: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
         self.0.frame(frame)
     }
 
@@ -270,7 +270,7 @@ impl AudioResolver for SharedAudioResolver {
         self.0.id()
     }
 
-    fn metadata(&self) -> lumen::audio::AudioMetadata {
+    fn metadata(&self) -> lumen_engine::audio::AudioMetadata {
         self.0.metadata()
     }
 
@@ -278,7 +278,7 @@ impl AudioResolver for SharedAudioResolver {
         &self,
         start_sample: u64,
         frames: usize,
-    ) -> Result<Arc<AudioBuffer>, lumen::error::MediaError> {
+    ) -> Result<Arc<AudioBuffer>, lumen_engine::error::MediaError> {
         self.0.resolve_range(start_sample, frames)
     }
 }
@@ -321,11 +321,11 @@ impl FontResolver for LocalFontResolver {
         &self.id
     }
 
-    fn data(&self) -> Result<Vec<Vec<u8>>, lumen::error::MediaError> {
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
         self.paths
             .iter()
             .map(|path| {
-                std::fs::read(path).map_err(|err| lumen::error::MediaError::Decode {
+                std::fs::read(path).map_err(|err| lumen_engine::error::MediaError::Decode {
                     media_source: self.id.clone(),
                     details: format!("failed reading font data `{path}`: {err}"),
                 })

@@ -1,6 +1,6 @@
 use std::sync::mpsc;
 
-use lumen_gpu::*;
+use lumen_engine_gpu::*;
 
 const COMPUTE_TEXTURE_SHADER: &str = r#"
 @group(0) @binding(0) var output_tex: texture_storage_2d<rgba8unorm, write>;

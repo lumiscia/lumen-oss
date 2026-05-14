@@ -227,7 +227,7 @@ pub fn validate_generated_artifacts(composition_schema_json: &str) -> Result<()>
 }
 
 pub fn meta_manifest() -> Result<MetaManifest> {
-    let specs = lumen::node::NodeKind::schemas()
+    let specs = lumen_engine::node::NodeKind::schemas()
         .into_iter()
         .map(spec_from_schema)
         .collect::<Result<Vec<_>>>()?;
@@ -401,7 +401,7 @@ fn numeric_property_schema_json(kind: &str, property: &NodePropertySpec) -> Valu
     json!(schema)
 }
 
-fn spec_from_schema(schema: lumen::node::NodeSchemaDef) -> Result<NodeSpec> {
+fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpec> {
     let properties = schema
         .properties
         .iter()
@@ -471,37 +471,37 @@ fn spec_from_schema(schema: lumen::node::NodeSchemaDef) -> Result<NodeSpec> {
     })
 }
 
-fn category_from_schema(category: lumen::node::NodeCategory) -> NodeCategory {
+fn category_from_schema(category: lumen_engine::node::NodeCategory) -> NodeCategory {
     match category {
-        lumen::node::NodeCategory::Compositing => NodeCategory::Compositing,
-        lumen::node::NodeCategory::Processing => NodeCategory::Processing,
-        lumen::node::NodeCategory::Source => NodeCategory::Source,
-        lumen::node::NodeCategory::Output => NodeCategory::Output,
-        lumen::node::NodeCategory::Vector => NodeCategory::Vector,
+        lumen_engine::node::NodeCategory::Compositing => NodeCategory::Compositing,
+        lumen_engine::node::NodeCategory::Processing => NodeCategory::Processing,
+        lumen_engine::node::NodeCategory::Source => NodeCategory::Source,
+        lumen_engine::node::NodeCategory::Output => NodeCategory::Output,
+        lumen_engine::node::NodeCategory::Vector => NodeCategory::Vector,
     }
 }
 
-fn port_kind_from_schema(kind: lumen::node::PortKind) -> NodePortKind {
+fn port_kind_from_schema(kind: lumen_engine::node::PortKind) -> NodePortKind {
     match kind {
-        lumen::node::PortKind::Raster => NodePortKind::RasterFrame,
-        lumen::node::PortKind::Vector => NodePortKind::Vector,
+        lumen_engine::node::PortKind::Raster => NodePortKind::RasterFrame,
+        lumen_engine::node::PortKind::Vector => NodePortKind::Vector,
     }
 }
 
-fn property_kind_from_schema(kind: lumen::node::PropertyKind) -> NodePropertyKind {
+fn property_kind_from_schema(kind: lumen_engine::node::PropertyKind) -> NodePropertyKind {
     match kind {
-        lumen::node::PropertyKind::Float => NodePropertyKind::Float,
-        lumen::node::PropertyKind::Int => NodePropertyKind::Int,
-        lumen::node::PropertyKind::Bool => NodePropertyKind::Bool,
-        lumen::node::PropertyKind::String => NodePropertyKind::String,
-        lumen::node::PropertyKind::Color => NodePropertyKind::Color,
-        lumen::node::PropertyKind::Vec2 => NodePropertyKind::Vec2,
-        lumen::node::PropertyKind::Enum => NodePropertyKind::Enum,
+        lumen_engine::node::PropertyKind::Float => NodePropertyKind::Float,
+        lumen_engine::node::PropertyKind::Int => NodePropertyKind::Int,
+        lumen_engine::node::PropertyKind::Bool => NodePropertyKind::Bool,
+        lumen_engine::node::PropertyKind::String => NodePropertyKind::String,
+        lumen_engine::node::PropertyKind::Color => NodePropertyKind::Color,
+        lumen_engine::node::PropertyKind::Vec2 => NodePropertyKind::Vec2,
+        lumen_engine::node::PropertyKind::Enum => NodePropertyKind::Enum,
     }
 }
 
 fn constraints_from_schema(
-    constraints: lumen::node::PropertyConstraints,
+    constraints: lumen_engine::node::PropertyConstraints,
 ) -> PropertyConstraintsSpec {
     PropertyConstraintsSpec {
         min: constraints.min,
@@ -515,11 +515,11 @@ fn constraints_from_schema(
 }
 
 fn literal_from_node_property(
-    property: &lumen::node::NodeProperty,
-    enum_def: Option<&'static lumen::node::EnumDef>,
+    property: &lumen_engine::node::NodeProperty,
+    enum_def: Option<&'static lumen_engine::node::EnumDef>,
 ) -> Result<NodeLiteralValue> {
     if let Some(enum_def) = enum_def {
-        let lumen::node::NodeProperty::Int(value) = property else {
+        let lumen_engine::node::NodeProperty::Int(value) = property else {
             bail!("enum default property must be stored as an int: {property:?}");
         };
         let option = enum_def
@@ -531,12 +531,14 @@ fn literal_from_node_property(
     }
 
     match property {
-        lumen::node::NodeProperty::Float(value) => Ok(NodeLiteralValue::Float(*value)),
-        lumen::node::NodeProperty::Int(value) => Ok(NodeLiteralValue::Int(*value)),
-        lumen::node::NodeProperty::Bool(value) => Ok(NodeLiteralValue::Bool(*value)),
-        lumen::node::NodeProperty::String(value) => Ok(NodeLiteralValue::String(value.clone())),
-        lumen::node::NodeProperty::Color(value) => Ok(NodeLiteralValue::Color(*value)),
-        lumen::node::NodeProperty::Vec2(value) => Ok(NodeLiteralValue::Vec2(*value)),
+        lumen_engine::node::NodeProperty::Float(value) => Ok(NodeLiteralValue::Float(*value)),
+        lumen_engine::node::NodeProperty::Int(value) => Ok(NodeLiteralValue::Int(*value)),
+        lumen_engine::node::NodeProperty::Bool(value) => Ok(NodeLiteralValue::Bool(*value)),
+        lumen_engine::node::NodeProperty::String(value) => {
+            Ok(NodeLiteralValue::String(value.clone()))
+        }
+        lumen_engine::node::NodeProperty::Color(value) => Ok(NodeLiteralValue::Color(*value)),
+        lumen_engine::node::NodeProperty::Vec2(value) => Ok(NodeLiteralValue::Vec2(*value)),
         other => bail!("unsupported default property literal: {other:?}"),
     }
 }

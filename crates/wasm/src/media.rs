@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use lumen::{
+use lumen_engine::{
     error::MediaError,
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,

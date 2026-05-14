@@ -6,7 +6,7 @@ mod media;
 
 use std::path::PathBuf;
 
-use lumen::composition::Composition;
+use lumen_engine::composition::Composition;
 
 pub use gpu::render_project_mp4;
 
@@ -59,7 +59,7 @@ pub fn convert_project_payload(payload: &serde_json::Value) -> Result<ProjectBun
         retryable: false,
     })?;
 
-    let composition = lumen::json::parse(&project).map_err(|err| RenderError {
+    let composition = lumen_engine::json::parse(&project).map_err(|err| RenderError {
         code: "invalid_project_payload",
         message: err.to_string(),
         retryable: false,

@@ -1,4 +1,4 @@
-use lumen::media::{FrameRequirements, VideoFrameRequirement};
+use lumen_engine::media::{FrameRequirements, VideoFrameRequirement};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

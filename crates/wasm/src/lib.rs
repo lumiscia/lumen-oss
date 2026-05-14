@@ -34,7 +34,7 @@ pub(crate) fn install_panic_hook() {
                 .set_show_fields(true);
             let layer =
                 wasm_tracing::WasmLayer::new(tracing_config).with_filter(filter_fn(|metadata| {
-                    lumen::log_level_enabled(*metadata.level())
+                    lumen_engine::log_level_enabled(*metadata.level())
                 }));
             let subscriber = tracing_subscriber::registry().with(layer);
             let _ = tracing::subscriber::set_global_default(subscriber);

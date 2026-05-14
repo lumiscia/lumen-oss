@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Core composition model and rendering orchestration for Lumen."
 
 [lib]
-name = "lumen"
+name = "lumen_engine"
 path = "src/lib.rs"
 
 [features]

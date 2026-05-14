@@ -1,4 +1,4 @@
-use lumen_gpu::*;
+use lumen_engine_gpu::*;
 
 const SHADER: &str = r#"
 @vertex

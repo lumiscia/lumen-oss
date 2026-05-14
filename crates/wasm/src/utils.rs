@@ -1,4 +1,4 @@
-use lumen::{
+use lumen_engine::{
     composition::Composition,
     media::{CpuMediaFrame, premultiply_rgba_in_place_if_needed},
 };
@@ -31,5 +31,5 @@ pub fn image_frame_from_rgba(
 }
 
 pub fn composition_json_to_composition(composition_json: &str) -> Result<Composition, String> {
-    lumen::json::parse(composition_json).map_err(|e| e.to_string())
+    lumen_engine::json::parse(composition_json).map_err(|e| e.to_string())
 }

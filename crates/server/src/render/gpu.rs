@@ -1,7 +1,7 @@
 use std::{env, fs, sync::mpsc};
 
 use anyhow::Context;
-use lumen::{composition::Composition, gpu::GpuCompositionRenderer, media::MediaStore};
+use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media::MediaStore};
 use lumen_ffmpeg::VideoCodec;
 
 use super::{
@@ -218,7 +218,7 @@ pub(super) fn prefetch_media_frames(
     frame: u32,
 ) {
     let Ok(requirements) =
-        lumen::media::collect_frame_requirements(composition, media_store, frame)
+        lumen_engine::media::collect_frame_requirements(composition, media_store, frame)
     else {
         return;
     };

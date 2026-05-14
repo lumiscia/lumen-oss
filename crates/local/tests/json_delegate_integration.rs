@@ -1,4 +1,4 @@
-use lumen::json;
+use lumen_engine::json;
 
 #[test]
 fn lumen_local_parses_composition_json() {

@@ -18,9 +18,9 @@ required-features = ["cli"]
 [features]
 cli = ["dep:axum", "dep:clap", "dep:tracing-subscriber"]
 legacy-decode-tests = []
-metal = ["lumen/metal", "lumen-ffmpeg/metal"]
-vulkan = ["lumen/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
-cuda = ["lumen/cuda", "lumen-ffmpeg/cuda"]
+metal = ["lumen-engine/metal", "lumen-ffmpeg/metal"]
+vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
+cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
 
 [dependencies]
 anyhow = "1.0.101"
@@ -35,7 +35,7 @@ axum = { version = "0.8.7", default-features = false, features = [
   "tokio",
   "ws",
 ], optional = true }
-lumen = { package = "lumen-engine", version = "0.1.0", path = "../engine", features = ["ffmpeg", "image", "json"] }
+lumen-engine = { version = "0.1.0", path = "../engine", features = ["ffmpeg", "image", "json"] }
 lumen-gpu = { package = "lumen-engine-gpu", version = "0.1.0", path = "../gpu" }
 lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.1.0", path = "../ffmpeg" }
 reqwest = { version = "0.12.24", default-features = false, features = [

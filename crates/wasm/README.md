@@ -12,7 +12,7 @@ The native Linux/macOS GPU targets do not apply directly here, but the renderer 
 
 ## Features
 
-- `json`: enables JSON support through `lumen/json`.
+- `json`: enables JSON support through `lumen-engine/json`.
 
 ## Development
 

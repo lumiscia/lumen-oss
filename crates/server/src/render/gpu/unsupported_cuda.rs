@@ -1,4 +1,4 @@
-use lumen::composition::Composition;
+use lumen_engine::composition::Composition;
 use lumen_ffmpeg::VideoCodec;
 
 use crate::render::{RenderError, RenderProgress, media::LocalMediaStore};

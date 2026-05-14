@@ -1,6 +1,6 @@
 #![cfg(feature = "metadata")]
 
-use lumen::node::{NodeCategory, NodeKind, NodeProperty, PropertyEval};
+use lumen_engine::node::{NodeCategory, NodeKind, NodeProperty, PropertyEval};
 
 #[test]
 fn node_schemas_are_derived_from_node_structs() {
@@ -78,7 +78,7 @@ fn node_schemas_are_derived_from_node_structs() {
 
 #[test]
 fn derived_property_eval_reads_marked_properties() {
-    let node = lumen::node::processing::exposure::Exposure::default();
+    let node = lumen_engine::node::processing::exposure::Exposure::default();
 
     assert!(matches!(
         node.get_property("contrast").unwrap(),
