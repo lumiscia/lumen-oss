@@ -1,10 +1,10 @@
-name: Publish Packages
+name: Release
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: publish-packages
+  group: release
   cancel-in-progress: false
 
 permissions:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   publish:
-    name: Publish Packages
+    name: Release
     runs-on: ubuntu-latest
     environment: release
 
@@ -83,19 +83,50 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Push release tag
+      - name: Read release metadata
+        id: release_metadata
         run: |
           release_version="$(node -p "require('./packages/lumen-types/package.json').version")"
-          release_tag="v$release_version"
+          {
+            echo "version=$release_version"
+            echo "tag=v$release_version"
+            echo "target=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch --tags origin
+      - name: Write release summary
+        run: |
+          release_version="${{ steps.release_metadata.outputs.version }}"
 
-          if git rev-parse "$release_tag" >/dev/null 2>&1; then
-            echo "Release tag $release_tag already exists."
-            exit 0
-          fi
+          cat > release-notes.md <<EOF
+          Lumen $release_version publishes the coordinated Lumen package family to npm and crates.io.
 
-          git tag "$release_tag"
-          git push origin "$release_tag"
+          ## Published Packages
+
+          npm:
+          - @lumiscia/lumen-bindings@$release_version
+          - @lumiscia/lumen-preview@$release_version
+          - @lumiscia/lumen-react@$release_version
+          - @lumiscia/lumen-sdk@$release_version
+          - @lumiscia/lumen-shared@$release_version
+          - @lumiscia/lumen-svelte@$release_version
+          - @lumiscia/lumen-types@$release_version
+
+          crates.io:
+          - lumen-engine@$release_version
+          - lumen-engine-ffmpeg@$release_version
+          - lumen-engine-gpu@$release_version
+          - lumen-engine-macros@$release_version
+          - lumen-engine-text@$release_version
+          - lumen-server@$release_version
+
+          EOF
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.release_metadata.outputs.tag }}
+          target_commitish: ${{ steps.release_metadata.outputs.target }}
+          name: Lumen ${{ steps.release_metadata.outputs.version }}
+          body_path: release-notes.md
+          generate_release_notes: true
+          make_latest: true

@@ -1,6 +1,5 @@
 definitions_out := justfile_directory() / "definitions"
 wasm_bindings_out := justfile_directory() / "packages/lumen-bindings/src"
-release_artifacts_out := justfile_directory() / "generated/release"
 
 ready: ci-typescript-artifacts verify-definitions
     pnpm check
@@ -17,15 +16,6 @@ generate-types: generate-definitions
     pnpm --filter @lumiscia/generate-types generate
 
 ci-typescript-artifacts: generate-types wasm-bindings-debug
-
-clean-release-artifacts:
-    rm -rf {{ release_artifacts_out }}
-
-release-artifacts: clean-release-artifacts wasm-bindings-release generate-definitions
-    mkdir -p {{ release_artifacts_out }}
-    cp -R {{ wasm_bindings_out }}/* {{ release_artifacts_out }}/
-    cp -R {{ definitions_out }} {{ release_artifacts_out }}/definitions
-    find {{ release_artifacts_out }} -type f -print0 | sort -z | xargs -0 shasum -a 256 > {{ release_artifacts_out }}/checksums.txt
 
 generate-definitions:
     cargo run -p lumen-generators -- definitions --out-dir {{ definitions_out }}
