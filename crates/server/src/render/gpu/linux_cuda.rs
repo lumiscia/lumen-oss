@@ -35,7 +35,7 @@ pub(super) fn render_project_mp4_cuda(
     let output_path = tmp.path().join("output.mp4");
     let mut renderer = create_gpu_renderer().map_err(|err| RenderError {
         code: "render_failed",
-        message: format!("failed to create GPU renderer: {err}"),
+        message: format!("failed to create GPU renderer: {err:#}"),
         retryable: true,
     })?;
     renderer

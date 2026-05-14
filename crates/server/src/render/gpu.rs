@@ -60,7 +60,7 @@ pub fn render_project_mp4(
     let media_store = LocalMediaStore::new(media_root);
     let mut renderer = create_gpu_renderer().map_err(|err| RenderError {
         code: "render_failed",
-        message: format!("failed to create GPU renderer: {err}"),
+        message: format!("failed to create GPU renderer: {err:#}"),
         retryable: true,
     })?;
     renderer

@@ -10,12 +10,14 @@ import type { RenderEvent } from "../src/types.js";
 const shouldRun = process.env.LUMEN_SDK_INTEGRATION === "1";
 const describeIntegration = shouldRun ? describe : describe.skip;
 const serverToken = "sdk-integration-token";
+const serverFeatures = process.env.LUMEN_SERVER_FEATURES ?? "cli";
 const startupTimeoutMs = 180_000;
 const renderTimeoutMs = 180_000;
 
 describeIntegration("Lumen SDK with lumen-server", () => {
   let server: ChildProcessWithoutNullStreams | undefined;
   let baseUrl: string;
+  let serverOutput = "";
 
   beforeAll(async () => {
     const port = await freePort();
@@ -27,7 +29,7 @@ describeIntegration("Lumen SDK with lumen-server", () => {
         "-p",
         "lumen-server",
         "--features",
-        "cli",
+        serverFeatures,
         "--bin",
         "lumen-server",
         "--",
@@ -46,6 +48,12 @@ describeIntegration("Lumen SDK with lumen-server", () => {
         },
       },
     );
+    server.stdout.on("data", (chunk) => {
+      serverOutput += String(chunk);
+    });
+    server.stderr.on("data", (chunk) => {
+      serverOutput += String(chunk);
+    });
 
     await waitForServer(baseUrl, server, startupTimeoutMs);
   }, startupTimeoutMs + 5_000);
@@ -68,7 +76,9 @@ describeIntegration("Lumen SDK with lumen-server", () => {
         idempotencyKey: "sdk-integration-solid-color",
       });
 
-      expect(created.error).toBeUndefined();
+      if (created.error !== undefined) {
+        throw new Error(`${created.error}\n\nlumen-server output:\n${serverOutput}`);
+      }
       expect(created.id).toBeDefined();
       expect(created.render?.status).toBe("queued");
 
@@ -82,7 +92,9 @@ describeIntegration("Lumen SDK with lumen-server", () => {
       expect(events.at(-1)).toEqual(completed);
 
       const fetched = await lumen.getRender(created.id!);
-      expect(fetched.error).toBeUndefined();
+      if (fetched.error !== undefined) {
+        throw new Error(`${fetched.error}\n\nlumen-server output:\n${serverOutput}`);
+      }
       expect(fetched.render?.status).toBe("succeeded");
 
       const artifact = await lumen.getRenderArtifact(created.id!);
@@ -148,14 +160,10 @@ async function waitForServer(
   timeoutMs: number,
 ): Promise<void> {
   const startedAt = Date.now();
-  let stderr = "";
-  server.stderr.on("data", (chunk) => {
-    stderr += String(chunk);
-  });
 
   while (Date.now() - startedAt < timeoutMs) {
     if (server.exitCode !== null) {
-      throw new Error(`lumen-server exited before startup.\n${stderr}`);
+      throw new Error("lumen-server exited before startup.");
     }
 
     try {
@@ -170,7 +178,7 @@ async function waitForServer(
     await sleep(250);
   }
 
-  throw new Error(`Timed out waiting for lumen-server to start.\n${stderr}`);
+  throw new Error("Timed out waiting for lumen-server to start.");
 }
 
 async function stopServer(server: ChildProcessWithoutNullStreams | undefined): Promise<void> {
