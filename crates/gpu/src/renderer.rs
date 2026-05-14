@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, env, sync::Arc};
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -50,12 +50,16 @@ pub struct Renderer {
 
 impl Renderer {
     pub async fn new() -> Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let power_preference =
+            wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+        let force_fallback_adapter = env_flag("LUMEN_GPU_FORCE_FALLBACK_ADAPTER");
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference,
                 compatible_surface: None,
-                force_fallback_adapter: false,
+                force_fallback_adapter,
             })
             .await
             .context("no compatible wgpu adapter")?;
@@ -736,6 +740,17 @@ impl Renderer {
             .get(id.0 as usize)
             .ok_or_else(|| anyhow!("unknown program id {id:?}"))
     }
+}
+
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn create_bind_group_layouts(

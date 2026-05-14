@@ -43,7 +43,8 @@ jobs:
             libswscale-dev \
             libvulkan1 \
             mesa-vulkan-drivers \
-            pkg-config
+            pkg-config \
+            vulkan-tools
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -62,9 +63,17 @@ jobs:
 
       - name: Test SDK against lumen-server
         env:
+          LUMEN_GPU_FORCE_FALLBACK_ADAPTER: "1"
           LUMEN_SDK_INTEGRATION: "1"
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-        run: pnpm test:integration
+          LUMEN_SERVER_FEATURES: "cli,vulkan"
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+          WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER: "1"
+          WGPU_BACKEND: vulkan
+          WGPU_POWER_PREF: none
+        run: |
+          ls -l /usr/share/vulkan/icd.d
+          vulkaninfo --summary
+          pnpm test:integration
 
       - name: Build TypeScript workspace
         run: pnpm build
@@ -80,5 +89,5 @@ jobs:
 
       - name: Test Rust workspace
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
         run: cargo test
