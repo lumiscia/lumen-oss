@@ -1,6 +1,6 @@
 {
   "name": "@lumiscia/lumen-svelte",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Svelte preview components and state helpers for Lumen compositions.",
   "keywords": [
     "lumen",

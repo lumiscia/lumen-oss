@@ -1,6 +1,6 @@
 {
   "name": "@lumiscia/lumen-react",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "React preview components and hooks for Lumen compositions.",
   "keywords": [
     "lumen",
