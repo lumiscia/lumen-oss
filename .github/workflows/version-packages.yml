@@ -3,6 +3,10 @@ name: Version Packages
 on:
   workflow_dispatch:
 
+concurrency:
+  group: version-packages
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
@@ -23,43 +27,37 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
-
-      - uses: extractions/setup-just@v3
-
-      - name: Install Rust targets
-        run: rustup target add wasm32-unknown-unknown
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libavcodec-dev \
-            libavdevice-dev \
-            libavfilter-dev \
-            libavformat-dev \
-            libavutil-dev \
-            libswresample-dev \
-            libswscale-dev \
-            pkg-config
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install WASM tooling
-        run: cargo install wasm-bindgen-cli --version 0.2.118 --locked
+      - name: Apply changesets
+        run: pnpm release:version
 
-      - name: Create Release Pull Request or Publish
-        id: changesets
-        uses: changesets/action@v1
-        with:
-          version: pnpm release:version
-          publish: pnpm release:publish
-          title: "chore: version packages"
-          commit: "chore: version packages"
+      - name: Check for version changes
+        run: |
+          if git diff --quiet; then
+            echo "No version changes were produced. Add a pending changeset before running this workflow."
+            exit 1
+          fi
+
+      - name: Create or update version pull request
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_BRANCH: changeset-release/main
+          RELEASE_TITLE: "chore: version packages"
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$RELEASE_BRANCH":"refs/remotes/origin/$RELEASE_BRANCH" || true
+          git checkout -B "$RELEASE_BRANCH"
+          git add .
+          git commit -m "$RELEASE_TITLE"
+          git push --force-with-lease=refs/heads/"$RELEASE_BRANCH" origin "$RELEASE_BRANCH"
+
+          pr_number="$(gh pr list --head "$RELEASE_BRANCH" --base main --state open --json number --jq '.[0].number')"
+          if [ -n "$pr_number" ]; then
+            gh pr edit "$pr_number" --title "$RELEASE_TITLE" --body "Version packages from pending changesets."
+          else
+            gh pr create --base main --head "$RELEASE_BRANCH" --title "$RELEASE_TITLE" --body "Version packages from pending changesets."
+          fi
