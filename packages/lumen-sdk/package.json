@@ -40,7 +40,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test:integration": "LUMEN_SDK_INTEGRATION=1 vitest run test/integration.test.ts"
   },
   "dependencies": {
     "@lumiscia/lumen-shared": "workspace:*",

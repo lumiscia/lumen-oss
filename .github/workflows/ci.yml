@@ -60,6 +60,12 @@ jobs:
       - name: Test TypeScript workspace
         run: pnpm test
 
+      - name: Test SDK against lumen-server
+        env:
+          LUMEN_SDK_INTEGRATION: "1"
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: pnpm test:integration
+
       - name: Build TypeScript workspace
         run: pnpm build
 

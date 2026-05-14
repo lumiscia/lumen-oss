@@ -35,6 +35,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint .",
     "test": "vitest run --passWithNoTests",
+    "test:integration": "LUMEN_SDK_INTEGRATION=1 vitest run packages/lumen-sdk/test/integration.test.ts",
     "build": "pnpm -r --filter '!lumen' --filter '!@lumiscia/lumen-bindings' build && pnpm --filter @lumiscia/lumen-bindings check"
   },
   "devDependencies": {
