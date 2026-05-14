@@ -30,7 +30,7 @@
     "sync:cargo-version": "pnpm --filter @lumiscia/release-tools sync-cargo-version",
     "release:version": "pnpm version:packages && pnpm sync:cargo-version && pnpm install --lockfile-only && cargo metadata --no-deps --format-version 1 > /dev/null",
     "release:publish": "just wasm-bindings-release && pnpm -r --filter './packages/*' --filter '!@lumiscia/lumen-bindings' build && pnpm publish:crates && pnpm publish:packages",
-    "check": "pnpm format:check && pnpm lint && pnpm -r check",
+    "check": "pnpm format:check && pnpm lint && pnpm -r --filter './packages/*' --filter '!@lumiscia/lumen-bindings' build && pnpm -r check",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint .",
