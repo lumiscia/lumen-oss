@@ -30,6 +30,19 @@ export interface RenderOptions {
   readonly webhookUrl?: string;
 }
 
+export interface RenderAndWaitOptions extends RenderOptions, WaitForRenderOptions {}
+
+export interface RenderAndWaitResult {
+  readonly completed: Extract<RenderEvent, { type: "render.completed" }>;
+  readonly render: RenderResult;
+}
+
+export interface RenderArtifactOptions extends RenderAndWaitOptions {}
+
+export interface RenderArtifactResult extends RenderAndWaitResult {
+  readonly artifact: Blob;
+}
+
 export interface RenderResult {
   readonly cached?: boolean;
   readonly id?: string;

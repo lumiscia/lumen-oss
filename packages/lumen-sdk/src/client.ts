@@ -9,6 +9,10 @@ import type {
   CreateUrlMediaOptions,
   LumenOptions,
   MediaUploadPart,
+  RenderAndWaitOptions,
+  RenderAndWaitResult,
+  RenderArtifactOptions,
+  RenderArtifactResult,
   RenderEvent,
   RenderEventHandlers,
   RenderEventSubscription,
@@ -68,6 +72,37 @@ export class Lumen {
     }
 
     return renderResult(body);
+  }
+
+  async renderAndWait(
+    composition: Composition | LumenComposition,
+    options: RenderAndWaitOptions = {},
+  ): Promise<RenderAndWaitResult> {
+    const render = await this.render(composition, options);
+    if (render.error) {
+      throw render.error;
+    }
+    if (!render.id) {
+      throw new Error("Lumen render response did not include a render id.");
+    }
+
+    const completed = await this.waitForRender(render.id, {
+      ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
+      ...optionalSignal(options.signal),
+    });
+    return { completed, render };
+  }
+
+  async renderArtifact(
+    composition: Composition | LumenComposition,
+    options: RenderArtifactOptions = {},
+  ): Promise<RenderArtifactResult> {
+    const result = await this.renderAndWait(composition, options);
+    const artifact = await this.getRenderArtifact(
+      result.completed.renderId,
+      optionalSignal(options.signal),
+    );
+    return { ...result, artifact };
   }
 
   async getRender(id: string, options: { signal?: AbortSignal } = {}): Promise<RenderResult> {
