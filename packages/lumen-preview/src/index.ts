@@ -1,5 +1,10 @@
 import { LumenMediaBridge } from "./media/index.js";
-export { LumenAudioEngine } from "./audio-engine.js";
+export {
+  createLumenAudioSchedule,
+  lumenAudioSamplesToSeconds,
+  LumenAudioEngine,
+  msToLumenAudioSample,
+} from "./audio-engine.js";
 export {
   LumenPreviewContext,
   createLumenPreview,
@@ -13,6 +18,7 @@ export type {
   AudioEngineTimeline,
   AudioEngineTrack,
   AudioSourceRegistration,
+  ScheduledAudioClip,
 } from "./audio-engine.js";
 import type {
   LumenMediaTarget,

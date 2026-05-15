@@ -1,7 +1,10 @@
 import type { MediaSourceInput } from "./media/index.js";
 import { sourceInputToBlob } from "./media/index.js";
 
-const CLIP_EDGE_FADE_SECONDS = 0.008;
+export const LUMEN_AUDIO_SAMPLE_RATE = 48_000;
+export const LUMEN_AUDIO_CHANNELS = 2;
+export const LUMEN_AUDIO_CLIP_EDGE_FADE_SAMPLES = 384;
+const MS_PER_SECOND = 1_000;
 
 export interface AudioEngineTrack {
   id: string;
@@ -38,6 +41,15 @@ type ActivePlayback = {
   startContextTime: number;
   startMs: number;
 };
+
+export interface ScheduledAudioClip {
+  clip: AudioEngineClip;
+  delaySeconds: number;
+  durationSeconds: number;
+  fadeSeconds: number;
+  gain: number;
+  sourceOffsetSeconds: number;
+}
 
 export class LumenAudioEngine {
   #buffers = new Map<string, AudioBuffer>();
@@ -89,31 +101,18 @@ export class LumenAudioEngine {
     const context = this.#getContext();
     void context.resume();
     const startedNodes: AudioBufferSourceNode[] = [];
-    const hasSolo = timeline.tracks.some((track) => track.solo);
-    const tracks = new Map(timeline.tracks.map((track) => [track.id, track]));
     const startContextTime = context.currentTime;
 
-    for (const clip of timeline.clips) {
-      const track = tracks.get(clip.trackId);
+    for (const scheduled of createLumenAudioSchedule(timeline, fromMs)) {
+      const { clip, delaySeconds, durationSeconds, fadeSeconds, gain: targetGain } = scheduled;
       const buffer = this.#buffers.get(clip.sourceId);
-      if (!track || !buffer || track.muted || (hasSolo && !track.solo)) {
+      if (!buffer) {
         continue;
       }
 
-      const clipEndMs = clip.startMs + clip.durationMs;
-      if (clipEndMs <= fromMs) {
-        continue;
-      }
-
-      const clipOffsetMs = Math.max(0, fromMs - clip.startMs);
-      const delaySeconds = Math.max(0, clip.startMs - fromMs) / 1_000;
-      const sourceOffsetSeconds = (clip.sourceStartMs + clipOffsetMs) / 1_000;
-      const durationSeconds = (clip.durationMs - clipOffsetMs) / 1_000;
       const source = context.createBufferSource();
       const gain = context.createGain();
-      const targetGain = track.volume * clip.volume;
       const startAt = startContextTime + delaySeconds;
-      const fadeSeconds = Math.min(CLIP_EDGE_FADE_SECONDS, Math.max(0, durationSeconds / 4));
 
       source.buffer = buffer;
       gain.gain.setValueAtTime(0, startAt);
@@ -124,7 +123,7 @@ export class LumenAudioEngine {
       );
       gain.gain.linearRampToValueAtTime(0, startAt + durationSeconds);
       source.connect(gain).connect(context.destination);
-      source.start(startAt, sourceOffsetSeconds, durationSeconds);
+      source.start(startAt, scheduled.sourceOffsetSeconds, durationSeconds);
       startedNodes.push(source);
     }
 
@@ -173,11 +172,11 @@ export class LumenAudioEngine {
     }
 
     const durationMs = this.#timeline
-      ? (this.#timeline.durationFrames / Math.max(this.#timeline.fps, 1)) * 1_000
+      ? (this.#timeline.durationFrames / Math.max(this.#timeline.fps, 1)) * MS_PER_SECOND
       : Number.POSITIVE_INFINITY;
     return Math.min(
       durationMs,
-      playback.startMs + (context.currentTime - playback.startContextTime) * 1_000,
+      playback.startMs + (context.currentTime - playback.startContextTime) * MS_PER_SECOND,
     );
   }
 
@@ -193,7 +192,64 @@ export class LumenAudioEngine {
   }
 
   #getContext(): AudioContext {
-    this.#context ??= new AudioContext({ sampleRate: 48_000 });
+    this.#context ??= new AudioContext({ sampleRate: LUMEN_AUDIO_SAMPLE_RATE });
     return this.#context;
   }
+}
+
+export function createLumenAudioSchedule(
+  timeline: AudioEngineTimeline,
+  fromMs: number,
+): ScheduledAudioClip[] {
+  const startSample = msToLumenAudioSample(Math.max(0, fromMs));
+  const hasSolo = timeline.tracks.some((track) => track.solo);
+  const tracks = new Map(timeline.tracks.map((track) => [track.id, track]));
+  const scheduled: ScheduledAudioClip[] = [];
+
+  for (const clip of timeline.clips) {
+    const track = tracks.get(clip.trackId);
+    if (
+      !track ||
+      track.muted ||
+      (hasSolo && !track.solo) ||
+      track.volume <= 0 ||
+      clip.volume <= 0
+    ) {
+      continue;
+    }
+
+    const clipStartSample = msToLumenAudioSample(clip.startMs);
+    const clipDurationSamples = Math.max(1, msToLumenAudioSample(clip.durationMs));
+    const clipEndSample = clipStartSample + clipDurationSamples;
+    if (clipEndSample <= startSample) {
+      continue;
+    }
+
+    const overlapStartSample = Math.max(startSample, clipStartSample);
+    const clipOffsetSamples = overlapStartSample - clipStartSample;
+    const remainingSamples = clipDurationSamples - clipOffsetSamples;
+    const delaySamples = Math.max(0, clipStartSample - startSample);
+    const sourceStartSample = msToLumenAudioSample(clip.sourceStartMs) + clipOffsetSamples;
+
+    scheduled.push({
+      clip,
+      delaySeconds: lumenAudioSamplesToSeconds(delaySamples),
+      durationSeconds: lumenAudioSamplesToSeconds(remainingSamples),
+      fadeSeconds: lumenAudioSamplesToSeconds(
+        Math.min(LUMEN_AUDIO_CLIP_EDGE_FADE_SAMPLES, Math.max(0, Math.floor(remainingSamples / 4))),
+      ),
+      gain: track.volume * clip.volume,
+      sourceOffsetSeconds: lumenAudioSamplesToSeconds(sourceStartSample),
+    });
+  }
+
+  return scheduled;
+}
+
+export function msToLumenAudioSample(ms: number): number {
+  return Math.floor((Math.max(0, ms) * LUMEN_AUDIO_SAMPLE_RATE) / MS_PER_SECOND);
+}
+
+export function lumenAudioSamplesToSeconds(samples: number): number {
+  return Math.max(0, samples) / LUMEN_AUDIO_SAMPLE_RATE;
 }
