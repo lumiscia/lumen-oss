@@ -42,10 +42,36 @@ enum RuntimeProgram {
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    adapter_info: GpuAdapterInfo,
     textures: Vec<RuntimeTexture>,
     buffers: Vec<RuntimeBuffer>,
     samplers: Vec<RuntimeSampler>,
     programs: Vec<RuntimeProgram>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GpuAdapterInfo {
+    pub name: String,
+    pub backend: wgpu::Backend,
+    pub device_type: wgpu::DeviceType,
+    pub vendor: u32,
+    pub device: u32,
+    pub driver: String,
+    pub driver_info: String,
+}
+
+impl From<wgpu::AdapterInfo> for GpuAdapterInfo {
+    fn from(info: wgpu::AdapterInfo) -> Self {
+        Self {
+            name: info.name,
+            backend: info.backend,
+            device_type: info.device_type,
+            vendor: info.vendor,
+            device: info.device,
+            driver: info.driver,
+            driver_info: info.driver_info,
+        }
+    }
 }
 
 impl Renderer {
@@ -63,30 +89,63 @@ impl Renderer {
             })
             .await
             .context("no compatible wgpu adapter")?;
-        let adapter_info = adapter.get_info();
+        let adapter_info = GpuAdapterInfo::from(adapter.get_info());
         tracing::info!(
             target: "lumen_gpu",
             adapter = %adapter_info.name,
             backend = ?adapter_info.backend,
             device_type = ?adapter_info.device_type,
+            vendor = adapter_info.vendor,
+            device = adapter_info.device,
+            driver = %adapter_info.driver,
+            driver_info = %adapter_info.driver_info,
             "selected wgpu adapter"
         );
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .context("create wgpu device")?;
-        Ok(Self::from_device(device, queue))
+        Ok(Self::from_device_with_adapter_info(
+            device,
+            queue,
+            adapter_info,
+        ))
     }
 
     pub fn from_device(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        Self::from_device_with_adapter_info(
+            device,
+            queue,
+            GpuAdapterInfo {
+                name: "external device".to_string(),
+                backend: wgpu::Backend::Noop,
+                device_type: wgpu::DeviceType::Other,
+                vendor: 0,
+                device: 0,
+                driver: "external".to_string(),
+                driver_info: "created outside lumen-gpu".to_string(),
+            },
+        )
+    }
+
+    pub fn from_device_with_adapter_info(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        adapter_info: GpuAdapterInfo,
+    ) -> Self {
         Self {
             device,
             queue,
+            adapter_info,
             textures: Vec::new(),
             buffers: Vec::new(),
             samplers: Vec::new(),
             programs: Vec::new(),
         }
+    }
+
+    pub fn adapter_info(&self) -> &GpuAdapterInfo {
+        &self.adapter_info
     }
 
     pub fn prepare_plan(&mut self, plan: &RenderPlan) -> Result<()> {
