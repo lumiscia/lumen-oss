@@ -1143,6 +1143,54 @@
                     "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
+                  "fill_gradient_end": {
+                    "$ref": "#/$defs/vec2",
+                    "default": [1.0, 0.0],
+                    "description": "Linear gradient end point in local pixels.",
+                    "title": "Fill Gradient End",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "fill_gradient_end_color": {
+                    "$ref": "#/$defs/color",
+                    "default": [0, 0, 0, 255],
+                    "description": "Linear gradient end color.",
+                    "title": "Fill Gradient End Color",
+                    "x-lumen-kind": "color"
+                  },
+                  "fill_gradient_start": {
+                    "$ref": "#/$defs/vec2",
+                    "default": [0.0, 0.0],
+                    "description": "Linear gradient start point in local pixels.",
+                    "title": "Fill Gradient Start",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "fill_gradient_start_color": {
+                    "$ref": "#/$defs/color",
+                    "default": [255, 255, 255, 255],
+                    "description": "Linear gradient start color.",
+                    "title": "Fill Gradient Start Color",
+                    "x-lumen-kind": "color"
+                  },
+                  "fill_paint": {
+                    "default": "solid",
+                    "description": "Fill paint mode.",
+                    "enum": ["solid", "linear_gradient"],
+                    "title": "Fill Paint",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Solid",
+                        "name": "solid",
+                        "value": 0
+                      },
+                      {
+                        "label": "Linear Gradient",
+                        "name": "linear_gradient",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
                   "position": {
                     "$ref": "#/$defs/vec2",
                     "default": [0.0, 0.0],
@@ -1514,6 +1562,54 @@
                     "title": "Fill Enabled",
                     "type": "boolean",
                     "x-lumen-kind": "bool"
+                  },
+                  "fill_gradient_end": {
+                    "$ref": "#/$defs/vec2",
+                    "default": [1.0, 0.0],
+                    "description": "Linear gradient end point in local pixels.",
+                    "title": "Fill Gradient End",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "fill_gradient_end_color": {
+                    "$ref": "#/$defs/color",
+                    "default": [0, 0, 0, 255],
+                    "description": "Linear gradient end color.",
+                    "title": "Fill Gradient End Color",
+                    "x-lumen-kind": "color"
+                  },
+                  "fill_gradient_start": {
+                    "$ref": "#/$defs/vec2",
+                    "default": [0.0, 0.0],
+                    "description": "Linear gradient start point in local pixels.",
+                    "title": "Fill Gradient Start",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "fill_gradient_start_color": {
+                    "$ref": "#/$defs/color",
+                    "default": [255, 255, 255, 255],
+                    "description": "Linear gradient start color.",
+                    "title": "Fill Gradient Start Color",
+                    "x-lumen-kind": "color"
+                  },
+                  "fill_paint": {
+                    "default": "solid",
+                    "description": "Fill paint mode.",
+                    "enum": ["solid", "linear_gradient"],
+                    "title": "Fill Paint",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Solid",
+                        "name": "solid",
+                        "value": 0
+                      },
+                      {
+                        "label": "Linear Gradient",
+                        "name": "linear_gradient",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   },
                   "geometry_kind": {
                     "default": "rectangle",

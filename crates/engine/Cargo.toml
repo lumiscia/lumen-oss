@@ -49,3 +49,6 @@ glemu = { version = "0.1.2", default-features = false, features = ["api", "video
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["VideoFrame", "WebGl2RenderingContext", "console"] }
+
+[dev-dependencies]
+pollster = "0.4.0"

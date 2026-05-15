@@ -1612,6 +1612,7 @@ dependencies = [
  "lumen-engine-gpu",
  "lumen-engine-macros",
  "lumen-engine-text",
+ "pollster",
  "serde",
  "serde_json",
  "smallvec",

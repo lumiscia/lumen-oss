@@ -1,13 +1,17 @@
 struct PathParams {
     fill_color: vec4<f32>,
+    fill_gradient_start_color: vec4<f32>,
+    fill_gradient_end_color: vec4<f32>,
     stroke_color: vec4<f32>,
     position: vec2<f32>,
+    fill_gradient_start: vec2<f32>,
+    fill_gradient_end: vec2<f32>,
     stroke_width: f32,
+    fill_paint: u32,
     flags: u32,
     point_count: u32,
     _pad0: u32,
     _pad1: u32,
-    _pad2: u32,
 }
 
 struct PathPoints {
@@ -63,6 +67,17 @@ fn path_edge_distance(p: vec2<f32>) -> f32 {
     return min_distance;
 }
 
+fn linear_gradient_color(local_pixel: vec2<f32>) -> vec4<f32> {
+    let axis = params.fill_gradient_end - params.fill_gradient_start;
+    let axis_len_sq = max(dot(axis, axis), 0.0001);
+    let t = clamp(dot(local_pixel - params.fill_gradient_start, axis) / axis_len_sq, 0.0, 1.0);
+    return mix(params.fill_gradient_start_color, params.fill_gradient_end_color, t);
+}
+
+fn fill_color_for(local_pixel: vec2<f32>) -> vec4<f32> {
+    return select(params.fill_color, linear_gradient_color(local_pixel), params.fill_paint == 1u);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = textureDimensions(output_tex);
@@ -80,7 +95,7 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         clamp(0.5 - (distance - params.stroke_width * 0.5), 0.0, 1.0),
         stroke_enabled,
     );
-    let fill = params.fill_color * fill_alpha;
+    let fill = fill_color_for(pixel - params.position) * fill_alpha;
     let stroke = params.stroke_color * stroke_alpha;
     let color = mix(fill, stroke, stroke_alpha);
     textureStore(output_tex, vec2<i32>(id.xy), color);

@@ -3,6 +3,8 @@ use crate::gpu::{
 };
 use crate::node::{NodeId, NodeProperty, PortRef};
 
+use super::shape::FillPaintKind;
+
 /// Produces a rasterized vector path source.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "path", name = "Path", category = "vector")]
@@ -26,6 +28,21 @@ pub struct Path {
     /// Fill color.
     #[property(kind = "color")]
     pub fill_color: NodeProperty,
+    /// Fill paint mode.
+    #[property(kind = "enum", enum_type = FillPaintKind)]
+    pub fill_paint: NodeProperty,
+    /// Linear gradient start point in local pixels.
+    #[property(kind = "vec2")]
+    pub fill_gradient_start: NodeProperty,
+    /// Linear gradient end point in local pixels.
+    #[property(kind = "vec2")]
+    pub fill_gradient_end: NodeProperty,
+    /// Linear gradient start color.
+    #[property(kind = "color")]
+    pub fill_gradient_start_color: NodeProperty,
+    /// Linear gradient end color.
+    #[property(kind = "color")]
+    pub fill_gradient_end_color: NodeProperty,
     /// Enables stroke rendering.
     #[property(kind = "bool")]
     pub stroke_enabled: NodeProperty,
@@ -45,6 +62,11 @@ impl Default for Path {
             position: NodeProperty::Vec2((0.0, 0.0)),
             fill_enabled: NodeProperty::Bool(true),
             fill_color: NodeProperty::Color([255, 255, 255, 255]),
+            fill_paint: NodeProperty::Int(FillPaintKind::Solid as i64),
+            fill_gradient_start: NodeProperty::Vec2((0.0, 0.0)),
+            fill_gradient_end: NodeProperty::Vec2((1.0, 0.0)),
+            fill_gradient_start_color: NodeProperty::Color([255, 255, 255, 255]),
+            fill_gradient_end_color: NodeProperty::Color([0, 0, 0, 255]),
             stroke_enabled: NodeProperty::Bool(false),
             stroke_color: NodeProperty::Color([0, 0, 0, 255]),
             stroke_width: NodeProperty::Float(1.0),
@@ -75,6 +97,11 @@ impl GpuFrameBindNode for Path {
             position,
             fill_enabled,
             fill_color,
+            fill_paint,
+            fill_gradient_start,
+            fill_gradient_end,
+            fill_gradient_start_color,
+            fill_gradient_end_color,
             stroke_enabled,
             stroke_color,
             stroke_width,
@@ -99,6 +126,26 @@ impl GpuFrameBindNode for Path {
             "fill_color",
             &ctx.expr_context(*node_id, "fill_color"),
         )?;
+        let fill_gradient_start = fill_gradient_start.resolve_vec2(
+            *node_id,
+            "fill_gradient_start",
+            &ctx.expr_context(*node_id, "fill_gradient_start"),
+        )?;
+        let fill_gradient_end = fill_gradient_end.resolve_vec2(
+            *node_id,
+            "fill_gradient_end",
+            &ctx.expr_context(*node_id, "fill_gradient_end"),
+        )?;
+        let fill_gradient_start_color = fill_gradient_start_color.resolve_color(
+            *node_id,
+            "fill_gradient_start_color",
+            &ctx.expr_context(*node_id, "fill_gradient_start_color"),
+        )?;
+        let fill_gradient_end_color = fill_gradient_end_color.resolve_color(
+            *node_id,
+            "fill_gradient_end_color",
+            &ctx.expr_context(*node_id, "fill_gradient_end_color"),
+        )?;
         let stroke = stroke_color.resolve_color(
             *node_id,
             "stroke_color",
@@ -122,16 +169,28 @@ impl GpuFrameBindNode for Path {
 
         let params = super::renderer::PathParams {
             fill_color: rgba8_to_f32(fill),
+            fill_gradient_start_color: rgba8_to_f32(fill_gradient_start_color),
+            fill_gradient_end_color: rgba8_to_f32(fill_gradient_end_color),
             stroke_color: rgba8_to_f32(stroke),
             position: [x as f32, y as f32],
+            fill_gradient_start: [
+                fill_gradient_start.0 as f32,
+                fill_gradient_start.1 as f32,
+            ],
+            fill_gradient_end: [fill_gradient_end.0 as f32, fill_gradient_end.1 as f32],
             stroke_width: stroke_width.resolve_float(
                 *node_id,
                 "stroke_width",
                 &ctx.expr_context(*node_id, "stroke_width"),
             )? as f32,
+            fill_paint: FillPaintKind::from_int(fill_paint.resolve_int(
+                *node_id,
+                "fill_paint",
+                &ctx.expr_context(*node_id, "fill_paint"),
+            )?) as u32,
             flags,
             point_count: points.len() as u32,
-            _pad: [0; 3],
+            _pad: [0; 2],
         };
         bound.write_buffer(*params_buffer, 0, bytemuck::bytes_of(&params));
         if !points.is_empty() {

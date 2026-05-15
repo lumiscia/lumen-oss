@@ -21,6 +21,22 @@ impl ShapeGeometryKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[repr(i64)]
+pub enum FillPaintKind {
+    Solid = 0,
+    LinearGradient = 1,
+}
+
+impl FillPaintKind {
+    pub fn from_int(value: i64) -> Self {
+        match value {
+            1 => Self::LinearGradient,
+            _ => Self::Solid,
+        }
+    }
+}
+
 /// Produces a vector shape layer for GPU rasterization.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "shape", name = "Shape", category = "vector")]
@@ -56,6 +72,21 @@ pub struct Shape {
     /// Fill color.
     #[property(kind = "color")]
     pub fill_color: NodeProperty,
+    /// Fill paint mode.
+    #[property(kind = "enum", enum_type = FillPaintKind)]
+    pub fill_paint: NodeProperty,
+    /// Linear gradient start point in local pixels.
+    #[property(kind = "vec2")]
+    pub fill_gradient_start: NodeProperty,
+    /// Linear gradient end point in local pixels.
+    #[property(kind = "vec2")]
+    pub fill_gradient_end: NodeProperty,
+    /// Linear gradient start color.
+    #[property(kind = "color")]
+    pub fill_gradient_start_color: NodeProperty,
+    /// Linear gradient end color.
+    #[property(kind = "color")]
+    pub fill_gradient_end_color: NodeProperty,
     /// Enables stroke rendering.
     #[property(kind = "bool")]
     pub stroke_enabled: NodeProperty,
@@ -79,6 +110,11 @@ impl Default for Shape {
             position: NodeProperty::Vec2((0.0, 0.0)),
             fill_enabled: NodeProperty::Bool(true),
             fill_color: NodeProperty::Color([255, 255, 255, 255]),
+            fill_paint: NodeProperty::Int(FillPaintKind::Solid as i64),
+            fill_gradient_start: NodeProperty::Vec2((0.0, 0.0)),
+            fill_gradient_end: NodeProperty::Vec2((1.0, 0.0)),
+            fill_gradient_start_color: NodeProperty::Color([255, 255, 255, 255]),
+            fill_gradient_end_color: NodeProperty::Color([0, 0, 0, 255]),
             stroke_enabled: NodeProperty::Bool(false),
             stroke_color: NodeProperty::Color([0, 0, 0, 255]),
             stroke_width: NodeProperty::Float(1.0),
@@ -112,6 +148,11 @@ impl GpuFrameBindNode for Shape {
             position,
             fill_enabled,
             fill_color,
+            fill_paint,
+            fill_gradient_start,
+            fill_gradient_end,
+            fill_gradient_start_color,
+            fill_gradient_end_color,
             stroke_enabled,
             stroke_color,
             stroke_width,
@@ -129,6 +170,26 @@ impl GpuFrameBindNode for Shape {
             *node_id,
             "fill_color",
             &ctx.expr_context(*node_id, "fill_color"),
+        )?;
+        let fill_gradient_start = fill_gradient_start.resolve_vec2(
+            *node_id,
+            "fill_gradient_start",
+            &ctx.expr_context(*node_id, "fill_gradient_start"),
+        )?;
+        let fill_gradient_end = fill_gradient_end.resolve_vec2(
+            *node_id,
+            "fill_gradient_end",
+            &ctx.expr_context(*node_id, "fill_gradient_end"),
+        )?;
+        let fill_gradient_start_color = fill_gradient_start_color.resolve_color(
+            *node_id,
+            "fill_gradient_start_color",
+            &ctx.expr_context(*node_id, "fill_gradient_start_color"),
+        )?;
+        let fill_gradient_end_color = fill_gradient_end_color.resolve_color(
+            *node_id,
+            "fill_gradient_end_color",
+            &ctx.expr_context(*node_id, "fill_gradient_end_color"),
         )?;
         let stroke = stroke_color.resolve_color(
             *node_id,
@@ -152,6 +213,8 @@ impl GpuFrameBindNode for Shape {
         }
         let params = super::renderer::ShapeParams {
             fill_color: rgba8_to_f32(fill),
+            fill_gradient_start_color: rgba8_to_f32(fill_gradient_start_color),
+            fill_gradient_end_color: rgba8_to_f32(fill_gradient_end_color),
             stroke_color: rgba8_to_f32(stroke),
             position: [x as f32, y as f32],
             size: [
@@ -161,7 +224,12 @@ impl GpuFrameBindNode for Shape {
                 height
                     .resolve_int(*node_id, "height", &ctx.expr_context(*node_id, "height"))?
                     .max(1) as f32,
+                ],
+            fill_gradient_start: [
+                fill_gradient_start.0 as f32,
+                fill_gradient_start.1 as f32,
             ],
+            fill_gradient_end: [fill_gradient_end.0 as f32, fill_gradient_end.1 as f32],
             border_radius: border_radius.resolve_float(
                 *node_id,
                 "border_radius",
@@ -177,7 +245,13 @@ impl GpuFrameBindNode for Shape {
                 "geometry_kind",
                 &ctx.expr_context(*node_id, "geometry_kind"),
             )?) as u32,
+            fill_paint: FillPaintKind::from_int(fill_paint.resolve_int(
+                *node_id,
+                "fill_paint",
+                &ctx.expr_context(*node_id, "fill_paint"),
+            )?) as u32,
             flags,
+            _pad: [0; 3],
         };
         bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
         Ok(())

@@ -48,6 +48,11 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             position: shape.position.clone(),
             fill_enabled: shape.fill_enabled.clone(),
             fill_color: shape.fill_color.clone(),
+            fill_paint: shape.fill_paint.clone(),
+            fill_gradient_start: shape.fill_gradient_start.clone(),
+            fill_gradient_end: shape.fill_gradient_end.clone(),
+            fill_gradient_start_color: shape.fill_gradient_start_color.clone(),
+            fill_gradient_end_color: shape.fill_gradient_end_color.clone(),
             stroke_enabled: shape.stroke_enabled.clone(),
             stroke_color: shape.stroke_color.clone(),
             stroke_width: shape.stroke_width.clone(),
@@ -142,6 +147,11 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             position: path.position.clone(),
             fill_enabled: path.fill_enabled.clone(),
             fill_color: path.fill_color.clone(),
+            fill_paint: path.fill_paint.clone(),
+            fill_gradient_start: path.fill_gradient_start.clone(),
+            fill_gradient_end: path.fill_gradient_end.clone(),
+            fill_gradient_start_color: path.fill_gradient_start_color.clone(),
+            fill_gradient_end_color: path.fill_gradient_end_color.clone(),
             stroke_enabled: path.stroke_enabled.clone(),
             stroke_color: path.stroke_color.clone(),
             stroke_width: path.stroke_width.clone(),
@@ -372,25 +382,36 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ShapeParams {
     pub(crate) fill_color: [f32; 4],
+    pub(crate) fill_gradient_start_color: [f32; 4],
+    pub(crate) fill_gradient_end_color: [f32; 4],
     pub(crate) stroke_color: [f32; 4],
     pub(crate) position: [f32; 2],
     pub(crate) size: [f32; 2],
+    pub(crate) fill_gradient_start: [f32; 2],
+    pub(crate) fill_gradient_end: [f32; 2],
     pub(crate) border_radius: f32,
     pub(crate) stroke_width: f32,
     pub(crate) geometry_kind: u32,
+    pub(crate) fill_paint: u32,
     pub(crate) flags: u32,
+    pub(crate) _pad: [u32; 3],
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct PathParams {
     pub(crate) fill_color: [f32; 4],
+    pub(crate) fill_gradient_start_color: [f32; 4],
+    pub(crate) fill_gradient_end_color: [f32; 4],
     pub(crate) stroke_color: [f32; 4],
     pub(crate) position: [f32; 2],
+    pub(crate) fill_gradient_start: [f32; 2],
+    pub(crate) fill_gradient_end: [f32; 2],
     pub(crate) stroke_width: f32,
+    pub(crate) fill_paint: u32,
     pub(crate) flags: u32,
     pub(crate) point_count: u32,
-    pub(crate) _pad: [u32; 3],
+    pub(crate) _pad: [u32; 2],
 }
 
 #[repr(C)]

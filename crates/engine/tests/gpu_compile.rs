@@ -97,6 +97,74 @@ fn compiles_solid_color_exposure_media_output_to_gpu_plan() {
 }
 
 #[test]
+fn renders_shape_linear_gradient_fill() {
+    let Some(mut renderer) = gpu_renderer() else {
+        return;
+    };
+
+    let shape = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        shape,
+        NodeKind::Shape(Shape {
+            id: shape,
+            width: NodeProperty::Int(4),
+            height: NodeProperty::Int(1),
+            fill_paint: NodeProperty::Int(1),
+            fill_gradient_start: NodeProperty::Vec2((0.0, 0.0)),
+            fill_gradient_end: NodeProperty::Vec2((4.0, 0.0)),
+            fill_gradient_start_color: NodeProperty::Color([255, 0, 0, 255]),
+            fill_gradient_end_color: NodeProperty::Color([0, 0, 255, 255]),
+            ..Shape::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(shape, "output".to_string()),
+        }),
+    );
+    graph
+        .connect(Connection {
+            from_node: shape,
+            from_port: "output".to_string(),
+            to_node: output,
+            to_port: "source".to_string(),
+        })
+        .unwrap();
+    let composition = Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 24.0,
+            duration_frames: 1,
+        },
+        RenderSettings {
+            width: 4,
+            height: 1,
+            background_color: [0, 0, 0, 0],
+        },
+    );
+
+    let media = TestMediaStore::image("unused", 1, 1);
+    let raster = renderer.render_frame(&composition, 0, &media).unwrap();
+    renderer
+        .gpu_renderer()
+        .device
+        .poll(lumen_gpu::wgpu::PollType::Poll)
+        .unwrap();
+    let bytes = read_texture_rgba8(
+        renderer.gpu_renderer(),
+        raster.texture,
+        lumen_gpu::Size::new(4, 1),
+    );
+
+    assert!(bytes[0] > bytes[8], "left pixel should be redder than center");
+    assert!(bytes[14] > bytes[2], "right pixel should be bluer than left");
+}
+
+#[test]
 fn frame_binding_updates_expression_uniforms_without_recompile() {
     let solid = NodeId::new(1);
     let exposure = NodeId::new(2);
@@ -1132,6 +1200,78 @@ fn test_composition(graph: Graph) -> Composition {
             background_color: [0, 0, 0, 255],
         },
     )
+}
+
+fn gpu_renderer() -> Option<lumen_engine::gpu::GpuCompositionRenderer> {
+    match pollster::block_on(lumen_engine::gpu::GpuCompositionRenderer::new()) {
+        Ok(renderer) => Some(renderer),
+        Err(error) => {
+            eprintln!("skipping GPU-backed lumen-engine test: {error:#}");
+            None
+        }
+    }
+}
+
+fn read_texture_rgba8(
+    renderer: &lumen_gpu::Renderer,
+    id: lumen_gpu::TextureId,
+    size: lumen_gpu::Size,
+) -> Vec<u8> {
+    let bytes_per_pixel = 4;
+    let unpadded_bytes_per_row = size.width * bytes_per_pixel;
+    let padded_bytes_per_row =
+        unpadded_bytes_per_row.next_multiple_of(lumen_gpu::wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let output_size = padded_bytes_per_row as u64 * size.height as u64;
+    let output = renderer.device.create_buffer(&lumen_gpu::wgpu::BufferDescriptor {
+        label: Some("lumen-engine test readback"),
+        size: output_size,
+        usage: lumen_gpu::wgpu::BufferUsages::COPY_DST | lumen_gpu::wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder =
+        renderer
+            .device
+            .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
+                label: Some("lumen-engine test readback encoder"),
+            });
+    encoder.copy_texture_to_buffer(
+        renderer.texture(id).unwrap().as_image_copy(),
+        lumen_gpu::wgpu::TexelCopyBufferInfo {
+            buffer: &output,
+            layout: lumen_gpu::wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(size.height),
+            },
+        },
+        lumen_gpu::wgpu::Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        },
+    );
+    renderer.queue.submit([encoder.finish()]);
+
+    let slice = output.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(lumen_gpu::wgpu::MapMode::Read, move |result| {
+        tx.send(result).unwrap()
+    });
+    renderer
+        .device
+        .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let mapped = slice.get_mapped_range();
+    let mut pixels = Vec::with_capacity((size.width * size.height * bytes_per_pixel) as usize);
+    for row in 0..size.height as usize {
+        let start = row * padded_bytes_per_row as usize;
+        let end = start + unpadded_bytes_per_row as usize;
+        pixels.extend_from_slice(&mapped[start..end]);
+    }
+    drop(mapped);
+    output.unmap();
+    pixels
 }
 
 #[derive(Debug, Clone)]
