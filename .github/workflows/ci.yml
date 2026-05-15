@@ -99,3 +99,35 @@ jobs:
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
         run: cargo test
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: extractions/setup-just@v3
+
+      - name: Install Rust targets
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check TypeScript package builds
+        run: pnpm -r --filter './packages/*' --filter '!@lumiscia/lumen-bindings' build
+
+      - name: Check pure Rust crates
+        run: cargo check -p lumen-engine -p lumen-engine-gpu -p lumen-generators -p lumen-engine-macros -p lumen-engine-text
