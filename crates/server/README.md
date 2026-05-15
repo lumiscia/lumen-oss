@@ -83,6 +83,22 @@ Verbose render diagnostics are off by default. Set `--verbose-debug` or
 `LUMEN_SERVER_VERBOSE_DEBUG=true` to enable detailed per-frame render progress
 logs, CUDA/Vulkan device diagnostics, and frame timing output.
 
+The renderer logs the selected adapter name, backend, device type, vendor,
+device, driver, and driver details when a render starts. For software Vulkan or
+non-NVIDIA validation, the same adapter-selection knobs used by `wgpu` are
+available:
+
+```bash
+LUMEN_GPU_FORCE_FALLBACK_ADAPTER=1 \
+WGPU_BACKEND=vulkan \
+WGPU_POWER_PREF=none \
+cargo run -p lumen-server --features cli,vulkan --bin lumen-server
+```
+
+On Linux CI, the SDK integration test also points Vulkan at lavapipe with
+`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`. This is a portability
+baseline, not a hardware performance target.
+
 ## Service Layer
 
 The public service layer is built around four extension points:

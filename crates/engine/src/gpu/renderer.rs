@@ -145,9 +145,10 @@ impl GpuCompositionRenderer {
             frame_bindings = compiled.frame_bindings.len(),
             "prepare compiled render plan"
         );
-        let mut renderer = lumen_gpu::Renderer::from_device(
+        let mut renderer = lumen_gpu::Renderer::from_device_with_adapter_info(
             self.renderer.device.clone(),
             self.renderer.queue.clone(),
+            self.renderer.adapter_info().clone(),
         );
         renderer
             .prepare_plan(&compiled.plan)
