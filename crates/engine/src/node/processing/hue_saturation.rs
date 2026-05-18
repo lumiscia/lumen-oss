@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("hue_saturation.wgsl");
@@ -41,6 +41,44 @@ impl Default for HueSaturation {
     }
 }
 
+#[derive(Debug, Clone)]
+struct HueSaturationFrameBinding {
+    node_id: NodeId,
+    hue_degrees: NodeProperty,
+    saturation: NodeProperty,
+    lightness: NodeProperty,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for HueSaturationFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let params = compiler::HueSaturationParams {
+            hue_offset: (self.hue_degrees.resolve_float(
+                self.node_id,
+                "hue_degrees",
+                &ctx.expr_context(self.node_id, "hue_degrees"),
+            )? / 360.0) as f32,
+            saturation: self.saturation.resolve_float(
+                self.node_id,
+                "saturation",
+                &ctx.expr_context(self.node_id, "saturation"),
+            )? as f32,
+            lightness: self.lightness.resolve_float(
+                self.node_id,
+                "lightness",
+                &ctx.expr_context(self.node_id, "lightness"),
+            )? as f32,
+            _pad: 0.0,
+        };
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
+    }
+}
+
 impl GpuCompileNode for HueSaturation {
     fn compile_gpu(
         &self,
@@ -55,7 +93,7 @@ impl GpuCompileNode for HueSaturation {
             SHADER,
             std::mem::size_of::<compiler::HueSaturationParams>() as u64,
         )?;
-        ctx.push_frame_binding(FrameBinding::HueSaturation {
+        ctx.push_frame_binding(HueSaturationFrameBinding {
             node_id: self.id,
             hue_degrees: self.hue_degrees.clone(),
             saturation: self.saturation.clone(),
@@ -67,45 +105,5 @@ impl GpuCompileNode for HueSaturation {
             domain: source.domain,
             metadata: source.metadata,
         }))
-    }
-}
-
-impl GpuFrameBindNode for HueSaturation {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::HueSaturation {
-            node_id,
-            hue_degrees,
-            saturation,
-            lightness,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let params = compiler::HueSaturationParams {
-            hue_offset: (hue_degrees.resolve_float(
-                *node_id,
-                "hue_degrees",
-                &ctx.expr_context(*node_id, "hue_degrees"),
-            )? / 360.0) as f32,
-            saturation: saturation.resolve_float(
-                *node_id,
-                "saturation",
-                &ctx.expr_context(*node_id, "saturation"),
-            )? as f32,
-            lightness: lightness.resolve_float(
-                *node_id,
-                "lightness",
-                &ctx.expr_context(*node_id, "lightness"),
-            )? as f32,
-            _pad: 0.0,
-        };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
     }
 }

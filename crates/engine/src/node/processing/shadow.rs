@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("shadow.wgsl");
@@ -134,7 +134,7 @@ impl GpuCompileNode for Shadow {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(FrameBinding::Shadow {
+        ctx.push_frame_binding(ShadowFrameBinding {
             node_id: self.id,
             offset_x: self.offset_x.clone(),
             offset_y: self.offset_y.clone(),
@@ -151,52 +151,58 @@ impl GpuCompileNode for Shadow {
     }
 }
 
-impl GpuFrameBindNode for Shadow {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Shadow {
-            node_id,
-            offset_x,
-            offset_y,
-            radius,
-            color,
-            opacity,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let color = color.resolve_color(*node_id, "color", &ctx.expr_context(*node_id, "color"))?;
+#[derive(Debug, Clone)]
+struct ShadowFrameBinding {
+    node_id: NodeId,
+    offset_x: NodeProperty,
+    offset_y: NodeProperty,
+    radius: NodeProperty,
+    color: NodeProperty,
+    opacity: NodeProperty,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for ShadowFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let color = self.color.resolve_color(
+            self.node_id,
+            "color",
+            &ctx.expr_context(self.node_id, "color"),
+        )?;
         let color = compiler::ColorParams::from_rgba8(color).color;
         let params = compiler::ShadowParams {
             color,
             values: [
-                offset_x.resolve_float(
-                    *node_id,
+                self.offset_x.resolve_float(
+                    self.node_id,
                     "offset_x",
-                    &ctx.expr_context(*node_id, "offset_x"),
+                    &ctx.expr_context(self.node_id, "offset_x"),
                 )? as f32,
-                offset_y.resolve_float(
-                    *node_id,
+                self.offset_y.resolve_float(
+                    self.node_id,
                     "offset_y",
-                    &ctx.expr_context(*node_id, "offset_y"),
+                    &ctx.expr_context(self.node_id, "offset_y"),
                 )? as f32,
-                radius
-                    .resolve_float(*node_id, "radius", &ctx.expr_context(*node_id, "radius"))?
+                self.radius
+                    .resolve_float(
+                        self.node_id,
+                        "radius",
+                        &ctx.expr_context(self.node_id, "radius"),
+                    )?
                     .round()
                     .clamp(0.0, 32.0) as f32,
-                opacity.resolve_float(
-                    *node_id,
+                self.opacity.resolve_float(
+                    self.node_id,
                     "opacity",
-                    &ctx.expr_context(*node_id, "opacity"),
+                    &ctx.expr_context(self.node_id, "opacity"),
                 )? as f32,
             ],
         };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
     }
 }

@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("raster_multimerge.wgsl");
@@ -34,6 +34,41 @@ impl Default for RasterMultiMerge {
             blend_mode: NodeProperty::Int(0),
             layers: Vec::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RasterMultiMergeFrameBinding {
+    node_id: NodeId,
+    opacity: NodeProperty,
+    blend_mode: NodeProperty,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for RasterMultiMergeFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let params = compiler::RasterMultiMergeParams {
+            values: [
+                self.opacity.resolve_float(
+                    self.node_id,
+                    "opacity",
+                    &ctx.expr_context(self.node_id, "opacity"),
+                )? as f32,
+                self.blend_mode.resolve_int(
+                    self.node_id,
+                    "blend_mode",
+                    &ctx.expr_context(self.node_id, "blend_mode"),
+                )? as f32,
+                0.0,
+                0.0,
+            ],
+        };
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
     }
 }
 
@@ -130,7 +165,7 @@ impl GpuCompileNode for RasterMultiMerge {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(FrameBinding::RasterMultiMerge {
+        ctx.push_frame_binding(RasterMultiMergeFrameBinding {
             node_id: self.id,
             opacity: self.opacity.clone(),
             blend_mode: self.blend_mode.clone(),
@@ -138,42 +173,5 @@ impl GpuCompileNode for RasterMultiMerge {
         });
 
         Ok(CompiledOutput::Raster(current))
-    }
-}
-
-impl GpuFrameBindNode for RasterMultiMerge {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::RasterMultiMerge {
-            node_id,
-            opacity,
-            blend_mode,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let params = compiler::RasterMultiMergeParams {
-            values: [
-                opacity.resolve_float(
-                    *node_id,
-                    "opacity",
-                    &ctx.expr_context(*node_id, "opacity"),
-                )? as f32,
-                blend_mode.resolve_int(
-                    *node_id,
-                    "blend_mode",
-                    &ctx.expr_context(*node_id, "blend_mode"),
-                )? as f32,
-                0.0,
-                0.0,
-            ],
-        };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
     }
 }

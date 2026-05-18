@@ -1,13 +1,16 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    gpu::{CompiledOutput, FrameBinding, RasterHandle, RasterMetadata, compiler},
+    gpu::{CompiledOutput, RasterHandle, RasterMetadata, compiler},
     node::{NodeId, PortRef},
 };
 
-use crate::node::source::text::Text;
+use crate::node::source::text::{Text, TextFrameBinding};
 
-use super::{path::Path, shape::Shape};
+use super::{
+    path::{Path, PathFrameBinding},
+    shape::{Shape, ShapeFrameBinding},
+};
 
 pub(crate) const SHAPE_SHADER: &str = include_str!("shape_renderer.wgsl");
 pub(crate) const PATH_SHADER: &str = include_str!("path_renderer.wgsl");
@@ -39,7 +42,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             SHAPE_SHADER,
             std::mem::size_of::<ShapeParams>() as u64,
         )?;
-        self.ctx.push_frame_binding(FrameBinding::Shape {
+        self.ctx.push_frame_binding(ShapeFrameBinding {
             node_id: shape.id,
             geometry_kind: shape.geometry_kind.clone(),
             width: shape.width.clone(),
@@ -136,7 +139,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        self.ctx.push_frame_binding(FrameBinding::Path {
+        self.ctx.push_frame_binding(PathFrameBinding {
             node_id: path.id,
             data: path.data.clone(),
             position: path.position.clone(),
@@ -272,7 +275,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 }),
                 scissor: None,
             });
-        self.ctx.push_frame_binding(FrameBinding::Text {
+        self.ctx.push_frame_binding(TextFrameBinding {
             node_id: text.id,
             content: text.content.clone(),
             font_family: text.font_family.clone(),

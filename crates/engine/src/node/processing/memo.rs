@@ -1,8 +1,6 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
-use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
 
 /// Aliases a raster input through a stable cache boundary.
 #[derive(Debug, Clone, lumen_macros::Node)]
@@ -40,7 +38,7 @@ impl GpuCompileNode for Memo {
             return Err(ctx.missing_output(self.id, &port.port));
         }
         let source = ctx.compile_port(&self.source)?;
-        ctx.push_frame_binding(FrameBinding::Memo {
+        ctx.push_frame_binding(MemoFrameBinding {
             node_id: self.id,
             cache_id: self.cache_id.clone(),
             allow_expressions: self.allow_expressions.clone(),
@@ -49,30 +47,28 @@ impl GpuCompileNode for Memo {
     }
 }
 
-impl GpuFrameBindNode for Memo {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        _bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Memo {
-            node_id,
-            cache_id,
-            allow_expressions,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let _ = cache_id.resolve_string(
-            *node_id,
+#[derive(Debug, Clone)]
+struct MemoFrameBinding {
+    node_id: NodeId,
+    cache_id: NodeProperty,
+    allow_expressions: NodeProperty,
+}
+
+impl GpuFrameBinding for MemoFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, _bound: &mut BoundFrame) -> crate::Result<()> {
+        let _ = self.cache_id.resolve_string(
+            self.node_id,
             "cache_id",
-            &ctx.expr_context(*node_id, "cache_id"),
+            &ctx.expr_context(self.node_id, "cache_id"),
         )?;
-        let _ = allow_expressions.resolve_bool(
-            *node_id,
+        let _ = self.allow_expressions.resolve_bool(
+            self.node_id,
             "allow_expressions",
-            &ctx.expr_context(*node_id, "allow_expressions"),
+            &ctx.expr_context(self.node_id, "allow_expressions"),
         )?;
         Ok(())
     }

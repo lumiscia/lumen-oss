@@ -177,6 +177,237 @@ pub enum NodeProperty {
     Expr(Expression),
 }
 
+#[derive(Debug, Clone)]
+pub enum Deferred<T> {
+    Value(T),
+    Expr(Expression),
+}
+
+impl<T> Deferred<T> {
+    pub fn value(value: T) -> Self {
+        Self::Value(value)
+    }
+
+    pub fn eval(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<T>
+    where
+        T: DeferredValue,
+    {
+        T::eval_deferred(self, node_id, property_path, ctx)
+    }
+
+    pub fn to_node_property(&self) -> NodeProperty
+    where
+        T: DeferredValue,
+    {
+        match self {
+            Self::Value(value) => T::to_node_property(value),
+            Self::Expr(expr) => NodeProperty::Expr(expr.clone()),
+        }
+    }
+}
+
+impl<T> From<T> for Deferred<T> {
+    fn from(value: T) -> Self {
+        Self::Value(value)
+    }
+}
+
+#[cfg(feature = "json")]
+impl<'de, T> serde::Deserialize<'de> for Deferred<T>
+where
+    T: serde::Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if let Some(text) = value.as_str()
+            && let Some(source) = text.strip_prefix('=')
+        {
+            return Expression::parse(source)
+                .map(Self::Expr)
+                .map_err(serde::de::Error::custom);
+        }
+        T::deserialize(value)
+            .map(Self::Value)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+pub trait DeferredValue: Clone {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self>
+    where
+        Self: Sized;
+
+    fn to_node_property(value: &Self) -> NodeProperty;
+}
+
+impl DeferredValue for f64 {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(*value),
+            Deferred::Expr(expr) => expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
+                NodeProperty::invalid_type(node_id, property_path, "Float", "expression")
+            }),
+        }
+    }
+
+    fn to_node_property(value: &Self) -> NodeProperty {
+        NodeProperty::Float(*value)
+    }
+}
+
+impl DeferredValue for i64 {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(*value),
+            Deferred::Expr(expr) => {
+                let value = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
+                    NodeProperty::invalid_type(node_id, property_path, "Int", "expression")
+                })?;
+                Ok(value as i64)
+            }
+        }
+    }
+
+    fn to_node_property(value: &Self) -> NodeProperty {
+        NodeProperty::Int(*value)
+    }
+}
+
+impl DeferredValue for bool {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        _node_id: NodeId,
+        _property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(*value),
+            Deferred::Expr(expr) => Ok(expr.evaluate(ctx)?.as_bool()),
+        }
+    }
+
+    fn to_node_property(value: &Self) -> NodeProperty {
+        NodeProperty::Bool(*value)
+    }
+}
+
+impl DeferredValue for String {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        _node_id: NodeId,
+        _property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(value.clone()),
+            Deferred::Expr(expr) => Ok(expr.evaluate(ctx)?.as_string()),
+        }
+    }
+
+    fn to_node_property(value: &Self) -> NodeProperty {
+        NodeProperty::String(value.clone())
+    }
+}
+
+impl DeferredValue for [u8; 4] {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(*value),
+            Deferred::Expr(_) => Err(NodeProperty::invalid_type(
+                node_id,
+                property_path,
+                "Color",
+                "expression",
+            )),
+        }
+    }
+
+    fn to_node_property(value: &Self) -> NodeProperty {
+        NodeProperty::Color(*value)
+    }
+}
+
+impl DeferredValue for (f64, f64) {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(*value),
+            Deferred::Expr(_) => Err(NodeProperty::invalid_type(
+                node_id,
+                property_path,
+                "Vec2",
+                "expression",
+            )),
+        }
+    }
+
+    fn to_node_property(value: &Self) -> NodeProperty {
+        NodeProperty::Vec2(*value)
+    }
+}
+
+pub struct NodeParamEvalContext<'a> {
+    pub node_id: NodeId,
+    pub expr: &'a crate::expr::ExpressionContext<'a>,
+}
+
+pub trait NodeParams: Clone + Default {
+    type Evaluated;
+
+    fn property_defs() -> Vec<PropertyDef>;
+    fn is_property(id: &str) -> bool;
+    fn default_properties(&self) -> Vec<(&'static str, NodeProperty)>;
+    fn get_property(&self, id: &str) -> Option<NodeProperty>;
+    fn eval(&self, ctx: &NodeParamEvalContext<'_>) -> crate::Result<Self::Evaluated>;
+
+    #[cfg(feature = "json")]
+    fn from_json(
+        properties: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> anyhow::Result<Self>
+    where
+        Self: Sized,
+        Self: serde::de::DeserializeOwned,
+    {
+        let value = properties
+            .cloned()
+            .map(serde_json::Value::Object)
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+        serde_path_to_error::deserialize(value).map_err(|error| anyhow::anyhow!(error.to_string()))
+    }
+}
+
 impl NodeProperty {
     fn invalid_type(
         node_id: NodeId,

@@ -26,7 +26,7 @@
       "id": 2,
       "type": "shape",
       "properties": {
-        "geometry_kind": 1,
+        "geometry_kind": "ellipse",
         "width": 420,
         "height": 420,
         "position": [210, 150],
@@ -58,12 +58,12 @@
         "font_family": "Helvetica Neue",
         "font_size": 48,
         "font_weight": 700,
-        "font_style": 0,
+        "font_style": "normal",
         "max_width": 520,
         "position": [680, 245],
         "color": [248, 250, 252, 255],
-        "alignment_horizontal": 0,
-        "alignment_vertical": 0
+        "alignment_horizontal": "left",
+        "alignment_vertical": "top"
       }
     },
     {
@@ -74,12 +74,12 @@
         "font_family": "Helvetica Neue",
         "font_size": 22,
         "font_weight": 400,
-        "font_style": 0,
+        "font_style": "normal",
         "max_width": 520,
         "position": [684, 320],
         "color": [186, 198, 230, 255],
-        "alignment_horizontal": 0,
-        "alignment_vertical": 0
+        "alignment_horizontal": "left",
+        "alignment_vertical": "top"
       }
     },
     {
@@ -94,10 +94,7 @@
       "type": "wgsl_shader",
       "properties": {
         "shader": "",
-        "value0": 0.0,
-        "value1": 0.0,
-        "value2": 0.0,
-        "value3": 0.0
+        "bindings": ""
       }
     },
     {
@@ -130,7 +127,7 @@
       "id": 11,
       "type": "boolean",
       "properties": {
-        "operation": 1,
+        "operation": "intersect",
         "threshold": 0.15
       }
     },
@@ -139,7 +136,7 @@
       "type": "merge",
       "properties": {
         "opacity": 1.0,
-        "blend_mode": 0
+        "blend_mode": "normal"
       }
     },
     {
@@ -147,7 +144,7 @@
       "type": "merge",
       "properties": {
         "opacity": 1.0,
-        "blend_mode": 0
+        "blend_mode": "normal"
       }
     },
     {

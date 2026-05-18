@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("curves.wgsl");
@@ -123,7 +123,7 @@ impl GpuCompileNode for Curves {
             },
             lumen_gpu::ParamTarget::Buffer(curve),
         );
-        ctx.push_frame_binding(FrameBinding::Curves {
+        ctx.push_frame_binding(CurvesFrameBinding {
             node_id: self.id,
             curve_source: self.curve_source.clone(),
             strength: self.strength.clone(),
@@ -139,43 +139,41 @@ impl GpuCompileNode for Curves {
     }
 }
 
-impl GpuFrameBindNode for Curves {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Curves {
-            node_id,
-            curve_source,
-            strength,
-            params_buffer,
-            curve_buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let curve_source = curve_source.resolve_string(
-            *node_id,
+#[derive(Debug, Clone)]
+struct CurvesFrameBinding {
+    node_id: NodeId,
+    curve_source: NodeProperty,
+    strength: NodeProperty,
+    params_buffer: lumen_gpu::BufferId,
+    curve_buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for CurvesFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let curve_source = self.curve_source.resolve_string(
+            self.node_id,
             "curve_source",
-            &ctx.expr_context(*node_id, "curve_source"),
+            &ctx.expr_context(self.node_id, "curve_source"),
         )?;
         let params = compiler::CurvesParams {
             values: [
-                strength.resolve_float(
-                    *node_id,
+                self.strength.resolve_float(
+                    self.node_id,
                     "strength",
-                    &ctx.expr_context(*node_id, "strength"),
+                    &ctx.expr_context(self.node_id, "strength"),
                 )? as f32,
                 0.0,
                 0.0,
                 0.0,
             ],
         };
-        let curve = compiler::CurvesTable::parse(*node_id, ctx.frame(), &curve_source)?;
-        bound.write_buffer(*params_buffer, 0, bytemuck::bytes_of(&params));
-        bound.write_buffer(*curve_buffer, 0, bytemuck::bytes_of(&curve));
+        let curve = compiler::CurvesTable::parse(self.node_id, ctx.frame(), &curve_source)?;
+        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.curve_buffer, 0, bytemuck::bytes_of(&curve));
         Ok(())
     }
 }

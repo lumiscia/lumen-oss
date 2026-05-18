@@ -1,8 +1,6 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
-use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
 
 /// Evaluates a raster input at another frame.
 #[derive(Debug, Clone, lumen_macros::Node)]
@@ -80,7 +78,7 @@ impl GpuCompileNode for TimeRemap {
         if port.port != "output" {
             return Err(ctx.missing_output(self.id, &port.port));
         }
-        ctx.push_frame_binding(FrameBinding::TimeRemap {
+        ctx.push_frame_binding(TimeRemapFrameBinding {
             node_id: self.id,
             frame: self.frame.clone(),
             loop_enabled: self.loop_enabled.clone(),
@@ -99,30 +97,28 @@ impl GpuCompileNode for TimeRemap {
     }
 }
 
-impl GpuFrameBindNode for TimeRemap {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        _bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::TimeRemap {
-            node_id,
-            frame,
-            loop_enabled,
-            loop_start,
-            loop_end,
-        } = binding
-        else {
-            return Ok(());
-        };
+#[derive(Debug, Clone)]
+struct TimeRemapFrameBinding {
+    node_id: NodeId,
+    frame: NodeProperty,
+    loop_enabled: NodeProperty,
+    loop_start: NodeProperty,
+    loop_end: NodeProperty,
+}
+
+impl GpuFrameBinding for TimeRemapFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, _bound: &mut BoundFrame) -> crate::Result<()> {
         let _ = remap_frame(resolve_settings(
-            *node_id,
-            frame,
-            loop_enabled,
-            loop_start,
-            loop_end,
-            &ctx.expr_context(*node_id, "frame"),
+            self.node_id,
+            &self.frame,
+            &self.loop_enabled,
+            &self.loop_start,
+            &self.loop_end,
+            &ctx.expr_context(self.node_id, "frame"),
         )?);
         Ok(())
     }

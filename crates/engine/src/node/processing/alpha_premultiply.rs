@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode,
-    GpuFrameBindNode, RasterHandle, compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding,
+    RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("alpha_premultiply.wgsl");
@@ -33,6 +33,37 @@ impl Default for AlphaPremultiply {
     }
 }
 
+#[derive(Debug, Clone)]
+struct AlphaPremultiplyFrameBinding {
+    node_id: NodeId,
+    mode: NodeProperty,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for AlphaPremultiplyFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let mode = self.mode.resolve_string(
+            self.node_id,
+            "mode",
+            &ctx.expr_context(self.node_id, "mode"),
+        )?;
+        let params = compiler::AlphaPremultiplyParams {
+            values: [
+                compiler::alpha_operation(self.node_id, &mode)?,
+                0.0,
+                0.0,
+                0.0,
+            ],
+        };
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
+    }
+}
+
 impl GpuCompileNode for AlphaPremultiply {
     fn compile_gpu(
         &self,
@@ -56,7 +87,7 @@ impl GpuCompileNode for AlphaPremultiply {
             SHADER,
             std::mem::size_of::<compiler::AlphaPremultiplyParams>() as u64,
         )?;
-        ctx.push_frame_binding(FrameBinding::AlphaPremultiply {
+        ctx.push_frame_binding(AlphaPremultiplyFrameBinding {
             node_id: self.id,
             mode: self.mode.clone(),
             buffer: params,
@@ -71,29 +102,5 @@ impl GpuCompileNode for AlphaPremultiply {
             domain: source.domain,
             metadata: output_metadata,
         }))
-    }
-}
-
-impl GpuFrameBindNode for AlphaPremultiply {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::AlphaPremultiply {
-            node_id,
-            mode,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let mode = mode.resolve_string(*node_id, "mode", &ctx.expr_context(*node_id, "mode"))?;
-        let params = compiler::AlphaPremultiplyParams {
-            values: [compiler::alpha_operation(*node_id, &mode)?, 0.0, 0.0, 0.0],
-        };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
     }
 }

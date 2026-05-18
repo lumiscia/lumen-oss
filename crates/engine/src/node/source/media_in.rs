@@ -4,8 +4,8 @@ use crate::error::{MediaError, RenderError};
 use crate::node::{NodeId, NodeProperty};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    MediaTextureKey, RasterHandle, RasterMetadata,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, MediaTextureKey,
+    RasterHandle, RasterMetadata,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
@@ -202,9 +202,9 @@ impl GpuCompileNode for MediaIn {
             },
             lumen_gpu::ParamTarget::Texture(texture),
         );
-        ctx.push_frame_binding(FrameBinding::MediaInput {
+        ctx.push_frame_binding(MediaInputFrameBinding {
             node_id: self.id,
-            source: self.source.clone(),
+            node: self.clone(),
             texture,
             size,
         });
@@ -240,29 +240,27 @@ impl MediaIn {
     }
 }
 
-impl GpuFrameBindNode for MediaIn {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::MediaInput {
-            node_id,
-            texture,
-            size,
-            ..
-        } = binding
-        else {
-            return Ok(());
-        };
+#[derive(Debug, Clone)]
+struct MediaInputFrameBinding {
+    node_id: NodeId,
+    node: MediaIn,
+    texture: lumen_gpu::TextureId,
+    size: lumen_gpu::Size,
+}
+
+impl GpuFrameBinding for MediaInputFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let media = ctx.media().ok_or_else(|| RenderError::NodeEvaluation {
             frame: ctx.frame(),
-            node_id: *node_id,
+            node_id: self.node_id,
             node_kind: "MediaIn",
             details: "media store is required for media input nodes".to_string(),
         })?;
-        let kind = resolve_for_context(self, &ctx.expr_context(*node_id, "source"))?;
+        let kind = resolve_for_context(&self.node, &ctx.expr_context(self.node_id, "source"))?;
         let (frame, key_source, key_frame) = match kind {
             MediaInKind::Image { image_id } => media
                 .get_image_resolver(&image_id)
@@ -285,7 +283,7 @@ impl GpuFrameBindNode for MediaIn {
                 let metadata = resolver.metadata();
                 let source_frame = map_to_source_frame(
                     ctx.frame(),
-                    ctx.expr_context(*node_id, "source").fps,
+                    ctx.expr_context(self.node_id, "source").fps,
                     metadata.fps,
                     metadata.frame_count,
                     range.as_ref(),
@@ -303,15 +301,15 @@ impl GpuFrameBindNode for MediaIn {
             }
         };
         bound.use_media_texture(
-            *texture,
+            self.texture,
             MediaTextureKey {
                 source: key_source,
                 frame: key_frame,
-                width: size.width,
-                height: size.height,
+                width: self.size.width,
+                height: self.size.height,
             },
             frame,
-            *size,
+            self.size,
         );
         Ok(())
     }

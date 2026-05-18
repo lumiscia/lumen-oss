@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("channel_shuffle.wgsl");
@@ -45,6 +45,69 @@ impl Default for ChannelShuffle {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ChannelShuffleFrameBinding {
+    node_id: NodeId,
+    red: NodeProperty,
+    green: NodeProperty,
+    blue: NodeProperty,
+    alpha: NodeProperty,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for ChannelShuffleFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let selectors = [
+            compiler::channel_selector(
+                self.node_id,
+                "red",
+                &self.red.resolve_string(
+                    self.node_id,
+                    "red",
+                    &ctx.expr_context(self.node_id, "red"),
+                )?,
+            )?,
+            compiler::channel_selector(
+                self.node_id,
+                "green",
+                &self.green.resolve_string(
+                    self.node_id,
+                    "green",
+                    &ctx.expr_context(self.node_id, "green"),
+                )?,
+            )?,
+            compiler::channel_selector(
+                self.node_id,
+                "blue",
+                &self.blue.resolve_string(
+                    self.node_id,
+                    "blue",
+                    &ctx.expr_context(self.node_id, "blue"),
+                )?,
+            )?,
+            compiler::channel_selector(
+                self.node_id,
+                "alpha",
+                &self.alpha.resolve_string(
+                    self.node_id,
+                    "alpha",
+                    &ctx.expr_context(self.node_id, "alpha"),
+                )?,
+            )?,
+        ];
+        let params = compiler::ChannelShuffleParams {
+            selector_indices: selectors.map(|selector| selector.index),
+            selector_values: selectors.map(|selector| selector.value),
+        };
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
+    }
+}
+
 impl GpuCompileNode for ChannelShuffle {
     fn compile_gpu(
         &self,
@@ -59,7 +122,7 @@ impl GpuCompileNode for ChannelShuffle {
             SHADER,
             std::mem::size_of::<compiler::ChannelShuffleParams>() as u64,
         )?;
-        ctx.push_frame_binding(FrameBinding::ChannelShuffle {
+        ctx.push_frame_binding(ChannelShuffleFrameBinding {
             node_id: self.id,
             red: self.red.clone(),
             green: self.green.clone(),
@@ -72,54 +135,5 @@ impl GpuCompileNode for ChannelShuffle {
             domain: source.domain,
             metadata: source.metadata,
         }))
-    }
-}
-
-impl GpuFrameBindNode for ChannelShuffle {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::ChannelShuffle {
-            node_id,
-            red,
-            green,
-            blue,
-            alpha,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let selectors = [
-            compiler::channel_selector(
-                *node_id,
-                "red",
-                &red.resolve_string(*node_id, "red", &ctx.expr_context(*node_id, "red"))?,
-            )?,
-            compiler::channel_selector(
-                *node_id,
-                "green",
-                &green.resolve_string(*node_id, "green", &ctx.expr_context(*node_id, "green"))?,
-            )?,
-            compiler::channel_selector(
-                *node_id,
-                "blue",
-                &blue.resolve_string(*node_id, "blue", &ctx.expr_context(*node_id, "blue"))?,
-            )?,
-            compiler::channel_selector(
-                *node_id,
-                "alpha",
-                &alpha.resolve_string(*node_id, "alpha", &ctx.expr_context(*node_id, "alpha"))?,
-            )?,
-        ];
-        let params = compiler::ChannelShuffleParams {
-            selector_indices: selectors.map(|selector| selector.index),
-            selector_values: selectors.map(|selector| selector.value),
-        };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
     }
 }

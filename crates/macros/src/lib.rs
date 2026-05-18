@@ -9,13 +9,21 @@ use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::{
     Attribute, Data, DeriveInput, Expr, ExprLit, Fields, Ident, ImplItem, ItemImpl, LitBool,
-    LitFloat, LitInt, LitStr, Path, Result, Token, parse_macro_input, punctuated::Punctuated,
+    LitFloat, LitInt, LitStr, Path, Result, Token, Type, parse_macro_input, punctuated::Punctuated,
     spanned::Spanned,
 };
 
-#[proc_macro_derive(Node, attributes(node, input, property))]
+#[proc_macro_derive(Node, attributes(node, input, property, params))]
 pub fn derive_node(input: TokenStream) -> TokenStream {
     match expand_node(parse_macro_input!(input as DeriveInput)) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+#[proc_macro_derive(NodeParams, attributes(params, param))]
+pub fn derive_node_params(input: TokenStream) -> TokenStream {
+    match expand_node_params(parse_macro_input!(input as DeriveInput)) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
@@ -46,6 +54,7 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
     let fields = named_fields(&input.data)?;
     let mut inputs = Vec::new();
     let mut properties = Vec::new();
+    let mut params = Vec::new();
 
     for field in fields {
         let Some(field_ident) = &field.ident else {
@@ -57,6 +66,16 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
         if let Some(property) = parse_property_attr(&field.attrs, field_ident)? {
             properties.push(property);
         }
+        if has_attr(&field.attrs, "params") {
+            params.push((field_ident.clone(), field.ty.clone()));
+        }
+    }
+
+    if params.len() > 1 {
+        return Err(syn::Error::new(
+            params[1].0.span(),
+            "Node derive supports at most one #[params] field",
+        ));
     }
 
     let input_static = format_ident!("__LUMEN_{}_INPUTS", ident.to_string().to_uppercase());
@@ -78,15 +97,28 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
         .iter()
         .map(property_def_tokens)
         .collect::<Vec<_>>();
+    let params_property_defs = params
+        .iter()
+        .map(|(_, ty)| quote!(<#ty as ::lumen_engine::node::NodeParams>::property_defs()));
     let default_properties = properties.iter().map(|property| {
         let name = &property.id;
         let field = &property.field;
         quote!((#name, defaults.#field.clone()))
     });
+    let params_default_properties = params
+        .iter()
+        .map(|(field, _)| quote!(defaults.#field.default_properties()));
     let property_matches = properties.iter().map(|property| {
         let name = &property.id;
         let field = &property.field;
         quote!(#name => Some(self.#field.clone()))
+    });
+    let params_property_matches = params.iter().map(|(field, _)| {
+        quote! {
+            if let Some(value) = self.#field.get_property(id) {
+                return Ok(Some(value));
+            }
+        }
     });
     let json_property_sets = properties.iter().map(|property| {
         let name = &property.id;
@@ -99,6 +131,14 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
             }
         }
     });
+    let json_params_sets = params.iter().map(|(field, _)| {
+        quote! {
+            node.#field = ::lumen_engine::node::NodeParams::from_json(properties)?;
+        }
+    });
+    let json_params_known = params
+        .iter()
+        .map(|(_, ty)| quote!(<#ty as ::lumen_engine::node::NodeParams>::is_property(key)));
     let json_known_properties = properties.iter().map(|property| {
         let name = &property.id;
         quote!(#name => ())
@@ -137,8 +177,16 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
                     description: #description,
                     category: #category,
                     inputs: #input_static,
-                    properties: vec![#(#property_defs),*],
-                    default_properties: vec![#(#default_properties),*],
+                    properties: {
+                        let mut properties = vec![#(#property_defs),*];
+                        #(properties.extend(#params_property_defs);)*
+                        properties
+                    },
+                    default_properties: {
+                        let mut default_properties = vec![#(#default_properties),*];
+                        #(default_properties.extend(#params_default_properties);)*
+                        default_properties
+                    },
                 }
             }
         }
@@ -156,12 +204,14 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
                     for key in properties.keys() {
                         match key.as_str() {
                             #(#json_known_properties,)*
+                            _ if false #(|| #json_params_known)* => (),
                             _ => ::anyhow::bail!("unknown property `{key}` on node {id}"),
                         };
                     }
                 }
 
                 #(#json_property_sets)*
+                #(#json_params_sets)*
                 Ok(node)
             }
 
@@ -195,9 +245,96 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
                 ::core::option::Option<::lumen_engine::node::NodeProperty>,
                 ::lumen_engine::error::LumenError,
             > {
+                #(#params_property_matches)*
                 Ok(match id {
                     #(#property_matches,)*
                     _ => None,
+                })
+            }
+        }
+    })
+}
+
+fn expand_node_params(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
+    let ident = input.ident;
+    let evaluated_ident = parse_params_attr(&input.attrs)?;
+    let fields = named_fields(&input.data)?;
+    let mut params = Vec::new();
+
+    for field in fields {
+        let Some(field_ident) = &field.ident else {
+            continue;
+        };
+        let property = parse_param_attr(&field.attrs, field_ident, &field.ty)?;
+        params.push(property);
+    }
+
+    let evaluated_fields = params.iter().map(|param| {
+        let field = &param.property.field;
+        let ty = &param.ty;
+        quote!(pub #field: #ty)
+    });
+    let property_defs = params
+        .iter()
+        .map(|param| property_def_tokens(&param.property));
+    let is_property_matches = params.iter().map(|param| {
+        let name = &param.property.id;
+        quote!(#name)
+    });
+    let default_properties = params.iter().map(|param| {
+        let name = &param.property.id;
+        let field = &param.property.field;
+        quote! {
+            (#name, <#ident as ::core::default::Default>::default().#field.to_node_property())
+        }
+    });
+    let property_matches = params.iter().map(|param| {
+        let name = &param.property.id;
+        let field = &param.property.field;
+        quote!(#name => Some(self.#field.to_node_property()))
+    });
+    let eval_fields = params.iter().map(|param| {
+        let name = &param.property.id;
+        let field = &param.property.field;
+        quote! {
+            #field: self.#field.eval(ctx.node_id, #name, ctx.expr)?
+        }
+    });
+
+    Ok(quote! {
+        #[derive(Debug, Clone)]
+        pub struct #evaluated_ident {
+            #(#evaluated_fields,)*
+        }
+
+        impl ::lumen_engine::node::NodeParams for #ident {
+            type Evaluated = #evaluated_ident;
+
+            fn property_defs() -> ::std::vec::Vec<::lumen_engine::node::PropertyDef> {
+                vec![#(#property_defs),*]
+            }
+
+            fn is_property(id: &str) -> bool {
+                matches!(id, #(#is_property_matches)|*)
+            }
+
+            fn default_properties(&self) -> ::std::vec::Vec<(&'static str, ::lumen_engine::node::NodeProperty)> {
+                vec![#(#default_properties),*]
+            }
+
+            fn get_property(&self, id: &str) -> ::core::option::Option<::lumen_engine::node::NodeProperty> {
+                match id {
+                    #(#property_matches,)*
+                    _ => None,
+                }
+            }
+
+            fn eval(
+                &self,
+                ctx: &::lumen_engine::node::NodeParamEvalContext<'_>,
+            ) -> ::lumen_engine::Result<Self::Evaluated> {
+                Ok(#evaluated_ident {
+                    #(#eval_fields,)*
                 })
             }
         }
@@ -312,6 +449,11 @@ struct PropertyAttr {
     docs: Vec<String>,
 }
 
+struct ParamAttr {
+    property: PropertyAttr,
+    ty: Type,
+}
+
 #[derive(Default)]
 struct PropertyConstraintsAttr {
     min: Option<f64>,
@@ -390,9 +532,52 @@ fn parse_input_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<InputAt
 }
 
 fn parse_property_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<PropertyAttr>> {
-    let Some(attr) = optional_attr(attrs, "property") else {
+    parse_property_like_attr(attrs, field, "property")
+}
+
+fn parse_params_attr(attrs: &[Attribute]) -> Result<Path> {
+    let attr = required_attr(attrs, "params")?;
+    let mut evaluated = None;
+    attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("evaluated") {
+            evaluated = Some(meta.value()?.parse()?);
+        } else {
+            return Err(meta.error("unknown params attribute key"));
+        }
+        Ok(())
+    })?;
+    required_value(evaluated, attr, "evaluated")
+}
+
+fn parse_param_attr(attrs: &[Attribute], field: &Ident, ty: &Type) -> Result<ParamAttr> {
+    let Some(property) = parse_property_like_attr(attrs, field, "param")? else {
+        return Err(syn::Error::new(
+            field.span(),
+            "NodeParams fields require #[param(kind = ...)]",
+        ));
+    };
+    Ok(ParamAttr {
+        property,
+        ty: deferred_inner_type(ty)?,
+    })
+}
+
+fn parse_property_like_attr(
+    attrs: &[Attribute],
+    field: &Ident,
+    attr_name: &str,
+) -> Result<Option<PropertyAttr>> {
+    let Some(attr) = optional_attr(attrs, attr_name) else {
         return Ok(None);
     };
+    parse_property_attr_body(attr, attrs, field).map(Some)
+}
+
+fn parse_property_attr_body(
+    attr: &Attribute,
+    attrs: &[Attribute],
+    field: &Ident,
+) -> Result<PropertyAttr> {
     let mut id = None;
     let mut name = None;
     let mut kind = None;
@@ -428,7 +613,7 @@ fn parse_property_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<Prop
         Ok(())
     })?;
 
-    Ok(Some(PropertyAttr {
+    Ok(PropertyAttr {
         field: field.clone(),
         id: id.unwrap_or_else(|| LitStr::new(&field.to_string(), field.span())),
         name: name
@@ -437,7 +622,26 @@ fn parse_property_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<Prop
         enum_type,
         constraints,
         docs: doc_lines(attrs),
-    }))
+    })
+}
+
+fn deferred_inner_type(ty: &Type) -> Result<Type> {
+    let Type::Path(path) = ty else {
+        return Err(syn::Error::new(ty.span(), "expected Deferred<T>"));
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return Err(syn::Error::new(ty.span(), "expected Deferred<T>"));
+    };
+    if segment.ident != "Deferred" {
+        return Err(syn::Error::new(ty.span(), "expected Deferred<T>"));
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return Err(syn::Error::new(ty.span(), "expected Deferred<T>"));
+    };
+    let Some(syn::GenericArgument::Type(inner)) = args.args.first() else {
+        return Err(syn::Error::new(ty.span(), "expected Deferred<T>"));
+    };
+    Ok(inner.clone())
 }
 
 fn property_def_tokens(property: &PropertyAttr) -> proc_macro2::TokenStream {
@@ -594,6 +798,10 @@ fn required_attr<'a>(attrs: &'a [Attribute], name: &str) -> Result<&'a Attribute
 
 fn optional_attr<'a>(attrs: &'a [Attribute], name: &str) -> Option<&'a Attribute> {
     attrs.iter().find(|attr| attr.path().is_ident(name))
+}
+
+fn has_attr(attrs: &[Attribute], name: &str) -> bool {
+    optional_attr(attrs, name).is_some()
 }
 
 fn required_value<T>(value: Option<T>, attr: &Attribute, name: &str) -> Result<T> {

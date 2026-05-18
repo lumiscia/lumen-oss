@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("color_grade.wgsl");
@@ -132,7 +132,7 @@ impl GpuCompileNode for ColorGrade {
             },
             lumen_gpu::ParamTarget::Buffer(lut),
         );
-        ctx.push_frame_binding(FrameBinding::ColorGrade {
+        ctx.push_frame_binding(ColorGradeFrameBinding {
             node_id: self.id,
             lut_source: self.lut_source.clone(),
             strength: self.strength.clone(),
@@ -149,46 +149,44 @@ impl GpuCompileNode for ColorGrade {
     }
 }
 
-impl GpuFrameBindNode for ColorGrade {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::ColorGrade {
-            node_id,
-            lut_source,
-            strength,
-            interpolation,
-            params_buffer,
-            lut_buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let lut_source = lut_source.resolve_string(
-            *node_id,
+#[derive(Debug, Clone)]
+struct ColorGradeFrameBinding {
+    node_id: NodeId,
+    lut_source: NodeProperty,
+    strength: NodeProperty,
+    interpolation: NodeProperty,
+    params_buffer: lumen_gpu::BufferId,
+    lut_buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for ColorGradeFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let lut_source = self.lut_source.resolve_string(
+            self.node_id,
             "lut_source",
-            &ctx.expr_context(*node_id, "lut_source"),
+            &ctx.expr_context(self.node_id, "lut_source"),
         )?;
-        let interpolation = interpolation.resolve_int(
-            *node_id,
+        let interpolation = self.interpolation.resolve_int(
+            self.node_id,
             "interpolation",
-            &ctx.expr_context(*node_id, "interpolation"),
+            &ctx.expr_context(self.node_id, "interpolation"),
         )?;
         let params = compiler::ColorGradeParams {
-            strength: strength.resolve_float(
-                *node_id,
+            strength: self.strength.resolve_float(
+                self.node_id,
                 "strength",
-                &ctx.expr_context(*node_id, "strength"),
+                &ctx.expr_context(self.node_id, "strength"),
             )? as f32,
             interpolation: if interpolation == 0 { 0 } else { 1 },
             _pad: [0; 2],
         };
-        let lut = compiler::ColorGradeLut::parse(*node_id, ctx.frame(), &lut_source)?;
-        bound.write_buffer(*params_buffer, 0, bytemuck::bytes_of(&params));
-        bound.write_buffer(*lut_buffer, 0, bytemuck::bytes_of(&lut));
+        let lut = compiler::ColorGradeLut::parse(self.node_id, ctx.frame(), &lut_source)?;
+        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.lut_buffer, 0, bytemuck::bytes_of(&lut));
         Ok(())
     }
 }

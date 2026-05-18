@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("crop.wgsl");
@@ -83,7 +83,7 @@ impl GpuCompileNode for Crop {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(FrameBinding::Crop {
+        ctx.push_frame_binding(CropFrameBinding {
             node_id: self.id,
             x: self.x.clone(),
             y: self.y.clone(),
@@ -100,39 +100,49 @@ impl GpuCompileNode for Crop {
     }
 }
 
-impl GpuFrameBindNode for Crop {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Crop {
-            node_id,
-            x,
-            y,
-            width,
-            height,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
+#[derive(Debug, Clone)]
+struct CropFrameBinding {
+    node_id: NodeId,
+    x: NodeProperty,
+    y: NodeProperty,
+    width: NodeProperty,
+    height: NodeProperty,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for CropFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let params = compiler::CropParams {
             origin: [
-                x.resolve_int(*node_id, "x", &ctx.expr_context(*node_id, "x"))? as i32,
-                y.resolve_int(*node_id, "y", &ctx.expr_context(*node_id, "y"))? as i32,
+                self.x
+                    .resolve_int(self.node_id, "x", &ctx.expr_context(self.node_id, "x"))?
+                    as i32,
+                self.y
+                    .resolve_int(self.node_id, "y", &ctx.expr_context(self.node_id, "y"))?
+                    as i32,
             ],
             size: [
-                width
-                    .resolve_int(*node_id, "width", &ctx.expr_context(*node_id, "width"))?
+                self.width
+                    .resolve_int(
+                        self.node_id,
+                        "width",
+                        &ctx.expr_context(self.node_id, "width"),
+                    )?
                     .max(0) as u32,
-                height
-                    .resolve_int(*node_id, "height", &ctx.expr_context(*node_id, "height"))?
+                self.height
+                    .resolve_int(
+                        self.node_id,
+                        "height",
+                        &ctx.expr_context(self.node_id, "height"),
+                    )?
                     .max(0) as u32,
             ],
         };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
     }
 }

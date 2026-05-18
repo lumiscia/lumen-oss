@@ -1,17 +1,40 @@
 use std::collections::HashMap;
 
-use bytemuck::{Pod, Zeroable};
-
 use crate::{
     composition::Composition,
     error::RenderError,
     expr::ExpressionContext,
     gpu::{
-        BoundFrame, CompiledComposition, CompiledOutput, FrameBinding, RasterHandle, RasterMetadata,
+        BoundFrame, CompiledComposition, CompiledFrameBinding, CompiledOutput, FrameBindContext,
+        GpuFrameBinding, RasterHandle, RasterMetadata,
     },
     media::MediaStore,
     node::{NodeId, NodeKind, NodeProperty, PortRef},
 };
+
+pub(crate) use super::params::*;
+
+#[derive(Debug, Clone)]
+struct SolidColorClearBinding {
+    node_id: NodeId,
+    color: [u8; 4],
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for SolidColorClearBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, _ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        bound.write_buffer(
+            self.buffer,
+            0,
+            bytemuck::bytes_of(&ColorParams::from_rgba8(self.color)),
+        );
+        Ok(())
+    }
+}
 
 pub trait GpuCompileNode {
     fn compile_gpu(
@@ -19,15 +42,6 @@ pub trait GpuCompileNode {
         ctx: &mut CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput>;
-}
-
-pub trait GpuFrameBindNode {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()>;
 }
 
 #[derive(Debug)]
@@ -59,8 +73,7 @@ pub struct CompileContext<'a> {
     builder: lumen_gpu::RenderPlanBuilder,
     outputs: HashMap<CompiledPortKey, CompiledOutput>,
     public_outputs: HashMap<PortRef, CompiledOutput>,
-    frame_bindings: Vec<FrameBinding>,
-    frame_binding_frames: Vec<Option<u32>>,
+    frame_bindings: Vec<CompiledFrameBinding>,
     frame_binding_frame_override: Option<u32>,
     output_format: lumen_gpu::wgpu::TextureFormat,
 }
@@ -116,7 +129,6 @@ impl<'a> CompileContext<'a> {
             outputs: HashMap::new(),
             public_outputs: HashMap::new(),
             frame_bindings: Vec::new(),
-            frame_binding_frames: Vec::new(),
             frame_binding_frame_override: None,
             output_format,
         }
@@ -133,7 +145,6 @@ impl<'a> CompileContext<'a> {
             output,
             node_outputs: self.public_outputs,
             frame_bindings: self.frame_bindings,
-            frame_binding_frames: self.frame_binding_frames,
         })
     }
 
@@ -153,10 +164,14 @@ impl<'a> CompileContext<'a> {
         &mut self.builder
     }
 
-    pub(crate) fn push_frame_binding(&mut self, binding: FrameBinding) {
-        self.frame_bindings.push(binding);
-        self.frame_binding_frames
-            .push(self.frame_binding_frame_override);
+    pub(crate) fn push_frame_binding<B>(&mut self, binding: B)
+    where
+        B: GpuFrameBinding + 'static,
+    {
+        self.frame_bindings.push(CompiledFrameBinding {
+            frame_override: self.frame_binding_frame_override,
+            binding: Box::new(binding),
+        });
     }
 
     pub(crate) fn compile_port(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
@@ -351,9 +366,9 @@ impl<'a> CompileContext<'a> {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        self.push_frame_binding(FrameBinding::SolidColor {
+        self.push_frame_binding(SolidColorClearBinding {
             node_id,
-            color: NodeProperty::Color([0, 0, 0, 0]),
+            color: [0, 0, 0, 0],
             buffer: params,
         });
 
@@ -385,6 +400,19 @@ impl<'a> CompileContext<'a> {
             value
         };
         Ok(value.clamp(1, i64::from(u32::MAX)) as u32)
+    }
+
+    pub(crate) fn static_dimension_value(&self, value: i64, property_path: &str) -> u32 {
+        let value = if value <= 0 {
+            match property_path {
+                "width" => i64::from(self.composition.render_settings.width),
+                "height" => i64::from(self.composition.render_settings.height),
+                _ => value,
+            }
+        } else {
+            value
+        };
+        value.clamp(1, i64::from(u32::MAX)) as u32
     }
 
     pub(crate) fn spatial_program(
@@ -507,543 +535,5 @@ impl<'a> CompileContext<'a> {
             property_path: format!("output port `{port}`"),
         }
         .into()
-    }
-}
-
-#[derive(Debug)]
-pub struct FrameBindContext<'a> {
-    composition: &'a Composition,
-    frame: u32,
-    media: Option<&'a dyn MediaStore>,
-}
-
-impl<'a> FrameBindContext<'a> {
-    pub fn new(composition: &'a Composition, frame: u32) -> Self {
-        Self {
-            composition,
-            frame,
-            media: None,
-        }
-    }
-
-    pub fn with_media<M: MediaStore>(
-        composition: &'a Composition,
-        frame: u32,
-        media: &'a M,
-    ) -> Self {
-        Self {
-            composition,
-            frame,
-            media: Some(media),
-        }
-    }
-
-    pub fn bind(&self, compiled: &CompiledComposition) -> crate::Result<BoundFrame> {
-        tracing::trace!(
-            target: "lumen_bind",
-            frame = self.frame,
-            bindings = compiled.frame_bindings.len(),
-            "bind compiled frame"
-        );
-        let mut bound = BoundFrame::new();
-        for (index, binding) in compiled.frame_bindings.iter().enumerate() {
-            let binding_frame = compiled
-                .frame_binding_frames
-                .get(index)
-                .copied()
-                .flatten()
-                .unwrap_or(self.frame);
-            let binding_context = Self {
-                composition: self.composition,
-                frame: binding_frame,
-                media: self.media,
-            };
-            let node_id = binding.node_id();
-            tracing::trace!(
-                target: "lumen_bind",
-                frame = self.frame,
-                binding_frame,
-                node_id = node_id.0,
-                binding_index = index,
-                "bind frame resource"
-            );
-            let node =
-                self.composition
-                    .graph
-                    .nodes
-                    .get(&node_id)
-                    .ok_or(RenderError::MissingNode {
-                        frame: self.frame,
-                        node_id,
-                    })?;
-            match node {
-                NodeKind::MediaIn(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::SolidColor(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Text(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Path(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Shape(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Boolean(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Merge(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::RasterMultiMerge(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::AlphaPremultiply(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Blur(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::ChannelShuffle(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::ColorGrade(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Curves(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Exposure(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::HueSaturation(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Levels(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Memo(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::TimeRemap(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Transform(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Crop(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Resize(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Shadow(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::WgslShader(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::Switch(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-                NodeKind::MediaOutput(node) => {
-                    node.bind_gpu_frame(&binding_context, binding, &mut bound)?
-                }
-            }
-        }
-        Ok(bound)
-    }
-
-    pub(crate) fn frame(&self) -> u32 {
-        self.frame
-    }
-
-    pub(crate) fn media(&self) -> Option<&dyn MediaStore> {
-        self.media
-    }
-
-    pub(crate) fn expr_context(
-        &self,
-        node_id: NodeId,
-        property_path: &str,
-    ) -> ExpressionContext<'_> {
-        ExpressionContext {
-            frame: self.frame,
-            fps: self.composition.timeline.fps,
-            width: self.composition.render_settings.width,
-            height: self.composition.render_settings.height,
-            duration_frames: self.composition.timeline.duration_frames,
-            path: Some(format!("{node_id}.{property_path}")),
-            graph: Some(&self.composition.graph),
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct ColorParams {
-    pub(crate) color: [f32; 4],
-}
-
-impl ColorParams {
-    pub(crate) fn from_rgba8(color: [u8; 4]) -> Self {
-        Self {
-            color: [
-                f32::from(color[0]) / 255.0,
-                f32::from(color[1]) / 255.0,
-                f32::from(color[2]) / 255.0,
-                f32::from(color[3]) / 255.0,
-            ],
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct AlphaPremultiplyParams {
-    pub(crate) values: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct ChannelShuffleParams {
-    pub(crate) selector_indices: [f32; 4],
-    pub(crate) selector_values: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct ColorGradeParams {
-    pub(crate) strength: f32,
-    pub(crate) interpolation: u32,
-    pub(crate) _pad: [u32; 2],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct ColorGradeLut {
-    stops: [[f32; 4]; LUT_TABLE_SIZE],
-}
-
-impl ColorGradeLut {
-    pub(crate) fn parse(node_id: NodeId, frame: u32, source: &str) -> crate::Result<Self> {
-        let stops = parse_lut_stops(node_id, frame, source)?;
-        let mut table = [[0.0; 4]; LUT_TABLE_SIZE];
-        for (index, entry) in table.iter_mut().enumerate() {
-            let value = index as f32 / (LUT_TABLE_SIZE - 1) as f32;
-            let scaled = value * (stops.len() - 1) as f32;
-            let low = scaled.floor() as usize;
-            let high = (low + 1).min(stops.len() - 1);
-            let t = scaled - low as f32;
-            *entry = [
-                stops[low][0] + (stops[high][0] - stops[low][0]) * t,
-                stops[low][1] + (stops[high][1] - stops[low][1]) * t,
-                stops[low][2] + (stops[high][2] - stops[low][2]) * t,
-                1.0,
-            ];
-        }
-        Ok(Self { stops: table })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct ExposureParams {
-    pub(crate) exposure: f32,
-    pub(crate) contrast: f32,
-    pub(crate) offset: f32,
-    pub(crate) _pad: f32,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct HueSaturationParams {
-    pub(crate) hue_offset: f32,
-    pub(crate) saturation: f32,
-    pub(crate) lightness: f32,
-    pub(crate) _pad: f32,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct LevelsParams {
-    pub(crate) black_point: f32,
-    pub(crate) white_point: f32,
-    pub(crate) gamma: f32,
-    pub(crate) output_black: f32,
-    pub(crate) output_white: f32,
-    pub(crate) _pad: [f32; 3],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct BlurParams {
-    pub(crate) values: [u32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct CurvesParams {
-    pub(crate) values: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct CurvesTable {
-    entries: [[f32; 4]; LUT_TABLE_SIZE],
-}
-
-impl CurvesTable {
-    pub(crate) fn parse(node_id: NodeId, frame: u32, source: &str) -> crate::Result<Self> {
-        let stops = parse_lut_stops(node_id, frame, source)?;
-        let mut entries = [[0.0; 4]; LUT_TABLE_SIZE];
-        for (index, entry) in entries.iter_mut().enumerate() {
-            let value = index as f32 / (LUT_TABLE_SIZE - 1) as f32;
-            let scaled = value * (stops.len() - 1) as f32;
-            let low = scaled.floor() as usize;
-            let high = (low + 1).min(stops.len() - 1);
-            let t = scaled - low as f32;
-            *entry = [
-                stops[low][0] + (stops[high][0] - stops[low][0]) * t,
-                stops[low][1] + (stops[high][1] - stops[low][1]) * t,
-                stops[low][2] + (stops[high][2] - stops[low][2]) * t,
-                1.0,
-            ];
-        }
-        Ok(Self { entries })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct ShadowParams {
-    pub(crate) color: [f32; 4],
-    pub(crate) values: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct WgslShaderParams {
-    pub(crate) values: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct MergeParams {
-    pub(crate) opacity: f32,
-    pub(crate) blend_mode: u32,
-    pub(crate) has_mask: u32,
-    pub(crate) _pad: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct BooleanParams {
-    pub(crate) values: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct RasterMultiMergeParams {
-    pub(crate) values: [f32; 4],
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ChannelSelector {
-    pub(crate) index: f32,
-    pub(crate) value: f32,
-}
-
-const LUT_TABLE_SIZE: usize = 256;
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct TransformParams {
-    pub(crate) scale: [f32; 2],
-    pub(crate) translate: [f32; 2],
-    pub(crate) pivot: [f32; 2],
-    pub(crate) rotate_radians: f32,
-    pub(crate) sampling: u32,
-    pub(crate) _pad: [u32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct CropParams {
-    pub(crate) origin: [i32; 2],
-    pub(crate) size: [u32; 2],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct ResizeParams {
-    pub(crate) size: [u32; 2],
-    pub(crate) mode: u32,
-    pub(crate) sampling: u32,
-}
-
-pub(crate) fn dispatch_for(size: lumen_gpu::Size) -> lumen_gpu::Dispatch {
-    lumen_gpu::Dispatch {
-        x: size.width.div_ceil(8),
-        y: size.height.div_ceil(8),
-        z: 1,
-    }
-}
-
-pub(crate) fn spatial_bindings(
-    input: lumen_gpu::TextureId,
-    params: lumen_gpu::BufferId,
-    output: lumen_gpu::TextureId,
-) -> Vec<lumen_gpu::Binding> {
-    vec![
-        lumen_gpu::Binding::sampled_texture(0, 0, input),
-        lumen_gpu::Binding::uniform(0, 1, params),
-        lumen_gpu::Binding::storage_texture(0, 2, output),
-    ]
-}
-
-pub(crate) fn alpha_operation(node_id: NodeId, mode: &str) -> crate::Result<f32> {
-    match mode.trim().to_ascii_lowercase().as_str() {
-        "premultiply" | "premul" | "multiply" => Ok(0.0),
-        "unpremultiply" | "unpremul" | "straight" | "unmultiply" => Ok(1.0),
-        _ => Err(crate::error::PropertyError::InvalidType {
-            node_id,
-            property_path: "mode".to_string(),
-            expected: "`premultiply` or `unpremultiply`",
-            actual: "String",
-        }
-        .into()),
-    }
-}
-
-pub(crate) fn channel_selector(
-    node_id: NodeId,
-    property_path: &str,
-    spec: &str,
-) -> crate::Result<ChannelSelector> {
-    let normalized = spec.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "r" | "red" => Ok(ChannelSelector {
-            index: 0.0,
-            value: 0.0,
-        }),
-        "g" | "green" => Ok(ChannelSelector {
-            index: 1.0,
-            value: 0.0,
-        }),
-        "b" | "blue" => Ok(ChannelSelector {
-            index: 2.0,
-            value: 0.0,
-        }),
-        "a" | "alpha" => Ok(ChannelSelector {
-            index: 3.0,
-            value: 0.0,
-        }),
-        "zero" => Ok(ChannelSelector {
-            index: 4.0,
-            value: 0.0,
-        }),
-        "one" => Ok(ChannelSelector {
-            index: 4.0,
-            value: 1.0,
-        }),
-        _ => {
-            let value = normalized.parse::<f32>().map_err(|_| {
-                crate::error::PropertyError::InvalidType {
-                    node_id,
-                    property_path: property_path.to_string(),
-                    expected: "channel name or numeric constant",
-                    actual: "String",
-                }
-            })?;
-            Ok(ChannelSelector {
-                index: 4.0,
-                value: if value <= 1.0 {
-                    value.clamp(0.0, 1.0)
-                } else {
-                    (value / 255.0).clamp(0.0, 1.0)
-                },
-            })
-        }
-    }
-}
-
-fn parse_lut_stops(node_id: NodeId, frame: u32, source: &str) -> crate::Result<Vec<[f32; 3]>> {
-    let source = source.trim();
-    if source.is_empty()
-        || source.eq_ignore_ascii_case(crate::node::processing::color_grade::IDENTITY_LUT)
-    {
-        return Ok(vec![[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]);
-    }
-
-    let source = source
-        .strip_prefix("rgb1d")
-        .and_then(|rest| rest.strip_prefix(':'))
-        .unwrap_or(source);
-    let mut stops = Vec::new();
-    for triplet in source.split(';') {
-        let triplet = triplet.trim();
-        if triplet.is_empty() {
-            continue;
-        }
-        let components = triplet
-            .split([',', ' ', '\t'])
-            .filter(|part| !part.is_empty())
-            .map(str::parse::<f32>)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| lut_error(node_id, frame, "LUT contains a non-numeric component"))?;
-        if components.len() != 3 {
-            return Err(lut_error(
-                node_id,
-                frame,
-                format!("LUT triplet `{triplet}` must contain exactly three RGB components"),
-            ));
-        }
-        stops.push([
-            normalize_lut_component(components[0]),
-            normalize_lut_component(components[1]),
-            normalize_lut_component(components[2]),
-        ]);
-    }
-    if stops.len() < 2 {
-        return Err(lut_error(
-            node_id,
-            frame,
-            "LUT must contain at least two RGB triplets",
-        ));
-    }
-    Ok(stops)
-}
-
-fn normalize_lut_component(value: f32) -> f32 {
-    if value > 1.0 {
-        (value / 255.0).clamp(0.0, 1.0)
-    } else {
-        value.clamp(0.0, 1.0)
-    }
-}
-
-fn lut_error(node_id: NodeId, frame: u32, details: impl Into<String>) -> crate::error::LumenError {
-    RenderError::NodeEvaluation {
-        frame,
-        node_id,
-        node_kind: "ColorGrade",
-        details: details.into(),
-    }
-    .into()
-}
-
-pub(crate) fn copyable_texture_desc(size: lumen_gpu::Size) -> lumen_gpu::TextureDesc {
-    lumen_gpu::TextureDesc {
-        domain: lumen_gpu::TextureDomain::full_frame(size),
-        format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-        usage: lumen_gpu::wgpu::TextureUsages::COPY_DST
-            | lumen_gpu::wgpu::TextureUsages::COPY_SRC
-            | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
-            | lumen_gpu::wgpu::TextureUsages::STORAGE_BINDING
-            | lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT,
     }
 }

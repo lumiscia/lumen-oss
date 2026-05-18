@@ -1,6 +1,4 @@
-use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 /// Produces a rasterized vector path source.
@@ -62,60 +60,60 @@ impl GpuCompileNode for Path {
     }
 }
 
-impl GpuFrameBindNode for Path {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Path {
-            node_id,
-            data,
-            position,
-            fill_enabled,
-            fill_color,
-            stroke_enabled,
-            stroke_color,
-            stroke_width,
-            params_buffer,
-            points_buffer,
-            max_points,
-        } = binding
-        else {
-            return Ok(());
-        };
+#[derive(Debug, Clone)]
+pub(crate) struct PathFrameBinding {
+    pub(crate) node_id: NodeId,
+    pub(crate) data: NodeProperty,
+    pub(crate) position: NodeProperty,
+    pub(crate) fill_enabled: NodeProperty,
+    pub(crate) fill_color: NodeProperty,
+    pub(crate) stroke_enabled: NodeProperty,
+    pub(crate) stroke_color: NodeProperty,
+    pub(crate) stroke_width: NodeProperty,
+    pub(crate) params_buffer: lumen_gpu::BufferId,
+    pub(crate) points_buffer: lumen_gpu::BufferId,
+    pub(crate) max_points: usize,
+}
 
-        let path_data =
-            data.resolve_string(*node_id, "data", &ctx.expr_context(*node_id, "data"))?;
-        let points = parse_path_points(&path_data, *max_points);
-        let (x, y) = position.resolve_vec2(
-            *node_id,
+impl GpuFrameBinding for PathFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let path_data = self.data.resolve_string(
+            self.node_id,
+            "data",
+            &ctx.expr_context(self.node_id, "data"),
+        )?;
+        let points = parse_path_points(&path_data, self.max_points);
+        let (x, y) = self.position.resolve_vec2(
+            self.node_id,
             "position",
-            &ctx.expr_context(*node_id, "position"),
+            &ctx.expr_context(self.node_id, "position"),
         )?;
-        let fill = fill_color.resolve_color(
-            *node_id,
+        let fill = self.fill_color.resolve_color(
+            self.node_id,
             "fill_color",
-            &ctx.expr_context(*node_id, "fill_color"),
+            &ctx.expr_context(self.node_id, "fill_color"),
         )?;
-        let stroke = stroke_color.resolve_color(
-            *node_id,
+        let stroke = self.stroke_color.resolve_color(
+            self.node_id,
             "stroke_color",
-            &ctx.expr_context(*node_id, "stroke_color"),
+            &ctx.expr_context(self.node_id, "stroke_color"),
         )?;
         let mut flags = 0;
-        if fill_enabled.resolve_bool(
-            *node_id,
+        if self.fill_enabled.resolve_bool(
+            self.node_id,
             "fill_enabled",
-            &ctx.expr_context(*node_id, "fill_enabled"),
+            &ctx.expr_context(self.node_id, "fill_enabled"),
         )? {
             flags |= 1;
         }
-        if stroke_enabled.resolve_bool(
-            *node_id,
+        if self.stroke_enabled.resolve_bool(
+            self.node_id,
             "stroke_enabled",
-            &ctx.expr_context(*node_id, "stroke_enabled"),
+            &ctx.expr_context(self.node_id, "stroke_enabled"),
         )? {
             flags |= 2;
         }
@@ -124,18 +122,18 @@ impl GpuFrameBindNode for Path {
             fill_color: rgba8_to_f32(fill),
             stroke_color: rgba8_to_f32(stroke),
             position: [x as f32, y as f32],
-            stroke_width: stroke_width.resolve_float(
-                *node_id,
+            stroke_width: self.stroke_width.resolve_float(
+                self.node_id,
                 "stroke_width",
-                &ctx.expr_context(*node_id, "stroke_width"),
+                &ctx.expr_context(self.node_id, "stroke_width"),
             )? as f32,
             flags,
             point_count: points.len() as u32,
             _pad: [0; 3],
         };
-        bound.write_buffer(*params_buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
         if !points.is_empty() {
-            bound.write_buffer(*points_buffer, 0, bytemuck::cast_slice(&points));
+            bound.write_buffer(self.points_buffer, 0, bytemuck::cast_slice(&points));
         }
         Ok(())
     }

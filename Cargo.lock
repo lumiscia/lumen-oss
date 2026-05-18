@@ -1614,6 +1614,7 @@ dependencies = [
  "lumen-engine-text",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "smallvec",
  "thiserror",
  "tracing",

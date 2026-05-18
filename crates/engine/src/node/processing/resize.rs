@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("resize.wgsl");
@@ -118,7 +118,7 @@ impl GpuCompileNode for Resize {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(FrameBinding::Resize {
+        ctx.push_frame_binding(ResizeFrameBinding {
             node_id: self.id,
             width: self.width.clone(),
             height: self.height.clone(),
@@ -135,45 +135,51 @@ impl GpuCompileNode for Resize {
     }
 }
 
-impl GpuFrameBindNode for Resize {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Resize {
-            node_id,
-            width,
-            height,
-            mode,
-            sampling,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
+#[derive(Debug, Clone)]
+struct ResizeFrameBinding {
+    node_id: NodeId,
+    width: NodeProperty,
+    height: NodeProperty,
+    mode: NodeProperty,
+    sampling: NodeProperty,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for ResizeFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let params = compiler::ResizeParams {
             size: [
-                width
-                    .resolve_int(*node_id, "width", &ctx.expr_context(*node_id, "width"))?
+                self.width
+                    .resolve_int(
+                        self.node_id,
+                        "width",
+                        &ctx.expr_context(self.node_id, "width"),
+                    )?
                     .max(1) as u32,
-                height
-                    .resolve_int(*node_id, "height", &ctx.expr_context(*node_id, "height"))?
+                self.height
+                    .resolve_int(
+                        self.node_id,
+                        "height",
+                        &ctx.expr_context(self.node_id, "height"),
+                    )?
                     .max(1) as u32,
             ],
-            mode: ResizeMode::from_int(mode.resolve_int(
-                *node_id,
+            mode: ResizeMode::from_int(self.mode.resolve_int(
+                self.node_id,
                 "mode",
-                &ctx.expr_context(*node_id, "mode"),
+                &ctx.expr_context(self.node_id, "mode"),
             )?) as u32,
-            sampling: ResizeSampling::from_int(sampling.resolve_int(
-                *node_id,
+            sampling: ResizeSampling::from_int(self.sampling.resolve_int(
+                self.node_id,
                 "sampling",
-                &ctx.expr_context(*node_id, "sampling"),
+                &ctx.expr_context(self.node_id, "sampling"),
             )?) as u32,
         };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
     }
 }

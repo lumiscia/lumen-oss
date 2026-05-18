@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeProperty, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("levels.wgsl");
@@ -45,6 +45,56 @@ impl Default for Levels {
     }
 }
 
+#[derive(Debug, Clone)]
+struct LevelsFrameBinding {
+    node_id: NodeId,
+    black_point: NodeProperty,
+    white_point: NodeProperty,
+    gamma: NodeProperty,
+    output_black: NodeProperty,
+    output_white: NodeProperty,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for LevelsFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let params = compiler::LevelsParams {
+            black_point: self.black_point.resolve_float(
+                self.node_id,
+                "black_point",
+                &ctx.expr_context(self.node_id, "black_point"),
+            )? as f32,
+            white_point: self.white_point.resolve_float(
+                self.node_id,
+                "white_point",
+                &ctx.expr_context(self.node_id, "white_point"),
+            )? as f32,
+            gamma: self.gamma.resolve_float(
+                self.node_id,
+                "gamma",
+                &ctx.expr_context(self.node_id, "gamma"),
+            )? as f32,
+            output_black: self.output_black.resolve_float(
+                self.node_id,
+                "output_black",
+                &ctx.expr_context(self.node_id, "output_black"),
+            )? as f32,
+            output_white: self.output_white.resolve_float(
+                self.node_id,
+                "output_white",
+                &ctx.expr_context(self.node_id, "output_white"),
+            )? as f32,
+            _pad: [0.0; 3],
+        };
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
+    }
+}
+
 impl GpuCompileNode for Levels {
     fn compile_gpu(
         &self,
@@ -59,7 +109,7 @@ impl GpuCompileNode for Levels {
             SHADER,
             std::mem::size_of::<compiler::LevelsParams>() as u64,
         )?;
-        ctx.push_frame_binding(FrameBinding::Levels {
+        ctx.push_frame_binding(LevelsFrameBinding {
             node_id: self.id,
             black_point: self.black_point.clone(),
             white_point: self.white_point.clone(),
@@ -73,54 +123,5 @@ impl GpuCompileNode for Levels {
             domain: source.domain,
             metadata: source.metadata,
         }))
-    }
-}
-
-impl GpuFrameBindNode for Levels {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Levels {
-            node_id,
-            black_point,
-            white_point,
-            gamma,
-            output_black,
-            output_white,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let params = compiler::LevelsParams {
-            black_point: black_point.resolve_float(
-                *node_id,
-                "black_point",
-                &ctx.expr_context(*node_id, "black_point"),
-            )? as f32,
-            white_point: white_point.resolve_float(
-                *node_id,
-                "white_point",
-                &ctx.expr_context(*node_id, "white_point"),
-            )? as f32,
-            gamma: gamma.resolve_float(*node_id, "gamma", &ctx.expr_context(*node_id, "gamma"))?
-                as f32,
-            output_black: output_black.resolve_float(
-                *node_id,
-                "output_black",
-                &ctx.expr_context(*node_id, "output_black"),
-            )? as f32,
-            output_white: output_white.resolve_float(
-                *node_id,
-                "output_white",
-                &ctx.expr_context(*node_id, "output_white"),
-            )? as f32,
-            _pad: [0.0; 3],
-        };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
     }
 }
