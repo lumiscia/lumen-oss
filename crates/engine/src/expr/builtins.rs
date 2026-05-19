@@ -7,7 +7,7 @@ use crate::{
         ast::{BuiltinFn, ExprNode, ExpressionValue},
         eval::evaluate_expr,
     },
-    node::{NodeId, NodeKind, NodeProperty},
+    node::{NodeId, NodeKind, PropertyValue},
 };
 
 pub fn evaluate_builtin(
@@ -339,25 +339,25 @@ fn measure_text_node(
     let content = resolve_string(
         node_id,
         "content",
-        &text.params.content.to_node_property(),
+        &text.params.content.to_property_value(),
         ctx,
     )?;
     let font_family = resolve_string(
         node_id,
         "font_family",
-        &text.params.font_family.to_node_property(),
+        &text.params.font_family.to_property_value(),
         ctx,
     )?;
     let font_size = resolve_number(
         node_id,
         "font_size",
-        &text.params.font_size.to_node_property(),
+        &text.params.font_size.to_property_value(),
         ctx,
     )? as f32;
     let max_width = resolve_number(
         node_id,
         "max_width",
-        &text.params.max_width.to_node_property(),
+        &text.params.max_width.to_property_value(),
         ctx,
     )? as f32;
     measure_text_value(&content, &font_family, font_size, max_width)
@@ -389,21 +389,11 @@ fn measure_text_value(
 fn resolve_string(
     node_id: NodeId,
     property: &str,
-    value: &NodeProperty,
+    value: &PropertyValue,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<String> {
     match value {
-        NodeProperty::String(text) => Ok(text.clone()),
-        NodeProperty::Expr(expr) => to_string(
-            &expr.evaluate(ctx)?,
-            text_measure_error(
-                ctx,
-                format!(
-                    "text node `{}` property `{property}` must be a string",
-                    node_id.0
-                ),
-            ),
-        ),
+        PropertyValue::String(text) => Ok(text.clone()),
         _ => Err(text_measure_error(
             ctx,
             format!(
@@ -417,22 +407,12 @@ fn resolve_string(
 fn resolve_number(
     node_id: NodeId,
     property: &str,
-    value: &NodeProperty,
+    value: &PropertyValue,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<f64> {
     match value {
-        NodeProperty::Float(number) => Ok(*number),
-        NodeProperty::Int(number) => Ok(*number as f64),
-        NodeProperty::Expr(expr) => to_number(
-            &expr.evaluate(ctx)?,
-            text_measure_error(
-                ctx,
-                format!(
-                    "text node `{}` property `{property}` must be numeric",
-                    node_id.0
-                ),
-            ),
-        ),
+        PropertyValue::Float(number) => Ok(*number),
+        PropertyValue::Int(number) => Ok(*number as f64),
         _ => Err(text_measure_error(
             ctx,
             format!(

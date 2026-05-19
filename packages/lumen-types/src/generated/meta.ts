@@ -3,7 +3,7 @@
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodePropertyKind = "bool" | "color" | "enum" | "float" | "int" | "string" | "vec2";
+export type NodeParamKind = "bool" | "color" | "enum" | "float" | "int" | "string" | "vec2";
 export type NodeKind = "alpha_premultiply" | "blur" | "boolean" | "channel_shuffle" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "solid_color" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
@@ -21,7 +21,7 @@ export interface NodeSpec {
   readonly category: NodeCategory;
   readonly inputs: readonly NodeInputPortSpec[];
   readonly outputs: readonly NodeOutputPortSpec[];
-  readonly properties: readonly NodePropertySpec[];
+  readonly properties: readonly NodeParamSpec[];
   readonly defaultProperties: Readonly<Record<string, NodeLiteralValue>>;
 }
 
@@ -37,10 +37,10 @@ export interface NodeOutputPortSpec {
   readonly kind: NodePortKind;
 }
 
-export interface NodePropertySpec {
+export interface NodeParamSpec {
   readonly id: string;
   readonly name: string;
-  readonly kind: NodePropertyKind;
+  readonly kind: NodeParamKind;
   readonly description: string;
   readonly defaultValue: NodeLiteralValue;
   readonly enumOptions?: readonly NodeEnumOptionSpec[];

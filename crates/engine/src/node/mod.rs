@@ -136,7 +136,7 @@ pub struct NodeSchemaDef {
     pub category: NodeCategory,
     pub inputs: &'static [InputPortDef],
     pub properties: Vec<PropertyDef>,
-    pub default_properties: Vec<(&'static str, NodeProperty)>,
+    pub default_properties: Vec<(&'static str, PropertyValue)>,
 }
 
 #[cfg(feature = "metadata")]
@@ -164,7 +164,7 @@ pub enum PortKind {
 }
 
 #[derive(Debug, Clone)]
-pub enum NodeProperty {
+pub enum PropertyValue {
     Float(f64),
     Int(i64),
     Bool(bool),
@@ -174,6 +174,11 @@ pub enum NodeProperty {
     FloatVec(Vec<f64>),
     IntVec(Vec<i64>),
     StringVec(Vec<String>),
+}
+
+#[derive(Debug, Clone)]
+pub enum PropertyExpression {
+    Value(PropertyValue),
     Expr(Expression),
 }
 
@@ -200,13 +205,42 @@ impl<T> Deferred<T> {
         T::eval_deferred(self, node_id, property_path, ctx)
     }
 
-    pub fn to_node_property(&self) -> NodeProperty
+    pub fn to_property_value(&self) -> PropertyValue
     where
         T: DeferredValue,
     {
         match self {
-            Self::Value(value) => T::to_node_property(value),
-            Self::Expr(expr) => NodeProperty::Expr(expr.clone()),
+            Self::Value(value) => T::to_property_value(value),
+            Self::Expr(_) => PropertyValue::String(String::new()),
+        }
+    }
+
+    pub fn to_property_expression(&self) -> PropertyExpression
+    where
+        T: DeferredValue,
+    {
+        match self {
+            Self::Value(value) => PropertyExpression::Value(T::to_property_value(value)),
+            Self::Expr(expr) => PropertyExpression::Expr(expr.clone()),
+        }
+    }
+
+    pub fn from_property_expression(value: PropertyExpression) -> crate::Result<Self>
+    where
+        T: DeferredValue,
+    {
+        match value {
+            PropertyExpression::Value(value) => T::from_property_value(value)
+                .map(Self::Value)
+                .ok_or_else(|| {
+                    LumenError::Property(PropertyError::InvalidType {
+                        node_id: NodeId::new(0),
+                        property_path: String::new(),
+                        expected: T::property_kind_name(),
+                        actual: "property",
+                    })
+                }),
+            PropertyExpression::Expr(expr) => Ok(Self::Expr(expr)),
         }
     }
 }
@@ -331,7 +365,11 @@ pub trait DeferredValue: Clone {
     where
         Self: Sized;
 
-    fn to_node_property(value: &Self) -> NodeProperty;
+    fn to_property_value(value: &Self) -> PropertyValue;
+    fn from_property_value(value: PropertyValue) -> Option<Self>
+    where
+        Self: Sized;
+    fn property_kind_name() -> &'static str;
 }
 
 #[cfg(feature = "json")]
@@ -354,13 +392,25 @@ impl DeferredValue for f64 {
         match deferred {
             Deferred::Value(value) => Ok(*value),
             Deferred::Expr(expr) => expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
-                NodeProperty::invalid_type(node_id, property_path, "Float", "expression")
+                PropertyValue::invalid_type(node_id, property_path, "Float", "expression")
             }),
         }
     }
 
-    fn to_node_property(value: &Self) -> NodeProperty {
-        NodeProperty::Float(*value)
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Float(*value)
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Float(value) => Some(value),
+            PropertyValue::Int(value) => Some(value as f64),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Float"
     }
 }
 
@@ -385,15 +435,27 @@ impl DeferredValue for i64 {
             Deferred::Value(value) => Ok(*value),
             Deferred::Expr(expr) => {
                 let value = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
-                    NodeProperty::invalid_type(node_id, property_path, "Int", "expression")
+                    PropertyValue::invalid_type(node_id, property_path, "Int", "expression")
                 })?;
                 Ok(value as i64)
             }
         }
     }
 
-    fn to_node_property(value: &Self) -> NodeProperty {
-        NodeProperty::Int(*value)
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Int(*value)
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Int(value) => Some(value),
+            PropertyValue::Float(value) => Some(value as i64),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Int"
     }
 }
 
@@ -420,8 +482,20 @@ impl DeferredValue for bool {
         }
     }
 
-    fn to_node_property(value: &Self) -> NodeProperty {
-        NodeProperty::Bool(*value)
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Bool(*value)
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Bool(value) => Some(value),
+            PropertyValue::Int(value) => Some(value != 0),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Bool"
     }
 }
 
@@ -448,8 +522,19 @@ impl DeferredValue for String {
         }
     }
 
-    fn to_node_property(value: &Self) -> NodeProperty {
-        NodeProperty::String(value.clone())
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::String(value.clone())
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "String"
     }
 }
 
@@ -469,7 +554,7 @@ impl DeferredValue for [u8; 4] {
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(_) => Err(NodeProperty::invalid_type(
+            Deferred::Expr(_) => Err(PropertyValue::invalid_type(
                 node_id,
                 property_path,
                 "Color",
@@ -478,8 +563,19 @@ impl DeferredValue for [u8; 4] {
         }
     }
 
-    fn to_node_property(value: &Self) -> NodeProperty {
-        NodeProperty::Color(*value)
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Color(*value)
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Color(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Color"
     }
 }
 
@@ -514,7 +610,7 @@ impl DeferredValue for (f64, f64) {
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(_) => Err(NodeProperty::invalid_type(
+            Deferred::Expr(_) => Err(PropertyValue::invalid_type(
                 node_id,
                 property_path,
                 "Vec2",
@@ -523,8 +619,19 @@ impl DeferredValue for (f64, f64) {
         }
     }
 
-    fn to_node_property(value: &Self) -> NodeProperty {
-        NodeProperty::Vec2(*value)
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Vec2(*value)
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Vec2(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Vec2"
     }
 }
 
@@ -538,8 +645,8 @@ pub trait NodeParams: Clone + Default {
 
     fn property_defs() -> Vec<PropertyDef>;
     fn is_property(id: &str) -> bool;
-    fn default_properties(&self) -> Vec<(&'static str, NodeProperty)>;
-    fn get_property(&self, id: &str) -> Option<NodeProperty>;
+    fn default_properties(&self) -> Vec<(&'static str, PropertyValue)>;
+    fn get_property(&self, id: &str) -> Option<PropertyExpression>;
     fn eval(&self, ctx: &NodeParamEvalContext<'_>) -> crate::Result<Self::Evaluated>;
 
     #[cfg(feature = "json")]
@@ -558,7 +665,7 @@ pub trait NodeParams: Clone + Default {
     }
 }
 
-impl NodeProperty {
+impl PropertyValue {
     fn invalid_type(
         node_id: NodeId,
         property_path: &str,
@@ -577,7 +684,7 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        ctx: &crate::expr::ExpressionContext<'_>,
+        _ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<f64> {
         match self {
             Self::Float(value) => Ok(*value),
@@ -585,10 +692,6 @@ impl NodeProperty {
             Self::String(value) => value
                 .parse::<f64>()
                 .map_err(|_| Self::invalid_type(node_id, property_path, "Float", "String")),
-            Self::Expr(expr) => expr
-                .evaluate(ctx)?
-                .as_f64()
-                .ok_or_else(|| Self::invalid_type(node_id, property_path, "Float", "expression")),
             _ => Err(Self::invalid_type(
                 node_id,
                 property_path,
@@ -602,7 +705,7 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        ctx: &crate::expr::ExpressionContext<'_>,
+        _ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<i64> {
         match self {
             Self::Int(value) => Ok(*value),
@@ -611,12 +714,6 @@ impl NodeProperty {
             Self::String(value) => value
                 .parse::<i64>()
                 .map_err(|_| Self::invalid_type(node_id, property_path, "Int", "String")),
-            Self::Expr(expr) => {
-                let value = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
-                    Self::invalid_type(node_id, property_path, "Int", "expression")
-                })?;
-                Ok(value as i64)
-            }
             _ => Err(Self::invalid_type(
                 node_id,
                 property_path,
@@ -630,7 +727,7 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        ctx: &crate::expr::ExpressionContext<'_>,
+        _ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<bool> {
         match self {
             Self::Bool(value) => Ok(*value),
@@ -641,7 +738,6 @@ impl NodeProperty {
                 "false" | "0" => Ok(false),
                 _ => Err(Self::invalid_type(node_id, property_path, "Bool", "String")),
             },
-            Self::Expr(expr) => Ok(expr.evaluate(ctx)?.as_bool()),
             _ => Err(Self::invalid_type(
                 node_id,
                 property_path,
@@ -655,14 +751,13 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        ctx: &crate::expr::ExpressionContext<'_>,
+        _ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<String> {
         match self {
             Self::String(value) => Ok(value.clone()),
             Self::Int(value) => Ok(value.to_string()),
             Self::Float(value) => Ok(value.to_string()),
             Self::Bool(value) => Ok(value.to_string()),
-            Self::Expr(expr) => Ok(expr.evaluate(ctx)?.as_string()),
             _ => Err(Self::invalid_type(
                 node_id,
                 property_path,
@@ -676,7 +771,7 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
+        __ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<[u8; 4]> {
         match self {
             Self::Color(value) => Ok(*value),
@@ -693,7 +788,7 @@ impl NodeProperty {
         &self,
         node_id: NodeId,
         property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
+        __ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<(f64, f64)> {
         match self {
             Self::Vec2(value) => Ok(*value),
@@ -716,7 +811,7 @@ pub trait Node: Send + Sync {
 }
 
 pub trait PropertyEval {
-    fn get_property(&self, id: &str) -> crate::Result<Option<NodeProperty>>;
+    fn get_property(&self, id: &str) -> crate::Result<Option<PropertyExpression>>;
 }
 
 pub const SINGLE_RASTER_OUTPUT: &[OutputPortDef] = &[OutputPortDef {
@@ -884,7 +979,7 @@ impl Node for NodeKind {
 }
 
 impl PropertyEval for NodeKind {
-    fn get_property(&self, id: &str) -> crate::Result<Option<NodeProperty>> {
+    fn get_property(&self, id: &str) -> crate::Result<Option<PropertyExpression>> {
         match self {
             Self::MediaIn(node) => node.get_property(id),
             Self::SolidColor(node) => node.get_property(id),

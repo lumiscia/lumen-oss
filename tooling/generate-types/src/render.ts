@@ -1,4 +1,4 @@
-import type { MetaManifest, NodePropertySpec, NodeSpec } from "./definitions.js";
+import type { MetaManifest, NodeParamSpec, NodeSpec } from "./definitions.js";
 
 const quote = (value: string): string => JSON.stringify(value);
 
@@ -25,10 +25,10 @@ const typeNameForEnumProperty = (nodeKind: string, propertyName: string): string
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
     .join("")}`;
 
-const enumTypeForProperty = (nodeKind: string, property: NodePropertySpec): string =>
+const enumTypeForProperty = (nodeKind: string, property: NodeParamSpec): string =>
   typeNameForEnumProperty(nodeKind, property.id);
 
-const propertyType = (nodeKind: string, property: NodePropertySpec): string => {
+const propertyType = (nodeKind: string, property: NodeParamSpec): string => {
   switch (property.kind) {
     case "bool":
       return "boolean";
@@ -48,7 +48,7 @@ const propertyType = (nodeKind: string, property: NodePropertySpec): string => {
   }
 };
 
-const renderEnumType = (spec: NodeSpec, property: NodePropertySpec): string =>
+const renderEnumType = (spec: NodeSpec, property: NodeParamSpec): string =>
   `export type ${enumTypeForProperty(spec.kind, property)} = ${union(
     (property.enumOptions ?? []).map((option) => option.name),
   )};`;
@@ -112,7 +112,7 @@ export function renderMetaTypes(manifest: MetaManifest): string {
 
 export type NodeCategory = ${union(categories)};
 export type NodePortKind = ${union(portKinds)};
-export type NodePropertyKind = ${union(propertyKinds)};
+export type NodeParamKind = ${union(propertyKinds)};
 export type NodeKind = ${union(nodeKinds)};
 
 export const schemaVersion = ${JSON.stringify(manifest.schemaVersion)} as const;
@@ -130,7 +130,7 @@ export interface NodeSpec {
   readonly category: NodeCategory;
   readonly inputs: readonly NodeInputPortSpec[];
   readonly outputs: readonly NodeOutputPortSpec[];
-  readonly properties: readonly NodePropertySpec[];
+  readonly properties: readonly NodeParamSpec[];
   readonly defaultProperties: Readonly<Record<string, NodeLiteralValue>>;
 }
 
@@ -146,10 +146,10 @@ export interface NodeOutputPortSpec {
   readonly kind: NodePortKind;
 }
 
-export interface NodePropertySpec {
+export interface NodeParamSpec {
   readonly id: string;
   readonly name: string;
-  readonly kind: NodePropertyKind;
+  readonly kind: NodeParamKind;
   readonly description: string;
   readonly defaultValue: NodeLiteralValue;
   readonly enumOptions?: readonly NodeEnumOptionSpec[];

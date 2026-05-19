@@ -1,6 +1,6 @@
 use crate::{
     expr::Expression,
-    node::{NodeId, NodeProperty, PortRef},
+    node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef},
 };
 
 use crate::gpu::{
@@ -11,28 +11,46 @@ use crate::gpu::{
 pub(crate) const SHADER: &str = include_str!("wgsl_shader.wgsl");
 
 /// Runs a custom WGSL compute shader over a raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
-#[node(kind = "wgsl_shader", name = "WGSL Shader", category = "processing")]
-pub struct WgslShader {
-    pub id: NodeId,
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedWgslShaderParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct WgslShaderParams {
     /// Custom WGSL compute shader source.
-    #[property(
+    #[param(
         kind = "string",
         name = "Shader source",
         format = "wgsl",
         multiline,
         recommended_rows = 10
     )]
-    pub shader: NodeProperty,
+    pub shader: Deferred<String>,
     /// JSON object describing shader binding values.
-    #[property(
+    #[param(
         kind = "string",
         name = "Shader bindings",
         format = "json",
         multiline,
         recommended_rows = 6
     )]
-    pub bindings: NodeProperty,
+    pub bindings: Deferred<String>,
+}
+
+impl Default for WgslShaderParams {
+    fn default() -> Self {
+        Self {
+            shader: Deferred::value(String::new()),
+            bindings: Deferred::value(String::new()),
+        }
+    }
+}
+
+/// Runs a custom WGSL compute shader over a raster.
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(kind = "wgsl_shader", name = "WGSL Shader", category = "processing")]
+pub struct WgslShader {
+    pub id: NodeId,
+    #[params]
+    pub params: WgslShaderParams,
     #[input()]
     pub source: PortRef,
 }
@@ -41,8 +59,7 @@ impl Default for WgslShader {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            shader: NodeProperty::String(String::new()),
-            bindings: NodeProperty::String(String::new()),
+            params: WgslShaderParams::default(),
             source: PortRef::empty(),
         }
     }
@@ -54,9 +71,11 @@ impl GpuCompileNode for WgslShader {
         ctx: &mut crate::gpu::CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        let shader =
-            self.shader
-                .resolve_string(self.id, "shader", &ctx.expr_context(self.id, "shader"))?;
+        let shader = self.params.shader.resolve_string(
+            self.id,
+            "shader",
+            &ctx.expr_context(self.id, "shader"),
+        )?;
         let shader = if shader.trim().is_empty() {
             SHADER
         } else {
@@ -72,8 +91,7 @@ impl GpuCompileNode for WgslShader {
         )?;
         ctx.push_frame_binding(WgslShaderFrameBinding {
             node_id: self.id,
-            shader: self.shader.clone(),
-            bindings: self.bindings.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -87,8 +105,7 @@ impl GpuCompileNode for WgslShader {
 #[derive(Debug, Clone)]
 struct WgslShaderFrameBinding {
     node_id: NodeId,
-    shader: NodeProperty,
-    bindings: NodeProperty,
+    params: WgslShaderParams,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -98,22 +115,16 @@ impl GpuFrameBinding for WgslShaderFrameBinding {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let shader = self.shader.resolve_string(
-            self.node_id,
-            "shader",
-            &ctx.expr_context(self.node_id, "shader"),
-        )?;
-        let bindings = self.bindings.resolve_string(
-            self.node_id,
-            "bindings",
-            &ctx.expr_context(self.node_id, "bindings"),
-        )?;
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
         let params = compiler::WgslShaderParams {
             values: resolve_shader_values(
                 self.node_id,
                 &ctx.expr_context(self.node_id, "bindings"),
-                &shader,
-                &bindings,
+                &params.shader,
+                &params.bindings,
             )?,
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));

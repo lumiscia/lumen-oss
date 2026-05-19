@@ -13,7 +13,7 @@ export interface NodeSpec {
   readonly category: string;
   readonly inputs?: readonly NodePortSpec[];
   readonly outputs?: readonly NodePortSpec[];
-  readonly properties?: readonly NodePropertySpec[];
+  readonly properties?: readonly NodeParamSpec[];
   readonly defaultProperties?: Readonly<Record<string, unknown>>;
 }
 
@@ -24,7 +24,7 @@ export interface NodePortSpec {
   readonly variadic?: boolean;
 }
 
-export interface NodePropertySpec {
+export interface NodeParamSpec {
   readonly id: string;
   readonly name: string;
   readonly kind: string;
@@ -104,7 +104,7 @@ function nodeSpecFromSchema(schema: JsonSchema): NodeSpec {
   };
 }
 
-function propertySpecFromSchema(id: string, schema: JsonSchema): NodePropertySpec {
+function propertySpecFromSchema(id: string, schema: JsonSchema): NodeParamSpec {
   const constraints = constraintsFromSchema(schema);
   return {
     id,

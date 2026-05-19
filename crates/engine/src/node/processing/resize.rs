@@ -108,8 +108,8 @@ impl GpuCompileNode for Resize {
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
         let size = lumen_gpu::Size::new(
-            ctx.static_dimension(&self.params.width.to_node_property(), self.id, "width")?,
-            ctx.static_dimension(&self.params.height.to_node_property(), self.id, "height")?,
+            ctx.static_dimension(&self.params.width, self.id, "width")?,
+            ctx.static_dimension(&self.params.height, self.id, "height")?,
         );
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),

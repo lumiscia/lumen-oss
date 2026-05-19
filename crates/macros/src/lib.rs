@@ -242,7 +242,7 @@ fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
                 &self,
                 id: &str,
             ) -> ::core::result::Result<
-                ::core::option::Option<::lumen_engine::node::NodeProperty>,
+                ::core::option::Option<::lumen_engine::node::PropertyExpression>,
                 ::lumen_engine::error::LumenError,
             > {
                 #(#params_property_matches)*
@@ -285,19 +285,32 @@ fn expand_node_params(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
         let name = &param.property.id;
         let field = &param.property.field;
         quote! {
-            (#name, <#ident as ::core::default::Default>::default().#field.to_node_property())
+            (#name, <#ident as ::core::default::Default>::default().#field.to_property_value())
         }
     });
     let property_matches = params.iter().map(|param| {
         let name = &param.property.id;
         let field = &param.property.field;
-        quote!(#name => Some(self.#field.to_node_property()))
+        quote!(#name => Some(self.#field.to_property_expression()))
     });
     let eval_fields = params.iter().map(|param| {
         let name = &param.property.id;
         let field = &param.property.field;
         quote! {
             #field: self.#field.eval(ctx.node_id, #name, ctx.expr)?
+        }
+    });
+    let json_sets = params.iter().map(|param| {
+        let name = &param.property.id;
+        let field = &param.property.field;
+        let property_def = property_def_tokens(&param.property);
+        quote! {
+            if let Some(value) = properties.and_then(|properties| properties.get(#name)) {
+                let def = #property_def;
+                params.#field = ::lumen_engine::node::Deferred::from_property_expression(
+                    ::lumen_engine::json::parse_property(value, Some(&def), #name)?,
+                )?;
+            }
         }
     });
 
@@ -318,11 +331,11 @@ fn expand_node_params(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
                 matches!(id, #(#is_property_matches)|*)
             }
 
-            fn default_properties(&self) -> ::std::vec::Vec<(&'static str, ::lumen_engine::node::NodeProperty)> {
+            fn default_properties(&self) -> ::std::vec::Vec<(&'static str, ::lumen_engine::node::PropertyValue)> {
                 vec![#(#default_properties),*]
             }
 
-            fn get_property(&self, id: &str) -> ::core::option::Option<::lumen_engine::node::NodeProperty> {
+            fn get_property(&self, id: &str) -> ::core::option::Option<::lumen_engine::node::PropertyExpression> {
                 match id {
                     #(#property_matches,)*
                     _ => None,
@@ -336,6 +349,19 @@ fn expand_node_params(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
                 Ok(#evaluated_ident {
                     #(#eval_fields,)*
                 })
+            }
+
+            #[cfg(feature = "json")]
+            fn from_json(
+                properties: ::core::option::Option<&::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+            ) -> ::anyhow::Result<Self>
+            where
+                Self: Sized,
+                Self: ::serde::de::DeserializeOwned,
+            {
+                let mut params = <Self as ::core::default::Default>::default();
+                #(#json_sets)*
+                Ok(params)
             }
         }
     })

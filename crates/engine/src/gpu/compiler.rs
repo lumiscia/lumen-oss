@@ -9,7 +9,7 @@ use crate::{
         GpuFrameBinding, RasterHandle, RasterMetadata,
     },
     media::MediaStore,
-    node::{NodeId, NodeKind, NodeProperty, PortRef},
+    node::{Deferred, NodeId, NodeKind, PortRef},
 };
 
 pub(crate) use super::params::*;
@@ -381,7 +381,7 @@ impl<'a> CompileContext<'a> {
 
     pub(crate) fn static_dimension(
         &self,
-        property: &NodeProperty,
+        property: &Deferred<i64>,
         node_id: NodeId,
         property_path: &str,
     ) -> crate::Result<u32> {
