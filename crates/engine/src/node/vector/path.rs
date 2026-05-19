@@ -1,53 +1,68 @@
-use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-};
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 /// Produces a rasterized vector path source.
-#[derive(Debug, Clone, lumen_macros::Node)]
-#[node(kind = "path", name = "Path", category = "vector")]
-pub struct Path {
-    pub id: NodeId,
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedPathParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct PathParams {
     /// SVG-style path data.
-    #[property(
+    #[param(
         kind = "string",
         name = "Path data",
         format = "path_data",
         multiline,
         recommended_rows = 5
     )]
-    pub data: NodeProperty,
+    pub data: Deferred<String>,
     /// Path origin in pixels.
-    #[property(kind = "vec2")]
-    pub position: NodeProperty,
+    #[param(kind = "vec2")]
+    pub position: Deferred<(f64, f64)>,
     /// Enables fill rendering.
-    #[property(kind = "bool")]
-    pub fill_enabled: NodeProperty,
+    #[param(kind = "bool")]
+    pub fill_enabled: Deferred<bool>,
     /// Fill color.
-    #[property(kind = "color")]
-    pub fill_color: NodeProperty,
+    #[param(kind = "color")]
+    pub fill_color: Deferred<[u8; 4]>,
     /// Enables stroke rendering.
-    #[property(kind = "bool")]
-    pub stroke_enabled: NodeProperty,
+    #[param(kind = "bool")]
+    pub stroke_enabled: Deferred<bool>,
     /// Stroke color.
-    #[property(kind = "color")]
-    pub stroke_color: NodeProperty,
+    #[param(kind = "color")]
+    pub stroke_color: Deferred<[u8; 4]>,
     /// Stroke width in pixels.
-    #[property(kind = "float", min = 0, step = 0.5)]
-    pub stroke_width: NodeProperty,
+    #[param(kind = "float", min = 0, step = 0.5)]
+    pub stroke_width: Deferred<f64>,
+}
+
+impl Default for PathParams {
+    fn default() -> Self {
+        Self {
+            data: Deferred::value("M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string()),
+            position: Deferred::value((0.0, 0.0)),
+            fill_enabled: Deferred::value(true),
+            fill_color: Deferred::value([255, 255, 255, 255]),
+            stroke_enabled: Deferred::value(false),
+            stroke_color: Deferred::value([0, 0, 0, 255]),
+            stroke_width: Deferred::value(1.0),
+        }
+    }
+}
+
+/// Produces a rasterized vector path source.
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(kind = "path", name = "Path", category = "vector")]
+pub struct Path {
+    pub id: NodeId,
+    #[params]
+    pub params: PathParams,
 }
 
 impl Default for Path {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            data: NodeProperty::String("M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string()),
-            position: NodeProperty::Vec2((0.0, 0.0)),
-            fill_enabled: NodeProperty::Bool(true),
-            fill_color: NodeProperty::Color([255, 255, 255, 255]),
-            stroke_enabled: NodeProperty::Bool(false),
-            stroke_color: NodeProperty::Color([0, 0, 0, 255]),
-            stroke_width: NodeProperty::Float(1.0),
+            params: PathParams::default(),
         }
     }
 }
@@ -62,60 +77,60 @@ impl GpuCompileNode for Path {
     }
 }
 
-impl GpuFrameBindNode for Path {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Path {
-            node_id,
-            data,
-            position,
-            fill_enabled,
-            fill_color,
-            stroke_enabled,
-            stroke_color,
-            stroke_width,
-            params_buffer,
-            points_buffer,
-            max_points,
-        } = binding
-        else {
-            return Ok(());
-        };
+#[derive(Debug, Clone)]
+pub(crate) struct PathFrameBinding {
+    pub(crate) node_id: NodeId,
+    pub(crate) data: Deferred<String>,
+    pub(crate) position: Deferred<(f64, f64)>,
+    pub(crate) fill_enabled: Deferred<bool>,
+    pub(crate) fill_color: Deferred<[u8; 4]>,
+    pub(crate) stroke_enabled: Deferred<bool>,
+    pub(crate) stroke_color: Deferred<[u8; 4]>,
+    pub(crate) stroke_width: Deferred<f64>,
+    pub(crate) params_buffer: lumen_gpu::BufferId,
+    pub(crate) points_buffer: lumen_gpu::BufferId,
+    pub(crate) max_points: usize,
+}
 
-        let path_data =
-            data.resolve_string(*node_id, "data", &ctx.expr_context(*node_id, "data"))?;
-        let points = parse_path_points(&path_data, *max_points);
-        let (x, y) = position.resolve_vec2(
-            *node_id,
+impl GpuFrameBinding for PathFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let path_data = self.data.resolve_string(
+            self.node_id,
+            "data",
+            &ctx.expr_context(self.node_id, "data"),
+        )?;
+        let points = parse_path_points(&path_data, self.max_points);
+        let (x, y) = self.position.resolve_vec2(
+            self.node_id,
             "position",
-            &ctx.expr_context(*node_id, "position"),
+            &ctx.expr_context(self.node_id, "position"),
         )?;
-        let fill = fill_color.resolve_color(
-            *node_id,
+        let fill = self.fill_color.resolve_color(
+            self.node_id,
             "fill_color",
-            &ctx.expr_context(*node_id, "fill_color"),
+            &ctx.expr_context(self.node_id, "fill_color"),
         )?;
-        let stroke = stroke_color.resolve_color(
-            *node_id,
+        let stroke = self.stroke_color.resolve_color(
+            self.node_id,
             "stroke_color",
-            &ctx.expr_context(*node_id, "stroke_color"),
+            &ctx.expr_context(self.node_id, "stroke_color"),
         )?;
         let mut flags = 0;
-        if fill_enabled.resolve_bool(
-            *node_id,
+        if self.fill_enabled.resolve_bool(
+            self.node_id,
             "fill_enabled",
-            &ctx.expr_context(*node_id, "fill_enabled"),
+            &ctx.expr_context(self.node_id, "fill_enabled"),
         )? {
             flags |= 1;
         }
-        if stroke_enabled.resolve_bool(
-            *node_id,
+        if self.stroke_enabled.resolve_bool(
+            self.node_id,
             "stroke_enabled",
-            &ctx.expr_context(*node_id, "stroke_enabled"),
+            &ctx.expr_context(self.node_id, "stroke_enabled"),
         )? {
             flags |= 2;
         }
@@ -124,18 +139,18 @@ impl GpuFrameBindNode for Path {
             fill_color: rgba8_to_f32(fill),
             stroke_color: rgba8_to_f32(stroke),
             position: [x as f32, y as f32],
-            stroke_width: stroke_width.resolve_float(
-                *node_id,
+            stroke_width: self.stroke_width.resolve_float(
+                self.node_id,
                 "stroke_width",
-                &ctx.expr_context(*node_id, "stroke_width"),
+                &ctx.expr_context(self.node_id, "stroke_width"),
             )? as f32,
             flags,
             point_count: points.len() as u32,
             _pad: [0; 3],
         };
-        bound.write_buffer(*params_buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
         if !points.is_empty() {
-            bound.write_buffer(*points_buffer, 0, bytemuck::cast_slice(&points));
+            bound.write_buffer(self.points_buffer, 0, bytemuck::cast_slice(&points));
         }
         Ok(())
     }

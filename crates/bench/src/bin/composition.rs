@@ -30,8 +30,11 @@ impl MediaStore for EmptyMediaStore {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     RenderOnly,
+    RenderProfile,
     Readback,
+    ReadbackProfile,
     CpuEncode,
+    CpuEncodeProfile,
     VkCudaExport,
     VkCudaNvenc,
 }
@@ -40,8 +43,11 @@ impl Mode {
     fn parse(value: &str) -> anyhow::Result<Self> {
         match value {
             "render-only" => Ok(Self::RenderOnly),
+            "render-profile" => Ok(Self::RenderProfile),
             "readback" => Ok(Self::Readback),
+            "readback-profile" => Ok(Self::ReadbackProfile),
             "cpu-encode" => Ok(Self::CpuEncode),
+            "cpu-encode-profile" => Ok(Self::CpuEncodeProfile),
             "vk-cuda-export" => Ok(Self::VkCudaExport),
             "vk-cuda-nvenc" => Ok(Self::VkCudaNvenc),
             _ => Err(anyhow!("unknown mode `{value}`")),
@@ -51,15 +57,21 @@ impl Mode {
     fn name(self) -> &'static str {
         match self {
             Self::RenderOnly => "render_only",
+            Self::RenderProfile => "render_profile",
             Self::Readback => "readback",
+            Self::ReadbackProfile => "readback_profile",
             Self::CpuEncode => "cpu_encode",
+            Self::CpuEncodeProfile => "cpu_encode_profile",
             Self::VkCudaExport => "vk_cuda_export",
             Self::VkCudaNvenc => "vk_cuda_nvenc",
         }
     }
 
     fn encodes(self) -> bool {
-        matches!(self, Self::CpuEncode | Self::VkCudaNvenc)
+        matches!(
+            self,
+            Self::CpuEncode | Self::CpuEncodeProfile | Self::VkCudaNvenc
+        )
     }
 }
 
@@ -175,7 +187,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--list" => {
                 println!("compositions: all, announcement_gpu, feature_showcase");
                 println!(
-                    "modes: all, render-only, readback, cpu-encode, vk-cuda-export, vk-cuda-nvenc"
+                    "modes: all, render-only, render-profile, readback, readback-profile, cpu-encode, cpu-encode-profile, vk-cuda-export, vk-cuda-nvenc"
                 );
                 std::process::exit(0);
             }
@@ -196,7 +208,7 @@ fn parse_args() -> anyhow::Result<Args> {
 
 fn print_help() {
     println!(
-        "usage: lumen-bench-composition [--composition all|announcement_gpu|feature_showcase] [--mode all|render-only|readback|cpu-encode|vk-cuda-export|vk-cuda-nvenc] [--frames N] [--save PATH]"
+        "usage: lumen-bench-composition [--composition all|announcement_gpu|feature_showcase] [--mode all|render-only|render-profile|readback|readback-profile|cpu-encode|cpu-encode-profile|vk-cuda-export|vk-cuda-nvenc] [--frames N] [--save PATH]"
     );
 }
 
@@ -271,12 +283,22 @@ async fn run_mode(
 ) -> anyhow::Result<Duration> {
     match mode {
         Mode::RenderOnly => benchmark_render_only(composition, frames).await,
+        Mode::RenderProfile => benchmark_render_profile(composition, frames).await,
         Mode::Readback => benchmark_render_readback(composition, frames).await,
+        Mode::ReadbackProfile => benchmark_render_readback_profile(composition, frames).await,
         Mode::CpuEncode => {
             benchmark_render_cpu_encode(
                 composition,
                 frames,
                 output.ok_or_else(|| anyhow!("cpu encode mode needs an output path"))?,
+            )
+            .await
+        }
+        Mode::CpuEncodeProfile => {
+            benchmark_render_cpu_encode_profile(
+                composition,
+                frames,
+                output.ok_or_else(|| anyhow!("cpu encode profile mode needs an output path"))?,
             )
             .await
         }
@@ -309,6 +331,54 @@ async fn benchmark_render_only(
     Ok(started.elapsed())
 }
 
+async fn benchmark_render_profile(
+    composition: &lumen_engine::composition::Composition,
+    frames: u32,
+) -> anyhow::Result<Duration> {
+    let media = EmptyMediaStore;
+    let mut renderer = renderer(composition).await?;
+    print_plan_profile(renderer.compiled());
+    let mut bind = Duration::ZERO;
+    let mut upload = Duration::ZERO;
+    let mut submit = Duration::ZERO;
+    let mut poll = Duration::ZERO;
+    let started = Instant::now();
+    for frame in 0..frames {
+        let step = Instant::now();
+        let bound = renderer.bind_frame(composition, frame, &media)?;
+        bind += step.elapsed();
+
+        let step = Instant::now();
+        renderer.upload_bound_frame(&bound)?;
+        upload += step.elapsed();
+
+        let step = Instant::now();
+        let _ = renderer.submit_render()?;
+        submit += step.elapsed();
+
+        let step = Instant::now();
+        renderer
+            .gpu_renderer()
+            .device
+            .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())?;
+        poll += step.elapsed();
+    }
+    let elapsed = started.elapsed();
+    println!(
+        "composition_profile frames={} bind_ms={} upload_ms={} submit_ms={} poll_ms={} bind_us_per_frame={:.2} upload_us_per_frame={:.2} submit_us_per_frame={:.2} poll_us_per_frame={:.2}",
+        frames,
+        bind.as_millis(),
+        upload.as_millis(),
+        submit.as_millis(),
+        poll.as_millis(),
+        micros_per_frame(bind, frames),
+        micros_per_frame(upload, frames),
+        micros_per_frame(submit, frames),
+        micros_per_frame(poll, frames),
+    );
+    Ok(elapsed)
+}
+
 async fn benchmark_render_readback(
     composition: &lumen_engine::composition::Composition,
     frames: u32,
@@ -325,6 +395,51 @@ async fn benchmark_render_readback(
         )?;
     }
     Ok(started.elapsed())
+}
+
+async fn benchmark_render_readback_profile(
+    composition: &lumen_engine::composition::Composition,
+    frames: u32,
+) -> anyhow::Result<Duration> {
+    let media = EmptyMediaStore;
+    let mut renderer = renderer(composition).await?;
+    print_plan_profile(renderer.compiled());
+    let mut render = Duration::ZERO;
+    let mut create_buffer = Duration::ZERO;
+    let mut encode_copy = Duration::ZERO;
+    let mut map_wait = Duration::ZERO;
+    let mut copy_rows = Duration::ZERO;
+    let started = Instant::now();
+    for frame in 0..frames {
+        let step = Instant::now();
+        let (raster, _) = renderer.render_frame_submitted(composition, frame, &media)?;
+        render += step.elapsed();
+        let timings = read_texture_rgba8_profile(
+            renderer.gpu_renderer(),
+            raster.texture,
+            raster.domain.storage_size,
+        )?;
+        create_buffer += timings.create_buffer;
+        encode_copy += timings.encode_copy;
+        map_wait += timings.map_wait;
+        copy_rows += timings.copy_rows;
+    }
+    let elapsed = started.elapsed();
+    println!(
+        "readback_profile frames={} render_ms={} create_buffer_ms={} encode_copy_ms={} map_wait_ms={} copy_rows_ms={} render_us_per_frame={:.2} create_buffer_us_per_frame={:.2} encode_copy_us_per_frame={:.2} map_wait_us_per_frame={:.2} copy_rows_us_per_frame={:.2}",
+        frames,
+        render.as_millis(),
+        create_buffer.as_millis(),
+        encode_copy.as_millis(),
+        map_wait.as_millis(),
+        copy_rows.as_millis(),
+        micros_per_frame(render, frames),
+        micros_per_frame(create_buffer, frames),
+        micros_per_frame(encode_copy, frames),
+        micros_per_frame(map_wait, frames),
+        micros_per_frame(copy_rows, frames),
+    );
+    Ok(elapsed)
 }
 
 async fn benchmark_render_cpu_encode(
@@ -359,6 +474,67 @@ async fn benchmark_render_cpu_encode(
     }
     encoder.finish()?;
     Ok(started.elapsed())
+}
+
+async fn benchmark_render_cpu_encode_profile(
+    composition: &lumen_engine::composition::Composition,
+    frames: u32,
+    output: &Path,
+) -> anyhow::Result<Duration> {
+    let media = EmptyMediaStore;
+    let mut renderer = renderer(composition).await?;
+    print_plan_profile(renderer.compiled());
+    let width = composition.render_settings.width;
+    let height = composition.render_settings.height;
+    let mut encoder = MuxedEncoder::create(
+        output.to_string_lossy().to_string(),
+        video_config(composition, VideoCodec::H264),
+    )?;
+    let mut render = Duration::ZERO;
+    let mut readback = Duration::ZERO;
+    let mut encode = Duration::ZERO;
+    let mut finish = Duration::ZERO;
+    let started = Instant::now();
+    for frame in 0..frames {
+        let step = Instant::now();
+        let (raster, _) = renderer.render_frame_submitted(composition, frame, &media)?;
+        render += step.elapsed();
+
+        let step = Instant::now();
+        let pixels = read_texture_rgba8(
+            renderer.gpu_renderer(),
+            raster.texture,
+            raster.domain.storage_size,
+        )?;
+        readback += step.elapsed();
+
+        let step = Instant::now();
+        encoder.write_video_frame(&CpuVideoFrame {
+            width,
+            height,
+            stride: width as usize * 4,
+            pixel_format: PixelFormat::Rgba8,
+            pts: Some(i64::from(frame)),
+            data: pixels,
+        })?;
+        encode += step.elapsed();
+    }
+    let step = Instant::now();
+    encoder.finish()?;
+    finish += step.elapsed();
+    let elapsed = started.elapsed();
+    println!(
+        "cpu_encode_profile frames={} render_ms={} readback_ms={} encode_ms={} finish_ms={} render_us_per_frame={:.2} readback_us_per_frame={:.2} encode_us_per_frame={:.2}",
+        frames,
+        render.as_millis(),
+        readback.as_millis(),
+        encode.as_millis(),
+        finish.as_millis(),
+        micros_per_frame(render, frames),
+        micros_per_frame(readback, frames),
+        micros_per_frame(encode, frames),
+    );
+    Ok(elapsed)
 }
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
@@ -524,6 +700,22 @@ fn read_texture_rgba8(
     id: lumen_gpu::TextureId,
     size: lumen_gpu::Size,
 ) -> anyhow::Result<Vec<u8>> {
+    read_texture_rgba8_profile(renderer, id, size).map(|profile| profile.pixels)
+}
+
+struct ReadbackProfile {
+    pixels: Vec<u8>,
+    create_buffer: Duration,
+    encode_copy: Duration,
+    map_wait: Duration,
+    copy_rows: Duration,
+}
+
+fn read_texture_rgba8_profile(
+    renderer: &lumen_gpu::Renderer,
+    id: lumen_gpu::TextureId,
+    size: lumen_gpu::Size,
+) -> anyhow::Result<ReadbackProfile> {
     let bytes_per_pixel = 4;
     let unpadded_bytes_per_row = size.width.saturating_mul(bytes_per_pixel);
     let padded_bytes_per_row = align_to(
@@ -531,6 +723,7 @@ fn read_texture_rgba8(
         lumen_gpu::wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
     );
     let output_size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(size.height));
+    let step = Instant::now();
     let output = renderer
         .device
         .create_buffer(&lumen_gpu::wgpu::BufferDescriptor {
@@ -540,6 +733,8 @@ fn read_texture_rgba8(
                 | lumen_gpu::wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
+    let create_buffer = step.elapsed();
+    let step = Instant::now();
     let mut encoder =
         renderer
             .device
@@ -562,7 +757,9 @@ fn read_texture_rgba8(
         size.as_extent(),
     );
     renderer.queue.submit([encoder.finish()]);
+    let encode_copy = step.elapsed();
 
+    let step = Instant::now();
     let slice = output.slice(..);
     let (tx, rx) = mpsc::channel();
     slice.map_async(lumen_gpu::wgpu::MapMode::Read, move |result| {
@@ -573,7 +770,9 @@ fn read_texture_rgba8(
         .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())?;
     rx.recv()
         .map_err(|_| anyhow!("GPU readback callback closed"))??;
+    let map_wait = step.elapsed();
 
+    let step = Instant::now();
     let mapped = slice.get_mapped_range();
     let mut pixels = vec![
         0;
@@ -590,7 +789,14 @@ fn read_texture_rgba8(
     }
     drop(mapped);
     output.unmap();
-    Ok(pixels)
+    let copy_rows = step.elapsed();
+    Ok(ReadbackProfile {
+        pixels,
+        create_buffer,
+        encode_copy,
+        map_wait,
+        copy_rows,
+    })
 }
 
 fn align_to(value: u32, alignment: u32) -> u32 {
@@ -599,6 +805,40 @@ fn align_to(value: u32, alignment: u32) -> u32 {
 
 fn fps(frames: u32, elapsed: Duration) -> f64 {
     f64::from(frames) / elapsed.as_secs_f64().max(1e-9)
+}
+
+fn print_plan_profile(compiled: Option<&lumen_engine::gpu::CompiledComposition>) {
+    let Some(compiled) = compiled else {
+        return;
+    };
+    println!(
+        "plan_profile textures={} buffers={} programs={} passes={} frame_bindings={}",
+        compiled.plan.textures().len(),
+        compiled.plan.buffers().len(),
+        compiled.plan.programs().len(),
+        compiled.plan.passes().len(),
+        compiled.frame_bindings.len(),
+    );
+    for pass in compiled.plan.passes() {
+        let (kind, label) = match &pass.desc {
+            lumen_gpu::PassDesc::Render(desc) => ("render", desc.label.as_deref()),
+            lumen_gpu::PassDesc::Compute(desc) => ("compute", desc.label.as_deref()),
+            lumen_gpu::PassDesc::CopyTexture(desc) => ("copy", desc.label.as_deref()),
+        };
+        println!(
+            "plan_pass id={} kind={} label={}",
+            pass.id.0,
+            kind,
+            label.unwrap_or("-")
+        );
+    }
+}
+
+fn micros_per_frame(duration: Duration, frames: u32) -> f64 {
+    if frames == 0 {
+        return 0.0;
+    }
+    duration.as_secs_f64() * 1_000_000.0 / f64::from(frames)
 }
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {

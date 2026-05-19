@@ -8,10 +8,8 @@ use std::{
 use std::time::Instant;
 
 use crate::error::{LumenError, RenderError};
-use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-};
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, lumen_macros::NodeEnum)]
 #[repr(i64)]
@@ -70,56 +68,73 @@ impl TextAlignmentVertical {
 }
 
 /// Produces a text raster source.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedTextParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct TextParams {
+    /// Text content to render.
+    #[param(kind = "string", multiline, recommended_rows = 4)]
+    pub content: Deferred<String>,
+    /// Font family name.
+    #[param(kind = "string", format = "font_family")]
+    pub font_family: Deferred<String>,
+    /// Font size in pixels.
+    #[param(kind = "float", min = 1, step = 1)]
+    pub font_size: Deferred<f64>,
+    /// Font weight.
+    #[param(kind = "int", min = 100, max = 900, step = 100)]
+    pub font_weight: Deferred<i64>,
+    /// Font style.
+    #[param(kind = "enum", enum_type = TextFontStyle)]
+    pub font_style: Deferred<i64>,
+    /// Maximum line width in pixels. Use 0 for automatic width.
+    #[param(kind = "float", min = 0, step = 1)]
+    pub max_width: Deferred<f64>,
+    /// Text origin in pixels.
+    #[param(kind = "vec2")]
+    pub position: Deferred<(f64, f64)>,
+    /// Text color.
+    #[param(kind = "color")]
+    pub color: Deferred<[u8; 4]>,
+    /// Horizontal text alignment.
+    #[param(kind = "enum", enum_type = TextAlignmentHorizontal)]
+    pub alignment_horizontal: Deferred<i64>,
+    /// Vertical text alignment.
+    #[param(kind = "enum", enum_type = TextAlignmentVertical)]
+    pub alignment_vertical: Deferred<i64>,
+}
+
+impl Default for TextParams {
+    fn default() -> Self {
+        Self {
+            content: Deferred::value(String::new()),
+            font_family: Deferred::value(lumen_text::DEFAULT_FONT_FAMILY.to_string()),
+            font_size: Deferred::value(16.0),
+            font_weight: Deferred::value(400),
+            font_style: Deferred::value(TextFontStyle::Normal as i64),
+            max_width: Deferred::value(0.0),
+            position: Deferred::value((0.0, 0.0)),
+            color: Deferred::value([255, 255, 255, 255]),
+            alignment_horizontal: Deferred::value(TextAlignmentHorizontal::Left as i64),
+            alignment_vertical: Deferred::value(TextAlignmentVertical::Top as i64),
+        }
+    }
+}
+
+/// Produces a text raster source.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "text", name = "Text", category = "source")]
 pub struct Text {
     pub id: NodeId,
-    /// Text content to render.
-    #[property(kind = "string", multiline, recommended_rows = 4)]
-    pub content: NodeProperty,
-    /// Font family name.
-    #[property(kind = "string", format = "font_family")]
-    pub font_family: NodeProperty,
-    /// Font size in pixels.
-    #[property(kind = "float", min = 1, step = 1)]
-    pub font_size: NodeProperty,
-    /// Font weight.
-    #[property(kind = "int", min = 100, max = 900, step = 100)]
-    pub font_weight: NodeProperty,
-    /// Font style.
-    #[property(kind = "enum", enum_type = TextFontStyle)]
-    pub font_style: NodeProperty,
-    /// Maximum line width in pixels. Use 0 for automatic width.
-    #[property(kind = "float", min = 0, step = 1)]
-    pub max_width: NodeProperty,
-    /// Text origin in pixels.
-    #[property(kind = "vec2")]
-    pub position: NodeProperty,
-    /// Text color.
-    #[property(kind = "color")]
-    pub color: NodeProperty,
-    /// Horizontal text alignment.
-    #[property(kind = "enum", enum_type = TextAlignmentHorizontal)]
-    pub alignment_horizontal: NodeProperty,
-    /// Vertical text alignment.
-    #[property(kind = "enum", enum_type = TextAlignmentVertical)]
-    pub alignment_vertical: NodeProperty,
+    #[params]
+    pub params: TextParams,
 }
 
 impl Default for Text {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            content: NodeProperty::String(String::new()),
-            font_family: NodeProperty::String(lumen_text::DEFAULT_FONT_FAMILY.to_string()),
-            font_size: NodeProperty::Float(16.0),
-            font_weight: NodeProperty::Int(400),
-            font_style: NodeProperty::Int(TextFontStyle::Normal as i64),
-            max_width: NodeProperty::Float(0.0),
-            position: NodeProperty::Vec2((0.0, 0.0)),
-            color: NodeProperty::Color([255, 255, 255, 255]),
-            alignment_horizontal: NodeProperty::Int(TextAlignmentHorizontal::Left as i64),
-            alignment_vertical: NodeProperty::Int(TextAlignmentVertical::Top as i64),
+            params: TextParams::default(),
         }
     }
 }
@@ -134,80 +149,85 @@ impl GpuCompileNode for Text {
     }
 }
 
-impl GpuFrameBindNode for Text {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Text {
-            node_id,
-            content,
-            font_family,
-            font_size,
-            font_weight,
-            font_style,
-            max_width,
-            position,
-            color,
-            alignment_horizontal,
-            alignment_vertical,
-            atlas_texture,
-            globals_buffer,
-            instances_buffer,
-            atlas_size,
-            max_glyphs,
-            size,
-        } = binding
-        else {
-            return Ok(());
-        };
+#[derive(Debug, Clone)]
+pub(crate) struct TextFrameBinding {
+    pub(crate) node_id: NodeId,
+    pub(crate) content: Deferred<String>,
+    pub(crate) font_family: Deferred<String>,
+    pub(crate) font_size: Deferred<f64>,
+    pub(crate) font_weight: Deferred<i64>,
+    pub(crate) font_style: Deferred<i64>,
+    pub(crate) max_width: Deferred<f64>,
+    pub(crate) position: Deferred<(f64, f64)>,
+    pub(crate) color: Deferred<[u8; 4]>,
+    pub(crate) alignment_horizontal: Deferred<i64>,
+    pub(crate) alignment_vertical: Deferred<i64>,
+    pub(crate) atlas_texture: lumen_gpu::TextureId,
+    pub(crate) globals_buffer: lumen_gpu::BufferId,
+    pub(crate) instances_buffer: lumen_gpu::BufferId,
+    pub(crate) atlas_size: lumen_gpu::Size,
+    pub(crate) max_glyphs: usize,
+    pub(crate) size: lumen_gpu::Size,
+}
 
+impl GpuFrameBinding for TextFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let trace_started = crate::log_level_enabled(tracing::Level::TRACE).then(trace_now_ms);
-        let content =
-            content.resolve_string(*node_id, "content", &ctx.expr_context(*node_id, "content"))?;
-        let font_family = font_family.resolve_string(
-            *node_id,
+        let content = self.content.resolve_string(
+            self.node_id,
+            "content",
+            &ctx.expr_context(self.node_id, "content"),
+        )?;
+        let font_family = self.font_family.resolve_string(
+            self.node_id,
             "font_family",
-            &ctx.expr_context(*node_id, "font_family"),
+            &ctx.expr_context(self.node_id, "font_family"),
         )?;
-        let color = color.resolve_color(*node_id, "color", &ctx.expr_context(*node_id, "color"))?;
-        let (position_x, position_y) = position.resolve_vec2(
-            *node_id,
+        let color = self.color.resolve_color(
+            self.node_id,
+            "color",
+            &ctx.expr_context(self.node_id, "color"),
+        )?;
+        let (position_x, position_y) = self.position.resolve_vec2(
+            self.node_id,
             "position",
-            &ctx.expr_context(*node_id, "position"),
+            &ctx.expr_context(self.node_id, "position"),
         )?;
-        let font_size = font_size.resolve_float(
-            *node_id,
+        let font_size = self.font_size.resolve_float(
+            self.node_id,
             "font_size",
-            &ctx.expr_context(*node_id, "font_size"),
+            &ctx.expr_context(self.node_id, "font_size"),
         )? as f32;
-        let max_width = max_width.resolve_float(
-            *node_id,
+        let max_width = self.max_width.resolve_float(
+            self.node_id,
             "max_width",
-            &ctx.expr_context(*node_id, "max_width"),
+            &ctx.expr_context(self.node_id, "max_width"),
         )? as f32;
         let alignment_horizontal =
-            TextAlignmentHorizontal::from_int(alignment_horizontal.resolve_int(
-                *node_id,
+            TextAlignmentHorizontal::from_int(self.alignment_horizontal.resolve_int(
+                self.node_id,
                 "alignment_horizontal",
-                &ctx.expr_context(*node_id, "alignment_horizontal"),
+                &ctx.expr_context(self.node_id, "alignment_horizontal"),
             )?);
-        let alignment_vertical = TextAlignmentVertical::from_int(alignment_vertical.resolve_int(
-            *node_id,
-            "alignment_vertical",
-            &ctx.expr_context(*node_id, "alignment_vertical"),
-        )?);
-        let font_weight = font_weight.resolve_int(
-            *node_id,
+        let alignment_vertical =
+            TextAlignmentVertical::from_int(self.alignment_vertical.resolve_int(
+                self.node_id,
+                "alignment_vertical",
+                &ctx.expr_context(self.node_id, "alignment_vertical"),
+            )?);
+        let font_weight = self.font_weight.resolve_int(
+            self.node_id,
             "font_weight",
-            &ctx.expr_context(*node_id, "font_weight"),
+            &ctx.expr_context(self.node_id, "font_weight"),
         )?;
-        let font_style = TextFontStyle::from_int(font_style.resolve_int(
-            *node_id,
+        let font_style = TextFontStyle::from_int(self.font_style.resolve_int(
+            self.node_id,
             "font_style",
-            &ctx.expr_context(*node_id, "font_style"),
+            &ctx.expr_context(self.node_id, "font_style"),
         )?);
 
         let mut request = lumen_text::TextLayoutRequest::new(content.clone());
@@ -241,9 +261,9 @@ impl GpuFrameBindNode for Text {
             font_style,
             max_width_bits: max_width.to_bits(),
             alignment_horizontal,
-            atlas_width: atlas_size.width,
-            atlas_height: atlas_size.height,
-            max_glyphs: *max_glyphs,
+            atlas_width: self.atlas_size.width,
+            atlas_height: self.atlas_size.height,
+            max_glyphs: self.max_glyphs,
         };
         let frame_key = TextFrameCacheKey {
             atlas_key: atlas_key.clone(),
@@ -251,23 +271,23 @@ impl GpuFrameBindNode for Text {
             position_y_bits: (position_y as f32).to_bits(),
             color,
             alignment_vertical,
-            output_width: size.width,
-            output_height: size.height,
+            output_width: self.size.width,
+            output_height: self.size.height,
         };
         if text_cache()?
-            .get(&node_id.0)
+            .get(&self.node_id.0)
             .is_some_and(|cached| cached.frame_key.as_ref() == Some(&frame_key))
         {
             return Ok(());
         }
 
         let atlas_config = lumen_text::AtlasConfig {
-            width: atlas_size.width,
-            height: atlas_size.height,
+            width: self.atlas_size.width,
+            height: self.atlas_size.height,
             px_range: 1,
         };
         let mut cache = text_cache()?;
-        let cached = cache.entry(node_id.0).or_default();
+        let cached = cache.entry(self.node_id.0).or_default();
         let atlas_changed = cached.atlas_key.as_ref() != Some(&atlas_key);
         let mut layout_ms = 0.0;
         let mut atlas_ms = 0.0;
@@ -279,7 +299,7 @@ impl GpuFrameBindNode for Text {
                 layout_ms = trace_now_ms() - started;
             }
             let atlas_started = trace_started.map(|_| trace_now_ms());
-            let atlas = text_system.render_alpha_atlas(&layout, atlas_config, *max_glyphs);
+            let atlas = text_system.render_alpha_atlas(&layout, atlas_config, self.max_glyphs);
             if let Some(started) = atlas_started {
                 atlas_ms = trace_now_ms() - started;
             }
@@ -289,15 +309,15 @@ impl GpuFrameBindNode for Text {
             cached.measurement_height = layout.measurement.height;
             let used_size = atlas.atlas.used_size();
             let upload_height = used_size[1].max(1);
-            let upload_len = atlas_size.width as usize * upload_height as usize * 4;
+            let upload_len = self.atlas_size.width as usize * upload_height as usize * 4;
             let upload_pixels = atlas.pixels[..upload_len.min(atlas.pixels.len())].to_vec();
             let upload_started = trace_started.map(|_| trace_now_ms());
             bound.write_texture_rgba8_region(
-                *atlas_texture,
+                self.atlas_texture,
                 upload_pixels,
                 [0, 0, 0],
-                lumen_gpu::Size::new(atlas_size.width, upload_height),
-                atlas_size.width * 4,
+                lumen_gpu::Size::new(self.atlas_size.width, upload_height),
+                self.atlas_size.width * 4,
                 upload_height,
             );
             if let Some(started) = upload_started {
@@ -317,19 +337,19 @@ impl GpuFrameBindNode for Text {
             color_f32,
         );
         let globals = lumen_text::GpuTextGlobals {
-            target_size: [size.width as f32, size.height as f32],
+            target_size: [self.size.width as f32, self.size.height as f32],
             px_range: atlas_config.px_range as f32,
             glyph_count: cached.glyph_count as u32,
         };
 
-        bound.write_buffer(*globals_buffer, 0, bytemuck::bytes_of(&globals));
+        bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
         if !instances.is_empty() {
-            bound.write_buffer(*instances_buffer, 0, bytemuck::cast_slice(&instances));
+            bound.write_buffer(self.instances_buffer, 0, bytemuck::cast_slice(&instances));
         }
         cached.frame_key = Some(frame_key);
         if let Some(started) = trace_started {
             trace_text_bind(
-                *node_id,
+                self.node_id,
                 atlas_changed,
                 cached.glyph_count,
                 layout_ms,

@@ -122,7 +122,7 @@ function tinyComposition(): Composition {
   });
   const solid = composition.addNode({
     type: "solid_color",
-    properties: {
+    params: {
       width: 64,
       height: 64,
       color: [255, 64, 32, 255],

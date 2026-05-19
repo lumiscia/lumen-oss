@@ -585,12 +585,12 @@ impl<'a> Parser<'a> {
             }
         };
 
-        self.references.push(ExpressionReference::NodeProperty {
+        self.references.push(ExpressionReference::PropertyValue {
             node_id,
             property_path: property_path.clone(),
         });
 
-        Ok(ExprNode::NodeProperty(node_id, property_path))
+        Ok(ExprNode::PropertyValue(node_id, property_path))
     }
 
     fn match_token(&mut self, predicate: impl Fn(&TokenKind) -> bool) -> bool {

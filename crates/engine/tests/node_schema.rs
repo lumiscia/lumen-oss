@@ -1,6 +1,6 @@
 #![cfg(feature = "metadata")]
 
-use lumen_engine::node::{NodeCategory, NodeKind, NodeProperty, PropertyEval};
+use lumen_engine::node::{NodeCategory, NodeKind, PropertyEval, PropertyExpression, PropertyValue};
 
 #[test]
 fn node_schemas_are_derived_from_node_structs() {
@@ -31,7 +31,7 @@ fn node_schemas_are_derived_from_node_structs() {
             .iter()
             .find(|(name, _)| *name == "color")
             .map(|(_, value)| value),
-        Some(NodeProperty::Color([0, 0, 0, 255]))
+        Some(PropertyValue::Color([0, 0, 0, 255]))
     ));
 
     let merge = schemas
@@ -82,7 +82,7 @@ fn derived_property_eval_reads_marked_properties() {
 
     assert!(matches!(
         node.get_property("contrast").unwrap(),
-        Some(NodeProperty::Float(1.0))
+        Some(PropertyExpression::Value(PropertyValue::Float(1.0)))
     ));
     assert!(node.get_property("source").unwrap().is_none());
 }

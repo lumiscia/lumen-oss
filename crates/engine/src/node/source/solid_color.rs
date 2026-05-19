@@ -1,36 +1,78 @@
-use crate::node::{NodeId, NodeProperty};
+use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, RasterMetadata, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    RasterMetadata, compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("solid_color.wgsl");
+
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedSolidColorParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct SolidColorParams {
+    /// Fill color.
+    #[param(kind = "color")]
+    pub color: Deferred<[u8; 4]>,
+    /// Output width in pixels. Use 0 to match the composition width.
+    #[param(kind = "int", min = 0, step = 1)]
+    pub width: Deferred<i64>,
+    /// Output height in pixels. Use 0 to match the composition height.
+    #[param(kind = "int", min = 0, step = 1)]
+    pub height: Deferred<i64>,
+}
+
+impl Default for SolidColorParams {
+    fn default() -> Self {
+        Self {
+            color: Deferred::value([0, 0, 0, 255]),
+            width: Deferred::value(0),
+            height: Deferred::value(0),
+        }
+    }
+}
 
 /// Generates a solid raster texture.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "solid_color", name = "Solid Color", category = "source")]
 pub struct SolidColor {
     pub id: NodeId,
-    /// Fill color.
-    #[property(kind = "color")]
-    pub color: NodeProperty,
-    /// Output width in pixels. Use 0 to match the composition width.
-    #[property(kind = "int", min = 0, step = 1)]
-    pub width: NodeProperty,
-    /// Output height in pixels. Use 0 to match the composition height.
-    #[property(kind = "int", min = 0, step = 1)]
-    pub height: NodeProperty,
+    #[params]
+    pub params: SolidColorParams,
 }
 
 impl Default for SolidColor {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            color: NodeProperty::Color([0, 0, 0, 255]),
-            width: NodeProperty::Int(0),
-            height: NodeProperty::Int(0),
+            params: SolidColorParams::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SolidColorFrameBinding {
+    node_id: NodeId,
+    params: SolidColorParams,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for SolidColorFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        bound.write_buffer(
+            self.buffer,
+            0,
+            bytemuck::bytes_of(&compiler::ColorParams::from_rgba8(params.color)),
+        );
+        Ok(())
     }
 }
 
@@ -44,15 +86,19 @@ impl GpuCompileNode for SolidColor {
             return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let width = ctx.static_dimension(&self.width, self.id, "width")?;
-        let height = ctx.static_dimension(&self.height, self.id, "height")?;
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &ctx.expr_context(self.id, "params"),
+        })?;
+        let width = ctx.static_dimension_value(params.width, "width");
+        let height = ctx.static_dimension_value(params.height, "height");
         let size = lumen_gpu::Size::new(width, height);
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("solid-color:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let params = ctx.builder_mut().buffer_for(
+        let buffer = ctx.builder_mut().buffer_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("solid-color:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ColorParams>() as u64),
@@ -82,7 +128,7 @@ impl GpuCompileNode for SolidColor {
             owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
             bindings: vec![
-                lumen_gpu::Binding::uniform(0, 0, params),
+                lumen_gpu::Binding::uniform(0, 0, buffer),
                 lumen_gpu::Binding::storage_texture(0, 1, texture),
             ],
             dispatch: compiler::dispatch_for(size).into(),
@@ -92,12 +138,12 @@ impl GpuCompileNode for SolidColor {
                 owner: lumen_gpu::NodeKey(self.id.0),
                 slot: 0,
             },
-            lumen_gpu::ParamTarget::Buffer(params),
+            lumen_gpu::ParamTarget::Buffer(buffer),
         );
-        ctx.push_frame_binding(FrameBinding::SolidColor {
+        ctx.push_frame_binding(SolidColorFrameBinding {
             node_id: self.id,
-            color: self.color.clone(),
-            buffer: params,
+            params: self.params.clone(),
+            buffer,
         });
 
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -105,30 +151,5 @@ impl GpuCompileNode for SolidColor {
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: RasterMetadata::default(),
         }))
-    }
-}
-
-impl GpuFrameBindNode for SolidColor {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::SolidColor {
-            node_id,
-            color,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let color = color.resolve_color(*node_id, "color", &ctx.expr_context(*node_id, "color"))?;
-        bound.write_buffer(
-            *buffer,
-            0,
-            bytemuck::bytes_of(&compiler::ColorParams::from_rgba8(color)),
-        );
-        Ok(())
     }
 }

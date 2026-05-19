@@ -1,7 +1,5 @@
-use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-};
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
@@ -22,66 +20,83 @@ impl ShapeGeometryKind {
 }
 
 /// Produces a vector shape layer for GPU rasterization.
-#[derive(Debug, Clone, lumen_macros::Node)]
-#[node(kind = "shape", name = "Shape", category = "vector")]
-pub struct Shape {
-    pub id: NodeId,
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedShapeParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct ShapeParams {
     /// Geometry primitive to rasterize.
-    #[property(kind = "enum", enum_type = ShapeGeometryKind)]
-    pub geometry_kind: NodeProperty,
+    #[param(kind = "enum", enum_type = ShapeGeometryKind)]
+    pub geometry_kind: Deferred<i64>,
     /// Shape width in pixels.
-    #[property(kind = "int", min = 1, step = 1)]
-    pub width: NodeProperty,
+    #[param(kind = "int", min = 1, step = 1)]
+    pub width: Deferred<i64>,
     /// Shape height in pixels.
-    #[property(kind = "int", min = 1, step = 1)]
-    pub height: NodeProperty,
+    #[param(kind = "int", min = 1, step = 1)]
+    pub height: Deferred<i64>,
     /// Corner radius for rectangle geometry.
-    #[property(kind = "float", min = 0, step = 1)]
-    pub border_radius: NodeProperty,
+    #[param(kind = "float", min = 0, step = 1)]
+    pub border_radius: Deferred<f64>,
     /// Polygon point list formatted as `x,y; x,y`.
-    #[property(
+    #[param(
         kind = "string",
         name = "Polygon points",
         format = "point_list",
         multiline,
         recommended_rows = 3
     )]
-    pub polygon_points: NodeProperty,
+    pub polygon_points: Deferred<String>,
     /// Shape origin in pixels.
-    #[property(kind = "vec2")]
-    pub position: NodeProperty,
+    #[param(kind = "vec2")]
+    pub position: Deferred<(f64, f64)>,
     /// Enables fill rendering.
-    #[property(kind = "bool")]
-    pub fill_enabled: NodeProperty,
+    #[param(kind = "bool")]
+    pub fill_enabled: Deferred<bool>,
     /// Fill color.
-    #[property(kind = "color")]
-    pub fill_color: NodeProperty,
+    #[param(kind = "color")]
+    pub fill_color: Deferred<[u8; 4]>,
     /// Enables stroke rendering.
-    #[property(kind = "bool")]
-    pub stroke_enabled: NodeProperty,
+    #[param(kind = "bool")]
+    pub stroke_enabled: Deferred<bool>,
     /// Stroke color.
-    #[property(kind = "color")]
-    pub stroke_color: NodeProperty,
+    #[param(kind = "color")]
+    pub stroke_color: Deferred<[u8; 4]>,
     /// Stroke width in pixels.
-    #[property(kind = "float", min = 0, step = 0.5)]
-    pub stroke_width: NodeProperty,
+    #[param(kind = "float", min = 0, step = 0.5)]
+    pub stroke_width: Deferred<f64>,
+}
+
+impl Default for ShapeParams {
+    fn default() -> Self {
+        Self {
+            geometry_kind: Deferred::value(ShapeGeometryKind::Rectangle as i64),
+            width: Deferred::value(1),
+            height: Deferred::value(1),
+            border_radius: Deferred::value(0.0),
+            polygon_points: Deferred::value(String::new()),
+            position: Deferred::value((0.0, 0.0)),
+            fill_enabled: Deferred::value(true),
+            fill_color: Deferred::value([255, 255, 255, 255]),
+            stroke_enabled: Deferred::value(false),
+            stroke_color: Deferred::value([0, 0, 0, 255]),
+            stroke_width: Deferred::value(1.0),
+        }
+    }
+}
+
+/// Produces a vector shape layer for GPU rasterization.
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(kind = "shape", name = "Shape", category = "vector")]
+pub struct Shape {
+    pub id: NodeId,
+    #[params]
+    pub params: ShapeParams,
 }
 
 impl Default for Shape {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            geometry_kind: NodeProperty::Int(ShapeGeometryKind::Rectangle as i64),
-            width: NodeProperty::Int(1),
-            height: NodeProperty::Int(1),
-            border_radius: NodeProperty::Float(0.0),
-            polygon_points: NodeProperty::String(String::new()),
-            position: NodeProperty::Vec2((0.0, 0.0)),
-            fill_enabled: NodeProperty::Bool(true),
-            fill_color: NodeProperty::Color([255, 255, 255, 255]),
-            stroke_enabled: NodeProperty::Bool(false),
-            stroke_color: NodeProperty::Color([0, 0, 0, 255]),
-            stroke_width: NodeProperty::Float(1.0),
+            params: ShapeParams::default(),
         }
     }
 }
@@ -96,57 +111,55 @@ impl GpuCompileNode for Shape {
     }
 }
 
-impl GpuFrameBindNode for Shape {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Shape {
-            node_id,
-            geometry_kind,
-            width,
-            height,
-            border_radius,
-            position,
-            fill_enabled,
-            fill_color,
-            stroke_enabled,
-            stroke_color,
-            stroke_width,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let (x, y) = position.resolve_vec2(
-            *node_id,
+#[derive(Debug, Clone)]
+pub(crate) struct ShapeFrameBinding {
+    pub(crate) node_id: NodeId,
+    pub(crate) geometry_kind: Deferred<i64>,
+    pub(crate) width: Deferred<i64>,
+    pub(crate) height: Deferred<i64>,
+    pub(crate) border_radius: Deferred<f64>,
+    pub(crate) position: Deferred<(f64, f64)>,
+    pub(crate) fill_enabled: Deferred<bool>,
+    pub(crate) fill_color: Deferred<[u8; 4]>,
+    pub(crate) stroke_enabled: Deferred<bool>,
+    pub(crate) stroke_color: Deferred<[u8; 4]>,
+    pub(crate) stroke_width: Deferred<f64>,
+    pub(crate) buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for ShapeFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let (x, y) = self.position.resolve_vec2(
+            self.node_id,
             "position",
-            &ctx.expr_context(*node_id, "position"),
+            &ctx.expr_context(self.node_id, "position"),
         )?;
-        let fill = fill_color.resolve_color(
-            *node_id,
+        let fill = self.fill_color.resolve_color(
+            self.node_id,
             "fill_color",
-            &ctx.expr_context(*node_id, "fill_color"),
+            &ctx.expr_context(self.node_id, "fill_color"),
         )?;
-        let stroke = stroke_color.resolve_color(
-            *node_id,
+        let stroke = self.stroke_color.resolve_color(
+            self.node_id,
             "stroke_color",
-            &ctx.expr_context(*node_id, "stroke_color"),
+            &ctx.expr_context(self.node_id, "stroke_color"),
         )?;
         let mut flags = 0;
-        if fill_enabled.resolve_bool(
-            *node_id,
+        if self.fill_enabled.resolve_bool(
+            self.node_id,
             "fill_enabled",
-            &ctx.expr_context(*node_id, "fill_enabled"),
+            &ctx.expr_context(self.node_id, "fill_enabled"),
         )? {
             flags |= 1;
         }
-        if stroke_enabled.resolve_bool(
-            *node_id,
+        if self.stroke_enabled.resolve_bool(
+            self.node_id,
             "stroke_enabled",
-            &ctx.expr_context(*node_id, "stroke_enabled"),
+            &ctx.expr_context(self.node_id, "stroke_enabled"),
         )? {
             flags |= 2;
         }
@@ -155,31 +168,39 @@ impl GpuFrameBindNode for Shape {
             stroke_color: rgba8_to_f32(stroke),
             position: [x as f32, y as f32],
             size: [
-                width
-                    .resolve_int(*node_id, "width", &ctx.expr_context(*node_id, "width"))?
+                self.width
+                    .resolve_int(
+                        self.node_id,
+                        "width",
+                        &ctx.expr_context(self.node_id, "width"),
+                    )?
                     .max(1) as f32,
-                height
-                    .resolve_int(*node_id, "height", &ctx.expr_context(*node_id, "height"))?
+                self.height
+                    .resolve_int(
+                        self.node_id,
+                        "height",
+                        &ctx.expr_context(self.node_id, "height"),
+                    )?
                     .max(1) as f32,
             ],
-            border_radius: border_radius.resolve_float(
-                *node_id,
+            border_radius: self.border_radius.resolve_float(
+                self.node_id,
                 "border_radius",
-                &ctx.expr_context(*node_id, "border_radius"),
+                &ctx.expr_context(self.node_id, "border_radius"),
             )? as f32,
-            stroke_width: stroke_width.resolve_float(
-                *node_id,
+            stroke_width: self.stroke_width.resolve_float(
+                self.node_id,
                 "stroke_width",
-                &ctx.expr_context(*node_id, "stroke_width"),
+                &ctx.expr_context(self.node_id, "stroke_width"),
             )? as f32,
-            geometry_kind: ShapeGeometryKind::from_int(geometry_kind.resolve_int(
-                *node_id,
+            geometry_kind: ShapeGeometryKind::from_int(self.geometry_kind.resolve_int(
+                self.node_id,
                 "geometry_kind",
-                &ctx.expr_context(*node_id, "geometry_kind"),
+                &ctx.expr_context(self.node_id, "geometry_kind"),
             )?) as u32,
             flags,
         };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
     }
 }

@@ -1,9 +1,6 @@
 use crate::node::{NodeId, PortRef};
 
-use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
-};
+use crate::gpu::{CompiledOutput, GpuCompileNode, RasterHandle, compiler};
 
 pub(crate) const SHADER: &str = include_str!("media_output.wgsl");
 pub(crate) const RENDER_SHADER: &str = include_str!("media_output_render.wgsl");
@@ -44,6 +41,12 @@ impl GpuCompileNode for MediaOutput {
             ctx.composition().render_settings.height.max(1),
         );
         let output_format = ctx.output_format();
+        if output_format == lumen_gpu::wgpu::TextureFormat::Rgba8Unorm
+            && source.domain == lumen_gpu::TextureDomain::full_frame(size)
+        {
+            return Ok(CompiledOutput::Raster(source));
+        }
+
         let output = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some("media-output:final".to_string()),
@@ -164,16 +167,5 @@ fn media_output_texture_desc(
                 | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
                 | lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT,
         }
-    }
-}
-
-impl GpuFrameBindNode for MediaOutput {
-    fn bind_gpu_frame(
-        &self,
-        _ctx: &FrameBindContext<'_>,
-        _binding: &FrameBinding,
-        _bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        Ok(())
     }
 }

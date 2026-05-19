@@ -57,239 +57,34 @@ impl CompiledOutput {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum FrameBinding {
-    SolidColor {
-        node_id: NodeId,
-        color: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    Shape {
-        node_id: NodeId,
-        geometry_kind: crate::node::NodeProperty,
-        width: crate::node::NodeProperty,
-        height: crate::node::NodeProperty,
-        border_radius: crate::node::NodeProperty,
-        position: crate::node::NodeProperty,
-        fill_enabled: crate::node::NodeProperty,
-        fill_color: crate::node::NodeProperty,
-        stroke_enabled: crate::node::NodeProperty,
-        stroke_color: crate::node::NodeProperty,
-        stroke_width: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    Text {
-        node_id: NodeId,
-        content: crate::node::NodeProperty,
-        font_family: crate::node::NodeProperty,
-        font_size: crate::node::NodeProperty,
-        font_weight: crate::node::NodeProperty,
-        font_style: crate::node::NodeProperty,
-        max_width: crate::node::NodeProperty,
-        position: crate::node::NodeProperty,
-        color: crate::node::NodeProperty,
-        alignment_horizontal: crate::node::NodeProperty,
-        alignment_vertical: crate::node::NodeProperty,
-        atlas_texture: lumen_gpu::TextureId,
-        globals_buffer: lumen_gpu::BufferId,
-        instances_buffer: lumen_gpu::BufferId,
-        atlas_size: lumen_gpu::Size,
-        max_glyphs: usize,
-        size: lumen_gpu::Size,
-    },
-    Path {
-        node_id: NodeId,
-        data: crate::node::NodeProperty,
-        position: crate::node::NodeProperty,
-        fill_enabled: crate::node::NodeProperty,
-        fill_color: crate::node::NodeProperty,
-        stroke_enabled: crate::node::NodeProperty,
-        stroke_color: crate::node::NodeProperty,
-        stroke_width: crate::node::NodeProperty,
-        params_buffer: lumen_gpu::BufferId,
-        points_buffer: lumen_gpu::BufferId,
-        max_points: usize,
-    },
-    AlphaPremultiply {
-        node_id: NodeId,
-        mode: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    ChannelShuffle {
-        node_id: NodeId,
-        red: crate::node::NodeProperty,
-        green: crate::node::NodeProperty,
-        blue: crate::node::NodeProperty,
-        alpha: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    ColorGrade {
-        node_id: NodeId,
-        lut_source: crate::node::NodeProperty,
-        strength: crate::node::NodeProperty,
-        interpolation: crate::node::NodeProperty,
-        params_buffer: lumen_gpu::BufferId,
-        lut_buffer: lumen_gpu::BufferId,
-    },
-    Exposure {
-        node_id: NodeId,
-        exposure: crate::node::NodeProperty,
-        contrast: crate::node::NodeProperty,
-        offset: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    HueSaturation {
-        node_id: NodeId,
-        hue_degrees: crate::node::NodeProperty,
-        saturation: crate::node::NodeProperty,
-        lightness: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    Levels {
-        node_id: NodeId,
-        black_point: crate::node::NodeProperty,
-        white_point: crate::node::NodeProperty,
-        gamma: crate::node::NodeProperty,
-        output_black: crate::node::NodeProperty,
-        output_white: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    Blur {
-        node_id: NodeId,
-        radius: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    Curves {
-        node_id: NodeId,
-        curve_source: crate::node::NodeProperty,
-        strength: crate::node::NodeProperty,
-        params_buffer: lumen_gpu::BufferId,
-        curve_buffer: lumen_gpu::BufferId,
-    },
-    Shadow {
-        node_id: NodeId,
-        offset_x: crate::node::NodeProperty,
-        offset_y: crate::node::NodeProperty,
-        radius: crate::node::NodeProperty,
-        color: crate::node::NodeProperty,
-        opacity: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    WgslShader {
-        node_id: NodeId,
-        shader: crate::node::NodeProperty,
-        bindings: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    Boolean {
-        node_id: NodeId,
-        operation: crate::node::NodeProperty,
-        threshold: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    RasterMultiMerge {
-        node_id: NodeId,
-        opacity: crate::node::NodeProperty,
-        blend_mode: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    Merge {
-        node_id: NodeId,
-        opacity: crate::node::NodeProperty,
-        blend_mode: crate::node::NodeProperty,
-        has_mask: bool,
-        buffer: lumen_gpu::BufferId,
-    },
-    Memo {
-        node_id: NodeId,
-        cache_id: crate::node::NodeProperty,
-        allow_expressions: crate::node::NodeProperty,
-    },
-    TimeRemap {
-        node_id: NodeId,
-        frame: crate::node::NodeProperty,
-        loop_enabled: crate::node::NodeProperty,
-        loop_start: crate::node::NodeProperty,
-        loop_end: crate::node::NodeProperty,
-    },
-    Transform {
-        node_id: NodeId,
-        scale_x: crate::node::NodeProperty,
-        scale_y: crate::node::NodeProperty,
-        translate_x: crate::node::NodeProperty,
-        translate_y: crate::node::NodeProperty,
-        rotate: crate::node::NodeProperty,
-        pivot_x: crate::node::NodeProperty,
-        pivot_y: crate::node::NodeProperty,
-        sampling: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    Crop {
-        node_id: NodeId,
-        x: crate::node::NodeProperty,
-        y: crate::node::NodeProperty,
-        width: crate::node::NodeProperty,
-        height: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    Resize {
-        node_id: NodeId,
-        width: crate::node::NodeProperty,
-        height: crate::node::NodeProperty,
-        mode: crate::node::NodeProperty,
-        sampling: crate::node::NodeProperty,
-        buffer: lumen_gpu::BufferId,
-    },
-    Switch {
-        node_id: NodeId,
-        selected_layer: Option<usize>,
-    },
-    MediaInput {
-        node_id: NodeId,
-        source: crate::node::NodeProperty,
-        texture: lumen_gpu::TextureId,
-        size: lumen_gpu::Size,
-    },
+pub trait GpuFrameBinding: std::fmt::Debug + Send + Sync {
+    fn node_id(&self) -> NodeId;
+
+    fn bind(
+        &self,
+        ctx: &crate::gpu::FrameBindContext<'_>,
+        bound: &mut BoundFrame,
+    ) -> crate::Result<()>;
 }
 
-impl FrameBinding {
+#[derive(Debug)]
+pub struct CompiledFrameBinding {
+    pub frame_override: Option<u32>,
+    pub binding: Box<dyn GpuFrameBinding>,
+}
+
+impl CompiledFrameBinding {
     pub fn node_id(&self) -> NodeId {
-        match self {
-            Self::SolidColor { node_id, .. }
-            | Self::Shape { node_id, .. }
-            | Self::Text { node_id, .. }
-            | Self::Path { node_id, .. }
-            | Self::AlphaPremultiply { node_id, .. }
-            | Self::ChannelShuffle { node_id, .. }
-            | Self::ColorGrade { node_id, .. }
-            | Self::Exposure { node_id, .. }
-            | Self::HueSaturation { node_id, .. }
-            | Self::Levels { node_id, .. }
-            | Self::Blur { node_id, .. }
-            | Self::Curves { node_id, .. }
-            | Self::Shadow { node_id, .. }
-            | Self::WgslShader { node_id, .. }
-            | Self::Boolean { node_id, .. }
-            | Self::RasterMultiMerge { node_id, .. }
-            | Self::Merge { node_id, .. }
-            | Self::Memo { node_id, .. }
-            | Self::TimeRemap { node_id, .. }
-            | Self::Transform { node_id, .. }
-            | Self::Crop { node_id, .. }
-            | Self::Resize { node_id, .. }
-            | Self::Switch { node_id, .. }
-            | Self::MediaInput { node_id, .. } => *node_id,
-        }
+        self.binding.node_id()
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CompiledComposition {
     pub plan: lumen_gpu::RenderPlan,
     pub output: RasterHandle,
     pub node_outputs: HashMap<PortRef, CompiledOutput>,
-    pub frame_bindings: Vec<FrameBinding>,
-    pub frame_binding_frames: Vec<Option<u32>>,
+    pub frame_bindings: Vec<CompiledFrameBinding>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -13,8 +13,8 @@ export interface NodeSpec {
   readonly category: string;
   readonly inputs?: readonly NodePortSpec[];
   readonly outputs?: readonly NodePortSpec[];
-  readonly properties?: readonly NodePropertySpec[];
-  readonly defaultProperties?: Readonly<Record<string, unknown>>;
+  readonly params?: readonly NodeParamSpec[];
+  readonly defaultParams?: Readonly<Record<string, unknown>>;
 }
 
 export interface NodePortSpec {
@@ -24,17 +24,17 @@ export interface NodePortSpec {
   readonly variadic?: boolean;
 }
 
-export interface NodePropertySpec {
+export interface NodeParamSpec {
   readonly id: string;
   readonly name: string;
   readonly kind: string;
   readonly description?: string;
   readonly defaultValue?: unknown;
   readonly enumOptions?: readonly NodeEnumOptionSpec[];
-  readonly constraints?: PropertyConstraintsSpec;
+  readonly constraints?: ParamConstraintsSpec;
 }
 
-export interface PropertyConstraintsSpec {
+export interface ParamConstraintsSpec {
   readonly min?: number;
   readonly max?: number;
   readonly step?: number;
@@ -79,14 +79,14 @@ function manifestFromCompositionSchema(schema: JsonSchema): MetaManifest {
 }
 
 function nodeSpecFromSchema(schema: JsonSchema): NodeSpec {
-  const properties = objectValue(schema.properties);
-  const kind = stringValue(objectValue(properties?.type)?.const);
+  const schemaProperties = objectValue(schema.properties);
+  const kind = stringValue(objectValue(schemaProperties?.type)?.const);
   if (!kind) {
     throw new Error("composition schema node variant is missing properties.type.const");
   }
-  const propertySchemas = objectValue(objectValue(properties?.properties)?.properties);
-  const nodeProperties = Object.entries(propertySchemas ?? {}).map(([id, property]) =>
-    propertySpecFromSchema(id, objectValue(property)),
+  const paramSchemas = objectValue(objectValue(schemaProperties?.properties)?.properties);
+  const nodeParams = Object.entries(paramSchemas ?? {}).map(([id, param]) =>
+    paramSpecFromSchema(id, objectValue(param)),
   );
   return {
     kind,
@@ -95,21 +95,21 @@ function nodeSpecFromSchema(schema: JsonSchema): NodeSpec {
     category: stringValue(schema["x-lumen-category"]) ?? "processing",
     inputs: arrayValue(schema["x-lumen-inputs"]).map((value) => nodePortSpec(value)),
     outputs: arrayValue(schema["x-lumen-outputs"]).map((value) => nodePortSpec(value)),
-    properties: nodeProperties,
-    defaultProperties: Object.fromEntries(
-      nodeProperties
-        .filter((property) => property.defaultValue !== undefined)
-        .map((property) => [property.id, property.defaultValue]),
+    params: nodeParams,
+    defaultParams: Object.fromEntries(
+      nodeParams
+        .filter((param) => param.defaultValue !== undefined)
+        .map((param) => [param.id, param.defaultValue]),
     ),
   };
 }
 
-function propertySpecFromSchema(id: string, schema: JsonSchema): NodePropertySpec {
+function paramSpecFromSchema(id: string, schema: JsonSchema): NodeParamSpec {
   const constraints = constraintsFromSchema(schema);
   return {
     id,
     name: stringValue(schema.title) ?? id,
-    kind: stringValue(schema["x-lumen-kind"]) ?? propertyKindFromSchema(schema),
+    kind: stringValue(schema["x-lumen-kind"]) ?? paramKindFromSchema(schema),
     description: stringValue(schema.description) ?? "",
     defaultValue: schema.default,
     enumOptions: arrayValue(schema["x-lumen-enumOptions"]).map((value) => enumOptionSpec(value)),
@@ -117,7 +117,7 @@ function propertySpecFromSchema(id: string, schema: JsonSchema): NodePropertySpe
   };
 }
 
-function constraintsFromSchema(schema: JsonSchema): PropertyConstraintsSpec | undefined {
+function constraintsFromSchema(schema: JsonSchema): ParamConstraintsSpec | undefined {
   const custom = objectValue(schema["x-lumen-constraints"]);
   const constraints: Record<string, unknown> = {};
   const min = numberValue(schema.minimum);
@@ -134,12 +134,10 @@ function constraintsFromSchema(schema: JsonSchema): PropertyConstraintsSpec | un
   if (multiline !== undefined) constraints.multiline = multiline;
   if (recommendedRows !== undefined) constraints.recommendedRows = recommendedRows;
   if (role !== undefined) constraints.role = role;
-  return Object.keys(constraints).length === 0
-    ? undefined
-    : (constraints as PropertyConstraintsSpec);
+  return Object.keys(constraints).length === 0 ? undefined : (constraints as ParamConstraintsSpec);
 }
 
-function propertyKindFromSchema(schema: JsonSchema): string {
+function paramKindFromSchema(schema: JsonSchema): string {
   if (Array.isArray(schema.enum)) return "enum";
   if (schema.$ref === "#/$defs/color") return "color";
   if (schema.$ref === "#/$defs/vec2") return "vec2";
