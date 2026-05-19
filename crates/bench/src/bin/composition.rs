@@ -5,10 +5,15 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+use std::collections::VecDeque;
+
 use anyhow::{Context, anyhow};
 use lumen_engine::media::{ImageResolver, MediaStore, VideoFrameResolver};
 use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use lumen_ffmpeg::{
     CudaDriver, EncodeMode, GpuBackend, GpuVideoInput, import_owned_vulkan_opaque_fd_image,
@@ -35,6 +40,8 @@ enum Mode {
     ReadbackProfile,
     CpuEncode,
     CpuEncodeProfile,
+    MetalVideotoolbox,
+    MetalVideotoolboxProfile,
     VkCudaExport,
     VkCudaNvenc,
 }
@@ -48,6 +55,8 @@ impl Mode {
             "readback-profile" => Ok(Self::ReadbackProfile),
             "cpu-encode" => Ok(Self::CpuEncode),
             "cpu-encode-profile" => Ok(Self::CpuEncodeProfile),
+            "metal-videotoolbox" => Ok(Self::MetalVideotoolbox),
+            "metal-videotoolbox-profile" => Ok(Self::MetalVideotoolboxProfile),
             "vk-cuda-export" => Ok(Self::VkCudaExport),
             "vk-cuda-nvenc" => Ok(Self::VkCudaNvenc),
             _ => Err(anyhow!("unknown mode `{value}`")),
@@ -62,6 +71,8 @@ impl Mode {
             Self::ReadbackProfile => "readback_profile",
             Self::CpuEncode => "cpu_encode",
             Self::CpuEncodeProfile => "cpu_encode_profile",
+            Self::MetalVideotoolbox => "metal_videotoolbox",
+            Self::MetalVideotoolboxProfile => "metal_videotoolbox_profile",
             Self::VkCudaExport => "vk_cuda_export",
             Self::VkCudaNvenc => "vk_cuda_nvenc",
         }
@@ -70,7 +81,11 @@ impl Mode {
     fn encodes(self) -> bool {
         matches!(
             self,
-            Self::CpuEncode | Self::CpuEncodeProfile | Self::VkCudaNvenc
+            Self::CpuEncode
+                | Self::CpuEncodeProfile
+                | Self::MetalVideotoolbox
+                | Self::MetalVideotoolboxProfile
+                | Self::VkCudaNvenc
         )
     }
 }
@@ -90,6 +105,9 @@ const DEMOS: &[DemoComposition] = &[
         source: include_str!("../../../local/demo/feature-showcase.json"),
     },
 ];
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+const GPU_ENCODER_FRAMES_IN_FLIGHT: usize = 3;
 
 #[derive(Debug)]
 struct Args {
@@ -187,7 +205,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--list" => {
                 println!("compositions: all, announcement_gpu, feature_showcase");
                 println!(
-                    "modes: all, render-only, render-profile, readback, readback-profile, cpu-encode, cpu-encode-profile, vk-cuda-export, vk-cuda-nvenc"
+                    "modes: all, render-only, render-profile, readback, readback-profile, cpu-encode, cpu-encode-profile, metal-videotoolbox, metal-videotoolbox-profile, vk-cuda-export, vk-cuda-nvenc"
                 );
                 std::process::exit(0);
             }
@@ -208,7 +226,7 @@ fn parse_args() -> anyhow::Result<Args> {
 
 fn print_help() {
     println!(
-        "usage: lumen-bench-composition [--composition all|announcement_gpu|feature_showcase] [--mode all|render-only|render-profile|readback|readback-profile|cpu-encode|cpu-encode-profile|vk-cuda-export|vk-cuda-nvenc] [--frames N] [--save PATH]"
+        "usage: lumen-bench-composition [--composition all|announcement_gpu|feature_showcase] [--mode all|render-only|render-profile|readback|readback-profile|cpu-encode|cpu-encode-profile|metal-videotoolbox|metal-videotoolbox-profile|vk-cuda-export|vk-cuda-nvenc] [--frames N] [--save PATH]"
     );
 }
 
@@ -231,12 +249,20 @@ fn selected_modes(modes: &[Mode]) -> Vec<Mode> {
         Mode::RenderOnly,
         Mode::Readback,
         Mode::CpuEncode,
+        Mode::MetalVideotoolbox,
         Mode::VkCudaExport,
         Mode::VkCudaNvenc,
     ]
 }
 
 fn requires_unsupported_platform(mode: Mode) -> bool {
+    if matches!(
+        mode,
+        Mode::MetalVideotoolbox | Mode::MetalVideotoolboxProfile
+    ) && !cfg!(all(target_os = "macos", feature = "metal"))
+    {
+        return true;
+    }
     matches!(mode, Mode::VkCudaExport | Mode::VkCudaNvenc)
         && !cfg!(all(
             target_os = "linux",
@@ -299,6 +325,26 @@ async fn run_mode(
                 composition,
                 frames,
                 output.ok_or_else(|| anyhow!("cpu encode profile mode needs an output path"))?,
+            )
+            .await
+        }
+        Mode::MetalVideotoolbox => {
+            benchmark_render_metal_videotoolbox(
+                composition,
+                frames,
+                output.ok_or_else(|| anyhow!("Metal VideoToolbox mode needs an output path"))?,
+                false,
+            )
+            .await
+        }
+        Mode::MetalVideotoolboxProfile => {
+            benchmark_render_metal_videotoolbox(
+                composition,
+                frames,
+                output.ok_or_else(|| {
+                    anyhow!("Metal VideoToolbox profile mode needs an output path")
+                })?,
+                true,
             )
             .await
         }
@@ -537,6 +583,131 @@ async fn benchmark_render_cpu_encode_profile(
     Ok(elapsed)
 }
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+async fn benchmark_render_metal_videotoolbox(
+    composition: &lumen_engine::composition::Composition,
+    frames: u32,
+    output: &Path,
+    profile: bool,
+) -> anyhow::Result<Duration> {
+    let media = EmptyMediaStore;
+    let mut renderer =
+        renderer_with_format(composition, lumen_gpu::wgpu::TextureFormat::Bgra8Unorm).await?;
+    if profile {
+        print_plan_profile(renderer.compiled());
+    }
+    let output_size = composition_size(composition);
+    let mut target_pool = MetalVideoToolboxTargetPool::bgra8(renderer.gpu_renderer(), output_size)?;
+    let mut config = video_config(composition, VideoCodec::H264);
+    config.mode = lumen_ffmpeg::EncodeMode::GpuTexture(lumen_ffmpeg::GpuBackend::Metal);
+    let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
+    let mut pending = VecDeque::<PendingMetalEncodeFrame>::new();
+    let mut render = Duration::ZERO;
+    let mut poll = Duration::ZERO;
+    let mut encode = Duration::ZERO;
+    let mut finish = Duration::ZERO;
+    let started = Instant::now();
+
+    for frame in 0..frames {
+        let target = target_pool.acquire(renderer.gpu_renderer(), frame)?;
+
+        let step = Instant::now();
+        let submitted = renderer.render_frame_into_external(
+            composition,
+            frame,
+            &media,
+            target.external_texture(),
+        )?;
+        render += step.elapsed();
+        pending.push_back(PendingMetalEncodeFrame {
+            frame,
+            target,
+            submitted,
+        });
+        if pending.len() >= GPU_ENCODER_FRAMES_IN_FLIGHT {
+            encode_ready_metal_frame(
+                &renderer,
+                &mut encoder,
+                &mut pending,
+                &mut poll,
+                &mut encode,
+            )?;
+        }
+    }
+    while !pending.is_empty() {
+        encode_ready_metal_frame(
+            &renderer,
+            &mut encoder,
+            &mut pending,
+            &mut poll,
+            &mut encode,
+        )?;
+    }
+
+    let step = Instant::now();
+    encoder.finish()?;
+    finish += step.elapsed();
+    let elapsed = started.elapsed();
+    if profile {
+        println!(
+            "metal_videotoolbox_profile frames={} render_ms={} poll_ms={} encode_ms={} finish_ms={} render_us_per_frame={:.2} poll_us_per_frame={:.2} encode_us_per_frame={:.2}",
+            frames,
+            render.as_millis(),
+            poll.as_millis(),
+            encode.as_millis(),
+            finish.as_millis(),
+            micros_per_frame(render, frames),
+            micros_per_frame(poll, frames),
+            micros_per_frame(encode, frames),
+        );
+    }
+    Ok(elapsed)
+}
+
+#[cfg(not(all(target_os = "macos", feature = "metal")))]
+async fn benchmark_render_metal_videotoolbox(
+    _composition: &lumen_engine::composition::Composition,
+    _frames: u32,
+    _output: &Path,
+    _profile: bool,
+) -> anyhow::Result<Duration> {
+    Err(anyhow!("metal-videotoolbox requires macOS + metal feature"))
+}
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+struct PendingMetalEncodeFrame {
+    frame: u32,
+    target: MetalVideoToolboxTarget,
+    submitted: lumen_gpu::SubmittedExternalTexture,
+}
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+fn encode_ready_metal_frame(
+    renderer: &lumen_engine::gpu::GpuCompositionRenderer,
+    encoder: &mut MuxedEncoder,
+    pending: &mut VecDeque<PendingMetalEncodeFrame>,
+    poll: &mut Duration,
+    encode: &mut Duration,
+) -> anyhow::Result<()> {
+    let PendingMetalEncodeFrame {
+        frame,
+        target,
+        submitted,
+    } = pending
+        .pop_front()
+        .ok_or_else(|| anyhow!("no pending Metal frame to encode"))?;
+    let step = Instant::now();
+    submitted.wait(&renderer.gpu_renderer().device)?;
+    *poll += step.elapsed();
+
+    let step = Instant::now();
+    encoder
+        .write_gpu_frame(&target.video_input())
+        .with_context(|| format!("Metal VideoToolbox encode failed at frame {frame}"))?;
+    *encode += step.elapsed();
+    Ok(())
+}
+
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 async fn benchmark_render_vk_cuda_export(
     composition: &lumen_engine::composition::Composition,
@@ -648,13 +819,16 @@ async fn benchmark_render_vk_cuda_nvenc(
 async fn renderer(
     composition: &lumen_engine::composition::Composition,
 ) -> anyhow::Result<lumen_engine::gpu::GpuCompositionRenderer> {
+    renderer_with_format(composition, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm).await
+}
+
+async fn renderer_with_format(
+    composition: &lumen_engine::composition::Composition,
+    format: lumen_gpu::wgpu::TextureFormat,
+) -> anyhow::Result<lumen_engine::gpu::GpuCompositionRenderer> {
     let media = EmptyMediaStore;
     let mut renderer = lumen_engine::gpu::GpuCompositionRenderer::new().await?;
-    renderer.compile_with_media(
-        composition,
-        &media,
-        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-    )?;
+    renderer.compile_with_media(composition, &media, format)?;
     Ok(renderer)
 }
 
@@ -672,7 +846,10 @@ fn video_config(
     config
 }
 
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "metal"),
+    all(target_os = "linux", feature = "cuda", feature = "vulkan")
+))]
 fn composition_size(composition: &lumen_engine::composition::Composition) -> lumen_gpu::Size {
     lumen_gpu::Size::new(
         composition.render_settings.width,

@@ -11,13 +11,7 @@ path = "src/main.rs"
 [features]
 default = []
 cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
-metal = [
-  "dep:objc2",
-  "dep:objc2-metal",
-  "lumen-engine/metal",
-  "lumen-ffmpeg/metal",
-  "lumen-gpu/metal",
-]
+metal = ["lumen-engine/metal", "lumen-ffmpeg/metal", "lumen-gpu/metal"]
 vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
 
 
@@ -30,7 +24,5 @@ lumen-gpu = { package = "lumen-engine-gpu", path = "../gpu" }
 lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.1.0", path = "../ffmpeg", features = [
   "vulkan",
 ] }
-objc2 = { version = "0.6.4", optional = true }
-objc2-metal = { version = "0.3.2", optional = true }
 pollster = "0.4.0"
 serde_json = "1.0.145"

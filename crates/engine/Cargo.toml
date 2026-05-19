@@ -16,7 +16,7 @@ image = ["dep:image"]
 json = ["dep:anyhow", "dep:serde_json", "dep:serde_path_to_error"]
 metadata = []
 webgl = []
-metal = ["lumen-ffmpeg?/metal", "lumen-gpu/metal"]
+metal = ["dep:objc2-metal", "lumen-ffmpeg?/metal", "lumen-gpu/metal"]
 vulkan = ["lumen-ffmpeg?/vulkan", "lumen-gpu/vulkan"]
 cuda = ["lumen-ffmpeg?/cuda"]
 experimental-msdf = ["lumen-text/experimental-msdf"]
@@ -44,6 +44,7 @@ lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.1.0", path = "../
 lumen-gpu = { package = "lumen-engine-gpu", version = "0.1.0", path = "../gpu" }
 lumen-text = { package = "lumen-engine-text", version = "0.1.0", path = "../text" }
 bytemuck = { version = "1.25.0", features = ["derive"] }
+objc2-metal = { version = "0.3.2", optional = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 glemu = { version = "0.1.2", default-features = false, features = ["api", "video-frame"] }

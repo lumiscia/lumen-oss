@@ -9,7 +9,7 @@ default = []
 cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
 experimental-msdf = ["lumen-engine/experimental-msdf", "lumen-text/experimental-msdf"]
 vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
-metal = ["lumen-engine/metal", "lumen-ffmpeg/metal"]
+metal = ["lumen-engine/metal", "lumen-ffmpeg/metal", "lumen-gpu/metal"]
 
 [dependencies]
 anyhow = "1.0.101"
