@@ -5,13 +5,34 @@
 
 mod binding;
 pub(crate) mod compiler;
+#[cfg(feature = "ffmpeg")]
+mod media;
 mod params;
 mod renderer;
+#[cfg(any(
+    all(target_os = "macos", feature = "ffmpeg", feature = "metal"),
+    all(
+        target_os = "linux",
+        feature = "ffmpeg",
+        feature = "cuda",
+        feature = "vulkan"
+    )
+))]
+mod target;
 mod types;
 
 pub use binding::FrameBindContext;
 pub use compiler::{CompileContext, GpuCompileNode};
 pub use renderer::GpuCompositionRenderer;
+#[cfg(all(
+    target_os = "linux",
+    feature = "ffmpeg",
+    feature = "cuda",
+    feature = "vulkan"
+))]
+pub use target::{CudaNvencTarget, CudaNvencTargetPool};
+#[cfg(all(target_os = "macos", feature = "ffmpeg", feature = "metal"))]
+pub use target::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 pub use types::{
     AlphaMode, BoundFrame, CompiledComposition, CompiledFrameBinding, CompiledOutput,
     GpuFrameBinding, MediaTextureKey, RasterHandle, RasterMetadata,

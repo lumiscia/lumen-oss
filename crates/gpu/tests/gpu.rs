@@ -1,4 +1,4 @@
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 use lumen_engine_gpu::*;
 
@@ -213,6 +213,80 @@ fn render_pass_draws_fullscreen_triangle_to_target() {
 }
 
 #[test]
+fn submit_plan_with_external_texture_restores_slot_and_retains_target() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let size = Size::new(2, 2);
+    let desc = TextureDesc::render_target(size, wgpu::TextureFormat::Rgba8Unorm);
+    let mut builder = RenderPlan::builder();
+    let output = builder.texture(Some("output".to_string()), desc);
+    let program = builder.program(ProgramDesc::Render(RenderProgramDesc {
+        label: Some("orange".to_string()),
+        shader: RENDER_SHADER.to_string(),
+        vertex_entry: "vs_main".to_string(),
+        fragment_entry: "fs_main".to_string(),
+        bind_groups: Vec::new(),
+        targets: vec![Some(wgpu::ColorTargetState {
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            blend: Some(wgpu::BlendState::REPLACE),
+            write_mask: wgpu::ColorWrites::ALL,
+        })],
+        vertex_buffers: Vec::new(),
+        primitive: wgpu::PrimitiveState::default(),
+    }));
+    builder.render_pass(RenderPassDesc {
+        label: Some("draw external".to_string()),
+        owner: None,
+        program,
+        targets: vec![RenderTargetRef {
+            texture: output,
+            load: LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+        }],
+        bindings: Vec::new(),
+        vertex_buffers: Vec::new(),
+        index_buffer: None,
+        draw: DrawCommand::Draw(Draw {
+            vertices: 0..3,
+            instances: 0..1,
+        }),
+        scissor: None,
+    });
+    let plan = builder.build();
+    renderer.prepare_plan(&plan).unwrap();
+
+    let original = renderer.texture_arc(output).unwrap();
+    let external = Arc::new(renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("external render target"),
+        size: size.as_extent(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: desc.usage,
+        view_formats: &[],
+    }));
+    let submitted = renderer
+        .submit_plan_with_external_texture(
+            &plan,
+            output,
+            ExternalTexture::new(Arc::clone(&external), desc),
+        )
+        .unwrap();
+
+    assert!(Arc::ptr_eq(
+        &renderer.texture_arc(output).unwrap(),
+        &original
+    ));
+    assert!(std::ptr::eq(submitted.texture(), external.as_ref()));
+    submitted.wait(&renderer.device).unwrap();
+
+    let bytes = read_wgpu_texture_rgba8(&renderer, submitted.texture(), size);
+    assert_rgba8_near(&bytes[0..4], [255, 128, 0, 255]);
+}
+
+#[test]
 fn copy_texture_pass_copies_uploaded_texture_data() {
     let Some(mut renderer) = renderer() else {
         return;
@@ -300,6 +374,10 @@ fn renderer() -> Option<Renderer> {
 }
 
 fn read_texture_rgba8(renderer: &Renderer, id: TextureId, size: Size) -> Vec<u8> {
+    read_wgpu_texture_rgba8(renderer, renderer.texture(id).unwrap(), size)
+}
+
+fn read_wgpu_texture_rgba8(renderer: &Renderer, texture: &wgpu::Texture, size: Size) -> Vec<u8> {
     let bytes_per_pixel = 4;
     let unpadded_bytes_per_row = size.width * bytes_per_pixel;
     let padded_bytes_per_row = align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -316,7 +394,7 @@ fn read_texture_rgba8(renderer: &Renderer, id: TextureId, size: Size) -> Vec<u8>
             label: Some("lumen-gpu test readback encoder"),
         });
     encoder.copy_texture_to_buffer(
-        renderer.texture(id).unwrap().as_image_copy(),
+        texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &output,
             layout: wgpu::TexelCopyBufferLayout {

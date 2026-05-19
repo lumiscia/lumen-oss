@@ -8,6 +8,8 @@
 mod binding;
 mod geometry;
 mod id;
+#[cfg(all(target_os = "macos", feature = "metal"))]
+mod metal;
 mod pass;
 mod plan;
 mod program;
@@ -20,6 +22,8 @@ mod vulkan_export;
 pub use binding::*;
 pub use geometry::*;
 pub use id::*;
+#[cfg(all(target_os = "macos", feature = "metal"))]
+pub use metal::*;
 pub use pass::*;
 pub use plan::*;
 pub use program::*;
