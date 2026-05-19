@@ -581,10 +581,10 @@ impl GpuCompositionRenderer {
                 let target_frame = crate::node::processing::time_remap::remap_frame(
                     crate::node::processing::time_remap::resolve_settings(
                         time_remap.id,
-                        &time_remap.frame,
-                        &time_remap.loop_enabled,
-                        &time_remap.loop_start,
-                        &time_remap.loop_end,
+                        &time_remap.params.frame,
+                        &time_remap.params.loop_enabled,
+                        &time_remap.params.loop_start,
+                        &time_remap.params.loop_end,
                         &ctx,
                     )?,
                 );

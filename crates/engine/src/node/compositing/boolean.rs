@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
@@ -28,16 +28,35 @@ impl BooleanOperation {
 }
 
 /// Combines two raster alpha masks with boolean operations.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedBooleanParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct BooleanParams {
+    /// Boolean operation used to combine the two input masks.
+    #[param(kind = "enum", enum_type = BooleanOperation)]
+    pub operation: Deferred<i64>,
+    /// Alpha cutoff used before evaluating the boolean operation.
+    #[param(kind = "float", min = 0, max = 1, step = 0.01)]
+    pub threshold: Deferred<f64>,
+}
+
+impl Default for BooleanParams {
+    fn default() -> Self {
+        Self {
+            operation: Deferred::value(BooleanOperation::Union as i64),
+            threshold: Deferred::value(0.0),
+        }
+    }
+}
+
+/// Combines two raster alpha masks with boolean operations.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "boolean", name = "Boolean", category = "compositing")]
 pub struct Boolean {
     pub id: NodeId,
-    /// Boolean operation used to combine the two input masks.
-    #[property(kind = "enum", enum_type = BooleanOperation)]
-    pub operation: NodeProperty,
-    /// Alpha cutoff used before evaluating the boolean operation.
-    #[property(kind = "float", min = 0, max = 1, step = 0.01)]
-    pub threshold: NodeProperty,
+    #[params]
+    pub params: BooleanParams,
+
     #[input()]
     pub a: PortRef,
     #[input()]
@@ -48,8 +67,7 @@ impl Default for Boolean {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            operation: NodeProperty::Int(BooleanOperation::Union as i64),
-            threshold: NodeProperty::Float(0.0),
+            params: BooleanParams::default(),
             a: PortRef::empty(),
             b: PortRef::empty(),
         }
@@ -59,8 +77,8 @@ impl Default for Boolean {
 #[derive(Debug, Clone)]
 struct BooleanFrameBinding {
     node_id: NodeId,
-    operation: NodeProperty,
-    threshold: NodeProperty,
+    operation: Deferred<i64>,
+    threshold: Deferred<f64>,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -167,8 +185,8 @@ impl GpuCompileNode for Boolean {
         );
         ctx.push_frame_binding(BooleanFrameBinding {
             node_id: self.id,
-            operation: self.operation.clone(),
-            threshold: self.threshold.clone(),
+            operation: self.params.operation.clone(),
+            threshold: self.params.threshold.clone(),
             buffer: params,
         });
 

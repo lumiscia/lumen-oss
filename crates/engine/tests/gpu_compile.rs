@@ -7,28 +7,35 @@ use lumen_engine::{
         VideoMetadata,
     },
     node::{
-        Deferred, NodeId, NodeKind, NodeProperty, PortRef,
-        compositing::{merge::Merge, raster_multimerge::RasterMultiMerge, switch::Switch},
+        Deferred, NodeId, NodeKind, PortRef,
+        compositing::{
+            merge::{Merge, MergeParams},
+            raster_multimerge::{RasterMultiMerge, RasterMultiMergeParams},
+            switch::{Switch, SwitchParams},
+        },
         media_output::MediaOutput,
         processing::{
-            alpha_premultiply::AlphaPremultiply,
-            channel_shuffle::ChannelShuffle,
-            color_grade::ColorGrade,
-            crop::Crop,
+            alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParams},
+            channel_shuffle::{ChannelShuffle, ChannelShuffleParams},
+            color_grade::{ColorGrade, ColorGradeParams},
+            crop::{Crop, CropParams},
             exposure::{Exposure, ExposureParams},
-            hue_saturation::HueSaturation,
-            levels::Levels,
-            memo::Memo,
-            resize::Resize,
-            time_remap::TimeRemap,
-            transform::Transform,
+            hue_saturation::{HueSaturation, HueSaturationParams},
+            levels::{Levels, LevelsParams},
+            memo::{Memo, MemoParams},
+            resize::{Resize, ResizeParams},
+            time_remap::{TimeRemap, TimeRemapParams},
+            transform::{Transform, TransformParams},
         },
         source::{
-            media_in::MediaIn,
+            media_in::{MediaIn, MediaInParams},
             solid_color::{SolidColor, SolidColorParams},
-            text::Text,
+            text::{Text, TextParams},
         },
-        vector::{path::Path, shape::Shape},
+        vector::{
+            path::{Path, PathParams},
+            shape::{Shape, ShapeParams},
+        },
     },
 };
 use std::sync::Arc;
@@ -230,8 +237,11 @@ fn compiles_media_input_as_frame_texture_boundary() {
         media,
         NodeKind::MediaIn(MediaIn {
             id: media,
-            kind: NodeProperty::Int(0),
-            source: NodeProperty::String("plate".to_string()),
+            params: MediaInParams {
+                kind: Deferred::value(0),
+                source: Deferred::value("plate".to_string()),
+                ..Default::default()
+            },
             ..MediaIn::default()
         }),
     );
@@ -299,7 +309,10 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
         overlay,
         NodeKind::MediaIn(MediaIn {
             id: overlay,
-            source: NodeProperty::String("plate".to_string()),
+            params: MediaInParams {
+                source: Deferred::value("plate".to_string()),
+                ..Default::default()
+            },
             ..MediaIn::default()
         }),
     );
@@ -394,8 +407,11 @@ fn compiles_merge_to_gpu_blend_pass() {
         merge,
         NodeKind::Merge(Merge {
             id: merge,
-            opacity: NodeProperty::Float(0.5),
-            blend_mode: NodeProperty::Int(0),
+            params: MergeParams {
+                opacity: Deferred::value(0.5),
+                blend_mode: Deferred::value(0),
+                ..Default::default()
+            },
             base: PortRef::new(base, "output".to_string()),
             overlay: PortRef::new(overlay, "output".to_string()),
             mask: PortRef::empty(),
@@ -441,8 +457,11 @@ fn compiles_raster_multimerge_with_blend_mode_binding() {
         multi,
         NodeKind::RasterMultiMerge(RasterMultiMerge {
             id: multi,
-            opacity: NodeProperty::Float(0.5),
-            blend_mode: NodeProperty::Int(2),
+            params: RasterMultiMergeParams {
+                opacity: Deferred::value(0.5),
+                blend_mode: Deferred::value(2),
+                ..Default::default()
+            },
             layers: vec![
                 PortRef::new(first, "output".to_string()),
                 PortRef::new(second, "output".to_string()),
@@ -483,7 +502,10 @@ fn compiles_switch_as_selected_gpu_alias() {
         switch,
         NodeKind::Switch(Switch {
             id: switch,
-            selected_layer: NodeProperty::Int(0),
+            params: SwitchParams {
+                selected_layer: Deferred::value(0),
+                ..Default::default()
+            },
             layers: vec![
                 PortRef::new(first, "output".to_string()),
                 PortRef::new(second, "output".to_string()),
@@ -534,9 +556,12 @@ fn compiles_switch_expression_as_frame_selected_gpu_alias() {
         switch,
         NodeKind::Switch(Switch {
             id: switch,
-            selected_layer: NodeProperty::Expr(
-                lumen_engine::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
-            ),
+            params: SwitchParams {
+                selected_layer: Deferred::Expr(
+                    lumen_engine::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
+                ),
+                ..Default::default()
+            },
             layers: vec![
                 PortRef::new(first, "output".to_string()),
                 PortRef::new(second, "output".to_string()),
@@ -618,10 +643,13 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_frame_bindings() {
         time_remap,
         NodeKind::TimeRemap(TimeRemap {
             id: time_remap,
-            frame: NodeProperty::Float(8.0),
-            loop_enabled: NodeProperty::Bool(true),
-            loop_start: NodeProperty::Int(4),
-            loop_end: NodeProperty::Int(12),
+            params: TimeRemapParams {
+                frame: Deferred::value(8.0),
+                loop_enabled: Deferred::value(true),
+                loop_start: Deferred::value(4),
+                loop_end: Deferred::value(12),
+                ..Default::default()
+            },
             source: PortRef::new(solid_id, "output".to_string()),
         }),
     );
@@ -629,8 +657,11 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_frame_bindings() {
         memo,
         NodeKind::Memo(Memo {
             id: memo,
-            cache_id: NodeProperty::String("cached-comp".to_string()),
-            allow_expressions: NodeProperty::Bool(false),
+            params: MemoParams {
+                cache_id: Deferred::value("cached-comp".to_string()),
+                allow_expressions: Deferred::value(false),
+                ..Default::default()
+            },
             source: PortRef::new(time_remap, "output".to_string()),
         }),
     );
@@ -687,9 +718,12 @@ fn time_remap_compiles_source_with_remapped_frame_context() {
         switch,
         NodeKind::Switch(Switch {
             id: switch,
-            selected_layer: NodeProperty::Expr(
-                lumen_engine::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
-            ),
+            params: SwitchParams {
+                selected_layer: Deferred::Expr(
+                    lumen_engine::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
+                ),
+                ..Default::default()
+            },
             layers: vec![
                 PortRef::new(first, "output".to_string()),
                 PortRef::new(second, "output".to_string()),
@@ -700,10 +734,13 @@ fn time_remap_compiles_source_with_remapped_frame_context() {
         time_remap,
         NodeKind::TimeRemap(TimeRemap {
             id: time_remap,
-            frame: NodeProperty::Float(0.0),
-            loop_enabled: NodeProperty::Bool(false),
-            loop_start: NodeProperty::Int(0),
-            loop_end: NodeProperty::Int(0),
+            params: TimeRemapParams {
+                frame: Deferred::value(0.0),
+                loop_enabled: Deferred::value(false),
+                loop_start: Deferred::value(0),
+                loop_end: Deferred::value(0),
+                ..Default::default()
+            },
             source: PortRef::new(switch, "output".to_string()),
         }),
     );
@@ -770,10 +807,13 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
         time_remap,
         NodeKind::TimeRemap(TimeRemap {
             id: time_remap,
-            frame: NodeProperty::Float(8.0),
-            loop_enabled: NodeProperty::Bool(false),
-            loop_start: NodeProperty::Int(0),
-            loop_end: NodeProperty::Int(0),
+            params: TimeRemapParams {
+                frame: Deferred::value(8.0),
+                loop_enabled: Deferred::value(false),
+                loop_start: Deferred::value(0),
+                loop_end: Deferred::value(0),
+                ..Default::default()
+            },
             source: PortRef::new(exposure, "output".to_string()),
         }),
     );
@@ -835,11 +875,14 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
         transform,
         NodeKind::Transform(Transform {
             id: transform,
-            translate_x: NodeProperty::Expr(
-                lumen_engine::expr::Expression::parse("frame").unwrap(),
-            ),
-            translate_y: NodeProperty::Float(2.0),
-            rotate: NodeProperty::Float(15.0),
+            params: TransformParams {
+                translate_x: Deferred::Expr(
+                    lumen_engine::expr::Expression::parse("frame").unwrap(),
+                ),
+                translate_y: Deferred::value(2.0),
+                rotate: Deferred::value(15.0),
+                ..Default::default()
+            },
             source: PortRef::new(solid_id, "output".to_string()),
             ..Transform::default()
         }),
@@ -848,10 +891,13 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
         crop,
         NodeKind::Crop(Crop {
             id: crop,
-            x: NodeProperty::Int(1),
-            y: NodeProperty::Int(1),
-            width: NodeProperty::Int(6),
-            height: NodeProperty::Int(3),
+            params: CropParams {
+                x: Deferred::value(1),
+                y: Deferred::value(1),
+                width: Deferred::value(6),
+                height: Deferred::value(3),
+                ..Default::default()
+            },
             source: PortRef::new(transform, "output".to_string()),
         }),
     );
@@ -859,10 +905,13 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
         resize,
         NodeKind::Resize(Resize {
             id: resize,
-            width: NodeProperty::Int(4),
-            height: NodeProperty::Int(2),
-            mode: NodeProperty::Int(1),
-            sampling: NodeProperty::Int(1),
+            params: ResizeParams {
+                width: Deferred::value(4),
+                height: Deferred::value(2),
+                mode: Deferred::value(1),
+                sampling: Deferred::value(1),
+                ..Default::default()
+            },
             source: PortRef::new(crop, "output".to_string()),
         }),
     );
@@ -924,7 +973,10 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         alpha,
         NodeKind::AlphaPremultiply(AlphaPremultiply {
             id: alpha,
-            mode: NodeProperty::String("unpremultiply".to_string()),
+            params: AlphaPremultiplyParams {
+                mode: Deferred::value("unpremultiply".to_string()),
+                ..Default::default()
+            },
             source: PortRef::new(solid_id, "output".to_string()),
         }),
     );
@@ -932,10 +984,13 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         shuffle,
         NodeKind::ChannelShuffle(ChannelShuffle {
             id: shuffle,
-            red: NodeProperty::String("blue".to_string()),
-            green: NodeProperty::String("green".to_string()),
-            blue: NodeProperty::String("red".to_string()),
-            alpha: NodeProperty::String("0.5".to_string()),
+            params: ChannelShuffleParams {
+                red: Deferred::value("blue".to_string()),
+                green: Deferred::value("green".to_string()),
+                blue: Deferred::value("red".to_string()),
+                alpha: Deferred::value("0.5".to_string()),
+                ..Default::default()
+            },
             source: PortRef::new(alpha, "output".to_string()),
         }),
     );
@@ -943,11 +998,14 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         levels,
         NodeKind::Levels(Levels {
             id: levels,
-            black_point: NodeProperty::Float(0.1),
-            white_point: NodeProperty::Float(0.9),
-            gamma: NodeProperty::Float(1.2),
-            output_black: NodeProperty::Float(0.0),
-            output_white: NodeProperty::Float(1.0),
+            params: LevelsParams {
+                black_point: Deferred::value(0.1),
+                white_point: Deferred::value(0.9),
+                gamma: Deferred::value(1.2),
+                output_black: Deferred::value(0.0),
+                output_white: Deferred::value(1.0),
+                ..Default::default()
+            },
             source: PortRef::new(shuffle, "output".to_string()),
         }),
     );
@@ -955,11 +1013,14 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         hue,
         NodeKind::HueSaturation(HueSaturation {
             id: hue,
-            hue_degrees: NodeProperty::Expr(
-                lumen_engine::expr::Expression::parse("frame * 10").unwrap(),
-            ),
-            saturation: NodeProperty::Float(0.75),
-            lightness: NodeProperty::Float(0.1),
+            params: HueSaturationParams {
+                hue_degrees: Deferred::Expr(
+                    lumen_engine::expr::Expression::parse("frame * 10").unwrap(),
+                ),
+                saturation: Deferred::value(0.75),
+                lightness: Deferred::value(0.1),
+                ..Default::default()
+            },
             source: PortRef::new(levels, "output".to_string()),
         }),
     );
@@ -967,9 +1028,12 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         grade,
         NodeKind::ColorGrade(ColorGrade {
             id: grade,
-            lut_source: NodeProperty::String("rgb1d: 0,0,0; 255,128,0".to_string()),
-            strength: NodeProperty::Float(0.5),
-            interpolation: NodeProperty::Int(1),
+            params: ColorGradeParams {
+                lut_source: Deferred::value("rgb1d: 0,0,0; 255,128,0".to_string()),
+                strength: Deferred::value(0.5),
+                interpolation: Deferred::value(1),
+                ..Default::default()
+            },
             source: PortRef::new(hue, "output".to_string()),
         }),
     );
@@ -1013,10 +1077,13 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         shape,
         NodeKind::Shape(Shape {
             id: shape,
-            width: NodeProperty::Int(6),
-            height: NodeProperty::Int(4),
-            position: NodeProperty::Vec2((1.0, 0.0)),
-            fill_color: NodeProperty::Color([255, 0, 0, 255]),
+            params: ShapeParams {
+                width: Deferred::value(6),
+                height: Deferred::value(4),
+                position: Deferred::value((1.0, 0.0)),
+                fill_color: Deferred::value([255, 0, 0, 255]),
+                ..Default::default()
+            },
             ..Shape::default()
         }),
     );
@@ -1024,9 +1091,12 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         text,
         NodeKind::Text(Text {
             id: text,
-            content: NodeProperty::String("hi".to_string()),
-            font_size: NodeProperty::Float(4.0),
-            color: NodeProperty::Color([255, 255, 255, 255]),
+            params: TextParams {
+                content: Deferred::value("hi".to_string()),
+                font_size: Deferred::value(4.0),
+                color: Deferred::value([255, 255, 255, 255]),
+                ..Default::default()
+            },
             ..Text::default()
         }),
     );
@@ -1074,10 +1144,13 @@ fn compiles_vector_path_through_shared_renderer() {
         path,
         NodeKind::Path(Path {
             id: path,
-            data: NodeProperty::String("M 1 1 L 6 1 L 6 3 L 1 3 Z".to_string()),
-            fill_color: NodeProperty::Color([0, 255, 0, 255]),
-            stroke_enabled: NodeProperty::Bool(true),
-            stroke_width: NodeProperty::Float(1.0),
+            params: PathParams {
+                data: Deferred::value("M 1 1 L 6 1 L 6 3 L 1 3 Z".to_string()),
+                fill_color: Deferred::value([0, 255, 0, 255]),
+                stroke_enabled: Deferred::value(true),
+                stroke_width: Deferred::value(1.0),
+                ..Default::default()
+            },
             ..Path::default()
         }),
     );

@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
@@ -25,34 +25,59 @@ impl TransformSampling {
 }
 
 /// Transforms a raster inside its existing static bounds.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedTransformParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct TransformParams {
+    /// Horizontal scale multiplier.
+    #[param(kind = "float", name = "Scale X", step = 0.1)]
+    pub scale_x: Deferred<f64>,
+    /// Vertical scale multiplier.
+    #[param(kind = "float", name = "Scale Y", step = 0.1)]
+    pub scale_y: Deferred<f64>,
+    /// Horizontal translation in pixels.
+    #[param(kind = "float", name = "Translate X", step = 1)]
+    pub translate_x: Deferred<f64>,
+    /// Vertical translation in pixels.
+    #[param(kind = "float", name = "Translate Y", step = 1)]
+    pub translate_y: Deferred<f64>,
+    /// Rotation in degrees.
+    #[param(kind = "float", name = "Rotate", step = 1)]
+    pub rotate: Deferred<f64>,
+    /// Horizontal pivot point in pixels.
+    #[param(kind = "float", name = "Pivot X", step = 1)]
+    pub pivot_x: Deferred<f64>,
+    /// Vertical pivot point in pixels.
+    #[param(kind = "float", name = "Pivot Y", step = 1)]
+    pub pivot_y: Deferred<f64>,
+    /// Sampling filter used when transforming.
+    #[param(kind = "enum", enum_type = TransformSampling)]
+    pub sampling: Deferred<i64>,
+}
+
+impl Default for TransformParams {
+    fn default() -> Self {
+        Self {
+            scale_x: Deferred::value(1.0),
+            scale_y: Deferred::value(1.0),
+            translate_x: Deferred::value(0.0),
+            translate_y: Deferred::value(0.0),
+            rotate: Deferred::value(0.0),
+            pivot_x: Deferred::value(0.0),
+            pivot_y: Deferred::value(0.0),
+            sampling: Deferred::value(TransformSampling::Linear as i64),
+        }
+    }
+}
+
+/// Transforms a raster inside its existing static bounds.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "transform", name = "Transform", category = "processing")]
 pub struct Transform {
     pub id: NodeId,
-    /// Horizontal scale multiplier.
-    #[property(kind = "float", name = "Scale X", step = 0.1)]
-    pub scale_x: NodeProperty,
-    /// Vertical scale multiplier.
-    #[property(kind = "float", name = "Scale Y", step = 0.1)]
-    pub scale_y: NodeProperty,
-    /// Horizontal translation in pixels.
-    #[property(kind = "float", name = "Translate X", step = 1)]
-    pub translate_x: NodeProperty,
-    /// Vertical translation in pixels.
-    #[property(kind = "float", name = "Translate Y", step = 1)]
-    pub translate_y: NodeProperty,
-    /// Rotation in degrees.
-    #[property(kind = "float", name = "Rotate", step = 1)]
-    pub rotate: NodeProperty,
-    /// Horizontal pivot point in pixels.
-    #[property(kind = "float", name = "Pivot X", step = 1)]
-    pub pivot_x: NodeProperty,
-    /// Vertical pivot point in pixels.
-    #[property(kind = "float", name = "Pivot Y", step = 1)]
-    pub pivot_y: NodeProperty,
-    /// Sampling filter used when transforming.
-    #[property(kind = "enum", enum_type = TransformSampling)]
-    pub sampling: NodeProperty,
+    #[params]
+    pub params: TransformParams,
+
     #[input()]
     pub source: PortRef,
 }
@@ -61,14 +86,7 @@ impl Default for Transform {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            scale_x: NodeProperty::Float(1.0),
-            scale_y: NodeProperty::Float(1.0),
-            translate_x: NodeProperty::Float(0.0),
-            translate_y: NodeProperty::Float(0.0),
-            rotate: NodeProperty::Float(0.0),
-            pivot_x: NodeProperty::Float(0.0),
-            pivot_y: NodeProperty::Float(0.0),
-            sampling: NodeProperty::Int(TransformSampling::Linear as i64),
+            params: TransformParams::default(),
             source: PortRef::empty(),
         }
     }
@@ -90,14 +108,14 @@ impl GpuCompileNode for Transform {
         )?;
         ctx.push_frame_binding(TransformFrameBinding {
             node_id: self.id,
-            scale_x: self.scale_x.clone(),
-            scale_y: self.scale_y.clone(),
-            translate_x: self.translate_x.clone(),
-            translate_y: self.translate_y.clone(),
-            rotate: self.rotate.clone(),
-            pivot_x: self.pivot_x.clone(),
-            pivot_y: self.pivot_y.clone(),
-            sampling: self.sampling.clone(),
+            scale_x: self.params.scale_x.clone(),
+            scale_y: self.params.scale_y.clone(),
+            translate_x: self.params.translate_x.clone(),
+            translate_y: self.params.translate_y.clone(),
+            rotate: self.params.rotate.clone(),
+            pivot_x: self.params.pivot_x.clone(),
+            pivot_y: self.params.pivot_y.clone(),
+            sampling: self.params.sampling.clone(),
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -111,14 +129,14 @@ impl GpuCompileNode for Transform {
 #[derive(Debug, Clone)]
 struct TransformFrameBinding {
     node_id: NodeId,
-    scale_x: NodeProperty,
-    scale_y: NodeProperty,
-    translate_x: NodeProperty,
-    translate_y: NodeProperty,
-    rotate: NodeProperty,
-    pivot_x: NodeProperty,
-    pivot_y: NodeProperty,
-    sampling: NodeProperty,
+    scale_x: Deferred<f64>,
+    scale_y: Deferred<f64>,
+    translate_x: Deferred<f64>,
+    translate_y: Deferred<f64>,
+    rotate: Deferred<f64>,
+    pivot_x: Deferred<f64>,
+    pivot_y: Deferred<f64>,
+    sampling: Deferred<i64>,
     buffer: lumen_gpu::BufferId,
 }
 

@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use crate::error::{LumenError, RenderError};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, lumen_macros::NodeEnum)]
 #[repr(i64)]
@@ -68,56 +68,73 @@ impl TextAlignmentVertical {
 }
 
 /// Produces a text raster source.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedTextParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct TextParams {
+    /// Text content to render.
+    #[param(kind = "string", multiline, recommended_rows = 4)]
+    pub content: Deferred<String>,
+    /// Font family name.
+    #[param(kind = "string", format = "font_family")]
+    pub font_family: Deferred<String>,
+    /// Font size in pixels.
+    #[param(kind = "float", min = 1, step = 1)]
+    pub font_size: Deferred<f64>,
+    /// Font weight.
+    #[param(kind = "int", min = 100, max = 900, step = 100)]
+    pub font_weight: Deferred<i64>,
+    /// Font style.
+    #[param(kind = "enum", enum_type = TextFontStyle)]
+    pub font_style: Deferred<i64>,
+    /// Maximum line width in pixels. Use 0 for automatic width.
+    #[param(kind = "float", min = 0, step = 1)]
+    pub max_width: Deferred<f64>,
+    /// Text origin in pixels.
+    #[param(kind = "vec2")]
+    pub position: Deferred<(f64, f64)>,
+    /// Text color.
+    #[param(kind = "color")]
+    pub color: Deferred<[u8; 4]>,
+    /// Horizontal text alignment.
+    #[param(kind = "enum", enum_type = TextAlignmentHorizontal)]
+    pub alignment_horizontal: Deferred<i64>,
+    /// Vertical text alignment.
+    #[param(kind = "enum", enum_type = TextAlignmentVertical)]
+    pub alignment_vertical: Deferred<i64>,
+}
+
+impl Default for TextParams {
+    fn default() -> Self {
+        Self {
+            content: Deferred::value(String::new()),
+            font_family: Deferred::value(lumen_text::DEFAULT_FONT_FAMILY.to_string()),
+            font_size: Deferred::value(16.0),
+            font_weight: Deferred::value(400),
+            font_style: Deferred::value(TextFontStyle::Normal as i64),
+            max_width: Deferred::value(0.0),
+            position: Deferred::value((0.0, 0.0)),
+            color: Deferred::value([255, 255, 255, 255]),
+            alignment_horizontal: Deferred::value(TextAlignmentHorizontal::Left as i64),
+            alignment_vertical: Deferred::value(TextAlignmentVertical::Top as i64),
+        }
+    }
+}
+
+/// Produces a text raster source.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "text", name = "Text", category = "source")]
 pub struct Text {
     pub id: NodeId,
-    /// Text content to render.
-    #[property(kind = "string", multiline, recommended_rows = 4)]
-    pub content: NodeProperty,
-    /// Font family name.
-    #[property(kind = "string", format = "font_family")]
-    pub font_family: NodeProperty,
-    /// Font size in pixels.
-    #[property(kind = "float", min = 1, step = 1)]
-    pub font_size: NodeProperty,
-    /// Font weight.
-    #[property(kind = "int", min = 100, max = 900, step = 100)]
-    pub font_weight: NodeProperty,
-    /// Font style.
-    #[property(kind = "enum", enum_type = TextFontStyle)]
-    pub font_style: NodeProperty,
-    /// Maximum line width in pixels. Use 0 for automatic width.
-    #[property(kind = "float", min = 0, step = 1)]
-    pub max_width: NodeProperty,
-    /// Text origin in pixels.
-    #[property(kind = "vec2")]
-    pub position: NodeProperty,
-    /// Text color.
-    #[property(kind = "color")]
-    pub color: NodeProperty,
-    /// Horizontal text alignment.
-    #[property(kind = "enum", enum_type = TextAlignmentHorizontal)]
-    pub alignment_horizontal: NodeProperty,
-    /// Vertical text alignment.
-    #[property(kind = "enum", enum_type = TextAlignmentVertical)]
-    pub alignment_vertical: NodeProperty,
+    #[params]
+    pub params: TextParams,
 }
 
 impl Default for Text {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            content: NodeProperty::String(String::new()),
-            font_family: NodeProperty::String(lumen_text::DEFAULT_FONT_FAMILY.to_string()),
-            font_size: NodeProperty::Float(16.0),
-            font_weight: NodeProperty::Int(400),
-            font_style: NodeProperty::Int(TextFontStyle::Normal as i64),
-            max_width: NodeProperty::Float(0.0),
-            position: NodeProperty::Vec2((0.0, 0.0)),
-            color: NodeProperty::Color([255, 255, 255, 255]),
-            alignment_horizontal: NodeProperty::Int(TextAlignmentHorizontal::Left as i64),
-            alignment_vertical: NodeProperty::Int(TextAlignmentVertical::Top as i64),
+            params: TextParams::default(),
         }
     }
 }
@@ -135,16 +152,16 @@ impl GpuCompileNode for Text {
 #[derive(Debug, Clone)]
 pub(crate) struct TextFrameBinding {
     pub(crate) node_id: NodeId,
-    pub(crate) content: NodeProperty,
-    pub(crate) font_family: NodeProperty,
-    pub(crate) font_size: NodeProperty,
-    pub(crate) font_weight: NodeProperty,
-    pub(crate) font_style: NodeProperty,
-    pub(crate) max_width: NodeProperty,
-    pub(crate) position: NodeProperty,
-    pub(crate) color: NodeProperty,
-    pub(crate) alignment_horizontal: NodeProperty,
-    pub(crate) alignment_vertical: NodeProperty,
+    pub(crate) content: Deferred<String>,
+    pub(crate) font_family: Deferred<String>,
+    pub(crate) font_size: Deferred<f64>,
+    pub(crate) font_weight: Deferred<i64>,
+    pub(crate) font_style: Deferred<i64>,
+    pub(crate) max_width: Deferred<f64>,
+    pub(crate) position: Deferred<(f64, f64)>,
+    pub(crate) color: Deferred<[u8; 4]>,
+    pub(crate) alignment_horizontal: Deferred<i64>,
+    pub(crate) alignment_vertical: Deferred<i64>,
     pub(crate) atlas_texture: lumen_gpu::TextureId,
     pub(crate) globals_buffer: lumen_gpu::BufferId,
     pub(crate) instances_buffer: lumen_gpu::BufferId,

@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
@@ -43,22 +43,43 @@ impl ResizeSampling {
 }
 
 /// Resamples a raster into static output bounds.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedResizeParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct ResizeParams {
+    /// Output width in pixels.
+    #[param(kind = "int", min = 1, step = 1)]
+    pub width: Deferred<i64>,
+    /// Output height in pixels.
+    #[param(kind = "int", min = 1, step = 1)]
+    pub height: Deferred<i64>,
+    /// How the source raster should fit the output bounds.
+    #[param(kind = "enum", enum_type = ResizeMode)]
+    pub mode: Deferred<i64>,
+    /// Sampling filter used when resizing.
+    #[param(kind = "enum", enum_type = ResizeSampling)]
+    pub sampling: Deferred<i64>,
+}
+
+impl Default for ResizeParams {
+    fn default() -> Self {
+        Self {
+            width: Deferred::value(1),
+            height: Deferred::value(1),
+            mode: Deferred::value(ResizeMode::Stretch as i64),
+            sampling: Deferred::value(ResizeSampling::Linear as i64),
+        }
+    }
+}
+
+/// Resamples a raster into static output bounds.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "resize", name = "Resize", category = "processing")]
 pub struct Resize {
     pub id: NodeId,
-    /// Output width in pixels.
-    #[property(kind = "int", min = 1, step = 1)]
-    pub width: NodeProperty,
-    /// Output height in pixels.
-    #[property(kind = "int", min = 1, step = 1)]
-    pub height: NodeProperty,
-    /// How the source raster should fit the output bounds.
-    #[property(kind = "enum", enum_type = ResizeMode)]
-    pub mode: NodeProperty,
-    /// Sampling filter used when resizing.
-    #[property(kind = "enum", enum_type = ResizeSampling)]
-    pub sampling: NodeProperty,
+    #[params]
+    pub params: ResizeParams,
+
     #[input()]
     pub source: PortRef,
 }
@@ -67,10 +88,7 @@ impl Default for Resize {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            width: NodeProperty::Int(1),
-            height: NodeProperty::Int(1),
-            mode: NodeProperty::Int(ResizeMode::Stretch as i64),
-            sampling: NodeProperty::Int(ResizeSampling::Linear as i64),
+            params: ResizeParams::default(),
             source: PortRef::empty(),
         }
     }
@@ -90,8 +108,8 @@ impl GpuCompileNode for Resize {
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
         let size = lumen_gpu::Size::new(
-            ctx.static_dimension(&self.width, self.id, "width")?,
-            ctx.static_dimension(&self.height, self.id, "height")?,
+            ctx.static_dimension(&self.params.width.to_node_property(), self.id, "width")?,
+            ctx.static_dimension(&self.params.height.to_node_property(), self.id, "height")?,
         );
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
@@ -120,10 +138,10 @@ impl GpuCompileNode for Resize {
         );
         ctx.push_frame_binding(ResizeFrameBinding {
             node_id: self.id,
-            width: self.width.clone(),
-            height: self.height.clone(),
-            mode: self.mode.clone(),
-            sampling: self.sampling.clone(),
+            width: self.params.width.clone(),
+            height: self.params.height.clone(),
+            mode: self.params.mode.clone(),
+            sampling: self.params.sampling.clone(),
             buffer: params,
         });
 
@@ -138,10 +156,10 @@ impl GpuCompileNode for Resize {
 #[derive(Debug, Clone)]
 struct ResizeFrameBinding {
     node_id: NodeId,
-    width: NodeProperty,
-    height: NodeProperty,
-    mode: NodeProperty,
-    sampling: NodeProperty,
+    width: Deferred<i64>,
+    height: Deferred<i64>,
+    mode: Deferred<i64>,
+    sampling: Deferred<i64>,
     buffer: lumen_gpu::BufferId,
 }
 

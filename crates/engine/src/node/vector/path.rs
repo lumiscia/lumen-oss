@@ -1,51 +1,68 @@
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 /// Produces a rasterized vector path source.
-#[derive(Debug, Clone, lumen_macros::Node)]
-#[node(kind = "path", name = "Path", category = "vector")]
-pub struct Path {
-    pub id: NodeId,
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedPathParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct PathParams {
     /// SVG-style path data.
-    #[property(
+    #[param(
         kind = "string",
         name = "Path data",
         format = "path_data",
         multiline,
         recommended_rows = 5
     )]
-    pub data: NodeProperty,
+    pub data: Deferred<String>,
     /// Path origin in pixels.
-    #[property(kind = "vec2")]
-    pub position: NodeProperty,
+    #[param(kind = "vec2")]
+    pub position: Deferred<(f64, f64)>,
     /// Enables fill rendering.
-    #[property(kind = "bool")]
-    pub fill_enabled: NodeProperty,
+    #[param(kind = "bool")]
+    pub fill_enabled: Deferred<bool>,
     /// Fill color.
-    #[property(kind = "color")]
-    pub fill_color: NodeProperty,
+    #[param(kind = "color")]
+    pub fill_color: Deferred<[u8; 4]>,
     /// Enables stroke rendering.
-    #[property(kind = "bool")]
-    pub stroke_enabled: NodeProperty,
+    #[param(kind = "bool")]
+    pub stroke_enabled: Deferred<bool>,
     /// Stroke color.
-    #[property(kind = "color")]
-    pub stroke_color: NodeProperty,
+    #[param(kind = "color")]
+    pub stroke_color: Deferred<[u8; 4]>,
     /// Stroke width in pixels.
-    #[property(kind = "float", min = 0, step = 0.5)]
-    pub stroke_width: NodeProperty,
+    #[param(kind = "float", min = 0, step = 0.5)]
+    pub stroke_width: Deferred<f64>,
+}
+
+impl Default for PathParams {
+    fn default() -> Self {
+        Self {
+            data: Deferred::value("M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string()),
+            position: Deferred::value((0.0, 0.0)),
+            fill_enabled: Deferred::value(true),
+            fill_color: Deferred::value([255, 255, 255, 255]),
+            stroke_enabled: Deferred::value(false),
+            stroke_color: Deferred::value([0, 0, 0, 255]),
+            stroke_width: Deferred::value(1.0),
+        }
+    }
+}
+
+/// Produces a rasterized vector path source.
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(kind = "path", name = "Path", category = "vector")]
+pub struct Path {
+    pub id: NodeId,
+    #[params]
+    pub params: PathParams,
 }
 
 impl Default for Path {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            data: NodeProperty::String("M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string()),
-            position: NodeProperty::Vec2((0.0, 0.0)),
-            fill_enabled: NodeProperty::Bool(true),
-            fill_color: NodeProperty::Color([255, 255, 255, 255]),
-            stroke_enabled: NodeProperty::Bool(false),
-            stroke_color: NodeProperty::Color([0, 0, 0, 255]),
-            stroke_width: NodeProperty::Float(1.0),
+            params: PathParams::default(),
         }
     }
 }
@@ -63,13 +80,13 @@ impl GpuCompileNode for Path {
 #[derive(Debug, Clone)]
 pub(crate) struct PathFrameBinding {
     pub(crate) node_id: NodeId,
-    pub(crate) data: NodeProperty,
-    pub(crate) position: NodeProperty,
-    pub(crate) fill_enabled: NodeProperty,
-    pub(crate) fill_color: NodeProperty,
-    pub(crate) stroke_enabled: NodeProperty,
-    pub(crate) stroke_color: NodeProperty,
-    pub(crate) stroke_width: NodeProperty,
+    pub(crate) data: Deferred<String>,
+    pub(crate) position: Deferred<(f64, f64)>,
+    pub(crate) fill_enabled: Deferred<bool>,
+    pub(crate) fill_color: Deferred<[u8; 4]>,
+    pub(crate) stroke_enabled: Deferred<bool>,
+    pub(crate) stroke_color: Deferred<[u8; 4]>,
+    pub(crate) stroke_width: Deferred<f64>,
     pub(crate) params_buffer: lumen_gpu::BufferId,
     pub(crate) points_buffer: lumen_gpu::BufferId,
     pub(crate) max_points: usize,

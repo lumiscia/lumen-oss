@@ -217,6 +217,82 @@ impl<T> From<T> for Deferred<T> {
     }
 }
 
+impl Deferred<f64> {
+    pub fn resolve_float(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<f64> {
+        self.eval(node_id, property_path, ctx)
+    }
+}
+
+impl Deferred<i64> {
+    pub fn resolve_int(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<i64> {
+        self.eval(node_id, property_path, ctx)
+    }
+
+    pub fn resolve_float(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<f64> {
+        self.eval(node_id, property_path, ctx)
+            .map(|value| value as f64)
+    }
+}
+
+impl Deferred<bool> {
+    pub fn resolve_bool(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<bool> {
+        self.eval(node_id, property_path, ctx)
+    }
+}
+
+impl Deferred<String> {
+    pub fn resolve_string(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<String> {
+        self.eval(node_id, property_path, ctx)
+    }
+}
+
+impl Deferred<[u8; 4]> {
+    pub fn resolve_color(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<[u8; 4]> {
+        self.eval(node_id, property_path, ctx)
+    }
+}
+
+impl Deferred<(f64, f64)> {
+    pub fn resolve_vec2(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<(f64, f64)> {
+        self.eval(node_id, property_path, ctx)
+    }
+}
+
 #[cfg(feature = "json")]
 impl<'de, T> serde::Deserialize<'de> for Deferred<T>
 where

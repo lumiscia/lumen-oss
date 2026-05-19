@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding,
@@ -6,6 +6,24 @@ use crate::gpu::{
 };
 
 pub(crate) const SHADER: &str = include_str!("alpha_premultiply.wgsl");
+
+/// Converts raster alpha between premultiplied and unpremultiplied representations.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedAlphaPremultiplyParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct AlphaPremultiplyParams {
+    /// Alpha conversion mode.
+    #[param(kind = "string", format = "alpha_premultiply_mode")]
+    pub mode: Deferred<String>,
+}
+
+impl Default for AlphaPremultiplyParams {
+    fn default() -> Self {
+        Self {
+            mode: Deferred::value("premultiply".to_string()),
+        }
+    }
+}
 
 /// Converts raster alpha between premultiplied and unpremultiplied representations.
 #[derive(Debug, Clone, lumen_macros::Node)]
@@ -16,9 +34,9 @@ pub(crate) const SHADER: &str = include_str!("alpha_premultiply.wgsl");
 )]
 pub struct AlphaPremultiply {
     pub id: NodeId,
-    /// Alpha conversion mode.
-    #[property(kind = "string", format = "alpha_premultiply_mode")]
-    pub mode: NodeProperty,
+    #[params]
+    pub params: AlphaPremultiplyParams,
+
     #[input()]
     pub source: PortRef,
 }
@@ -27,7 +45,7 @@ impl Default for AlphaPremultiply {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            mode: NodeProperty::String("premultiply".to_string()),
+            params: AlphaPremultiplyParams::default(),
             source: PortRef::empty(),
         }
     }
@@ -36,7 +54,7 @@ impl Default for AlphaPremultiply {
 #[derive(Debug, Clone)]
 struct AlphaPremultiplyFrameBinding {
     node_id: NodeId,
-    mode: NodeProperty,
+    mode: Deferred<String>,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -70,11 +88,11 @@ impl GpuCompileNode for AlphaPremultiply {
         ctx: &mut crate::gpu::CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        let metadata = match &self.mode {
-            NodeProperty::String(mode) if compiler::alpha_operation(self.id, mode)? < 0.5 => {
+        let metadata = match &self.params.mode {
+            Deferred::Value(mode) if compiler::alpha_operation(self.id, mode)? < 0.5 => {
                 Some(AlphaMode::Premultiplied)
             }
-            NodeProperty::String(mode) if compiler::alpha_operation(self.id, mode)? >= 0.5 => {
+            Deferred::Value(mode) if compiler::alpha_operation(self.id, mode)? >= 0.5 => {
                 Some(AlphaMode::Unpremultiplied)
             }
             _ => None,
@@ -89,7 +107,7 @@ impl GpuCompileNode for AlphaPremultiply {
         )?;
         ctx.push_frame_binding(AlphaPremultiplyFrameBinding {
             node_id: self.id,
-            mode: self.mode.clone(),
+            mode: self.params.mode.clone(),
             buffer: params,
         });
 

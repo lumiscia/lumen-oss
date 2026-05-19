@@ -370,10 +370,13 @@ mod tests {
             text_id,
             NodeKind::Text(Text {
                 id: text_id,
-                content: NodeProperty::String("Morning, update posted.".to_string()),
-                font_family: NodeProperty::String("Roboto".to_string()),
-                font_size: NodeProperty::Float(32.0),
-                max_width: NodeProperty::Float(300.0),
+                params: crate::node::source::text::TextParams {
+                    content: crate::node::Deferred::value("Morning, update posted.".to_string()),
+                    font_family: crate::node::Deferred::value("Roboto".to_string()),
+                    font_size: crate::node::Deferred::value(32.0),
+                    max_width: crate::node::Deferred::value(300.0),
+                    ..Default::default()
+                },
                 ..Text::default()
             }),
         );

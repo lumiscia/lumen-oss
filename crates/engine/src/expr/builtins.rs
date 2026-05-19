@@ -336,10 +336,30 @@ fn measure_text_node(
         ));
     };
 
-    let content = resolve_string(node_id, "content", &text.content, ctx)?;
-    let font_family = resolve_string(node_id, "font_family", &text.font_family, ctx)?;
-    let font_size = resolve_number(node_id, "font_size", &text.font_size, ctx)? as f32;
-    let max_width = resolve_number(node_id, "max_width", &text.max_width, ctx)? as f32;
+    let content = resolve_string(
+        node_id,
+        "content",
+        &text.params.content.to_node_property(),
+        ctx,
+    )?;
+    let font_family = resolve_string(
+        node_id,
+        "font_family",
+        &text.params.font_family.to_node_property(),
+        ctx,
+    )?;
+    let font_size = resolve_number(
+        node_id,
+        "font_size",
+        &text.params.font_size.to_node_property(),
+        ctx,
+    )? as f32;
+    let max_width = resolve_number(
+        node_id,
+        "max_width",
+        &text.params.max_width.to_node_property(),
+        ctx,
+    )? as f32;
     measure_text_value(&content, &font_family, font_size, max_width)
 }
 

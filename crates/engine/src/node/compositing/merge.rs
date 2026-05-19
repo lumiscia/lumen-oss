@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeProperty, PortRef, compositing::BlendMode};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef, compositing::BlendMode};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
@@ -8,16 +8,35 @@ use crate::gpu::{
 pub(crate) const SHADER: &str = include_str!("merge.wgsl");
 
 /// Composites an overlay raster over a base raster.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedMergeParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct MergeParams {
+    /// Overlay opacity applied before compositing.
+    #[param(kind = "float", min = 0, max = 1, step = 0.05)]
+    pub opacity: Deferred<f64>,
+    /// Blend mode used when combining the overlay with the base raster.
+    #[param(kind = "enum", enum_type = BlendMode)]
+    pub blend_mode: Deferred<i64>,
+}
+
+impl Default for MergeParams {
+    fn default() -> Self {
+        Self {
+            opacity: Deferred::value(1.0),
+            blend_mode: Deferred::value(BlendMode::Normal as i64),
+        }
+    }
+}
+
+/// Composites an overlay raster over a base raster.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "merge", name = "Merge", category = "compositing")]
 pub struct Merge {
     pub id: NodeId,
-    /// Overlay opacity applied before compositing.
-    #[property(kind = "float", min = 0, max = 1, step = 0.05)]
-    pub opacity: NodeProperty,
-    /// Blend mode used when combining the overlay with the base raster.
-    #[property(kind = "enum", enum_type = BlendMode)]
-    pub blend_mode: NodeProperty,
+    #[params]
+    pub params: MergeParams,
+
     #[input()]
     pub base: PortRef,
     #[input()]
@@ -30,8 +49,7 @@ impl Default for Merge {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            opacity: NodeProperty::Float(1.0),
-            blend_mode: NodeProperty::Int(BlendMode::Normal as i64),
+            params: MergeParams::default(),
             base: PortRef::empty(),
             overlay: PortRef::empty(),
             mask: PortRef::empty(),
@@ -42,8 +60,8 @@ impl Default for Merge {
 #[derive(Debug, Clone)]
 struct MergeFrameBinding {
     node_id: NodeId,
-    opacity: NodeProperty,
-    blend_mode: NodeProperty,
+    opacity: Deferred<f64>,
+    blend_mode: Deferred<i64>,
     has_mask: bool,
     buffer: lumen_gpu::BufferId,
 }
@@ -167,8 +185,8 @@ impl GpuCompileNode for Merge {
         );
         ctx.push_frame_binding(MergeFrameBinding {
             node_id: self.id,
-            opacity: self.opacity.clone(),
-            blend_mode: self.blend_mode.clone(),
+            opacity: self.params.opacity.clone(),
+            blend_mode: self.params.blend_mode.clone(),
             has_mask: !self.mask.is_empty(),
             buffer: params,
         });

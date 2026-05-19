@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
@@ -8,22 +8,41 @@ use crate::gpu::{
 pub(crate) const SHADER: &str = include_str!("curves.wgsl");
 
 /// Applies a 1D RGB curve table to a raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
-#[node(kind = "curves", name = "Curves", category = "processing")]
-pub struct Curves {
-    pub id: NodeId,
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedCurvesParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct CurvesParams {
     /// Curve table data source or named curve preset.
-    #[property(
+    #[param(
         kind = "string",
         name = "Curve",
         role = "curve_source",
         multiline,
         recommended_rows = 4
     )]
-    pub curve_source: NodeProperty,
+    pub curve_source: Deferred<String>,
     /// Blend amount for the curve adjustment.
-    #[property(kind = "float", min = 0, max = 1, step = 0.01)]
-    pub strength: NodeProperty,
+    #[param(kind = "float", min = 0, max = 1, step = 0.01)]
+    pub strength: Deferred<f64>,
+}
+
+impl Default for CurvesParams {
+    fn default() -> Self {
+        Self {
+            curve_source: Deferred::value("identity".to_string()),
+            strength: Deferred::value(1.0),
+        }
+    }
+}
+
+/// Applies a 1D RGB curve table to a raster.
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(kind = "curves", name = "Curves", category = "processing")]
+pub struct Curves {
+    pub id: NodeId,
+    #[params]
+    pub params: CurvesParams,
+
     #[input()]
     pub source: PortRef,
 }
@@ -32,8 +51,7 @@ impl Default for Curves {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            curve_source: NodeProperty::String("identity".to_string()),
-            strength: NodeProperty::Float(1.0),
+            params: CurvesParams::default(),
             source: PortRef::empty(),
         }
     }
@@ -125,8 +143,8 @@ impl GpuCompileNode for Curves {
         );
         ctx.push_frame_binding(CurvesFrameBinding {
             node_id: self.id,
-            curve_source: self.curve_source.clone(),
-            strength: self.strength.clone(),
+            curve_source: self.params.curve_source.clone(),
+            strength: self.params.strength.clone(),
             params_buffer: params,
             curve_buffer: curve,
         });
@@ -142,8 +160,8 @@ impl GpuCompileNode for Curves {
 #[derive(Debug, Clone)]
 struct CurvesFrameBinding {
     node_id: NodeId,
-    curve_source: NodeProperty,
-    strength: NodeProperty,
+    curve_source: Deferred<String>,
+    strength: Deferred<f64>,
     params_buffer: lumen_gpu::BufferId,
     curve_buffer: lumen_gpu::BufferId,
 }

@@ -1,5 +1,5 @@
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
@@ -20,66 +20,83 @@ impl ShapeGeometryKind {
 }
 
 /// Produces a vector shape layer for GPU rasterization.
-#[derive(Debug, Clone, lumen_macros::Node)]
-#[node(kind = "shape", name = "Shape", category = "vector")]
-pub struct Shape {
-    pub id: NodeId,
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedShapeParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct ShapeParams {
     /// Geometry primitive to rasterize.
-    #[property(kind = "enum", enum_type = ShapeGeometryKind)]
-    pub geometry_kind: NodeProperty,
+    #[param(kind = "enum", enum_type = ShapeGeometryKind)]
+    pub geometry_kind: Deferred<i64>,
     /// Shape width in pixels.
-    #[property(kind = "int", min = 1, step = 1)]
-    pub width: NodeProperty,
+    #[param(kind = "int", min = 1, step = 1)]
+    pub width: Deferred<i64>,
     /// Shape height in pixels.
-    #[property(kind = "int", min = 1, step = 1)]
-    pub height: NodeProperty,
+    #[param(kind = "int", min = 1, step = 1)]
+    pub height: Deferred<i64>,
     /// Corner radius for rectangle geometry.
-    #[property(kind = "float", min = 0, step = 1)]
-    pub border_radius: NodeProperty,
+    #[param(kind = "float", min = 0, step = 1)]
+    pub border_radius: Deferred<f64>,
     /// Polygon point list formatted as `x,y; x,y`.
-    #[property(
+    #[param(
         kind = "string",
         name = "Polygon points",
         format = "point_list",
         multiline,
         recommended_rows = 3
     )]
-    pub polygon_points: NodeProperty,
+    pub polygon_points: Deferred<String>,
     /// Shape origin in pixels.
-    #[property(kind = "vec2")]
-    pub position: NodeProperty,
+    #[param(kind = "vec2")]
+    pub position: Deferred<(f64, f64)>,
     /// Enables fill rendering.
-    #[property(kind = "bool")]
-    pub fill_enabled: NodeProperty,
+    #[param(kind = "bool")]
+    pub fill_enabled: Deferred<bool>,
     /// Fill color.
-    #[property(kind = "color")]
-    pub fill_color: NodeProperty,
+    #[param(kind = "color")]
+    pub fill_color: Deferred<[u8; 4]>,
     /// Enables stroke rendering.
-    #[property(kind = "bool")]
-    pub stroke_enabled: NodeProperty,
+    #[param(kind = "bool")]
+    pub stroke_enabled: Deferred<bool>,
     /// Stroke color.
-    #[property(kind = "color")]
-    pub stroke_color: NodeProperty,
+    #[param(kind = "color")]
+    pub stroke_color: Deferred<[u8; 4]>,
     /// Stroke width in pixels.
-    #[property(kind = "float", min = 0, step = 0.5)]
-    pub stroke_width: NodeProperty,
+    #[param(kind = "float", min = 0, step = 0.5)]
+    pub stroke_width: Deferred<f64>,
+}
+
+impl Default for ShapeParams {
+    fn default() -> Self {
+        Self {
+            geometry_kind: Deferred::value(ShapeGeometryKind::Rectangle as i64),
+            width: Deferred::value(1),
+            height: Deferred::value(1),
+            border_radius: Deferred::value(0.0),
+            polygon_points: Deferred::value(String::new()),
+            position: Deferred::value((0.0, 0.0)),
+            fill_enabled: Deferred::value(true),
+            fill_color: Deferred::value([255, 255, 255, 255]),
+            stroke_enabled: Deferred::value(false),
+            stroke_color: Deferred::value([0, 0, 0, 255]),
+            stroke_width: Deferred::value(1.0),
+        }
+    }
+}
+
+/// Produces a vector shape layer for GPU rasterization.
+#[derive(Debug, Clone, lumen_macros::Node)]
+#[node(kind = "shape", name = "Shape", category = "vector")]
+pub struct Shape {
+    pub id: NodeId,
+    #[params]
+    pub params: ShapeParams,
 }
 
 impl Default for Shape {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            geometry_kind: NodeProperty::Int(ShapeGeometryKind::Rectangle as i64),
-            width: NodeProperty::Int(1),
-            height: NodeProperty::Int(1),
-            border_radius: NodeProperty::Float(0.0),
-            polygon_points: NodeProperty::String(String::new()),
-            position: NodeProperty::Vec2((0.0, 0.0)),
-            fill_enabled: NodeProperty::Bool(true),
-            fill_color: NodeProperty::Color([255, 255, 255, 255]),
-            stroke_enabled: NodeProperty::Bool(false),
-            stroke_color: NodeProperty::Color([0, 0, 0, 255]),
-            stroke_width: NodeProperty::Float(1.0),
+            params: ShapeParams::default(),
         }
     }
 }
@@ -97,16 +114,16 @@ impl GpuCompileNode for Shape {
 #[derive(Debug, Clone)]
 pub(crate) struct ShapeFrameBinding {
     pub(crate) node_id: NodeId,
-    pub(crate) geometry_kind: NodeProperty,
-    pub(crate) width: NodeProperty,
-    pub(crate) height: NodeProperty,
-    pub(crate) border_radius: NodeProperty,
-    pub(crate) position: NodeProperty,
-    pub(crate) fill_enabled: NodeProperty,
-    pub(crate) fill_color: NodeProperty,
-    pub(crate) stroke_enabled: NodeProperty,
-    pub(crate) stroke_color: NodeProperty,
-    pub(crate) stroke_width: NodeProperty,
+    pub(crate) geometry_kind: Deferred<i64>,
+    pub(crate) width: Deferred<i64>,
+    pub(crate) height: Deferred<i64>,
+    pub(crate) border_radius: Deferred<f64>,
+    pub(crate) position: Deferred<(f64, f64)>,
+    pub(crate) fill_enabled: Deferred<bool>,
+    pub(crate) fill_color: Deferred<[u8; 4]>,
+    pub(crate) stroke_enabled: Deferred<bool>,
+    pub(crate) stroke_color: Deferred<[u8; 4]>,
+    pub(crate) stroke_width: Deferred<f64>,
     pub(crate) buffer: lumen_gpu::BufferId,
 }
 
