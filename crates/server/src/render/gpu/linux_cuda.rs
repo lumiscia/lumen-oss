@@ -57,7 +57,7 @@ pub(super) fn render_project_mp4_cuda(
             Some("lumen-server vk-cuda encode texture"),
             size,
             lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-            lumen_gpu::wgpu::TextureUsages::COPY_DST
+            lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT
                 | lumen_gpu::wgpu::TextureUsages::COPY_SRC
                 | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING,
         )
@@ -207,8 +207,22 @@ pub(super) fn render_project_mp4_cuda(
         timing.prefetch = started.elapsed();
 
         let started = Instant::now();
-        let (raster, _) = renderer
-            .render_frame_submitted(composition, frame, media_store)
+        let submitted = renderer
+            .render_frame_into_external(
+                composition,
+                frame,
+                media_store,
+                lumen_gpu::ExternalTexture::new(
+                    exportable.texture_arc(),
+                    lumen_gpu::TextureDesc {
+                        domain: lumen_gpu::TextureDomain::full_frame(size),
+                        format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                        usage: lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | lumen_gpu::wgpu::TextureUsages::COPY_SRC
+                            | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING,
+                    },
+                ),
+            )
             .map_err(|err| RenderError {
                 code: "render_failed",
                 message: format!("render failed at frame {frame}: {err}"),
@@ -226,18 +240,8 @@ pub(super) fn render_project_mp4_cuda(
         timing.precompile = started.elapsed();
 
         let started = Instant::now();
-        renderer
-            .gpu_renderer()
-            .copy_texture_to_external(raster.texture, exportable.texture())
-            .map_err(|err| RenderError {
-                code: "render_failed",
-                message: format!("failed to copy frame {frame} into exportable texture: {err}"),
-                retryable: true,
-            })?;
-        renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())
+        submitted
+            .wait(&renderer.gpu_renderer().device)
             .map_err(|err| RenderError {
                 code: "render_failed",
                 message: format!("GPU poll failed at frame {frame}: {err}"),
