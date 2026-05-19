@@ -220,7 +220,7 @@ impl<T> From<T> for Deferred<T> {
 #[cfg(feature = "json")]
 impl<'de, T> serde::Deserialize<'de> for Deferred<T>
 where
-    T: serde::Deserialize<'de>,
+    T: DeferredJsonValue,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -234,10 +234,15 @@ where
                 .map(Self::Expr)
                 .map_err(serde::de::Error::custom);
         }
-        T::deserialize(value)
+        T::from_json_value(&value)
             .map(Self::Value)
             .map_err(serde::de::Error::custom)
     }
+}
+
+#[cfg(feature = "json")]
+pub trait DeferredJsonValue: Sized {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String>;
 }
 
 pub trait DeferredValue: Clone {
@@ -251,6 +256,16 @@ pub trait DeferredValue: Clone {
         Self: Sized;
 
     fn to_node_property(value: &Self) -> NodeProperty;
+}
+
+#[cfg(feature = "json")]
+impl DeferredJsonValue for f64 {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        value
+            .as_f64()
+            .or_else(|| value.as_i64().map(|value| value as f64))
+            .ok_or_else(|| "expected float".to_string())
+    }
 }
 
 impl DeferredValue for f64 {
@@ -270,6 +285,16 @@ impl DeferredValue for f64 {
 
     fn to_node_property(value: &Self) -> NodeProperty {
         NodeProperty::Float(*value)
+    }
+}
+
+#[cfg(feature = "json")]
+impl DeferredJsonValue for i64 {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        value
+            .as_i64()
+            .or_else(|| value.as_f64().map(|value| value as i64))
+            .ok_or_else(|| "expected int".to_string())
     }
 }
 
@@ -296,6 +321,16 @@ impl DeferredValue for i64 {
     }
 }
 
+#[cfg(feature = "json")]
+impl DeferredJsonValue for bool {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        value
+            .as_bool()
+            .or_else(|| value.as_i64().map(|value| value != 0))
+            .ok_or_else(|| "expected bool".to_string())
+    }
+}
+
 impl DeferredValue for bool {
     fn eval_deferred(
         deferred: &Deferred<Self>,
@@ -314,6 +349,16 @@ impl DeferredValue for bool {
     }
 }
 
+#[cfg(feature = "json")]
+impl DeferredJsonValue for String {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        value
+            .as_str()
+            .map(ToString::to_string)
+            .ok_or_else(|| "expected string".to_string())
+    }
+}
+
 impl DeferredValue for String {
     fn eval_deferred(
         deferred: &Deferred<Self>,
@@ -329,6 +374,13 @@ impl DeferredValue for String {
 
     fn to_node_property(value: &Self) -> NodeProperty {
         NodeProperty::String(value.clone())
+    }
+}
+
+#[cfg(feature = "json")]
+impl DeferredJsonValue for [u8; 4] {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        crate::json::parse_color(value).ok_or_else(|| "expected color".to_string())
     }
 }
 
@@ -352,6 +404,28 @@ impl DeferredValue for [u8; 4] {
 
     fn to_node_property(value: &Self) -> NodeProperty {
         NodeProperty::Color(*value)
+    }
+}
+
+#[cfg(feature = "json")]
+impl DeferredJsonValue for (f64, f64) {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        let values = value
+            .as_array()
+            .ok_or_else(|| "expected vec2".to_string())?;
+        if values.len() != 2 {
+            return Err(format!(
+                "expected vec2, got array of length {}",
+                values.len()
+            ));
+        }
+        let x = values[0]
+            .as_f64()
+            .ok_or_else(|| "expected vec2 x number".to_string())?;
+        let y = values[1]
+            .as_f64()
+            .ok_or_else(|| "expected vec2 y number".to_string())?;
+        Ok((x, y))
     }
 }
 
