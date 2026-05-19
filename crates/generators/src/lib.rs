@@ -140,8 +140,8 @@ pub struct NodeSpec {
     pub category: NodeCategory,
     pub inputs: Vec<NodeInputPortSpec>,
     pub outputs: Vec<NodeOutputPortSpec>,
-    pub properties: Vec<NodeParamSpec>,
-    pub default_properties: BTreeMap<String, NodeLiteralValue>,
+    pub params: Vec<NodeParamSpec>,
+    pub default_params: BTreeMap<String, NodeLiteralValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -327,7 +327,7 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
 
 fn node_schema_json(spec: &NodeSpec) -> Value {
     let mut properties = serde_json::Map::new();
-    for property in &spec.properties {
+    for property in &spec.params {
         properties.insert(property.id.clone(), property_schema_json(property));
     }
     json!({
@@ -402,7 +402,7 @@ fn numeric_property_schema_json(kind: &str, property: &NodeParamSpec) -> Value {
 }
 
 fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpec> {
-    let properties = schema
+    let params = schema
         .properties
         .iter()
         .map(|property| {
@@ -410,11 +410,11 @@ fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpe
                 .default_properties
                 .iter()
                 .find(|(name, _)| *name == property.id)
-                .map(|(_, value)| literal_from_node_property(value, property.enum_def))
+                .map(|(_, value)| literal_from_property_value(value, property.enum_def))
                 .transpose()?
                 .with_context(|| {
                     format!(
-                        "missing default value for property `{}` on node `{}`",
+                        "missing default value for param `{}` on node `{}`",
                         property.id, schema.kind
                     )
                 })?;
@@ -443,7 +443,7 @@ fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpe
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let default_properties = properties
+    let default_params = params
         .iter()
         .map(|property| (property.id.clone(), property.default_value.clone()))
         .collect();
@@ -466,8 +466,8 @@ fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpe
             name: "output".to_string(),
             kind: NodePortKind::RasterFrame,
         }],
-        properties,
-        default_properties,
+        params,
+        default_params,
     })
 }
 
@@ -514,13 +514,13 @@ fn constraints_from_schema(
     }
 }
 
-fn literal_from_node_property(
+fn literal_from_property_value(
     property: &lumen_engine::node::PropertyValue,
     enum_def: Option<&'static lumen_engine::node::EnumDef>,
 ) -> Result<NodeLiteralValue> {
     if let Some(enum_def) = enum_def {
         let lumen_engine::node::PropertyValue::Int(value) = property else {
-            bail!("enum default property must be stored as an int: {property:?}");
+            bail!("enum default param must be stored as an int: {property:?}");
         };
         let option = enum_def
             .options
@@ -539,7 +539,7 @@ fn literal_from_node_property(
         }
         lumen_engine::node::PropertyValue::Color(value) => Ok(NodeLiteralValue::Color(*value)),
         lumen_engine::node::PropertyValue::Vec2(value) => Ok(NodeLiteralValue::Vec2(*value)),
-        other => bail!("unsupported default property literal: {other:?}"),
+        other => bail!("unsupported default param literal: {other:?}"),
     }
 }
 

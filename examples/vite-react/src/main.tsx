@@ -21,7 +21,7 @@ const composition = new Composition({
 
 const background = composition.addNode({
   type: "solid_color",
-  properties: {
+  params: {
     width: 1280,
     height: 720,
     color: [25, 28, 36, 255],
@@ -30,7 +30,7 @@ const background = composition.addNode({
 
 const title = composition.addNode({
   type: "text",
-  properties: {
+  params: {
     content: "Hello from Lumen React",
     font_family: "Inter",
     font_size: 76,
@@ -42,7 +42,7 @@ const title = composition.addNode({
 
 const merge = composition.addNode({
   type: "merge",
-  properties: {
+  params: {
     opacity: 1,
     blend_mode: "normal",
   },
