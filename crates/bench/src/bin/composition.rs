@@ -12,12 +12,12 @@ use anyhow::{Context, anyhow};
 use lumen_engine::media::{ImageResolver, MediaStore, VideoFrameResolver};
 use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
 
+#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+use lumen_engine::gpu::CudaNvencTargetPool;
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-use lumen_ffmpeg::{
-    CudaDriver, EncodeMode, GpuBackend, GpuVideoInput, import_owned_vulkan_opaque_fd_image,
-};
+use lumen_ffmpeg::{CudaDriver, EncodeMode, GpuBackend, import_owned_vulkan_opaque_fd_image};
 
 #[derive(Debug)]
 struct EmptyMediaStore;
@@ -764,42 +764,24 @@ async fn benchmark_render_vk_cuda_nvenc(
     let media = EmptyMediaStore;
     let mut renderer = renderer(composition).await?;
     let output_size = composition_size(composition);
-    let exportable = create_exportable_texture(renderer.gpu_renderer(), output_size)?;
-    let driver = CudaDriver::load().map_err(|error| anyhow!(error))?;
-    let context = driver
-        .create_primary_context()
-        .map_err(|error| anyhow!(error))?;
-    let imported = import_owned_vulkan_opaque_fd_image(
-        &driver,
-        exportable.memory_fd().try_clone()?,
-        exportable.allocation_size(),
-        output_size.width,
-        output_size.height,
-    )
-    .map_err(|error| anyhow!(error))?;
-    let cuda_frame = driver
-        .allocate_rgba_frame(output_size.width, output_size.height)
-        .map_err(|error| anyhow!(error))?;
+    let target_pool = CudaNvencTargetPool::rgba8(renderer.gpu_renderer(), output_size)?;
+    let target = target_pool.acquire(renderer.gpu_renderer())?;
     let mut config = video_config(composition, VideoCodec::H264);
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
 
     let started = Instant::now();
     for frame in 0..frames {
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, &media)?;
-        renderer
-            .gpu_renderer()
-            .copy_texture_to_external(raster.texture, exportable.texture())?;
-        renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())?;
-        context.set_current().map_err(|error| anyhow!(error))?;
-        driver
-            .copy_image_to_rgba_frame(&imported, &cuda_frame)
-            .map_err(|error| anyhow!(error))?;
-        let frame = cuda_frame.as_video_frame(Some(i64::from(frame)));
-        encoder.write_gpu_frame(&GpuVideoInput::Cuda(&frame))?;
+        let submitted = renderer.render_frame_into_external(
+            composition,
+            frame,
+            &media,
+            target.external_texture(),
+        )?;
+        submitted.wait(&renderer.gpu_renderer().device)?;
+        target.copy_rendered_frame_to_cuda()?;
+        let frame = target.video_frame(Some(i64::from(frame)));
+        encoder.write_gpu_frame(&target.video_input(&frame))?;
     }
     encoder.finish()?;
     Ok(started.elapsed())
