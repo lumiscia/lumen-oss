@@ -12,7 +12,6 @@ export type LumenCanvasProps = {
   bindings: LumenPreviewBindingSource;
   audioSources?: AudioSourceRegistration[];
   compositionJson?: string | null;
-  fps?: number;
   mediaSources?: MediaRegistration[];
   logLevel?: LumenLogLevel;
   class?: string;

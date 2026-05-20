@@ -24,14 +24,12 @@ export type LumenPreviewWorkerCommand =
   | {
       canvas: OffscreenCanvas;
       compositionJson: string | null;
-      fps: number;
       logLevel: LumenLogLevel;
       mediaSources: readonly MediaRegistration[];
       type: "initialize";
     }
   | {
       compositionJson: string | null;
-      fps: number;
       mediaSources: readonly MediaRegistration[];
       type: "set-composition";
     }
@@ -82,8 +80,8 @@ export function createLumenPreviewWorkerHost({
   let canvas: OffscreenCanvas | null = null;
   let compositionJson: string | null = null;
   let controller: LumenPreviewController | null = null;
-  let fps = 30;
-  let frameMs = 1_000 / fps;
+  let fps = 0;
+  let frameMs = 1_000;
   let loadGeneration = 0;
   let mediaSources: readonly MediaRegistration[] = [];
   let playing = false;
@@ -106,7 +104,6 @@ export function createLumenPreviewWorkerHost({
       case "set-composition":
         compositionJson = message.compositionJson;
         mediaSources = message.mediaSources;
-        setFps(message.fps);
         await loadComposition();
         break;
       case "play":
@@ -131,7 +128,6 @@ export function createLumenPreviewWorkerHost({
     canvas = message.canvas;
     compositionJson = message.compositionJson;
     mediaSources = message.mediaSources;
-    setFps(message.fps);
 
     await initPreview({ module_or_path: previewWasmUrl });
     const { LumenPreviewController: PreviewController } =
@@ -155,7 +151,16 @@ export function createLumenPreviewWorkerHost({
 
     if (!compositionJson) {
       activeController.clear();
-      postState({ isLoaded: false });
+      setFps(0);
+      postState({
+        frame: 0,
+        totalFrames: 0,
+        width: 0,
+        height: 0,
+        isLoaded: false,
+        fps: 0,
+        frameDurationMs: 0,
+      });
       return;
     }
 
@@ -164,7 +169,8 @@ export function createLumenPreviewWorkerHost({
       if (generation !== loadGeneration) {
         return;
       }
-      activeController.loadComposition(compositionJson, fps);
+      activeController.loadComposition(compositionJson);
+      setFps(activeController.fps());
       canvas.width = activeController.width() || 1;
       canvas.height = activeController.height() || 1;
       postState({
@@ -173,12 +179,20 @@ export function createLumenPreviewWorkerHost({
         height: activeController.height(),
         isLoaded: true,
         isPlaying: false,
+        fps: activeController.fps(),
+        frameDurationMs: activeController.frameDurationMs(),
         totalFrames: activeController.durationFrames(),
         width: activeController.width(),
       });
       queueRender();
     } catch (error) {
-      postState({ error: describeError(error), isLoaded: false });
+      setFps(0);
+      postState({
+        error: describeError(error),
+        fps: 0,
+        frameDurationMs: 0,
+        isLoaded: false,
+      });
     }
   }
 
@@ -294,7 +308,7 @@ export function createLumenPreviewWorkerHost({
   }
 
   function setFps(nextFps: number): void {
-    fps = nextFps || 30;
+    fps = nextFps || 0;
     frameMs = 1_000 / Math.max(fps, 1);
   }
 

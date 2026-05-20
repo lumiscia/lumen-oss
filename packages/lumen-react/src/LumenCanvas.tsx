@@ -19,7 +19,6 @@ export interface LumenCanvasProps {
   bindings: LumenPreviewBindingSource;
   audioSources?: AudioSourceRegistration[];
   compositionJson?: string | null;
-  fps?: number;
   mediaSources?: MediaRegistration[];
   logLevel?: LumenLogLevel;
   className?: string;
@@ -31,7 +30,6 @@ export function LumenCanvas({
   bindings,
   audioSources = EMPTY_AUDIO_SOURCES,
   compositionJson = null,
-  fps = 30,
   mediaSources = EMPTY_MEDIA_SOURCES,
   logLevel = "off",
   className,
@@ -46,7 +44,6 @@ export function LumenCanvas({
       bindings,
       audioSources,
       compositionJson,
-      fps,
       mediaSources,
       logLevel,
     });
@@ -67,11 +64,10 @@ export function LumenCanvas({
     sessionRef.current?.update({
       audioSources,
       compositionJson,
-      fps,
       mediaSources,
       logLevel,
     });
-  }, [audioSources, compositionJson, fps, mediaSources, logLevel]);
+  }, [audioSources, compositionJson, mediaSources, logLevel]);
 
   const snapshot = preview.getSnapshot();
 

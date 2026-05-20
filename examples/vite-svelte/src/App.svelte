@@ -68,6 +68,7 @@
             {!preview.isLoaded ? "Loading" : preview.isPlaying ? "Pause" : "Play"}
         </button>
         <span>Frame {preview.frame} / {preview.totalFrames}</span>
+        <span>{preview.fps} fps · {preview.frameDurationMs.toFixed(2)} ms</span>
         {#if preview.error}
             <pre>{preview.error}</pre>
         {/if}

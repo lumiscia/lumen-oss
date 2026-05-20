@@ -18,11 +18,14 @@ export interface LumenPreviewSessionInputs {
   bindings: LumenPreviewBindingSource;
   compositionJson: string | null;
   fps: number;
+  frameDurationMs: number;
   logLevel: LumenLogLevel;
   mediaSources: readonly MediaRegistration[];
 }
 
-export interface LumenPreviewSessionOptions extends Partial<LumenPreviewSessionInputs> {
+export interface LumenPreviewSessionOptions extends Partial<
+  Omit<LumenPreviewSessionInputs, "fps" | "frameDurationMs">
+> {
   audio?: LumenAudioEngineOptions;
   preview: LumenPreviewContext;
 }

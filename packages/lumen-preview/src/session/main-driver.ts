@@ -63,7 +63,6 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
 
     if (
       previous.compositionJson !== inputs.compositionJson ||
-      previous.fps !== inputs.fps ||
       previous.mediaSources !== inputs.mediaSources
     ) {
       void this.#loadComposition();
@@ -93,7 +92,15 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
 
     if (!this.#inputs.compositionJson) {
       controller.clear();
-      this.#host.updateState({ isLoaded: false });
+      this.#host.updateState({
+        frame: 0,
+        totalFrames: 0,
+        width: 0,
+        height: 0,
+        isLoaded: false,
+        fps: 0,
+        frameDurationMs: 0,
+      });
       return;
     }
 
@@ -102,20 +109,22 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
       if (generation !== this.#loadGeneration || this.#disposed) {
         return;
       }
-      controller.loadComposition(this.#inputs.compositionJson, this.#inputs.fps);
+      controller.loadComposition(this.#inputs.compositionJson);
       this.#isLoaded = true;
       this.#host.updateState({
         totalFrames: controller.durationFrames(),
         width: controller.width(),
         height: controller.height(),
         isLoaded: true,
+        fps: controller.fps(),
+        frameDurationMs: controller.frameDurationMs(),
         error: null,
       });
       this.#queue.enqueue(() => this.#renderOnce());
     } catch (error) {
       if (generation === this.#loadGeneration) {
         this.#isLoaded = false;
-        this.#host.updateState({ isLoaded: false });
+        this.#host.updateState({ isLoaded: false, fps: 0, frameDurationMs: 0 });
         this.#host.reportError("load composition", error);
       }
     }

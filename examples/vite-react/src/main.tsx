@@ -117,6 +117,9 @@ function App() {
         <span>
           Frame {state.frame} / {state.totalFrames}
         </span>
+        <span>
+          {state.fps} fps · {state.frameDurationMs.toFixed(2)} ms
+        </span>
         <span className="audio-pill">AudioWorklet + WASM tone</span>
         {state.error ? <pre>{state.error}</pre> : null}
       </div>

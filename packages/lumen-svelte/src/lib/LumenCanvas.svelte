@@ -14,7 +14,6 @@
         bindings: LumenPreviewBindingSource;
         audioSources?: AudioSourceRegistration[];
         compositionJson?: string | null;
-        fps?: number;
         mediaSources?: MediaRegistration[];
         logLevel?: LumenLogLevel;
         class?: string;
@@ -26,7 +25,6 @@
         bindings,
         audioSources = [],
         compositionJson = null,
-        fps = 30,
         mediaSources = [],
         logLevel = "off",
         class: className,
@@ -42,7 +40,6 @@
             bindings,
             audioSources,
             compositionJson,
-            fps,
             mediaSources,
             logLevel,
         });
@@ -65,7 +62,6 @@
         session?.update({
             audioSources,
             compositionJson,
-            fps,
             mediaSources,
             logLevel,
         });

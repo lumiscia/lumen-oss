@@ -1,6 +1,7 @@
 import { hasPreviewWorker } from "./bindings.js";
 import { describeError, reportConsoleError } from "./errors.js";
 import { MainPreviewDriver } from "./main-driver.js";
+import { previewTimingFromCompositionJson } from "./timing.js";
 import { WorkerPreviewDriver } from "./worker-driver.js";
 import type {
   LumenPreviewDriverHost,
@@ -78,12 +79,14 @@ export class LumenPreviewSession implements LumenPreviewDriverHost {
 }
 
 function normalizeInputs(options: LumenPreviewSessionOptions): LumenPreviewSessionInputs {
+  const timing = previewTimingFromCompositionJson(options.compositionJson);
   return {
     audioSources: options.audioSources ?? EMPTY_AUDIO_SOURCES,
     audioTimeline: options.audioTimeline ?? null,
     bindings: options.bindings ?? missingBindings(),
     compositionJson: options.compositionJson ?? null,
-    fps: options.fps ?? 30,
+    fps: timing.fps,
+    frameDurationMs: timing.frameDurationMs,
     logLevel: options.logLevel ?? "off",
     mediaSources: options.mediaSources ?? EMPTY_MEDIA_SOURCES,
   };

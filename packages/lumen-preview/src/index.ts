@@ -111,10 +111,12 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   durationFrames(): number;
   frameRequirements(frame: number): string;
   frameRequirementsWindow(frame: number): string;
+  fps(): number;
+  frameDurationMs(): number;
   height(): number;
   hasFont(fontFamily: string): boolean;
   isPlaying(): boolean;
-  loadComposition(compositionJson: string, fps: number): void;
+  loadComposition(compositionJson: string): void;
   pause(): void;
   play(): void;
   removeFontFamily(fontFamily: string): void;
@@ -359,8 +361,8 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       this.requirements.reset();
     }
 
-    loadComposition(compositionJson: string, fps: number): void {
-      super.loadComposition(compositionJson, fps);
+    loadComposition(compositionJson: string): void {
+      super.loadComposition(compositionJson);
       this.requirements.reset();
     }
 

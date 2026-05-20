@@ -153,7 +153,7 @@ impl LumenPreviewController {
     }
 
     #[wasm_bindgen(js_name = "loadComposition")]
-    pub fn load_composition(&self, composition_json: &str, fps: f64) -> Result<(), JsValue> {
+    pub fn load_composition(&self, composition_json: &str) -> Result<(), JsValue> {
         let composition =
             composition_json_to_composition(composition_json).map_err(|e| JsValue::from_str(&e))?;
 
@@ -164,7 +164,7 @@ impl LumenPreviewController {
         state.width = composition.render_settings.width as usize;
         state.height = composition.render_settings.height as usize;
         state.duration_frames = composition.timeline.duration_frames;
-        state.fps = fps.max(1.0);
+        state.fps = f64::from(composition.timeline.fps.max(1.0));
         state.current_frame = 0;
         state.playing = false;
         state.dirty = true;
@@ -205,14 +205,6 @@ impl LumenPreviewController {
             state.clear();
         }
         let _ = self.media.clear();
-    }
-
-    #[wasm_bindgen(js_name = "setFps")]
-    pub fn set_fps(&self, fps: f64) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.fps = fps.max(1.0);
-            state.last_tick_ms = None;
-        }
     }
 
     pub fn play(&self) {
@@ -297,6 +289,21 @@ impl LumenPreviewController {
             .try_borrow()
             .map(|state| state.duration_frames)
             .unwrap_or(0)
+    }
+
+    pub fn fps(&self) -> f64 {
+        self.state
+            .try_borrow()
+            .map(|state| state.fps)
+            .unwrap_or(0.0)
+    }
+
+    #[wasm_bindgen(js_name = "frameDurationMs")]
+    pub fn frame_duration_ms(&self) -> f64 {
+        self.state
+            .try_borrow()
+            .map(|state| state.target_frame_duration_ms())
+            .unwrap_or(0.0)
     }
 
     pub fn snapshot(&self) -> Result<String, JsValue> {

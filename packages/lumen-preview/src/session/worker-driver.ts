@@ -52,7 +52,6 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
         type: "initialize",
         canvas: offscreen,
         compositionJson: this.#inputs.compositionJson,
-        fps: this.#inputs.fps,
         logLevel: this.#inputs.logLevel,
         mediaSources: this.#inputs.mediaSources,
       },
@@ -61,7 +60,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
 
     this.#syncAudio();
     this.#host.attachController(
-      createWorkerControllerProxy(this.#host.preview, () => this.#inputs.fps),
+      createWorkerControllerProxy(this.#host.preview),
       (frame) => this.#post({ type: "seek", frame }),
       {
         pause: () => {
@@ -90,13 +89,11 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
 
     if (
       previous.compositionJson !== inputs.compositionJson ||
-      previous.fps !== inputs.fps ||
       previous.mediaSources !== inputs.mediaSources
     ) {
       this.#post({
         type: "set-composition",
         compositionJson: inputs.compositionJson,
-        fps: inputs.fps,
         mediaSources: inputs.mediaSources,
       });
     }
