@@ -2,7 +2,7 @@ import { Composition } from "@lumiscia/lumen-shared";
 import { LumenCanvas, createLumenPreview, useLumenPreview } from "@lumiscia/lumen-react";
 import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
 import type { AudioSourceRegistration, LumenPreviewStats } from "@lumiscia/lumen-react";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 
@@ -10,7 +10,6 @@ const AUDIO_SOURCE_ID = "demo-tone";
 const AUDIO_TRACK_ID = "music";
 const SAMPLE_RATE = 48_000;
 const CHANNEL_COUNT = 2;
-const FPS_SMOOTHING = 0.18;
 const EMPTY_STATS: LumenPreviewStats = {
   frame: 0,
   timelineFps: 0,
@@ -29,7 +28,7 @@ const composition = new Composition({
     background_color: [18, 20, 26, 255],
   },
   timeline: {
-    fps: 30,
+    fps: 60,
     durationSeconds: 4,
   },
 });
@@ -107,9 +106,6 @@ const compositionJson = JSON.stringify({
 function App() {
   const state = useLumenPreview(preview);
   const [stats, setStats] = useState(EMPTY_STATS);
-  const updateStats = useCallback((nextStats: LumenPreviewStats) => {
-    setStats((previousStats) => stabilizePreviewStats(previousStats, nextStats));
-  }, []);
 
   return (
     <main>
@@ -118,7 +114,7 @@ function App() {
         bindings={lumenBindings}
         compositionJson={compositionJson}
         audioSources={audioSources}
-        onStats={updateStats}
+        onStats={setStats}
       />
       <div className="controls">
         <button
@@ -150,32 +146,6 @@ if (!root) {
 }
 
 createRoot(root).render(<App />);
-
-function stabilizePreviewStats(
-  previousStats: LumenPreviewStats,
-  nextStats: LumenPreviewStats,
-): LumenPreviewStats {
-  if (nextStats.timelineFps <= 0) {
-    return EMPTY_STATS;
-  }
-
-  if (nextStats.actualFps <= 0) {
-    return {
-      ...nextStats,
-      actualFps: previousStats.actualFps,
-    };
-  }
-
-  if (previousStats.actualFps <= 0) {
-    return nextStats;
-  }
-
-  return {
-    ...nextStats,
-    actualFps:
-      previousStats.actualFps + (nextStats.actualFps - previousStats.actualFps) * FPS_SMOOTHING,
-  };
-}
 
 function createDemoWavBlob(durationSeconds: number): Blob {
   const frameCount = Math.floor(durationSeconds * SAMPLE_RATE);

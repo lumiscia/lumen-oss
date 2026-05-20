@@ -221,7 +221,6 @@ export function createLumenPreviewWorkerHost({
     playing = false;
     controller?.pause();
     stopLoop();
-    playbackFps.reset();
     postState({ frame: controller?.currentFrame() ?? 0, isPlaying: false });
     postStats(controller ? statsFromController(controller) : EMPTY_PREVIEW_STATS);
   }

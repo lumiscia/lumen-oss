@@ -16,24 +16,39 @@ export const EMPTY_PREVIEW_STATS: LumenPreviewStats = {
   actualFps: 0,
 };
 
+const FPS_WINDOW_MS = 1_000;
+
 export class PlaybackFpsMeter {
   #fps = 0;
-  #previous: { frame: number; time: number } | null = null;
+  #samples: Array<{ frame: number; time: number }> = [];
 
   sample(frame: number, isPlaying: boolean, now: number = performance.now()): number {
     if (!isPlaying) {
-      this.reset();
-      return 0;
-    }
-
-    const previous = this.#previous;
-    this.#previous = { frame, time: now };
-    if (!previous) {
       return this.#fps;
     }
 
-    const frameDelta = frame - previous.frame;
-    const timeDelta = now - previous.time;
+    const previous = this.#samples.at(-1);
+    if (!previous || frame !== previous.frame) {
+      this.#samples.push({ frame, time: now });
+    }
+
+    const windowStart = now - FPS_WINDOW_MS;
+    while (this.#samples.length > 1) {
+      const oldest = this.#samples[0];
+      if (!oldest || oldest.time >= windowStart) {
+        break;
+      }
+      this.#samples.shift();
+    }
+
+    const first = this.#samples[0];
+    const last = this.#samples.at(-1);
+    if (!first || !last || first === last) {
+      return this.#fps;
+    }
+
+    const frameDelta = last.frame - first.frame;
+    const timeDelta = last.time - first.time;
     if (frameDelta > 0 && timeDelta > 0) {
       this.#fps = (frameDelta * 1_000) / timeDelta;
     }
@@ -43,6 +58,6 @@ export class PlaybackFpsMeter {
 
   reset(): void {
     this.#fps = 0;
-    this.#previous = null;
+    this.#samples = [];
   }
 }
