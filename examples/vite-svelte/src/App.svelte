@@ -4,6 +4,7 @@
     import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
     import type { LumenPreviewStats } from "@lumiscia/lumen-svelte";
 
+    const FPS_SMOOTHING = 0.18;
     const EMPTY_STATS: LumenPreviewStats = {
         frame: 0,
         timelineFps: 0,
@@ -65,10 +66,41 @@
     const lumenBindings = createLumenBindings();
     const compositionJson = JSON.stringify(composition.toJSON());
     let stats = $state(EMPTY_STATS);
+
+    function updateStats(nextStats: LumenPreviewStats): void {
+        stats = stabilizePreviewStats(stats, nextStats);
+    }
+
+    function stabilizePreviewStats(
+        previousStats: LumenPreviewStats,
+        nextStats: LumenPreviewStats,
+    ): LumenPreviewStats {
+        if (nextStats.timelineFps <= 0) {
+            return EMPTY_STATS;
+        }
+
+        if (nextStats.actualFps <= 0) {
+            return {
+                ...nextStats,
+                actualFps: previousStats.actualFps,
+            };
+        }
+
+        if (previousStats.actualFps <= 0) {
+            return nextStats;
+        }
+
+        return {
+            ...nextStats,
+            actualFps:
+                previousStats.actualFps +
+                (nextStats.actualFps - previousStats.actualFps) * FPS_SMOOTHING,
+        };
+    }
 </script>
 
 <main>
-    <LumenCanvas {preview} bindings={lumenBindings} {compositionJson} onStats={(next) => (stats = next)} />
+    <LumenCanvas {preview} bindings={lumenBindings} {compositionJson} onStats={updateStats} />
     <div class="controls">
         <button
             type="button"
