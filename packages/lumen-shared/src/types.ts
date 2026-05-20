@@ -47,11 +47,7 @@ export interface AudioTimelineInput {
   readonly [key: string]: unknown;
 }
 
-export type AudioTrackReference = string | Pick<AudioTrackInput, "id">;
-
-export type AudioTrackOptions = Omit<AudioTrackInput, "id"> & {
-  readonly id?: string;
-};
+export type AudioTrackOptions = AudioTrackInput;
 
 export interface AudioTrackInput {
   readonly id: string;
@@ -74,17 +70,14 @@ export type AudioClipOptions = Omit<
   | "start_ms"
   | "track_id"
 > & {
-  readonly durationFrames?: number;
   readonly durationMs?: number;
   readonly durationSeconds?: number;
   readonly id?: string;
   readonly sourceId: string;
   readonly sourceStartMs?: number;
   readonly sourceStartSeconds?: number;
-  readonly startFrame?: number;
   readonly startMs?: number;
   readonly startSeconds?: number;
-  readonly track: AudioTrackReference;
 };
 
 export interface AudioClipInput {

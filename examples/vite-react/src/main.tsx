@@ -1,4 +1,4 @@
-import { Composition } from "@lumiscia/lumen-shared";
+import { AudioTrack, Composition } from "@lumiscia/lumen-shared";
 import { LumenCanvas, createLumenPreview, useLumenPreview } from "@lumiscia/lumen-react";
 import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
 import type { AudioSourceRegistration, LumenPreviewStats } from "@lumiscia/lumen-react";
@@ -69,11 +69,12 @@ composition.connect(merge, output, { toPort: "source" });
 
 const preview = createLumenPreview();
 const lumenBindings = createLumenBindings();
-const audioTrack = composition.addAudioTrack(AUDIO_TRACK_ID, {
+const audioTrack = new AudioTrack({
+  id: AUDIO_TRACK_ID,
   name: "Generated tone",
   volume: 0.42,
 });
-composition.addAudioClip(audioTrack, {
+audioTrack.addClip({
   durationSeconds: 4,
   id: "intro-chord",
   name: "Generated tone",
@@ -82,6 +83,7 @@ composition.addAudioClip(audioTrack, {
   startMs: 0,
   volume: 1,
 });
+composition.addAudioTrack(audioTrack);
 const audioSources: AudioSourceRegistration[] = [
   {
     id: AUDIO_SOURCE_ID,

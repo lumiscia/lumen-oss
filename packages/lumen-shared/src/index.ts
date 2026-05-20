@@ -1,3 +1,4 @@
+export { AudioTrack } from "./audio.js";
 export { Composition } from "./composition.js";
 export type * from "@lumiscia/lumen-types";
 export type {
@@ -6,7 +7,6 @@ export type {
   AudioClipOptions,
   AudioTrackInput,
   AudioTrackOptions,
-  AudioTrackReference,
   CompositionOptions,
   ConnectOptions,
   NodeInput,

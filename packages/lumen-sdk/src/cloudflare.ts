@@ -27,7 +27,7 @@ export class Lumen extends BaseLumen {
 }
 
 export { mediaReference };
-export { Composition } from "@lumiscia/lumen-shared";
+export { AudioTrack, Composition } from "@lumiscia/lumen-shared";
 export type * from "@lumiscia/lumen-shared";
 export type {
   CompleteMultipartUploadOptions,
