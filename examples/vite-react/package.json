@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@lumiscia/lumen-bindings": "workspace:*",
+    "@lumiscia/lumen-preview": "workspace:*",
     "@lumiscia/lumen-react": "workspace:*",
     "@lumiscia/lumen-shared": "workspace:*",
     "react": "^19.0.0",

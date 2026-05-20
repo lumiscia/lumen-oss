@@ -1,7 +1,7 @@
 <script lang="ts">
     import { Composition } from "@lumiscia/lumen-shared";
     import { LumenCanvas, createLumenPreview } from "@lumiscia/lumen-svelte";
-    import * as lumenBindings from "@lumiscia/lumen-bindings/bundler";
+    import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
 
     const composition = new Composition({
         metadata: {
@@ -53,6 +53,7 @@
     composition.connect(merge, output, { toPort: "source" });
 
     const preview = createLumenPreview();
+    const lumenBindings = createLumenBindings();
     const compositionJson = JSON.stringify(composition.toJSON());
 </script>
 

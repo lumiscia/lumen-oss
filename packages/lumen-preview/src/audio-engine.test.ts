@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  audioTimelineFromCompositionJson,
   LUMEN_AUDIO_CLIP_EDGE_FADE_SAMPLES,
   createLumenAudioSchedule,
   msToLumenAudioSample,
@@ -60,6 +61,47 @@ describe("msToLumenAudioSample", () => {
   it("uses the engine 48 kHz floor conversion", () => {
     expect(msToLumenAudioSample(1_000)).toBe(48_000);
     expect(msToLumenAudioSample(1.5)).toBe(72);
+  });
+});
+
+describe("audioTimelineFromCompositionJson", () => {
+  it("maps the canonical composition audio contract into the preview engine timeline", () => {
+    const timeline = audioTimelineFromCompositionJson(
+      JSON.stringify({
+        timeline: { fps: 24, duration_frames: 120 },
+        audio: {
+          tracks: [{ id: "music", muted: true, volume: 0.75 }],
+          clips: [
+            {
+              id: "intro",
+              source_id: "song",
+              track_id: "music",
+              start_frame: 12,
+              duration_ms: 1_500,
+              source_start_seconds: 0.25,
+              volume: 0.5,
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(timeline).toEqual({
+      durationFrames: 120,
+      fps: 24,
+      tracks: [{ id: "music", muted: true, solo: false, volume: 0.75 }],
+      clips: [
+        {
+          durationMs: 1_500,
+          id: "intro",
+          sourceId: "song",
+          sourceStartMs: 250,
+          startMs: 500,
+          trackId: "music",
+          volume: 0.5,
+        },
+      ],
+    });
   });
 });
 

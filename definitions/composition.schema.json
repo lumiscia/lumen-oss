@@ -1,5 +1,73 @@
 {
   "$defs": {
+    "audioClip": {
+      "additionalProperties": true,
+      "properties": {
+        "duration_frames": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "duration_ms": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "source_start_ms": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_start_seconds": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "start_frame": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start_ms": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track_id": {
+          "type": "string"
+        },
+        "volume": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "source_id", "track_id"],
+      "type": "object"
+    },
+    "audioTrack": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "muted": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "solo": {
+          "type": "boolean"
+        },
+        "volume": {
+          "type": "number"
+        }
+      },
+      "required": ["id"],
+      "type": "object"
+    },
     "color": {
       "oneOf": [
         {
@@ -82,6 +150,25 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
   "properties": {
+    "audio": {
+      "additionalProperties": true,
+      "properties": {
+        "clips": {
+          "items": {
+            "$ref": "#/$defs/audioClip"
+          },
+          "type": "array"
+        },
+        "tracks": {
+          "items": {
+            "$ref": "#/$defs/audioTrack"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["tracks", "clips"],
+      "type": "object"
+    },
     "connections": {
       "items": {
         "$ref": "#/$defs/connection"

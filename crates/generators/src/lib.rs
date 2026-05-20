@@ -267,6 +267,21 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                     },
                     "additionalProperties": true
                 },
+                "audio": {
+                    "type": "object",
+                    "required": ["tracks", "clips"],
+                    "properties": {
+                        "tracks": {
+                            "type": "array",
+                            "items": { "$ref": "#/$defs/audioTrack" }
+                        },
+                        "clips": {
+                            "type": "array",
+                            "items": { "$ref": "#/$defs/audioClip" }
+                        }
+                    },
+                    "additionalProperties": true
+                },
                 "render_settings": {
                     "type": "object",
                     "required": ["width", "height"],
@@ -319,6 +334,36 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                         "to_port": { "type": "string" }
                     },
                     "additionalProperties": false
+                },
+                "audioTrack": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "name": { "type": "string" },
+                        "muted": { "type": "boolean" },
+                        "solo": { "type": "boolean" },
+                        "volume": { "type": "number" }
+                    },
+                    "additionalProperties": true
+                },
+                "audioClip": {
+                    "type": "object",
+                    "required": ["id", "source_id", "track_id"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "source_id": { "type": "string" },
+                        "track_id": { "type": "string" },
+                        "name": { "type": "string" },
+                        "start_ms": { "type": "integer", "minimum": 0 },
+                        "duration_ms": { "type": "integer", "minimum": 1 },
+                        "source_start_ms": { "type": "integer", "minimum": 0 },
+                        "start_frame": { "type": "integer", "minimum": 0 },
+                        "duration_frames": { "type": "integer", "minimum": 1 },
+                        "source_start_seconds": { "type": "number", "minimum": 0 },
+                        "volume": { "type": "number" }
+                    },
+                    "additionalProperties": true
                 }
             }
         }))?

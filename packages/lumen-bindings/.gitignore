@@ -1,4 +1,11 @@
 src/bundler/*
+!src/bundler/index.js
+!src/bundler/index.d.ts
+!src/bundler/preview-worker.js
 src/browser/*
+!src/browser/index.js
+!src/browser/index.d.ts
 src/node/*
+!src/node/index.js
+!src/node/index.d.ts
 src/no-modules/*

@@ -1,0 +1,124 @@
+import { LumenAudioEngine, audioTimelineFromCompositionJson } from "../audio-engine.js";
+import { createWorkerControllerProxy } from "./controller-proxy.js";
+import type {
+  LumenPreviewDriverHost,
+  LumenPreviewRuntimeDriver,
+  LumenPreviewSessionInputs,
+  LumenPreviewSessionOptions,
+  LumenWorkerBindings,
+} from "./types.js";
+
+type WorkerMessage =
+  | { type: "state"; patch: Record<string, unknown> }
+  | { type: "error"; scope: string; message: string };
+
+export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
+  #audio: LumenAudioEngine;
+  #host: LumenPreviewDriverHost;
+  #inputs: LumenPreviewSessionInputs;
+  #offscreenTransferred = false;
+  #worker: Worker | null = null;
+  readonly #bindings: LumenWorkerBindings;
+
+  constructor(
+    host: LumenPreviewDriverHost,
+    inputs: LumenPreviewSessionInputs,
+    options: LumenPreviewSessionOptions,
+    bindings: LumenWorkerBindings,
+  ) {
+    this.#host = host;
+    this.#inputs = inputs;
+    this.#bindings = bindings;
+    this.#audio = new LumenAudioEngine(options.audio);
+  }
+
+  async attach(canvas: HTMLCanvasElement): Promise<void> {
+    if (this.#offscreenTransferred || typeof canvas.transferControlToOffscreen !== "function") {
+      throw new Error("OffscreenCanvas transfer is not available for this canvas");
+    }
+
+    const worker = new Worker(String(this.#bindings.previewWorkerUrl()), { type: "module" });
+    const offscreen = canvas.transferControlToOffscreen();
+    this.#offscreenTransferred = true;
+    this.#worker = worker;
+
+    worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
+      if (event.data.type === "state") {
+        this.#host.updateState(event.data.patch);
+        return;
+      }
+      this.#host.reportError(event.data.scope, event.data.message);
+    };
+
+    worker.postMessage(
+      {
+        type: "initialize",
+        canvas: offscreen,
+        compositionJson: this.#inputs.compositionJson,
+        fps: this.#inputs.fps,
+        logLevel: this.#inputs.logLevel,
+        mediaSources: this.#inputs.mediaSources,
+      },
+      [offscreen],
+    );
+
+    this.#syncAudio();
+    this.#host.attachController(
+      createWorkerControllerProxy(this.#host.preview, () => this.#inputs.fps),
+      (frame) => worker.postMessage({ type: "seek", frame }),
+      {
+        pause: () => {
+          this.#audio.pause();
+          worker.postMessage({ type: "pause" });
+        },
+        play: () => {
+          const frame = this.#host.preview.getSnapshot().frame;
+          const fromMs = (frame / Math.max(this.#inputs.fps, 1)) * 1_000;
+          this.#audio.play(fromMs);
+          worker.postMessage({ type: "play", fromMs });
+        },
+        seek: (frame) => {
+          this.#audio.seekMs((frame / Math.max(this.#inputs.fps, 1)) * 1_000);
+          worker.postMessage({ type: "seek", frame });
+        },
+      },
+    );
+  }
+
+  update(inputs: LumenPreviewSessionInputs): void {
+    const previous = this.#inputs;
+    this.#inputs = inputs;
+    this.#worker?.postMessage({ type: "set-log-level", logLevel: inputs.logLevel });
+    this.#syncAudio();
+
+    if (
+      previous.compositionJson !== inputs.compositionJson ||
+      previous.fps !== inputs.fps ||
+      previous.mediaSources !== inputs.mediaSources
+    ) {
+      this.#worker?.postMessage({
+        type: "set-composition",
+        compositionJson: inputs.compositionJson,
+        fps: inputs.fps,
+        mediaSources: inputs.mediaSources,
+      });
+    }
+  }
+
+  dispose(): void {
+    this.#worker?.postMessage({ type: "dispose" });
+    this.#worker?.terminate();
+    this.#worker = null;
+    this.#audio.dispose();
+    this.#host.detachController();
+  }
+
+  #syncAudio(): void {
+    const timeline =
+      this.#inputs.audioTimeline ?? audioTimelineFromCompositionJson(this.#inputs.compositionJson);
+    this.#audio.setAudioTimeline(timeline);
+    void this.#audio.syncAudioSources(this.#inputs.audioSources).catch((error: unknown) => {
+      this.#host.reportError("sync audio sources", error);
+    });
+  }
+}

@@ -16,7 +16,6 @@ use crate::{
     types::FrameRequirementsPayload,
     utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
 };
-use web_sys::HtmlCanvasElement;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct RenderMetrics {
@@ -323,7 +322,7 @@ impl LumenPreviewController {
         serde_json::to_string(&snapshot).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    pub async fn tick(&self, now_ms: f64, canvas: HtmlCanvasElement) -> Result<bool, JsValue> {
+    pub async fn tick(&self, now_ms: f64, canvas: JsValue) -> Result<bool, JsValue> {
         let should_render = {
             let mut state = self
                 .state
@@ -383,7 +382,7 @@ impl LumenPreviewController {
     }
 
     #[wasm_bindgen(js_name = "renderNow")]
-    pub async fn render_now(&self, canvas: HtmlCanvasElement) -> Result<(), JsValue> {
+    pub async fn render_now(&self, canvas: JsValue) -> Result<(), JsValue> {
         {
             let mut state = self
                 .state
@@ -683,7 +682,7 @@ fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Resu
 async fn render_preview_frame(
     state_cell: &RefCell<PreviewState>,
     media: &WasmMediaStore,
-    canvas: HtmlCanvasElement,
+    canvas: JsValue,
 ) -> Result<(), JsValue> {
     let (mut renderer, frame, generation) = {
         let mut state = state_cell

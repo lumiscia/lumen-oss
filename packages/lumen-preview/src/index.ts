@@ -1,6 +1,9 @@
 import { LumenMediaBridge } from "./media/index.js";
 export {
+  audioTimelineFromCompositionJson,
   createLumenAudioSchedule,
+  defaultAudioWorkerUrl,
+  defaultAudioWorkletUrl,
   lumenAudioSamplesToSeconds,
   LumenAudioEngine,
   msToLumenAudioSample,
@@ -13,10 +16,13 @@ export {
   type LumenPreviewState,
   type LumenPreviewTransport,
 } from "./preview.js";
+export { LumenPreviewSession } from "./session/index.js";
+export type { LumenPreviewSessionInputs, LumenPreviewSessionOptions } from "./session/index.js";
 export type {
   AudioEngineClip,
   AudioEngineTimeline,
   AudioEngineTrack,
+  LumenAudioEngineOptions,
   AudioSourceRegistration,
   ScheduledAudioClip,
 } from "./audio-engine.js";
@@ -89,7 +95,7 @@ export interface LumenRendererBinding {
   renderFrame(
     frame: number,
     media: LumenMediaStoreBinding,
-    canvas: HTMLCanvasElement,
+    canvas: HTMLCanvasElement | OffscreenCanvas,
   ): Promise<void>;
   setLookaheadCount(lookaheadCount: number): void;
   setLogLevel(level: LumenLogLevel): void;
@@ -113,13 +119,13 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   removeFontFamily(fontFamily: string): void;
   removeImageSource(imageId: string): void;
   removeVideoSource(streamId: string): void;
-  renderNow(canvas: HTMLCanvasElement): Promise<void>;
+  renderNow(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
   setFrame(frame: number): void;
   setFont(fontFamily: string, bytes: Uint8Array): void;
   setLookaheadCount(lookaheadCount: number): void;
   setLogLevel(level: LumenLogLevel): void;
   targetFrameForTimeMs(timeMs: number): number;
-  tick(nowMs: number, canvas: HTMLCanvasElement): Promise<boolean>;
+  tick(nowMs: number, canvas: HTMLCanvasElement | OffscreenCanvas): Promise<boolean>;
   width(): number;
 }
 
@@ -127,6 +133,28 @@ export interface LumenPreviewBindings {
   LumenMediaStore: new () => LumenMediaStoreBinding;
   LumenRenderer: new () => LumenRendererBinding;
   LumenPreviewController: new () => LumenPreviewControllerBinding;
+}
+
+export interface LumenBindings {
+  readonly target?: string;
+  previewWorkerUrl?: () => string | URL;
+  preview: () => Promise<LumenPreviewBindings>;
+}
+
+export type LumenPreviewBindingSource = LumenPreviewBindings | LumenBindings;
+
+export async function resolveLumenPreviewBindings(
+  bindings: LumenPreviewBindingSource,
+): Promise<LumenPreviewBindings> {
+  if (isLumenBindings(bindings)) {
+    return bindings.preview();
+  }
+
+  return bindings;
+}
+
+function isLumenBindings(bindings: LumenPreviewBindingSource): bindings is LumenBindings {
+  return typeof (bindings as LumenBindings).preview === "function";
 }
 
 export interface LumenMediaStore extends LumenMediaStoreBinding {
@@ -149,8 +177,16 @@ export interface LumenMediaStore extends LumenMediaStoreBinding {
 }
 
 export interface LumenRenderer extends LumenRendererBinding {
-  renderFrame(frame: number, media: LumenMediaStore, canvas: HTMLCanvasElement): Promise<void>;
-  renderFrameAsync(frame: number, media: LumenMediaStore, canvas: HTMLCanvasElement): Promise<void>;
+  renderFrame(
+    frame: number,
+    media: LumenMediaStore,
+    canvas: HTMLCanvasElement | OffscreenCanvas,
+  ): Promise<void>;
+  renderFrameAsync(
+    frame: number,
+    media: LumenMediaStore,
+    canvas: HTMLCanvasElement | OffscreenCanvas,
+  ): Promise<void>;
 }
 
 export interface LumenPreviewController extends LumenPreviewControllerBinding {
@@ -170,9 +206,9 @@ export interface LumenPreviewController extends LumenPreviewControllerBinding {
   syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void>;
   loadVideoFrame(streamId: string, frame: number): Promise<void>;
   loadFrameRequirements(requirementsJson: string): Promise<void>;
-  renderNowAsync(canvas: HTMLCanvasElement): Promise<void>;
+  renderNowAsync(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
   setLogLevel(level: LumenLogLevel): void;
-  tickAsync(nowMs: number, canvas: HTMLCanvasElement): Promise<boolean>;
+  tickAsync(nowMs: number, canvas: HTMLCanvasElement | OffscreenCanvas): Promise<boolean>;
 }
 
 export interface LumenPreviewRuntime {
@@ -256,7 +292,11 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       this.resetWindowLoads();
     }
 
-    renderFrame(frame: number, media: LumenMediaStore, canvas: HTMLCanvasElement): Promise<void> {
+    renderFrame(
+      frame: number,
+      media: LumenMediaStore,
+      canvas: HTMLCanvasElement | OffscreenCanvas,
+    ): Promise<void> {
       return super.renderFrame(frame, media, canvas);
     }
 
@@ -269,7 +309,7 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
     async renderFrameAsync(
       frame: number,
       media: LumenMediaStore,
-      canvas: HTMLCanvasElement,
+      canvas: HTMLCanvasElement | OffscreenCanvas,
     ): Promise<void> {
       await this.loadFrame(frame, media);
       await super.renderFrame(frame, media, canvas);
@@ -499,7 +539,7 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       super.setLogLevel(level);
     }
 
-    async renderNowAsync(canvas: HTMLCanvasElement): Promise<void> {
+    async renderNowAsync(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
       await this.loadFrame(super.currentFrame());
       try {
         await super.renderNow(canvas);
@@ -513,7 +553,7 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       this.prefetchWindow(super.currentFrame() + 1);
     }
 
-    async tickAsync(nowMs: number, canvas: HTMLCanvasElement): Promise<boolean> {
+    async tickAsync(nowMs: number, canvas: HTMLCanvasElement | OffscreenCanvas): Promise<boolean> {
       const frame = super.currentFrame();
       this.prefetchWindow(frame + 1);
       await this.loadFrame(frame);

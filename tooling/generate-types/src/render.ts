@@ -235,6 +235,31 @@ export function renderCompositionTypes(): string {
 
 export interface LumenComposition {
   readonly $schema?: string;
+  readonly audio?: {
+    readonly clips: readonly {
+      readonly duration_frames?: number;
+      readonly duration_ms?: number;
+      readonly id: string;
+      readonly name?: string;
+      readonly source_id: string;
+      readonly source_start_ms?: number;
+      readonly source_start_seconds?: number;
+      readonly start_frame?: number;
+      readonly start_ms?: number;
+      readonly track_id: string;
+      readonly volume?: number;
+      readonly [key: string]: unknown;
+    }[];
+    readonly tracks: readonly {
+      readonly id: string;
+      readonly muted?: boolean;
+      readonly name?: string;
+      readonly solo?: boolean;
+      readonly volume?: number;
+      readonly [key: string]: unknown;
+    }[];
+    readonly [key: string]: unknown;
+  };
   readonly connections: readonly Connection[];
   readonly lumenSchemaVersion?: string;
   readonly metadata?: {

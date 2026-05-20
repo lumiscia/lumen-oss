@@ -1,6 +1,9 @@
 export { Composition } from "./composition.js";
 export type * from "@lumiscia/lumen-types";
 export type {
+  AudioTimelineInput,
+  AudioClipInput,
+  AudioTrackInput,
   CompositionOptions,
   ConnectOptions,
   NodeInput,
