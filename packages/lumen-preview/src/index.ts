@@ -17,7 +17,12 @@ export {
   type LumenPreviewTransport,
 } from "./preview.js";
 export { LumenPreviewSession } from "./session/index.js";
-export type { LumenPreviewSessionInputs, LumenPreviewSessionOptions } from "./session/index.js";
+export type {
+  LumenPreviewSessionInputs,
+  LumenPreviewSessionOptions,
+  LumenPreviewStats,
+  LumenPreviewStatsCallback,
+} from "./session/index.js";
 export type {
   AudioEngineClip,
   AudioEngineTimeline,
@@ -112,7 +117,7 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   frameRequirements(frame: number): string;
   frameRequirementsWindow(frame: number): string;
   fps(): number;
-  frameDurationMs(): number;
+  targetFrameDurationMs(): number;
   height(): number;
   hasFont(fontFamily: string): boolean;
   isPlaying(): boolean;

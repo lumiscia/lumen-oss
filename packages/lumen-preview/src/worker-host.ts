@@ -7,6 +7,7 @@ import {
 } from "./index.js";
 import type { LumenPreviewPatch } from "./preview.js";
 import { describeError } from "./session/errors.js";
+import { EMPTY_PREVIEW_STATS, PlaybackFpsMeter, type LumenPreviewStats } from "./session/stats.js";
 
 type PreviewWasmInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -58,6 +59,10 @@ export type LumenPreviewWorkerEvent =
       type: "state";
     }
   | {
+      stats: LumenPreviewStats;
+      type: "stats";
+    }
+  | {
       message: string;
       scope: string;
       type: "error";
@@ -82,8 +87,10 @@ export function createLumenPreviewWorkerHost({
   let controller: LumenPreviewController | null = null;
   let fps = 0;
   let frameMs = 1_000;
+  let lastRenderMs = 0;
   let loadGeneration = 0;
   let mediaSources: readonly MediaRegistration[] = [];
+  let playbackFps = new PlaybackFpsMeter();
   let playing = false;
   let queuedRender = false;
   let renderInFlight = false;
@@ -152,15 +159,16 @@ export function createLumenPreviewWorkerHost({
     if (!compositionJson) {
       activeController.clear();
       setFps(0);
+      lastRenderMs = 0;
       postState({
         frame: 0,
         totalFrames: 0,
         width: 0,
         height: 0,
         isLoaded: false,
-        fps: 0,
-        frameDurationMs: 0,
       });
+      playbackFps.reset();
+      postStats(EMPTY_PREVIEW_STATS);
       return;
     }
 
@@ -179,20 +187,20 @@ export function createLumenPreviewWorkerHost({
         height: activeController.height(),
         isLoaded: true,
         isPlaying: false,
-        fps: activeController.fps(),
-        frameDurationMs: activeController.frameDurationMs(),
         totalFrames: activeController.durationFrames(),
         width: activeController.width(),
       });
+      postStats(statsFromController(activeController, 0));
       queueRender();
     } catch (error) {
       setFps(0);
+      lastRenderMs = 0;
+      playbackFps.reset();
       postState({
         error: describeError(error),
-        fps: 0,
-        frameDurationMs: 0,
         isLoaded: false,
       });
+      postStats(EMPTY_PREVIEW_STATS);
     }
   }
 
@@ -202,6 +210,7 @@ export function createLumenPreviewWorkerHost({
       return;
     }
     playing = true;
+    playbackFps.reset();
     activeController.setFrame(activeController.targetFrameForTimeMs(fromMs));
     activeController.play();
     postState({ isPlaying: true });
@@ -212,7 +221,9 @@ export function createLumenPreviewWorkerHost({
     playing = false;
     controller?.pause();
     stopLoop();
+    playbackFps.reset();
     postState({ frame: controller?.currentFrame() ?? 0, isPlaying: false });
+    postStats(controller ? statsFromController(controller) : EMPTY_PREVIEW_STATS);
   }
 
   function seek(frame: number): void {
@@ -285,12 +296,13 @@ export function createLumenPreviewWorkerHost({
       }
 
       if (changed || !playing) {
+        lastRenderMs = performance.now() - startedAt;
         postState({
           error: null,
           frame: activeController.currentFrame(),
           isPlaying: playing,
-          renderMs: performance.now() - startedAt,
         });
+        postStats(statsFromController(activeController));
       }
     } catch (error) {
       reportError("render", error);
@@ -305,6 +317,8 @@ export function createLumenPreviewWorkerHost({
     canvas = null;
     renderInFlight = false;
     queuedRender = false;
+    playbackFps.reset();
+    lastRenderMs = 0;
   }
 
   function setFps(nextFps: number): void {
@@ -314,6 +328,24 @@ export function createLumenPreviewWorkerHost({
 
   function postState(patch: LumenPreviewPatch): void {
     scope.postMessage({ patch, type: "state" });
+  }
+
+  function postStats(stats: LumenPreviewStats): void {
+    scope.postMessage({ stats, type: "stats" });
+  }
+
+  function statsFromController(
+    activeController: LumenPreviewController,
+    renderMs = lastRenderMs,
+  ): LumenPreviewStats {
+    const frame = activeController.currentFrame();
+    return {
+      frame,
+      timelineFps: activeController.fps(),
+      targetFrameDurationMs: activeController.targetFrameDurationMs(),
+      renderMs,
+      actualFps: playbackFps.sample(frame, playing),
+    };
   }
 
   function reportError(scopeName: string, error: unknown): void {

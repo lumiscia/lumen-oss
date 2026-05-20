@@ -298,8 +298,8 @@ impl LumenPreviewController {
             .unwrap_or(0.0)
     }
 
-    #[wasm_bindgen(js_name = "frameDurationMs")]
-    pub fn frame_duration_ms(&self) -> f64 {
+    #[wasm_bindgen(js_name = "targetFrameDurationMs")]
+    pub fn target_frame_duration_ms(&self) -> f64 {
         self.state
             .try_borrow()
             .map(|state| state.target_frame_duration_ms())

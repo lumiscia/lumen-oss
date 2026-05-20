@@ -66,6 +66,10 @@ export class LumenPreviewSession implements LumenPreviewDriverHost {
     this.preview.update({ error: describeError(error) });
   }
 
+  reportStats(stats: Parameters<LumenPreviewDriverHost["reportStats"]>[0]): void {
+    this.#inputs.onStats?.(stats);
+  }
+
   #createDriver(canvas: HTMLCanvasElement): LumenPreviewRuntimeDriver {
     if (
       hasPreviewWorker(this.#inputs.bindings) &&
@@ -86,9 +90,10 @@ function normalizeInputs(options: LumenPreviewSessionOptions): LumenPreviewSessi
     bindings: options.bindings ?? missingBindings(),
     compositionJson: options.compositionJson ?? null,
     fps: timing.fps,
-    frameDurationMs: timing.frameDurationMs,
+    targetFrameDurationMs: timing.targetFrameDurationMs,
     logLevel: options.logLevel ?? "off",
     mediaSources: options.mediaSources ?? EMPTY_MEDIA_SOURCES,
+    onStats: options.onStats ?? null,
   };
 }
 

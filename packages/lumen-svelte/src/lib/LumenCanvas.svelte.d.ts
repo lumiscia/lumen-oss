@@ -3,6 +3,7 @@ import type {
   AudioSourceRegistration,
   LumenLogLevel,
   LumenPreviewBindingSource,
+  LumenPreviewStatsCallback,
   MediaRegistration,
 } from "@lumiscia/lumen-preview";
 import type { LumenPreviewContext } from "./preview.svelte.js";
@@ -14,6 +15,7 @@ export type LumenCanvasProps = {
   compositionJson?: string | null;
   mediaSources?: MediaRegistration[];
   logLevel?: LumenLogLevel;
+  onStats?: LumenPreviewStatsCallback;
   class?: string;
   style?: string;
 };

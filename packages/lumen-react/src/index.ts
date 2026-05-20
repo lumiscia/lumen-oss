@@ -10,5 +10,7 @@ export type {
   LumenBindings,
   LumenLogLevel,
   LumenPreviewBindingSource,
+  LumenPreviewStats,
+  LumenPreviewStatsCallback,
   MediaRegistration,
 } from "@lumiscia/lumen-preview";

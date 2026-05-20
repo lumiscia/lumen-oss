@@ -44,6 +44,10 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
         this.#host.updateState(event.data.patch);
         return;
       }
+      if (event.data.type === "stats") {
+        this.#host.reportStats(event.data.stats);
+        return;
+      }
       this.#host.reportError(event.data.scope, event.data.message);
     };
 
@@ -60,7 +64,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
 
     this.#syncAudio();
     this.#host.attachController(
-      createWorkerControllerProxy(this.#host.preview),
+      createWorkerControllerProxy(this.#host.preview, () => this.#inputs),
       (frame) => this.#post({ type: "seek", frame }),
       {
         pause: () => {

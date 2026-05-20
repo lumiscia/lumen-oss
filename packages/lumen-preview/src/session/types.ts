@@ -11,6 +11,7 @@ import type {
 } from "../index.js";
 import type { MediaRegistration } from "../media/index.js";
 import type { LumenPreviewContext, LumenPreviewPatch } from "../preview.js";
+import type { LumenPreviewStats, LumenPreviewStatsCallback } from "./stats.js";
 
 export interface LumenPreviewSessionInputs {
   audioSources: readonly AudioSourceRegistration[];
@@ -18,13 +19,14 @@ export interface LumenPreviewSessionInputs {
   bindings: LumenPreviewBindingSource;
   compositionJson: string | null;
   fps: number;
-  frameDurationMs: number;
+  targetFrameDurationMs: number;
   logLevel: LumenLogLevel;
   mediaSources: readonly MediaRegistration[];
+  onStats: LumenPreviewStatsCallback | null;
 }
 
 export interface LumenPreviewSessionOptions extends Partial<
-  Omit<LumenPreviewSessionInputs, "fps" | "frameDurationMs">
+  Omit<LumenPreviewSessionInputs, "fps" | "targetFrameDurationMs">
 > {
   audio?: LumenAudioEngineOptions;
   preview: LumenPreviewContext;
@@ -49,6 +51,7 @@ export interface LumenPreviewDriverHost {
   ): void;
   detachController(): void;
   reportError(scope: string, error: unknown): void;
+  reportStats(stats: LumenPreviewStats): void;
   updateState(patch: LumenPreviewPatch): void;
 }
 

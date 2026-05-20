@@ -6,6 +6,7 @@ import type {
   AudioSourceRegistration,
   LumenLogLevel,
   LumenPreviewBindingSource,
+  LumenPreviewStatsCallback,
   MediaRegistration,
 } from "@lumiscia/lumen-preview";
 
@@ -21,6 +22,7 @@ export interface LumenCanvasProps {
   compositionJson?: string | null;
   mediaSources?: MediaRegistration[];
   logLevel?: LumenLogLevel;
+  onStats?: LumenPreviewStatsCallback;
   className?: string;
   style?: CSSProperties;
 }
@@ -32,6 +34,7 @@ export function LumenCanvas({
   compositionJson = null,
   mediaSources = EMPTY_MEDIA_SOURCES,
   logLevel = "off",
+  onStats,
   className,
   style,
 }: LumenCanvasProps) {
@@ -46,6 +49,7 @@ export function LumenCanvas({
       compositionJson,
       mediaSources,
       logLevel,
+      onStats: onStats ?? null,
     });
     sessionRef.current = session;
     void session.attach(canvasRef.current).catch((error: unknown) => {
@@ -66,8 +70,9 @@ export function LumenCanvas({
       compositionJson,
       mediaSources,
       logLevel,
+      onStats: onStats ?? null,
     });
-  }, [audioSources, compositionJson, mediaSources, logLevel]);
+  }, [audioSources, compositionJson, mediaSources, logLevel, onStats]);
 
   const snapshot = preview.getSnapshot();
 

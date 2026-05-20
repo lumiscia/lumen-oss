@@ -2,6 +2,15 @@
     import { Composition } from "@lumiscia/lumen-shared";
     import { LumenCanvas, createLumenPreview } from "@lumiscia/lumen-svelte";
     import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
+    import type { LumenPreviewStats } from "@lumiscia/lumen-svelte";
+
+    const EMPTY_STATS: LumenPreviewStats = {
+        frame: 0,
+        timelineFps: 0,
+        targetFrameDurationMs: 0,
+        renderMs: 0,
+        actualFps: 0,
+    };
 
     const composition = new Composition({
         metadata: {
@@ -55,10 +64,11 @@
     const preview = createLumenPreview();
     const lumenBindings = createLumenBindings();
     const compositionJson = JSON.stringify(composition.toJSON());
+    let stats = $state(EMPTY_STATS);
 </script>
 
 <main>
-    <LumenCanvas {preview} bindings={lumenBindings} {compositionJson} />
+    <LumenCanvas {preview} bindings={lumenBindings} {compositionJson} onStats={(next) => (stats = next)} />
     <div class="controls">
         <button
             type="button"
@@ -68,7 +78,8 @@
             {!preview.isLoaded ? "Loading" : preview.isPlaying ? "Pause" : "Play"}
         </button>
         <span>Frame {preview.frame} / {preview.totalFrames}</span>
-        <span>{preview.fps} fps · {preview.frameDurationMs.toFixed(2)} ms</span>
+        <span>Timeline {stats.timelineFps} fps · target {stats.targetFrameDurationMs.toFixed(2)} ms</span>
+        <span>Render {stats.renderMs.toFixed(2)} ms · actual {stats.actualFps.toFixed(1)} fps</span>
         {#if preview.error}
             <pre>{preview.error}</pre>
         {/if}

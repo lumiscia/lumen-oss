@@ -5,6 +5,7 @@
         AudioSourceRegistration,
         LumenLogLevel,
         LumenPreviewBindingSource,
+        LumenPreviewStatsCallback,
         MediaRegistration,
     } from "@lumiscia/lumen-preview";
     import type { LumenPreviewContext } from "./preview.svelte.js";
@@ -16,6 +17,7 @@
         compositionJson?: string | null;
         mediaSources?: MediaRegistration[];
         logLevel?: LumenLogLevel;
+        onStats?: LumenPreviewStatsCallback;
         class?: string;
         style?: string;
     };
@@ -27,6 +29,7 @@
         compositionJson = null,
         mediaSources = [],
         logLevel = "off",
+        onStats,
         class: className,
         style: styleName,
     }: Props = $props();
@@ -42,6 +45,7 @@
             compositionJson,
             mediaSources,
             logLevel,
+            onStats: onStats ?? null,
         });
         session = nextSession;
         void nextSession.attach(canvas).catch((error: unknown) => {
@@ -64,6 +68,7 @@
             compositionJson,
             mediaSources,
             logLevel,
+            onStats: onStats ?? null,
         });
     });
 </script>

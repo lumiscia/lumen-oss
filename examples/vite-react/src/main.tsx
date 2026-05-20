@@ -1,7 +1,8 @@
 import { Composition } from "@lumiscia/lumen-shared";
 import { LumenCanvas, createLumenPreview, useLumenPreview } from "@lumiscia/lumen-react";
 import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
-import type { AudioSourceRegistration } from "@lumiscia/lumen-react";
+import type { AudioSourceRegistration, LumenPreviewStats } from "@lumiscia/lumen-react";
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 
@@ -9,6 +10,13 @@ const AUDIO_SOURCE_ID = "demo-tone";
 const AUDIO_TRACK_ID = "music";
 const SAMPLE_RATE = 48_000;
 const CHANNEL_COUNT = 2;
+const EMPTY_STATS: LumenPreviewStats = {
+  frame: 0,
+  timelineFps: 0,
+  targetFrameDurationMs: 0,
+  renderMs: 0,
+  actualFps: 0,
+};
 
 const composition = new Composition({
   metadata: {
@@ -97,6 +105,7 @@ const compositionJson = JSON.stringify({
 
 function App() {
   const state = useLumenPreview(preview);
+  const [stats, setStats] = useState(EMPTY_STATS);
 
   return (
     <main>
@@ -105,6 +114,7 @@ function App() {
         bindings={lumenBindings}
         compositionJson={compositionJson}
         audioSources={audioSources}
+        onStats={setStats}
       />
       <div className="controls">
         <button
@@ -118,7 +128,10 @@ function App() {
           Frame {state.frame} / {state.totalFrames}
         </span>
         <span>
-          {state.fps} fps · {state.frameDurationMs.toFixed(2)} ms
+          Timeline {stats.timelineFps} fps · target {stats.targetFrameDurationMs.toFixed(2)} ms
+        </span>
+        <span>
+          Render {stats.renderMs.toFixed(2)} ms · actual {stats.actualFps.toFixed(1)} fps
         </span>
         <span className="audio-pill">AudioWorklet + WASM tone</span>
         {state.error ? <pre>{state.error}</pre> : null}

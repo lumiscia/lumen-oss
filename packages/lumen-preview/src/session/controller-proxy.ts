@@ -1,7 +1,10 @@
 import type { LumenPreviewController, VideoFrameMetadata } from "../index.js";
 import type { LumenPreviewContext } from "../preview.js";
 
-export function createWorkerControllerProxy(preview: LumenPreviewContext): LumenPreviewController {
+export function createWorkerControllerProxy(
+  preview: LumenPreviewContext,
+  timing: () => { fps: number; targetFrameDurationMs: number },
+): LumenPreviewController {
   return {
     clear: () => {},
     clearMedia: () => {},
@@ -11,8 +14,8 @@ export function createWorkerControllerProxy(preview: LumenPreviewContext): Lumen
     durationFrames: () => preview.getSnapshot().totalFrames,
     frameRequirements: () => "[]",
     frameRequirementsWindow: () => "[]",
-    fps: () => preview.getSnapshot().fps,
-    frameDurationMs: () => preview.getSnapshot().frameDurationMs,
+    fps: () => timing().fps,
+    targetFrameDurationMs: () => timing().targetFrameDurationMs,
     hasFont: () => false,
     hasImage: () => false,
     hasVideoFrame: () => false,
@@ -41,8 +44,7 @@ export function createWorkerControllerProxy(preview: LumenPreviewContext): Lumen
     setVideoFrame: () => {},
     setVideoMetadata: () => {},
     syncMediaSources: async () => {},
-    targetFrameForTimeMs: (timeMs) =>
-      Math.floor((timeMs / 1_000) * Math.max(preview.getSnapshot().fps, 1)),
+    targetFrameForTimeMs: (timeMs) => Math.floor((timeMs / 1_000) * Math.max(timing().fps, 1)),
     tick: async () => false,
     tickAsync: async () => false,
     width: () => preview.getSnapshot().width,

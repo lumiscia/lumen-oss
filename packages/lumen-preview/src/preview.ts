@@ -6,9 +6,6 @@ export interface LumenPreviewState {
   width: number;
   height: number;
   isLoaded: boolean;
-  fps: number;
-  frameDurationMs: number;
-  renderMs: number;
   isPlaying: boolean;
   error: string | null;
   controller: LumenPreviewController | null;
@@ -29,9 +26,6 @@ const INITIAL_STATE: LumenPreviewState = {
   width: 0,
   height: 0,
   isLoaded: false,
-  fps: 0,
-  frameDurationMs: 0,
-  renderMs: 0,
   isPlaying: false,
   error: null,
   controller: null,

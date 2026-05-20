@@ -2,6 +2,7 @@ import { LumenAudioEngine, audioTimelineFromCompositionJson } from "../audio-eng
 import { createLumenPreviewRuntime, resolveLumenPreviewBindings } from "../index.js";
 import type { LumenPreviewController } from "../index.js";
 import { LumenRenderQueue } from "./render-queue.js";
+import { EMPTY_PREVIEW_STATS, PlaybackFpsMeter } from "./stats.js";
 import type {
   LumenPreviewDriverHost,
   LumenPreviewRuntimeDriver,
@@ -16,7 +17,9 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
   #inputs: LumenPreviewSessionInputs;
   #isLoaded = false;
   #host: LumenPreviewDriverHost;
+  #lastRenderMs = 0;
   #loadGeneration = 0;
+  #playbackFps = new PlaybackFpsMeter();
   #queue = new LumenRenderQueue();
   #rafId = 0;
   #disposed = false;
@@ -45,8 +48,17 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
     this.#syncAudio();
 
     this.#host.attachController(controller, (frame) => this.#seek(frame), {
-      pause: () => this.#audio.pause(),
-      play: () => this.#audio.play(this.#frameToMs(controller.currentFrame())),
+      pause: () => {
+        this.#audio.pause();
+        this.#reportStats({
+          frame: controller.currentFrame(),
+          isPlaying: false,
+        });
+      },
+      play: () => {
+        this.#playbackFps.reset();
+        this.#audio.play(this.#frameToMs(controller.currentFrame()));
+      },
       seek: (frame) => this.#audio.seekMs(this.#frameToMs(frame)),
     });
 
@@ -98,9 +110,10 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
         width: 0,
         height: 0,
         isLoaded: false,
-        fps: 0,
-        frameDurationMs: 0,
       });
+      this.#playbackFps.reset();
+      this.#lastRenderMs = 0;
+      this.#host.reportStats(EMPTY_PREVIEW_STATS);
       return;
     }
 
@@ -116,15 +129,17 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
         width: controller.width(),
         height: controller.height(),
         isLoaded: true,
-        fps: controller.fps(),
-        frameDurationMs: controller.frameDurationMs(),
         error: null,
       });
+      this.#reportStats({ frame: 0, renderMs: 0, isPlaying: false });
       this.#queue.enqueue(() => this.#renderOnce());
     } catch (error) {
       if (generation === this.#loadGeneration) {
         this.#isLoaded = false;
-        this.#host.updateState({ isLoaded: false, fps: 0, frameDurationMs: 0 });
+        this.#playbackFps.reset();
+        this.#lastRenderMs = 0;
+        this.#host.updateState({ isLoaded: false });
+        this.#host.reportStats(EMPTY_PREVIEW_STATS);
         this.#host.reportError("load composition", error);
       }
     }
@@ -167,12 +182,14 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
         controller.setFrame(targetFrame);
         const startedAt = performance.now();
         await controller.renderNowAsync(canvas);
+        const renderMs = performance.now() - startedAt;
+        const isPlaying = controller.isPlaying();
         this.#host.updateState({
           frame: targetFrame,
-          renderMs: performance.now() - startedAt,
-          isPlaying: controller.isPlaying(),
+          isPlaying,
           error: null,
         });
+        this.#reportStats({ frame: targetFrame, renderMs, isPlaying });
       } catch (error) {
         this.#host.reportError("audio-clock animation tick", error);
       }
@@ -183,12 +200,15 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
       const startedAt = performance.now();
       const changed = await controller.tickAsync(now, canvas);
       if (changed) {
+        const frame = controller.currentFrame();
+        const renderMs = performance.now() - startedAt;
+        const isPlaying = controller.isPlaying();
         this.#host.updateState({
-          frame: controller.currentFrame(),
-          renderMs: performance.now() - startedAt,
-          isPlaying: controller.isPlaying(),
+          frame,
+          isPlaying,
           error: null,
         });
+        this.#reportStats({ frame, renderMs, isPlaying });
       }
     } catch (error) {
       this.#host.reportError("animation tick", error);
@@ -205,12 +225,15 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
     try {
       const startedAt = performance.now();
       await controller.renderNowAsync(canvas);
+      const frame = controller.currentFrame();
+      const renderMs = performance.now() - startedAt;
+      const isPlaying = controller.isPlaying();
       this.#host.updateState({
-        frame: controller.currentFrame(),
-        renderMs: performance.now() - startedAt,
-        isPlaying: controller.isPlaying(),
+        frame,
+        isPlaying,
         error: null,
       });
+      this.#reportStats({ frame, renderMs, isPlaying });
     } catch (error) {
       this.#host.reportError("render once", error);
     }
@@ -243,6 +266,36 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
 
   #frameToMs(frame: number): number {
     return (frame / Math.max(this.#inputs.fps, 1)) * 1_000;
+  }
+
+  #reportStats({
+    frame,
+    renderMs,
+    isPlaying,
+  }: {
+    frame: number;
+    renderMs?: number;
+    isPlaying: boolean;
+  }): void {
+    const controller = this.#controller;
+    if (!controller) {
+      this.#playbackFps.reset();
+      this.#lastRenderMs = 0;
+      this.#host.reportStats(EMPTY_PREVIEW_STATS);
+      return;
+    }
+
+    if (renderMs !== undefined) {
+      this.#lastRenderMs = renderMs;
+    }
+
+    this.#host.reportStats({
+      frame,
+      timelineFps: controller.fps(),
+      targetFrameDurationMs: controller.targetFrameDurationMs(),
+      renderMs: this.#lastRenderMs,
+      actualFps: this.#playbackFps.sample(frame, isPlaying),
+    });
   }
 
   #hostIsPlaying(): boolean {

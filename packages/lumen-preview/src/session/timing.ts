@@ -3,7 +3,7 @@ const MS_PER_SECOND = 1_000;
 
 export interface LumenPreviewTiming {
   fps: number;
-  frameDurationMs: number;
+  targetFrameDurationMs: number;
 }
 
 export function previewTimingFromCompositionJson(
@@ -12,7 +12,7 @@ export function previewTimingFromCompositionJson(
   const fps = readCompositionFps(compositionJson) ?? DEFAULT_PREVIEW_FPS;
   return {
     fps,
-    frameDurationMs: MS_PER_SECOND / fps,
+    targetFrameDurationMs: MS_PER_SECOND / fps,
   };
 }
 
