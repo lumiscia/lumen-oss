@@ -3,7 +3,10 @@ export type * from "@lumiscia/lumen-types";
 export type {
   AudioTimelineInput,
   AudioClipInput,
+  AudioClipOptions,
   AudioTrackInput,
+  AudioTrackOptions,
+  AudioTrackReference,
   CompositionOptions,
   ConnectOptions,
   NodeInput,

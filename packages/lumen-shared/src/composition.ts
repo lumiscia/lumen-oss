@@ -7,9 +7,12 @@ import type {
 } from "@lumiscia/lumen-types";
 
 import type {
+  AudioClipOptions,
   AudioClipInput,
+  AudioTrackOptions,
   AudioTimelineInput,
   AudioTrackInput,
+  AudioTrackReference,
   CompositionOptions,
   ConnectOptions,
   NodeInput,
@@ -29,6 +32,21 @@ const defaultTimeline = {
   duration_frames: 1,
   fps: 24,
 } satisfies LumenComposition["timeline"];
+
+type MutableAudioClipInput = {
+  -readonly [K in keyof AudioClipInput]: AudioClipInput[K];
+} & {
+  durationFrames?: number;
+  durationMs?: number;
+  durationSeconds?: number;
+  sourceId?: string;
+  sourceStartMs?: number;
+  sourceStartSeconds?: number;
+  startFrame?: number;
+  startMs?: number;
+  startSeconds?: number;
+  track?: AudioTrackReference;
+};
 
 export class Composition {
   readonly #connections: Connection[] = [];
@@ -123,22 +141,34 @@ export class Composition {
     return this;
   }
 
-  addAudioTrack(track: AudioTrackInput): this {
+  addAudioTrack(id: string, options?: Omit<AudioTrackOptions, "id">): AudioTrackInput;
+  addAudioTrack(track?: AudioTrackOptions): AudioTrackInput;
+  addAudioTrack(
+    input: AudioTrackOptions | string = {},
+    options: Omit<AudioTrackOptions, "id"> = {},
+  ): AudioTrackInput {
     const audio = this.#audio ?? emptyAudioTimeline();
+    const track = audioTrack(input, options, audio.tracks.length);
     this.#audio = {
       ...audio,
       tracks: [...audio.tracks, track],
     };
-    return this;
+    return track;
   }
 
-  addAudioClip(clip: AudioClipInput): this {
+  addAudioClip(track: AudioTrackReference, clip: Omit<AudioClipOptions, "track">): AudioClipInput;
+  addAudioClip(clip: AudioClipInput | AudioClipOptions): AudioClipInput;
+  addAudioClip(
+    input: AudioClipInput | AudioClipOptions | AudioTrackReference,
+    options?: Omit<AudioClipOptions, "track">,
+  ): AudioClipInput {
     const audio = this.#audio ?? emptyAudioTimeline();
+    const clip = audioClip(input, options, audio.clips.length, this.#timeline.fps);
     this.#audio = {
       ...audio,
       clips: [...audio.clips, clip],
     };
-    return this;
+    return clip;
   }
 
   toJSON(): LumenComposition {
@@ -193,6 +223,121 @@ function audioTimeline(input: AudioTimelineInput | undefined): AudioTimelineInpu
     clips: [...input.clips],
     tracks: [...input.tracks],
   };
+}
+
+function audioTrack(
+  input: AudioTrackOptions | string,
+  options: Omit<AudioTrackOptions, "id">,
+  index: number,
+): AudioTrackInput {
+  if (typeof input === "string") {
+    return {
+      ...options,
+      id: input,
+    };
+  }
+
+  return {
+    ...input,
+    id: input.id ?? `audio-track-${index + 1}`,
+  };
+}
+
+function audioClip(
+  input: AudioClipInput | AudioClipOptions | AudioTrackReference,
+  options: Omit<AudioClipOptions, "track"> | undefined,
+  index: number,
+  fps: number,
+): AudioClipInput {
+  if (options !== undefined) {
+    return audioClipFromOptions(
+      { ...options, track: input as AudioTrackReference } as AudioClipOptions,
+      index,
+      fps,
+    );
+  }
+
+  if (isAudioClipOptions(input)) {
+    return audioClipFromOptions(input, index, fps);
+  }
+
+  if (isAudioClipInput(input)) {
+    return input;
+  }
+
+  throw new Error("addAudioClip requires a clip input or a track reference with clip options");
+}
+
+function audioClipFromOptions(input: AudioClipOptions, index: number, fps: number): AudioClipInput {
+  const clip: MutableAudioClipInput = {
+    ...input,
+    id: input.id ?? `audio-clip-${index + 1}`,
+    source_id: input.sourceId,
+    track_id: audioTrackId(input.track),
+  };
+
+  setAudioTime(clip, "start_ms", input.startMs, input.startSeconds);
+  setAudioTime(clip, "duration_ms", input.durationMs, input.durationSeconds);
+  setAudioTime(clip, "source_start_ms", input.sourceStartMs, input.sourceStartSeconds);
+
+  if (clip.start_ms === undefined && input.startFrame !== undefined) {
+    clip.start_ms = framesToMs(input.startFrame, fps);
+  }
+  if (clip.duration_ms === undefined && input.durationFrames !== undefined) {
+    clip.duration_ms = framesToMs(input.durationFrames, fps);
+  }
+
+  deleteExtraAudioClipInputFields(clip);
+  return clip;
+}
+
+function setAudioTime(
+  clip: MutableAudioClipInput,
+  key: "duration_ms" | "source_start_ms" | "start_ms",
+  milliseconds: number | undefined,
+  seconds: number | undefined,
+): void {
+  if (milliseconds !== undefined) {
+    clip[key] = milliseconds;
+    return;
+  }
+
+  if (seconds !== undefined) {
+    clip[key] = Math.round(seconds * 1_000);
+  }
+}
+
+function deleteExtraAudioClipInputFields(clip: MutableAudioClipInput): void {
+  delete clip.durationFrames;
+  delete clip.durationMs;
+  delete clip.durationSeconds;
+  delete clip.sourceId;
+  delete clip.sourceStartMs;
+  delete clip.sourceStartSeconds;
+  delete clip.startFrame;
+  delete clip.startMs;
+  delete clip.startSeconds;
+  delete clip.track;
+}
+
+function isAudioClipOptions(
+  input: AudioClipInput | AudioClipOptions | AudioTrackReference,
+): input is AudioClipOptions {
+  return typeof input !== "string" && "sourceId" in input && "track" in input;
+}
+
+function isAudioClipInput(
+  input: AudioClipInput | AudioClipOptions | AudioTrackReference,
+): input is AudioClipInput {
+  return typeof input !== "string" && "source_id" in input && "track_id" in input;
+}
+
+function audioTrackId(track: AudioTrackReference): string {
+  return typeof track === "string" ? track : track.id;
+}
+
+function framesToMs(frames: number, fps: number): number {
+  return Math.round((frames / fps) * 1_000);
 }
 
 function emptyAudioTimeline(): AudioTimelineInput {

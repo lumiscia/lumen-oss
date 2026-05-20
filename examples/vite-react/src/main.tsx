@@ -69,6 +69,19 @@ composition.connect(merge, output, { toPort: "source" });
 
 const preview = createLumenPreview();
 const lumenBindings = createLumenBindings();
+const audioTrack = composition.addAudioTrack(AUDIO_TRACK_ID, {
+  name: "Generated tone",
+  volume: 0.42,
+});
+composition.addAudioClip(audioTrack, {
+  durationSeconds: 4,
+  id: "intro-chord",
+  name: "Generated tone",
+  sourceId: AUDIO_SOURCE_ID,
+  sourceStartMs: 0,
+  startMs: 0,
+  volume: 1,
+});
 const audioSources: AudioSourceRegistration[] = [
   {
     id: AUDIO_SOURCE_ID,
@@ -76,32 +89,7 @@ const audioSources: AudioSourceRegistration[] = [
     source: createDemoWavBlob(4),
   },
 ];
-const compositionJson = JSON.stringify({
-  ...composition.toJSON(),
-  audio: {
-    tracks: [
-      {
-        id: AUDIO_TRACK_ID,
-        name: "Generated tone",
-        muted: false,
-        solo: false,
-        volume: 0.42,
-      },
-    ],
-    clips: [
-      {
-        id: "intro-chord",
-        source_id: AUDIO_SOURCE_ID,
-        track_id: AUDIO_TRACK_ID,
-        name: "Generated tone",
-        start_ms: 0,
-        duration_ms: 4_000,
-        source_start_ms: 0,
-        volume: 1,
-      },
-    ],
-  },
-});
+const compositionJson = JSON.stringify(composition.toJSON());
 
 function App() {
   const state = useLumenPreview(preview);
