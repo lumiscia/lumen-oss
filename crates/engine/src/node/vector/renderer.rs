@@ -1,13 +1,16 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    gpu::{CompiledOutput, FrameBinding, RasterHandle, RasterMetadata, compiler},
+    gpu::{CompiledOutput, RasterHandle, RasterMetadata, compiler},
     node::{NodeId, PortRef},
 };
 
-use crate::node::source::text::Text;
+use crate::node::source::text::{Text, TextFrameBinding};
 
-use super::{path::Path, shape::Shape};
+use super::{
+    path::{Path, PathFrameBinding},
+    shape::{Shape, ShapeFrameBinding},
+};
 
 pub(crate) const SHAPE_SHADER: &str = include_str!("shape_renderer.wgsl");
 pub(crate) const PATH_SHADER: &str = include_str!("path_renderer.wgsl");
@@ -39,18 +42,18 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             SHAPE_SHADER,
             std::mem::size_of::<ShapeParams>() as u64,
         )?;
-        self.ctx.push_frame_binding(FrameBinding::Shape {
+        self.ctx.push_frame_binding(ShapeFrameBinding {
             node_id: shape.id,
-            geometry_kind: shape.geometry_kind.clone(),
-            width: shape.width.clone(),
-            height: shape.height.clone(),
-            border_radius: shape.border_radius.clone(),
-            position: shape.position.clone(),
-            fill_enabled: shape.fill_enabled.clone(),
-            fill_color: shape.fill_color.clone(),
-            stroke_enabled: shape.stroke_enabled.clone(),
-            stroke_color: shape.stroke_color.clone(),
-            stroke_width: shape.stroke_width.clone(),
+            geometry_kind: shape.params.geometry_kind.clone(),
+            width: shape.params.width.clone(),
+            height: shape.params.height.clone(),
+            border_radius: shape.params.border_radius.clone(),
+            position: shape.params.position.clone(),
+            fill_enabled: shape.params.fill_enabled.clone(),
+            fill_color: shape.params.fill_color.clone(),
+            stroke_enabled: shape.params.stroke_enabled.clone(),
+            stroke_color: shape.params.stroke_color.clone(),
+            stroke_width: shape.params.stroke_width.clone(),
             buffer: params,
         });
 
@@ -136,15 +139,15 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        self.ctx.push_frame_binding(FrameBinding::Path {
+        self.ctx.push_frame_binding(PathFrameBinding {
             node_id: path.id,
-            data: path.data.clone(),
-            position: path.position.clone(),
-            fill_enabled: path.fill_enabled.clone(),
-            fill_color: path.fill_color.clone(),
-            stroke_enabled: path.stroke_enabled.clone(),
-            stroke_color: path.stroke_color.clone(),
-            stroke_width: path.stroke_width.clone(),
+            data: path.params.data.clone(),
+            position: path.params.position.clone(),
+            fill_enabled: path.params.fill_enabled.clone(),
+            fill_color: path.params.fill_color.clone(),
+            stroke_enabled: path.params.stroke_enabled.clone(),
+            stroke_color: path.params.stroke_color.clone(),
+            stroke_width: path.params.stroke_width.clone(),
             params_buffer: params,
             points_buffer: points,
             max_points: MAX_PATH_POINTS,
@@ -272,18 +275,18 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 }),
                 scissor: None,
             });
-        self.ctx.push_frame_binding(FrameBinding::Text {
+        self.ctx.push_frame_binding(TextFrameBinding {
             node_id: text.id,
-            content: text.content.clone(),
-            font_family: text.font_family.clone(),
-            font_size: text.font_size.clone(),
-            font_weight: text.font_weight.clone(),
-            font_style: text.font_style.clone(),
-            max_width: text.max_width.clone(),
-            position: text.position.clone(),
-            color: text.color.clone(),
-            alignment_horizontal: text.alignment_horizontal.clone(),
-            alignment_vertical: text.alignment_vertical.clone(),
+            content: text.params.content.clone(),
+            font_family: text.params.font_family.clone(),
+            font_size: text.params.font_size.clone(),
+            font_weight: text.params.font_weight.clone(),
+            font_style: text.params.font_style.clone(),
+            max_width: text.params.max_width.clone(),
+            position: text.params.position.clone(),
+            color: text.params.color.clone(),
+            alignment_horizontal: text.params.alignment_horizontal.clone(),
+            alignment_vertical: text.params.alignment_vertical.clone(),
             atlas_texture,
             globals_buffer,
             instances_buffer,

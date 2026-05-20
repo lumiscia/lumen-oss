@@ -1,8 +1,8 @@
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("boolean.wgsl");
@@ -28,16 +28,35 @@ impl BooleanOperation {
 }
 
 /// Combines two raster alpha masks with boolean operations.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedBooleanParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct BooleanParams {
+    /// Boolean operation used to combine the two input masks.
+    #[param(kind = "enum", enum_type = BooleanOperation)]
+    pub operation: Deferred<i64>,
+    /// Alpha cutoff used before evaluating the boolean operation.
+    #[param(kind = "float", min = 0, max = 1, step = 0.01)]
+    pub threshold: Deferred<f64>,
+}
+
+impl Default for BooleanParams {
+    fn default() -> Self {
+        Self {
+            operation: Deferred::value(BooleanOperation::Union as i64),
+            threshold: Deferred::value(0.0),
+        }
+    }
+}
+
+/// Combines two raster alpha masks with boolean operations.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "boolean", name = "Boolean", category = "compositing")]
 pub struct Boolean {
     pub id: NodeId,
-    /// Boolean operation used to combine the two input masks.
-    #[property(kind = "enum", enum_type = BooleanOperation)]
-    pub operation: NodeProperty,
-    /// Alpha cutoff used before evaluating the boolean operation.
-    #[property(kind = "float", min = 0, max = 1, step = 0.01)]
-    pub threshold: NodeProperty,
+    #[params]
+    pub params: BooleanParams,
+
     #[input()]
     pub a: PortRef,
     #[input()]
@@ -48,11 +67,45 @@ impl Default for Boolean {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            operation: NodeProperty::Int(BooleanOperation::Union as i64),
-            threshold: NodeProperty::Float(0.0),
+            params: BooleanParams::default(),
             a: PortRef::empty(),
             b: PortRef::empty(),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BooleanFrameBinding {
+    node_id: NodeId,
+    operation: Deferred<i64>,
+    threshold: Deferred<f64>,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for BooleanFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let params = compiler::BooleanParams {
+            values: [
+                BooleanOperation::from_int(self.operation.resolve_int(
+                    self.node_id,
+                    "operation",
+                    &ctx.expr_context(self.node_id, "operation"),
+                )?) as u32 as f32,
+                self.threshold.resolve_float(
+                    self.node_id,
+                    "threshold",
+                    &ctx.expr_context(self.node_id, "threshold"),
+                )? as f32,
+                0.0,
+                0.0,
+            ],
+        };
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
     }
 }
 
@@ -130,10 +183,10 @@ impl GpuCompileNode for Boolean {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(FrameBinding::Boolean {
+        ctx.push_frame_binding(BooleanFrameBinding {
             node_id: self.id,
-            operation: self.operation.clone(),
-            threshold: self.threshold.clone(),
+            operation: self.params.operation.clone(),
+            threshold: self.params.threshold.clone(),
             buffer: params,
         });
 
@@ -142,42 +195,5 @@ impl GpuCompileNode for Boolean {
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: a.metadata,
         }))
-    }
-}
-
-impl GpuFrameBindNode for Boolean {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Boolean {
-            node_id,
-            operation,
-            threshold,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let params = compiler::BooleanParams {
-            values: [
-                BooleanOperation::from_int(operation.resolve_int(
-                    *node_id,
-                    "operation",
-                    &ctx.expr_context(*node_id, "operation"),
-                )?) as u32 as f32,
-                threshold.resolve_float(
-                    *node_id,
-                    "threshold",
-                    &ctx.expr_context(*node_id, "threshold"),
-                )? as f32,
-                0.0,
-                0.0,
-            ],
-        };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
     }
 }

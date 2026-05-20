@@ -1,4 +1,4 @@
-import type { MetaManifest, NodePropertySpec, NodeSpec } from "./definitions.js";
+import type { MetaManifest, NodeParamSpec, NodeSpec } from "./definitions.js";
 
 const quote = (value: string): string => JSON.stringify(value);
 
@@ -14,22 +14,22 @@ const typeNameForNode = (kind: string): string =>
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
     .join("")}Node`;
 
-const typeNameForEnumProperty = (nodeKind: string, propertyName: string): string =>
+const typeNameForEnumParam = (nodeKind: string, paramName: string): string =>
   `${nodeKind
     .split(/[^a-zA-Z0-9]+/u)
     .filter(Boolean)
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
-    .join("")}${propertyName
+    .join("")}${paramName
     .split(/[^a-zA-Z0-9]+/u)
     .filter(Boolean)
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
     .join("")}`;
 
-const enumTypeForProperty = (nodeKind: string, property: NodePropertySpec): string =>
-  typeNameForEnumProperty(nodeKind, property.id);
+const enumTypeForParam = (nodeKind: string, param: NodeParamSpec): string =>
+  typeNameForEnumParam(nodeKind, param.id);
 
-const propertyType = (nodeKind: string, property: NodePropertySpec): string => {
-  switch (property.kind) {
+const paramType = (nodeKind: string, param: NodeParamSpec): string => {
+  switch (param.kind) {
     case "bool":
       return "boolean";
     case "color":
@@ -42,36 +42,33 @@ const propertyType = (nodeKind: string, property: NodePropertySpec): string => {
     case "vec2":
       return "Vec2";
     case "enum":
-      return enumTypeForProperty(nodeKind, property);
+      return enumTypeForParam(nodeKind, param);
     default:
       return "NodeLiteralValue";
   }
 };
 
-const renderEnumType = (spec: NodeSpec, property: NodePropertySpec): string =>
-  `export type ${enumTypeForProperty(spec.kind, property)} = ${union(
-    (property.enumOptions ?? []).map((option) => option.name),
+const renderEnumType = (spec: NodeSpec, param: NodeParamSpec): string =>
+  `export type ${enumTypeForParam(spec.kind, param)} = ${union(
+    (param.enumOptions ?? []).map((option) => option.name),
   )};`;
 
 const renderNodeInterface = (spec: NodeSpec): string => {
-  const properties = spec.properties ?? [];
-  const propertiesType =
-    properties.length === 0
+  const params = spec.params ?? [];
+  const paramsType =
+    params.length === 0
       ? "Readonly<Record<string, never>>"
-      : `{\n${properties
+      : `{\n${params
           .map(
-            (property) =>
-              `    readonly ${quote(property.id)}?: ExpressionValue<${propertyType(
-                spec.kind,
-                property,
-              )}>;`,
+            (param) =>
+              `    readonly ${quote(param.id)}?: ExpressionValue<${paramType(spec.kind, param)}>;`,
           )
           .join("\n")}\n  }`;
 
   return `export interface ${typeNameForNode(spec.kind)} extends CompositionNodeBase<${quote(
     spec.kind,
   )}> {
-  readonly properties?: ${propertiesType};
+  readonly params?: ${paramsType};
 }`;
 };
 
@@ -93,14 +90,14 @@ export function renderMetaTypes(manifest: MetaManifest): string {
       ...(spec.outputs ?? []).map((port) => port.kind),
     ]),
   );
-  const propertyKinds = uniqueSorted(
-    specs.flatMap((spec) => (spec.properties ?? []).map((property) => property.kind)),
+  const paramKinds = uniqueSorted(
+    specs.flatMap((spec) => (spec.params ?? []).map((param) => param.kind)),
   );
   const enumTypes = specs
     .flatMap((spec) =>
-      (spec.properties ?? [])
-        .filter((property) => property.kind === "enum")
-        .map((property) => renderEnumType(spec, property)),
+      (spec.params ?? [])
+        .filter((param) => param.kind === "enum")
+        .map((param) => renderEnumType(spec, param)),
     )
     .join("\n");
   const nodeInterfaces = specs.map(renderNodeInterface).join("\n\n");
@@ -112,7 +109,7 @@ export function renderMetaTypes(manifest: MetaManifest): string {
 
 export type NodeCategory = ${union(categories)};
 export type NodePortKind = ${union(portKinds)};
-export type NodePropertyKind = ${union(propertyKinds)};
+export type NodeParamKind = ${union(paramKinds)};
 export type NodeKind = ${union(nodeKinds)};
 
 export const schemaVersion = ${JSON.stringify(manifest.schemaVersion)} as const;
@@ -130,8 +127,8 @@ export interface NodeSpec {
   readonly category: NodeCategory;
   readonly inputs: readonly NodeInputPortSpec[];
   readonly outputs: readonly NodeOutputPortSpec[];
-  readonly properties: readonly NodePropertySpec[];
-  readonly defaultProperties: Readonly<Record<string, NodeLiteralValue>>;
+  readonly params: readonly NodeParamSpec[];
+  readonly defaultParams: Readonly<Record<string, NodeLiteralValue>>;
 }
 
 export interface NodeInputPortSpec {
@@ -146,17 +143,17 @@ export interface NodeOutputPortSpec {
   readonly kind: NodePortKind;
 }
 
-export interface NodePropertySpec {
+export interface NodeParamSpec {
   readonly id: string;
   readonly name: string;
-  readonly kind: NodePropertyKind;
+  readonly kind: NodeParamKind;
   readonly description: string;
   readonly defaultValue: NodeLiteralValue;
   readonly enumOptions?: readonly NodeEnumOptionSpec[];
-  readonly constraints?: PropertyConstraintsSpec;
+  readonly constraints?: ParamConstraintsSpec;
 }
 
-export interface PropertyConstraintsSpec {
+export interface ParamConstraintsSpec {
   readonly min?: number;
   readonly max?: number;
   readonly step?: number;

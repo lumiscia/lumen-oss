@@ -1,32 +1,54 @@
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("shadow.wgsl");
+
+/// Composites a blurred alpha shadow behind a raster.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedShadowParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct ShadowParams {
+    /// Horizontal shadow offset in pixels.
+    #[param(kind = "float", name = "Offset X", step = 1)]
+    pub offset_x: Deferred<f64>,
+    /// Vertical shadow offset in pixels.
+    #[param(kind = "float", name = "Offset Y", step = 1)]
+    pub offset_y: Deferred<f64>,
+    /// Shadow blur radius in pixels.
+    #[param(kind = "float", name = "Blur radius", min = 0, step = 0.5)]
+    pub radius: Deferred<f64>,
+    /// Shadow color.
+    #[param(kind = "color")]
+    pub color: Deferred<[u8; 4]>,
+    /// Shadow opacity.
+    #[param(kind = "float", min = 0, max = 1, step = 0.05)]
+    pub opacity: Deferred<f64>,
+}
+
+impl Default for ShadowParams {
+    fn default() -> Self {
+        Self {
+            offset_x: Deferred::value(8.0),
+            offset_y: Deferred::value(8.0),
+            radius: Deferred::value(8.0),
+            color: Deferred::value([0, 0, 0, 255]),
+            opacity: Deferred::value(0.5),
+        }
+    }
+}
 
 /// Composites a blurred alpha shadow behind a raster.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "shadow", name = "Shadow", category = "processing")]
 pub struct Shadow {
     pub id: NodeId,
-    /// Horizontal shadow offset in pixels.
-    #[property(kind = "float", name = "Offset X", step = 1)]
-    pub offset_x: NodeProperty,
-    /// Vertical shadow offset in pixels.
-    #[property(kind = "float", name = "Offset Y", step = 1)]
-    pub offset_y: NodeProperty,
-    /// Shadow blur radius in pixels.
-    #[property(kind = "float", name = "Blur radius", min = 0, step = 0.5)]
-    pub radius: NodeProperty,
-    /// Shadow color.
-    #[property(kind = "color")]
-    pub color: NodeProperty,
-    /// Shadow opacity.
-    #[property(kind = "float", min = 0, max = 1, step = 0.05)]
-    pub opacity: NodeProperty,
+    #[params]
+    pub params: ShadowParams,
+
     #[input()]
     pub source: PortRef,
 }
@@ -35,11 +57,7 @@ impl Default for Shadow {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            offset_x: NodeProperty::Float(8.0),
-            offset_y: NodeProperty::Float(8.0),
-            radius: NodeProperty::Float(8.0),
-            color: NodeProperty::Color([0, 0, 0, 255]),
-            opacity: NodeProperty::Float(0.5),
+            params: ShadowParams::default(),
             source: PortRef::empty(),
         }
     }
@@ -134,13 +152,13 @@ impl GpuCompileNode for Shadow {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(FrameBinding::Shadow {
+        ctx.push_frame_binding(ShadowFrameBinding {
             node_id: self.id,
-            offset_x: self.offset_x.clone(),
-            offset_y: self.offset_y.clone(),
-            radius: self.radius.clone(),
-            color: self.color.clone(),
-            opacity: self.opacity.clone(),
+            offset_x: self.params.offset_x.clone(),
+            offset_y: self.params.offset_y.clone(),
+            radius: self.params.radius.clone(),
+            color: self.params.color.clone(),
+            opacity: self.params.opacity.clone(),
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -151,52 +169,58 @@ impl GpuCompileNode for Shadow {
     }
 }
 
-impl GpuFrameBindNode for Shadow {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Shadow {
-            node_id,
-            offset_x,
-            offset_y,
-            radius,
-            color,
-            opacity,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let color = color.resolve_color(*node_id, "color", &ctx.expr_context(*node_id, "color"))?;
+#[derive(Debug, Clone)]
+struct ShadowFrameBinding {
+    node_id: NodeId,
+    offset_x: Deferred<f64>,
+    offset_y: Deferred<f64>,
+    radius: Deferred<f64>,
+    color: Deferred<[u8; 4]>,
+    opacity: Deferred<f64>,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for ShadowFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let color = self.color.resolve_color(
+            self.node_id,
+            "color",
+            &ctx.expr_context(self.node_id, "color"),
+        )?;
         let color = compiler::ColorParams::from_rgba8(color).color;
         let params = compiler::ShadowParams {
             color,
             values: [
-                offset_x.resolve_float(
-                    *node_id,
+                self.offset_x.resolve_float(
+                    self.node_id,
                     "offset_x",
-                    &ctx.expr_context(*node_id, "offset_x"),
+                    &ctx.expr_context(self.node_id, "offset_x"),
                 )? as f32,
-                offset_y.resolve_float(
-                    *node_id,
+                self.offset_y.resolve_float(
+                    self.node_id,
                     "offset_y",
-                    &ctx.expr_context(*node_id, "offset_y"),
+                    &ctx.expr_context(self.node_id, "offset_y"),
                 )? as f32,
-                radius
-                    .resolve_float(*node_id, "radius", &ctx.expr_context(*node_id, "radius"))?
+                self.radius
+                    .resolve_float(
+                        self.node_id,
+                        "radius",
+                        &ctx.expr_context(self.node_id, "radius"),
+                    )?
                     .round()
                     .clamp(0.0, 32.0) as f32,
-                opacity.resolve_float(
-                    *node_id,
+                self.opacity.resolve_float(
+                    self.node_id,
                     "opacity",
-                    &ctx.expr_context(*node_id, "opacity"),
+                    &ctx.expr_context(self.node_id, "opacity"),
                 )? as f32,
             ],
         };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
     }
 }

@@ -1,76 +1,82 @@
-//! JSON → [`NodeProperty`] conversion with type coercion and expression parsing.
+//! JSON property conversion with type coercion and expression parsing.
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::{
     expr::Expression,
-    node::{NodeProperty, PropertyDef, PropertyKind},
+    node::{PropertyDef, PropertyExpression, PropertyKind, PropertyValue},
 };
 
-/// Parse a JSON value into a [`NodeProperty`], using the definition for type guidance.
-pub fn parse_property(val: &Value, def: Option<&PropertyDef>, name: &str) -> Result<NodeProperty> {
-    // Expression strings: values starting with `=` are parsed as expressions
+pub fn parse_property(
+    val: &Value,
+    def: Option<&PropertyDef>,
+    name: &str,
+) -> Result<PropertyExpression> {
     if let Some(s) = val.as_str()
         && let Some(expr_src) = s.strip_prefix('=')
     {
         let expr = Expression::parse(expr_src)
             .map_err(|e| anyhow::anyhow!("expression parse error for `{name}`: {e}"))?;
-        return Ok(NodeProperty::Expr(expr));
+        return Ok(PropertyExpression::Expr(expr));
     }
 
-    if let Some(def) = def {
-        return parse_typed(val, def, name);
-    }
+    let value = if let Some(def) = def {
+        parse_typed(val, def, name)?
+    } else {
+        parse_inferred(val, name)?
+    };
+    Ok(PropertyExpression::Value(value))
+}
 
-    // Fallback: infer type from JSON shape
+fn parse_inferred(val: &Value, name: &str) -> Result<PropertyValue> {
     match val {
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(NodeProperty::Int(i))
+                Ok(PropertyValue::Int(i))
             } else {
-                Ok(NodeProperty::Float(n.as_f64().unwrap_or(0.0)))
+                Ok(PropertyValue::Float(n.as_f64().unwrap_or(0.0)))
             }
         }
-        Value::Bool(b) => Ok(NodeProperty::Bool(*b)),
-        Value::String(s) => Ok(NodeProperty::String(s.clone())),
+        Value::Bool(b) => Ok(PropertyValue::Bool(*b)),
+        Value::String(s) => Ok(PropertyValue::String(s.clone())),
         Value::Array(arr) => parse_color_or_vec(arr, name),
         _ => bail!("unsupported property value for `{name}`"),
     }
 }
 
-fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<NodeProperty> {
+fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyValue> {
     match def.expected {
         PropertyKind::Float => {
             let f = val
                 .as_f64()
                 .or_else(|| val.as_i64().map(|i| i as f64))
                 .with_context(|| format!("`{name}` expected float"))?;
-            Ok(NodeProperty::Float(f))
+            Ok(PropertyValue::Float(f))
         }
         PropertyKind::Int => {
             let i = val
                 .as_i64()
                 .or_else(|| val.as_f64().map(|f| f as i64))
                 .with_context(|| format!("`{name}` expected int"))?;
-            Ok(NodeProperty::Int(i))
+            Ok(PropertyValue::Int(i))
         }
         PropertyKind::Bool => {
             let b = val
                 .as_bool()
                 .or_else(|| val.as_i64().map(|i| i != 0))
                 .with_context(|| format!("`{name}` expected bool"))?;
-            Ok(NodeProperty::Bool(b))
+            Ok(PropertyValue::Bool(b))
         }
         PropertyKind::String => {
             let s = val
                 .as_str()
                 .with_context(|| format!("`{name}` expected string"))?;
-            Ok(NodeProperty::String(s.to_string()))
+            Ok(PropertyValue::String(s.to_string()))
         }
         PropertyKind::Color => parse_color(val)
             .with_context(|| format!("`{name}` expected color"))
-            .map(NodeProperty::Color),
+            .map(PropertyValue::Color),
         PropertyKind::Vec2 => {
             let arr = val
                 .as_array()
@@ -87,7 +93,7 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<NodePropert
             let y = arr[1]
                 .as_f64()
                 .with_context(|| format!("`{name}[1]` expected number"))?;
-            Ok(NodeProperty::Vec2((x, y)))
+            Ok(PropertyValue::Vec2((x, y)))
         }
         PropertyKind::Enum => {
             let enum_def = def
@@ -101,12 +107,11 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<NodePropert
                 .iter()
                 .find(|option| option.name == enum_name)
                 .with_context(|| format!("`{name}` unknown enum value `{enum_name}`"))?;
-            Ok(NodeProperty::Int(option.value))
+            Ok(PropertyValue::Int(option.value))
         }
     }
 }
 
-/// Parse a color from JSON: `[r, g, b]`, `[r, g, b, a]`, `"#RRGGBB"`, or `"#RRGGBBAA"`.
 pub fn parse_color(val: &Value) -> Option<[u8; 4]> {
     if let Some(arr) = val.as_array()
         && arr.len() >= 3
@@ -134,17 +139,17 @@ pub fn parse_color(val: &Value) -> Option<[u8; 4]> {
     None
 }
 
-fn parse_color_or_vec(arr: &[Value], name: &str) -> Result<NodeProperty> {
+fn parse_color_or_vec(arr: &[Value], name: &str) -> Result<PropertyValue> {
     if arr.len() == 2 {
         let x = arr[0].as_f64().with_context(|| format!("`{name}` vec2"))?;
         let y = arr[1].as_f64().with_context(|| format!("`{name}` vec2"))?;
-        return Ok(NodeProperty::Vec2((x, y)));
+        return Ok(PropertyValue::Vec2((x, y)));
     }
     if arr.len() >= 3
         && arr.len() <= 4
         && let Some(c) = parse_color(&Value::Array(arr.to_vec()))
     {
-        return Ok(NodeProperty::Color(c));
+        return Ok(PropertyValue::Color(c));
     }
     bail!("cannot infer type for array property `{name}`")
 }
@@ -175,13 +180,16 @@ mod tests {
     fn typed_property() {
         let v = serde_json::json!(1.25);
         let p = parse_property(&v, None, "test").unwrap();
-        assert!(matches!(p, NodeProperty::Float(f) if (f - 1.25).abs() < 1e-10));
+        assert!(matches!(
+            p,
+            PropertyExpression::Value(PropertyValue::Float(f)) if (f - 1.25).abs() < 1e-10
+        ));
     }
 
     #[test]
     fn expression_property() {
         let v = serde_json::json!("=frame * 2");
         let p = parse_property(&v, None, "test").unwrap();
-        assert!(matches!(p, NodeProperty::Expr(_)));
+        assert!(matches!(p, PropertyExpression::Expr(_)));
     }
 }

@@ -5,7 +5,7 @@
 //!
 //! # Modules
 //!
-//! - [`property`] — JSON value → [`NodeProperty`](crate::node::NodeProperty) conversion
+//! - [`property`] — JSON value → [`PropertyValue`](crate::node::PropertyValue) conversion
 //! - [`node`] — per-node-type construction, property application, and port wiring
 
 mod migrations;
@@ -371,7 +371,7 @@ mod tests {
         assert!(matches!(
             merge,
             crate::node::NodeKind::Merge(node)
-                if matches!(node.blend_mode, crate::node::NodeProperty::Int(1))
+                if matches!(node.params.blend_mode, crate::node::Deferred::Value(1))
         ));
     }
 

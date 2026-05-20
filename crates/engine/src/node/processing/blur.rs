@@ -1,20 +1,36 @@
-use crate::node::{NodeId, NodeProperty, PortRef};
+use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("blur.wgsl");
+
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedBlurParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct BlurParams {
+    /// Blur radius in pixels.
+    #[param(kind = "float", min = 0, step = 0.5)]
+    pub radius: Deferred<f64>,
+}
+
+impl Default for BlurParams {
+    fn default() -> Self {
+        Self {
+            radius: Deferred::value(4.0),
+        }
+    }
+}
 
 /// Applies a simple box blur to a raster.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "blur", name = "Blur", category = "processing")]
 pub struct Blur {
     pub id: NodeId,
-    /// Blur radius in pixels.
-    #[property(kind = "float", min = 0, step = 0.5)]
-    pub radius: NodeProperty,
+    #[params]
+    pub params: BlurParams,
     #[input()]
     pub source: PortRef,
 }
@@ -23,9 +39,35 @@ impl Default for Blur {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            radius: NodeProperty::Float(4.0),
+            params: BlurParams::default(),
             source: PortRef::empty(),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BlurFrameBinding {
+    node_id: NodeId,
+    params: BlurParams,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for BlurFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        let radius = params.radius.round().clamp(0.0, 32.0) as u32;
+        let params = compiler::BlurParams {
+            values: [radius, 0, 0, 0],
+        };
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
     }
 }
 
@@ -43,9 +85,9 @@ impl GpuCompileNode for Blur {
             SHADER,
             std::mem::size_of::<compiler::BlurParams>() as u64,
         )?;
-        ctx.push_frame_binding(FrameBinding::Blur {
+        ctx.push_frame_binding(BlurFrameBinding {
             node_id: self.id,
-            radius: self.radius.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -53,32 +95,5 @@ impl GpuCompileNode for Blur {
             domain: source.domain,
             metadata: source.metadata,
         }))
-    }
-}
-
-impl GpuFrameBindNode for Blur {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Blur {
-            node_id,
-            radius,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let radius = radius
-            .resolve_float(*node_id, "radius", &ctx.expr_context(*node_id, "radius"))?
-            .round()
-            .clamp(0.0, 32.0) as u32;
-        let params = compiler::BlurParams {
-            values: [radius, 0, 0, 0],
-        };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
     }
 }

@@ -42,10 +42,99 @@ enum RuntimeProgram {
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    adapter_info: GpuAdapterInfo,
     textures: Vec<RuntimeTexture>,
     buffers: Vec<RuntimeBuffer>,
     samplers: Vec<RuntimeSampler>,
     programs: Vec<RuntimeProgram>,
+}
+
+#[derive(Clone)]
+pub struct ExternalTexture {
+    texture: Arc<wgpu::Texture>,
+    desc: TextureDesc,
+}
+
+impl std::fmt::Debug for ExternalTexture {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExternalTexture")
+            .field("desc", &self.desc)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExternalTexture {
+    pub fn new(texture: Arc<wgpu::Texture>, desc: TextureDesc) -> Self {
+        Self { texture, desc }
+    }
+
+    pub fn from_texture(texture: wgpu::Texture, desc: TextureDesc) -> Self {
+        Self::new(Arc::new(texture), desc)
+    }
+
+    pub fn texture(&self) -> &wgpu::Texture {
+        &self.texture
+    }
+
+    pub fn texture_arc(&self) -> Arc<wgpu::Texture> {
+        Arc::clone(&self.texture)
+    }
+
+    pub fn desc(&self) -> TextureDesc {
+        self.desc
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SubmittedExternalTexture {
+    submission: wgpu::SubmissionIndex,
+    texture: Arc<wgpu::Texture>,
+}
+
+impl SubmittedExternalTexture {
+    pub fn submission(&self) -> wgpu::SubmissionIndex {
+        self.submission.clone()
+    }
+
+    pub fn texture(&self) -> &wgpu::Texture {
+        &self.texture
+    }
+
+    pub fn wait(&self, device: &wgpu::Device) -> Result<()> {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(self.submission.clone()),
+                timeout: None,
+            })
+            .context("wait for external texture submission")?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GpuAdapterInfo {
+    pub name: String,
+    pub backend: wgpu::Backend,
+    pub device_type: wgpu::DeviceType,
+    pub vendor: u32,
+    pub device: u32,
+    pub driver: String,
+    pub driver_info: String,
+}
+
+impl From<wgpu::AdapterInfo> for GpuAdapterInfo {
+    fn from(info: wgpu::AdapterInfo) -> Self {
+        Self {
+            name: info.name,
+            backend: info.backend,
+            device_type: info.device_type,
+            vendor: info.vendor,
+            device: info.device,
+            driver: info.driver,
+            driver_info: info.driver_info,
+        }
+    }
 }
 
 impl Renderer {
@@ -63,30 +152,63 @@ impl Renderer {
             })
             .await
             .context("no compatible wgpu adapter")?;
-        let adapter_info = adapter.get_info();
+        let adapter_info = GpuAdapterInfo::from(adapter.get_info());
         tracing::info!(
             target: "lumen_gpu",
             adapter = %adapter_info.name,
             backend = ?adapter_info.backend,
             device_type = ?adapter_info.device_type,
+            vendor = adapter_info.vendor,
+            device = adapter_info.device,
+            driver = %adapter_info.driver,
+            driver_info = %adapter_info.driver_info,
             "selected wgpu adapter"
         );
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .context("create wgpu device")?;
-        Ok(Self::from_device(device, queue))
+        Ok(Self::from_device_with_adapter_info(
+            device,
+            queue,
+            adapter_info,
+        ))
     }
 
     pub fn from_device(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        Self::from_device_with_adapter_info(
+            device,
+            queue,
+            GpuAdapterInfo {
+                name: "external device".to_string(),
+                backend: wgpu::Backend::Noop,
+                device_type: wgpu::DeviceType::Other,
+                vendor: 0,
+                device: 0,
+                driver: "external".to_string(),
+                driver_info: "created outside lumen-gpu".to_string(),
+            },
+        )
+    }
+
+    pub fn from_device_with_adapter_info(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        adapter_info: GpuAdapterInfo,
+    ) -> Self {
         Self {
             device,
             queue,
+            adapter_info,
             textures: Vec::new(),
             buffers: Vec::new(),
             samplers: Vec::new(),
             programs: Vec::new(),
         }
+    }
+
+    pub fn adapter_info(&self) -> &GpuAdapterInfo {
+        &self.adapter_info
     }
 
     pub fn prepare_plan(&mut self, plan: &RenderPlan) -> Result<()> {
@@ -140,6 +262,10 @@ impl Renderer {
         self.textures
             .get(id.0 as usize)
             .map(|texture| Arc::clone(&texture.texture))
+    }
+
+    pub fn texture_desc(&self, id: TextureId) -> Option<TextureDesc> {
+        self.textures.get(id.0 as usize).map(|texture| texture.desc)
     }
 
     pub fn replace_texture(
@@ -214,6 +340,33 @@ impl Renderer {
     ) -> Result<()> {
         let _ = self.copy_texture_to_external(source_id, destination)?;
         Ok(())
+    }
+
+    pub fn submit_plan_with_external_texture(
+        &mut self,
+        plan: &RenderPlan,
+        texture_id: TextureId,
+        external: ExternalTexture,
+    ) -> Result<SubmittedExternalTexture> {
+        self.validate_external_texture(texture_id, external.desc())?;
+        let old_desc = self
+            .texture_desc(texture_id)
+            .ok_or_else(|| anyhow!("unknown texture id {texture_id:?}"))?;
+        let retained = external.texture_arc();
+        let old_texture =
+            self.replace_texture_arc(texture_id, retained.clone(), external.desc())?;
+        let submission = match self.submit_plan(plan) {
+            Ok(submission) => submission,
+            Err(error) => {
+                let _ = self.replace_texture_arc(texture_id, old_texture, old_desc);
+                return Err(error);
+            }
+        };
+        let _ = self.replace_texture_arc(texture_id, old_texture, old_desc)?;
+        Ok(SubmittedExternalTexture {
+            submission,
+            texture: retained,
+        })
     }
 
     pub fn buffer(&self, id: BufferId) -> Option<&wgpu::Buffer> {
@@ -404,6 +557,36 @@ impl Renderer {
             || self.programs.len() != plan.programs.len()
         {
             bail!("render plan has not been prepared or has changed since prepare_plan");
+        }
+        Ok(())
+    }
+
+    fn validate_external_texture(&self, id: TextureId, external: TextureDesc) -> Result<()> {
+        let slot = self
+            .textures
+            .get(id.0 as usize)
+            .ok_or_else(|| anyhow!("unknown texture id {id:?}"))?;
+        let expected = slot.desc;
+        if expected.domain.storage_size != external.domain.storage_size {
+            bail!(
+                "external texture for {id:?} has size {:?}, expected {:?}",
+                external.domain.storage_size,
+                expected.domain.storage_size
+            );
+        }
+        if expected.format != external.format {
+            bail!(
+                "external texture for {id:?} has format {:?}, expected {:?}",
+                external.format,
+                expected.format
+            );
+        }
+        if !external.usage.contains(expected.usage) {
+            bail!(
+                "external texture for {id:?} has usage {:?}, expected at least {:?}",
+                external.usage,
+                expected.usage
+            );
         }
         Ok(())
     }

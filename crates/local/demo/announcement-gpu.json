@@ -26,7 +26,7 @@
       "id": 2,
       "type": "shape",
       "properties": {
-        "geometry_kind": 1,
+        "geometry_kind": "ellipse",
         "width": 620,
         "height": 620,
         "position": [760, -140],
@@ -39,7 +39,7 @@
       "id": 3,
       "type": "shape",
       "properties": {
-        "geometry_kind": 0,
+        "geometry_kind": "rectangle",
         "width": 860,
         "height": 310,
         "border_radius": 28,
@@ -59,12 +59,12 @@
         "font_family": "Helvetica Neue",
         "font_size": 42,
         "font_weight": 700,
-        "font_style": 0,
+        "font_style": "normal",
         "max_width": 700,
         "position": [260, 255],
         "color": [248, 250, 252, 255],
-        "alignment_horizontal": 0,
-        "alignment_vertical": 0
+        "alignment_horizontal": "left",
+        "alignment_vertical": "top"
       }
     },
     {
@@ -75,19 +75,19 @@
         "font_family": "Helvetica Neue",
         "font_size": 21,
         "font_weight": 500,
-        "font_style": 0,
+        "font_style": "normal",
         "max_width": 730,
         "position": [260, 350],
         "color": [148, 163, 184, 255],
-        "alignment_horizontal": 0,
-        "alignment_vertical": 0
+        "alignment_horizontal": "left",
+        "alignment_vertical": "top"
       }
     },
     {
       "id": 6,
       "type": "shape",
       "properties": {
-        "geometry_kind": 0,
+        "geometry_kind": "rectangle",
         "width": "=text_width(\"Open editor\", 20) + 48",
         "height": "=text_height(\"Open editor\", 20) + 32",
         "border_radius": 999,
@@ -105,12 +105,12 @@
         "font_family": "Helvetica Neue",
         "font_size": 20,
         "font_weight": 700,
-        "font_style": 0,
+        "font_style": "normal",
         "max_width": 0,
         "position": [284, 433],
         "color": [255, 255, 255, 255],
-        "alignment_horizontal": 0,
-        "alignment_vertical": 0
+        "alignment_horizontal": "left",
+        "alignment_vertical": "top"
       }
     },
     {
@@ -118,7 +118,7 @@
       "type": "merge",
       "properties": {
         "opacity": "=smoothstep(0, 20, frame) * (1 - smoothstep(150, 180, frame))",
-        "blend_mode": 0
+        "blend_mode": "normal"
       }
     },
     {
@@ -126,7 +126,7 @@
       "type": "merge",
       "properties": {
         "opacity": "=smoothstep(0, 24, frame)",
-        "blend_mode": 0
+        "blend_mode": "normal"
       }
     },
     {
@@ -134,7 +134,7 @@
       "type": "merge",
       "properties": {
         "opacity": "=smoothstep(18, 48, frame)",
-        "blend_mode": 0
+        "blend_mode": "normal"
       }
     },
     {
@@ -142,7 +142,7 @@
       "type": "merge",
       "properties": {
         "opacity": "=smoothstep(22, 54, frame)",
-        "blend_mode": 0
+        "blend_mode": "normal"
       }
     },
     {
@@ -150,7 +150,7 @@
       "type": "merge",
       "properties": {
         "opacity": "=smoothstep(30, 60, frame)",
-        "blend_mode": 0
+        "blend_mode": "normal"
       }
     },
     {
@@ -158,7 +158,7 @@
       "type": "merge",
       "properties": {
         "opacity": "=smoothstep(32, 64, frame)",
-        "blend_mode": 0
+        "blend_mode": "normal"
       }
     },
     {

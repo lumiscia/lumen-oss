@@ -41,7 +41,7 @@ pub enum NodePortKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum NodePropertyKind {
+pub enum NodeParamKind {
     Float,
     Int,
     Bool,
@@ -80,10 +80,10 @@ pub struct NodeOutputPortSpec {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NodePropertySpec {
+pub struct NodeParamSpec {
     pub id: String,
     pub name: String,
-    pub kind: NodePropertyKind,
+    pub kind: NodeParamKind,
     pub description: String,
     pub default_value: NodeLiteralValue,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -140,8 +140,8 @@ pub struct NodeSpec {
     pub category: NodeCategory,
     pub inputs: Vec<NodeInputPortSpec>,
     pub outputs: Vec<NodeOutputPortSpec>,
-    pub properties: Vec<NodePropertySpec>,
-    pub default_properties: BTreeMap<String, NodeLiteralValue>,
+    pub params: Vec<NodeParamSpec>,
+    pub default_params: BTreeMap<String, NodeLiteralValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -372,7 +372,7 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
 
 fn node_schema_json(spec: &NodeSpec) -> Value {
     let mut properties = serde_json::Map::new();
-    for property in &spec.properties {
+    for property in &spec.params {
         properties.insert(property.id.clone(), property_schema_json(property));
     }
     json!({
@@ -396,15 +396,15 @@ fn node_schema_json(spec: &NodeSpec) -> Value {
     })
 }
 
-fn property_schema_json(property: &NodePropertySpec) -> Value {
+fn property_schema_json(property: &NodeParamSpec) -> Value {
     let mut schema = match property.kind {
-        NodePropertyKind::Float => numeric_property_schema_json("number", property),
-        NodePropertyKind::Int => numeric_property_schema_json("integer", property),
-        NodePropertyKind::Bool => json!({ "type": "boolean" }),
-        NodePropertyKind::String => json!({ "type": "string" }),
-        NodePropertyKind::Color => json!({ "$ref": "#/$defs/color" }),
-        NodePropertyKind::Vec2 => json!({ "$ref": "#/$defs/vec2" }),
-        NodePropertyKind::Enum => {
+        NodeParamKind::Float => numeric_property_schema_json("number", property),
+        NodeParamKind::Int => numeric_property_schema_json("integer", property),
+        NodeParamKind::Bool => json!({ "type": "boolean" }),
+        NodeParamKind::String => json!({ "type": "string" }),
+        NodeParamKind::Color => json!({ "$ref": "#/$defs/color" }),
+        NodeParamKind::Vec2 => json!({ "$ref": "#/$defs/vec2" }),
+        NodeParamKind::Enum => {
             let values = property
                 .enum_options
                 .iter()
@@ -434,7 +434,7 @@ fn property_schema_json(property: &NodePropertySpec) -> Value {
     schema
 }
 
-fn numeric_property_schema_json(kind: &str, property: &NodePropertySpec) -> Value {
+fn numeric_property_schema_json(kind: &str, property: &NodeParamSpec) -> Value {
     let mut schema = serde_json::Map::new();
     schema.insert("type".to_string(), json!(kind));
     if let Some(min) = property.constraints.min {
@@ -447,7 +447,7 @@ fn numeric_property_schema_json(kind: &str, property: &NodePropertySpec) -> Valu
 }
 
 fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpec> {
-    let properties = schema
+    let params = schema
         .properties
         .iter()
         .map(|property| {
@@ -455,11 +455,11 @@ fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpe
                 .default_properties
                 .iter()
                 .find(|(name, _)| *name == property.id)
-                .map(|(_, value)| literal_from_node_property(value, property.enum_def))
+                .map(|(_, value)| literal_from_property_value(value, property.enum_def))
                 .transpose()?
                 .with_context(|| {
                     format!(
-                        "missing default value for property `{}` on node `{}`",
+                        "missing default value for param `{}` on node `{}`",
                         property.id, schema.kind
                     )
                 })?;
@@ -477,7 +477,7 @@ fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpe
                         .collect()
                 })
                 .unwrap_or_default();
-            Ok(NodePropertySpec {
+            Ok(NodeParamSpec {
                 id: property.id.to_string(),
                 name: property.name.to_string(),
                 kind: property_kind_from_schema(property.expected),
@@ -488,7 +488,7 @@ fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpe
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let default_properties = properties
+    let default_params = params
         .iter()
         .map(|property| (property.id.clone(), property.default_value.clone()))
         .collect();
@@ -511,8 +511,8 @@ fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpe
             name: "output".to_string(),
             kind: NodePortKind::RasterFrame,
         }],
-        properties,
-        default_properties,
+        params,
+        default_params,
     })
 }
 
@@ -533,15 +533,15 @@ fn port_kind_from_schema(kind: lumen_engine::node::PortKind) -> NodePortKind {
     }
 }
 
-fn property_kind_from_schema(kind: lumen_engine::node::PropertyKind) -> NodePropertyKind {
+fn property_kind_from_schema(kind: lumen_engine::node::PropertyKind) -> NodeParamKind {
     match kind {
-        lumen_engine::node::PropertyKind::Float => NodePropertyKind::Float,
-        lumen_engine::node::PropertyKind::Int => NodePropertyKind::Int,
-        lumen_engine::node::PropertyKind::Bool => NodePropertyKind::Bool,
-        lumen_engine::node::PropertyKind::String => NodePropertyKind::String,
-        lumen_engine::node::PropertyKind::Color => NodePropertyKind::Color,
-        lumen_engine::node::PropertyKind::Vec2 => NodePropertyKind::Vec2,
-        lumen_engine::node::PropertyKind::Enum => NodePropertyKind::Enum,
+        lumen_engine::node::PropertyKind::Float => NodeParamKind::Float,
+        lumen_engine::node::PropertyKind::Int => NodeParamKind::Int,
+        lumen_engine::node::PropertyKind::Bool => NodeParamKind::Bool,
+        lumen_engine::node::PropertyKind::String => NodeParamKind::String,
+        lumen_engine::node::PropertyKind::Color => NodeParamKind::Color,
+        lumen_engine::node::PropertyKind::Vec2 => NodeParamKind::Vec2,
+        lumen_engine::node::PropertyKind::Enum => NodeParamKind::Enum,
     }
 }
 
@@ -559,13 +559,13 @@ fn constraints_from_schema(
     }
 }
 
-fn literal_from_node_property(
-    property: &lumen_engine::node::NodeProperty,
+fn literal_from_property_value(
+    property: &lumen_engine::node::PropertyValue,
     enum_def: Option<&'static lumen_engine::node::EnumDef>,
 ) -> Result<NodeLiteralValue> {
     if let Some(enum_def) = enum_def {
-        let lumen_engine::node::NodeProperty::Int(value) = property else {
-            bail!("enum default property must be stored as an int: {property:?}");
+        let lumen_engine::node::PropertyValue::Int(value) = property else {
+            bail!("enum default param must be stored as an int: {property:?}");
         };
         let option = enum_def
             .options
@@ -576,15 +576,15 @@ fn literal_from_node_property(
     }
 
     match property {
-        lumen_engine::node::NodeProperty::Float(value) => Ok(NodeLiteralValue::Float(*value)),
-        lumen_engine::node::NodeProperty::Int(value) => Ok(NodeLiteralValue::Int(*value)),
-        lumen_engine::node::NodeProperty::Bool(value) => Ok(NodeLiteralValue::Bool(*value)),
-        lumen_engine::node::NodeProperty::String(value) => {
+        lumen_engine::node::PropertyValue::Float(value) => Ok(NodeLiteralValue::Float(*value)),
+        lumen_engine::node::PropertyValue::Int(value) => Ok(NodeLiteralValue::Int(*value)),
+        lumen_engine::node::PropertyValue::Bool(value) => Ok(NodeLiteralValue::Bool(*value)),
+        lumen_engine::node::PropertyValue::String(value) => {
             Ok(NodeLiteralValue::String(value.clone()))
         }
-        lumen_engine::node::NodeProperty::Color(value) => Ok(NodeLiteralValue::Color(*value)),
-        lumen_engine::node::NodeProperty::Vec2(value) => Ok(NodeLiteralValue::Vec2(*value)),
-        other => bail!("unsupported default property literal: {other:?}"),
+        lumen_engine::node::PropertyValue::Color(value) => Ok(NodeLiteralValue::Color(*value)),
+        lumen_engine::node::PropertyValue::Vec2(value) => Ok(NodeLiteralValue::Vec2(*value)),
+        other => bail!("unsupported default param literal: {other:?}"),
     }
 }
 

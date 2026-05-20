@@ -3,7 +3,7 @@
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodePropertyKind = "bool" | "color" | "enum" | "float" | "int" | "string" | "vec2";
+export type NodeParamKind = "bool" | "color" | "enum" | "float" | "int" | "string" | "vec2";
 export type NodeKind = "alpha_premultiply" | "blur" | "boolean" | "channel_shuffle" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "solid_color" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
@@ -21,8 +21,8 @@ export interface NodeSpec {
   readonly category: NodeCategory;
   readonly inputs: readonly NodeInputPortSpec[];
   readonly outputs: readonly NodeOutputPortSpec[];
-  readonly properties: readonly NodePropertySpec[];
-  readonly defaultProperties: Readonly<Record<string, NodeLiteralValue>>;
+  readonly params: readonly NodeParamSpec[];
+  readonly defaultParams: Readonly<Record<string, NodeLiteralValue>>;
 }
 
 export interface NodeInputPortSpec {
@@ -37,17 +37,17 @@ export interface NodeOutputPortSpec {
   readonly kind: NodePortKind;
 }
 
-export interface NodePropertySpec {
+export interface NodeParamSpec {
   readonly id: string;
   readonly name: string;
-  readonly kind: NodePropertyKind;
+  readonly kind: NodeParamKind;
   readonly description: string;
   readonly defaultValue: NodeLiteralValue;
   readonly enumOptions?: readonly NodeEnumOptionSpec[];
-  readonly constraints?: PropertyConstraintsSpec;
+  readonly constraints?: ParamConstraintsSpec;
 }
 
-export interface PropertyConstraintsSpec {
+export interface ParamConstraintsSpec {
   readonly min?: number;
   readonly max?: number;
   readonly step?: number;
@@ -101,26 +101,26 @@ export interface CompositionNodeBase<TKind extends NodeKind> {
 }
 
 export interface AlphaPremultiplyNode extends CompositionNodeBase<"alpha_premultiply"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "mode"?: ExpressionValue<string>;
   };
 }
 
 export interface BlurNode extends CompositionNodeBase<"blur"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "radius"?: ExpressionValue<number>;
   };
 }
 
 export interface BooleanNode extends CompositionNodeBase<"boolean"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "operation"?: ExpressionValue<BooleanOperation>;
     readonly "threshold"?: ExpressionValue<number>;
   };
 }
 
 export interface ChannelShuffleNode extends CompositionNodeBase<"channel_shuffle"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "alpha"?: ExpressionValue<string>;
     readonly "blue"?: ExpressionValue<string>;
     readonly "green"?: ExpressionValue<string>;
@@ -129,7 +129,7 @@ export interface ChannelShuffleNode extends CompositionNodeBase<"channel_shuffle
 }
 
 export interface ColorGradeNode extends CompositionNodeBase<"color_grade"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "interpolation"?: ExpressionValue<number>;
     readonly "lut_source"?: ExpressionValue<string>;
     readonly "strength"?: ExpressionValue<number>;
@@ -137,7 +137,7 @@ export interface ColorGradeNode extends CompositionNodeBase<"color_grade"> {
 }
 
 export interface CropNode extends CompositionNodeBase<"crop"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "height"?: ExpressionValue<number>;
     readonly "width"?: ExpressionValue<number>;
     readonly "x"?: ExpressionValue<number>;
@@ -146,14 +146,14 @@ export interface CropNode extends CompositionNodeBase<"crop"> {
 }
 
 export interface CurvesNode extends CompositionNodeBase<"curves"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "curve_source"?: ExpressionValue<string>;
     readonly "strength"?: ExpressionValue<number>;
   };
 }
 
 export interface ExposureNode extends CompositionNodeBase<"exposure"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "contrast"?: ExpressionValue<number>;
     readonly "exposure"?: ExpressionValue<number>;
     readonly "offset"?: ExpressionValue<number>;
@@ -161,7 +161,7 @@ export interface ExposureNode extends CompositionNodeBase<"exposure"> {
 }
 
 export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "hue_degrees"?: ExpressionValue<number>;
     readonly "lightness"?: ExpressionValue<number>;
     readonly "saturation"?: ExpressionValue<number>;
@@ -169,7 +169,7 @@ export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation">
 }
 
 export interface LevelsNode extends CompositionNodeBase<"levels"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "black_point"?: ExpressionValue<number>;
     readonly "gamma"?: ExpressionValue<number>;
     readonly "output_black"?: ExpressionValue<number>;
@@ -179,7 +179,7 @@ export interface LevelsNode extends CompositionNodeBase<"levels"> {
 }
 
 export interface MediaInNode extends CompositionNodeBase<"media_in"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "kind"?: ExpressionValue<MediaInKind>;
     readonly "loop_mode"?: ExpressionValue<MediaInLoopMode>;
     readonly "range_end"?: ExpressionValue<number>;
@@ -190,25 +190,25 @@ export interface MediaInNode extends CompositionNodeBase<"media_in"> {
 }
 
 export interface MediaOutputNode extends CompositionNodeBase<"media_output"> {
-  readonly properties?: Readonly<Record<string, never>>;
+  readonly params?: Readonly<Record<string, never>>;
 }
 
 export interface MemoNode extends CompositionNodeBase<"memo"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "allow_expressions"?: ExpressionValue<boolean>;
     readonly "cache_id"?: ExpressionValue<string>;
   };
 }
 
 export interface MergeNode extends CompositionNodeBase<"merge"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "blend_mode"?: ExpressionValue<MergeBlendMode>;
     readonly "opacity"?: ExpressionValue<number>;
   };
 }
 
 export interface PathNode extends CompositionNodeBase<"path"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "data"?: ExpressionValue<string>;
     readonly "fill_color"?: ExpressionValue<Color>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
@@ -220,14 +220,14 @@ export interface PathNode extends CompositionNodeBase<"path"> {
 }
 
 export interface RasterMultimergeNode extends CompositionNodeBase<"raster_multimerge"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "blend_mode"?: ExpressionValue<RasterMultimergeBlendMode>;
     readonly "opacity"?: ExpressionValue<number>;
   };
 }
 
 export interface ResizeNode extends CompositionNodeBase<"resize"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "height"?: ExpressionValue<number>;
     readonly "mode"?: ExpressionValue<ResizeMode>;
     readonly "sampling"?: ExpressionValue<ResizeSampling>;
@@ -236,7 +236,7 @@ export interface ResizeNode extends CompositionNodeBase<"resize"> {
 }
 
 export interface ShadowNode extends CompositionNodeBase<"shadow"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "color"?: ExpressionValue<Color>;
     readonly "offset_x"?: ExpressionValue<number>;
     readonly "offset_y"?: ExpressionValue<number>;
@@ -246,7 +246,7 @@ export interface ShadowNode extends CompositionNodeBase<"shadow"> {
 }
 
 export interface ShapeNode extends CompositionNodeBase<"shape"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "border_radius"?: ExpressionValue<number>;
     readonly "fill_color"?: ExpressionValue<Color>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
@@ -262,7 +262,7 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
 }
 
 export interface SolidColorNode extends CompositionNodeBase<"solid_color"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "color"?: ExpressionValue<Color>;
     readonly "height"?: ExpressionValue<number>;
     readonly "width"?: ExpressionValue<number>;
@@ -270,13 +270,13 @@ export interface SolidColorNode extends CompositionNodeBase<"solid_color"> {
 }
 
 export interface SwitchNode extends CompositionNodeBase<"switch"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "selected_layer"?: ExpressionValue<number>;
   };
 }
 
 export interface TextNode extends CompositionNodeBase<"text"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "alignment_horizontal"?: ExpressionValue<TextAlignmentHorizontal>;
     readonly "alignment_vertical"?: ExpressionValue<TextAlignmentVertical>;
     readonly "color"?: ExpressionValue<Color>;
@@ -291,7 +291,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
 }
 
 export interface TimeRemapNode extends CompositionNodeBase<"time_remap"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "frame"?: ExpressionValue<number>;
     readonly "loop_enabled"?: ExpressionValue<boolean>;
     readonly "loop_end"?: ExpressionValue<number>;
@@ -300,7 +300,7 @@ export interface TimeRemapNode extends CompositionNodeBase<"time_remap"> {
 }
 
 export interface TransformNode extends CompositionNodeBase<"transform"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "pivot_x"?: ExpressionValue<number>;
     readonly "pivot_y"?: ExpressionValue<number>;
     readonly "rotate"?: ExpressionValue<number>;
@@ -313,7 +313,7 @@ export interface TransformNode extends CompositionNodeBase<"transform"> {
 }
 
 export interface WgslShaderNode extends CompositionNodeBase<"wgsl_shader"> {
-  readonly properties?: {
+  readonly params?: {
     readonly "bindings"?: ExpressionValue<string>;
     readonly "shader"?: ExpressionValue<string>;
   };

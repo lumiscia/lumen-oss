@@ -41,7 +41,7 @@ const composition = new Composition({
 
 const background = composition.addNode({
   type: "solid_color",
-  properties: {
+  params: {
     width: 1920,
     height: 1080,
     color: [24, 28, 36, 255],
@@ -50,7 +50,7 @@ const background = composition.addNode({
 
 const title = composition.addNode({
   type: "text",
-  properties: {
+  params: {
     content: textContent,
     font_family: fontFamily,
     font_size: 96,
@@ -62,7 +62,7 @@ const title = composition.addNode({
 
 const image = composition.addNode({
   type: "media_in",
-  properties: {
+  params: {
     kind: "image",
     source: plateAlias,
     range_start: 0,
@@ -73,7 +73,7 @@ const image = composition.addNode({
 
 const merge = composition.addNode({
   type: "merge",
-  properties: {
+  params: {
     opacity: 0.9,
     blend_mode: "normal",
   },

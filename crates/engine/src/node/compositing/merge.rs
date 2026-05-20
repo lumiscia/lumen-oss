@@ -1,23 +1,42 @@
-use crate::node::{NodeId, NodeProperty, PortRef, compositing::BlendMode};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef, compositing::BlendMode};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    RasterHandle, compiler,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("merge.wgsl");
+
+/// Composites an overlay raster over a base raster.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedMergeParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct MergeParams {
+    /// Overlay opacity applied before compositing.
+    #[param(kind = "float", min = 0, max = 1, step = 0.05)]
+    pub opacity: Deferred<f64>,
+    /// Blend mode used when combining the overlay with the base raster.
+    #[param(kind = "enum", enum_type = BlendMode)]
+    pub blend_mode: Deferred<i64>,
+}
+
+impl Default for MergeParams {
+    fn default() -> Self {
+        Self {
+            opacity: Deferred::value(1.0),
+            blend_mode: Deferred::value(BlendMode::Normal as i64),
+        }
+    }
+}
 
 /// Composites an overlay raster over a base raster.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "merge", name = "Merge", category = "compositing")]
 pub struct Merge {
     pub id: NodeId,
-    /// Overlay opacity applied before compositing.
-    #[property(kind = "float", min = 0, max = 1, step = 0.05)]
-    pub opacity: NodeProperty,
-    /// Blend mode used when combining the overlay with the base raster.
-    #[property(kind = "enum", enum_type = BlendMode)]
-    pub blend_mode: NodeProperty,
+    #[params]
+    pub params: MergeParams,
+
     #[input()]
     pub base: PortRef,
     #[input()]
@@ -30,12 +49,45 @@ impl Default for Merge {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            opacity: NodeProperty::Float(1.0),
-            blend_mode: NodeProperty::Int(BlendMode::Normal as i64),
+            params: MergeParams::default(),
             base: PortRef::empty(),
             overlay: PortRef::empty(),
             mask: PortRef::empty(),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MergeFrameBinding {
+    node_id: NodeId,
+    opacity: Deferred<f64>,
+    blend_mode: Deferred<i64>,
+    has_mask: bool,
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuFrameBinding for MergeFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let params = compiler::MergeParams {
+            opacity: self.opacity.resolve_float(
+                self.node_id,
+                "opacity",
+                &ctx.expr_context(self.node_id, "opacity"),
+            )? as f32,
+            blend_mode: self.blend_mode.resolve_int(
+                self.node_id,
+                "blend_mode",
+                &ctx.expr_context(self.node_id, "blend_mode"),
+            )? as u32,
+            has_mask: u32::from(self.has_mask),
+            _pad: 0,
+        };
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        Ok(())
     }
 }
 
@@ -131,10 +183,10 @@ impl GpuCompileNode for Merge {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(FrameBinding::Merge {
+        ctx.push_frame_binding(MergeFrameBinding {
             node_id: self.id,
-            opacity: self.opacity.clone(),
-            blend_mode: self.blend_mode.clone(),
+            opacity: self.params.opacity.clone(),
+            blend_mode: self.params.blend_mode.clone(),
             has_mask: !self.mask.is_empty(),
             buffer: params,
         });
@@ -144,41 +196,5 @@ impl GpuCompileNode for Merge {
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: base.metadata,
         }))
-    }
-}
-
-impl GpuFrameBindNode for Merge {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::Merge {
-            node_id,
-            opacity,
-            blend_mode,
-            has_mask,
-            buffer,
-        } = binding
-        else {
-            return Ok(());
-        };
-        let params = compiler::MergeParams {
-            opacity: opacity.resolve_float(
-                *node_id,
-                "opacity",
-                &ctx.expr_context(*node_id, "opacity"),
-            )? as f32,
-            blend_mode: blend_mode.resolve_int(
-                *node_id,
-                "blend_mode",
-                &ctx.expr_context(*node_id, "blend_mode"),
-            )? as u32,
-            has_mask: u32::from(*has_mask),
-            _pad: 0,
-        };
-        bound.write_buffer(*buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
     }
 }

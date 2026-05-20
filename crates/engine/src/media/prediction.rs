@@ -239,21 +239,24 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
         let expr_context = self.expr_context("time_remap_requirements");
         Ok(remap_frame(TimeRemapSettings {
             frame: time_remap
+                .params
                 .frame
                 .resolve_float(time_remap.id, "frame", &expr_context)?,
-            loop_enabled: time_remap.loop_enabled.resolve_bool(
+            loop_enabled: time_remap.params.loop_enabled.resolve_bool(
                 time_remap.id,
                 "loop_enabled",
                 &expr_context,
             )?,
-            loop_start: time_remap.loop_start.resolve_int(
+            loop_start: time_remap.params.loop_start.resolve_int(
                 time_remap.id,
                 "loop_start",
                 &expr_context,
             )?,
-            loop_end: time_remap
-                .loop_end
-                .resolve_int(time_remap.id, "loop_end", &expr_context)?,
+            loop_end: time_remap.params.loop_end.resolve_int(
+                time_remap.id,
+                "loop_end",
+                &expr_context,
+            )?,
         }))
     }
 

@@ -63,6 +63,17 @@ pub fn render_project_mp4(
         message: format!("failed to create GPU renderer: {err:#}"),
         retryable: true,
     })?;
+    let adapter = renderer.gpu_renderer().adapter_info();
+    tracing::info!(
+        adapter = %adapter.name,
+        backend = ?adapter.backend,
+        device_type = ?adapter.device_type,
+        vendor = adapter.vendor,
+        device = adapter.device,
+        driver = %adapter.driver,
+        driver_info = %adapter.driver_info,
+        "rendering with GPU adapter"
+    );
     renderer
         .compile_with_media(
             composition,

@@ -1,11 +1,11 @@
 use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
-use crate::node::{NodeId, NodeProperty};
+use crate::node::{Deferred, NodeId, NodeParams};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, FrameBinding, GpuCompileNode, GpuFrameBindNode,
-    MediaTextureKey, RasterHandle, RasterMetadata,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, MediaTextureKey,
+    RasterHandle, RasterMetadata,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
@@ -46,40 +46,57 @@ pub enum MediaInKind {
 }
 
 /// Binds an external image or video frame as a GPU texture.
+#[derive(Debug, Clone, lumen_macros::NodeParams)]
+#[params(evaluated = EvaluatedMediaInParams)]
+#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+pub struct MediaInParams {
+    /// Type of external media source.
+    #[param(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
+    pub kind: Deferred<i64>,
+    /// External media source identifier.
+    #[param(kind = "string", role = "source_id")]
+    pub source: Deferred<String>,
+    /// First source frame to include.
+    #[param(kind = "int", min = 0, step = 1)]
+    pub range_start: Deferred<i64>,
+    /// Last source frame to include.
+    #[param(kind = "int", min = 0, step = 1)]
+    pub range_end: Deferred<i64>,
+    /// Playback speed multiplier.
+    #[param(kind = "float", step = 0.1)]
+    pub speed: Deferred<f64>,
+    /// Behavior when playback leaves the source range.
+    #[param(kind = "enum", enum_type = LoopMode)]
+    pub loop_mode: Deferred<i64>,
+}
+
+impl Default for MediaInParams {
+    fn default() -> Self {
+        Self {
+            kind: Deferred::value(0),
+            source: Deferred::value(String::new()),
+            range_start: Deferred::value(0),
+            range_end: Deferred::value(0),
+            speed: Deferred::value(1.0),
+            loop_mode: Deferred::value(0),
+        }
+    }
+}
+
+/// Binds an external image or video frame as a GPU texture.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "media_in", name = "Media In", category = "source")]
 pub struct MediaIn {
     pub id: NodeId,
-    /// Type of external media source.
-    #[property(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
-    pub kind: NodeProperty,
-    /// External media source identifier.
-    #[property(kind = "string", role = "source_id")]
-    pub source: NodeProperty,
-    /// First source frame to include.
-    #[property(kind = "int", min = 0, step = 1)]
-    pub range_start: NodeProperty,
-    /// Last source frame to include.
-    #[property(kind = "int", min = 0, step = 1)]
-    pub range_end: NodeProperty,
-    /// Playback speed multiplier.
-    #[property(kind = "float", step = 0.1)]
-    pub speed: NodeProperty,
-    /// Behavior when playback leaves the source range.
-    #[property(kind = "enum", enum_type = LoopMode)]
-    pub loop_mode: NodeProperty,
+    #[params]
+    pub params: MediaInParams,
 }
 
 impl Default for MediaIn {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            kind: NodeProperty::Int(0),
-            source: NodeProperty::String(String::new()),
-            range_start: NodeProperty::Int(0),
-            range_end: NodeProperty::Int(0),
-            speed: NodeProperty::Float(1.0),
-            loop_mode: NodeProperty::Int(0),
+            params: MediaInParams::default(),
         }
     }
 }
@@ -88,16 +105,24 @@ pub fn resolve_for_context(
     media_in: &MediaIn,
     ctx: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<MediaInKind> {
-    let kind = media_in.kind.resolve_int(media_in.id, "kind", ctx)?;
-    let source = media_in.source.resolve_string(media_in.id, "source", ctx)?;
+    let kind = media_in.params.kind.resolve_int(media_in.id, "kind", ctx)?;
+    let source = media_in
+        .params
+        .source
+        .resolve_string(media_in.id, "source", ctx)?;
     let range_start = media_in
+        .params
         .range_start
         .resolve_int(media_in.id, "range_start", ctx)?;
     let range_end = media_in
+        .params
         .range_end
         .resolve_int(media_in.id, "range_end", ctx)?;
-    let speed = media_in.speed.resolve_float(media_in.id, "speed", ctx)? as f32;
-    let loop_mode = LoopMode::from_int(media_in.loop_mode.resolve_int(
+    let speed = media_in
+        .params
+        .speed
+        .resolve_float(media_in.id, "speed", ctx)? as f32;
+    let loop_mode = LoopMode::from_int(media_in.params.loop_mode.resolve_int(
         media_in.id,
         "loop_mode",
         ctx,
@@ -202,9 +227,9 @@ impl GpuCompileNode for MediaIn {
             },
             lumen_gpu::ParamTarget::Texture(texture),
         );
-        ctx.push_frame_binding(FrameBinding::MediaInput {
+        ctx.push_frame_binding(MediaInputFrameBinding {
             node_id: self.id,
-            source: self.source.clone(),
+            node: self.clone(),
             texture,
             size,
         });
@@ -240,29 +265,27 @@ impl MediaIn {
     }
 }
 
-impl GpuFrameBindNode for MediaIn {
-    fn bind_gpu_frame(
-        &self,
-        ctx: &FrameBindContext<'_>,
-        binding: &FrameBinding,
-        bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        let FrameBinding::MediaInput {
-            node_id,
-            texture,
-            size,
-            ..
-        } = binding
-        else {
-            return Ok(());
-        };
+#[derive(Debug, Clone)]
+struct MediaInputFrameBinding {
+    node_id: NodeId,
+    node: MediaIn,
+    texture: lumen_gpu::TextureId,
+    size: lumen_gpu::Size,
+}
+
+impl GpuFrameBinding for MediaInputFrameBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let media = ctx.media().ok_or_else(|| RenderError::NodeEvaluation {
             frame: ctx.frame(),
-            node_id: *node_id,
+            node_id: self.node_id,
             node_kind: "MediaIn",
             details: "media store is required for media input nodes".to_string(),
         })?;
-        let kind = resolve_for_context(self, &ctx.expr_context(*node_id, "source"))?;
+        let kind = resolve_for_context(&self.node, &ctx.expr_context(self.node_id, "source"))?;
         let (frame, key_source, key_frame) = match kind {
             MediaInKind::Image { image_id } => media
                 .get_image_resolver(&image_id)
@@ -285,7 +308,7 @@ impl GpuFrameBindNode for MediaIn {
                 let metadata = resolver.metadata();
                 let source_frame = map_to_source_frame(
                     ctx.frame(),
-                    ctx.expr_context(*node_id, "source").fps,
+                    ctx.expr_context(self.node_id, "source").fps,
                     metadata.fps,
                     metadata.frame_count,
                     range.as_ref(),
@@ -303,15 +326,15 @@ impl GpuFrameBindNode for MediaIn {
             }
         };
         bound.use_media_texture(
-            *texture,
+            self.texture,
             MediaTextureKey {
                 source: key_source,
                 frame: key_frame,
-                width: size.width,
-                height: size.height,
+                width: self.size.width,
+                height: self.size.height,
             },
             frame,
-            *size,
+            self.size,
         );
         Ok(())
     }

@@ -1,13 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 
-#[cfg(all(
-    target_os = "linux",
-    feature = "ffmpeg",
-    feature = "cuda",
-    feature = "vulkan"
-))]
-use std::sync::OnceLock;
-
 use crate::{
     composition::Composition,
     error::RenderError,
@@ -19,13 +11,8 @@ use crate::{
     node::{NodeId, NodeKind, PortRef},
 };
 
-#[cfg(all(
-    target_os = "linux",
-    feature = "ffmpeg",
-    feature = "cuda",
-    feature = "vulkan"
-))]
-use super::types::MediaTextureUpload;
+#[cfg(feature = "ffmpeg")]
+use super::media::GpuMediaFrameImporter;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CompiledPlanKey(Vec<(NodeId, Option<usize>)>);
@@ -42,13 +29,8 @@ pub struct GpuCompositionRenderer {
     active_key: Option<CompiledPlanKey>,
     output_format: lumen_gpu::wgpu::TextureFormat,
     media_texture_cache: HashMap<MediaTextureKey, Arc<lumen_gpu::wgpu::Texture>>,
-    #[cfg(all(
-        target_os = "linux",
-        feature = "ffmpeg",
-        feature = "cuda",
-        feature = "vulkan"
-    ))]
-    cuda_media: Option<CudaMediaInterop>,
+    #[cfg(feature = "ffmpeg")]
+    gpu_media_importer: GpuMediaFrameImporter,
 }
 
 impl GpuCompositionRenderer {
@@ -65,13 +47,8 @@ impl GpuCompositionRenderer {
             active_key: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             media_texture_cache: HashMap::new(),
-            #[cfg(all(
-                target_os = "linux",
-                feature = "ffmpeg",
-                feature = "cuda",
-                feature = "vulkan"
-            ))]
-            cuda_media: None,
+            #[cfg(feature = "ffmpeg")]
+            gpu_media_importer: GpuMediaFrameImporter::default(),
         })
     }
 
@@ -82,13 +59,8 @@ impl GpuCompositionRenderer {
             active_key: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             media_texture_cache: HashMap::new(),
-            #[cfg(all(
-                target_os = "linux",
-                feature = "ffmpeg",
-                feature = "cuda",
-                feature = "vulkan"
-            ))]
-            cuda_media: None,
+            #[cfg(feature = "ffmpeg")]
+            gpu_media_importer: GpuMediaFrameImporter::default(),
         }
     }
 
@@ -145,9 +117,10 @@ impl GpuCompositionRenderer {
             frame_bindings = compiled.frame_bindings.len(),
             "prepare compiled render plan"
         );
-        let mut renderer = lumen_gpu::Renderer::from_device(
+        let mut renderer = lumen_gpu::Renderer::from_device_with_adapter_info(
             self.renderer.device.clone(),
             self.renderer.queue.clone(),
+            self.renderer.adapter_info().clone(),
         );
         renderer
             .prepare_plan(&compiled.plan)
@@ -225,6 +198,32 @@ impl GpuCompositionRenderer {
         self.submit_bound_frame(&bound)
     }
 
+    pub fn render_frame_into_external<M: MediaStore>(
+        &mut self,
+        composition: &Composition,
+        frame: u32,
+        media: &M,
+        external: lumen_gpu::ExternalTexture,
+    ) -> crate::Result<lumen_gpu::SubmittedExternalTexture> {
+        let span = tracing::trace_span!(target: "lumen_render", "render frame into external texture", frame);
+        let _entered = span.enter();
+        self.ensure_compiled_for_frame(composition, frame, Some(media))?;
+        let bound = self.bind_frame(composition, frame, media)?;
+        self.upload_bound_frame(&bound)?;
+        let prepared = self.active_prepared_mut()?;
+        prepared
+            .renderer
+            .submit_plan_with_external_texture(
+                &prepared.compiled.plan,
+                prepared.compiled.output.texture,
+                external,
+            )
+            .map_err(|error| RenderError::Gpu {
+                details: error.to_string(),
+            })
+            .map_err(Into::into)
+    }
+
     pub fn bind_frame<M: MediaStore>(
         &mut self,
         composition: &Composition,
@@ -275,13 +274,8 @@ impl GpuCompositionRenderer {
                 details: "composition has not been compiled".to_string(),
             })?;
         let media_texture_cache = &mut self.media_texture_cache;
-        #[cfg(all(
-            target_os = "linux",
-            feature = "ffmpeg",
-            feature = "cuda",
-            feature = "vulkan"
-        ))]
-        let cuda_media = &mut self.cuda_media;
+        #[cfg(feature = "ffmpeg")]
+        let gpu_media_importer = &mut self.gpu_media_importer;
         for upload in bound.media_textures() {
             tracing::trace!(
                 target: "lumen_render",
@@ -292,21 +286,22 @@ impl GpuCompositionRenderer {
                 height = upload.size.height,
                 "resolve media texture upload"
             );
-            #[cfg(all(
-                target_os = "linux",
-                feature = "ffmpeg",
-                feature = "cuda",
-                feature = "vulkan"
-            ))]
+            #[cfg(feature = "ffmpeg")]
             if let MediaFrame::GpuVideo(frame) = &upload.frame {
-                let texture =
-                    cuda_video_frame_to_texture(cuda_media, &prepared.renderer, upload, frame)
-                        .map_err(|details| RenderError::Gpu {
-                            details: format!("failed to import CUDA media frame: {details}"),
-                        })?;
+                let texture = gpu_media_importer
+                    .import(&prepared.renderer, upload, frame)
+                    .map_err(|details| RenderError::Gpu {
+                        details: format!("failed to import GPU media frame: {details}"),
+                    })?;
                 let desc = lumen_gpu::TextureDesc::sampled(
                     upload.size,
-                    lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                    match frame.frame.backend() {
+                        #[cfg(all(target_os = "macos", feature = "metal"))]
+                        lumen_ffmpeg::GpuBackend::Metal => {
+                            lumen_gpu::wgpu::TextureFormat::Bgra8Unorm
+                        }
+                        _ => lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                    },
                 );
                 prepared
                     .renderer
@@ -580,10 +575,10 @@ impl GpuCompositionRenderer {
                 let target_frame = crate::node::processing::time_remap::remap_frame(
                     crate::node::processing::time_remap::resolve_settings(
                         time_remap.id,
-                        &time_remap.frame,
-                        &time_remap.loop_enabled,
-                        &time_remap.loop_start,
-                        &time_remap.loop_end,
+                        &time_remap.params.frame,
+                        &time_remap.params.loop_enabled,
+                        &time_remap.params.loop_start,
+                        &time_remap.params.loop_end,
                         &ctx,
                     )?,
                 );
@@ -680,200 +675,4 @@ fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32) -> Vec<u8>
         }
     }
     out
-}
-
-#[cfg(all(
-    target_os = "linux",
-    feature = "ffmpeg",
-    feature = "cuda",
-    feature = "vulkan"
-))]
-struct CudaMediaInterop {
-    driver: &'static lumen_ffmpeg::CudaDriver,
-    context: lumen_ffmpeg::CudaContext<'static>,
-    converter: lumen_ffmpeg::CudaNv12ToRgbaConverter<'static>,
-    textures: HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
-}
-
-#[cfg(all(
-    target_os = "linux",
-    feature = "ffmpeg",
-    feature = "cuda",
-    feature = "vulkan"
-))]
-struct CudaMediaTexture {
-    size: lumen_gpu::Size,
-    imported: lumen_ffmpeg::ImportedCudaExternalImage<'static>,
-    rgba: lumen_ffmpeg::CudaDeviceAllocation<'static>,
-    exportable: lumen_gpu::ExportableVulkanTexture,
-}
-
-#[cfg(all(
-    target_os = "linux",
-    feature = "ffmpeg",
-    feature = "cuda",
-    feature = "vulkan"
-))]
-impl CudaMediaInterop {
-    fn new(exportable: &lumen_gpu::ExportableVulkanTexture) -> Result<Self, String> {
-        let driver = cuda_driver()?;
-        let vulkan_uuid = exportable.device_info().device_uuid;
-        let cuda_ordinal = driver
-            .devices()?
-            .into_iter()
-            .find(|device| device.uuid == vulkan_uuid)
-            .map(|device| device.ordinal)
-            .unwrap_or(0);
-        let context = driver.create_primary_context_for_ordinal(cuda_ordinal)?;
-        let converter = driver.create_nv12_to_rgba_converter()?;
-        Ok(Self {
-            driver,
-            context,
-            converter,
-            textures: HashMap::new(),
-        })
-    }
-
-    fn import_frame(
-        &mut self,
-        renderer: &lumen_gpu::Renderer,
-        upload: &MediaTextureUpload,
-        frame: &crate::media::GpuVideoMediaFrame,
-    ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
-        use lumen_ffmpeg::GpuVideoFrame;
-
-        let GpuVideoFrame::Cuda(decoded) = &frame.frame else {
-            return Err(format!(
-                "unsupported GPU media backend {:?}; only CUDA media frames can be imported here",
-                frame.frame.backend()
-            ));
-        };
-        let (decoded_width, decoded_height) = decoded.dimensions();
-        let decoded_size = lumen_gpu::Size::new(decoded_width.max(1), decoded_height.max(1));
-
-        let needs_texture = self
-            .textures
-            .get(&upload.texture)
-            .is_none_or(|texture| texture.size != decoded_size);
-        if needs_texture {
-            let texture = create_cuda_media_texture(renderer, self.driver, decoded_size)?;
-            self.textures.insert(upload.texture, texture);
-        }
-        let texture = self
-            .textures
-            .get_mut(&upload.texture)
-            .ok_or_else(|| "CUDA media texture cache entry was not initialized".to_string())?;
-
-        self.context.set_current()?;
-        self.converter.convert(decoded, &texture.rgba)?;
-        self.driver
-            .copy_rgba_frame_to_image(&texture.rgba, &texture.imported)?;
-        self.driver.synchronize_context()?;
-        Ok(texture.exportable.texture_arc())
-    }
-}
-
-#[cfg(all(
-    target_os = "linux",
-    feature = "ffmpeg",
-    feature = "cuda",
-    feature = "vulkan"
-))]
-fn cuda_driver() -> Result<&'static lumen_ffmpeg::CudaDriver, String> {
-    static CUDA_DRIVER: OnceLock<lumen_ffmpeg::CudaDriver> = OnceLock::new();
-    if let Some(driver) = CUDA_DRIVER.get() {
-        return Ok(driver);
-    }
-    let _ = CUDA_DRIVER.set(lumen_ffmpeg::CudaDriver::load()?);
-    CUDA_DRIVER
-        .get()
-        .ok_or_else(|| "CUDA driver was not initialized".to_string())
-}
-
-#[cfg(all(
-    target_os = "linux",
-    feature = "ffmpeg",
-    feature = "cuda",
-    feature = "vulkan"
-))]
-impl Drop for CudaMediaInterop {
-    fn drop(&mut self) {
-        let _ = self.context.set_current();
-        self.textures.clear();
-    }
-}
-
-#[cfg(all(
-    target_os = "linux",
-    feature = "ffmpeg",
-    feature = "cuda",
-    feature = "vulkan"
-))]
-fn cuda_video_frame_to_texture(
-    interop: &mut Option<CudaMediaInterop>,
-    renderer: &lumen_gpu::Renderer,
-    upload: &MediaTextureUpload,
-    frame: &crate::media::GpuVideoMediaFrame,
-) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
-    let (width, height) = frame.dimensions();
-    let decoded_size = lumen_gpu::Size::new(width.max(1), height.max(1));
-    if interop.is_none() {
-        let exportable = renderer
-            .create_exportable_vulkan_texture(
-                Some("lumen cuda media texture bootstrap"),
-                decoded_size,
-                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
-                    | lumen_gpu::wgpu::TextureUsages::COPY_DST
-                    | lumen_gpu::wgpu::TextureUsages::COPY_SRC,
-            )
-            .map_err(|error| error.to_string())?;
-        *interop = Some(CudaMediaInterop::new(&exportable)?);
-    }
-    interop
-        .as_mut()
-        .ok_or_else(|| "CUDA media interop was not initialized".to_string())?
-        .import_frame(renderer, upload, frame)
-}
-
-#[cfg(all(
-    target_os = "linux",
-    feature = "ffmpeg",
-    feature = "cuda",
-    feature = "vulkan"
-))]
-fn create_cuda_media_texture(
-    renderer: &lumen_gpu::Renderer,
-    driver: &'static lumen_ffmpeg::CudaDriver,
-    size: lumen_gpu::Size,
-) -> Result<CudaMediaTexture, String> {
-    use lumen_ffmpeg::import_owned_vulkan_opaque_fd_image;
-    let exportable = renderer
-        .create_exportable_vulkan_texture(
-            Some("lumen cuda media texture"),
-            size,
-            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-            lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
-                | lumen_gpu::wgpu::TextureUsages::COPY_DST
-                | lumen_gpu::wgpu::TextureUsages::COPY_SRC,
-        )
-        .map_err(|error| error.to_string())?;
-
-    let rgba = driver.allocate_rgba_frame(size.width, size.height)?;
-    let imported = import_owned_vulkan_opaque_fd_image(
-        driver,
-        exportable
-            .memory_fd()
-            .try_clone()
-            .map_err(|error| format!("failed to duplicate Vulkan memory fd: {error}"))?,
-        exportable.allocation_size(),
-        size.width,
-        size.height,
-    )?;
-    Ok(CudaMediaTexture {
-        size,
-        imported,
-        rgba,
-        exportable,
-    })
 }

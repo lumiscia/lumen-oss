@@ -5,7 +5,7 @@ use crate::{
         ast::{BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::{evaluate_builtin, evaluate_text_measure_builtin},
     },
-    node::NodeProperty,
+    node::{PropertyExpression, PropertyValue},
 };
 
 impl Expression {
@@ -14,12 +14,12 @@ impl Expression {
     }
 }
 
-pub fn property_value_to_expression_value(value: &NodeProperty) -> crate::Result<ExpressionValue> {
+pub fn property_value_to_expression_value(value: &PropertyValue) -> crate::Result<ExpressionValue> {
     match value {
-        NodeProperty::Float(number) => Ok(ExpressionValue::Number(*number)),
-        NodeProperty::Int(number) => Ok(ExpressionValue::Number(*number as f64)),
-        NodeProperty::Bool(boolean) => Ok(ExpressionValue::Boolean(*boolean)),
-        NodeProperty::String(text) => Ok(ExpressionValue::String(text.clone())),
+        PropertyValue::Float(number) => Ok(ExpressionValue::Number(*number)),
+        PropertyValue::Int(number) => Ok(ExpressionValue::Number(*number as f64)),
+        PropertyValue::Bool(boolean) => Ok(ExpressionValue::Boolean(*boolean)),
+        PropertyValue::String(text) => Ok(ExpressionValue::String(text.clone())),
         unsupported => Err(LumenError::Expression(ExpressionError::Evaluate {
             path: None,
             details: format!(
@@ -153,7 +153,7 @@ pub(crate) fn evaluate_expr(
                 node_id.0
             ),
         })),
-        ExprNode::NodeProperty(node_id, target_path) => {
+        ExprNode::PropertyValue(node_id, target_path) => {
             let graph = ctx.graph.ok_or_else(|| {
                 LumenError::Expression(ExpressionError::Evaluate {
                     path: ctx.path.clone(),
@@ -185,8 +185,8 @@ pub(crate) fn evaluate_expr(
                     })
                 })?;
             match &prop {
-                NodeProperty::Expr(inner_expr) => inner_expr.evaluate(ctx),
-                other => property_value_to_expression_value(other),
+                PropertyExpression::Expr(inner_expr) => inner_expr.evaluate(ctx),
+                PropertyExpression::Value(value) => property_value_to_expression_value(value),
             }
         }
         ExprNode::VirtualProperty(id) => Err(LumenError::Expression(ExpressionError::Evaluate {
@@ -225,18 +225,17 @@ fn to_boolean(value: &ExpressionValue) -> bool {
     }
 }
 
-fn node_property_type_name(value: &NodeProperty) -> &'static str {
+fn node_property_type_name(value: &PropertyValue) -> &'static str {
     match value {
-        NodeProperty::Float(_) => "float",
-        NodeProperty::Int(_) => "int",
-        NodeProperty::Bool(_) => "bool",
-        NodeProperty::String(_) => "string",
-        NodeProperty::Color(_) => "color",
-        NodeProperty::Vec2(_) => "vec2",
-        NodeProperty::FloatVec(_) => "float[]",
-        NodeProperty::IntVec(_) => "int[]",
-        NodeProperty::StringVec(_) => "string[]",
-        NodeProperty::Expr(_) => "expression",
+        PropertyValue::Float(_) => "float",
+        PropertyValue::Int(_) => "int",
+        PropertyValue::Bool(_) => "bool",
+        PropertyValue::String(_) => "string",
+        PropertyValue::Color(_) => "color",
+        PropertyValue::Vec2(_) => "vec2",
+        PropertyValue::FloatVec(_) => "float[]",
+        PropertyValue::IntVec(_) => "int[]",
+        PropertyValue::StringVec(_) => "string[]",
     }
 }
 
@@ -246,7 +245,7 @@ mod tests {
     use crate::{
         expr::ast::{BuiltinFn, ExprNode, ExpressionId},
         graph::Graph,
-        node::{NodeId, NodeKind, NodeProperty, source::text::Text},
+        node::{NodeId, NodeKind, PropertyValue, source::text::Text},
     };
 
     fn test_context() -> ExpressionContext<'static> {
@@ -286,18 +285,18 @@ mod tests {
     #[test]
     fn converts_supported_node_properties() {
         assert_eq!(
-            property_value_to_expression_value(&NodeProperty::Int(7)).unwrap(),
+            property_value_to_expression_value(&PropertyValue::Int(7)).unwrap(),
             ExpressionValue::Number(7.0)
         );
         assert_eq!(
-            property_value_to_expression_value(&NodeProperty::Bool(true)).unwrap(),
+            property_value_to_expression_value(&PropertyValue::Bool(true)).unwrap(),
             ExpressionValue::Boolean(true)
         );
     }
 
     #[test]
     fn rejects_non_scalar_node_properties() {
-        let error = property_value_to_expression_value(&NodeProperty::Color([0, 0, 0, 255]))
+        let error = property_value_to_expression_value(&PropertyValue::Color([0, 0, 0, 255]))
             .unwrap_err()
             .to_string();
 
@@ -370,10 +369,13 @@ mod tests {
             text_id,
             NodeKind::Text(Text {
                 id: text_id,
-                content: NodeProperty::String("Morning, update posted.".to_string()),
-                font_family: NodeProperty::String("Roboto".to_string()),
-                font_size: NodeProperty::Float(32.0),
-                max_width: NodeProperty::Float(300.0),
+                params: crate::node::source::text::TextParams {
+                    content: crate::node::Deferred::value("Morning, update posted.".to_string()),
+                    font_family: crate::node::Deferred::value("Roboto".to_string()),
+                    font_size: crate::node::Deferred::value(32.0),
+                    max_width: crate::node::Deferred::value(300.0),
+                    ..Default::default()
+                },
                 ..Text::default()
             }),
         );

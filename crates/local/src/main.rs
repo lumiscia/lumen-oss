@@ -11,6 +11,8 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
+#[cfg(all(target_os = "macos", feature = "metal"))]
+use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, duration_samples},
     composition::Composition,
@@ -26,8 +28,6 @@ use lumen_ffmpeg::{
     VideoCodec, VideoEncoderConfig,
 };
 use lumen_ffmpeg::{GpuBackend, gpu_texture_encode_support};
-#[cfg(all(target_os = "macos", feature = "metal"))]
-use lumen_ffmpeg::{GpuVideoInput, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache};
 
 #[derive(Debug)]
 struct CliArgs {
@@ -705,11 +705,6 @@ fn render_video_gpu_videotoolbox(
             lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
         )
         .context("failed to compile composition")?;
-    let output_handle = renderer
-        .compiled()
-        .ok_or_else(|| anyhow!("composition did not compile"))?
-        .output;
-
     let mut config = VideoEncoderConfig::cpu_rgba(
         width,
         height,
@@ -726,9 +721,10 @@ fn render_video_gpu_videotoolbox(
     let audio =
         include_audio.then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
 
-    let metal_device = metal_device_from_wgpu(&renderer.gpu_renderer().device)?;
-    let texture_cache = MetalTextureCache::create(&metal_device)?;
-    let pixel_buffer_pool = MetalPixelBufferPool::bgra8(width, height)?;
+    let mut target_pool = MetalVideoToolboxTargetPool::bgra8(
+        renderer.gpu_renderer(),
+        lumen_gpu::Size::new(width, height),
+    )?;
     let mut encoder =
         MuxedEncoder::create_with_audio(output.to_string_lossy().to_string(), config, audio)
             .map_err(|error| anyhow!("lumen-ffmpeg GPU encoder failed to start: {error}"))?;
@@ -737,50 +733,16 @@ fn render_video_gpu_videotoolbox(
     let render_started = Instant::now();
     let mut pending = VecDeque::<PendingGpuEncodeFrame>::new();
     for frame in 0..total_frames {
-        let pixel_frame = pixel_buffer_pool.create_frame(Some(i64::from(frame)))?;
-        let metal_texture = pixel_frame.create_texture(
-            &texture_cache,
-            objc2_metal::MTLPixelFormat::BGRA8Unorm,
-            0,
-        )?;
-        let output_texture = import_metal_texture_as_wgpu(
-            &renderer.gpu_renderer().device,
-            metal_texture,
-            width,
-            height,
-            lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
-        )?;
-        let old_texture = renderer.gpu_renderer_mut().replace_texture(
-            output_handle.texture,
-            output_texture,
-            external_output_texture_desc(
-                lumen_gpu::Size::new(width, height),
-                lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
-            ),
-        )?;
-        if let Some(previous) = pending.back_mut() {
-            previous.retained_texture = Some(old_texture);
-        }
-
-        let bind_started = Instant::now();
-        let bound = renderer
-            .bind_frame(&composition, frame, &media_store)
-            .with_context(|| format!("frame bind failed at frame {frame}"))?;
-        timings.bind_ms = timings
-            .bind_ms
-            .saturating_add(bind_started.elapsed().as_millis());
-
-        let upload_started = Instant::now();
-        renderer
-            .upload_bound_frame(&bound)
-            .with_context(|| format!("frame upload failed at frame {frame}"))?;
-        timings.upload_ms = timings
-            .upload_ms
-            .saturating_add(upload_started.elapsed().as_millis());
+        let target = target_pool.acquire(renderer.gpu_renderer(), frame)?;
 
         let render_frame_started = Instant::now();
-        let (_raster, submission) = renderer
-            .submit_render()
+        let submitted = renderer
+            .render_frame_into_external(
+                &composition,
+                frame,
+                &media_store,
+                target.external_texture(),
+            )
             .with_context(|| format!("render submit failed at frame {frame}"))?;
         timings.render_ms = timings
             .render_ms
@@ -788,9 +750,8 @@ fn render_video_gpu_videotoolbox(
 
         pending.push_back(PendingGpuEncodeFrame {
             frame,
-            pixel_frame,
-            submission,
-            retained_texture: None,
+            target,
+            submitted,
         });
         if pending.len() >= GPU_ENCODER_FRAMES_IN_FLIGHT {
             encode_ready_gpu_frame(&renderer, &mut encoder, &mut timings, &mut pending)?;
@@ -836,9 +797,8 @@ fn render_video_gpu_videotoolbox(
 #[cfg(all(target_os = "macos", feature = "metal"))]
 struct PendingGpuEncodeFrame {
     frame: u32,
-    pixel_frame: MetalPixelBufferFrame,
-    submission: lumen_gpu::wgpu::SubmissionIndex,
-    retained_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
+    target: MetalVideoToolboxTarget,
+    submitted: lumen_gpu::SubmittedExternalTexture,
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -850,32 +810,24 @@ fn encode_ready_gpu_frame(
 ) -> Result<()> {
     let PendingGpuEncodeFrame {
         frame,
-        pixel_frame,
-        submission,
-        retained_texture,
+        target,
+        submitted,
     } = pending
         .pop_front()
         .ok_or_else(|| anyhow!("no pending GPU frame to encode"))?;
     let flush_started = Instant::now();
-    renderer
-        .gpu_renderer()
-        .device
-        .poll(lumen_gpu::wgpu::PollType::Wait {
-            submission_index: Some(submission),
-            timeout: None,
-        })?;
+    submitted.wait(&renderer.gpu_renderer().device)?;
     timings.flush_ms = timings
         .flush_ms
         .saturating_add(flush_started.elapsed().as_millis());
 
     let encode_send_started = Instant::now();
     encoder
-        .write_gpu_frame(&GpuVideoInput::MetalPixelBuffer(&pixel_frame))
+        .write_gpu_frame(&target.video_input())
         .map_err(|error| anyhow!("lumen-ffmpeg GPU encode failed at frame {}: {error}", frame))?;
     timings.encode_send_ms = timings
         .encode_send_ms
         .saturating_add(encode_send_started.elapsed().as_millis());
-    drop(retained_texture);
     Ok(())
 }
 
@@ -892,70 +844,6 @@ fn render_video_gpu_videotoolbox(
     Err(anyhow!(
         "VideoToolbox GPU texture encode is only available on macOS"
     ))
-}
-
-#[cfg(all(target_os = "macos", feature = "metal"))]
-fn metal_device_from_wgpu(
-    device: &lumen_gpu::wgpu::Device,
-) -> Result<objc2::rc::Retained<lumen_ffmpeg::Objc2MetalDevice>> {
-    let hal_device = unsafe { device.as_hal::<lumen_gpu::wgpu::hal::api::Metal>() }
-        .ok_or_else(|| anyhow!("wgpu device is not using the Metal backend"))?;
-    Ok(hal_device.raw_device().clone())
-}
-
-#[cfg(all(target_os = "macos", feature = "metal"))]
-fn import_metal_texture_as_wgpu(
-    device: &lumen_gpu::wgpu::Device,
-    texture: objc2::rc::Retained<lumen_ffmpeg::Objc2MetalTexture>,
-    width: u32,
-    height: u32,
-    format: lumen_gpu::wgpu::TextureFormat,
-) -> Result<lumen_gpu::wgpu::Texture> {
-    let hal_texture = unsafe {
-        lumen_gpu::wgpu::hal::metal::Device::texture_from_raw(
-            texture,
-            format,
-            objc2_metal::MTLTextureType::Type2D,
-            1,
-            1,
-            lumen_gpu::wgpu::hal::CopyExtent {
-                width,
-                height,
-                depth: 1,
-            },
-        )
-    };
-    let desc = lumen_gpu::wgpu::TextureDescriptor {
-        label: Some("lumen-local videotoolbox output texture"),
-        size: lumen_gpu::wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: lumen_gpu::wgpu::TextureDimension::D2,
-        format,
-        usage: lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT
-            | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    };
-    Ok(unsafe {
-        device.create_texture_from_hal::<lumen_gpu::wgpu::hal::api::Metal>(hal_texture, &desc)
-    })
-}
-
-#[cfg(all(target_os = "macos", feature = "metal"))]
-fn external_output_texture_desc(
-    size: lumen_gpu::Size,
-    format: lumen_gpu::wgpu::TextureFormat,
-) -> lumen_gpu::TextureDesc {
-    lumen_gpu::TextureDesc {
-        domain: lumen_gpu::TextureDomain::full_frame(size),
-        format,
-        usage: lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT
-            | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING,
-    }
 }
 
 fn write_composited_audio(

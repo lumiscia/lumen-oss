@@ -128,7 +128,7 @@ pub enum ExprNode {
     Global(GlobalVar),
     SymbolicPath(Vec<String>),
     Node(NodeId),
-    NodeProperty(NodeId, PropertyPath),
+    PropertyValue(NodeId, PropertyPath),
     VirtualProperty(VirtualPropertyId),
     Conditional(Box<ExprNode>, Box<ExprNode>, Box<ExprNode>),
 }
@@ -138,7 +138,7 @@ pub enum ExpressionReference {
     Node {
         node_id: NodeId,
     },
-    NodeProperty {
+    PropertyValue {
         node_id: NodeId,
         property_path: PropertyPath,
     },
