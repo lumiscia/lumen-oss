@@ -34,6 +34,7 @@ import type {
   VideoSourceRegistration,
 } from "./media/index.js";
 import { toUint8Array } from "./media/index.js";
+import { FrameRequirementLoader } from "./requirements-loader.js";
 
 export type {
   BlobMediaSourceInput,
@@ -278,18 +279,27 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
   }
 
   class RuntimeLumenRenderer extends bindings.LumenRenderer implements LumenRenderer {
-    private lookaheadCount = 8;
-    private loadGeneration = 0;
-    private readonly pendingWindows = new Map<number, Promise<void>>();
+    private readonly requirements: FrameRequirementLoader;
+
+    constructor() {
+      super();
+      this.requirements = new FrameRequirementLoader({
+        durationFrames: () => super.durationFrames(),
+        load: (requirementsJson) => this.requireMedia().loadFrameRequirements(requirementsJson),
+        requirements: (frame) => super.frameRequirements(frame, this.requireMedia()),
+      });
+    }
+
+    private media: LumenMediaStore | null = null;
 
     clear(): void {
       super.clear();
-      this.resetWindowLoads();
+      this.requirements.reset();
     }
 
     loadComposition(compositionJson: string): void {
       super.loadComposition(compositionJson);
-      this.resetWindowLoads();
+      this.requirements.reset();
     }
 
     renderFrame(
@@ -302,8 +312,7 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
 
     setLookaheadCount(lookaheadCount: number): void {
       super.setLookaheadCount(lookaheadCount);
-      this.lookaheadCount = Math.max(0, Math.floor(lookaheadCount));
-      this.resetWindowLoads();
+      this.requirements.setLookaheadCount(lookaheadCount);
     }
 
     async renderFrameAsync(
@@ -311,90 +320,20 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       media: LumenMediaStore,
       canvas: HTMLCanvasElement | OffscreenCanvas,
     ): Promise<void> {
-      await this.loadFrame(frame, media);
+      if (this.media !== media) {
+        this.media = media;
+        this.requirements.reset();
+      }
+      await this.requirements.loadFrame(frame);
       await super.renderFrame(frame, media, canvas);
-      this.prefetchWindow(frame + 1, media);
+      this.requirements.prefetchWindow(frame + 1);
     }
 
-    private resetWindowLoads(): void {
-      this.loadGeneration += 1;
-      this.pendingWindows.clear();
-    }
-
-    private normalizeFrame(frame: number): number {
-      const totalFrames = super.durationFrames();
-      if (totalFrames <= 0) {
-        return frame;
+    private requireMedia(): LumenMediaStore {
+      if (!this.media) {
+        throw new Error("LumenRenderer media store is not attached");
       }
-
-      return ((frame % totalFrames) + totalFrames) % totalFrames;
-    }
-
-    private async loadWindow(frame: number, media: LumenMediaStore): Promise<void> {
-      await this.loadRequirementsForFrame(frame, media, true);
-    }
-
-    private async loadFrame(frame: number, media: LumenMediaStore): Promise<void> {
-      await this.loadRequirementsForFrame(frame, media, false);
-    }
-
-    private async loadRequirementsForFrame(
-      frame: number,
-      media: LumenMediaStore,
-      includeLookahead: boolean,
-    ): Promise<void> {
-      const normalizedFrame = this.normalizeFrame(frame);
-      const key = includeLookahead ? normalizedFrame : -normalizedFrame - 1;
-      const existing = this.pendingWindows.get(key);
-      if (existing) {
-        await existing;
-        return;
-      }
-
-      const generation = this.loadGeneration;
-      const pending = (async () => {
-        const requirementsJson = includeLookahead
-          ? super.frameRequirementsWindow(normalizedFrame, media)
-          : super.frameRequirements(normalizedFrame, media);
-        if (generation !== this.loadGeneration) {
-          return;
-        }
-        await media.loadFrameRequirements(requirementsJson);
-      })().finally(() => {
-        if (this.pendingWindows.get(key) === pending) {
-          this.pendingWindows.delete(key);
-        }
-      });
-      this.pendingWindows.set(key, pending);
-
-      try {
-        await pending;
-      } catch (error) {
-        if (generation !== this.loadGeneration) {
-          return;
-        }
-        throw error;
-      }
-    }
-
-    private prefetchWindow(frame: number, media: LumenMediaStore): void {
-      if (super.durationFrames() <= 0) {
-        return;
-      }
-
-      void this.prefetchFrames(frame, media).catch(() => {
-        // The foreground render path reports persistent media errors.
-      });
-    }
-
-    private async prefetchFrames(frame: number, media: LumenMediaStore): Promise<void> {
-      const generation = this.loadGeneration;
-      for (let offset = 0; offset < this.lookaheadCount; offset += 1) {
-        if (generation !== this.loadGeneration) {
-          return;
-        }
-        await this.loadFrame(frame + offset, media);
-      }
+      return this.media;
     }
   }
 
@@ -403,89 +342,60 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
     implements LumenPreviewController
   {
     private readonly bridge = new LumenMediaBridge(this);
-    private lookaheadCount = 8;
-    private loadGeneration = 0;
-    private readonly pendingWindows = new Map<number, Promise<void>>();
+    private readonly requirements: FrameRequirementLoader;
+
+    constructor() {
+      super();
+      this.requirements = new FrameRequirementLoader({
+        durationFrames: () => super.durationFrames(),
+        load: (requirementsJson) => this.bridge.loadFrameRequirements(requirementsJson),
+        requirements: (frame) => super.frameRequirements(frame),
+      });
+    }
 
     clear(): void {
       super.clear();
       this.bridge.clear();
-      this.resetWindowLoads();
+      this.requirements.reset();
     }
 
     loadComposition(compositionJson: string, fps: number): void {
       super.loadComposition(compositionJson, fps);
-      this.resetWindowLoads();
-    }
-
-    currentFrame(): number {
-      return super.currentFrame();
-    }
-
-    durationFrames(): number {
-      return super.durationFrames();
-    }
-
-    height(): number {
-      return super.height();
-    }
-
-    isPlaying(): boolean {
-      return super.isPlaying();
-    }
-
-    pause(): void {
-      super.pause();
-    }
-
-    play(): void {
-      super.play();
-    }
-
-    setFrame(frame: number): void {
-      super.setFrame(frame);
-    }
-
-    targetFrameForTimeMs(timeMs: number): number {
-      return super.targetFrameForTimeMs(timeMs);
-    }
-
-    width(): number {
-      return super.width();
+      this.requirements.reset();
     }
 
     clearMedia(): void {
       super.clearMedia();
       this.bridge.clear();
-      this.resetWindowLoads();
+      this.requirements.reset();
     }
 
     clearVideos(): void {
       super.clearVideos();
       this.bridge.clearVideos();
-      this.resetWindowLoads();
+      this.requirements.reset();
     }
 
     clearVideoSource(streamId: string): void {
       super.clearVideoSource(streamId);
       this.bridge.clearVideoSource(streamId);
-      this.resetWindowLoads();
+      this.requirements.reset();
     }
 
     removeImageSource(imageId: string): void {
       super.removeImageSource(imageId);
       this.bridge.removeImageSource(imageId, false);
-      this.resetWindowLoads();
+      this.requirements.reset();
     }
 
     removeVideoSource(streamId: string): void {
       super.removeVideoSource(streamId);
       this.bridge.removeVideoSource(streamId, false);
-      this.resetWindowLoads();
+      this.requirements.reset();
     }
 
     registerFontFamily(fontFamily: string, bytes: BufferSource): void {
-      this.resetWindowLoads();
+      this.requirements.reset();
       super.setFont(fontFamily, toUint8Array(bytes));
     }
 
@@ -494,7 +404,7 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
     }
 
     async registerImageSource(imageId: string, source: MediaSourceInput): Promise<void> {
-      this.resetWindowLoads();
+      this.requirements.reset();
       await this.bridge.registerImageSource(imageId, source);
     }
 
@@ -503,7 +413,7 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       source: MediaSourceInput,
       optionsOrFps: number | Omit<VideoSourceRegistration, "source"> = {},
     ): Promise<VideoFrameMetadata> {
-      this.resetWindowLoads();
+      this.requirements.reset();
       return this.bridge.registerVideoSource(streamId, source, optionsOrFps);
     }
 
@@ -512,12 +422,12 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       bytes: BufferSource,
       options: Omit<VideoSourceRegistration, "source"> = {},
     ): Promise<VideoFrameMetadata> {
-      this.resetWindowLoads();
+      this.requirements.reset();
       return this.bridge.registerVideoSourceBytes(streamId, bytes, options);
     }
 
     async syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void> {
-      this.resetWindowLoads();
+      this.requirements.reset();
       await this.bridge.syncMediaSources(registrations);
     }
 
@@ -531,32 +441,27 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
 
     setLookaheadCount(lookaheadCount: number): void {
       super.setLookaheadCount(lookaheadCount);
-      this.lookaheadCount = Math.max(0, Math.floor(lookaheadCount));
-      this.resetWindowLoads();
-    }
-
-    setLogLevel(level: LumenLogLevel): void {
-      super.setLogLevel(level);
+      this.requirements.setLookaheadCount(lookaheadCount);
     }
 
     async renderNowAsync(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
-      await this.loadFrame(super.currentFrame());
+      await this.requirements.loadFrame(super.currentFrame());
       try {
         await super.renderNow(canvas);
       } catch (error) {
         if (!this.isRecoverableFrameMiss(error)) {
           throw error;
         }
-        await this.loadFrame(super.currentFrame());
+        await this.requirements.loadFrame(super.currentFrame());
         await super.renderNow(canvas);
       }
-      this.prefetchWindow(super.currentFrame() + 1);
+      this.requirements.prefetchWindow(super.currentFrame() + 1);
     }
 
     async tickAsync(nowMs: number, canvas: HTMLCanvasElement | OffscreenCanvas): Promise<boolean> {
       const frame = super.currentFrame();
-      this.prefetchWindow(frame + 1);
-      await this.loadFrame(frame);
+      this.requirements.prefetchWindow(frame + 1);
+      await this.requirements.loadFrame(frame);
       let changed: boolean;
       try {
         changed = await super.tick(nowMs, canvas);
@@ -564,92 +469,12 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
         if (!this.isRecoverableFrameMiss(error)) {
           throw error;
         }
-        await this.loadFrame(super.currentFrame());
+        await this.requirements.loadFrame(super.currentFrame());
         await super.renderNow(canvas);
         changed = true;
       }
-      this.prefetchWindow(super.currentFrame() + 1);
+      this.requirements.prefetchWindow(super.currentFrame() + 1);
       return changed;
-    }
-
-    private resetWindowLoads(): void {
-      this.loadGeneration += 1;
-      this.pendingWindows.clear();
-    }
-
-    private normalizeFrame(frame: number): number {
-      const totalFrames = super.durationFrames();
-      if (totalFrames <= 0) {
-        return frame;
-      }
-
-      return ((frame % totalFrames) + totalFrames) % totalFrames;
-    }
-
-    private async loadWindow(frame: number): Promise<void> {
-      await this.loadRequirementsForFrame(frame, true);
-    }
-
-    private async loadFrame(frame: number): Promise<void> {
-      await this.loadRequirementsForFrame(frame, false);
-    }
-
-    private async loadRequirementsForFrame(
-      frame: number,
-      includeLookahead: boolean,
-    ): Promise<void> {
-      const normalizedFrame = this.normalizeFrame(frame);
-      const key = includeLookahead ? normalizedFrame : -normalizedFrame - 1;
-      const existing = this.pendingWindows.get(key);
-      if (existing) {
-        await existing;
-        return;
-      }
-
-      const generation = this.loadGeneration;
-      const pending = (async () => {
-        const requirementsJson = includeLookahead
-          ? super.frameRequirementsWindow(normalizedFrame)
-          : super.frameRequirements(normalizedFrame);
-        if (generation !== this.loadGeneration) {
-          return;
-        }
-        await this.bridge.loadFrameRequirements(requirementsJson);
-      })().finally(() => {
-        if (this.pendingWindows.get(key) === pending) {
-          this.pendingWindows.delete(key);
-        }
-      });
-      this.pendingWindows.set(key, pending);
-
-      try {
-        await pending;
-      } catch (error) {
-        if (generation !== this.loadGeneration) {
-          return;
-        }
-        throw error;
-      }
-    }
-
-    private prefetchWindow(frame: number): void {
-      if (super.durationFrames() <= 0) {
-        return;
-      }
-
-      void this.prefetchFrames(frame).catch(() => {
-        // The foreground render path reports persistent media errors.
-      });
-    }
-
-    private async prefetchFrames(frame: number): Promise<void> {
-      const generation = this.loadGeneration;
-      for (let offset = 0; offset < this.lookaheadCount; offset += 1) {
-        if (generation !== this.loadGeneration) {
-          return;
-        }
-        await this.loadFrame(frame + offset);
-      }
     }
 
     private isRecoverableFrameMiss(error: unknown): boolean {

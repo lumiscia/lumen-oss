@@ -1,4 +1,5 @@
 import { LumenAudioEngine, audioTimelineFromCompositionJson } from "../audio-engine.js";
+import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../worker-host.js";
 import { createWorkerControllerProxy } from "./controller-proxy.js";
 import type {
   LumenPreviewDriverHost,
@@ -7,10 +8,6 @@ import type {
   LumenPreviewSessionOptions,
   LumenWorkerBindings,
 } from "./types.js";
-
-type WorkerMessage =
-  | { type: "state"; patch: Record<string, unknown> }
-  | { type: "error"; scope: string; message: string };
 
 export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
   #audio: LumenAudioEngine;
@@ -42,7 +39,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
     this.#offscreenTransferred = true;
     this.#worker = worker;
 
-    worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
+    worker.onmessage = (event: MessageEvent<LumenPreviewWorkerEvent>) => {
       if (event.data.type === "state") {
         this.#host.updateState(event.data.patch);
         return;
@@ -50,7 +47,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
       this.#host.reportError(event.data.scope, event.data.message);
     };
 
-    worker.postMessage(
+    this.#post(
       {
         type: "initialize",
         canvas: offscreen,
@@ -65,21 +62,21 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
     this.#syncAudio();
     this.#host.attachController(
       createWorkerControllerProxy(this.#host.preview, () => this.#inputs.fps),
-      (frame) => worker.postMessage({ type: "seek", frame }),
+      (frame) => this.#post({ type: "seek", frame }),
       {
         pause: () => {
           this.#audio.pause();
-          worker.postMessage({ type: "pause" });
+          this.#post({ type: "pause" });
         },
         play: () => {
           const frame = this.#host.preview.getSnapshot().frame;
           const fromMs = (frame / Math.max(this.#inputs.fps, 1)) * 1_000;
           this.#audio.play(fromMs);
-          worker.postMessage({ type: "play", fromMs });
+          this.#post({ type: "play", fromMs });
         },
         seek: (frame) => {
           this.#audio.seekMs((frame / Math.max(this.#inputs.fps, 1)) * 1_000);
-          worker.postMessage({ type: "seek", frame });
+          this.#post({ type: "seek", frame });
         },
       },
     );
@@ -88,7 +85,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
   update(inputs: LumenPreviewSessionInputs): void {
     const previous = this.#inputs;
     this.#inputs = inputs;
-    this.#worker?.postMessage({ type: "set-log-level", logLevel: inputs.logLevel });
+    this.#post({ type: "set-log-level", logLevel: inputs.logLevel });
     this.#syncAudio();
 
     if (
@@ -96,7 +93,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
       previous.fps !== inputs.fps ||
       previous.mediaSources !== inputs.mediaSources
     ) {
-      this.#worker?.postMessage({
+      this.#post({
         type: "set-composition",
         compositionJson: inputs.compositionJson,
         fps: inputs.fps,
@@ -106,7 +103,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
   }
 
   dispose(): void {
-    this.#worker?.postMessage({ type: "dispose" });
+    this.#post({ type: "dispose" });
     this.#worker?.terminate();
     this.#worker = null;
     this.#audio.dispose();
@@ -120,5 +117,9 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
     void this.#audio.syncAudioSources(this.#inputs.audioSources).catch((error: unknown) => {
       this.#host.reportError("sync audio sources", error);
     });
+  }
+
+  #post(message: LumenPreviewWorkerCommand, transfer: Transferable[] = []): void {
+    this.#worker?.postMessage(message, transfer);
   }
 }

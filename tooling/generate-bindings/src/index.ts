@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -50,18 +50,6 @@ for (const target of targets) {
     wasmPath,
   ]);
 }
-
-if (mode === "release") {
-  console.log("Running wasm-opt for generated WASM targets...");
-  await Promise.all(
-    targets.map(async (target) => {
-      const wasm = join(bindingsDir, target.out, `${wasmName}_bg.wasm`);
-      await run("pnpm", ["exec", "wasm-opt", "-Oz", "-o", wasm, wasm]);
-    }),
-  );
-}
-
-await verifySharedWasm();
 
 function parseArgs() {
   let mode: "debug" | "release" | undefined;
@@ -136,10 +124,180 @@ async function verifySharedWasm() {
   throw new Error(`Generated target wasm files differ:\n${lines}`);
 }
 
+async function writePackageEntrypoints() {
+  await Promise.all([
+    writeTargetFiles("bundler", {
+      "index.js": bundlerIndexJs,
+      "index.d.ts": bundlerIndexDts,
+      "preview-worker.js": previewWorkerJs,
+    }),
+    writeTargetFiles("browser", {
+      "index.js": browserIndexJs,
+      "index.d.ts": browserIndexDts,
+    }),
+    writeTargetFiles("node", {
+      "index.js": nodeIndexJs,
+      "index.d.ts": nodeIndexDts,
+    }),
+  ]);
+}
+
+async function writeTargetFiles(target: string, files: Record<string, string>) {
+  await Promise.all(
+    Object.entries(files).map(([file, contents]) =>
+      writeFile(join(bindingsDir, target, file), contents),
+    ),
+  );
+}
+
 async function hashFile(path: string) {
   const bytes = await readFile(path);
   return createHash("sha256").update(bytes).digest("hex");
 }
+
+const wasmExportsJs =
+  'export { LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";\n';
+
+const bundlerIndexJs = `import previewWorkerModuleUrl from "./preview-worker.js?worker&url";
+import * as previewBindings from "./lumen_wasm.js";
+
+${wasmExportsJs}
+export class LumenBindings {
+  target = "bundler";
+
+  preview() {
+    return Promise.resolve(previewBindings);
+  }
+
+  previewWorkerUrl() {
+    return previewWorkerModuleUrl;
+  }
+}
+
+export function createLumenBindings() {
+  return new LumenBindings();
+}
+`;
+
+const browserIndexJs = `import initPreview, * as previewBindings from "./lumen_wasm.js";
+
+export { initSync, LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";
+
+export class LumenBindings {
+  target = "browser";
+
+  constructor(options = {}) {
+    this.previewWasmUrl =
+      options.previewWasmUrl ?? new URL("./lumen_wasm_bg.wasm", import.meta.url);
+    this.previewWorkerModuleUrl = options.previewWorkerUrl;
+  }
+
+  async preview() {
+    await initPreview({ module_or_path: this.previewWasmUrl });
+    return previewBindings;
+  }
+
+  previewWorkerUrl() {
+    return this.previewWorkerModuleUrl;
+  }
+}
+
+export function createLumenBindings(options = {}) {
+  return new LumenBindings(options);
+}
+`;
+
+const nodeIndexJs = `import * as previewBindings from "./lumen_wasm.js";
+
+${wasmExportsJs}
+export class LumenBindings {
+  target = "node";
+
+  preview() {
+    return Promise.resolve(previewBindings);
+  }
+}
+
+export function createLumenBindings() {
+  return new LumenBindings();
+}
+`;
+
+const previewWorkerJs = `import { createLumenPreviewWorkerHost } from "@lumiscia/lumen-preview/worker-host";
+
+import initPreview, * as previewBindings from "../browser/lumen_wasm.js";
+import previewWasmUrl from "../browser/lumen_wasm_bg.wasm?url";
+
+createLumenPreviewWorkerHost({ initPreview, previewBindings, previewWasmUrl });
+`;
+
+const bindingsLikeDts = `export type LumenPreviewBindingsModule = typeof previewBindings;
+
+export interface LumenBindingsLike {
+  readonly target: "bundler" | "browser" | "node";
+  preview(): Promise<LumenPreviewBindingsModule>;
+  previewWorkerUrl?(): string | URL;
+}
+`;
+
+const bundlerIndexDts = `import type * as previewBindings from "./lumen_wasm.js";
+export { LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";
+
+${bindingsLikeDts}
+export class LumenBindings implements LumenBindingsLike {
+  readonly target: "bundler";
+  preview(): Promise<LumenPreviewBindingsModule>;
+  previewWorkerUrl(): string;
+}
+
+export function createLumenBindings(): LumenBindings;
+`;
+
+const browserIndexDts = `import type * as previewBindings from "./lumen_wasm.js";
+export type { InitInput, InitOutput, SyncInitInput } from "./lumen_wasm.js";
+export { initSync, LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";
+
+export interface LumenBrowserBindingsOptions {
+  previewWasmUrl?: string | URL | Request | Response | BufferSource | WebAssembly.Module;
+  previewWorkerUrl?: string | URL;
+}
+
+${bindingsLikeDts}
+export class LumenBindings implements LumenBindingsLike {
+  readonly target: "browser";
+  constructor(options?: LumenBrowserBindingsOptions);
+  preview(): Promise<LumenPreviewBindingsModule>;
+  previewWorkerUrl(): string | URL | undefined;
+}
+
+export function createLumenBindings(options?: LumenBrowserBindingsOptions): LumenBindings;
+`;
+
+const nodeIndexDts = `import type * as previewBindings from "./lumen_wasm.js";
+export { LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";
+
+${bindingsLikeDts}
+export class LumenBindings implements LumenBindingsLike {
+  readonly target: "node";
+  preview(): Promise<LumenPreviewBindingsModule>;
+}
+
+export function createLumenBindings(): LumenBindings;
+`;
+
+await writePackageEntrypoints();
+
+if (mode === "release") {
+  console.log("Running wasm-opt for generated WASM targets...");
+  await Promise.all(
+    targets.map(async (target) => {
+      const wasm = join(bindingsDir, target.out, `${wasmName}_bg.wasm`);
+      await run("pnpm", ["exec", "wasm-opt", "-Oz", "-o", wasm, wasm]);
+    }),
+  );
+}
+
+await verifySharedWasm();
 
 function run(command: string, args: string[]) {
   return new Promise<void>((resolvePromise, reject) => {

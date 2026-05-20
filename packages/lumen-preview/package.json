@@ -52,6 +52,7 @@
       "default": "./dist/session/index.js"
     },
     "./worker-host": {
+      "types": "./dist/worker-host.d.ts",
       "default": "./dist/worker-host.js"
     }
   },

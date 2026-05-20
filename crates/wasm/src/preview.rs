@@ -446,20 +446,14 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "clearMedia")]
     pub fn clear_media(&self) -> Result<(), JsValue> {
         self.media.clear().map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
     #[wasm_bindgen(js_name = "clearVideos")]
     pub fn clear_videos(&self) -> Result<(), JsValue> {
         self.media.clear_video_frames().map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.dirty = true;
-        }
+        self.mark_dirty();
         Ok(())
     }
 
@@ -468,9 +462,7 @@ impl LumenPreviewController {
         self.media
             .clear_video_frames_for_stream(stream_id)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.dirty = true;
-        }
+        self.mark_dirty();
         Ok(())
     }
 
@@ -479,11 +471,7 @@ impl LumenPreviewController {
         self.media
             .remove_image(image_id)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
@@ -492,11 +480,7 @@ impl LumenPreviewController {
         self.media
             .remove_video(stream_id)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
@@ -505,11 +489,7 @@ impl LumenPreviewController {
         self.media
             .remove_font(font_family)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
@@ -547,11 +527,7 @@ impl LumenPreviewController {
         self.media
             .set_image(image_id.to_string(), frame)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
@@ -560,11 +536,7 @@ impl LumenPreviewController {
         self.media
             .set_font(font_family.to_string(), data.to_vec())
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
@@ -588,9 +560,7 @@ impl LumenPreviewController {
         self.media
             .set_video_frame(stream_id.to_string(), frame, image)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.dirty = true;
-        }
+        self.mark_dirty();
         Ok(())
     }
 
@@ -620,12 +590,24 @@ impl LumenPreviewController {
                 },
             )
             .map_err(JsValue::from_str)?;
+        self.reset_renderer();
+        Ok(())
+    }
+}
+
+impl LumenPreviewController {
+    fn mark_dirty(&self) {
+        if let Ok(mut state) = self.state.try_borrow_mut() {
+            state.dirty = true;
+        }
+    }
+
+    fn reset_renderer(&self) {
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.renderer = None;
             state.render_generation = state.render_generation.wrapping_add(1);
             state.dirty = true;
         }
-        Ok(())
     }
 }
 
