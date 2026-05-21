@@ -68,55 +68,53 @@ impl TextAlignmentVertical {
 }
 
 /// Produces a text raster source.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedTextParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TextParams {
     /// Text content to render.
-    #[param(kind = "string", multiline, recommended_rows = 4)]
-    pub content: Deferred<String>,
+    #[meta(multiline, recommended_rows = 4)]
+    pub content: String,
     /// Font family name.
-    #[param(kind = "string", format = "font_family")]
-    pub font_family: Deferred<String>,
+    #[meta(format = "font_family")]
+    pub font_family: String,
     /// Font size in pixels.
-    #[param(kind = "float", min = 1, step = 1)]
-    pub font_size: Deferred<f64>,
+    #[meta(min = 1, step = 1)]
+    pub font_size: f64,
     /// Font weight.
-    #[param(kind = "int", min = 100, max = 900, step = 100)]
-    pub font_weight: Deferred<i64>,
+    #[meta(min = 100, max = 900, step = 100)]
+    pub font_weight: i64,
     /// Font style.
-    #[param(kind = "enum", enum_type = TextFontStyle)]
-    pub font_style: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = TextFontStyle)]
+    pub font_style: i64,
     /// Maximum line width in pixels. Use 0 for automatic width.
-    #[param(kind = "float", min = 0, step = 1)]
-    pub max_width: Deferred<f64>,
+    #[meta(min = 0, step = 1)]
+    pub max_width: f64,
     /// Text origin in pixels.
-    #[param(kind = "vec2")]
-    pub position: Deferred<(f64, f64)>,
+    #[meta()]
+    pub position: (f64, f64),
     /// Text color.
-    #[param(kind = "color")]
-    pub color: Deferred<[u8; 4]>,
+    #[meta()]
+    pub color: [u8; 4],
     /// Horizontal text alignment.
-    #[param(kind = "enum", enum_type = TextAlignmentHorizontal)]
-    pub alignment_horizontal: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = TextAlignmentHorizontal)]
+    pub alignment_horizontal: i64,
     /// Vertical text alignment.
-    #[param(kind = "enum", enum_type = TextAlignmentVertical)]
-    pub alignment_vertical: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = TextAlignmentVertical)]
+    pub alignment_vertical: i64,
 }
 
 impl Default for TextParams {
     fn default() -> Self {
         Self {
-            content: Deferred::value(String::new()),
-            font_family: Deferred::value(lumen_text::DEFAULT_FONT_FAMILY.to_string()),
-            font_size: Deferred::value(16.0),
-            font_weight: Deferred::value(400),
-            font_style: Deferred::value(TextFontStyle::Normal as i64),
-            max_width: Deferred::value(0.0),
-            position: Deferred::value((0.0, 0.0)),
-            color: Deferred::value([255, 255, 255, 255]),
-            alignment_horizontal: Deferred::value(TextAlignmentHorizontal::Left as i64),
-            alignment_vertical: Deferred::value(TextAlignmentVertical::Top as i64),
+            content: String::new(),
+            font_family: lumen_text::DEFAULT_FONT_FAMILY.to_string(),
+            font_size: 16.0,
+            font_weight: 400,
+            font_style: TextFontStyle::Normal as i64,
+            max_width: 0.0,
+            position: (0.0, 0.0),
+            color: [255, 255, 255, 255],
+            alignment_horizontal: TextAlignmentHorizontal::Left as i64,
+            alignment_vertical: TextAlignmentVertical::Top as i64,
         }
     }
 }
@@ -127,14 +125,14 @@ impl Default for TextParams {
 pub struct Text {
     pub id: NodeId,
     #[params]
-    pub params: TextParams,
+    pub params: TextParamsDelegate,
 }
 
 impl Default for Text {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: TextParams::default(),
+            params: TextParamsDelegate::default(),
         }
     }
 }

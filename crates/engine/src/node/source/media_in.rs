@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
-use crate::node::{Deferred, NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, MediaTextureKey,
@@ -46,39 +46,37 @@ pub enum MediaInKind {
 }
 
 /// Binds an external image or video frame as a GPU texture.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedMediaInParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct MediaInParams {
     /// Type of external media source.
-    #[param(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
-    pub kind: Deferred<i64>,
+    #[meta(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
+    pub kind: i64,
     /// External media source identifier.
-    #[param(kind = "string", role = "source_id")]
-    pub source: Deferred<String>,
+    #[meta(role = "source_id")]
+    pub source: String,
     /// First source frame to include.
-    #[param(kind = "int", min = 0, step = 1)]
-    pub range_start: Deferred<i64>,
+    #[meta(min = 0, step = 1)]
+    pub range_start: i64,
     /// Last source frame to include.
-    #[param(kind = "int", min = 0, step = 1)]
-    pub range_end: Deferred<i64>,
+    #[meta(min = 0, step = 1)]
+    pub range_end: i64,
     /// Playback speed multiplier.
-    #[param(kind = "float", step = 0.1)]
-    pub speed: Deferred<f64>,
+    #[meta(step = 0.1)]
+    pub speed: f64,
     /// Behavior when playback leaves the source range.
-    #[param(kind = "enum", enum_type = LoopMode)]
-    pub loop_mode: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = LoopMode)]
+    pub loop_mode: i64,
 }
 
 impl Default for MediaInParams {
     fn default() -> Self {
         Self {
-            kind: Deferred::value(0),
-            source: Deferred::value(String::new()),
-            range_start: Deferred::value(0),
-            range_end: Deferred::value(0),
-            speed: Deferred::value(1.0),
-            loop_mode: Deferred::value(0),
+            kind: 0,
+            source: String::new(),
+            range_start: 0,
+            range_end: 0,
+            speed: 1.0,
+            loop_mode: 0,
         }
     }
 }
@@ -89,14 +87,14 @@ impl Default for MediaInParams {
 pub struct MediaIn {
     pub id: NodeId,
     #[params]
-    pub params: MediaInParams,
+    pub params: MediaInParamsDelegate,
 }
 
 impl Default for MediaIn {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: MediaInParams::default(),
+            params: MediaInParamsDelegate::default(),
         }
     }
 }
@@ -342,7 +340,7 @@ impl GpuFrameBinding for MediaInputFrameBinding {
 
 #[cfg(test)]
 mod tests {
-    use super::{LoopMode, map_to_source_frame};
+    use super::{map_to_source_frame, LoopMode};
 
     #[test]
     fn maps_negative_media_speed_in_reverse() {
