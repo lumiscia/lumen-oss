@@ -6,7 +6,9 @@ import type {
   NodeKind,
 } from "@lumiscia/lumen-types";
 
+import { AudioTrack, audioTrackTimeline } from "./audio.js";
 import type {
+  AudioTimelineInput,
   CompositionOptions,
   ConnectOptions,
   NodeInput,
@@ -30,6 +32,7 @@ const defaultTimeline = {
 export class Composition {
   readonly #connections: Connection[] = [];
   readonly #nodes: CompositionNode[] = [];
+  #audio: AudioTimelineInput | undefined;
   #lumenSchemaVersion: string | undefined;
   #metadata: LumenComposition["metadata"] | undefined;
   #renderSettings: LumenComposition["render_settings"];
@@ -37,6 +40,7 @@ export class Composition {
   #timeline: LumenComposition["timeline"];
 
   constructor(options: CompositionOptions = {}) {
+    this.#audio = audioTimeline(options.audio);
     this.#metadata = options.metadata;
     this.#lumenSchemaVersion = options.lumenSchemaVersion;
     this.#schemaVersion = options.schemaVersion;
@@ -113,12 +117,33 @@ export class Composition {
     return this;
   }
 
+  setAudio(audio: AudioTimelineInput | undefined): this {
+    this.#audio = audioTimeline(audio);
+    return this;
+  }
+
+  addAudioTrack(track: AudioTrack): this {
+    const audio = this.#audio ?? emptyAudioTimeline();
+    const timeline = audioTrackTimeline(track);
+    if (audio.tracks.some((existingTrack) => existingTrack.id === timeline.track.id)) {
+      throw new Error(`Audio track \`${timeline.track.id}\` already exists.`);
+    }
+
+    this.#audio = {
+      ...audio,
+      clips: [...audio.clips, ...timeline.clips],
+      tracks: [...audio.tracks, timeline.track],
+    };
+    return this;
+  }
+
   toJSON(): LumenComposition {
     return {
       connections: [...this.#connections],
       nodes: [...this.#nodes],
       render_settings: this.#renderSettings,
       timeline: this.#timeline,
+      ...(this.#audio !== undefined ? { audio: this.#audio } : {}),
       ...(this.#lumenSchemaVersion !== undefined
         ? { lumenSchemaVersion: this.#lumenSchemaVersion }
         : {}),
@@ -151,5 +176,24 @@ function timeline(input: TimelineInput | undefined): LumenComposition["timeline"
         ? (input?.duration_frames ?? defaultTimeline.duration_frames)
         : Math.ceil(input.durationSeconds * fps),
     fps,
+  };
+}
+
+function audioTimeline(input: AudioTimelineInput | undefined): AudioTimelineInput | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...input,
+    clips: [...input.clips],
+    tracks: [...input.tracks],
+  };
+}
+
+function emptyAudioTimeline(): AudioTimelineInput {
+  return {
+    clips: [],
+    tracks: [],
   };
 }

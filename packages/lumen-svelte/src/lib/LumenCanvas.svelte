@@ -1,14 +1,24 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { createLumenPreviewRuntime } from "@lumiscia/lumen-preview";
-    import type { LumenPreviewBindings, LumenPreviewController } from "@lumiscia/lumen-preview";
+    import { LumenPreviewSession } from "@lumiscia/lumen-preview";
+    import type {
+        AudioSourceRegistration,
+        LumenLogLevel,
+        LumenPreviewBindingSource,
+        LumenPreviewStatsCallback,
+        MediaRegistration,
+    } from "@lumiscia/lumen-preview";
     import type { LumenPreviewContext } from "./preview.svelte.js";
 
     type Props = {
         preview: LumenPreviewContext;
-        bindings: LumenPreviewBindings;
+        bindings: LumenPreviewBindingSource;
+        audioSources?: AudioSourceRegistration[];
         compositionJson?: string | null;
-        fps?: number;
+        mediaSources?: MediaRegistration[];
+        lookaheadCount?: number;
+        logLevel?: LumenLogLevel;
+        onStats?: LumenPreviewStatsCallback;
         class?: string;
         style?: string;
     };
@@ -16,187 +26,54 @@
     let {
         preview,
         bindings,
+        audioSources = [],
         compositionJson = null,
-        fps = 30,
+        mediaSources = [],
+        lookaheadCount,
+        logLevel = "off",
+        onStats,
         class: className,
         style: styleName,
     }: Props = $props();
 
     let canvas = $state<HTMLCanvasElement | null>(null);
-    let ctrl = $state<LumenPreviewController | null>(null);
-    let rafId = 0;
-    let compositionLoaded = false;
-
-    function getCtx2d(): CanvasRenderingContext2D | null {
-        return canvas?.getContext("2d") ?? null;
-    }
-
-    let renderInFlight = false;
-    let queuedRender: (() => Promise<void>) | null = null;
-
-    function describeError(error: unknown): string {
-        if (error instanceof Error) {
-            return error.stack ?? `${error.name}: ${error.message}`;
-        }
-        return String(error);
-    }
-
-    function reportError(scope: string, error: unknown): void {
-        console.error(`[LumenCanvas] ${scope}`, error);
-        preview.update({ error: describeError(error) });
-    }
-
-    function queueRender(operation: () => Promise<void>): void {
-        queuedRender = operation;
-        if (renderInFlight) {
-            return;
-        }
-        void drainRenderQueue();
-    }
-
-    async function drainRenderQueue(): Promise<void> {
-        renderInFlight = true;
-        try {
-            while (queuedRender) {
-                const next = queuedRender;
-                queuedRender = null;
-                await next();
-            }
-        } finally {
-            renderInFlight = false;
-            if (queuedRender) {
-                void drainRenderQueue();
-            }
-        }
-    }
-
-    async function renderOnce(controller: LumenPreviewController): Promise<void> {
-        const ctx = getCtx2d();
-        if (!ctx) return;
-        if (!compositionLoaded) return;
-        try {
-            const t0 = performance.now();
-            await controller.renderNowAsync(ctx);
-            preview.update({
-                renderMs: performance.now() - t0,
-                frame: controller.currentFrame(),
-                isPlaying: controller.isPlaying(),
-                error: null,
-            });
-        } catch (e: unknown) {
-            reportError("renderOnce", e);
-        }
-    }
-
-    function handleLoadComposition(
-        controller: LumenPreviewController,
-        json: string,
-        f: number,
-    ): void {
-        try {
-            controller.loadComposition(json, f);
-            compositionLoaded = true;
-            preview.update({
-                totalFrames: controller.durationFrames(),
-                width: controller.width(),
-                height: controller.height(),
-                error: null,
-            });
-        } catch (e: unknown) {
-            compositionLoaded = false;
-            reportError("loadComposition", e);
-        }
-    }
-
-    function startLoop(controller: LumenPreviewController): void {
-        cancelAnimationFrame(rafId);
-        rafId = 0;
-
-        function loop(now: number): void {
-            rafId = 0;
-            const ctx = getCtx2d();
-
-            if (ctx && compositionLoaded && controller.isPlaying()) {
-                queueRender(async () => {
-                    if (!compositionLoaded) {
-                        return;
-                    }
-
-                    try {
-                        const t0 = performance.now();
-                        const changed = await controller.tickAsync(now, ctx);
-                        if (changed) {
-                            preview.update({
-                                renderMs: performance.now() - t0,
-                                frame: controller.currentFrame(),
-                                isPlaying: controller.isPlaying(),
-                            });
-                        }
-                        preview.update({ error: null });
-                    } catch (e: unknown) {
-                        reportError("animation tick", e);
-                        // Don't return — keep the loop alive so transient errors
-                        // (e.g. media not yet loaded) recover automatically.
-                    }
-                });
-            }
-
-            rafId = requestAnimationFrame(loop);
-        }
-
-        rafId = requestAnimationFrame(loop);
-    }
+    let session: LumenPreviewSession | null = null;
 
     onMount(() => {
-        let cancelled = false;
-
-        Promise.resolve()
-            .then(() => {
-                if (cancelled) return;
-                const { LumenPreviewController } = createLumenPreviewRuntime(bindings);
-                const controller = new LumenPreviewController();
-                compositionLoaded = false;
-                preview._attach(controller, (frame) => {
-                    queueRender(async () => {
-                        try {
-                            controller.setFrame(frame);
-                            await renderOnce(controller);
-                        } catch (e: unknown) {
-                            reportError("seek render", e);
-                        }
-                    });
-                });
-                ctrl = controller;
-                startLoop(controller);
-            })
-            .catch((e: unknown) => {
-                if (!cancelled) {
-                    reportError("initialize lumen-preview", e);
-                }
+        const nextSession = new LumenPreviewSession({
+            preview: preview.core,
+            bindings,
+            audioSources,
+            compositionJson,
+            mediaSources,
+            ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
+            logLevel,
+            onStats: onStats ?? null,
+        });
+        session = nextSession;
+        void nextSession.attach(canvas).catch((error: unknown) => {
+            preview.update({
+                error: error instanceof Error ? (error.stack ?? error.message) : String(error),
             });
+        });
 
         return () => {
-            cancelled = true;
-            cancelAnimationFrame(rafId);
-            rafId = 0;
-            compositionLoaded = false;
-            ctrl?.clear();
-            preview._detach();
-            ctrl = null;
+            nextSession.dispose();
+            if (session === nextSession) {
+                session = null;
+            }
         };
     });
 
-    // Load/reload composition when compositionJson, fps, or ctrl changes
     $effect(() => {
-        const json = compositionJson;
-        const f = fps;
-        const controller = ctrl;
-        if (!controller || !json) {
-            compositionLoaded = false;
-            return;
-        }
-        handleLoadComposition(controller, json, f);
-        queueRender(() => renderOnce(controller));
+        session?.update({
+            audioSources,
+            compositionJson,
+            mediaSources,
+            ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
+            logLevel,
+            onStats: onStats ?? null,
+        });
     });
 </script>
 

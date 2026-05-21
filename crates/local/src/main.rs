@@ -14,10 +14,7 @@ use image::{ImageEncoder, codecs::png::PngEncoder};
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 use lumen_engine::{
-    audio::{
-        AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, AudioSourceProvider,
-        duration_samples,
-    },
+    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, duration_samples},
     composition::Composition,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     gpu::GpuCompositionRenderer,
@@ -191,9 +188,7 @@ impl MediaStore for LocalMediaStore {
             self.video_resolver(&resolved)?,
         )))
     }
-}
 
-impl AudioSourceProvider for LocalMediaStore {
     fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
         let resolved = self.resolve_source(source_id)?;
         Some(Box::new(SharedAudioResolver(

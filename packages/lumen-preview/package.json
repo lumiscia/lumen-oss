@@ -46,6 +46,14 @@
     "./preview": {
       "types": "./dist/preview.d.ts",
       "default": "./dist/preview.js"
+    },
+    "./session": {
+      "types": "./dist/session/index.d.ts",
+      "default": "./dist/session/index.js"
+    },
+    "./worker-host": {
+      "types": "./dist/worker-host.d.ts",
+      "default": "./dist/worker-host.js"
     }
   },
   "scripts": {

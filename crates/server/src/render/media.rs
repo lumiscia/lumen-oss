@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use lumen_engine::{
-    audio::{AudioBuffer, AudioResolver, AudioSourceProvider},
+    audio::{AudioBuffer, AudioResolver},
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
     media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
@@ -296,6 +296,12 @@ impl MediaStore for LocalMediaStore {
         Some(Box::new(SharedVideoResolver(resolver)))
     }
 
+    fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
+        let resolved = self.resolve_source(source_id)?;
+        let resolver = self.audio_resolver(&resolved)?;
+        Some(Box::new(SharedAudioResolver(resolver)))
+    }
+
     fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
         let paths = self.resolve_font_family(font_family)?;
         tracing::info!(
@@ -331,14 +337,6 @@ impl FontResolver for LocalFontResolver {
                 })
             })
             .collect()
-    }
-}
-
-impl AudioSourceProvider for LocalMediaStore {
-    fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
-        let resolved = self.resolve_source(source_id)?;
-        let resolver = self.audio_resolver(&resolved)?;
-        Some(Box::new(SharedAudioResolver(resolver)))
     }
 }
 

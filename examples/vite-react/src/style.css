@@ -35,3 +35,11 @@ canvas {
   display: flex;
   gap: 12px;
 }
+
+.audio-pill {
+  border: 1px solid #3b4659;
+  border-radius: 999px;
+  color: #aab7cc;
+  font-size: 13px;
+  padding: 5px 10px;
+}

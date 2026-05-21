@@ -11,12 +11,12 @@ use crate::{
     debug_error, install_panic_hook,
     media::WasmMediaStore,
     renderer::{
-        SurfaceCompositionRenderer, collect_requirement_window, create_surface_composition_renderer,
+        RenderCanvas, SurfaceCompositionRenderer, collect_requirement_window,
+        create_surface_composition_renderer,
     },
     types::FrameRequirementsPayload,
     utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
 };
-use web_sys::HtmlCanvasElement;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct RenderMetrics {
@@ -154,7 +154,7 @@ impl LumenPreviewController {
     }
 
     #[wasm_bindgen(js_name = "loadComposition")]
-    pub fn load_composition(&self, composition_json: &str, fps: f64) -> Result<(), JsValue> {
+    pub fn load_composition(&self, composition_json: &str) -> Result<(), JsValue> {
         let composition =
             composition_json_to_composition(composition_json).map_err(|e| JsValue::from_str(&e))?;
 
@@ -165,7 +165,7 @@ impl LumenPreviewController {
         state.width = composition.render_settings.width as usize;
         state.height = composition.render_settings.height as usize;
         state.duration_frames = composition.timeline.duration_frames;
-        state.fps = fps.max(1.0);
+        state.fps = f64::from(composition.timeline.fps.max(1.0));
         state.current_frame = 0;
         state.playing = false;
         state.dirty = true;
@@ -206,14 +206,6 @@ impl LumenPreviewController {
             state.clear();
         }
         let _ = self.media.clear();
-    }
-
-    #[wasm_bindgen(js_name = "setFps")]
-    pub fn set_fps(&self, fps: f64) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.fps = fps.max(1.0);
-            state.last_tick_ms = None;
-        }
     }
 
     pub fn play(&self) {
@@ -300,6 +292,21 @@ impl LumenPreviewController {
             .unwrap_or(0)
     }
 
+    pub fn fps(&self) -> f64 {
+        self.state
+            .try_borrow()
+            .map(|state| state.fps)
+            .unwrap_or(0.0)
+    }
+
+    #[wasm_bindgen(js_name = "targetFrameDurationMs")]
+    pub fn target_frame_duration_ms(&self) -> f64 {
+        self.state
+            .try_borrow()
+            .map(|state| state.target_frame_duration_ms())
+            .unwrap_or(0.0)
+    }
+
     pub fn snapshot(&self) -> Result<String, JsValue> {
         let state = self
             .state
@@ -323,7 +330,7 @@ impl LumenPreviewController {
         serde_json::to_string(&snapshot).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    pub async fn tick(&self, now_ms: f64, canvas: HtmlCanvasElement) -> Result<bool, JsValue> {
+    pub async fn tick(&self, now_ms: f64, canvas: JsValue) -> Result<bool, JsValue> {
         let should_render = {
             let mut state = self
                 .state
@@ -383,7 +390,7 @@ impl LumenPreviewController {
     }
 
     #[wasm_bindgen(js_name = "renderNow")]
-    pub async fn render_now(&self, canvas: HtmlCanvasElement) -> Result<(), JsValue> {
+    pub async fn render_now(&self, canvas: JsValue) -> Result<(), JsValue> {
         {
             let mut state = self
                 .state
@@ -447,20 +454,14 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "clearMedia")]
     pub fn clear_media(&self) -> Result<(), JsValue> {
         self.media.clear().map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
     #[wasm_bindgen(js_name = "clearVideos")]
     pub fn clear_videos(&self) -> Result<(), JsValue> {
         self.media.clear_video_frames().map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.dirty = true;
-        }
+        self.mark_dirty();
         Ok(())
     }
 
@@ -469,9 +470,7 @@ impl LumenPreviewController {
         self.media
             .clear_video_frames_for_stream(stream_id)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.dirty = true;
-        }
+        self.mark_dirty();
         Ok(())
     }
 
@@ -480,11 +479,7 @@ impl LumenPreviewController {
         self.media
             .remove_image(image_id)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
@@ -493,11 +488,7 @@ impl LumenPreviewController {
         self.media
             .remove_video(stream_id)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
@@ -506,11 +497,7 @@ impl LumenPreviewController {
         self.media
             .remove_font(font_family)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
@@ -548,11 +535,7 @@ impl LumenPreviewController {
         self.media
             .set_image(image_id.to_string(), frame)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
@@ -561,11 +544,7 @@ impl LumenPreviewController {
         self.media
             .set_font(font_family.to_string(), data.to_vec())
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
-        }
+        self.reset_renderer();
         Ok(())
     }
 
@@ -589,9 +568,7 @@ impl LumenPreviewController {
         self.media
             .set_video_frame(stream_id.to_string(), frame, image)
             .map_err(JsValue::from_str)?;
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.dirty = true;
-        }
+        self.mark_dirty();
         Ok(())
     }
 
@@ -621,12 +598,24 @@ impl LumenPreviewController {
                 },
             )
             .map_err(JsValue::from_str)?;
+        self.reset_renderer();
+        Ok(())
+    }
+}
+
+impl LumenPreviewController {
+    fn mark_dirty(&self) {
+        if let Ok(mut state) = self.state.try_borrow_mut() {
+            state.dirty = true;
+        }
+    }
+
+    fn reset_renderer(&self) {
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.renderer = None;
             state.render_generation = state.render_generation.wrapping_add(1);
             state.dirty = true;
         }
-        Ok(())
     }
 }
 
@@ -683,8 +672,9 @@ fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Resu
 async fn render_preview_frame(
     state_cell: &RefCell<PreviewState>,
     media: &WasmMediaStore,
-    canvas: HtmlCanvasElement,
+    canvas: JsValue,
 ) -> Result<(), JsValue> {
+    let canvas = RenderCanvas::from_js_value(&canvas)?;
     let (mut renderer, frame, generation) = {
         let mut state = state_cell
             .try_borrow_mut()

@@ -25,37 +25,41 @@
   ],
   "type": "module",
   "sideEffects": [
+    "./src/bundler/index.js",
+    "./src/bundler/preview-worker.js",
     "./src/bundler/lumen_wasm.js",
+    "./src/browser/index.js",
     "./src/browser/lumen_wasm.js",
+    "./src/node/index.js",
     "./src/node/lumen_wasm.js",
     "./src/no-modules/lumen_wasm.js"
   ],
-  "main": "./src/bundler/lumen_wasm.js",
-  "types": "./src/bundler/lumen_wasm.d.ts",
+  "main": "./src/bundler/index.js",
+  "types": "./src/bundler/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/bundler/lumen_wasm.d.ts",
-      "default": "./src/bundler/lumen_wasm.js"
+      "types": "./src/bundler/index.d.ts",
+      "default": "./src/bundler/index.js"
     },
     "./bundler": {
-      "types": "./src/bundler/lumen_wasm.d.ts",
-      "default": "./src/bundler/lumen_wasm.js"
+      "types": "./src/bundler/index.d.ts",
+      "default": "./src/bundler/index.js"
     },
     "./browser": {
-      "types": "./src/browser/lumen_wasm.d.ts",
-      "default": "./src/browser/lumen_wasm.js"
+      "types": "./src/browser/index.d.ts",
+      "default": "./src/browser/index.js"
     },
     "./web": {
-      "types": "./src/browser/lumen_wasm.d.ts",
-      "default": "./src/browser/lumen_wasm.js"
+      "types": "./src/browser/index.d.ts",
+      "default": "./src/browser/index.js"
     },
     "./node": {
-      "types": "./src/node/lumen_wasm.d.ts",
-      "default": "./src/node/lumen_wasm.js"
+      "types": "./src/node/index.d.ts",
+      "default": "./src/node/index.js"
     },
     "./nodejs": {
-      "types": "./src/node/lumen_wasm.d.ts",
-      "default": "./src/node/lumen_wasm.js"
+      "types": "./src/node/index.d.ts",
+      "default": "./src/node/index.js"
     },
     "./no-modules": {
       "default": "./src/no-modules/lumen_wasm.js"
@@ -64,6 +68,9 @@
   "scripts": {
     "build": "just wasm-bindings-release",
     "check": "test ! -f src/bundler/lumen_wasm.d.ts || tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf src/browser src/bundler src/node src/no-modules src/.cache *.tsbuildinfo"
+    "clean": "find src -type f -name 'lumen_wasm*' -delete && rm -rf src/.cache *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@lumiscia/lumen-preview": "workspace:*"
   }
 }

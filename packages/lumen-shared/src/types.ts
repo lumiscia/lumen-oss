@@ -13,6 +13,7 @@ export interface LumenOptions {
 }
 
 export interface CompositionOptions {
+  readonly audio?: AudioTimelineInput;
   readonly metadata?: LumenComposition["metadata"];
   readonly renderSettings?: RenderSettingsInput;
   readonly timeline?: TimelineInput;
@@ -39,6 +40,60 @@ export type RenderSettingsInput = Partial<LumenComposition["render_settings"]>;
 export type TimelineInput = Partial<LumenComposition["timeline"]> & {
   readonly durationSeconds?: number;
 };
+
+export interface AudioTimelineInput {
+  readonly clips: readonly AudioClipInput[];
+  readonly tracks: readonly AudioTrackInput[];
+  readonly [key: string]: unknown;
+}
+
+export type AudioTrackOptions = AudioTrackInput;
+
+export interface AudioTrackInput {
+  readonly id: string;
+  readonly muted?: boolean;
+  readonly name?: string;
+  readonly solo?: boolean;
+  readonly volume?: number;
+  readonly [key: string]: unknown;
+}
+
+export type AudioClipOptions = Omit<
+  AudioClipInput,
+  | "duration_frames"
+  | "duration_ms"
+  | "id"
+  | "source_id"
+  | "source_start_ms"
+  | "source_start_seconds"
+  | "start_frame"
+  | "start_ms"
+  | "track_id"
+> & {
+  readonly durationMs?: number;
+  readonly durationSeconds?: number;
+  readonly id?: string;
+  readonly sourceId: string;
+  readonly sourceStartMs?: number;
+  readonly sourceStartSeconds?: number;
+  readonly startMs?: number;
+  readonly startSeconds?: number;
+};
+
+export interface AudioClipInput {
+  readonly duration_frames?: number;
+  readonly duration_ms?: number;
+  readonly id: string;
+  readonly name?: string;
+  readonly source_id: string;
+  readonly source_start_ms?: number;
+  readonly source_start_seconds?: number;
+  readonly start_frame?: number;
+  readonly start_ms?: number;
+  readonly track_id: string;
+  readonly volume?: number;
+  readonly [key: string]: unknown;
+}
 
 export interface RenderOptions {
   readonly signal?: AbortSignal;

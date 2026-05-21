@@ -7,7 +7,8 @@ use crate::{
     debug_error, install_panic_hook, media::LumenMediaStore, types::FrameRequirementsPayload,
     utils::composition_json_to_composition,
 };
-use web_sys::HtmlCanvasElement;
+use wasm_bindgen::JsCast;
+use web_sys::{HtmlCanvasElement, OffscreenCanvas};
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[derive(Debug)]
@@ -101,13 +102,26 @@ impl LumenRenderer {
     }
 
     #[wasm_bindgen(js_name = "renderFrame")]
-    pub async fn render_frame(
+    pub async fn render_frame_html_canvas(
         &mut self,
         frame: u32,
         media: &LumenMediaStore,
-        canvas: HtmlCanvasElement,
+        #[wasm_bindgen(unchecked_param_type = "HTMLCanvasElement")] canvas: JsValue,
     ) -> Result<(), JsValue> {
-        self.render_frame_to_canvas(frame, media, canvas).await?;
+        self.render_frame_to_canvas(frame, media, RenderCanvas::from_js_value(&canvas)?)
+            .await?;
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = "renderFrameToOffscreenCanvas")]
+    pub async fn render_frame_offscreen_canvas(
+        &mut self,
+        frame: u32,
+        media: &LumenMediaStore,
+        #[wasm_bindgen(unchecked_param_type = "OffscreenCanvas")] canvas: JsValue,
+    ) -> Result<(), JsValue> {
+        self.render_frame_to_canvas(frame, media, RenderCanvas::from_js_value(&canvas)?)
+            .await?;
         Ok(())
     }
 
@@ -156,7 +170,7 @@ impl LumenRenderer {
     async fn ensure_renderer(
         &mut self,
         media: &LumenMediaStore,
-        canvas: HtmlCanvasElement,
+        canvas: RenderCanvas,
     ) -> Result<(), JsValue> {
         if self.renderer.is_some() {
             return Ok(());
@@ -182,7 +196,7 @@ impl LumenRenderer {
         &mut self,
         frame: u32,
         media: &LumenMediaStore,
-        canvas: HtmlCanvasElement,
+        canvas: RenderCanvas,
     ) -> Result<(), JsValue> {
         tracing::trace!(target: "lumen_wasm", frame, "render frame to canvas");
         self.validate_frame(frame)?;
@@ -268,6 +282,28 @@ impl SurfaceCompositionRenderer {
     }
 }
 
+#[allow(dead_code)]
+pub(crate) enum RenderCanvas {
+    Html(HtmlCanvasElement),
+    Offscreen(OffscreenCanvas),
+}
+
+impl RenderCanvas {
+    pub(crate) fn from_js_value(canvas: &JsValue) -> Result<Self, JsValue> {
+        if let Some(canvas) = canvas.dyn_ref::<HtmlCanvasElement>() {
+            return Ok(Self::Html(canvas.clone()));
+        }
+
+        if let Some(canvas) = canvas.dyn_ref::<OffscreenCanvas>() {
+            return Ok(Self::Offscreen(canvas.clone()));
+        }
+
+        Err(JsValue::from_str(
+            "expected an HTMLCanvasElement or OffscreenCanvas",
+        ))
+    }
+}
+
 fn current_surface_texture(
     surface: &lumen_gpu::wgpu::Surface<'static>,
 ) -> Result<lumen_gpu::wgpu::SurfaceTexture, lumen_engine::error::LumenError> {
@@ -282,7 +318,7 @@ fn current_surface_texture(
 }
 
 pub(crate) async fn create_surface_composition_renderer<M: lumen_engine::media::MediaStore>(
-    canvas: HtmlCanvasElement,
+    canvas: RenderCanvas,
     composition: &Composition,
     media: &M,
     width: u32,
@@ -300,7 +336,7 @@ pub(crate) async fn create_surface_composition_renderer<M: lumen_engine::media::
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn create_surface_device(
-    canvas: HtmlCanvasElement,
+    canvas: RenderCanvas,
     width: u32,
     height: u32,
 ) -> Result<
@@ -317,9 +353,15 @@ async fn create_surface_device(
             .with_display_handle(Box::new(WebDisplayHandle)),
     )
     .await;
-    let surface = instance
-        .create_surface(lumen_gpu::wgpu::SurfaceTarget::Canvas(canvas))
-        .map_err(|error| JsValue::from_str(&format!("canvas GPU surface failed: {error}")))?;
+    let surface = match canvas {
+        RenderCanvas::Html(canvas) => {
+            instance.create_surface(lumen_gpu::wgpu::SurfaceTarget::Canvas(canvas))
+        }
+        RenderCanvas::Offscreen(canvas) => {
+            instance.create_surface(lumen_gpu::wgpu::SurfaceTarget::OffscreenCanvas(canvas))
+        }
+    }
+    .map_err(|error| JsValue::from_str(&format!("canvas GPU surface failed: {error}")))?;
     let adapter = instance
         .request_adapter(&lumen_gpu::wgpu::RequestAdapterOptions {
             power_preference: lumen_gpu::wgpu::PowerPreference::HighPerformance,
@@ -344,7 +386,7 @@ async fn create_surface_device(
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 async fn create_surface_device(
-    _canvas: HtmlCanvasElement,
+    _canvas: RenderCanvas,
     _width: u32,
     _height: u32,
 ) -> Result<

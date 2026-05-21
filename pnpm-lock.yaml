@@ -72,6 +72,9 @@ importers:
       '@lumiscia/lumen-bindings':
         specifier: workspace:*
         version: link:../../packages/lumen-bindings
+      '@lumiscia/lumen-preview':
+        specifier: workspace:*
+        version: link:../../packages/lumen-preview
       '@lumiscia/lumen-react':
         specifier: workspace:*
         version: link:../../packages/lumen-react
@@ -132,7 +135,11 @@ importers:
         specifier: ^3.6.0
         version: 3.6.0(vite@7.3.3(@types/node@22.19.17)(lightningcss@1.32.0))
 
-  packages/lumen-bindings: {}
+  packages/lumen-bindings:
+    dependencies:
+      '@lumiscia/lumen-preview':
+        specifier: workspace:*
+        version: link:../lumen-preview
 
   packages/lumen-preview:
     dependencies:

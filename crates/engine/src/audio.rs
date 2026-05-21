@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use crate::error::MediaError;
+use crate::{error::MediaError, media::MediaStore};
 
 pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
 pub const AUDIO_CHANNELS: usize = 2;
@@ -108,16 +108,12 @@ pub trait AudioResolver: Send + Sync {
     ) -> Result<Arc<AudioBuffer>, MediaError>;
 }
 
-pub trait AudioSourceProvider {
-    fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>>;
-}
-
-pub struct AudioMixer<'a, P: AudioSourceProvider> {
+pub struct AudioMixer<'a, P: MediaStore> {
     timeline: &'a AudioTimeline,
     provider: &'a P,
 }
 
-impl<'a, P: AudioSourceProvider> AudioMixer<'a, P> {
+impl<'a, P: MediaStore> AudioMixer<'a, P> {
     pub fn new(timeline: &'a AudioTimeline, provider: &'a P) -> Self {
         Self { timeline, provider }
     }
@@ -249,7 +245,21 @@ mod tests {
         sources: HashMap<String, Arc<AudioBuffer>>,
     }
 
-    impl AudioSourceProvider for TestProvider {
+    impl crate::media::MediaStore for TestProvider {
+        fn get_image_resolver(
+            &self,
+            _source: &str,
+        ) -> Option<Box<dyn crate::media::ImageResolver>> {
+            None
+        }
+
+        fn get_video_resolver(
+            &self,
+            _stream_id: &str,
+        ) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
+            None
+        }
+
         fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
             self.sources.get(source_id).cloned().map(|buffer| {
                 Box::new(TestResolver {

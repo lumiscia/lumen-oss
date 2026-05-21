@@ -5,3 +5,12 @@ export {
   useLumenPreview,
   type LumenPreviewState,
 } from "./preview.js";
+export type {
+  AudioSourceRegistration,
+  LumenBindings,
+  LumenLogLevel,
+  LumenPreviewBindingSource,
+  LumenPreviewStats,
+  LumenPreviewStatsCallback,
+  MediaRegistration,
+} from "@lumiscia/lumen-preview";

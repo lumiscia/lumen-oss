@@ -18,7 +18,6 @@ export class LumenPreviewContext {
   width = $state(0);
   height = $state(0);
   isLoaded = $state(false);
-  renderMs = $state(0);
   isPlaying = $state(false);
   error = $state<string | null>(null);
   /** The underlying preview controller — null until the canvas mounts. */
@@ -80,7 +79,6 @@ export class LumenPreviewContext {
     this.width = snapshot.width;
     this.height = snapshot.height;
     this.isLoaded = snapshot.isLoaded;
-    this.renderMs = snapshot.renderMs;
     this.isPlaying = snapshot.isPlaying;
     this.error = snapshot.error;
     this.controller = snapshot.controller;
