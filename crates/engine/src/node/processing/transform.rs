@@ -1,8 +1,8 @@
 use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
-    compiler,
+    compiler, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding,
+    RasterHandle,
 };
 
 pub(crate) const SHADER: &str = include_str!("transform.wgsl");
@@ -25,47 +25,45 @@ impl TransformSampling {
 }
 
 /// Transforms a raster inside its existing static bounds.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedTransformParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TransformParams {
     /// Horizontal scale multiplier.
-    #[param(kind = "float", name = "Scale X", step = 0.1)]
-    pub scale_x: Deferred<f64>,
+    #[meta(name = "Scale X", step = 0.1)]
+    pub scale_x: f64,
     /// Vertical scale multiplier.
-    #[param(kind = "float", name = "Scale Y", step = 0.1)]
-    pub scale_y: Deferred<f64>,
+    #[meta(name = "Scale Y", step = 0.1)]
+    pub scale_y: f64,
     /// Horizontal translation in pixels.
-    #[param(kind = "float", name = "Translate X", step = 1)]
-    pub translate_x: Deferred<f64>,
+    #[meta(name = "Translate X", step = 1)]
+    pub translate_x: f64,
     /// Vertical translation in pixels.
-    #[param(kind = "float", name = "Translate Y", step = 1)]
-    pub translate_y: Deferred<f64>,
+    #[meta(name = "Translate Y", step = 1)]
+    pub translate_y: f64,
     /// Rotation in degrees.
-    #[param(kind = "float", name = "Rotate", step = 1)]
-    pub rotate: Deferred<f64>,
+    #[meta(name = "Rotate", step = 1)]
+    pub rotate: f64,
     /// Horizontal pivot point in pixels.
-    #[param(kind = "float", name = "Pivot X", step = 1)]
-    pub pivot_x: Deferred<f64>,
+    #[meta(name = "Pivot X", step = 1)]
+    pub pivot_x: f64,
     /// Vertical pivot point in pixels.
-    #[param(kind = "float", name = "Pivot Y", step = 1)]
-    pub pivot_y: Deferred<f64>,
+    #[meta(name = "Pivot Y", step = 1)]
+    pub pivot_y: f64,
     /// Sampling filter used when transforming.
-    #[param(kind = "enum", enum_type = TransformSampling)]
-    pub sampling: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = TransformSampling)]
+    pub sampling: i64,
 }
 
 impl Default for TransformParams {
     fn default() -> Self {
         Self {
-            scale_x: Deferred::value(1.0),
-            scale_y: Deferred::value(1.0),
-            translate_x: Deferred::value(0.0),
-            translate_y: Deferred::value(0.0),
-            rotate: Deferred::value(0.0),
-            pivot_x: Deferred::value(0.0),
-            pivot_y: Deferred::value(0.0),
-            sampling: Deferred::value(TransformSampling::Linear as i64),
+            scale_x: 1.0,
+            scale_y: 1.0,
+            translate_x: 0.0,
+            translate_y: 0.0,
+            rotate: 0.0,
+            pivot_x: 0.0,
+            pivot_y: 0.0,
+            sampling: TransformSampling::Linear as i64,
         }
     }
 }
@@ -76,7 +74,7 @@ impl Default for TransformParams {
 pub struct Transform {
     pub id: NodeId,
     #[params]
-    pub params: TransformParams,
+    pub params: TransformParamsDelegate,
 
     #[input()]
     pub source: PortRef,
@@ -86,7 +84,7 @@ impl Default for Transform {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: TransformParams::default(),
+            params: TransformParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }

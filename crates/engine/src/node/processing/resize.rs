@@ -1,8 +1,8 @@
 use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
-    compiler,
+    compiler, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding,
+    RasterHandle,
 };
 
 pub(crate) const SHADER: &str = include_str!("resize.wgsl");
@@ -43,31 +43,29 @@ impl ResizeSampling {
 }
 
 /// Resamples a raster into static output bounds.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedResizeParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ResizeParams {
     /// Output width in pixels.
-    #[param(kind = "int", min = 1, step = 1)]
-    pub width: Deferred<i64>,
+    #[meta(min = 1, step = 1)]
+    pub width: i64,
     /// Output height in pixels.
-    #[param(kind = "int", min = 1, step = 1)]
-    pub height: Deferred<i64>,
+    #[meta(min = 1, step = 1)]
+    pub height: i64,
     /// How the source raster should fit the output bounds.
-    #[param(kind = "enum", enum_type = ResizeMode)]
-    pub mode: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = ResizeMode)]
+    pub mode: i64,
     /// Sampling filter used when resizing.
-    #[param(kind = "enum", enum_type = ResizeSampling)]
-    pub sampling: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = ResizeSampling)]
+    pub sampling: i64,
 }
 
 impl Default for ResizeParams {
     fn default() -> Self {
         Self {
-            width: Deferred::value(1),
-            height: Deferred::value(1),
-            mode: Deferred::value(ResizeMode::Stretch as i64),
-            sampling: Deferred::value(ResizeSampling::Linear as i64),
+            width: 1,
+            height: 1,
+            mode: ResizeMode::Stretch as i64,
+            sampling: ResizeSampling::Linear as i64,
         }
     }
 }
@@ -78,7 +76,7 @@ impl Default for ResizeParams {
 pub struct Resize {
     pub id: NodeId,
     #[params]
-    pub params: ResizeParams,
+    pub params: ResizeParamsDelegate,
 
     #[input()]
     pub source: PortRef,
@@ -88,7 +86,7 @@ impl Default for Resize {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: ResizeParams::default(),
+            params: ResizeParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }
