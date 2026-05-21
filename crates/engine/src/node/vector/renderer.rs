@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    gpu::{CompiledOutput, RasterHandle, RasterMetadata, compiler},
+    gpu::{compiler, CompiledOutput, RasterHandle, RasterMetadata},
     node::{NodeId, PortRef},
 };
 
@@ -51,8 +51,10 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             position: shape.params.position.clone(),
             fill_enabled: shape.params.fill_enabled.clone(),
             fill_color: shape.params.fill_color.clone(),
+            fill_paint: shape.params.fill_paint.clone(),
             stroke_enabled: shape.params.stroke_enabled.clone(),
             stroke_color: shape.params.stroke_color.clone(),
+            stroke_paint: shape.params.stroke_paint.clone(),
             stroke_width: shape.params.stroke_width.clone(),
             buffer: params,
         });
@@ -145,8 +147,10 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             position: path.params.position.clone(),
             fill_enabled: path.params.fill_enabled.clone(),
             fill_color: path.params.fill_color.clone(),
+            fill_paint: path.params.fill_paint.clone(),
             stroke_enabled: path.params.stroke_enabled.clone(),
             stroke_color: path.params.stroke_color.clone(),
+            stroke_paint: path.params.stroke_paint.clone(),
             stroke_width: path.params.stroke_width.clone(),
             params_buffer: params,
             points_buffer: points,
@@ -374,8 +378,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ShapeParams {
-    pub(crate) fill_color: [f32; 4],
-    pub(crate) stroke_color: [f32; 4],
+    pub(crate) fill_paint: super::paint::GpuPaint,
+    pub(crate) stroke_paint: super::paint::GpuPaint,
     pub(crate) position: [f32; 2],
     pub(crate) size: [f32; 2],
     pub(crate) border_radius: f32,
@@ -387,9 +391,11 @@ pub(crate) struct ShapeParams {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct PathParams {
-    pub(crate) fill_color: [f32; 4],
-    pub(crate) stroke_color: [f32; 4],
+    pub(crate) fill_paint: super::paint::GpuPaint,
+    pub(crate) stroke_paint: super::paint::GpuPaint,
     pub(crate) position: [f32; 2],
+    pub(crate) bounds_min: [f32; 2],
+    pub(crate) bounds_size: [f32; 2],
     pub(crate) stroke_width: f32,
     pub(crate) flags: u32,
     pub(crate) point_count: u32,

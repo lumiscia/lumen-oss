@@ -1,50 +1,51 @@
+use super::paint::{Paint, PaintDelegate};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, Deferred, NodeId, NodeParams, PortRef};
 
 /// Produces a rasterized vector path source.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedPathParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct PathParams {
     /// SVG-style path data.
-    #[param(
-        kind = "string",
-        name = "Path data",
-        format = "path_data",
-        multiline,
-        recommended_rows = 5
-    )]
-    pub data: Deferred<String>,
+    #[meta(name = "Path data", format = "path_data", multiline, recommended_rows = 5)]
+    pub data: String,
     /// Path origin in pixels.
-    #[param(kind = "vec2")]
-    pub position: Deferred<(f64, f64)>,
+    #[meta()]
+    pub position: (f64, f64),
     /// Enables fill rendering.
-    #[param(kind = "bool")]
-    pub fill_enabled: Deferred<bool>,
+    #[meta()]
+    pub fill_enabled: bool,
     /// Fill color.
-    #[param(kind = "color")]
-    pub fill_color: Deferred<[u8; 4]>,
+    #[meta()]
+    pub fill_color: [u8; 4],
+    /// Fill paint. Accepts a solid color or gradient.
+    #[meta()]
+    pub fill_paint: Paint,
     /// Enables stroke rendering.
-    #[param(kind = "bool")]
-    pub stroke_enabled: Deferred<bool>,
+    #[meta()]
+    pub stroke_enabled: bool,
     /// Stroke color.
-    #[param(kind = "color")]
-    pub stroke_color: Deferred<[u8; 4]>,
+    #[meta()]
+    pub stroke_color: [u8; 4],
+    /// Stroke paint. Accepts a solid color or gradient.
+    #[meta()]
+    pub stroke_paint: Paint,
     /// Stroke width in pixels.
-    #[param(kind = "float", min = 0, step = 0.5)]
-    pub stroke_width: Deferred<f64>,
+    #[meta(min = 0, step = 0.5)]
+    pub stroke_width: f64,
 }
 
 impl Default for PathParams {
     fn default() -> Self {
         Self {
-            data: Deferred::value("M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string()),
-            position: Deferred::value((0.0, 0.0)),
-            fill_enabled: Deferred::value(true),
-            fill_color: Deferred::value([255, 255, 255, 255]),
-            stroke_enabled: Deferred::value(false),
-            stroke_color: Deferred::value([0, 0, 0, 255]),
-            stroke_width: Deferred::value(1.0),
+            data: "M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string(),
+            position: (0.0, 0.0),
+            fill_enabled: true,
+            fill_color: [255, 255, 255, 255],
+            fill_paint: Paint::solid([255, 255, 255, 255]),
+            stroke_enabled: false,
+            stroke_color: [0, 0, 0, 255],
+            stroke_paint: Paint::solid([0, 0, 0, 255]),
+            stroke_width: 1.0,
         }
     }
 }
@@ -55,14 +56,14 @@ impl Default for PathParams {
 pub struct Path {
     pub id: NodeId,
     #[params]
-    pub params: PathParams,
+    pub params: PathParamsDelegate,
 }
 
 impl Default for Path {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: PathParams::default(),
+            params: PathParamsDelegate::default(),
         }
     }
 }
@@ -84,8 +85,10 @@ pub(crate) struct PathFrameBinding {
     pub(crate) position: Deferred<(f64, f64)>,
     pub(crate) fill_enabled: Deferred<bool>,
     pub(crate) fill_color: Deferred<[u8; 4]>,
+    pub(crate) fill_paint: PaintDelegate,
     pub(crate) stroke_enabled: Deferred<bool>,
     pub(crate) stroke_color: Deferred<[u8; 4]>,
+    pub(crate) stroke_paint: PaintDelegate,
     pub(crate) stroke_width: Deferred<f64>,
     pub(crate) params_buffer: lumen_gpu::BufferId,
     pub(crate) points_buffer: lumen_gpu::BufferId,
@@ -119,6 +122,16 @@ impl GpuFrameBinding for PathFrameBinding {
             "stroke_color",
             &ctx.expr_context(self.node_id, "stroke_color"),
         )?;
+        let fill_paint = self.fill_paint.try_into_evaluated(&DelegateEvalContext {
+            node_id: self.node_id,
+            property_path: "fill_paint",
+            expr: &ctx.expr_context(self.node_id, "fill_paint"),
+        })?;
+        let stroke_paint = self.stroke_paint.try_into_evaluated(&DelegateEvalContext {
+            node_id: self.node_id,
+            property_path: "stroke_paint",
+            expr: &ctx.expr_context(self.node_id, "stroke_paint"),
+        })?;
         let mut flags = 0;
         if self.fill_enabled.resolve_bool(
             self.node_id,
@@ -136,9 +149,11 @@ impl GpuFrameBinding for PathFrameBinding {
         }
 
         let params = super::renderer::PathParams {
-            fill_color: rgba8_to_f32(fill),
-            stroke_color: rgba8_to_f32(stroke),
+            fill_paint: fill_paint.to_gpu(fill),
+            stroke_paint: stroke_paint.to_gpu(stroke),
             position: [x as f32, y as f32],
+            bounds_min: bounds_min(&points),
+            bounds_size: bounds_size(&points),
             stroke_width: self.stroke_width.resolve_float(
                 self.node_id,
                 "stroke_width",
@@ -199,11 +214,19 @@ fn parse_path_points(data: &str, max_points: usize) -> Vec<super::renderer::Path
         .collect()
 }
 
-fn rgba8_to_f32(color: [u8; 4]) -> [f32; 4] {
-    [
-        f32::from(color[0]) / 255.0,
-        f32::from(color[1]) / 255.0,
-        f32::from(color[2]) / 255.0,
-        f32::from(color[3]) / 255.0,
-    ]
+fn bounds_min(points: &[super::renderer::PathPoint]) -> [f32; 2] {
+    let Some(first) = points.first() else {
+        return [0.0, 0.0];
+    };
+    points.iter().skip(1).fold(first.position, |acc, point| {
+        [acc[0].min(point.position[0]), acc[1].min(point.position[1])]
+    })
+}
+
+fn bounds_size(points: &[super::renderer::PathPoint]) -> [f32; 2] {
+    let min = bounds_min(points);
+    let max = points.iter().fold(min, |acc, point| {
+        [acc[0].max(point.position[0]), acc[1].max(point.position[1])]
+    });
+    [(max[0] - min[0]).max(1.0), (max[1] - min[1]).max(1.0)]
 }
