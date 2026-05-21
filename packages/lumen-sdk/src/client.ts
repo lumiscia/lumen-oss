@@ -182,9 +182,9 @@ export class Lumen {
   }): Promise<MediaUploadPart> {
     const response = await this.#fetch(
       this.#apiUrl(
-        `/media/${options.id}/multipart/${encodeURIComponent(
+        `/media/${options.id}/multipart/parts/${options.partNumber}?uploadId=${encodeURIComponent(
           options.uploadId,
-        )}/parts/${options.partNumber}`,
+        )}`,
       ),
       {
         body: options.body,
@@ -201,7 +201,7 @@ export class Lumen {
   ): Promise<TemporaryMedia> {
     const response = await this.#fetch(
       this.#apiUrl(
-        `/media/${options.id}/multipart/${encodeURIComponent(options.uploadId)}/complete`,
+        `/media/${options.id}/multipart/complete?uploadId=${encodeURIComponent(options.uploadId)}`,
       ),
       this.#jsonRequest("POST", { parts: options.parts }, optionalSignal(options.signal)),
     );
