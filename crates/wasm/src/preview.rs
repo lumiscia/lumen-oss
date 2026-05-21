@@ -11,7 +11,8 @@ use crate::{
     debug_error, install_panic_hook,
     media::WasmMediaStore,
     renderer::{
-        SurfaceCompositionRenderer, collect_requirement_window, create_surface_composition_renderer,
+        RenderCanvas, SurfaceCompositionRenderer, collect_requirement_window,
+        create_surface_composition_renderer,
     },
     types::FrameRequirementsPayload,
     utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
@@ -673,6 +674,7 @@ async fn render_preview_frame(
     media: &WasmMediaStore,
     canvas: JsValue,
 ) -> Result<(), JsValue> {
+    let canvas = RenderCanvas::from_js_value(&canvas)?;
     let (mut renderer, frame, generation) = {
         let mut state = state_cell
             .try_borrow_mut()

@@ -58,7 +58,7 @@ export class LumenPreviewContext {
   }
 
   attach(
-    controller: LumenPreviewController,
+    controller: LumenPreviewController | null,
     seekFn: (frame: number) => void,
     transport: LumenPreviewTransport | null = null,
   ): void {
@@ -66,7 +66,7 @@ export class LumenPreviewContext {
     this.#transport = transport;
     this.update({ controller });
 
-    if (this.#state.isPlaying) {
+    if (this.#state.isPlaying && controller) {
       controller.play();
       this.#transport?.play?.();
     }
@@ -84,7 +84,7 @@ export class LumenPreviewContext {
 
   /** @internal Compatibility alias for framework canvas components. */
   _attach(
-    controller: LumenPreviewController,
+    controller: LumenPreviewController | null,
     seekFn: (frame: number) => void,
     transport: LumenPreviewTransport | null = null,
   ): void {

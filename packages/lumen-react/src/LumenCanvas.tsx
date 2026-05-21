@@ -21,6 +21,7 @@ export interface LumenCanvasProps {
   audioSources?: AudioSourceRegistration[];
   compositionJson?: string | null;
   mediaSources?: MediaRegistration[];
+  lookaheadCount?: number;
   logLevel?: LumenLogLevel;
   onStats?: LumenPreviewStatsCallback;
   className?: string;
@@ -33,6 +34,7 @@ export function LumenCanvas({
   audioSources = EMPTY_AUDIO_SOURCES,
   compositionJson = null,
   mediaSources = EMPTY_MEDIA_SOURCES,
+  lookaheadCount,
   logLevel = "off",
   onStats,
   className,
@@ -48,6 +50,7 @@ export function LumenCanvas({
       audioSources,
       compositionJson,
       mediaSources,
+      ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
       logLevel,
       onStats: onStats ?? null,
     });
@@ -69,10 +72,11 @@ export function LumenCanvas({
       audioSources,
       compositionJson,
       mediaSources,
+      ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
       logLevel,
       onStats: onStats ?? null,
     });
-  }, [audioSources, compositionJson, mediaSources, logLevel, onStats]);
+  }, [audioSources, compositionJson, mediaSources, lookaheadCount, logLevel, onStats]);
 
   const snapshot = preview.getSnapshot();
 

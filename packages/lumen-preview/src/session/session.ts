@@ -1,8 +1,7 @@
-import { hasPreviewWorker } from "./bindings.js";
 import { describeError, reportConsoleError } from "./errors.js";
 import { MainPreviewDriver } from "./main-driver.js";
-import { previewTimingFromCompositionJson } from "./timing.js";
 import { WorkerPreviewDriver } from "./worker-driver.js";
+import type { LumenBindings, LumenPreviewBindingSource } from "../index.js";
 import type {
   LumenPreviewDriverHost,
   LumenPreviewRuntimeDriver,
@@ -12,6 +11,7 @@ import type {
 
 const EMPTY_AUDIO_SOURCES: LumenPreviewSessionInputs["audioSources"] = [];
 const EMPTY_MEDIA_SOURCES: LumenPreviewSessionInputs["mediaSources"] = [];
+const DEFAULT_LOOKAHEAD_COUNT = 8;
 
 export class LumenPreviewSession implements LumenPreviewDriverHost {
   readonly preview: LumenPreviewSessionOptions["preview"];
@@ -83,14 +83,12 @@ export class LumenPreviewSession implements LumenPreviewDriverHost {
 }
 
 function normalizeInputs(options: LumenPreviewSessionOptions): LumenPreviewSessionInputs {
-  const timing = previewTimingFromCompositionJson(options.compositionJson);
   return {
     audioSources: options.audioSources ?? EMPTY_AUDIO_SOURCES,
     audioTimeline: options.audioTimeline ?? null,
     bindings: options.bindings ?? missingBindings(),
     compositionJson: options.compositionJson ?? null,
-    fps: timing.fps,
-    targetFrameDurationMs: timing.targetFrameDurationMs,
+    lookaheadCount: options.lookaheadCount ?? DEFAULT_LOOKAHEAD_COUNT,
     logLevel: options.logLevel ?? "off",
     mediaSources: options.mediaSources ?? EMPTY_MEDIA_SOURCES,
     onStats: options.onStats ?? null,
@@ -99,4 +97,10 @@ function normalizeInputs(options: LumenPreviewSessionOptions): LumenPreviewSessi
 
 function missingBindings(): never {
   throw new Error("LumenPreviewSession requires `bindings`");
+}
+
+function hasPreviewWorker(
+  bindings: LumenPreviewBindingSource,
+): bindings is LumenBindings & { previewWorkerUrl: () => string | URL } {
+  return "preview" in bindings && typeof bindings.previewWorkerUrl === "function";
 }

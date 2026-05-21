@@ -1,19 +1,5 @@
 import type { AudioClipInput, AudioClipOptions, AudioTrackInput } from "./types.js";
 
-type MutableAudioClipInput = {
-  -readonly [K in keyof AudioClipInput]: AudioClipInput[K];
-} & {
-  durationFrames?: number;
-  durationMs?: number;
-  durationSeconds?: number;
-  sourceId?: string;
-  sourceStartMs?: number;
-  sourceStartSeconds?: number;
-  startFrame?: number;
-  startMs?: number;
-  startSeconds?: number;
-};
-
 export class AudioTrack {
   readonly #clips: AudioClipInput[] = [];
   readonly #track: AudioTrackInput;
@@ -70,31 +56,39 @@ function audioClipFromOptions(
   trackId: string,
   index: number,
 ): AudioClipInput {
-  const clip: MutableAudioClipInput = {
-    ...input,
+  const {
+    durationMs: _durationMs,
+    durationSeconds: _durationSeconds,
+    sourceId: _sourceId,
+    sourceStartMs: _sourceStartMs,
+    sourceStartSeconds: _sourceStartSeconds,
+    startMs: _startMs,
+    startSeconds: _startSeconds,
+    ...rest
+  } = input;
+  const durationMs = audioTimeMs(input.durationMs, input.durationSeconds);
+  const sourceStartMs = audioTimeMs(input.sourceStartMs, input.sourceStartSeconds);
+  return {
+    ...rest,
+    ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
     id: input.id ?? `audio-clip-${index + 1}`,
     source_id: input.sourceId,
+    ...(sourceStartMs === undefined ? {} : { source_start_ms: sourceStartMs }),
     start_ms: audioTimeMs(input.startMs, input.startSeconds) ?? 0,
     track_id: trackId,
   };
-
-  const durationMs = audioTimeMs(input.durationMs, input.durationSeconds);
-  if (durationMs !== undefined) {
-    clip.duration_ms = durationMs;
-  }
-
-  const sourceStartMs = audioTimeMs(input.sourceStartMs, input.sourceStartSeconds);
-  if (sourceStartMs !== undefined) {
-    clip.source_start_ms = sourceStartMs;
-  }
-
-  deleteExtraAudioClipInputFields(clip);
-  return clip;
 }
 
 function audioClipFromInput(input: AudioClipInput, trackId: string): AudioClipInput {
-  const clip: MutableAudioClipInput = {
-    ...input,
+  const sourceStartMs =
+    input.source_start_ms ??
+    (typeof input.source_start_seconds === "number"
+      ? Math.round(input.source_start_seconds * 1_000)
+      : undefined);
+  const { source_start_seconds: _sourceStartSeconds, ...rest } = input;
+  const clip: AudioClipInput = {
+    ...rest,
+    ...(sourceStartMs === undefined ? {} : { source_start_ms: sourceStartMs }),
     start_ms: input.start_ms ?? 0,
     track_id: input.track_id,
   };
@@ -104,11 +98,6 @@ function audioClipFromInput(input: AudioClipInput, trackId: string): AudioClipIn
       `Audio clip \`${clip.id}\` belongs to track \`${clip.track_id}\`, not \`${trackId}\`.`,
     );
   }
-
-  if (clip.source_start_ms === undefined && typeof clip.source_start_seconds === "number") {
-    clip.source_start_ms = Math.round(clip.source_start_seconds * 1_000);
-  }
-  delete clip.source_start_seconds;
 
   return clip;
 }
@@ -160,18 +149,6 @@ function audioTimeMs(
   }
 
   return seconds === undefined ? undefined : Math.round(seconds * 1_000);
-}
-
-function deleteExtraAudioClipInputFields(clip: MutableAudioClipInput): void {
-  delete clip.durationFrames;
-  delete clip.durationMs;
-  delete clip.durationSeconds;
-  delete clip.sourceId;
-  delete clip.sourceStartMs;
-  delete clip.sourceStartSeconds;
-  delete clip.startFrame;
-  delete clip.startMs;
-  delete clip.startSeconds;
 }
 
 function isAudioClipOptions(input: AudioClipInput | AudioClipOptions): input is AudioClipOptions {

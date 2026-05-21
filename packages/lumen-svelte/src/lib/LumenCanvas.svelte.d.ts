@@ -14,6 +14,7 @@ export type LumenCanvasProps = {
   audioSources?: AudioSourceRegistration[];
   compositionJson?: string | null;
   mediaSources?: MediaRegistration[];
+  lookaheadCount?: number;
   logLevel?: LumenLogLevel;
   onStats?: LumenPreviewStatsCallback;
   class?: string;

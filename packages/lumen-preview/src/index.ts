@@ -101,7 +101,12 @@ export interface LumenRendererBinding {
   renderFrame(
     frame: number,
     media: LumenMediaStoreBinding,
-    canvas: HTMLCanvasElement | OffscreenCanvas,
+    canvas: HTMLCanvasElement,
+  ): Promise<void>;
+  renderFrameToOffscreenCanvas(
+    frame: number,
+    media: LumenMediaStoreBinding,
+    canvas: OffscreenCanvas,
   ): Promise<void>;
   setLookaheadCount(lookaheadCount: number): void;
   setLogLevel(level: LumenLogLevel): void;
@@ -314,7 +319,10 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       media: LumenMediaStore,
       canvas: HTMLCanvasElement | OffscreenCanvas,
     ): Promise<void> {
-      return super.renderFrame(frame, media, canvas);
+      if (isHtmlCanvas(canvas)) {
+        return super.renderFrame(frame, media, canvas);
+      }
+      return super.renderFrameToOffscreenCanvas(frame, media, canvas);
     }
 
     setLookaheadCount(lookaheadCount: number): void {
@@ -332,7 +340,7 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
         this.requirements.reset();
       }
       await this.requirements.loadFrame(frame);
-      await super.renderFrame(frame, media, canvas);
+      await this.renderFrame(frame, media, canvas);
       this.requirements.prefetchWindow(frame + 1);
     }
 
@@ -495,4 +503,8 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
     LumenRenderer: RuntimeLumenRenderer,
     LumenPreviewController: RuntimeLumenPreviewController,
   };
+}
+
+function isHtmlCanvas(canvas: HTMLCanvasElement | OffscreenCanvas): canvas is HTMLCanvasElement {
+  return typeof HTMLCanvasElement !== "undefined" && canvas instanceof HTMLCanvasElement;
 }

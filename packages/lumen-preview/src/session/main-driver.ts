@@ -44,6 +44,7 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
     const { LumenPreviewController: PreviewController } = createLumenPreviewRuntime(bindings);
     const controller = new PreviewController();
     controller.setLogLevel(this.#inputs.logLevel);
+    controller.setLookaheadCount(this.#inputs.lookaheadCount);
     this.#controller = controller;
     this.#syncAudio();
 
@@ -71,6 +72,7 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
     this.#inputs = inputs;
 
     this.#controller?.setLogLevel(inputs.logLevel);
+    this.#controller?.setLookaheadCount(inputs.lookaheadCount);
     this.#syncAudio();
 
     if (
@@ -123,6 +125,7 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
         return;
       }
       controller.loadComposition(this.#inputs.compositionJson);
+      controller.setLookaheadCount(this.#inputs.lookaheadCount);
       this.#isLoaded = true;
       this.#host.updateState({
         totalFrames: controller.durationFrames(),
@@ -265,7 +268,7 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
   }
 
   #frameToMs(frame: number): number {
-    return (frame / Math.max(this.#inputs.fps, 1)) * 1_000;
+    return (frame / Math.max(this.#controller?.fps() ?? 0, 1)) * 1_000;
   }
 
   #reportStats({

@@ -25,6 +25,7 @@ export type LumenPreviewWorkerCommand =
   | {
       canvas: OffscreenCanvas;
       compositionJson: string | null;
+      lookaheadCount: number;
       logLevel: LumenLogLevel;
       mediaSources: readonly MediaRegistration[];
       type: "initialize";
@@ -37,6 +38,10 @@ export type LumenPreviewWorkerCommand =
   | {
       logLevel: LumenLogLevel;
       type: "set-log-level";
+    }
+  | {
+      lookaheadCount: number;
+      type: "set-lookahead-count";
     }
   | {
       fromMs: number;
@@ -85,8 +90,7 @@ export function createLumenPreviewWorkerHost({
   let canvas: OffscreenCanvas | null = null;
   let compositionJson: string | null = null;
   let controller: LumenPreviewController | null = null;
-  let fps = 0;
-  let frameMs = 1_000;
+  let lookaheadCount = 8;
   let lastRenderMs = 0;
   let loadGeneration = 0;
   let mediaSources: readonly MediaRegistration[] = [];
@@ -107,6 +111,10 @@ export function createLumenPreviewWorkerHost({
         break;
       case "set-log-level":
         controller?.setLogLevel(message.logLevel);
+        break;
+      case "set-lookahead-count":
+        lookaheadCount = message.lookaheadCount;
+        controller?.setLookaheadCount(lookaheadCount);
         break;
       case "set-composition":
         compositionJson = message.compositionJson;
@@ -134,6 +142,7 @@ export function createLumenPreviewWorkerHost({
     dispose();
     canvas = message.canvas;
     compositionJson = message.compositionJson;
+    lookaheadCount = message.lookaheadCount;
     mediaSources = message.mediaSources;
 
     await initPreview({ module_or_path: previewWasmUrl });
@@ -141,6 +150,7 @@ export function createLumenPreviewWorkerHost({
       createLumenPreviewRuntime(previewBindings);
     controller = new PreviewController();
     controller.setLogLevel(message.logLevel);
+    controller.setLookaheadCount(lookaheadCount);
 
     await loadComposition();
   }
@@ -158,7 +168,6 @@ export function createLumenPreviewWorkerHost({
 
     if (!compositionJson) {
       activeController.clear();
-      setFps(0);
       lastRenderMs = 0;
       postState({
         frame: 0,
@@ -178,7 +187,7 @@ export function createLumenPreviewWorkerHost({
         return;
       }
       activeController.loadComposition(compositionJson);
-      setFps(activeController.fps());
+      activeController.setLookaheadCount(lookaheadCount);
       canvas.width = activeController.width() || 1;
       canvas.height = activeController.height() || 1;
       postState({
@@ -193,7 +202,6 @@ export function createLumenPreviewWorkerHost({
       postStats(statsFromController(activeController, 0));
       queueRender();
     } catch (error) {
-      setFps(0);
       lastRenderMs = 0;
       playbackFps.reset();
       postState({
@@ -245,7 +253,7 @@ export function createLumenPreviewWorkerHost({
         return;
       }
       queueRender();
-      timerId = setTimeout(tick, frameMs);
+      timerId = setTimeout(tick, 0);
     };
     timerId = setTimeout(tick, 0);
   }
@@ -318,11 +326,6 @@ export function createLumenPreviewWorkerHost({
     queuedRender = false;
     playbackFps.reset();
     lastRenderMs = 0;
-  }
-
-  function setFps(nextFps: number): void {
-    fps = nextFps || 0;
-    frameMs = 1_000 / Math.max(fps, 1);
   }
 
   function postState(patch: LumenPreviewPatch): void {

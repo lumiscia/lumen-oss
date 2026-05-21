@@ -18,16 +18,13 @@ export interface LumenPreviewSessionInputs {
   audioTimeline: AudioEngineTimeline | null;
   bindings: LumenPreviewBindingSource;
   compositionJson: string | null;
-  fps: number;
-  targetFrameDurationMs: number;
+  lookaheadCount: number;
   logLevel: LumenLogLevel;
   mediaSources: readonly MediaRegistration[];
   onStats: LumenPreviewStatsCallback | null;
 }
 
-export interface LumenPreviewSessionOptions extends Partial<
-  Omit<LumenPreviewSessionInputs, "fps" | "targetFrameDurationMs">
-> {
+export interface LumenPreviewSessionOptions extends Partial<LumenPreviewSessionInputs> {
   audio?: LumenAudioEngineOptions;
   preview: LumenPreviewContext;
 }
@@ -41,7 +38,7 @@ export interface LumenPreviewRuntimeDriver {
 export interface LumenPreviewDriverHost {
   readonly preview: LumenPreviewContext;
   attachController(
-    controller: LumenPreviewController,
+    controller: LumenPreviewController | null,
     seek: (frame: number) => void,
     transport: {
       pause: () => void;

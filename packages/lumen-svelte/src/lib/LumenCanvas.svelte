@@ -16,6 +16,7 @@
         audioSources?: AudioSourceRegistration[];
         compositionJson?: string | null;
         mediaSources?: MediaRegistration[];
+        lookaheadCount?: number;
         logLevel?: LumenLogLevel;
         onStats?: LumenPreviewStatsCallback;
         class?: string;
@@ -28,6 +29,7 @@
         audioSources = [],
         compositionJson = null,
         mediaSources = [],
+        lookaheadCount,
         logLevel = "off",
         onStats,
         class: className,
@@ -44,6 +46,7 @@
             audioSources,
             compositionJson,
             mediaSources,
+            ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
             logLevel,
             onStats: onStats ?? null,
         });
@@ -67,6 +70,7 @@
             audioSources,
             compositionJson,
             mediaSources,
+            ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
             logLevel,
             onStats: onStats ?? null,
         });
