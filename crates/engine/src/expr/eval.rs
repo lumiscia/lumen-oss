@@ -1,9 +1,9 @@
 use crate::{
     error::{ExpressionError, LumenError},
     expr::{
-        ExpressionContext,
         ast::{BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::{evaluate_builtin, evaluate_text_measure_builtin},
+        ExpressionContext,
     },
     node::{PropertyExpression, PropertyValue},
 };
@@ -232,6 +232,7 @@ fn node_property_type_name(value: &PropertyValue) -> &'static str {
         PropertyValue::Bool(_) => "bool",
         PropertyValue::String(_) => "string",
         PropertyValue::Color(_) => "color",
+        PropertyValue::Paint(_) => "paint",
         PropertyValue::Vec2(_) => "vec2",
         PropertyValue::FloatVec(_) => "float[]",
         PropertyValue::IntVec(_) => "int[]",
@@ -245,7 +246,7 @@ mod tests {
     use crate::{
         expr::ast::{BuiltinFn, ExprNode, ExpressionId},
         graph::Graph,
-        node::{NodeId, NodeKind, PropertyValue, source::text::Text},
+        node::{source::text::Text, NodeId, NodeKind, PropertyValue},
     };
 
     fn test_context() -> ExpressionContext<'static> {
@@ -369,7 +370,7 @@ mod tests {
             text_id,
             NodeKind::Text(Text {
                 id: text_id,
-                params: crate::node::source::text::TextParams {
+                params: crate::node::source::text::TextParamsDelegate {
                     content: crate::node::Deferred::value("Morning, update posted.".to_string()),
                     font_family: crate::node::Deferred::value("Roboto".to_string()),
                     font_size: crate::node::Deferred::value(32.0),

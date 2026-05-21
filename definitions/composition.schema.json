@@ -107,7 +107,7 @@
     },
     "nodeKinds": [
       "media_in",
-      "solid_color",
+      "background",
       "text",
       "path",
       "shape",
@@ -132,6 +132,102 @@
       "wgsl_shader",
       "media_output"
     ],
+    "paint": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/color"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "angle": {
+              "type": "number"
+            },
+            "center": {
+              "$ref": "#/$defs/vec2"
+            },
+            "end": {
+              "$ref": "#/$defs/vec2"
+            },
+            "interpolation": {
+              "default": "srgb",
+              "enum": ["srgb", "linear_srgb", "linear"],
+              "type": "string"
+            },
+            "radius": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "$ref": "#/$defs/vec2"
+                }
+              ]
+            },
+            "spread": {
+              "default": "pad",
+              "enum": ["pad", "repeat", "reflect"],
+              "type": "string"
+            },
+            "start": {
+              "$ref": "#/$defs/vec2"
+            },
+            "stops": {
+              "items": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "color": {
+                        "$ref": "#/$defs/color"
+                      },
+                      "offset": {
+                        "type": "number"
+                      }
+                    },
+                    "required": ["offset", "color"],
+                    "type": "object"
+                  },
+                  {
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "prefixItems": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/color"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "type": {
+              "enum": [
+                "linear",
+                "linear_gradient",
+                "radial",
+                "radial_gradient",
+                "conic",
+                "conic_gradient"
+              ],
+              "type": "string"
+            },
+            "units": {
+              "default": "object_bounding_box",
+              "enum": ["object_bounding_box", "user_space", "userSpaceOnUse"],
+              "type": "string"
+            }
+          },
+          "required": ["type", "stops"],
+          "type": "object"
+        }
+      ]
+    },
     "vec2": {
       "items": false,
       "maxItems": 2,
@@ -185,7 +281,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "mode": {
@@ -226,12 +322,72 @@
           },
           {
             "additionalProperties": false,
+            "description": "Generates a background raster texture.",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "height": {
+                    "default": 0,
+                    "description": "Output height in pixels. Use 0 to match the composition height.",
+                    "minimum": 0.0,
+                    "title": "Height",
+                    "type": "integer",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "paint": {
+                    "$ref": "#/$defs/paint",
+                    "default": [0, 0, 0, 255],
+                    "description": "Background paint.",
+                    "title": "Paint",
+                    "x-lumen-kind": "paint"
+                  },
+                  "width": {
+                    "default": 0,
+                    "description": "Output width in pixels. Use 0 to match the composition width.",
+                    "minimum": 0.0,
+                    "title": "Width",
+                    "type": "integer",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "background"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Background",
+            "type": "object",
+            "x-lumen-category": "source",
+            "x-lumen-inputs": [],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster_frame",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Applies a simple box blur to a raster.",
             "properties": {
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "radius": {
@@ -279,7 +435,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "operation": {
@@ -365,7 +521,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "alpha": {
@@ -441,7 +597,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "interpolation": {
@@ -513,7 +669,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "height": {
@@ -593,7 +749,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "curve_source": {
@@ -655,7 +811,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "contrast": {
@@ -723,7 +879,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "hue_degrees": {
@@ -789,7 +945,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "black_point": {
@@ -893,7 +1049,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "kind": {
@@ -1011,7 +1167,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {},
                 "type": "object"
@@ -1046,7 +1202,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "allow_expressions": {
@@ -1099,7 +1255,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "blend_mode": {
@@ -1201,7 +1357,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "data": {
@@ -1230,6 +1386,13 @@
                     "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
+                  "fill_paint": {
+                    "$ref": "#/$defs/paint",
+                    "default": [255, 255, 255, 255],
+                    "description": "Fill paint. Accepts a solid color or gradient.",
+                    "title": "Fill Paint",
+                    "x-lumen-kind": "paint"
+                  },
                   "position": {
                     "$ref": "#/$defs/vec2",
                     "default": [0.0, 0.0],
@@ -1250,6 +1413,13 @@
                     "title": "Stroke Enabled",
                     "type": "boolean",
                     "x-lumen-kind": "bool"
+                  },
+                  "stroke_paint": {
+                    "$ref": "#/$defs/paint",
+                    "default": [0, 0, 0, 255],
+                    "description": "Stroke paint. Accepts a solid color or gradient.",
+                    "title": "Stroke Paint",
+                    "x-lumen-kind": "paint"
                   },
                   "stroke_width": {
                     "default": 1.0,
@@ -1289,7 +1459,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "blend_mode": {
@@ -1379,7 +1549,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "height": {
@@ -1484,7 +1654,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "color": {
@@ -1573,7 +1743,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "border_radius": {
@@ -1601,6 +1771,13 @@
                     "title": "Fill Enabled",
                     "type": "boolean",
                     "x-lumen-kind": "bool"
+                  },
+                  "fill_paint": {
+                    "$ref": "#/$defs/paint",
+                    "default": [255, 255, 255, 255],
+                    "description": "Fill paint. Accepts a solid color or gradient.",
+                    "title": "Fill Paint",
+                    "x-lumen-kind": "paint"
                   },
                   "geometry_kind": {
                     "default": "rectangle",
@@ -1672,6 +1849,13 @@
                     "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
+                  "stroke_paint": {
+                    "$ref": "#/$defs/paint",
+                    "default": [0, 0, 0, 255],
+                    "description": "Stroke paint. Accepts a solid color or gradient.",
+                    "title": "Stroke Paint",
+                    "x-lumen-kind": "paint"
+                  },
                   "stroke_width": {
                     "default": 1.0,
                     "description": "Stroke width in pixels.",
@@ -1717,72 +1901,12 @@
           },
           {
             "additionalProperties": false,
-            "description": "Generates a solid raster texture.",
-            "properties": {
-              "id": {
-                "type": "integer"
-              },
-              "properties": {
-                "additionalProperties": false,
-                "properties": {
-                  "color": {
-                    "$ref": "#/$defs/color",
-                    "default": [0, 0, 0, 255],
-                    "description": "Fill color.",
-                    "title": "Color",
-                    "x-lumen-kind": "color"
-                  },
-                  "height": {
-                    "default": 0,
-                    "description": "Output height in pixels. Use 0 to match the composition height.",
-                    "minimum": 0.0,
-                    "title": "Height",
-                    "type": "integer",
-                    "x-lumen-constraints": {
-                      "min": 0.0,
-                      "step": 1.0
-                    },
-                    "x-lumen-kind": "int"
-                  },
-                  "width": {
-                    "default": 0,
-                    "description": "Output width in pixels. Use 0 to match the composition width.",
-                    "minimum": 0.0,
-                    "title": "Width",
-                    "type": "integer",
-                    "x-lumen-constraints": {
-                      "min": 0.0,
-                      "step": 1.0
-                    },
-                    "x-lumen-kind": "int"
-                  }
-                },
-                "type": "object"
-              },
-              "type": {
-                "const": "solid_color"
-              }
-            },
-            "required": ["id", "type"],
-            "title": "Solid Color",
-            "type": "object",
-            "x-lumen-category": "source",
-            "x-lumen-inputs": [],
-            "x-lumen-outputs": [
-              {
-                "kind": "raster_frame",
-                "name": "output"
-              }
-            ]
-          },
-          {
-            "additionalProperties": false,
             "description": "Selects one raster input according to a controlled layer index.",
             "properties": {
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "selected_layer": {
@@ -1830,7 +1954,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "alignment_horizontal": {
@@ -2012,7 +2136,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "frame": {
@@ -2091,7 +2215,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "pivot_x": {
@@ -2217,7 +2341,7 @@
               "id": {
                 "type": "integer"
               },
-              "properties": {
+              "params": {
                 "additionalProperties": false,
                 "properties": {
                   "bindings": {
