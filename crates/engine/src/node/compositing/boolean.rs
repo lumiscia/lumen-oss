@@ -1,8 +1,8 @@
 use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
-    compiler,
+    compiler, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding,
+    RasterHandle,
 };
 
 pub(crate) const SHADER: &str = include_str!("boolean.wgsl");
@@ -28,23 +28,21 @@ impl BooleanOperation {
 }
 
 /// Combines two raster alpha masks with boolean operations.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedBooleanParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct BooleanParams {
     /// Boolean operation used to combine the two input masks.
-    #[param(kind = "enum", enum_type = BooleanOperation)]
-    pub operation: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = BooleanOperation)]
+    pub operation: i64,
     /// Alpha cutoff used before evaluating the boolean operation.
-    #[param(kind = "float", min = 0, max = 1, step = 0.01)]
-    pub threshold: Deferred<f64>,
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub threshold: f64,
 }
 
 impl Default for BooleanParams {
     fn default() -> Self {
         Self {
-            operation: Deferred::value(BooleanOperation::Union as i64),
-            threshold: Deferred::value(0.0),
+            operation: BooleanOperation::Union as i64,
+            threshold: 0.0,
         }
     }
 }
@@ -55,7 +53,7 @@ impl Default for BooleanParams {
 pub struct Boolean {
     pub id: NodeId,
     #[params]
-    pub params: BooleanParams,
+    pub params: BooleanParamsDelegate,
 
     #[input()]
     pub a: PortRef,
@@ -67,7 +65,7 @@ impl Default for Boolean {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: BooleanParams::default(),
+            params: BooleanParamsDelegate::default(),
             a: PortRef::empty(),
             b: PortRef::empty(),
         }

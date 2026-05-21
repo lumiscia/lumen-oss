@@ -1,30 +1,28 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef, compositing::BlendMode};
+use crate::node::{compositing::BlendMode, Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
-    compiler,
+    compiler, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding,
+    RasterHandle,
 };
 
 pub(crate) const SHADER: &str = include_str!("merge.wgsl");
 
 /// Composites an overlay raster over a base raster.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedMergeParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct MergeParams {
     /// Overlay opacity applied before compositing.
-    #[param(kind = "float", min = 0, max = 1, step = 0.05)]
-    pub opacity: Deferred<f64>,
+    #[meta(min = 0, max = 1, step = 0.05)]
+    pub opacity: f64,
     /// Blend mode used when combining the overlay with the base raster.
-    #[param(kind = "enum", enum_type = BlendMode)]
-    pub blend_mode: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = BlendMode)]
+    pub blend_mode: i64,
 }
 
 impl Default for MergeParams {
     fn default() -> Self {
         Self {
-            opacity: Deferred::value(1.0),
-            blend_mode: Deferred::value(BlendMode::Normal as i64),
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal as i64,
         }
     }
 }
@@ -35,7 +33,7 @@ impl Default for MergeParams {
 pub struct Merge {
     pub id: NodeId,
     #[params]
-    pub params: MergeParams,
+    pub params: MergeParamsDelegate,
 
     #[input()]
     pub base: PortRef,
@@ -49,7 +47,7 @@ impl Default for Merge {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: MergeParams::default(),
+            params: MergeParamsDelegate::default(),
             base: PortRef::empty(),
             overlay: PortRef::empty(),
             mask: PortRef::empty(),
