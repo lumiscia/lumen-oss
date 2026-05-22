@@ -15,9 +15,9 @@
   "nodes": [
     {
       "id": 1,
-      "type": "solid_color",
-      "properties": {
-        "color": [9, 17, 31, 255],
+      "type": "background",
+      "params": {
+        "paint": [9, 17, 31, 255],
         "width": 1280,
         "height": 720
       }
@@ -25,7 +25,7 @@
     {
       "id": 2,
       "type": "shape",
-      "properties": {
+      "params": {
         "geometry_kind": "ellipse",
         "width": 620,
         "height": 620,
@@ -38,7 +38,7 @@
     {
       "id": 3,
       "type": "shape",
-      "properties": {
+      "params": {
         "geometry_kind": "rectangle",
         "width": 860,
         "height": 310,
@@ -54,7 +54,7 @@
     {
       "id": 4,
       "type": "text",
-      "properties": {
+      "params": {
         "content": "GPU-native previews.",
         "font_family": "Helvetica Neue",
         "font_size": 42,
@@ -70,7 +70,7 @@
     {
       "id": 5,
       "type": "text",
-      "properties": {
+      "params": {
         "content": "Expressions update uniforms per frame.",
         "font_family": "Helvetica Neue",
         "font_size": 21,
@@ -86,7 +86,7 @@
     {
       "id": 6,
       "type": "shape",
-      "properties": {
+      "params": {
         "geometry_kind": "rectangle",
         "width": "=text_width(\"Open editor\", 20) + 48",
         "height": "=text_height(\"Open editor\", 20) + 32",
@@ -100,7 +100,7 @@
     {
       "id": 7,
       "type": "text",
-      "properties": {
+      "params": {
         "content": "Open editor",
         "font_family": "Helvetica Neue",
         "font_size": 20,
@@ -116,7 +116,7 @@
     {
       "id": 8,
       "type": "merge",
-      "properties": {
+      "params": {
         "opacity": "=smoothstep(0, 20, frame) * (1 - smoothstep(150, 180, frame))",
         "blend_mode": "normal"
       }
@@ -124,7 +124,7 @@
     {
       "id": 9,
       "type": "merge",
-      "properties": {
+      "params": {
         "opacity": "=smoothstep(0, 24, frame)",
         "blend_mode": "normal"
       }
@@ -132,7 +132,7 @@
     {
       "id": 10,
       "type": "merge",
-      "properties": {
+      "params": {
         "opacity": "=smoothstep(18, 48, frame)",
         "blend_mode": "normal"
       }
@@ -140,7 +140,7 @@
     {
       "id": 11,
       "type": "merge",
-      "properties": {
+      "params": {
         "opacity": "=smoothstep(22, 54, frame)",
         "blend_mode": "normal"
       }
@@ -148,7 +148,7 @@
     {
       "id": 12,
       "type": "merge",
-      "properties": {
+      "params": {
         "opacity": "=smoothstep(30, 60, frame)",
         "blend_mode": "normal"
       }
@@ -156,7 +156,7 @@
     {
       "id": 13,
       "type": "merge",
-      "properties": {
+      "params": {
         "opacity": "=smoothstep(32, 64, frame)",
         "blend_mode": "normal"
       }
