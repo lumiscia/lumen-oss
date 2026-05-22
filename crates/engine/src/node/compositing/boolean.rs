@@ -1,7 +1,7 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -73,14 +73,13 @@ impl Default for Boolean {
 }
 
 #[derive(Debug, Clone)]
-struct BooleanFrameBinding {
+struct CompiledBoolean {
     node_id: NodeId,
-    operation: Deferred<i64>,
-    threshold: Deferred<f64>,
+    params: BooleanParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for BooleanFrameBinding {
+impl GpuCompiledNode for CompiledBoolean {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -88,12 +87,16 @@ impl GpuFrameBinding for BooleanFrameBinding {
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let params = compiler::BooleanParams {
             values: [
-                BooleanOperation::from_int(self.operation.resolve_int(
-                    self.node_id,
-                    "operation",
-                    &ctx.expr_context(self.node_id, "operation"),
-                )?) as u32 as f32,
-                self.threshold.resolve_float(
+                BooleanOperation::from_int(
+                    self.params
+                        .operation
+                        .resolve_int(
+                            self.node_id,
+                            "operation",
+                            &ctx.expr_context(self.node_id, "operation"),
+                        )?,
+                ) as u32 as f32,
+                self.params.threshold.resolve_float(
                     self.node_id,
                     "threshold",
                     &ctx.expr_context(self.node_id, "threshold"),
@@ -181,10 +184,9 @@ impl GpuCompileNode for Boolean {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(BooleanFrameBinding {
+        ctx.register_compiled_node(CompiledBoolean {
             node_id: self.id,
-            operation: self.params.operation.clone(),
-            threshold: self.params.threshold.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
 

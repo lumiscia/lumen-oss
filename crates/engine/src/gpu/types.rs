@@ -57,7 +57,19 @@ impl CompiledOutput {
     }
 }
 
-pub trait GpuFrameBinding: std::fmt::Debug + Send + Sync {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FramePortRef {
+    pub port: PortRef,
+    pub frame: u32,
+}
+
+impl FramePortRef {
+    pub fn new(port: PortRef, frame: u32) -> Self {
+        Self { port, frame }
+    }
+}
+
+pub trait GpuCompiledNode: std::fmt::Debug + Send + Sync {
     fn node_id(&self) -> NodeId;
 
     fn bind(
@@ -68,23 +80,11 @@ pub trait GpuFrameBinding: std::fmt::Debug + Send + Sync {
 }
 
 #[derive(Debug)]
-pub struct CompiledFrameBinding {
-    pub frame_override: Option<u32>,
-    pub binding: Box<dyn GpuFrameBinding>,
-}
-
-impl CompiledFrameBinding {
-    pub fn node_id(&self) -> NodeId {
-        self.binding.node_id()
-    }
-}
-
-#[derive(Debug)]
 pub struct CompiledComposition {
     pub plan: lumen_gpu::RenderPlan,
     pub output: RasterHandle,
     pub node_outputs: HashMap<PortRef, CompiledOutput>,
-    pub frame_bindings: Vec<CompiledFrameBinding>,
+    pub compiled_nodes: HashMap<NodeId, Box<dyn GpuCompiledNode>>,
 }
 
 #[derive(Debug, Clone, Default)]

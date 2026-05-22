@@ -1,7 +1,7 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -52,13 +52,13 @@ impl Default for Exposure {
 }
 
 #[derive(Debug, Clone)]
-struct ExposureFrameBinding {
+struct CompiledExposure {
     node_id: NodeId,
     params: ExposureParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for ExposureFrameBinding {
+impl GpuCompiledNode for CompiledExposure {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -93,7 +93,7 @@ impl GpuCompileNode for Exposure {
             SHADER,
             std::mem::size_of::<compiler::ExposureParams>() as u64,
         )?;
-        ctx.push_frame_binding(ExposureFrameBinding {
+        ctx.register_compiled_node(CompiledExposure {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,

@@ -1,7 +1,7 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -150,7 +150,7 @@ impl GpuCompileNode for Shadow {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(ShadowFrameBinding {
+        ctx.register_compiled_node(CompiledShadow {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,
@@ -164,13 +164,13 @@ impl GpuCompileNode for Shadow {
 }
 
 #[derive(Debug, Clone)]
-struct ShadowFrameBinding {
+struct CompiledShadow {
     node_id: NodeId,
     params: ShadowParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for ShadowFrameBinding {
+impl GpuCompiledNode for CompiledShadow {
     fn node_id(&self) -> NodeId {
         self.node_id
     }

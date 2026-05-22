@@ -1,10 +1,7 @@
-use crate::node::{
-    Deferred, DelegateEvalContext, NodeId, NodeParams, PortRef, compositing::BlendMode,
-    compositing::BlendModeDelegate,
-};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, compositing::BlendMode};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -59,31 +56,26 @@ impl Default for Merge {
 }
 
 #[derive(Debug, Clone)]
-struct MergeFrameBinding {
+struct CompiledMerge {
     node_id: NodeId,
-    opacity: Deferred<f64>,
-    blend_mode: BlendModeDelegate,
+    params: MergeParamsDelegate,
     has_mask: bool,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for MergeFrameBinding {
+impl GpuCompiledNode for CompiledMerge {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
         let params = compiler::MergeParams {
-            opacity: self.opacity.resolve_float(
-                self.node_id,
-                "opacity",
-                &ctx.expr_context(self.node_id, "opacity"),
-            )? as f32,
-            blend_mode: self.blend_mode.try_into_evaluated(&DelegateEvalContext {
-                node_id: self.node_id,
-                property_path: "blend_mode",
-                expr: &ctx.expr_context(self.node_id, "blend_mode"),
-            })? as u32,
+            opacity: evaluated.opacity as f32,
+            blend_mode: evaluated.blend_mode as u32,
             has_mask: u32::from(self.has_mask),
             _pad: 0,
         };
@@ -184,10 +176,9 @@ impl GpuCompileNode for Merge {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(MergeFrameBinding {
+        ctx.register_compiled_node(CompiledMerge {
             node_id: self.id,
-            opacity: self.params.opacity.clone(),
-            blend_mode: self.params.blend_mode.clone(),
+            params: self.params.clone(),
             has_mask: !self.mask.is_empty(),
             buffer: params,
         });

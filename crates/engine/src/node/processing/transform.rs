@@ -1,7 +1,7 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -104,16 +104,9 @@ impl GpuCompileNode for Transform {
             SHADER,
             std::mem::size_of::<compiler::TransformParams>() as u64,
         )?;
-        ctx.push_frame_binding(TransformFrameBinding {
+        ctx.register_compiled_node(CompiledTransform {
             node_id: self.id,
-            scale_x: self.params.scale_x.clone(),
-            scale_y: self.params.scale_y.clone(),
-            translate_x: self.params.translate_x.clone(),
-            translate_y: self.params.translate_y.clone(),
-            rotate: self.params.rotate.clone(),
-            pivot_x: self.params.pivot_x.clone(),
-            pivot_y: self.params.pivot_y.clone(),
-            sampling: self.params.sampling.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -125,73 +118,28 @@ impl GpuCompileNode for Transform {
 }
 
 #[derive(Debug, Clone)]
-struct TransformFrameBinding {
+struct CompiledTransform {
     node_id: NodeId,
-    scale_x: Deferred<f64>,
-    scale_y: Deferred<f64>,
-    translate_x: Deferred<f64>,
-    translate_y: Deferred<f64>,
-    rotate: Deferred<f64>,
-    pivot_x: Deferred<f64>,
-    pivot_y: Deferred<f64>,
-    sampling: Deferred<i64>,
+    params: TransformParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for TransformFrameBinding {
+impl GpuCompiledNode for CompiledTransform {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
         let params = compiler::TransformParams {
-            scale: [
-                self.scale_x.resolve_float(
-                    self.node_id,
-                    "scale_x",
-                    &ctx.expr_context(self.node_id, "scale_x"),
-                )? as f32,
-                self.scale_y.resolve_float(
-                    self.node_id,
-                    "scale_y",
-                    &ctx.expr_context(self.node_id, "scale_y"),
-                )? as f32,
-            ],
-            translate: [
-                self.translate_x.resolve_float(
-                    self.node_id,
-                    "translate_x",
-                    &ctx.expr_context(self.node_id, "translate_x"),
-                )? as f32,
-                self.translate_y.resolve_float(
-                    self.node_id,
-                    "translate_y",
-                    &ctx.expr_context(self.node_id, "translate_y"),
-                )? as f32,
-            ],
-            pivot: [
-                self.pivot_x.resolve_float(
-                    self.node_id,
-                    "pivot_x",
-                    &ctx.expr_context(self.node_id, "pivot_x"),
-                )? as f32,
-                self.pivot_y.resolve_float(
-                    self.node_id,
-                    "pivot_y",
-                    &ctx.expr_context(self.node_id, "pivot_y"),
-                )? as f32,
-            ],
-            rotate_radians: (self.rotate.resolve_float(
-                self.node_id,
-                "rotate",
-                &ctx.expr_context(self.node_id, "rotate"),
-            )? as f32)
-                .to_radians(),
-            sampling: TransformSampling::from_int(self.sampling.resolve_int(
-                self.node_id,
-                "sampling",
-                &ctx.expr_context(self.node_id, "sampling"),
-            )?) as u32,
+            scale: [evaluated.scale_x as f32, evaluated.scale_y as f32],
+            translate: [evaluated.translate_x as f32, evaluated.translate_y as f32],
+            pivot: [evaluated.pivot_x as f32, evaluated.pivot_y as f32],
+            rotate_radians: (evaluated.rotate as f32).to_radians(),
+            sampling: TransformSampling::from_int(evaluated.sampling) as u32,
             _pad: [0; 4],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));

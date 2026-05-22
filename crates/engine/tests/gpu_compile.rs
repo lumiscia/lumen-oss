@@ -9,7 +9,6 @@ use lumen_engine::{
     node::{
         Deferred, NodeId, NodeKind, PortRef,
         compositing::{
-            BlendModeDelegate,
             merge::{Merge, MergeParamsDelegate},
             raster_multimerge::{RasterMultiMerge, RasterMultiMergeParamsDelegate},
             switch::{Switch, SwitchParamsDelegate},
@@ -114,7 +113,7 @@ fn compiles_background_exposure_media_output_to_gpu_plan() {
     assert_eq!(compiled.plan.buffers().len(), 2);
     assert_eq!(compiled.plan.programs().len(), 2);
     assert_eq!(compiled.plan.passes().len(), 2);
-    assert_eq!(compiled.frame_bindings.len(), 2);
+    assert_eq!(compiled.compiled_nodes.len(), 2);
     assert_eq!(
         compiled.output.domain.storage_size,
         lumen_gpu::Size::new(8, 4)
@@ -230,7 +229,7 @@ fn compiles_gpu_plan_from_json_composition() {
 
     assert_eq!(compiled.plan.textures().len(), 2);
     assert_eq!(compiled.plan.programs().len(), 2);
-    assert_eq!(compiled.frame_bindings.len(), 2);
+    assert_eq!(compiled.compiled_nodes.len(), 2);
 }
 
 #[test]
@@ -284,7 +283,7 @@ fn compiles_media_input_as_frame_texture_boundary() {
     assert_eq!(compiled.plan.buffers().len(), 0);
     assert_eq!(compiled.plan.programs().len(), 0);
     assert_eq!(compiled.plan.passes().len(), 0);
-    assert_eq!(compiled.frame_bindings.len(), 1);
+    assert_eq!(compiled.compiled_nodes.len(), 1);
     assert_eq!(compiled.plan.params().len(), 1);
     assert_eq!(
         compiled.output.domain.storage_size,
@@ -438,7 +437,7 @@ fn compiles_merge_to_gpu_blend_pass() {
     assert_eq!(compiled.plan.buffers().len(), 3);
     assert_eq!(compiled.plan.programs().len(), 3);
     assert_eq!(compiled.plan.passes().len(), 3);
-    assert_eq!(compiled.frame_bindings.len(), 3);
+    assert_eq!(compiled.compiled_nodes.len(), 3);
     assert!(compiled.plan.passes().iter().any(|pass| {
         matches!(
             &pass.desc,
@@ -487,12 +486,7 @@ fn compiles_raster_multimerge_with_blend_mode_binding() {
     let compiled = CompileContext::new(&composition).compile().unwrap();
 
     assert_eq!(compiled.plan.passes().len(), 5);
-    assert!(
-        compiled
-            .frame_bindings
-            .iter()
-            .any(|binding| binding.node_id() == multi)
-    );
+    assert!(compiled.compiled_nodes.contains_key(&multi));
 }
 
 #[test]
@@ -545,7 +539,7 @@ fn compiles_switch_as_selected_gpu_alias() {
 
     assert_eq!(compiled.plan.textures().len(), 1);
     assert_eq!(compiled.plan.passes().len(), 1);
-    assert_eq!(compiled.frame_bindings.len(), 2);
+    assert_eq!(compiled.compiled_nodes.len(), 2);
     assert_eq!(switched.texture, selected.texture);
 }
 
@@ -636,7 +630,7 @@ fn compiles_switch_expression_as_frame_selected_gpu_alias() {
 }
 
 #[test]
-fn compiles_memo_and_time_remap_as_gpu_aliases_with_frame_bindings() {
+fn compiles_memo_and_time_remap_as_gpu_aliases_with_compiled_nodes() {
     let solid_id = NodeId::new(1);
     let time_remap = NodeId::new(2);
     let memo = NodeId::new(3);
@@ -705,7 +699,7 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_frame_bindings() {
 
     assert_eq!(compiled.plan.textures().len(), 1);
     assert_eq!(compiled.plan.passes().len(), 1);
-    assert_eq!(compiled.frame_bindings.len(), 3);
+    assert_eq!(compiled.compiled_nodes.len(), 3);
     assert_eq!(remapped.texture, source.texture);
     assert_eq!(memoized.texture, source.texture);
 }
@@ -950,10 +944,10 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
     assert_eq!(compiled.plan.buffers().len(), 4);
     assert_eq!(compiled.plan.programs().len(), 5);
     assert_eq!(compiled.plan.passes().len(), 5);
-    assert_eq!(compiled.frame_bindings.len(), 4);
-    assert_eq!(compiled.frame_bindings[1].node_id(), transform);
-    assert_eq!(compiled.frame_bindings[2].node_id(), crop);
-    assert_eq!(compiled.frame_bindings[3].node_id(), resize);
+    assert_eq!(compiled.compiled_nodes.len(), 4);
+    assert!(compiled.compiled_nodes.contains_key(&transform));
+    assert!(compiled.compiled_nodes.contains_key(&crop));
+    assert!(compiled.compiled_nodes.contains_key(&resize));
     assert_eq!(transformed.domain.storage_size, lumen_gpu::Size::new(8, 4));
     assert_eq!(resized.domain.storage_size, lumen_gpu::Size::new(4, 2));
 
@@ -963,7 +957,7 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
 }
 
 #[test]
-fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
+fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
     let solid_id = NodeId::new(1);
     let alpha = NodeId::new(2);
     let shuffle = NodeId::new(3);
@@ -1063,12 +1057,12 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
     assert_eq!(compiled.plan.programs().len(), 6);
     assert_eq!(compiled.plan.passes().len(), 6);
     assert_eq!(compiled.plan.params().len(), 7);
-    assert_eq!(compiled.frame_bindings.len(), 6);
-    assert_eq!(compiled.frame_bindings[1].node_id(), alpha);
-    assert_eq!(compiled.frame_bindings[2].node_id(), shuffle);
-    assert_eq!(compiled.frame_bindings[3].node_id(), levels);
-    assert_eq!(compiled.frame_bindings[4].node_id(), hue);
-    assert_eq!(compiled.frame_bindings[5].node_id(), grade);
+    assert_eq!(compiled.compiled_nodes.len(), 6);
+    assert!(compiled.compiled_nodes.contains_key(&alpha));
+    assert!(compiled.compiled_nodes.contains_key(&shuffle));
+    assert!(compiled.compiled_nodes.contains_key(&levels));
+    assert!(compiled.compiled_nodes.contains_key(&hue));
+    assert!(compiled.compiled_nodes.contains_key(&grade));
     assert_eq!(update.uploads().len(), 7);
 }
 
@@ -1131,8 +1125,8 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
 
     assert_eq!(compiled.plan.textures().len(), 4);
     assert_eq!(compiled.plan.programs().len(), 3);
-    assert_eq!(compiled.frame_bindings[0].node_id(), shape);
-    assert_eq!(compiled.frame_bindings[1].node_id(), text);
+    assert!(compiled.compiled_nodes.contains_key(&shape));
+    assert!(compiled.compiled_nodes.contains_key(&text));
     assert_eq!(bound.frame_update().uploads().len(), 5);
 
     let unchanged = FrameBindContext::new(&composition, 0)
@@ -1174,7 +1168,7 @@ fn compiles_vector_path_through_shared_renderer() {
         .bind(&compiled)
         .unwrap();
 
-    assert_eq!(compiled.frame_bindings[0].node_id(), path);
+    assert!(compiled.compiled_nodes.contains_key(&path));
     assert_eq!(bound.frame_update().uploads().len(), 2);
 }
 

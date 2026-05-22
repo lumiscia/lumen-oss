@@ -1,7 +1,7 @@
 use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
     RasterHandle, compiler,
 };
 
@@ -50,13 +50,13 @@ impl Default for AlphaPremultiply {
 }
 
 #[derive(Debug, Clone)]
-struct AlphaPremultiplyFrameBinding {
+struct CompiledAlphaPremultiply {
     node_id: NodeId,
     params: AlphaPremultiplyParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for AlphaPremultiplyFrameBinding {
+impl GpuCompiledNode for CompiledAlphaPremultiply {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -102,7 +102,7 @@ impl GpuCompileNode for AlphaPremultiply {
             SHADER,
             std::mem::size_of::<compiler::AlphaPremultiplyParams>() as u64,
         )?;
-        ctx.push_frame_binding(AlphaPremultiplyFrameBinding {
+        ctx.register_compiled_node(CompiledAlphaPremultiply {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,

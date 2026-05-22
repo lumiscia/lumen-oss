@@ -1,7 +1,7 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, vector::paint::Paint};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     RasterMetadata, compiler,
 };
 
@@ -49,13 +49,13 @@ impl Default for Background {
 }
 
 #[derive(Debug, Clone)]
-struct BackgroundFrameBinding {
+struct CompiledBackground {
     node_id: NodeId,
     params: BackgroundParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for BackgroundFrameBinding {
+impl GpuCompiledNode for CompiledBackground {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -140,7 +140,7 @@ impl GpuCompileNode for Background {
             },
             lumen_gpu::ParamTarget::Buffer(buffer),
         );
-        ctx.push_frame_binding(BackgroundFrameBinding {
+        ctx.register_compiled_node(CompiledBackground {
             node_id: self.id,
             params: self.params.clone(),
             buffer,

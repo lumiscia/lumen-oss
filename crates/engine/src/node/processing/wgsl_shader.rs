@@ -4,7 +4,7 @@ use crate::{
 };
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -76,7 +76,7 @@ impl GpuCompileNode for WgslShader {
             shader,
             std::mem::size_of::<compiler::WgslShaderParams>() as u64,
         )?;
-        ctx.push_frame_binding(WgslShaderFrameBinding {
+        ctx.register_compiled_node(CompiledWgslShader {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,
@@ -90,13 +90,13 @@ impl GpuCompileNode for WgslShader {
 }
 
 #[derive(Debug, Clone)]
-struct WgslShaderFrameBinding {
+struct CompiledWgslShader {
     node_id: NodeId,
     params: WgslShaderParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for WgslShaderFrameBinding {
+impl GpuCompiledNode for CompiledWgslShader {
     fn node_id(&self) -> NodeId {
         self.node_id
     }

@@ -8,8 +8,8 @@ use std::{
 use std::time::Instant;
 
 use crate::error::{LumenError, RenderError};
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, lumen_macros::NodeEnum)]
 #[repr(i64)]
@@ -148,18 +148,9 @@ impl GpuCompileNode for Text {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TextFrameBinding {
+pub(crate) struct CompiledText {
     pub(crate) node_id: NodeId,
-    pub(crate) content: Deferred<String>,
-    pub(crate) font_family: Deferred<String>,
-    pub(crate) font_size: Deferred<f64>,
-    pub(crate) font_weight: Deferred<i64>,
-    pub(crate) font_style: Deferred<i64>,
-    pub(crate) max_width: Deferred<f64>,
-    pub(crate) position: Deferred<(f64, f64)>,
-    pub(crate) color: Deferred<[u8; 4]>,
-    pub(crate) alignment_horizontal: Deferred<i64>,
-    pub(crate) alignment_vertical: Deferred<i64>,
+    pub(crate) params: TextParamsDelegate,
     pub(crate) atlas_texture: lumen_gpu::TextureId,
     pub(crate) globals_buffer: lumen_gpu::BufferId,
     pub(crate) instances_buffer: lumen_gpu::BufferId,
@@ -168,65 +159,28 @@ pub(crate) struct TextFrameBinding {
     pub(crate) size: lumen_gpu::Size,
 }
 
-impl GpuFrameBinding for TextFrameBinding {
+impl GpuCompiledNode for CompiledText {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let trace_started = crate::log_level_enabled(tracing::Level::TRACE).then(trace_now_ms);
-        let content = self.content.resolve_string(
-            self.node_id,
-            "content",
-            &ctx.expr_context(self.node_id, "content"),
-        )?;
-        let font_family = self.font_family.resolve_string(
-            self.node_id,
-            "font_family",
-            &ctx.expr_context(self.node_id, "font_family"),
-        )?;
-        let color = self.color.resolve_color(
-            self.node_id,
-            "color",
-            &ctx.expr_context(self.node_id, "color"),
-        )?;
-        let (position_x, position_y) = self.position.resolve_vec2(
-            self.node_id,
-            "position",
-            &ctx.expr_context(self.node_id, "position"),
-        )?;
-        let font_size = self.font_size.resolve_float(
-            self.node_id,
-            "font_size",
-            &ctx.expr_context(self.node_id, "font_size"),
-        )? as f32;
-        let max_width = self.max_width.resolve_float(
-            self.node_id,
-            "max_width",
-            &ctx.expr_context(self.node_id, "max_width"),
-        )? as f32;
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        let content = evaluated.content;
+        let font_family = evaluated.font_family;
+        let color = evaluated.color;
+        let (position_x, position_y) = evaluated.position;
+        let font_size = evaluated.font_size as f32;
+        let max_width = evaluated.max_width as f32;
         let alignment_horizontal =
-            TextAlignmentHorizontal::from_int(self.alignment_horizontal.resolve_int(
-                self.node_id,
-                "alignment_horizontal",
-                &ctx.expr_context(self.node_id, "alignment_horizontal"),
-            )?);
-        let alignment_vertical =
-            TextAlignmentVertical::from_int(self.alignment_vertical.resolve_int(
-                self.node_id,
-                "alignment_vertical",
-                &ctx.expr_context(self.node_id, "alignment_vertical"),
-            )?);
-        let font_weight = self.font_weight.resolve_int(
-            self.node_id,
-            "font_weight",
-            &ctx.expr_context(self.node_id, "font_weight"),
-        )?;
-        let font_style = TextFontStyle::from_int(self.font_style.resolve_int(
-            self.node_id,
-            "font_style",
-            &ctx.expr_context(self.node_id, "font_style"),
-        )?);
+            TextAlignmentHorizontal::from_int(evaluated.alignment_horizontal);
+        let alignment_vertical = TextAlignmentVertical::from_int(evaluated.alignment_vertical);
+        let font_weight = evaluated.font_weight;
+        let font_style = TextFontStyle::from_int(evaluated.font_style);
 
         let mut request = lumen_text::TextLayoutRequest::new(content.clone());
         request.font_family = font_family.clone();

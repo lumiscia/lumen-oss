@@ -114,7 +114,7 @@ impl GpuCompositionRenderer {
             buffers = compiled.plan.buffers().len(),
             programs = compiled.plan.programs().len(),
             passes = compiled.plan.passes().len(),
-            frame_bindings = compiled.frame_bindings.len(),
+            compiled_nodes = compiled.compiled_nodes.len(),
             "prepare compiled render plan"
         );
         let mut renderer = lumen_gpu::Renderer::from_device_with_adapter_info(

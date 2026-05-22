@@ -1,7 +1,7 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -133,7 +133,7 @@ impl GpuCompileNode for Curves {
             },
             lumen_gpu::ParamTarget::Buffer(curve),
         );
-        ctx.push_frame_binding(CurvesFrameBinding {
+        ctx.register_compiled_node(CompiledCurves {
             node_id: self.id,
             params: self.params.clone(),
             params_buffer: params,
@@ -149,14 +149,14 @@ impl GpuCompileNode for Curves {
 }
 
 #[derive(Debug, Clone)]
-struct CurvesFrameBinding {
+struct CompiledCurves {
     node_id: NodeId,
     params: CurvesParamsDelegate,
     params_buffer: lumen_gpu::BufferId,
     curve_buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for CurvesFrameBinding {
+impl GpuCompiledNode for CompiledCurves {
     fn node_id(&self) -> NodeId {
         self.node_id
     }

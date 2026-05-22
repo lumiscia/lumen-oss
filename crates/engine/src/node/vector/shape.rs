@@ -1,6 +1,6 @@
-use super::paint::{Paint, PaintDelegate};
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
-use crate::node::{Deferred, DelegateEvalContext, NodeId, NodeParams, PortRef};
+use super::paint::Paint;
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
@@ -118,104 +118,38 @@ impl GpuCompileNode for Shape {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ShapeFrameBinding {
+pub(crate) struct CompiledShape {
     pub(crate) node_id: NodeId,
-    pub(crate) geometry_kind: Deferred<i64>,
-    pub(crate) width: Deferred<i64>,
-    pub(crate) height: Deferred<i64>,
-    pub(crate) border_radius: Deferred<f64>,
-    pub(crate) position: Deferred<(f64, f64)>,
-    pub(crate) fill_enabled: Deferred<bool>,
-    pub(crate) fill_color: Deferred<[u8; 4]>,
-    pub(crate) fill_paint: PaintDelegate,
-    pub(crate) stroke_enabled: Deferred<bool>,
-    pub(crate) stroke_color: Deferred<[u8; 4]>,
-    pub(crate) stroke_paint: PaintDelegate,
-    pub(crate) stroke_width: Deferred<f64>,
+    pub(crate) params: ShapeParamsDelegate,
     pub(crate) buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for ShapeFrameBinding {
+impl GpuCompiledNode for CompiledShape {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let (x, y) = self.position.resolve_vec2(
-            self.node_id,
-            "position",
-            &ctx.expr_context(self.node_id, "position"),
-        )?;
-        let fill = self.fill_color.resolve_color(
-            self.node_id,
-            "fill_color",
-            &ctx.expr_context(self.node_id, "fill_color"),
-        )?;
-        let stroke = self.stroke_color.resolve_color(
-            self.node_id,
-            "stroke_color",
-            &ctx.expr_context(self.node_id, "stroke_color"),
-        )?;
-        let fill_paint = self.fill_paint.try_into_evaluated(&DelegateEvalContext {
+        let evaluated = self.params.eval(&NodeParamEvalContext {
             node_id: self.node_id,
-            property_path: "fill_paint",
-            expr: &ctx.expr_context(self.node_id, "fill_paint"),
+            expr: &ctx.expr_context(self.node_id, "params"),
         })?;
-        let stroke_paint = self.stroke_paint.try_into_evaluated(&DelegateEvalContext {
-            node_id: self.node_id,
-            property_path: "stroke_paint",
-            expr: &ctx.expr_context(self.node_id, "stroke_paint"),
-        })?;
+        let (x, y) = evaluated.position;
         let mut flags = 0;
-        if self.fill_enabled.resolve_bool(
-            self.node_id,
-            "fill_enabled",
-            &ctx.expr_context(self.node_id, "fill_enabled"),
-        )? {
+        if evaluated.fill_enabled {
             flags |= 1;
         }
-        if self.stroke_enabled.resolve_bool(
-            self.node_id,
-            "stroke_enabled",
-            &ctx.expr_context(self.node_id, "stroke_enabled"),
-        )? {
+        if evaluated.stroke_enabled {
             flags |= 2;
         }
         let params = super::renderer::ShapeParams {
-            fill_paint: fill_paint.to_gpu(fill),
-            stroke_paint: stroke_paint.to_gpu(stroke),
+            fill_paint: evaluated.fill_paint.to_gpu(evaluated.fill_color),
+            stroke_paint: evaluated.stroke_paint.to_gpu(evaluated.stroke_color),
             position: [x as f32, y as f32],
-            size: [
-                self.width
-                    .resolve_int(
-                        self.node_id,
-                        "width",
-                        &ctx.expr_context(self.node_id, "width"),
-                    )?
-                    .max(1) as f32,
-                self.height
-                    .resolve_int(
-                        self.node_id,
-                        "height",
-                        &ctx.expr_context(self.node_id, "height"),
-                    )?
-                    .max(1) as f32,
-            ],
-            border_radius: self.border_radius.resolve_float(
-                self.node_id,
-                "border_radius",
-                &ctx.expr_context(self.node_id, "border_radius"),
-            )? as f32,
-            stroke_width: self.stroke_width.resolve_float(
-                self.node_id,
-                "stroke_width",
-                &ctx.expr_context(self.node_id, "stroke_width"),
-            )? as f32,
-            geometry_kind: ShapeGeometryKind::from_int(self.geometry_kind.resolve_int(
-                self.node_id,
-                "geometry_kind",
-                &ctx.expr_context(self.node_id, "geometry_kind"),
-            )?) as u32,
+            size: [evaluated.width.max(1) as f32, evaluated.height.max(1) as f32],
+            border_radius: evaluated.border_radius as f32,
+            stroke_width: evaluated.stroke_width as f32,
+            geometry_kind: ShapeGeometryKind::from_int(evaluated.geometry_kind) as u32,
             flags,
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));

@@ -4,7 +4,7 @@ use crate::error::{MediaError, RenderError};
 use crate::node::{NodeId, NodeParams};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, MediaTextureKey,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey,
     RasterHandle, RasterMetadata,
 };
 
@@ -225,9 +225,9 @@ impl GpuCompileNode for MediaIn {
             },
             lumen_gpu::ParamTarget::Texture(texture),
         );
-        ctx.push_frame_binding(MediaInputFrameBinding {
+        ctx.register_compiled_node(CompiledMediaInput {
             node_id: self.id,
-            node: self.clone(),
+            params: self.params.clone(),
             texture,
             size,
         });
@@ -264,14 +264,14 @@ impl MediaIn {
 }
 
 #[derive(Debug, Clone)]
-struct MediaInputFrameBinding {
+struct CompiledMediaInput {
     node_id: NodeId,
-    node: MediaIn,
+    params: MediaInParamsDelegate,
     texture: lumen_gpu::TextureId,
     size: lumen_gpu::Size,
 }
 
-impl GpuFrameBinding for MediaInputFrameBinding {
+impl GpuCompiledNode for CompiledMediaInput {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -283,7 +283,11 @@ impl GpuFrameBinding for MediaInputFrameBinding {
             node_kind: "MediaIn",
             details: "media store is required for media input nodes".to_string(),
         })?;
-        let kind = resolve_for_context(&self.node, &ctx.expr_context(self.node_id, "source"))?;
+        let node = MediaIn {
+            id: self.node_id,
+            params: self.params.clone(),
+        };
+        let kind = resolve_for_context(&node, &ctx.expr_context(self.node_id, "source"))?;
         let (frame, key_source, key_frame) = match kind {
             MediaInKind::Image { image_id } => media
                 .get_image_resolver(&image_id)

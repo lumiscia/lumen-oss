@@ -1,7 +1,7 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -58,13 +58,13 @@ impl Default for HueSaturation {
 }
 
 #[derive(Debug, Clone)]
-struct HueSaturationFrameBinding {
+struct CompiledHueSaturation {
     node_id: NodeId,
     params: HueSaturationParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for HueSaturationFrameBinding {
+impl GpuCompiledNode for CompiledHueSaturation {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -99,7 +99,7 @@ impl GpuCompileNode for HueSaturation {
             SHADER,
             std::mem::size_of::<compiler::HueSaturationParams>() as u64,
         )?;
-        ctx.push_frame_binding(HueSaturationFrameBinding {
+        ctx.register_compiled_node(CompiledHueSaturation {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,

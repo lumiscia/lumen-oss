@@ -1,6 +1,6 @@
 use crate::node::{NodeId, NodeParams, PortRef};
 
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 
 /// Selects one raster input according to a controlled layer index.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -55,7 +55,7 @@ impl GpuCompileNode for Switch {
 
         let selected_layer =
             selected_layer_for_frame(self, &ctx.expr_context(self.id, "selected_layer"))?;
-        ctx.push_frame_binding(SwitchFrameBinding {
+        ctx.register_compiled_node(CompiledSwitch {
             node_id: self.id,
             selected_layer,
         });
@@ -74,12 +74,12 @@ impl GpuCompileNode for Switch {
 }
 
 #[derive(Debug, Clone)]
-struct SwitchFrameBinding {
+struct CompiledSwitch {
     node_id: NodeId,
     selected_layer: Option<usize>,
 }
 
-impl GpuFrameBinding for SwitchFrameBinding {
+impl GpuCompiledNode for CompiledSwitch {
     fn node_id(&self) -> NodeId {
         self.node_id
     }

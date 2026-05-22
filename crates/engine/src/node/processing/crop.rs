@@ -1,7 +1,7 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -99,7 +99,7 @@ impl GpuCompileNode for Crop {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(CropFrameBinding {
+        ctx.register_compiled_node(CompiledCrop {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,
@@ -114,13 +114,13 @@ impl GpuCompileNode for Crop {
 }
 
 #[derive(Debug, Clone)]
-struct CropFrameBinding {
+struct CompiledCrop {
     node_id: NodeId,
     params: CropParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for CropFrameBinding {
+impl GpuCompiledNode for CompiledCrop {
     fn node_id(&self) -> NodeId {
         self.node_id
     }

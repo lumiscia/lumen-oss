@@ -1,7 +1,7 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -62,13 +62,13 @@ impl Default for Levels {
 }
 
 #[derive(Debug, Clone)]
-struct LevelsFrameBinding {
+struct CompiledLevels {
     node_id: NodeId,
     params: LevelsParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for LevelsFrameBinding {
+impl GpuCompiledNode for CompiledLevels {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -105,7 +105,7 @@ impl GpuCompileNode for Levels {
             SHADER,
             std::mem::size_of::<compiler::LevelsParams>() as u64,
         )?;
-        ctx.push_frame_binding(LevelsFrameBinding {
+        ctx.register_compiled_node(CompiledLevels {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,

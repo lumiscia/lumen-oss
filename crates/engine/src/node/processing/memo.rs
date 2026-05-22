@@ -1,6 +1,6 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 
 /// Aliases a raster input through a stable cache boundary.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -45,7 +45,7 @@ impl GpuCompileNode for Memo {
             return Err(ctx.missing_output(self.id, &port.port));
         }
         let source = ctx.compile_port(&self.source)?;
-        ctx.push_frame_binding(MemoFrameBinding {
+        ctx.register_compiled_node(CompiledMemo {
             node_id: self.id,
             params: self.params.clone(),
         });
@@ -54,12 +54,12 @@ impl GpuCompileNode for Memo {
 }
 
 #[derive(Debug, Clone)]
-struct MemoFrameBinding {
+struct CompiledMemo {
     node_id: NodeId,
     params: MemoParamsDelegate,
 }
 
-impl GpuFrameBinding for MemoFrameBinding {
+impl GpuCompiledNode for CompiledMemo {
     fn node_id(&self) -> NodeId {
         self.node_id
     }

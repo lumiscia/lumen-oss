@@ -1,7 +1,7 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -62,13 +62,13 @@ impl Default for ChannelShuffle {
 }
 
 #[derive(Debug, Clone)]
-struct ChannelShuffleFrameBinding {
+struct CompiledChannelShuffle {
     node_id: NodeId,
     params: ChannelShuffleParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for ChannelShuffleFrameBinding {
+impl GpuCompiledNode for CompiledChannelShuffle {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -107,7 +107,7 @@ impl GpuCompileNode for ChannelShuffle {
             SHADER,
             std::mem::size_of::<compiler::ChannelShuffleParams>() as u64,
         )?;
-        ctx.push_frame_binding(ChannelShuffleFrameBinding {
+        ctx.register_compiled_node(CompiledChannelShuffle {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,

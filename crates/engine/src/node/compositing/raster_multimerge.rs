@@ -1,7 +1,7 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -54,34 +54,24 @@ impl Default for RasterMultiMerge {
 }
 
 #[derive(Debug, Clone)]
-struct RasterMultiMergeFrameBinding {
+struct RasterMultiCompiledMerge {
     node_id: NodeId,
-    opacity: Deferred<f64>,
-    blend_mode: Deferred<i64>,
+    params: RasterMultiMergeParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for RasterMultiMergeFrameBinding {
+impl GpuCompiledNode for RasterMultiCompiledMerge {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
         let params = compiler::RasterMultiMergeParams {
-            values: [
-                self.opacity.resolve_float(
-                    self.node_id,
-                    "opacity",
-                    &ctx.expr_context(self.node_id, "opacity"),
-                )? as f32,
-                self.blend_mode.resolve_int(
-                    self.node_id,
-                    "blend_mode",
-                    &ctx.expr_context(self.node_id, "blend_mode"),
-                )? as f32,
-                0.0,
-                0.0,
-            ],
+            values: [evaluated.opacity as f32, evaluated.blend_mode as f32, 0.0, 0.0],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
@@ -181,10 +171,9 @@ impl GpuCompileNode for RasterMultiMerge {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(RasterMultiMergeFrameBinding {
+        ctx.register_compiled_node(RasterMultiCompiledMerge {
             node_id: self.id,
-            opacity: self.params.opacity.clone(),
-            blend_mode: self.params.blend_mode.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
 

@@ -1,7 +1,7 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -147,7 +147,7 @@ impl GpuCompileNode for ColorGrade {
             },
             lumen_gpu::ParamTarget::Buffer(lut),
         );
-        ctx.push_frame_binding(ColorGradeFrameBinding {
+        ctx.register_compiled_node(CompiledColorGrade {
             node_id: self.id,
             params: self.params.clone(),
             params_buffer: params,
@@ -163,14 +163,14 @@ impl GpuCompileNode for ColorGrade {
 }
 
 #[derive(Debug, Clone)]
-struct ColorGradeFrameBinding {
+struct CompiledColorGrade {
     node_id: NodeId,
     params: ColorGradeParamsDelegate,
     params_buffer: lumen_gpu::BufferId,
     lut_buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for ColorGradeFrameBinding {
+impl GpuCompiledNode for CompiledColorGrade {
     fn node_id(&self) -> NodeId {
         self.node_id
     }

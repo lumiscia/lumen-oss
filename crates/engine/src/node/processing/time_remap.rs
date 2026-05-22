@@ -1,6 +1,6 @@
 use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 
 /// Evaluates a raster input at another frame.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -83,7 +83,7 @@ impl GpuCompileNode for TimeRemap {
         if port.port != "output" {
             return Err(ctx.missing_output(self.id, &port.port));
         }
-        ctx.push_frame_binding(TimeRemapFrameBinding {
+        ctx.register_compiled_node(CompiledTimeRemap {
             node_id: self.id,
             params: self.params.clone(),
         });
@@ -100,12 +100,12 @@ impl GpuCompileNode for TimeRemap {
 }
 
 #[derive(Debug, Clone)]
-struct TimeRemapFrameBinding {
+struct CompiledTimeRemap {
     node_id: NodeId,
     params: TimeRemapParamsDelegate,
 }
 
-impl GpuFrameBinding for TimeRemapFrameBinding {
+impl GpuCompiledNode for CompiledTimeRemap {
     fn node_id(&self) -> NodeId {
         self.node_id
     }

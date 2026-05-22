@@ -971,12 +971,12 @@ fn print_plan_profile(compiled: Option<&lumen_engine::gpu::CompiledComposition>)
         return;
     };
     println!(
-        "plan_profile textures={} buffers={} programs={} passes={} frame_bindings={}",
+        "plan_profile textures={} buffers={} programs={} passes={} compiled_nodes={}",
         compiled.plan.textures().len(),
         compiled.plan.buffers().len(),
         compiled.plan.programs().len(),
         compiled.plan.passes().len(),
-        compiled.frame_bindings.len(),
+        compiled.compiled_nodes.len(),
     );
     for pass in compiled.plan.passes() {
         let (kind, label) = match &pass.desc {
