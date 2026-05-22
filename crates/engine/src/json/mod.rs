@@ -245,7 +245,7 @@ mod tests {
             "timeline": { "fps": 30, "duration_frames": 90 },
             "render_settings": { "width": 1920, "height": 1080 },
             "nodes": [
-                { "id": 1, "type": "solid_color", "properties": { "color": [255, 0, 0, 255], "width": 1920, "height": 1080 } },
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 1920, "height": 1080 } },
                 { "id": 2, "type": "media_output" }
             ],
             "connections": [
@@ -285,7 +285,7 @@ mod tests {
                 ]
             },
             "nodes": [
-                { "id": 1, "type": "solid_color", "properties": { "color": [255, 0, 0, 255], "width": 1920, "height": 1080 } },
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 1920, "height": 1080 } },
                 { "id": 2, "type": "media_output" }
             ],
             "connections": [
@@ -308,8 +308,8 @@ mod tests {
             "timeline": { "fps": 24, "duration_frames": 48 },
             "render_settings": { "width": 800, "height": 600 },
             "nodes": [
-                { "id": 1, "type": "solid_color", "properties": { "color": "#FF0000", "width": 800, "height": 600 } },
-                { "id": 2, "type": "exposure", "properties": {
+                { "id": 1, "type": "background", "params": { "paint": "#FF0000", "width": 800, "height": 600 } },
+                { "id": 2, "type": "exposure", "params": {
                     "exposure": "=frame * 0.1",
                     "contrast": 1.0,
                     "offset": 0.0
@@ -332,9 +332,9 @@ mod tests {
             "timeline": { "fps": 30, "duration_frames": 60 },
             "render_settings": { "width": 100, "height": 100 },
             "nodes": [
-                { "id": 1, "type": "solid_color", "properties": { "color": [255, 0, 0], "width": 100, "height": 100 } },
-                { "id": 2, "type": "solid_color", "properties": { "color": [0, 255, 0], "width": 100, "height": 100 } },
-                { "id": 3, "type": "switch", "properties": { "selected_layer": "=if(frame < 30, 0, 1)" } },
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0], "width": 100, "height": 100 } },
+                { "id": 2, "type": "background", "params": { "paint": [0, 255, 0], "width": 100, "height": 100 } },
+                { "id": 3, "type": "switch", "params": { "selected_layer": "=if(frame < 30, 0, 1)" } },
                 { "id": 4, "type": "media_output" }
             ],
             "connections": [
@@ -354,9 +354,9 @@ mod tests {
             "timeline": { "fps": 30, "duration_frames": 60 },
             "render_settings": { "width": 100, "height": 100 },
             "nodes": [
-                { "id": 1, "type": "solid_color", "properties": { "color": [255, 0, 0], "width": 100, "height": 100 } },
-                { "id": 2, "type": "solid_color", "properties": { "color": [0, 255, 0], "width": 100, "height": 100 } },
-                { "id": 3, "type": "merge", "properties": { "blend_mode": "multiply", "opacity": 0.5 } },
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0], "width": 100, "height": 100 } },
+                { "id": 2, "type": "background", "params": { "paint": [0, 255, 0], "width": 100, "height": 100 } },
+                { "id": 3, "type": "merge", "params": { "blend_mode": "multiply", "opacity": 0.5 } },
                 { "id": 4, "type": "media_output" }
             ],
             "connections": [
@@ -371,7 +371,7 @@ mod tests {
         assert!(matches!(
             merge,
             crate::node::NodeKind::Merge(node)
-                if matches!(node.params.blend_mode, crate::node::Deferred::Value(1))
+                if matches!(node.params.blend_mode, crate::node::compositing::BlendModeDelegate::Multiply)
         ));
     }
 
@@ -381,7 +381,7 @@ mod tests {
             "timeline": { "fps": 30, "duration_frames": 60 },
             "render_settings": { "width": 100, "height": 100 },
             "nodes": [
-                { "id": 1, "type": "merge", "properties": { "blend_mode": "not_real" } }
+                { "id": 1, "type": "merge", "params": { "blend_mode": "not_real" } }
             ],
             "connections": []
         }"#;

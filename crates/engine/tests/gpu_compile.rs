@@ -11,6 +11,7 @@ use lumen_engine::{
             merge::{Merge, MergeParamsDelegate},
             raster_multimerge::{RasterMultiMerge, RasterMultiMergeParamsDelegate},
             switch::{Switch, SwitchParamsDelegate},
+            BlendModeDelegate,
         },
         media_output::MediaOutput,
         processing::{
@@ -415,7 +416,6 @@ fn compiles_merge_to_gpu_blend_pass() {
             id: merge,
             params: MergeParamsDelegate {
                 opacity: Deferred::value(0.5),
-                blend_mode: Deferred::value(0),
                 ..Default::default()
             },
             base: PortRef::new(base, "output".to_string()),

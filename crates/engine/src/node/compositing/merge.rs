@@ -1,4 +1,7 @@
-use crate::node::{compositing::BlendMode, Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{
+    compositing::BlendMode, compositing::BlendModeDelegate, Deferred, DelegateEvalContext, NodeId,
+    NodeParams, PortRef,
+};
 
 use crate::gpu::{
     compiler, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding,
@@ -14,15 +17,15 @@ pub struct MergeParams {
     #[meta(min = 0, max = 1, step = 0.05)]
     pub opacity: f64,
     /// Blend mode used when combining the overlay with the base raster.
-    #[meta(kind = "enum", enum_type = BlendMode)]
-    pub blend_mode: i64,
+    #[meta()]
+    pub blend_mode: BlendMode,
 }
 
 impl Default for MergeParams {
     fn default() -> Self {
         Self {
             opacity: 1.0,
-            blend_mode: BlendMode::Normal as i64,
+            blend_mode: BlendMode::Normal,
         }
     }
 }
@@ -59,7 +62,7 @@ impl Default for Merge {
 struct MergeFrameBinding {
     node_id: NodeId,
     opacity: Deferred<f64>,
-    blend_mode: Deferred<i64>,
+    blend_mode: BlendModeDelegate,
     has_mask: bool,
     buffer: lumen_gpu::BufferId,
 }
@@ -76,11 +79,11 @@ impl GpuFrameBinding for MergeFrameBinding {
                 "opacity",
                 &ctx.expr_context(self.node_id, "opacity"),
             )? as f32,
-            blend_mode: self.blend_mode.resolve_int(
-                self.node_id,
-                "blend_mode",
-                &ctx.expr_context(self.node_id, "blend_mode"),
-            )? as u32,
+            blend_mode: self.blend_mode.try_into_evaluated(&DelegateEvalContext {
+                node_id: self.node_id,
+                property_path: "blend_mode",
+                expr: &ctx.expr_context(self.node_id, "blend_mode"),
+            })? as u32,
             has_mask: u32::from(self.has_mask),
             _pad: 0,
         };
