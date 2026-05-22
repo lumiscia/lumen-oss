@@ -15,13 +15,13 @@ use crate::{
 pub(crate) use super::params::*;
 
 #[derive(Debug, Clone)]
-struct SolidColorClearBinding {
+struct BackgroundClearBinding {
     node_id: NodeId,
     color: [u8; 4],
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for SolidColorClearBinding {
+impl GpuFrameBinding for BackgroundClearBinding {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -194,7 +194,7 @@ impl<'a> CompileContext<'a> {
             })?;
         let output = match node {
             NodeKind::MediaIn(node) => node.compile_gpu(self, port)?,
-            NodeKind::SolidColor(node) => node.compile_gpu(self, port)?,
+            NodeKind::Background(node) => node.compile_gpu(self, port)?,
             NodeKind::Text(node) => node.compile_gpu(self, port)?,
             NodeKind::Path(node) => node.compile_gpu(self, port)?,
             NodeKind::Shape(node) => node.compile_gpu(self, port)?,
@@ -333,7 +333,7 @@ impl<'a> CompileContext<'a> {
             lumen_gpu::NodeKey(node_id.0),
             lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
                 label: Some("transparent".to_string()),
-                shader: crate::node::source::solid_color::SHADER.to_string(),
+                shader: crate::node::source::background::SHADER.to_string(),
                 entry: "cs_main".to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
                     lumen_gpu::BindingLayoutEntry::uniform(
@@ -366,7 +366,7 @@ impl<'a> CompileContext<'a> {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        self.push_frame_binding(SolidColorClearBinding {
+        self.push_frame_binding(BackgroundClearBinding {
             node_id,
             color: [0, 0, 0, 0],
             buffer: params,
