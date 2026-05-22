@@ -54,52 +54,6 @@ fn enum_from_match_tokens(
     })
 }
 
-fn enum_into_match_tokens(
-    enum_ident: &Ident,
-    variant: &Variant,
-) -> Result<proc_macro2::TokenStream> {
-    let ident = &variant.ident;
-    Ok(match &variant.fields {
-        Fields::Unit => quote!(Self::#ident => #enum_ident::#ident),
-        Fields::Unnamed(fields) => {
-            let vars = (0..fields.unnamed.len())
-                .map(|index| format_ident!("field_{index}"))
-                .collect::<Vec<_>>();
-            quote!(
-                Self::#ident(#(#vars),*) => #enum_ident::#ident(
-                    #(::lumen_engine::node::DelegateValue::eval(
-                        &#vars,
-                        &::lumen_engine::node::DelegateEvalContext {
-                            node_id: ::lumen_engine::node::NodeId::new(0),
-                            property_path: "",
-                            expr: &::lumen_engine::expr::ExpressionContext::default(),
-                        },
-                    ).expect("delegate enum evaluation cannot fail without expressions")),*
-                )
-            )
-        }
-        Fields::Named(fields) => {
-            let vars = fields
-                .named
-                .iter()
-                .map(|field| field.ident.clone().expect("named field"))
-                .collect::<Vec<_>>();
-            quote!(
-                Self::#ident { #(#vars),* } => #enum_ident::#ident {
-                    #(#vars: ::lumen_engine::node::DelegateValue::eval(
-                        &#vars,
-                        &::lumen_engine::node::DelegateEvalContext {
-                            node_id: ::lumen_engine::node::NodeId::new(0),
-                            property_path: "",
-                            expr: &::lumen_engine::expr::ExpressionContext::default(),
-                        },
-                    ).expect("delegate enum evaluation cannot fail without expressions")),*
-                }
-            )
-        }
-    })
-}
-
 fn enum_eval_match_tokens(
     enum_ident: &Ident,
     variant: &Variant,
@@ -199,10 +153,6 @@ pub(crate) fn expand_enum_delegate(
         .iter()
         .map(|variant| enum_from_match_tokens(ident, variant))
         .collect::<Result<Vec<_>>>()?;
-    let into_matches = variants
-        .iter()
-        .map(|variant| enum_into_match_tokens(ident, variant))
-        .collect::<Result<Vec<_>>>()?;
     let eval_matches = variants
         .iter()
         .map(|variant| enum_eval_match_tokens(ident, variant))
@@ -216,7 +166,10 @@ pub(crate) fn expand_enum_delegate(
         quote! {
             fn to_property_value(&self) -> ::lumen_engine::node::PropertyValue {
                 <#ident as ::lumen_engine::node::DeferredValue>::to_property_value(
-                    &self.clone().into_evaluated(),
+                    &self
+                        .clone()
+                        .into_evaluated()
+                        .expect("delegate enum property values cannot contain expressions"),
                 )
             }
 
@@ -294,10 +247,16 @@ pub(crate) fn expand_enum_delegate(
                 }
             }
 
-            pub fn into_evaluated(self) -> #ident {
-                match self {
-                    #(#into_matches,)*
-                }
+            pub fn into_evaluated(
+                self,
+            ) -> ::core::result::Result<#ident, ::lumen_engine::error::LumenError> {
+                let expr = ::lumen_engine::expr::ExpressionContext::default();
+                let ctx = ::lumen_engine::node::DelegateEvalContext {
+                    node_id: ::lumen_engine::node::NodeId::new(0),
+                    property_path: "",
+                    expr: &expr,
+                };
+                self.try_into_evaluated(&ctx)
             }
         }
 

@@ -1,10 +1,13 @@
 #![cfg(feature = "metadata")]
 
-use lumen_engine::node::{
-    NodeCategory, NodeKind, PropertyEval, PropertyExpression, PropertyValue,
-    vector::paint::{
-        GradientInterpolation, GradientPaint, GradientSpread, GradientUnits, Paint, PaintDelegate,
-        PaintKind,
+use lumen_engine::{
+    expr::Expression,
+    node::{
+        Deferred, NodeCategory, NodeKind, PropertyEval, PropertyExpression, PropertyValue,
+        vector::paint::{
+            GradientInterpolation, GradientPaint, GradientSpread, GradientUnits, Paint,
+            PaintDelegate, PaintKind,
+        },
     },
 };
 
@@ -96,7 +99,10 @@ fn derived_property_eval_reads_marked_properties() {
 #[test]
 fn paint_delegate_round_trips_generated_enum_shape() {
     let solid = Paint::SolidColor(1, 2, 3, 255);
-    assert_eq!(PaintDelegate::from(solid.clone()).into_evaluated(), solid);
+    assert_eq!(
+        PaintDelegate::from(solid.clone()).into_evaluated().unwrap(),
+        solid
+    );
 
     let gradient = Paint::Gradient(GradientPaint {
         kind: PaintKind::LinearGradient,
@@ -111,7 +117,21 @@ fn paint_delegate_round_trips_generated_enum_shape() {
         stops: Vec::new(),
     });
     assert_eq!(
-        PaintDelegate::from(gradient.clone()).into_evaluated(),
+        PaintDelegate::from(gradient.clone())
+            .into_evaluated()
+            .unwrap(),
         gradient
     );
+}
+
+#[test]
+fn paint_delegate_into_evaluated_reports_expression_errors() {
+    let delegate = PaintDelegate::SolidColor(
+        Deferred::Expr(Expression::parse("\"not a number\"").unwrap()),
+        Deferred::value(2),
+        Deferred::value(3),
+        Deferred::value(255),
+    );
+
+    assert!(delegate.into_evaluated().is_err());
 }

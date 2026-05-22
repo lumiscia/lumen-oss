@@ -87,7 +87,10 @@ impl Paint {
 
     pub(crate) fn to_gpu(&self, fallback: [u8; 4]) -> GpuPaint {
         let delegate = PaintDelegate::from(self.clone());
-        match delegate.into_evaluated() {
+        match delegate
+            .into_evaluated()
+            .expect("paint delegates built from evaluated paint cannot contain expressions")
+        {
             Self::SolidColor(r, g, b, a) => GpuPaint::solid([r, g, b, a]),
             Self::Gradient(gradient) => gradient_to_gpu(&gradient, fallback),
         }
@@ -234,6 +237,14 @@ fn gradient_to_gpu(gradient: &GradientPaint, fallback: [u8; 4]) -> GpuPaint {
     paint.center = gradient.center;
     paint.radius = gradient.radius;
     paint.angle = gradient.angle;
+    if gradient.stops.len() > MAX_GRADIENT_STOPS {
+        tracing::warn!(
+            target: "lumen_render",
+            stop_count = gradient.stops.len(),
+            max_stop_count = MAX_GRADIENT_STOPS,
+            "truncating gradient stops for gpu paint"
+        );
+    }
     for (index, stop) in gradient.stops.iter().take(MAX_GRADIENT_STOPS).enumerate() {
         paint.offsets[index][0] = stop.offset.clamp(0.0, 1.0);
         paint.colors[index] = rgba8_to_f32(stop.color);
@@ -694,7 +705,7 @@ mod tests {
     fn paint_delegate_roundtrips_solid_color() {
         let solid = Paint::SolidColor(10, 20, 30, 40);
         let delegate = PaintDelegate::from(solid.clone());
-        let roundtripped = delegate.into_evaluated();
+        let roundtripped = delegate.into_evaluated().unwrap();
         assert_eq!(roundtripped, solid);
     }
 
@@ -722,7 +733,7 @@ mod tests {
             ],
         });
         let delegate = PaintDelegate::from(gradient.clone());
-        let roundtripped = delegate.into_evaluated();
+        let roundtripped = delegate.into_evaluated().unwrap();
         assert_eq!(roundtripped, gradient);
     }
 
