@@ -34,6 +34,8 @@ const paramType = (nodeKind: string, param: NodeParamSpec): string => {
       return "boolean";
     case "color":
       return "Color";
+    case "paint":
+      return "Paint";
     case "float":
     case "int":
       return "number";
@@ -173,6 +175,7 @@ export type NodeLiteralValue =
   | boolean
   | number
   | string
+  | GradientPaint
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]
@@ -186,6 +189,28 @@ export type Color =
   | readonly [number, number, number]
   | readonly [number, number, number, number]
   | \`#\${string}\`;
+export type GradientStop =
+  | { readonly offset: number; readonly color: Color }
+  | readonly [number, Color];
+export type GradientPaint = {
+  readonly type:
+    | "linear"
+    | "linear_gradient"
+    | "radial"
+    | "radial_gradient"
+    | "conic"
+    | "conic_gradient";
+  readonly units?: "object_bounding_box" | "user_space" | "userSpaceOnUse";
+  readonly spread?: "pad" | "repeat" | "reflect";
+  readonly interpolation?: "srgb" | "linear_srgb" | "linear";
+  readonly start?: Vec2;
+  readonly end?: Vec2;
+  readonly center?: Vec2;
+  readonly radius?: number | Vec2;
+  readonly angle?: number;
+  readonly stops: readonly GradientStop[];
+};
+export type Paint = Color | GradientPaint;
 
 ${enumTypes}
 

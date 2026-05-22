@@ -28,11 +28,11 @@
     });
 
     const background = composition.addNode({
-        type: "solid_color",
+        type: "background",
         params: {
             width: 1280,
             height: 720,
-            color: [25, 28, 36, 255],
+            paint: [25, 28, 36, 255],
         },
     });
 
