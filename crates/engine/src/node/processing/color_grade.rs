@@ -1,4 +1,4 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
@@ -10,33 +10,30 @@ pub(crate) const SHADER: &str = include_str!("color_grade.wgsl");
 pub const IDENTITY_LUT: &str = "identity";
 
 /// Applies a LUT-driven color transform to a raster.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedColorGradeParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ColorGradeParams {
     /// LUT data source or named LUT preset.
-    #[param(
-        kind = "string",
+    #[meta(
         name = "LUT source",
         role = "lut_source",
         multiline,
         recommended_rows = 4
     )]
-    pub lut_source: Deferred<String>,
+    pub lut_source: String,
     /// Blend amount for the LUT transform.
-    #[param(kind = "float", min = 0, max = 1, step = 0.01)]
-    pub strength: Deferred<f64>,
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub strength: f64,
     /// Sampling filter used when reading LUT data.
-    #[param(kind = "int", format = "sampling_mode")]
-    pub interpolation: Deferred<i64>,
+    #[meta(format = "sampling_mode")]
+    pub interpolation: i64,
 }
 
 impl Default for ColorGradeParams {
     fn default() -> Self {
         Self {
-            lut_source: Deferred::value(IDENTITY_LUT.to_string()),
-            strength: Deferred::value(1.0),
-            interpolation: Deferred::value(1),
+            lut_source: IDENTITY_LUT.to_string(),
+            strength: 1.0,
+            interpolation: 1,
         }
     }
 }
@@ -47,7 +44,7 @@ impl Default for ColorGradeParams {
 pub struct ColorGrade {
     pub id: NodeId,
     #[params]
-    pub params: ColorGradeParams,
+    pub params: ColorGradeParamsDelegate,
 
     #[input()]
     pub source: PortRef,
@@ -57,7 +54,7 @@ impl Default for ColorGrade {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: ColorGradeParams::default(),
+            params: ColorGradeParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }
@@ -152,9 +149,7 @@ impl GpuCompileNode for ColorGrade {
         );
         ctx.push_frame_binding(ColorGradeFrameBinding {
             node_id: self.id,
-            lut_source: self.params.lut_source.clone(),
-            strength: self.params.strength.clone(),
-            interpolation: self.params.interpolation.clone(),
+            params: self.params.clone(),
             params_buffer: params,
             lut_buffer: lut,
         });
@@ -170,9 +165,7 @@ impl GpuCompileNode for ColorGrade {
 #[derive(Debug, Clone)]
 struct ColorGradeFrameBinding {
     node_id: NodeId,
-    lut_source: Deferred<String>,
-    strength: Deferred<f64>,
-    interpolation: Deferred<i64>,
+    params: ColorGradeParamsDelegate,
     params_buffer: lumen_gpu::BufferId,
     lut_buffer: lumen_gpu::BufferId,
 }
@@ -183,27 +176,17 @@ impl GpuFrameBinding for ColorGradeFrameBinding {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let lut_source = self.lut_source.resolve_string(
-            self.node_id,
-            "lut_source",
-            &ctx.expr_context(self.node_id, "lut_source"),
-        )?;
-        let interpolation = self.interpolation.resolve_int(
-            self.node_id,
-            "interpolation",
-            &ctx.expr_context(self.node_id, "interpolation"),
-        )?;
-        let params = compiler::ColorGradeParams {
-            strength: self.strength.resolve_float(
-                self.node_id,
-                "strength",
-                &ctx.expr_context(self.node_id, "strength"),
-            )? as f32,
-            interpolation: if interpolation == 0 { 0 } else { 1 },
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        let gpu_params = compiler::ColorGradeParams {
+            strength: evaluated.strength as f32,
+            interpolation: if evaluated.interpolation == 0 { 0 } else { 1 },
             _pad: [0; 2],
         };
-        let lut = compiler::ColorGradeLut::parse(self.node_id, ctx.frame(), &lut_source)?;
-        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
+        let lut = compiler::ColorGradeLut::parse(self.node_id, ctx.frame(), &evaluated.lut_source)?;
+        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&gpu_params));
         bound.write_buffer(self.lut_buffer, 0, bytemuck::bytes_of(&lut));
         Ok(())
     }

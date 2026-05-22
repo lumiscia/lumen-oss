@@ -1,4 +1,4 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
@@ -8,31 +8,29 @@ use crate::gpu::{
 pub(crate) const SHADER: &str = include_str!("crop.wgsl");
 
 /// Extracts a fixed raster region into static output bounds.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedCropParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct CropParams {
     /// Left edge of the crop region in pixels.
-    #[param(kind = "int", step = 1)]
-    pub x: Deferred<i64>,
+    #[meta(step = 1)]
+    pub x: i64,
     /// Top edge of the crop region in pixels.
-    #[param(kind = "int", step = 1)]
-    pub y: Deferred<i64>,
+    #[meta(step = 1)]
+    pub y: i64,
     /// Width of the crop region in pixels.
-    #[param(kind = "int", min = 0, step = 1)]
-    pub width: Deferred<i64>,
+    #[meta(min = 0, step = 1)]
+    pub width: i64,
     /// Height of the crop region in pixels.
-    #[param(kind = "int", min = 0, step = 1)]
-    pub height: Deferred<i64>,
+    #[meta(min = 0, step = 1)]
+    pub height: i64,
 }
 
 impl Default for CropParams {
     fn default() -> Self {
         Self {
-            x: Deferred::value(0),
-            y: Deferred::value(0),
-            width: Deferred::value(1),
-            height: Deferred::value(1),
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
         }
     }
 }
@@ -43,7 +41,7 @@ impl Default for CropParams {
 pub struct Crop {
     pub id: NodeId,
     #[params]
-    pub params: CropParams,
+    pub params: CropParamsDelegate,
 
     #[input()]
     pub source: PortRef,
@@ -53,7 +51,7 @@ impl Default for Crop {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: CropParams::default(),
+            params: CropParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }
@@ -103,10 +101,7 @@ impl GpuCompileNode for Crop {
         );
         ctx.push_frame_binding(CropFrameBinding {
             node_id: self.id,
-            x: self.params.x.clone(),
-            y: self.params.y.clone(),
-            width: self.params.width.clone(),
-            height: self.params.height.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
 
@@ -121,10 +116,7 @@ impl GpuCompileNode for Crop {
 #[derive(Debug, Clone)]
 struct CropFrameBinding {
     node_id: NodeId,
-    x: Deferred<i64>,
-    y: Deferred<i64>,
-    width: Deferred<i64>,
-    height: Deferred<i64>,
+    params: CropParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -134,33 +126,15 @@ impl GpuFrameBinding for CropFrameBinding {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = compiler::CropParams {
-            origin: [
-                self.x
-                    .resolve_int(self.node_id, "x", &ctx.expr_context(self.node_id, "x"))?
-                    as i32,
-                self.y
-                    .resolve_int(self.node_id, "y", &ctx.expr_context(self.node_id, "y"))?
-                    as i32,
-            ],
-            size: [
-                self.width
-                    .resolve_int(
-                        self.node_id,
-                        "width",
-                        &ctx.expr_context(self.node_id, "width"),
-                    )?
-                    .max(0) as u32,
-                self.height
-                    .resolve_int(
-                        self.node_id,
-                        "height",
-                        &ctx.expr_context(self.node_id, "height"),
-                    )?
-                    .max(0) as u32,
-            ],
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        let gpu_params = compiler::CropParams {
+            origin: [params.x as i32, params.y as i32],
+            size: [params.width.max(0) as u32, params.height.max(0) as u32],
         };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
     }
 }

@@ -1,4 +1,4 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
@@ -8,29 +8,21 @@ use crate::gpu::{
 pub(crate) const SHADER: &str = include_str!("curves.wgsl");
 
 /// Applies a 1D RGB curve table to a raster.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedCurvesParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct CurvesParams {
     /// Curve table data source or named curve preset.
-    #[param(
-        kind = "string",
-        name = "Curve",
-        role = "curve_source",
-        multiline,
-        recommended_rows = 4
-    )]
-    pub curve_source: Deferred<String>,
+    #[meta(name = "Curve", role = "curve_source", multiline, recommended_rows = 4)]
+    pub curve_source: String,
     /// Blend amount for the curve adjustment.
-    #[param(kind = "float", min = 0, max = 1, step = 0.01)]
-    pub strength: Deferred<f64>,
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub strength: f64,
 }
 
 impl Default for CurvesParams {
     fn default() -> Self {
         Self {
-            curve_source: Deferred::value("identity".to_string()),
-            strength: Deferred::value(1.0),
+            curve_source: "identity".to_string(),
+            strength: 1.0,
         }
     }
 }
@@ -41,7 +33,7 @@ impl Default for CurvesParams {
 pub struct Curves {
     pub id: NodeId,
     #[params]
-    pub params: CurvesParams,
+    pub params: CurvesParamsDelegate,
 
     #[input()]
     pub source: PortRef,
@@ -51,7 +43,7 @@ impl Default for Curves {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: CurvesParams::default(),
+            params: CurvesParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }
@@ -143,8 +135,7 @@ impl GpuCompileNode for Curves {
         );
         ctx.push_frame_binding(CurvesFrameBinding {
             node_id: self.id,
-            curve_source: self.params.curve_source.clone(),
-            strength: self.params.strength.clone(),
+            params: self.params.clone(),
             params_buffer: params,
             curve_buffer: curve,
         });
@@ -160,8 +151,7 @@ impl GpuCompileNode for Curves {
 #[derive(Debug, Clone)]
 struct CurvesFrameBinding {
     node_id: NodeId,
-    curve_source: Deferred<String>,
-    strength: Deferred<f64>,
+    params: CurvesParamsDelegate,
     params_buffer: lumen_gpu::BufferId,
     curve_buffer: lumen_gpu::BufferId,
 }
@@ -172,25 +162,16 @@ impl GpuFrameBinding for CurvesFrameBinding {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let curve_source = self.curve_source.resolve_string(
-            self.node_id,
-            "curve_source",
-            &ctx.expr_context(self.node_id, "curve_source"),
-        )?;
-        let params = compiler::CurvesParams {
-            values: [
-                self.strength.resolve_float(
-                    self.node_id,
-                    "strength",
-                    &ctx.expr_context(self.node_id, "strength"),
-                )? as f32,
-                0.0,
-                0.0,
-                0.0,
-            ],
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        let gpu_params = compiler::CurvesParams {
+            values: [evaluated.strength as f32, 0.0, 0.0, 0.0],
         };
-        let curve = compiler::CurvesTable::parse(self.node_id, ctx.frame(), &curve_source)?;
-        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
+        let curve =
+            compiler::CurvesTable::parse(self.node_id, ctx.frame(), &evaluated.curve_source)?;
+        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&gpu_params));
         bound.write_buffer(self.curve_buffer, 0, bytemuck::bytes_of(&curve));
         Ok(())
     }

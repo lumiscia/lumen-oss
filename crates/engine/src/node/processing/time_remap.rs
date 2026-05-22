@@ -1,35 +1,22 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
 
 /// Evaluates a raster input at another frame.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedTimeRemapParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, Default, lumen_macros::Delegate)]
 pub struct TimeRemapParams {
     /// Source frame to sample.
-    #[param(kind = "float", min = 0, step = 1)]
-    pub frame: Deferred<f64>,
+    #[meta(min = 0, step = 1)]
+    pub frame: f64,
     /// Enables looping between the configured loop bounds.
-    #[param(kind = "bool")]
-    pub loop_enabled: Deferred<bool>,
+    #[meta()]
+    pub loop_enabled: bool,
     /// First frame in the loop range.
-    #[param(kind = "int", min = 0, step = 1)]
-    pub loop_start: Deferred<i64>,
+    #[meta(min = 0, step = 1)]
+    pub loop_start: i64,
     /// Last frame in the loop range.
-    #[param(kind = "int", min = 0, step = 1)]
-    pub loop_end: Deferred<i64>,
-}
-
-impl Default for TimeRemapParams {
-    fn default() -> Self {
-        Self {
-            frame: Deferred::value(0.0),
-            loop_enabled: Deferred::value(false),
-            loop_start: Deferred::value(0),
-            loop_end: Deferred::value(0),
-        }
-    }
+    #[meta(min = 0, step = 1)]
+    pub loop_end: i64,
 }
 
 /// Evaluates a raster input at another frame.
@@ -38,7 +25,7 @@ impl Default for TimeRemapParams {
 pub struct TimeRemap {
     pub id: NodeId,
     #[params]
-    pub params: TimeRemapParams,
+    pub params: TimeRemapParamsDelegate,
 
     #[input()]
     pub source: PortRef,
@@ -56,7 +43,7 @@ impl Default for TimeRemap {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: TimeRemapParams::default(),
+            params: TimeRemapParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }
@@ -98,10 +85,7 @@ impl GpuCompileNode for TimeRemap {
         }
         ctx.push_frame_binding(TimeRemapFrameBinding {
             node_id: self.id,
-            frame: self.params.frame.clone(),
-            loop_enabled: self.params.loop_enabled.clone(),
-            loop_start: self.params.loop_start.clone(),
-            loop_end: self.params.loop_end.clone(),
+            params: self.params.clone(),
         });
         let target_frame = remap_frame(resolve_settings(
             self.id,
@@ -118,10 +102,7 @@ impl GpuCompileNode for TimeRemap {
 #[derive(Debug, Clone)]
 struct TimeRemapFrameBinding {
     node_id: NodeId,
-    frame: Deferred<f64>,
-    loop_enabled: Deferred<bool>,
-    loop_start: Deferred<i64>,
-    loop_end: Deferred<i64>,
+    params: TimeRemapParamsDelegate,
 }
 
 impl GpuFrameBinding for TimeRemapFrameBinding {
@@ -130,14 +111,16 @@ impl GpuFrameBinding for TimeRemapFrameBinding {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, _bound: &mut BoundFrame) -> crate::Result<()> {
-        let _ = remap_frame(resolve_settings(
-            self.node_id,
-            &self.frame,
-            &self.loop_enabled,
-            &self.loop_start,
-            &self.loop_end,
-            &ctx.expr_context(self.node_id, "frame"),
-        )?);
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        let _ = remap_frame(TimeRemapSettings {
+            frame: evaluated.frame,
+            loop_enabled: evaluated.loop_enabled,
+            loop_start: evaluated.loop_start,
+            loop_end: evaluated.loop_end,
+        });
         Ok(())
     }
 }
