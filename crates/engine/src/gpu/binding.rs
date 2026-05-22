@@ -130,18 +130,9 @@ impl<'a> FrameBindContext<'a> {
                     .map(|port| vec![FramePortRef::new(port.clone(), self.frame)])
                     .unwrap_or_default())
             }
-            _ => Ok(self
-                .composition
-                .graph
-                .connections
-                .iter()
-                .filter(|connection| connection.to_node == node.id())
-                .map(|connection| {
-                    FramePortRef::new(
-                        PortRef::new(connection.from_node, connection.from_port.clone()),
-                        self.frame,
-                    )
-                })
+            _ => Ok(node_inputs(node)
+                .into_iter()
+                .map(|port| FramePortRef::new(port, self.frame))
                 .collect()),
         }
     }
@@ -168,6 +159,36 @@ impl<'a> FrameBindContext<'a> {
             path: Some(format!("{node_id}.{property_path}")),
             graph: Some(&self.composition.graph),
         }
+    }
+}
+
+fn node_inputs(node: &NodeKind) -> Vec<PortRef> {
+    match node {
+        NodeKind::MediaIn(_)
+        | NodeKind::Background(_)
+        | NodeKind::Text(_)
+        | NodeKind::Path(_)
+        | NodeKind::Shape(_) => Vec::new(),
+        NodeKind::Boolean(node) => vec![node.a.clone(), node.b.clone()],
+        NodeKind::Merge(node) => vec![node.base.clone(), node.overlay.clone(), node.mask.clone()],
+        NodeKind::RasterMultiMerge(node) => node.layers.clone(),
+        NodeKind::AlphaPremultiply(node) => vec![node.source.clone()],
+        NodeKind::Blur(node) => vec![node.source.clone()],
+        NodeKind::ChannelShuffle(node) => vec![node.source.clone()],
+        NodeKind::ColorGrade(node) => vec![node.source.clone()],
+        NodeKind::Curves(node) => vec![node.source.clone()],
+        NodeKind::Exposure(node) => vec![node.source.clone()],
+        NodeKind::HueSaturation(node) => vec![node.source.clone()],
+        NodeKind::Levels(node) => vec![node.source.clone()],
+        NodeKind::Memo(node) => vec![node.source.clone()],
+        NodeKind::TimeRemap(node) => vec![node.source.clone()],
+        NodeKind::Transform(node) => vec![node.source.clone()],
+        NodeKind::Crop(node) => vec![node.source.clone()],
+        NodeKind::Resize(node) => vec![node.source.clone()],
+        NodeKind::Shadow(node) => vec![node.source.clone()],
+        NodeKind::WgslShader(node) => vec![node.source.clone()],
+        NodeKind::Switch(node) => node.layers.clone(),
+        NodeKind::MediaOutput(node) => vec![node.source.clone()],
     }
 }
 
