@@ -70,6 +70,7 @@ pub enum PropertyKind {
     Color = 4,
     Vec2 = 5,
     Enum = 6,
+    Paint = 7,
 }
 
 #[cfg(any(feature = "json", feature = "metadata"))]
@@ -90,6 +91,49 @@ pub struct EnumDef {
 #[cfg(any(feature = "json", feature = "metadata"))]
 pub trait NodeEnum {
     fn enum_def() -> &'static EnumDef;
+}
+
+pub trait NodeParamType {
+    fn property_kind() -> PropertyKind;
+    #[cfg(any(feature = "json", feature = "metadata"))]
+    fn enum_def() -> Option<&'static EnumDef> {
+        None
+    }
+}
+
+pub struct DelegateEvalContext<'a> {
+    pub node_id: NodeId,
+    pub property_path: &'a str,
+    pub expr: &'a crate::expr::ExpressionContext<'a>,
+}
+
+impl<'a> DelegateEvalContext<'a> {
+    pub fn child(&'a self, property_path: &'a str) -> Self {
+        Self {
+            node_id: self.node_id,
+            property_path,
+            expr: self.expr,
+        }
+    }
+}
+
+pub trait DelegateValue: Clone {
+    type Evaluated;
+
+    fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated>;
+    fn to_property_value(&self) -> PropertyValue;
+    fn to_property_expression(&self) -> PropertyExpression {
+        PropertyExpression::Value(self.to_property_value())
+    }
+    fn from_property_expression(value: PropertyExpression) -> crate::Result<Self>
+    where
+        Self: Sized;
+}
+
+pub trait Delegated: Clone + Default + Sized {
+    type Delegate: DelegateValue<Evaluated = Self> + Clone;
+
+    fn into_delegate(self) -> Self::Delegate;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -148,7 +192,7 @@ pub trait NodeSchema: Default {
 pub trait JsonNode: Default {
     fn from_json(
         id: NodeId,
-        properties: Option<&serde_json::Map<String, serde_json::Value>>,
+        params: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> anyhow::Result<Self>
     where
         Self: Sized;
@@ -170,6 +214,7 @@ pub enum PropertyValue {
     Bool(bool),
     String(String),
     Color([u8; 4]),
+    Paint(vector::paint::Paint),
     Vec2((f64, f64)),
     FloatVec(Vec<f64>),
     IntVec(Vec<i64>),
@@ -316,6 +361,17 @@ impl Deferred<[u8; 4]> {
     }
 }
 
+impl Deferred<vector::paint::Paint> {
+    pub fn resolve_paint(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<vector::paint::Paint> {
+        self.eval(node_id, property_path, ctx)
+    }
+}
+
 impl Deferred<(f64, f64)> {
     pub fn resolve_vec2(
         &self,
@@ -372,6 +428,174 @@ pub trait DeferredValue: Clone {
     fn property_kind_name() -> &'static str;
 }
 
+impl NodeParamType for f64 {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Float
+    }
+}
+
+impl NodeParamType for f32 {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Float
+    }
+}
+
+impl NodeParamType for u8 {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Int
+    }
+}
+
+impl NodeParamType for i64 {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Int
+    }
+}
+
+impl NodeParamType for bool {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Bool
+    }
+}
+
+impl NodeParamType for String {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::String
+    }
+}
+
+impl NodeParamType for [u8; 4] {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Color
+    }
+}
+
+impl NodeParamType for (f64, f64) {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Vec2
+    }
+}
+
+impl NodeParamType for [f32; 2] {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Vec2
+    }
+}
+
+impl<T> DelegateValue for Deferred<T>
+where
+    T: DeferredValue,
+{
+    type Evaluated = T;
+
+    fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
+        Deferred::eval(self, ctx.node_id, ctx.property_path, ctx.expr)
+    }
+
+    fn to_property_value(&self) -> PropertyValue {
+        Deferred::to_property_value(self)
+    }
+
+    fn to_property_expression(&self) -> PropertyExpression {
+        Deferred::to_property_expression(self)
+    }
+
+    fn from_property_expression(value: PropertyExpression) -> crate::Result<Self> {
+        Deferred::from_property_expression(value)
+    }
+}
+
+macro_rules! impl_delegated_deferred {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl Delegated for $ty {
+                type Delegate = Deferred<$ty>;
+
+                fn into_delegate(self) -> Self::Delegate {
+                    Deferred::value(self)
+                }
+            }
+        )*
+    };
+}
+
+impl_delegated_deferred!(
+    f64,
+    f32,
+    i64,
+    u8,
+    bool,
+    String,
+    [u8; 4],
+    (f64, f64),
+    [f32; 2]
+);
+
+#[derive(Debug, Clone, Default)]
+pub struct DelegateVec<T: Delegated> {
+    pub items: Vec<T::Delegate>,
+}
+
+#[cfg(feature = "json")]
+impl<'de, T> serde::Deserialize<'de> for DelegateVec<T>
+where
+    T: Delegated,
+    T::Delegate: serde::Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <Vec<T::Delegate> as serde::Deserialize>::deserialize(deserializer)
+            .map(|items| Self { items })
+    }
+}
+
+impl<T> DelegateValue for DelegateVec<T>
+where
+    T: Delegated,
+{
+    type Evaluated = Vec<T>;
+
+    fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
+        self.items
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let path = format!("{}[{index}]", ctx.property_path);
+                value.eval(&ctx.child(&path))
+            })
+            .collect()
+    }
+
+    fn to_property_value(&self) -> PropertyValue {
+        PropertyValue::StringVec(Vec::new())
+    }
+
+    fn from_property_expression(_value: PropertyExpression) -> crate::Result<Self> {
+        Ok(Self { items: Vec::new() })
+    }
+}
+
+impl<T> Delegated for Vec<T>
+where
+    T: Delegated,
+{
+    type Delegate = DelegateVec<T>;
+
+    fn into_delegate(self) -> Self::Delegate {
+        DelegateVec {
+            items: self.into_iter().map(Delegated::into_delegate).collect(),
+        }
+    }
+}
+
+impl<T> NodeParamType for Vec<T> {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::String
+    }
+}
+
 #[cfg(feature = "json")]
 impl DeferredJsonValue for f64 {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
@@ -379,6 +603,13 @@ impl DeferredJsonValue for f64 {
             .as_f64()
             .or_else(|| value.as_i64().map(|value| value as f64))
             .ok_or_else(|| "expected float".to_string())
+    }
+}
+
+#[cfg(feature = "json")]
+impl DeferredJsonValue for f32 {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        f64::from_json_value(value).map(|value| value as f32)
     }
 }
 
@@ -414,6 +645,42 @@ impl DeferredValue for f64 {
     }
 }
 
+impl DeferredValue for f32 {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(*value),
+            Deferred::Expr(expr) => expr
+                .evaluate(ctx)?
+                .as_f64()
+                .map(|value| value as f32)
+                .ok_or_else(|| {
+                    PropertyValue::invalid_type(node_id, property_path, "Float", "expression")
+                }),
+        }
+    }
+
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Float(f64::from(*value))
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Float(value) => Some(value as f32),
+            PropertyValue::Int(value) => Some(value as f32),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Float"
+    }
+}
+
 #[cfg(feature = "json")]
 impl DeferredJsonValue for i64 {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
@@ -421,6 +688,14 @@ impl DeferredJsonValue for i64 {
             .as_i64()
             .or_else(|| value.as_f64().map(|value| value as i64))
             .ok_or_else(|| "expected int".to_string())
+    }
+}
+
+#[cfg(feature = "json")]
+impl DeferredJsonValue for u8 {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        let value = i64::from_json_value(value)?;
+        u8::try_from(value).map_err(|_| "expected u8".to_string())
     }
 }
 
@@ -456,6 +731,40 @@ impl DeferredValue for i64 {
 
     fn property_kind_name() -> &'static str {
         "Int"
+    }
+}
+
+impl DeferredValue for u8 {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        let value = match deferred {
+            Deferred::Value(value) => i64::from(*value),
+            Deferred::Expr(expr) => expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
+                PropertyValue::invalid_type(node_id, property_path, "Int", "expression")
+            })? as i64,
+        };
+        u8::try_from(value)
+            .map_err(|_| PropertyValue::invalid_type(node_id, property_path, "U8", "range"))
+    }
+
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Int(i64::from(*value))
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Int(value) => u8::try_from(value).ok(),
+            PropertyValue::Float(value) => u8::try_from(value as i64).ok(),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "U8"
     }
 }
 
@@ -580,6 +889,48 @@ impl DeferredValue for [u8; 4] {
 }
 
 #[cfg(feature = "json")]
+impl DeferredJsonValue for vector::paint::Paint {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        vector::paint::Paint::from_json_value(value).ok_or_else(|| "expected paint".to_string())
+    }
+}
+
+impl DeferredValue for vector::paint::Paint {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(value.clone()),
+            Deferred::Expr(_) => Err(PropertyValue::invalid_type(
+                node_id,
+                property_path,
+                "Paint",
+                "expression",
+            )),
+        }
+    }
+
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Paint(value.clone())
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Paint(value) => Some(value),
+            PropertyValue::Color(value) => Some(vector::paint::Paint::solid(value)),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Paint"
+    }
+}
+
+#[cfg(feature = "json")]
 impl DeferredJsonValue for (f64, f64) {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         let values = value
@@ -598,6 +949,14 @@ impl DeferredJsonValue for (f64, f64) {
             .as_f64()
             .ok_or_else(|| "expected vec2 y number".to_string())?;
         Ok((x, y))
+    }
+}
+
+#[cfg(feature = "json")]
+impl DeferredJsonValue for [f32; 2] {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        let (x, y) = <(f64, f64)>::from_json_value(value)?;
+        Ok([x as f32, y as f32])
     }
 }
 
@@ -635,6 +994,40 @@ impl DeferredValue for (f64, f64) {
     }
 }
 
+impl DeferredValue for [f32; 2] {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(*value),
+            Deferred::Expr(_) => Err(PropertyValue::invalid_type(
+                node_id,
+                property_path,
+                "Vec2",
+                "expression",
+            )),
+        }
+    }
+
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Vec2((f64::from(value[0]), f64::from(value[1])))
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Vec2((x, y)) => Some([x as f32, y as f32]),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Vec2"
+    }
+}
+
 pub struct NodeParamEvalContext<'a> {
     pub node_id: NodeId,
     pub expr: &'a crate::expr::ExpressionContext<'a>,
@@ -651,13 +1044,13 @@ pub trait NodeParams: Clone + Default {
 
     #[cfg(feature = "json")]
     fn from_json(
-        properties: Option<&serde_json::Map<String, serde_json::Value>>,
+        params: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> anyhow::Result<Self>
     where
         Self: Sized,
         Self: serde::de::DeserializeOwned,
     {
-        let value = properties
+        let value = params
             .cloned()
             .map(serde_json::Value::Object)
             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
@@ -784,6 +1177,24 @@ impl PropertyValue {
         }
     }
 
+    pub fn resolve_paint(
+        &self,
+        node_id: NodeId,
+        property_path: &str,
+        __ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<vector::paint::Paint> {
+        match self {
+            Self::Paint(value) => Ok(value.clone()),
+            Self::Color(value) => Ok(vector::paint::Paint::solid(*value)),
+            _ => Err(Self::invalid_type(
+                node_id,
+                property_path,
+                "Paint",
+                "unsupported",
+            )),
+        }
+    }
+
     pub fn resolve_vec2(
         &self,
         node_id: NodeId,
@@ -845,7 +1256,7 @@ impl PortRef {
 #[derive(Debug)]
 pub enum NodeKind {
     MediaIn(source::media_in::MediaIn),
-    SolidColor(source::solid_color::SolidColor),
+    Background(source::background::Background),
     Text(source::text::Text),
     Path(vector::path::Path),
     Shape(vector::shape::Shape),
@@ -875,7 +1286,7 @@ impl NodeKind {
     pub fn id(&self) -> NodeId {
         match self {
             Self::MediaIn(node) => node.id,
-            Self::SolidColor(node) => node.id,
+            Self::Background(node) => node.id,
             Self::Text(node) => node.id,
             Self::Path(node) => node.id,
             Self::Shape(node) => node.id,
@@ -910,7 +1321,7 @@ impl NodeKind {
     pub fn schemas() -> Vec<NodeSchemaDef> {
         vec![
             source::media_in::MediaIn::schema(),
-            source::solid_color::SolidColor::schema(),
+            source::background::Background::schema(),
             source::text::Text::schema(),
             vector::path::Path::schema(),
             vector::shape::Shape::schema(),
@@ -946,7 +1357,7 @@ impl Node for NodeKind {
     fn input_port_defs(&self) -> &'static [InputPortDef] {
         match self {
             Self::MediaIn(node) => node.input_port_defs(),
-            Self::SolidColor(node) => node.input_port_defs(),
+            Self::Background(node) => node.input_port_defs(),
             Self::Text(node) => node.input_port_defs(),
             Self::Path(node) => node.input_port_defs(),
             Self::Shape(node) => node.input_port_defs(),
@@ -982,7 +1393,7 @@ impl PropertyEval for NodeKind {
     fn get_property(&self, id: &str) -> crate::Result<Option<PropertyExpression>> {
         match self {
             Self::MediaIn(node) => node.get_property(id),
-            Self::SolidColor(node) => node.get_property(id),
+            Self::Background(node) => node.get_property(id),
             Self::Text(node) => node.get_property(id),
             Self::Path(node) => node.get_property(id),
             Self::Shape(node) => node.get_property(id),
