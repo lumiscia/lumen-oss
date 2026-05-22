@@ -87,15 +87,11 @@ impl GpuCompiledNode for CompiledBoolean {
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let params = compiler::BooleanParams {
             values: [
-                BooleanOperation::from_int(
-                    self.params
-                        .operation
-                        .resolve_int(
-                            self.node_id,
-                            "operation",
-                            &ctx.expr_context(self.node_id, "operation"),
-                        )?,
-                ) as u32 as f32,
+                BooleanOperation::from_int(self.params.operation.resolve_int(
+                    self.node_id,
+                    "operation",
+                    &ctx.expr_context(self.node_id, "operation"),
+                )?) as u32 as f32,
                 self.params.threshold.resolve_float(
                     self.node_id,
                     "threshold",

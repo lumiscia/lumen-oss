@@ -146,7 +146,10 @@ impl GpuCompiledNode for CompiledShape {
             fill_paint: evaluated.fill_paint.to_gpu(evaluated.fill_color),
             stroke_paint: evaluated.stroke_paint.to_gpu(evaluated.stroke_color),
             position: [x as f32, y as f32],
-            size: [evaluated.width.max(1) as f32, evaluated.height.max(1) as f32],
+            size: [
+                evaluated.width.max(1) as f32,
+                evaluated.height.max(1) as f32,
+            ],
             border_radius: evaluated.border_radius as f32,
             stroke_width: evaluated.stroke_width as f32,
             geometry_kind: ShapeGeometryKind::from_int(evaluated.geometry_kind) as u32,

@@ -71,7 +71,12 @@ impl GpuCompiledNode for RasterMultiCompiledMerge {
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
         let params = compiler::RasterMultiMergeParams {
-            values: [evaluated.opacity as f32, evaluated.blend_mode as f32, 0.0, 0.0],
+            values: [
+                evaluated.opacity as f32,
+                evaluated.blend_mode as f32,
+                0.0,
+                0.0,
+            ],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())

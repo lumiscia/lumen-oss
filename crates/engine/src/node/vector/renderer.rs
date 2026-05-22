@@ -5,11 +5,11 @@ use crate::{
     node::{NodeId, PortRef},
 };
 
-use crate::node::source::text::{Text, CompiledText};
+use crate::node::source::text::{CompiledText, Text};
 
 use super::{
-    path::{Path, CompiledPath},
-    shape::{Shape, CompiledShape},
+    path::{CompiledPath, Path},
+    shape::{CompiledShape, Shape},
 };
 
 pub(crate) const SHAPE_SHADER: &str = include_str!("shape_renderer.wgsl");

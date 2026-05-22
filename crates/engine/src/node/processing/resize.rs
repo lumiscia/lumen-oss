@@ -166,7 +166,10 @@ impl GpuCompiledNode for CompiledResize {
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
         let params = compiler::ResizeParams {
-            size: [evaluated.width.max(1) as u32, evaluated.height.max(1) as u32],
+            size: [
+                evaluated.width.max(1) as u32,
+                evaluated.height.max(1) as u32,
+            ],
             mode: ResizeMode::from_int(evaluated.mode) as u32,
             sampling: ResizeSampling::from_int(evaluated.sampling) as u32,
         };
