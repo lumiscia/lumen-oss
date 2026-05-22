@@ -1,6 +1,12 @@
 #![cfg(feature = "metadata")]
 
-use lumen_engine::node::{NodeCategory, NodeKind, PropertyEval, PropertyExpression, PropertyValue};
+use lumen_engine::node::{
+    NodeCategory, NodeKind, PropertyEval, PropertyExpression, PropertyValue,
+    vector::paint::{
+        GradientInterpolation, GradientPaint, GradientSpread, GradientUnits, Paint, PaintDelegate,
+        PaintKind,
+    },
+};
 
 #[test]
 fn node_schemas_are_derived_from_node_structs() {
@@ -11,27 +17,27 @@ fn node_schemas_are_derived_from_node_structs() {
     assert!(schemas.iter().any(|schema| schema.kind == "text"));
     assert!(schemas.iter().any(|schema| schema.kind == "path"));
 
-    let solid = schemas
+    let background = schemas
         .iter()
-        .find(|schema| schema.kind == "solid_color")
+        .find(|schema| schema.kind == "background")
         .unwrap();
-    assert_eq!(solid.category, NodeCategory::Source);
-    assert_eq!(solid.inputs.len(), 0);
+    assert_eq!(background.category, NodeCategory::Source);
+    assert_eq!(background.inputs.len(), 0);
     assert_eq!(
-        solid
+        background
             .properties
             .iter()
             .map(|property| property.id)
             .collect::<Vec<_>>(),
-        vec!["color", "width", "height"]
+        vec!["paint", "width", "height"]
     );
     assert!(matches!(
-        solid
+        background
             .default_properties
             .iter()
-            .find(|(name, _)| *name == "color")
+            .find(|(name, _)| *name == "paint")
             .map(|(_, value)| value),
-        Some(PropertyValue::Color([0, 0, 0, 255]))
+        Some(PropertyValue::Paint(_))
     ));
 
     let merge = schemas
@@ -85,4 +91,27 @@ fn derived_property_eval_reads_marked_properties() {
         Some(PropertyExpression::Value(PropertyValue::Float(1.0)))
     ));
     assert!(node.get_property("source").unwrap().is_none());
+}
+
+#[test]
+fn paint_delegate_round_trips_generated_enum_shape() {
+    let solid = Paint::SolidColor(1, 2, 3, 255);
+    assert_eq!(PaintDelegate::from(solid.clone()).into_evaluated(), solid);
+
+    let gradient = Paint::Gradient(GradientPaint {
+        kind: PaintKind::LinearGradient,
+        units: GradientUnits::ObjectBoundingBox,
+        spread: GradientSpread::Pad,
+        interpolation: GradientInterpolation::Srgb,
+        start: [0.0, 0.0],
+        end: [1.0, 1.0],
+        center: [0.5, 0.5],
+        radius: [0.5, 0.5],
+        angle: 0.0,
+        stops: Vec::new(),
+    });
+    assert_eq!(
+        PaintDelegate::from(gradient.clone()).into_evaluated(),
+        gradient
+    );
 }

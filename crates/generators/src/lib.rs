@@ -47,6 +47,7 @@ pub enum NodeParamKind {
     Bool,
     String,
     Color,
+    Paint,
     Vec2,
     Enum,
 }
@@ -59,6 +60,7 @@ pub enum NodeLiteralValue {
     Bool(bool),
     String(String),
     Color([u8; 4]),
+    Paint(Value),
     Vec2((f64, f64)),
 }
 
@@ -317,6 +319,70 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                         }
                     ]
                 },
+                "paint": {
+                    "oneOf": [
+                        { "$ref": "#/$defs/color" },
+                        {
+                            "type": "object",
+                            "required": ["type", "stops"],
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["linear", "linear_gradient", "radial", "radial_gradient", "conic", "conic_gradient"]
+                                },
+                                "units": {
+                                    "type": "string",
+                                    "enum": ["object_bounding_box", "user_space", "userSpaceOnUse"],
+                                    "default": "object_bounding_box"
+                                },
+                                "spread": {
+                                    "type": "string",
+                                    "enum": ["pad", "repeat", "reflect"],
+                                    "default": "pad"
+                                },
+                                "interpolation": {
+                                    "type": "string",
+                                    "enum": ["srgb", "linear_srgb", "linear"],
+                                    "default": "srgb"
+                                },
+                                "start": { "$ref": "#/$defs/vec2" },
+                                "end": { "$ref": "#/$defs/vec2" },
+                                "center": { "$ref": "#/$defs/vec2" },
+                                "radius": {
+                                    "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/vec2" }]
+                                },
+                                "angle": { "type": "number" },
+                                "stops": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                        "oneOf": [
+                                            {
+                                                "type": "object",
+                                                "required": ["offset", "color"],
+                                                "properties": {
+                                                    "offset": { "type": "number" },
+                                                    "color": { "$ref": "#/$defs/color" }
+                                                },
+                                                "additionalProperties": false
+                                            },
+                                            {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                    { "type": "number" },
+                                                    { "$ref": "#/$defs/color" }
+                                                ],
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    ]
+                },
                 "vec2": {
                     "type": "array",
                     "prefixItems": [{ "type": "number" }, { "type": "number" }],
@@ -386,7 +452,7 @@ fn node_schema_json(spec: &NodeSpec) -> Value {
         "properties": {
             "id": { "type": "integer" },
             "type": { "const": spec.kind },
-            "properties": {
+            "params": {
                 "type": "object",
                 "properties": properties,
                 "additionalProperties": false
@@ -403,6 +469,7 @@ fn property_schema_json(property: &NodeParamSpec) -> Value {
         NodeParamKind::Bool => json!({ "type": "boolean" }),
         NodeParamKind::String => json!({ "type": "string" }),
         NodeParamKind::Color => json!({ "$ref": "#/$defs/color" }),
+        NodeParamKind::Paint => json!({ "$ref": "#/$defs/paint" }),
         NodeParamKind::Vec2 => json!({ "$ref": "#/$defs/vec2" }),
         NodeParamKind::Enum => {
             let values = property
@@ -540,6 +607,7 @@ fn property_kind_from_schema(kind: lumen_engine::node::PropertyKind) -> NodePara
         lumen_engine::node::PropertyKind::Bool => NodeParamKind::Bool,
         lumen_engine::node::PropertyKind::String => NodeParamKind::String,
         lumen_engine::node::PropertyKind::Color => NodeParamKind::Color,
+        lumen_engine::node::PropertyKind::Paint => NodeParamKind::Paint,
         lumen_engine::node::PropertyKind::Vec2 => NodeParamKind::Vec2,
         lumen_engine::node::PropertyKind::Enum => NodeParamKind::Enum,
     }
@@ -583,6 +651,9 @@ fn literal_from_property_value(
             Ok(NodeLiteralValue::String(value.clone()))
         }
         lumen_engine::node::PropertyValue::Color(value) => Ok(NodeLiteralValue::Color(*value)),
+        lumen_engine::node::PropertyValue::Paint(value) => {
+            Ok(NodeLiteralValue::Paint(value.to_json_value()))
+        }
         lumen_engine::node::PropertyValue::Vec2(value) => Ok(NodeLiteralValue::Vec2(*value)),
         other => bail!("unsupported default param literal: {other:?}"),
     }

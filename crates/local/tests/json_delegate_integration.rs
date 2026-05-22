@@ -12,9 +12,9 @@ fn lumen_local_parses_composition_json() {
   "nodes": [
     {
       "id": 1,
-      "type": "solid_color",
-      "properties": {
-        "color": [255, 0, 0, 255],
+      "type": "background",
+      "params": {
+        "paint": [255, 0, 0, 255],
         "width": 2,
         "height": 1
       }
