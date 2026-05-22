@@ -1,6 +1,6 @@
 struct Paint {
     colors: array<vec4<f32>, 8>,
-    offsets: array<f32, 8>,
+    offsets: array<vec4<f32>, 8>,
     start: vec2<f32>,
     end: vec2<f32>,
     center: vec2<f32>,
@@ -35,8 +35,8 @@ fn interpolate_color(t_raw: f32) -> vec4<f32> {
     var color = paint.colors[0];
     for (var i = 1u; i < 8u; i = i + 1u) {
         if (i < count) {
-            let left = paint.offsets[i - 1u];
-            let right = paint.offsets[i];
+            let left = paint.offsets[i - 1u].x;
+            let right = paint.offsets[i].x;
             let span = max(right - left, 0.00001);
             let amount = clamp((t - left) / span, 0.0, 1.0);
             color = select(color, mix(paint.colors[i - 1u], paint.colors[i], amount), t >= left);

@@ -1,12 +1,17 @@
 use super::paint::{Paint, PaintDelegate};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
-use crate::node::{DelegateEvalContext, Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, NodeId, NodeParams, PortRef};
 
 /// Produces a rasterized vector path source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct PathParams {
     /// SVG-style path data.
-    #[meta(name = "Path data", format = "path_data", multiline, recommended_rows = 5)]
+    #[meta(
+        name = "Path data",
+        format = "path_data",
+        multiline,
+        recommended_rows = 5
+    )]
     pub data: String,
     /// Path origin in pixels.
     #[meta()]

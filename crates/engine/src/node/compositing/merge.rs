@@ -1,11 +1,11 @@
 use crate::node::{
-    compositing::BlendMode, compositing::BlendModeDelegate, Deferred, DelegateEvalContext, NodeId,
-    NodeParams, PortRef,
+    Deferred, DelegateEvalContext, NodeId, NodeParams, PortRef, compositing::BlendMode,
+    compositing::BlendModeDelegate,
 };
 
 use crate::gpu::{
-    compiler, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding,
-    RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("merge.wgsl");

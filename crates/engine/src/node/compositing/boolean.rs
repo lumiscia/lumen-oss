@@ -1,8 +1,8 @@
 use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    compiler, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding,
-    RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("boolean.wgsl");

@@ -340,7 +340,7 @@ impl GpuFrameBinding for MediaInputFrameBinding {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_to_source_frame, LoopMode};
+    use super::{LoopMode, map_to_source_frame};
 
     #[test]
     fn maps_negative_media_speed_in_reverse() {

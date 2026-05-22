@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    gpu::{compiler, CompiledOutput, RasterHandle, RasterMetadata},
+    gpu::{CompiledOutput, RasterHandle, RasterMetadata, compiler},
     node::{NodeId, PortRef},
 };
 

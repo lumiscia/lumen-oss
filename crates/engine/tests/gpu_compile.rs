@@ -7,11 +7,12 @@ use lumen_engine::{
         VideoMetadata,
     },
     node::{
+        Deferred, NodeId, NodeKind, PortRef,
         compositing::{
+            BlendModeDelegate,
             merge::{Merge, MergeParamsDelegate},
             raster_multimerge::{RasterMultiMerge, RasterMultiMergeParamsDelegate},
             switch::{Switch, SwitchParamsDelegate},
-            BlendModeDelegate,
         },
         media_output::MediaOutput,
         processing::{
@@ -36,7 +37,6 @@ use lumen_engine::{
             path::{Path, PathParamsDelegate},
             shape::{Shape, ShapeParamsDelegate},
         },
-        Deferred, NodeId, NodeKind, PortRef,
     },
 };
 use std::sync::Arc;
@@ -487,10 +487,12 @@ fn compiles_raster_multimerge_with_blend_mode_binding() {
     let compiled = CompileContext::new(&composition).compile().unwrap();
 
     assert_eq!(compiled.plan.passes().len(), 5);
-    assert!(compiled
-        .frame_bindings
-        .iter()
-        .any(|binding| binding.node_id() == multi));
+    assert!(
+        compiled
+            .frame_bindings
+            .iter()
+            .any(|binding| binding.node_id() == multi)
+    );
 }
 
 #[test]
@@ -621,12 +623,16 @@ fn compiles_switch_expression_as_frame_selected_gpu_alias() {
 
     assert_eq!(frame_zero_switch.texture, first_output.texture);
     assert_eq!(frame_ten_switch.texture, second_output.texture);
-    assert!(!frame_zero
-        .node_outputs
-        .contains_key(&PortRef::new(second, "output".to_string())));
-    assert!(!frame_ten
-        .node_outputs
-        .contains_key(&PortRef::new(first, "output".to_string())));
+    assert!(
+        !frame_zero
+            .node_outputs
+            .contains_key(&PortRef::new(second, "output".to_string()))
+    );
+    assert!(
+        !frame_ten
+            .node_outputs
+            .contains_key(&PortRef::new(first, "output".to_string()))
+    );
 }
 
 #[test]
@@ -774,9 +780,11 @@ fn time_remap_compiles_source_with_remapped_frame_context() {
         .unwrap();
 
     assert_eq!(remapped.texture, selected.texture);
-    assert!(!compiled
-        .node_outputs
-        .contains_key(&PortRef::new(second, "output".to_string())));
+    assert!(
+        !compiled
+            .node_outputs
+            .contains_key(&PortRef::new(second, "output".to_string()))
+    );
 }
 
 #[test]

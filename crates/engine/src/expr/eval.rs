@@ -1,9 +1,9 @@
 use crate::{
     error::{ExpressionError, LumenError},
     expr::{
+        ExpressionContext,
         ast::{BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::{evaluate_builtin, evaluate_text_measure_builtin},
-        ExpressionContext,
     },
     node::{PropertyExpression, PropertyValue},
 };
@@ -246,7 +246,7 @@ mod tests {
     use crate::{
         expr::ast::{BuiltinFn, ExprNode, ExpressionId},
         graph::Graph,
-        node::{source::text::Text, NodeId, NodeKind, PropertyValue},
+        node::{NodeId, NodeKind, PropertyValue, source::text::Text},
     };
 
     fn test_context() -> ExpressionContext<'static> {
