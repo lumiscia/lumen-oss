@@ -3,8 +3,8 @@
 //! Node structs stay intentionally small here: they describe graph shape and
 //! animatable parameters. GPU lowering lives in `crate::gpu`.
 
-mod delegate;
 mod deferred;
+mod delegate;
 mod ids;
 mod kind;
 mod param_type;
@@ -18,28 +18,26 @@ pub mod processing;
 pub mod source;
 pub mod vector;
 
-pub use delegate::{
-    DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated,
-    NodeParamEvalContext, NodeParams,
-};
 pub use deferred::Deferred;
 #[cfg(feature = "json")]
 pub use deferred::DeferredJsonValue;
 pub use deferred::DeferredValue;
+pub use delegate::{
+    DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated,
+    NodeParamEvalContext, NodeParams,
+};
 pub use ids::{NodeId, TrackId};
 pub use kind::NodeKind;
 pub use param_type::NodeParamType;
-pub use ports::{
-    InputPortDef, OutputPortDef, PortKind, PortRef, SINGLE_RASTER_OUTPUT,
-};
+pub use ports::{InputPortDef, OutputPortDef, PortKind, PortRef, SINGLE_RASTER_OUTPUT};
 pub use property::{PropertyExpression, PropertyValue};
+#[cfg(feature = "json")]
+pub use schema::JsonNode;
 #[cfg(any(feature = "json", feature = "metadata"))]
 pub use schema::{EnumDef, EnumOptionDef, NodeEnum};
 pub use schema::{NodeCategory, NodeSchemaDef, PropertyDef, PropertyKind};
 #[cfg(feature = "metadata")]
 pub use schema::{NodeSchema, PropertyConstraints};
-#[cfg(feature = "json")]
-pub use schema::JsonNode;
 
 pub trait Node: Send + Sync {
     fn id(&self) -> NodeId;

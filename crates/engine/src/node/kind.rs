@@ -1,9 +1,9 @@
-use super::{
-    compositing, ids::NodeId, media_output, ports::SINGLE_RASTER_OUTPUT, processing, source, vector,
-    Node, OutputPortDef, PortRef, PropertyEval, PropertyExpression,
-};
 #[cfg(feature = "metadata")]
 use super::schema::NodeSchema;
+use super::{
+    Node, OutputPortDef, PortRef, PropertyEval, PropertyExpression, compositing, ids::NodeId,
+    media_output, ports::SINGLE_RASTER_OUTPUT, processing, source, vector,
+};
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]

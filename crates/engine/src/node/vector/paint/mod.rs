@@ -35,8 +35,8 @@ impl Paint {
 mod tests {
     use super::*;
     use bytemuck::Zeroable;
-    use gpu::{test_gradient_to_gpu as gradient_to_gpu, GpuPaint};
-    use types::{PaintDelegate, MAX_GRADIENT_STOPS};
+    use gpu::{GpuPaint, test_gradient_to_gpu as gradient_to_gpu};
+    use types::{MAX_GRADIENT_STOPS, PaintDelegate};
 
     #[test]
     fn gpu_paint_size_matches_wgsl_uniform_stride() {

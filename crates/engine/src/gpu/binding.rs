@@ -127,7 +127,8 @@ impl<'a> FrameBindContext<'a> {
                     node_id: node.id,
                     expr: &self.expr_context(node.id, "params"),
                 })?;
-                let selected = (params.selected_layer >= 0).then_some(params.selected_layer as usize);
+                let selected =
+                    (params.selected_layer >= 0).then_some(params.selected_layer as usize);
                 Ok(selected
                     .and_then(|index| node.layers.get(index))
                     .map(|port| vec![FramePortRef::new(port.clone(), self.frame)])

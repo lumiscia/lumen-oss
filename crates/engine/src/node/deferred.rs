@@ -37,7 +37,9 @@ impl<T> Deferred<T> {
         match self {
             Self::Value(value) => T::to_property_value(value),
             Self::Expr(_) => {
-                panic!("Deferred::to_property_value called on expression; use to_property_expression")
+                panic!(
+                    "Deferred::to_property_value called on expression; use to_property_expression"
+                )
             }
         }
     }
@@ -275,18 +277,16 @@ macro_rules! impl_deferred_float_expr {
             ) -> crate::Result<Self> {
                 match deferred {
                     Deferred::Value(value) => Ok(*value),
-                    Deferred::Expr(expr) => expr
-                        .evaluate(ctx)?
-                        .as_f64()
-                        .map($conv)
-                        .ok_or_else(|| {
+                    Deferred::Expr(expr) => {
+                        expr.evaluate(ctx)?.as_f64().map($conv).ok_or_else(|| {
                             PropertyValue::invalid_type(
                                 node_id,
                                 property_path,
                                 "Float",
                                 "expression",
                             )
-                        }),
+                        })
+                    }
                 }
             }
 
@@ -392,7 +392,9 @@ impl DeferredValue for u8 {
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
-        value.coerce_int().and_then(|value| u8::try_from(value).ok())
+        value
+            .coerce_int()
+            .and_then(|value| u8::try_from(value).ok())
     }
 
     fn property_kind_name() -> &'static str {

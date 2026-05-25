@@ -1,6 +1,9 @@
 use bytemuck::Zeroable;
 
-use super::types::{GradientPaint, GradientInterpolation, GradientSpread, GradientUnits, PaintKind, MAX_GRADIENT_STOPS};
+use super::types::{
+    GradientInterpolation, GradientPaint, GradientSpread, GradientUnits, MAX_GRADIENT_STOPS,
+    PaintKind,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
