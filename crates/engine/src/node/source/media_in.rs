@@ -103,28 +103,16 @@ pub fn resolve_for_context(
     media_in: &MediaIn,
     ctx: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<MediaInKind> {
-    let kind = media_in.params.kind.resolve_int(media_in.id, "kind", ctx)?;
-    let source = media_in
-        .params
-        .source
-        .resolve_string(media_in.id, "source", ctx)?;
-    let range_start = media_in
-        .params
-        .range_start
-        .resolve_int(media_in.id, "range_start", ctx)?;
-    let range_end = media_in
-        .params
-        .range_end
-        .resolve_int(media_in.id, "range_end", ctx)?;
-    let speed = media_in
-        .params
-        .speed
-        .resolve_float(media_in.id, "speed", ctx)? as f32;
-    let loop_mode = LoopMode::from_int(media_in.params.loop_mode.resolve_int(
-        media_in.id,
-        "loop_mode",
-        ctx,
-    )?);
+    let params = media_in.params.eval(&crate::node::NodeParamEvalContext {
+        node_id: media_in.id,
+        expr: ctx,
+    })?;
+    let kind = params.kind;
+    let source = params.source;
+    let range_start = params.range_start;
+    let range_end = params.range_end;
+    let speed = params.speed as f32;
+    let loop_mode = LoopMode::from_int(params.loop_mode);
 
     if kind == 1 {
         Ok(MediaInKind::Video {

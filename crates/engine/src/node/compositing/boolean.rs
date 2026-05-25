@@ -85,23 +85,19 @@ impl GpuCompiledNode for CompiledBoolean {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = compiler::BooleanParams {
+        let params = self.params.eval(&crate::node::NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        let gpu_params = compiler::BooleanParams {
             values: [
-                BooleanOperation::from_int(self.params.operation.resolve_int(
-                    self.node_id,
-                    "operation",
-                    &ctx.expr_context(self.node_id, "operation"),
-                )?) as u32 as f32,
-                self.params.threshold.resolve_float(
-                    self.node_id,
-                    "threshold",
-                    &ctx.expr_context(self.node_id, "threshold"),
-                )? as f32,
+                BooleanOperation::from_int(params.operation) as u32 as f32,
+                params.threshold as f32,
                 0.0,
                 0.0,
             ],
         };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
     }
 }

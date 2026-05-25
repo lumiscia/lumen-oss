@@ -67,7 +67,7 @@ fn enum_eval_match_tokens(
                 .collect::<Vec<_>>();
             quote!(
                 Self::#ident(#(#vars),*) => Ok(#enum_ident::#ident(
-                    #(::lumen_engine::node::DelegateValue::eval(#vars, ctx)?),*
+                    #(::lumen_engine::node::DelegateEvaluable::eval(#vars, ctx)?),*
                 ))
             )
         }
@@ -79,7 +79,7 @@ fn enum_eval_match_tokens(
                 .collect::<Vec<_>>();
             quote!(
                 Self::#ident { #(#vars),* } => Ok(#enum_ident::#ident {
-                    #(#vars: ::lumen_engine::node::DelegateValue::eval(#vars, ctx)?),*
+                    #(#vars: ::lumen_engine::node::DelegateEvaluable::eval(#vars, ctx)?),*
                 })
             )
         }
@@ -268,7 +268,7 @@ pub(crate) fn expand_enum_delegate(
             }
         }
 
-        impl ::lumen_engine::node::DelegateValue for #delegate_ident {
+        impl ::lumen_engine::node::DelegateEvaluable for #delegate_ident {
             type Evaluated = #ident;
 
             fn eval(
@@ -277,7 +277,9 @@ pub(crate) fn expand_enum_delegate(
             ) -> ::core::result::Result<Self::Evaluated, ::lumen_engine::error::LumenError> {
                 self.try_into_evaluated(ctx)
             }
+        }
 
+        impl ::lumen_engine::node::DelegateValue for #delegate_ident {
             #enum_property_methods
         }
 

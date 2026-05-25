@@ -58,15 +58,14 @@ impl GpuCompileNode for WgslShader {
         ctx: &mut crate::gpu::CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        let shader = self.params.shader.resolve_string(
-            self.id,
-            "shader",
-            &ctx.expr_context(self.id, "shader"),
-        )?;
-        let shader = if shader.trim().is_empty() {
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &ctx.expr_context(self.id, "params"),
+        })?;
+        let shader = if params.shader.trim().is_empty() {
             SHADER
         } else {
-            shader.as_str()
+            params.shader.as_str()
         };
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,

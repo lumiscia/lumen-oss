@@ -1,4 +1,4 @@
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 
@@ -58,22 +58,6 @@ pub fn remap_frame(settings: TimeRemapSettings) -> u32 {
     frame.max(0) as u32
 }
 
-pub fn resolve_settings(
-    node_id: NodeId,
-    frame: &Deferred<f64>,
-    loop_enabled: &Deferred<bool>,
-    loop_start: &Deferred<i64>,
-    loop_end: &Deferred<i64>,
-    ctx: &crate::expr::ExpressionContext<'_>,
-) -> crate::Result<TimeRemapSettings> {
-    Ok(TimeRemapSettings {
-        frame: frame.resolve_float(node_id, "frame", ctx)?,
-        loop_enabled: loop_enabled.resolve_bool(node_id, "loop_enabled", ctx)?,
-        loop_start: loop_start.resolve_int(node_id, "loop_start", ctx)?,
-        loop_end: loop_end.resolve_int(node_id, "loop_end", ctx)?,
-    })
-}
-
 impl GpuCompileNode for TimeRemap {
     fn compile_gpu(
         &self,
@@ -87,14 +71,16 @@ impl GpuCompileNode for TimeRemap {
             node_id: self.id,
             params: self.params.clone(),
         });
-        let target_frame = remap_frame(resolve_settings(
-            self.id,
-            &self.params.frame,
-            &self.params.loop_enabled,
-            &self.params.loop_start,
-            &self.params.loop_end,
-            &ctx.expr_context(self.id, "frame"),
-        )?);
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &ctx.expr_context(self.id, "params"),
+        })?;
+        let target_frame = remap_frame(TimeRemapSettings {
+            frame: params.frame,
+            loop_enabled: params.loop_enabled,
+            loop_start: params.loop_start,
+            loop_end: params.loop_end,
+        });
         ctx.with_frame_context(target_frame, |ctx| ctx.compile_port(&self.source))
     }
 }

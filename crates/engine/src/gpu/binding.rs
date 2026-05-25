@@ -5,7 +5,7 @@ use crate::{
     error::RenderError,
     expr::ExpressionContext,
     media::MediaStore,
-    node::{NodeId, NodeKind, PortRef},
+    node::{NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
 };
 
 use super::{BoundFrame, CompiledComposition, FramePortRef};
@@ -107,30 +107,34 @@ impl<'a> FrameBindContext<'a> {
                 Ok(vec![FramePortRef::new(node.source.clone(), self.frame)])
             }
             NodeKind::TimeRemap(node) => {
-                let settings = crate::node::processing::time_remap::resolve_settings(
-                    node.id,
-                    &node.params.frame,
-                    &node.params.loop_enabled,
-                    &node.params.loop_start,
-                    &node.params.loop_end,
-                    &self.expr_context(node.id, "frame"),
-                )?;
+                let params = node.params.eval(&NodeParamEvalContext {
+                    node_id: node.id,
+                    expr: &self.expr_context(node.id, "params"),
+                })?;
+                let settings = crate::node::processing::time_remap::TimeRemapSettings {
+                    frame: params.frame,
+                    loop_enabled: params.loop_enabled,
+                    loop_start: params.loop_start,
+                    loop_end: params.loop_end,
+                };
                 Ok(vec![FramePortRef::new(
                     node.source.clone(),
                     crate::node::processing::time_remap::remap_frame(settings),
                 )])
             }
             NodeKind::Switch(node) => {
-                let selected = crate::node::compositing::switch::selected_layer_for_frame(
-                    node,
-                    &self.expr_context(node.id, "selected_layer"),
-                )?;
+                let params = node.params.eval(&NodeParamEvalContext {
+                    node_id: node.id,
+                    expr: &self.expr_context(node.id, "params"),
+                })?;
+                let selected = (params.selected_layer >= 0).then_some(params.selected_layer as usize);
                 Ok(selected
                     .and_then(|index| node.layers.get(index))
                     .map(|port| vec![FramePortRef::new(port.clone(), self.frame)])
                     .unwrap_or_default())
             }
-            _ => Ok(node_inputs(node)
+            _ => Ok(node
+                .input_ports()
                 .into_iter()
                 .map(|port| FramePortRef::new(port, self.frame))
                 .collect()),
@@ -159,36 +163,6 @@ impl<'a> FrameBindContext<'a> {
             path: Some(format!("{node_id}.{property_path}")),
             graph: Some(&self.composition.graph),
         }
-    }
-}
-
-fn node_inputs(node: &NodeKind) -> Vec<PortRef> {
-    match node {
-        NodeKind::MediaIn(_)
-        | NodeKind::Background(_)
-        | NodeKind::Text(_)
-        | NodeKind::Path(_)
-        | NodeKind::Shape(_) => Vec::new(),
-        NodeKind::Boolean(node) => vec![node.a.clone(), node.b.clone()],
-        NodeKind::Merge(node) => vec![node.base.clone(), node.overlay.clone(), node.mask.clone()],
-        NodeKind::RasterMultiMerge(node) => node.layers.clone(),
-        NodeKind::AlphaPremultiply(node) => vec![node.source.clone()],
-        NodeKind::Blur(node) => vec![node.source.clone()],
-        NodeKind::ChannelShuffle(node) => vec![node.source.clone()],
-        NodeKind::ColorGrade(node) => vec![node.source.clone()],
-        NodeKind::Curves(node) => vec![node.source.clone()],
-        NodeKind::Exposure(node) => vec![node.source.clone()],
-        NodeKind::HueSaturation(node) => vec![node.source.clone()],
-        NodeKind::Levels(node) => vec![node.source.clone()],
-        NodeKind::Memo(node) => vec![node.source.clone()],
-        NodeKind::TimeRemap(node) => vec![node.source.clone()],
-        NodeKind::Transform(node) => vec![node.source.clone()],
-        NodeKind::Crop(node) => vec![node.source.clone()],
-        NodeKind::Resize(node) => vec![node.source.clone()],
-        NodeKind::Shadow(node) => vec![node.source.clone()],
-        NodeKind::WgslShader(node) => vec![node.source.clone()],
-        NodeKind::Switch(node) => node.layers.clone(),
-        NodeKind::MediaOutput(node) => vec![node.source.clone()],
     }
 }
 

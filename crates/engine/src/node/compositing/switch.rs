@@ -36,11 +36,11 @@ pub fn selected_layer_for_frame(
     node: &Switch,
     ctx: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<Option<usize>> {
-    let selected = node
-        .params
-        .selected_layer
-        .resolve_int(node.id, "selected_layer", ctx)?;
-    Ok((selected >= 0).then_some(selected as usize))
+    let params = node.params.eval(&crate::node::NodeParamEvalContext {
+        node_id: node.id,
+        expr: ctx,
+    })?;
+    Ok((params.selected_layer >= 0).then_some(params.selected_layer as usize))
 }
 
 impl GpuCompileNode for Switch {

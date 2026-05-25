@@ -684,7 +684,7 @@ impl Renderer {
                     tracing::trace!(
                         target: "lumen_gpu",
                         ?id,
-                        bytes = data.len() * std::mem::size_of::<u16>(),
+                        bytes = std::mem::size_of_val(*data),
                         bytes_per_row,
                         rows_per_image,
                         "upload rgba16f texture"

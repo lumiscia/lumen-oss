@@ -1,5 +1,16 @@
 use super::*;
 
+pub(crate) fn is_vec_type(ty: &Type) -> bool {
+    if let Type::Path(path) = ty {
+        path.path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Vec")
+    } else {
+        false
+    }
+}
+
 pub(crate) fn expand_struct_delegate(
     input: &DeriveInput,
     fields: &Fields,
@@ -42,7 +53,7 @@ pub(crate) fn expand_struct_delegate(
             let ident = &meta.ident;
             let name = &meta.property.id;
             quote! {
-                #ident: ::lumen_engine::node::DelegateValue::eval(
+                #ident: ::lumen_engine::node::DelegateEvaluable::eval(
                     &self.#ident,
                     &::lumen_engine::node::DelegateEvalContext {
                         node_id: ctx.node_id,
@@ -63,23 +74,42 @@ pub(crate) fn expand_struct_delegate(
     let default_properties = metas.iter().map(|meta| {
         let ident = &meta.ident;
         let name = &meta.property.id;
-        quote!((#name, ::lumen_engine::node::DelegateValue::to_property_value(&self.#ident)))
+        let ty = &meta.ty;
+        if is_vec_type(ty) {
+            quote!((#name, ::lumen_engine::node::PropertyValue::String(String::from("[]"))))
+        } else {
+            quote!((#name, ::lumen_engine::node::DelegateValue::to_property_value(&self.#ident)))
+        }
     });
     let property_matches = metas.iter().map(|meta| {
         let ident = &meta.ident;
         let name = &meta.property.id;
-        quote!(#name => Some(::lumen_engine::node::DelegateValue::to_property_expression(&self.#ident)))
+        let ty = &meta.ty;
+        if is_vec_type(ty) {
+            quote!(#name => None)
+        } else {
+            quote!(#name => Some(::lumen_engine::node::DelegateValue::to_property_expression(&self.#ident)))
+        }
     });
     let json_sets = metas.iter().map(|meta| {
         let ident = &meta.ident;
         let name = &meta.property.id;
-        let property_def = property_def_tokens(&meta.property, &meta.ty);
-        quote! {
-            if let Some(value) = params.and_then(|params| params.get(#name)) {
-                let def = #property_def;
-                metas.#ident = ::lumen_engine::node::DelegateValue::from_property_expression(
-                    ::lumen_engine::json::parse_property(value, Some(&def), #name)?,
-                )?;
+        let ty = &meta.ty;
+        if is_vec_type(ty) {
+            quote! {
+                if let Some(value) = params.and_then(|params| params.get(#name)) {
+                    metas.#ident = ::serde_json::from_value(value.clone())?;
+                }
+            }
+        } else {
+            let property_def = property_def_tokens(&meta.property, ty);
+            quote! {
+                if let Some(value) = params.and_then(|params| params.get(#name)) {
+                    let def = #property_def;
+                    metas.#ident = ::lumen_engine::node::DelegateValue::from_property_expression(
+                        ::lumen_engine::json::parse_property(value, Some(&def), #name)?,
+                    )?;
+                }
             }
         }
     });
@@ -152,12 +182,6 @@ pub(crate) fn expand_struct_delegate(
             }
         }
 
-        impl ::lumen_engine::node::NodeParamType for #ident {
-            fn property_kind() -> ::lumen_engine::node::PropertyKind {
-                ::lumen_engine::node::PropertyKind::String
-            }
-        }
-
         impl ::lumen_engine::node::Delegated for #ident {
             type Delegate = #delegate_ident;
 
@@ -169,7 +193,7 @@ pub(crate) fn expand_struct_delegate(
             }
         }
 
-        impl ::lumen_engine::node::DelegateValue for #delegate_ident {
+        impl ::lumen_engine::node::DelegateEvaluable for #delegate_ident {
             type Evaluated = #ident;
 
             fn eval(
@@ -179,16 +203,6 @@ pub(crate) fn expand_struct_delegate(
                 Ok(#ident {
                     #(#evaluated_fields,)*
                 })
-            }
-
-            fn to_property_value(&self) -> ::lumen_engine::node::PropertyValue {
-                ::lumen_engine::node::PropertyValue::String(::std::string::String::new())
-            }
-
-            fn from_property_expression(
-                _value: ::lumen_engine::node::PropertyExpression,
-            ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
-                Ok(<Self as ::core::default::Default>::default())
             }
         }
 

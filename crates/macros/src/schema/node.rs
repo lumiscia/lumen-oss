@@ -110,6 +110,14 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             })
         }
     });
+    let input_port_collectors = inputs.iter().map(|input| {
+        let field = &input.field;
+        if input.variadic {
+            quote!(ports.extend(self.#field.clone()))
+        } else {
+            quote!(ports.push(self.#field.clone()))
+        }
+    });
 
     let kind = node.kind;
     let node_name = node.name;
@@ -186,6 +194,12 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
 
             fn input_port_defs(&self) -> &'static [::lumen_engine::node::InputPortDef] {
                 #input_static
+            }
+
+            fn input_ports(&self) -> ::std::vec::Vec<::lumen_engine::node::PortRef> {
+                let mut ports = ::std::vec::Vec::new();
+                #(#input_port_collectors;)*
+                ports
             }
         }
 
