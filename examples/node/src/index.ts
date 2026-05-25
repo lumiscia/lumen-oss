@@ -40,11 +40,11 @@ const composition = new Composition({
 });
 
 const background = composition.addNode({
-  type: "solid_color",
+  type: "background",
   params: {
     width: 1920,
     height: 1080,
-    color: [24, 28, 36, 255],
+    paint: [24, 28, 36, 255],
   },
 });
 

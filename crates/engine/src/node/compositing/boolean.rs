@@ -1,7 +1,7 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
@@ -28,23 +28,21 @@ impl BooleanOperation {
 }
 
 /// Combines two raster alpha masks with boolean operations.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedBooleanParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct BooleanParams {
     /// Boolean operation used to combine the two input masks.
-    #[param(kind = "enum", enum_type = BooleanOperation)]
-    pub operation: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = BooleanOperation)]
+    pub operation: i64,
     /// Alpha cutoff used before evaluating the boolean operation.
-    #[param(kind = "float", min = 0, max = 1, step = 0.01)]
-    pub threshold: Deferred<f64>,
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub threshold: f64,
 }
 
 impl Default for BooleanParams {
     fn default() -> Self {
         Self {
-            operation: Deferred::value(BooleanOperation::Union as i64),
-            threshold: Deferred::value(0.0),
+            operation: BooleanOperation::Union as i64,
+            threshold: 0.0,
         }
     }
 }
@@ -55,7 +53,7 @@ impl Default for BooleanParams {
 pub struct Boolean {
     pub id: NodeId,
     #[params]
-    pub params: BooleanParams,
+    pub params: BooleanParamsDelegate,
 
     #[input()]
     pub a: PortRef,
@@ -67,7 +65,7 @@ impl Default for Boolean {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: BooleanParams::default(),
+            params: BooleanParamsDelegate::default(),
             a: PortRef::empty(),
             b: PortRef::empty(),
         }
@@ -75,36 +73,31 @@ impl Default for Boolean {
 }
 
 #[derive(Debug, Clone)]
-struct BooleanFrameBinding {
+struct CompiledBoolean {
     node_id: NodeId,
-    operation: Deferred<i64>,
-    threshold: Deferred<f64>,
+    params: BooleanParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for BooleanFrameBinding {
+impl GpuCompiledNode for CompiledBoolean {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = compiler::BooleanParams {
+        let params = self.params.eval(&crate::node::NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        let gpu_params = compiler::BooleanParams {
             values: [
-                BooleanOperation::from_int(self.operation.resolve_int(
-                    self.node_id,
-                    "operation",
-                    &ctx.expr_context(self.node_id, "operation"),
-                )?) as u32 as f32,
-                self.threshold.resolve_float(
-                    self.node_id,
-                    "threshold",
-                    &ctx.expr_context(self.node_id, "threshold"),
-                )? as f32,
+                BooleanOperation::from_int(params.operation) as u32 as f32,
+                params.threshold as f32,
                 0.0,
                 0.0,
             ],
         };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
     }
 }
@@ -183,10 +176,9 @@ impl GpuCompileNode for Boolean {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(BooleanFrameBinding {
+        ctx.register_compiled_node(CompiledBoolean {
             node_id: self.id,
-            operation: self.params.operation.clone(),
-            threshold: self.params.threshold.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
 

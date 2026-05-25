@@ -1,10 +1,10 @@
 use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
-use crate::node::{Deferred, NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, MediaTextureKey,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey,
     RasterHandle, RasterMetadata,
 };
 
@@ -46,39 +46,37 @@ pub enum MediaInKind {
 }
 
 /// Binds an external image or video frame as a GPU texture.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedMediaInParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct MediaInParams {
     /// Type of external media source.
-    #[param(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
-    pub kind: Deferred<i64>,
+    #[meta(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
+    pub kind: i64,
     /// External media source identifier.
-    #[param(kind = "string", role = "source_id")]
-    pub source: Deferred<String>,
+    #[meta(role = "source_id")]
+    pub source: String,
     /// First source frame to include.
-    #[param(kind = "int", min = 0, step = 1)]
-    pub range_start: Deferred<i64>,
+    #[meta(min = 0, step = 1)]
+    pub range_start: i64,
     /// Last source frame to include.
-    #[param(kind = "int", min = 0, step = 1)]
-    pub range_end: Deferred<i64>,
+    #[meta(min = 0, step = 1)]
+    pub range_end: i64,
     /// Playback speed multiplier.
-    #[param(kind = "float", step = 0.1)]
-    pub speed: Deferred<f64>,
+    #[meta(step = 0.1)]
+    pub speed: f64,
     /// Behavior when playback leaves the source range.
-    #[param(kind = "enum", enum_type = LoopMode)]
-    pub loop_mode: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = LoopMode)]
+    pub loop_mode: i64,
 }
 
 impl Default for MediaInParams {
     fn default() -> Self {
         Self {
-            kind: Deferred::value(0),
-            source: Deferred::value(String::new()),
-            range_start: Deferred::value(0),
-            range_end: Deferred::value(0),
-            speed: Deferred::value(1.0),
-            loop_mode: Deferred::value(0),
+            kind: 0,
+            source: String::new(),
+            range_start: 0,
+            range_end: 0,
+            speed: 1.0,
+            loop_mode: 0,
         }
     }
 }
@@ -89,14 +87,14 @@ impl Default for MediaInParams {
 pub struct MediaIn {
     pub id: NodeId,
     #[params]
-    pub params: MediaInParams,
+    pub params: MediaInParamsDelegate,
 }
 
 impl Default for MediaIn {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: MediaInParams::default(),
+            params: MediaInParamsDelegate::default(),
         }
     }
 }
@@ -105,28 +103,16 @@ pub fn resolve_for_context(
     media_in: &MediaIn,
     ctx: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<MediaInKind> {
-    let kind = media_in.params.kind.resolve_int(media_in.id, "kind", ctx)?;
-    let source = media_in
-        .params
-        .source
-        .resolve_string(media_in.id, "source", ctx)?;
-    let range_start = media_in
-        .params
-        .range_start
-        .resolve_int(media_in.id, "range_start", ctx)?;
-    let range_end = media_in
-        .params
-        .range_end
-        .resolve_int(media_in.id, "range_end", ctx)?;
-    let speed = media_in
-        .params
-        .speed
-        .resolve_float(media_in.id, "speed", ctx)? as f32;
-    let loop_mode = LoopMode::from_int(media_in.params.loop_mode.resolve_int(
-        media_in.id,
-        "loop_mode",
-        ctx,
-    )?);
+    let params = media_in.params.eval(&crate::node::NodeParamEvalContext {
+        node_id: media_in.id,
+        expr: ctx,
+    })?;
+    let kind = params.kind;
+    let source = params.source;
+    let range_start = params.range_start;
+    let range_end = params.range_end;
+    let speed = params.speed as f32;
+    let loop_mode = LoopMode::from_int(params.loop_mode);
 
     if kind == 1 {
         Ok(MediaInKind::Video {
@@ -227,9 +213,9 @@ impl GpuCompileNode for MediaIn {
             },
             lumen_gpu::ParamTarget::Texture(texture),
         );
-        ctx.push_frame_binding(MediaInputFrameBinding {
+        ctx.register_compiled_node(CompiledMediaInput {
             node_id: self.id,
-            node: self.clone(),
+            params: self.params.clone(),
             texture,
             size,
         });
@@ -266,14 +252,14 @@ impl MediaIn {
 }
 
 #[derive(Debug, Clone)]
-struct MediaInputFrameBinding {
+struct CompiledMediaInput {
     node_id: NodeId,
-    node: MediaIn,
+    params: MediaInParamsDelegate,
     texture: lumen_gpu::TextureId,
     size: lumen_gpu::Size,
 }
 
-impl GpuFrameBinding for MediaInputFrameBinding {
+impl GpuCompiledNode for CompiledMediaInput {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -285,7 +271,11 @@ impl GpuFrameBinding for MediaInputFrameBinding {
             node_kind: "MediaIn",
             details: "media store is required for media input nodes".to_string(),
         })?;
-        let kind = resolve_for_context(&self.node, &ctx.expr_context(self.node_id, "source"))?;
+        let node = MediaIn {
+            id: self.node_id,
+            params: self.params.clone(),
+        };
+        let kind = resolve_for_context(&node, &ctx.expr_context(self.node_id, "source"))?;
         let (frame, key_source, key_frame) = match kind {
             MediaInKind::Image { image_id } => media
                 .get_image_resolver(&image_id)

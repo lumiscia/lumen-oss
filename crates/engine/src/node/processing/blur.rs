@@ -1,26 +1,22 @@
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("blur.wgsl");
 
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedBlurParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct BlurParams {
     /// Blur radius in pixels.
-    #[param(kind = "float", min = 0, step = 0.5)]
-    pub radius: Deferred<f64>,
+    #[meta(min = 0, step = 0.5)]
+    pub radius: f64,
 }
 
 impl Default for BlurParams {
     fn default() -> Self {
-        Self {
-            radius: Deferred::value(4.0),
-        }
+        Self { radius: 4.0 }
     }
 }
 
@@ -30,7 +26,7 @@ impl Default for BlurParams {
 pub struct Blur {
     pub id: NodeId,
     #[params]
-    pub params: BlurParams,
+    pub params: BlurParamsDelegate,
     #[input()]
     pub source: PortRef,
 }
@@ -39,20 +35,20 @@ impl Default for Blur {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: BlurParams::default(),
+            params: BlurParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct BlurFrameBinding {
+struct CompiledBlur {
     node_id: NodeId,
-    params: BlurParams,
+    params: BlurParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for BlurFrameBinding {
+impl GpuCompiledNode for CompiledBlur {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -85,7 +81,7 @@ impl GpuCompileNode for Blur {
             SHADER,
             std::mem::size_of::<compiler::BlurParams>() as u64,
         )?;
-        ctx.push_frame_binding(BlurFrameBinding {
+        ctx.register_compiled_node(CompiledBlur {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,

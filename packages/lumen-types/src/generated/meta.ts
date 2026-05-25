@@ -3,8 +3,8 @@
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodeParamKind = "bool" | "color" | "enum" | "float" | "int" | "string" | "vec2";
-export type NodeKind = "alpha_premultiply" | "blur" | "boolean" | "channel_shuffle" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "solid_color" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeParamKind = "bool" | "enum" | "float" | "int" | "paint" | "string" | "vec2";
+export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 
@@ -67,6 +67,7 @@ export type NodeLiteralValue =
   | boolean
   | number
   | string
+  | GradientPaint
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]
@@ -74,14 +75,48 @@ export type NodeLiteralValue =
   | readonly string[];
 
 export type ExpressionString = `=${string}`;
-export type ExpressionValue<T> = T | ExpressionString;
+export type ExpressionValue<T> =
+  | ExpressionString
+  | (T extends string | number | boolean
+      ? T
+      : T extends readonly (infer U)[]
+        ? readonly ExpressionValue<U>[]
+        : T extends object
+          ? { readonly [K in keyof T]: ExpressionValue<T[K]> }
+          : T);
 export type Vec2 = readonly [number, number];
 export type Color =
   | readonly [number, number, number]
   | readonly [number, number, number, number]
   | `#${string}`;
+export type GradientStop =
+  | { readonly offset: number; readonly color: Color }
+  | readonly [number, Color];
+export type GradientPaint = {
+  readonly type:
+    | "linear"
+    | "linear_gradient"
+    | "radial"
+    | "radial_gradient"
+    | "conic"
+    | "conic_gradient";
+  readonly units?: "object_bounding_box" | "user_space" | "userSpaceOnUse";
+  readonly spread?: "pad" | "repeat" | "reflect";
+  readonly interpolation?: "srgb" | "linear_srgb" | "linear";
+  readonly start?: Vec2;
+  readonly end?: Vec2;
+  readonly center?: Vec2;
+  readonly radius?: number | Vec2;
+  readonly angle?: number;
+  readonly stops: readonly GradientStop[];
+};
+export type Paint = Color | GradientPaint;
 
 export type BooleanOperation = "union" | "intersect" | "subtract" | "xor";
+export type ChannelShuffleAlpha = "red" | "green" | "blue" | "alpha" | "zero" | "one";
+export type ChannelShuffleBlue = "red" | "green" | "blue" | "alpha" | "zero" | "one";
+export type ChannelShuffleGreen = "red" | "green" | "blue" | "alpha" | "zero" | "one";
+export type ChannelShuffleRed = "red" | "green" | "blue" | "alpha" | "zero" | "one";
 export type MediaInKind = "image" | "video";
 export type MediaInLoopMode = "clamp" | "repeat" | "ping_pong";
 export type MergeBlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
@@ -106,6 +141,14 @@ export interface AlphaPremultiplyNode extends CompositionNodeBase<"alpha_premult
   };
 }
 
+export interface BackgroundNode extends CompositionNodeBase<"background"> {
+  readonly params?: {
+    readonly "height"?: ExpressionValue<number>;
+    readonly "paint"?: ExpressionValue<Paint>;
+    readonly "width"?: ExpressionValue<number>;
+  };
+}
+
 export interface BlurNode extends CompositionNodeBase<"blur"> {
   readonly params?: {
     readonly "radius"?: ExpressionValue<number>;
@@ -121,10 +164,10 @@ export interface BooleanNode extends CompositionNodeBase<"boolean"> {
 
 export interface ChannelShuffleNode extends CompositionNodeBase<"channel_shuffle"> {
   readonly params?: {
-    readonly "alpha"?: ExpressionValue<string>;
-    readonly "blue"?: ExpressionValue<string>;
-    readonly "green"?: ExpressionValue<string>;
-    readonly "red"?: ExpressionValue<string>;
+    readonly "alpha"?: ExpressionValue<ChannelShuffleAlpha>;
+    readonly "blue"?: ExpressionValue<ChannelShuffleBlue>;
+    readonly "green"?: ExpressionValue<ChannelShuffleGreen>;
+    readonly "red"?: ExpressionValue<ChannelShuffleRed>;
   };
 }
 
@@ -210,11 +253,11 @@ export interface MergeNode extends CompositionNodeBase<"merge"> {
 export interface PathNode extends CompositionNodeBase<"path"> {
   readonly params?: {
     readonly "data"?: ExpressionValue<string>;
-    readonly "fill_color"?: ExpressionValue<Color>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
+    readonly "fill_paint"?: ExpressionValue<Paint>;
     readonly "position"?: ExpressionValue<Vec2>;
-    readonly "stroke_color"?: ExpressionValue<Color>;
     readonly "stroke_enabled"?: ExpressionValue<boolean>;
+    readonly "stroke_paint"?: ExpressionValue<Paint>;
     readonly "stroke_width"?: ExpressionValue<number>;
   };
 }
@@ -237,7 +280,7 @@ export interface ResizeNode extends CompositionNodeBase<"resize"> {
 
 export interface ShadowNode extends CompositionNodeBase<"shadow"> {
   readonly params?: {
-    readonly "color"?: ExpressionValue<Color>;
+    readonly "color"?: ExpressionValue<Paint>;
     readonly "offset_x"?: ExpressionValue<number>;
     readonly "offset_y"?: ExpressionValue<number>;
     readonly "opacity"?: ExpressionValue<number>;
@@ -248,23 +291,15 @@ export interface ShadowNode extends CompositionNodeBase<"shadow"> {
 export interface ShapeNode extends CompositionNodeBase<"shape"> {
   readonly params?: {
     readonly "border_radius"?: ExpressionValue<number>;
-    readonly "fill_color"?: ExpressionValue<Color>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
+    readonly "fill_paint"?: ExpressionValue<Paint>;
     readonly "geometry_kind"?: ExpressionValue<ShapeGeometryKind>;
     readonly "height"?: ExpressionValue<number>;
     readonly "polygon_points"?: ExpressionValue<string>;
     readonly "position"?: ExpressionValue<Vec2>;
-    readonly "stroke_color"?: ExpressionValue<Color>;
     readonly "stroke_enabled"?: ExpressionValue<boolean>;
+    readonly "stroke_paint"?: ExpressionValue<Paint>;
     readonly "stroke_width"?: ExpressionValue<number>;
-    readonly "width"?: ExpressionValue<number>;
-  };
-}
-
-export interface SolidColorNode extends CompositionNodeBase<"solid_color"> {
-  readonly params?: {
-    readonly "color"?: ExpressionValue<Color>;
-    readonly "height"?: ExpressionValue<number>;
     readonly "width"?: ExpressionValue<number>;
   };
 }
@@ -279,7 +314,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
   readonly params?: {
     readonly "alignment_horizontal"?: ExpressionValue<TextAlignmentHorizontal>;
     readonly "alignment_vertical"?: ExpressionValue<TextAlignmentVertical>;
-    readonly "color"?: ExpressionValue<Color>;
+    readonly "color"?: ExpressionValue<Paint>;
     readonly "content"?: ExpressionValue<string>;
     readonly "font_family"?: ExpressionValue<string>;
     readonly "font_size"?: ExpressionValue<number>;
@@ -321,6 +356,7 @@ export interface WgslShaderNode extends CompositionNodeBase<"wgsl_shader"> {
 
 export interface CompositionNodeByKind {
   readonly "alpha_premultiply": AlphaPremultiplyNode;
+  readonly "background": BackgroundNode;
   readonly "blur": BlurNode;
   readonly "boolean": BooleanNode;
   readonly "channel_shuffle": ChannelShuffleNode;
@@ -339,7 +375,6 @@ export interface CompositionNodeByKind {
   readonly "resize": ResizeNode;
   readonly "shadow": ShadowNode;
   readonly "shape": ShapeNode;
-  readonly "solid_color": SolidColorNode;
   readonly "switch": SwitchNode;
   readonly "text": TextNode;
   readonly "time_remap": TimeRemapNode;
@@ -349,6 +384,9 @@ export interface CompositionNodeByKind {
 
 export interface CompositionNodeInputByKind {
   readonly "alpha_premultiply": Omit<AlphaPremultiplyNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "background": Omit<BackgroundNode, "id"> & {
     readonly id?: number;
   };
   readonly "blur": Omit<BlurNode, "id"> & {
@@ -403,9 +441,6 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "shape": Omit<ShapeNode, "id"> & {
-    readonly id?: number;
-  };
-  readonly "solid_color": Omit<SolidColorNode, "id"> & {
     readonly id?: number;
   };
   readonly "switch": Omit<SwitchNode, "id"> & {

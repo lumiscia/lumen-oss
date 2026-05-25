@@ -84,7 +84,7 @@ function nodeSpecFromSchema(schema: JsonSchema): NodeSpec {
   if (!kind) {
     throw new Error("composition schema node variant is missing properties.type.const");
   }
-  const paramSchemas = objectValue(objectValue(schemaProperties?.properties)?.properties);
+  const paramSchemas = objectValue(objectValue(schemaProperties?.params)?.properties);
   const nodeParams = Object.entries(paramSchemas ?? {}).map(([id, param]) =>
     paramSpecFromSchema(id, objectValue(param)),
   );
@@ -140,6 +140,7 @@ function constraintsFromSchema(schema: JsonSchema): ParamConstraintsSpec | undef
 function paramKindFromSchema(schema: JsonSchema): string {
   if (Array.isArray(schema.enum)) return "enum";
   if (schema.$ref === "#/$defs/color") return "color";
+  if (schema.$ref === "#/$defs/paint") return "paint";
   if (schema.$ref === "#/$defs/vec2") return "vec2";
   return stringValue(schema.type) ?? "string";
 }

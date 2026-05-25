@@ -1,23 +1,13 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParams, PortRef};
 
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding};
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 
 /// Selects one raster input according to a controlled layer index.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedSwitchParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, Default, lumen_macros::Delegate)]
 pub struct SwitchParams {
     /// Zero-based input index to route to the output.
-    #[param(kind = "int", name = "Selected layer", min = 0, step = 1)]
-    pub selected_layer: Deferred<i64>,
-}
-
-impl Default for SwitchParams {
-    fn default() -> Self {
-        Self {
-            selected_layer: Deferred::value(0),
-        }
-    }
+    #[meta(name = "Selected layer", min = 0, step = 1)]
+    pub selected_layer: i64,
 }
 
 /// Selects one raster input according to a controlled layer index.
@@ -26,7 +16,7 @@ impl Default for SwitchParams {
 pub struct Switch {
     pub id: NodeId,
     #[params]
-    pub params: SwitchParams,
+    pub params: SwitchParamsDelegate,
 
     #[input(optional, variadic)]
     pub layers: Vec<PortRef>,
@@ -36,7 +26,7 @@ impl Default for Switch {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: SwitchParams::default(),
+            params: SwitchParamsDelegate::default(),
             layers: Vec::new(),
         }
     }
@@ -46,11 +36,11 @@ pub fn selected_layer_for_frame(
     node: &Switch,
     ctx: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<Option<usize>> {
-    let selected = node
-        .params
-        .selected_layer
-        .resolve_int(node.id, "selected_layer", ctx)?;
-    Ok((selected >= 0).then_some(selected as usize))
+    let params = node.params.eval(&crate::node::NodeParamEvalContext {
+        node_id: node.id,
+        expr: ctx,
+    })?;
+    Ok((params.selected_layer >= 0).then_some(params.selected_layer as usize))
 }
 
 impl GpuCompileNode for Switch {
@@ -65,7 +55,7 @@ impl GpuCompileNode for Switch {
 
         let selected_layer =
             selected_layer_for_frame(self, &ctx.expr_context(self.id, "selected_layer"))?;
-        ctx.push_frame_binding(SwitchFrameBinding {
+        ctx.register_compiled_node(CompiledSwitch {
             node_id: self.id,
             selected_layer,
         });
@@ -84,12 +74,12 @@ impl GpuCompileNode for Switch {
 }
 
 #[derive(Debug, Clone)]
-struct SwitchFrameBinding {
+struct CompiledSwitch {
     node_id: NodeId,
     selected_layer: Option<usize>,
 }
 
-impl GpuFrameBinding for SwitchFrameBinding {
+impl GpuCompiledNode for CompiledSwitch {
     fn node_id(&self) -> NodeId {
         self.node_id
     }

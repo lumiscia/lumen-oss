@@ -5,7 +5,7 @@ use crate::{
     error::{GraphValidationError, LumenError, MediaError},
     expr::ExpressionContext,
     node::{
-        NodeId, NodeKind, PortRef,
+        NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef,
         processing::time_remap::{TimeRemapSettings, remap_frame},
         source::media_in,
     },
@@ -237,26 +237,15 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
         time_remap: &crate::node::processing::time_remap::TimeRemap,
     ) -> Result<u32, LumenError> {
         let expr_context = self.expr_context("time_remap_requirements");
+        let params = time_remap.params.eval(&NodeParamEvalContext {
+            node_id: time_remap.id,
+            expr: &expr_context,
+        })?;
         Ok(remap_frame(TimeRemapSettings {
-            frame: time_remap
-                .params
-                .frame
-                .resolve_float(time_remap.id, "frame", &expr_context)?,
-            loop_enabled: time_remap.params.loop_enabled.resolve_bool(
-                time_remap.id,
-                "loop_enabled",
-                &expr_context,
-            )?,
-            loop_start: time_remap.params.loop_start.resolve_int(
-                time_remap.id,
-                "loop_start",
-                &expr_context,
-            )?,
-            loop_end: time_remap.params.loop_end.resolve_int(
-                time_remap.id,
-                "loop_end",
-                &expr_context,
-            )?,
+            frame: params.frame,
+            loop_enabled: params.loop_enabled,
+            loop_start: params.loop_start,
+            loop_end: params.loop_end,
         }))
     }
 

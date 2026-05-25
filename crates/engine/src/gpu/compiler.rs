@@ -5,8 +5,8 @@ use crate::{
     error::RenderError,
     expr::ExpressionContext,
     gpu::{
-        BoundFrame, CompiledComposition, CompiledFrameBinding, CompiledOutput, FrameBindContext,
-        GpuFrameBinding, RasterHandle, RasterMetadata,
+        BoundFrame, CompiledComposition, CompiledOutput, FrameBindContext, GpuCompiledNode,
+        RasterHandle, RasterMetadata,
     },
     media::MediaStore,
     node::{Deferred, NodeId, NodeKind, PortRef},
@@ -15,13 +15,13 @@ use crate::{
 pub(crate) use super::params::*;
 
 #[derive(Debug, Clone)]
-struct SolidColorClearBinding {
+struct BackgroundClearBinding {
     node_id: NodeId,
     color: [u8; 4],
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for SolidColorClearBinding {
+impl GpuCompiledNode for BackgroundClearBinding {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -73,8 +73,7 @@ pub struct CompileContext<'a> {
     builder: lumen_gpu::RenderPlanBuilder,
     outputs: HashMap<CompiledPortKey, CompiledOutput>,
     public_outputs: HashMap<PortRef, CompiledOutput>,
-    frame_bindings: Vec<CompiledFrameBinding>,
-    frame_binding_frame_override: Option<u32>,
+    compiled_nodes: HashMap<NodeId, Box<dyn GpuCompiledNode>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
 }
 
@@ -128,8 +127,7 @@ impl<'a> CompileContext<'a> {
             builder: lumen_gpu::RenderPlan::builder(),
             outputs: HashMap::new(),
             public_outputs: HashMap::new(),
-            frame_bindings: Vec::new(),
-            frame_binding_frame_override: None,
+            compiled_nodes: HashMap::new(),
             output_format,
         }
     }
@@ -144,7 +142,7 @@ impl<'a> CompileContext<'a> {
             plan: self.builder.build(),
             output,
             node_outputs: self.public_outputs,
-            frame_bindings: self.frame_bindings,
+            compiled_nodes: self.compiled_nodes,
         })
     }
 
@@ -164,14 +162,11 @@ impl<'a> CompileContext<'a> {
         &mut self.builder
     }
 
-    pub(crate) fn push_frame_binding<B>(&mut self, binding: B)
+    pub(crate) fn register_compiled_node<N>(&mut self, node: N)
     where
-        B: GpuFrameBinding + 'static,
+        N: GpuCompiledNode + 'static,
     {
-        self.frame_bindings.push(CompiledFrameBinding {
-            frame_override: self.frame_binding_frame_override,
-            binding: Box::new(binding),
-        });
+        self.compiled_nodes.insert(node.node_id(), Box::new(node));
     }
 
     pub(crate) fn compile_port(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
@@ -194,7 +189,7 @@ impl<'a> CompileContext<'a> {
             })?;
         let output = match node {
             NodeKind::MediaIn(node) => node.compile_gpu(self, port)?,
-            NodeKind::SolidColor(node) => node.compile_gpu(self, port)?,
+            NodeKind::Background(node) => node.compile_gpu(self, port)?,
             NodeKind::Text(node) => node.compile_gpu(self, port)?,
             NodeKind::Path(node) => node.compile_gpu(self, port)?,
             NodeKind::Shape(node) => node.compile_gpu(self, port)?,
@@ -233,12 +228,9 @@ impl<'a> CompileContext<'a> {
         f: impl FnOnce(&mut Self) -> crate::Result<T>,
     ) -> crate::Result<T> {
         let original_frame = self.frame;
-        let original_frame_override = self.frame_binding_frame_override;
         self.frame = frame;
-        self.frame_binding_frame_override = Some(frame);
         let result = f(self);
         self.frame = original_frame;
-        self.frame_binding_frame_override = original_frame_override;
         result
     }
 
@@ -333,7 +325,7 @@ impl<'a> CompileContext<'a> {
             lumen_gpu::NodeKey(node_id.0),
             lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
                 label: Some("transparent".to_string()),
-                shader: crate::node::source::solid_color::SHADER.to_string(),
+                shader: crate::node::source::background::SHADER.to_string(),
                 entry: "cs_main".to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
                     lumen_gpu::BindingLayoutEntry::uniform(
@@ -366,7 +358,7 @@ impl<'a> CompileContext<'a> {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        self.push_frame_binding(SolidColorClearBinding {
+        self.register_compiled_node(BackgroundClearBinding {
             node_id,
             color: [0, 0, 0, 0],
             buffer: params,

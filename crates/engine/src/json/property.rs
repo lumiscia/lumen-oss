@@ -77,6 +77,9 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
         PropertyKind::Color => parse_color(val)
             .with_context(|| format!("`{name}` expected color"))
             .map(PropertyValue::Color),
+        PropertyKind::Paint => crate::node::vector::paint::Paint::from_json_value(val)
+            .with_context(|| format!("`{name}` expected paint"))
+            .map(PropertyValue::Paint),
         PropertyKind::Vec2 => {
             let arr = val
                 .as_array()

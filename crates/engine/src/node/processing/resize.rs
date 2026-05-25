@@ -1,73 +1,59 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("resize.wgsl");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum")]
 pub enum ResizeMode {
+    #[default]
     Stretch = 0,
     Fit = 1,
     Fill = 2,
 }
 
-impl ResizeMode {
-    pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Fit,
-            2 => Self::Fill,
-            _ => Self::Stretch,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum")]
 pub enum ResizeSampling {
     Nearest = 0,
+    #[default]
     Linear = 1,
 }
 
-impl ResizeSampling {
-    pub fn from_int(value: i64) -> Self {
-        if value == Self::Nearest as i64 {
-            Self::Nearest
-        } else {
-            Self::Linear
-        }
-    }
-}
-
 /// Resamples a raster into static output bounds.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedResizeParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ResizeParams {
     /// Output width in pixels.
-    #[param(kind = "int", min = 1, step = 1)]
-    pub width: Deferred<i64>,
+    #[meta(min = 1, step = 1)]
+    pub width: i64,
     /// Output height in pixels.
-    #[param(kind = "int", min = 1, step = 1)]
-    pub height: Deferred<i64>,
+    #[meta(min = 1, step = 1)]
+    pub height: i64,
     /// How the source raster should fit the output bounds.
-    #[param(kind = "enum", enum_type = ResizeMode)]
-    pub mode: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = ResizeMode)]
+    pub mode: ResizeMode,
     /// Sampling filter used when resizing.
-    #[param(kind = "enum", enum_type = ResizeSampling)]
-    pub sampling: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = ResizeSampling)]
+    pub sampling: ResizeSampling,
 }
 
 impl Default for ResizeParams {
     fn default() -> Self {
         Self {
-            width: Deferred::value(1),
-            height: Deferred::value(1),
-            mode: Deferred::value(ResizeMode::Stretch as i64),
-            sampling: Deferred::value(ResizeSampling::Linear as i64),
+            width: 1,
+            height: 1,
+            mode: ResizeMode::Stretch,
+            sampling: ResizeSampling::Linear,
         }
     }
 }
@@ -78,7 +64,7 @@ impl Default for ResizeParams {
 pub struct Resize {
     pub id: NodeId,
     #[params]
-    pub params: ResizeParams,
+    pub params: ResizeParamsDelegate,
 
     #[input()]
     pub source: PortRef,
@@ -88,7 +74,7 @@ impl Default for Resize {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: ResizeParams::default(),
+            params: ResizeParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }
@@ -136,12 +122,9 @@ impl GpuCompileNode for Resize {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(ResizeFrameBinding {
+        ctx.register_compiled_node(CompiledResize {
             node_id: self.id,
-            width: self.params.width.clone(),
-            height: self.params.height.clone(),
-            mode: self.params.mode.clone(),
-            sampling: self.params.sampling.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
 
@@ -154,48 +137,29 @@ impl GpuCompileNode for Resize {
 }
 
 #[derive(Debug, Clone)]
-struct ResizeFrameBinding {
+struct CompiledResize {
     node_id: NodeId,
-    width: Deferred<i64>,
-    height: Deferred<i64>,
-    mode: Deferred<i64>,
-    sampling: Deferred<i64>,
+    params: ResizeParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for ResizeFrameBinding {
+impl GpuCompiledNode for CompiledResize {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
         let params = compiler::ResizeParams {
             size: [
-                self.width
-                    .resolve_int(
-                        self.node_id,
-                        "width",
-                        &ctx.expr_context(self.node_id, "width"),
-                    )?
-                    .max(1) as u32,
-                self.height
-                    .resolve_int(
-                        self.node_id,
-                        "height",
-                        &ctx.expr_context(self.node_id, "height"),
-                    )?
-                    .max(1) as u32,
+                evaluated.width.max(1) as u32,
+                evaluated.height.max(1) as u32,
             ],
-            mode: ResizeMode::from_int(self.mode.resolve_int(
-                self.node_id,
-                "mode",
-                &ctx.expr_context(self.node_id, "mode"),
-            )?) as u32,
-            sampling: ResizeSampling::from_int(self.sampling.resolve_int(
-                self.node_id,
-                "sampling",
-                &ctx.expr_context(self.node_id, "sampling"),
-            )?) as u32,
+            mode: evaluated.mode as u32,
+            sampling: evaluated.sampling as u32,
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())

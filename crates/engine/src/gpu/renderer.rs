@@ -8,7 +8,7 @@ use crate::{
         RasterHandle,
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
-    node::{NodeId, NodeKind, PortRef},
+    node::{NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
 };
 
 #[cfg(feature = "ffmpeg")]
@@ -114,7 +114,7 @@ impl GpuCompositionRenderer {
             buffers = compiled.plan.buffers().len(),
             programs = compiled.plan.programs().len(),
             passes = compiled.plan.passes().len(),
-            frame_bindings = compiled.frame_bindings.len(),
+            compiled_nodes = compiled.compiled_nodes.len(),
             "prepare compiled render plan"
         );
         let mut renderer = lumen_gpu::Renderer::from_device_with_adapter_info(
@@ -571,16 +571,18 @@ impl GpuCompositionRenderer {
                 selections,
             ),
             NodeKind::TimeRemap(time_remap) => {
-                let ctx = self.expression_context(composition, frame, time_remap.id, "frame");
+                let ctx = self.expression_context(composition, frame, time_remap.id, "params");
+                let params = time_remap.params.eval(&NodeParamEvalContext {
+                    node_id: time_remap.id,
+                    expr: &ctx,
+                })?;
                 let target_frame = crate::node::processing::time_remap::remap_frame(
-                    crate::node::processing::time_remap::resolve_settings(
-                        time_remap.id,
-                        &time_remap.params.frame,
-                        &time_remap.params.loop_enabled,
-                        &time_remap.params.loop_start,
-                        &time_remap.params.loop_end,
-                        &ctx,
-                    )?,
+                    crate::node::processing::time_remap::TimeRemapSettings {
+                        frame: params.frame,
+                        loop_enabled: params.loop_enabled,
+                        loop_start: params.loop_start,
+                        loop_end: params.loop_end,
+                    },
                 );
                 self.collect_plan_key(
                     composition,

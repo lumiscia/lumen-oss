@@ -1,63 +1,61 @@
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, vector::paint::Paint};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     RasterMetadata, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("solid_color.wgsl");
+pub(crate) const SHADER: &str = include_str!("background.wgsl");
 
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedSolidColorParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
-pub struct SolidColorParams {
-    /// Fill color.
-    #[param(kind = "color")]
-    pub color: Deferred<[u8; 4]>,
+#[derive(Debug, Clone, lumen_macros::Delegate)]
+pub struct BackgroundParams {
+    /// Background paint.
+    #[meta()]
+    pub paint: Paint,
     /// Output width in pixels. Use 0 to match the composition width.
-    #[param(kind = "int", min = 0, step = 1)]
-    pub width: Deferred<i64>,
+    #[meta(min = 0, step = 1)]
+    pub width: u32,
     /// Output height in pixels. Use 0 to match the composition height.
-    #[param(kind = "int", min = 0, step = 1)]
-    pub height: Deferred<i64>,
+    #[meta(min = 0, step = 1)]
+    pub height: u32,
 }
 
-impl Default for SolidColorParams {
+impl Default for BackgroundParams {
     fn default() -> Self {
         Self {
-            color: Deferred::value([0, 0, 0, 255]),
-            width: Deferred::value(0),
-            height: Deferred::value(0),
+            paint: Paint::solid([0, 0, 0, 255]),
+            width: 0,
+            height: 0,
         }
     }
 }
 
-/// Generates a solid raster texture.
+/// Generates a background raster texture.
 #[derive(Debug, Clone, lumen_macros::Node)]
-#[node(kind = "solid_color", name = "Solid Color", category = "source")]
-pub struct SolidColor {
+#[node(kind = "background", name = "Background", category = "source")]
+pub struct Background {
     pub id: NodeId,
     #[params]
-    pub params: SolidColorParams,
+    pub params: BackgroundParamsDelegate,
 }
 
-impl Default for SolidColor {
+impl Default for Background {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: SolidColorParams::default(),
+            params: BackgroundParamsDelegate::default(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct SolidColorFrameBinding {
+struct CompiledBackground {
     node_id: NodeId,
-    params: SolidColorParams,
+    params: BackgroundParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for SolidColorFrameBinding {
+impl GpuCompiledNode for CompiledBackground {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -70,13 +68,13 @@ impl GpuFrameBinding for SolidColorFrameBinding {
         bound.write_buffer(
             self.buffer,
             0,
-            bytemuck::bytes_of(&compiler::ColorParams::from_rgba8(params.color)),
+            bytemuck::bytes_of(&params.paint.to_gpu([0, 0, 0, 255])),
         );
         Ok(())
     }
 }
 
-impl GpuCompileNode for SolidColor {
+impl GpuCompileNode for Background {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
@@ -90,23 +88,25 @@ impl GpuCompileNode for SolidColor {
             node_id: self.id,
             expr: &ctx.expr_context(self.id, "params"),
         })?;
-        let width = ctx.static_dimension_value(params.width, "width");
-        let height = ctx.static_dimension_value(params.height, "height");
+        let width = ctx.static_dimension_value(i64::from(params.width), "width");
+        let height = ctx.static_dimension_value(i64::from(params.height), "height");
         let size = lumen_gpu::Size::new(width, height);
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
-            Some(format!("solid-color:{}:output", self.id.0)),
+            Some(format!("background:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
         let buffer = ctx.builder_mut().buffer_for(
             lumen_gpu::NodeKey(self.id.0),
-            Some(format!("solid-color:{}:params", self.id.0)),
-            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ColorParams>() as u64),
+            Some(format!("background:{}:params", self.id.0)),
+            lumen_gpu::BufferDesc::uniform(
+                std::mem::size_of::<crate::node::vector::paint::GpuPaint>() as u64,
+            ),
         );
         let program = ctx.builder_mut().program_for(
             lumen_gpu::NodeKey(self.id.0),
             lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
-                label: Some("solid-color".to_string()),
+                label: Some("background".to_string()),
                 shader: SHADER.to_string(),
                 entry: "cs_main".to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
@@ -124,7 +124,7 @@ impl GpuCompileNode for SolidColor {
             }),
         );
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("solid-color:{}:fill", self.id.0)),
+            label: Some(format!("background:{}:fill", self.id.0)),
             owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
             bindings: vec![
@@ -140,7 +140,7 @@ impl GpuCompileNode for SolidColor {
             },
             lumen_gpu::ParamTarget::Buffer(buffer),
         );
-        ctx.push_frame_binding(SolidColorFrameBinding {
+        ctx.register_compiled_node(CompiledBackground {
             node_id: self.id,
             params: self.params.clone(),
             buffer,

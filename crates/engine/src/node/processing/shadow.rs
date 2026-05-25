@@ -1,42 +1,40 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("shadow.wgsl");
 
 /// Composites a blurred alpha shadow behind a raster.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedShadowParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ShadowParams {
     /// Horizontal shadow offset in pixels.
-    #[param(kind = "float", name = "Offset X", step = 1)]
-    pub offset_x: Deferred<f64>,
+    #[meta(name = "Offset X", step = 1)]
+    pub offset_x: f64,
     /// Vertical shadow offset in pixels.
-    #[param(kind = "float", name = "Offset Y", step = 1)]
-    pub offset_y: Deferred<f64>,
+    #[meta(name = "Offset Y", step = 1)]
+    pub offset_y: f64,
     /// Shadow blur radius in pixels.
-    #[param(kind = "float", name = "Blur radius", min = 0, step = 0.5)]
-    pub radius: Deferred<f64>,
+    #[meta(name = "Blur radius", min = 0, step = 0.5)]
+    pub radius: f64,
     /// Shadow color.
-    #[param(kind = "color")]
-    pub color: Deferred<[u8; 4]>,
+    #[meta(role = "color")]
+    pub color: Paint,
     /// Shadow opacity.
-    #[param(kind = "float", min = 0, max = 1, step = 0.05)]
-    pub opacity: Deferred<f64>,
+    #[meta(min = 0, max = 1, step = 0.05)]
+    pub opacity: f64,
 }
 
 impl Default for ShadowParams {
     fn default() -> Self {
         Self {
-            offset_x: Deferred::value(8.0),
-            offset_y: Deferred::value(8.0),
-            radius: Deferred::value(8.0),
-            color: Deferred::value([0, 0, 0, 255]),
-            opacity: Deferred::value(0.5),
+            offset_x: 8.0,
+            offset_y: 8.0,
+            radius: 8.0,
+            color: Paint::solid([0, 0, 0, 255]),
+            opacity: 0.5,
         }
     }
 }
@@ -47,7 +45,7 @@ impl Default for ShadowParams {
 pub struct Shadow {
     pub id: NodeId,
     #[params]
-    pub params: ShadowParams,
+    pub params: ShadowParamsDelegate,
 
     #[input()]
     pub source: PortRef,
@@ -57,7 +55,7 @@ impl Default for Shadow {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: ShadowParams::default(),
+            params: ShadowParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }
@@ -152,13 +150,9 @@ impl GpuCompileNode for Shadow {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(ShadowFrameBinding {
+        ctx.register_compiled_node(CompiledShadow {
             node_id: self.id,
-            offset_x: self.params.offset_x.clone(),
-            offset_y: self.params.offset_y.clone(),
-            radius: self.params.radius.clone(),
-            color: self.params.color.clone(),
-            opacity: self.params.opacity.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -170,57 +164,33 @@ impl GpuCompileNode for Shadow {
 }
 
 #[derive(Debug, Clone)]
-struct ShadowFrameBinding {
+struct CompiledShadow {
     node_id: NodeId,
-    offset_x: Deferred<f64>,
-    offset_y: Deferred<f64>,
-    radius: Deferred<f64>,
-    color: Deferred<[u8; 4]>,
-    opacity: Deferred<f64>,
+    params: ShadowParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for ShadowFrameBinding {
+impl GpuCompiledNode for CompiledShadow {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let color = self.color.resolve_color(
-            self.node_id,
-            "color",
-            &ctx.expr_context(self.node_id, "color"),
-        )?;
-        let color = compiler::ColorParams::from_rgba8(color).color;
-        let params = compiler::ShadowParams {
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        let color = evaluated.color.to_gpu([0, 0, 0, 255]).colors[0];
+        let gpu_params = compiler::ShadowParams {
             color,
             values: [
-                self.offset_x.resolve_float(
-                    self.node_id,
-                    "offset_x",
-                    &ctx.expr_context(self.node_id, "offset_x"),
-                )? as f32,
-                self.offset_y.resolve_float(
-                    self.node_id,
-                    "offset_y",
-                    &ctx.expr_context(self.node_id, "offset_y"),
-                )? as f32,
-                self.radius
-                    .resolve_float(
-                        self.node_id,
-                        "radius",
-                        &ctx.expr_context(self.node_id, "radius"),
-                    )?
-                    .round()
-                    .clamp(0.0, 32.0) as f32,
-                self.opacity.resolve_float(
-                    self.node_id,
-                    "opacity",
-                    &ctx.expr_context(self.node_id, "opacity"),
-                )? as f32,
+                evaluated.offset_x as f32,
+                evaluated.offset_y as f32,
+                evaluated.radius.round().clamp(0.0, 32.0) as f32,
+                evaluated.opacity as f32,
             ],
         };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
     }
 }

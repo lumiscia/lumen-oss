@@ -1,0 +1,183 @@
+{
+  "timeline": {
+    "fps": 30,
+    "duration_frames": 180
+  },
+  "render_settings": {
+    "width": 1280,
+    "height": 720,
+    "background_color": [10, 12, 18, 255]
+  },
+  "metadata": {
+    "title": "Gradient Paints",
+    "description": "Demonstrates shape and path paint parameters with solid color compatibility, linear gradients, radial gradients, conic gradients, and spread modes."
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "type": "background",
+      "params": {
+        "paint": [10, 12, 18, 255],
+        "width": 1280,
+        "height": 720
+      }
+    },
+    {
+      "id": 2,
+      "type": "shape",
+      "params": {
+        "geometry_kind": "rectangle",
+        "width": 360,
+        "height": 220,
+        "border_radius": 28,
+        "position": [120, 120],
+        "fill_enabled": true,
+        "fill_paint": {
+          "type": "linear_gradient",
+          "start": [0, 0],
+          "end": [1, 1],
+          "stops": [
+            { "offset": 0, "color": [34, 211, 238, 255] },
+            { "offset": 0.52, "color": [244, 114, 182, 255] },
+            { "offset": 1, "color": [250, 204, 21, 255] }
+          ]
+        },
+        "stroke_enabled": true,
+        "stroke_paint": [255, 255, 255, 190],
+        "stroke_width": 4
+      }
+    },
+    {
+      "id": 3,
+      "type": "shape",
+      "params": {
+        "geometry_kind": "ellipse",
+        "width": 260,
+        "height": 260,
+        "position": [580, 100],
+        "fill_enabled": true,
+        "fill_paint": {
+          "type": "radial_gradient",
+          "center": [0.38, 0.32],
+          "radius": [0.62, 0.72],
+          "stops": [
+            { "offset": 0, "color": [255, 255, 255, 255] },
+            { "offset": 0.35, "color": [125, 211, 252, 255] },
+            { "offset": 1, "color": [30, 64, 175, 235] }
+          ]
+        },
+        "stroke_enabled": false
+      }
+    },
+    {
+      "id": 4,
+      "type": "path",
+      "params": {
+        "data": "0,-130 38,-38 136,-42 58,22 86,120 0,68 -86,120 -58,22 -136,-42 -38,-38",
+        "position": [335, 520],
+        "fill_enabled": true,
+        "fill_paint": {
+          "type": "conic_gradient",
+          "center": [0.5, 0.5],
+          "angle": 18,
+          "stops": [
+            { "offset": 0, "color": [248, 113, 113, 245] },
+            { "offset": 0.33, "color": [74, 222, 128, 245] },
+            { "offset": 0.66, "color": [96, 165, 250, 245] },
+            { "offset": 1, "color": [248, 113, 113, 245] }
+          ]
+        },
+        "stroke_enabled": true,
+        "stroke_paint": {
+          "type": "linear",
+          "spread": "reflect",
+          "start": [0, 0],
+          "end": [0.22, 0],
+          "stops": [
+            [0, [255, 255, 255, 255]],
+            [1, [15, 23, 42, 255]]
+          ]
+        },
+        "stroke_width": 10
+      }
+    },
+    {
+      "id": 5,
+      "type": "shape",
+      "params": {
+        "geometry_kind": "rectangle",
+        "width": 310,
+        "height": 160,
+        "border_radius": 18,
+        "position": [860, 400],
+        "fill_enabled": true,
+        "fill_paint": "#22C55EFF",
+        "stroke_enabled": true,
+        "stroke_paint": {
+          "type": "linear_gradient",
+          "units": "user_space",
+          "start": [860, 400],
+          "end": [1170, 560],
+          "stops": [
+            { "offset": 0, "color": [255, 255, 255, 255] },
+            { "offset": 1, "color": [14, 165, 233, 255] }
+          ]
+        },
+        "stroke_width": 8
+      }
+    },
+    {
+      "id": 6,
+      "type": "text",
+      "params": {
+        "content": "Gradient paints",
+        "font_family": "Helvetica Neue",
+        "font_size": 54,
+        "font_weight": 700,
+        "font_style": "normal",
+        "max_width": 620,
+        "position": [860, 136],
+        "color": [248, 250, 252, 255],
+        "alignment_horizontal": "left",
+        "alignment_vertical": "top"
+      }
+    },
+    {
+      "id": 7,
+      "type": "text",
+      "params": {
+        "content": "fill_paint and stroke_paint accept raw colors or gradient objects.",
+        "font_family": "Helvetica Neue",
+        "font_size": 24,
+        "font_weight": 400,
+        "font_style": "normal",
+        "max_width": 360,
+        "position": [864, 214],
+        "color": [186, 198, 230, 255],
+        "alignment_horizontal": "left",
+        "alignment_vertical": "top"
+      }
+    },
+    {
+      "id": 8,
+      "type": "raster_multimerge",
+      "params": {
+        "opacity": 1
+      }
+    },
+    {
+      "id": 9,
+      "type": "media_output"
+    }
+  ],
+  "connections": [
+    { "from_node": 1, "from_port": "output", "to_node": 8, "to_port": "layers" },
+    { "from_node": 2, "from_port": "output", "to_node": 8, "to_port": "layers" },
+    { "from_node": 3, "from_port": "output", "to_node": 8, "to_port": "layers" },
+    { "from_node": 4, "from_port": "output", "to_node": 8, "to_port": "layers" },
+    { "from_node": 5, "from_port": "output", "to_node": 8, "to_port": "layers" },
+    { "from_node": 6, "from_port": "output", "to_node": 8, "to_port": "layers" },
+    { "from_node": 7, "from_port": "output", "to_node": 8, "to_port": "layers" },
+    { "from_node": 8, "from_port": "output", "to_node": 9, "to_port": "source" }
+  ]
+}

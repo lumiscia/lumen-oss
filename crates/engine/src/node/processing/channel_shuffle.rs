@@ -1,38 +1,64 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("channel_shuffle.wgsl");
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum")]
+pub enum ChannelSelector {
+    #[default]
+    Red = 0,
+    Green = 1,
+    Blue = 2,
+    Alpha = 3,
+    Zero = 4,
+    One = 5,
+}
+
+impl ChannelSelector {
+    fn as_spec(self) -> &'static str {
+        match self {
+            Self::Red => "red",
+            Self::Green => "green",
+            Self::Blue => "blue",
+            Self::Alpha => "alpha",
+            Self::Zero => "zero",
+            Self::One => "one",
+        }
+    }
+}
+
 /// Remaps source raster color channels.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedChannelShuffleParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ChannelShuffleParams {
     /// Source channel mapped into the red output channel.
-    #[param(kind = "string", format = "channel_selector")]
-    pub red: Deferred<String>,
+    #[meta(kind = "enum", enum_type = ChannelSelector)]
+    pub red: ChannelSelector,
     /// Source channel mapped into the green output channel.
-    #[param(kind = "string", format = "channel_selector")]
-    pub green: Deferred<String>,
+    #[meta(kind = "enum", enum_type = ChannelSelector)]
+    pub green: ChannelSelector,
     /// Source channel mapped into the blue output channel.
-    #[param(kind = "string", format = "channel_selector")]
-    pub blue: Deferred<String>,
+    #[meta(kind = "enum", enum_type = ChannelSelector)]
+    pub blue: ChannelSelector,
     /// Source channel mapped into the alpha output channel.
-    #[param(kind = "string", format = "channel_selector")]
-    pub alpha: Deferred<String>,
+    #[meta(kind = "enum", enum_type = ChannelSelector)]
+    pub alpha: ChannelSelector,
 }
 
 impl Default for ChannelShuffleParams {
     fn default() -> Self {
         Self {
-            red: Deferred::value("red".to_string()),
-            green: Deferred::value("green".to_string()),
-            blue: Deferred::value("blue".to_string()),
-            alpha: Deferred::value("alpha".to_string()),
+            red: ChannelSelector::Red,
+            green: ChannelSelector::Green,
+            blue: ChannelSelector::Blue,
+            alpha: ChannelSelector::Alpha,
         }
     }
 }
@@ -47,7 +73,7 @@ impl Default for ChannelShuffleParams {
 pub struct ChannelShuffle {
     pub id: NodeId,
     #[params]
-    pub params: ChannelShuffleParams,
+    pub params: ChannelShuffleParamsDelegate,
 
     #[input()]
     pub source: PortRef,
@@ -57,71 +83,40 @@ impl Default for ChannelShuffle {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: ChannelShuffleParams::default(),
+            params: ChannelShuffleParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct ChannelShuffleFrameBinding {
+struct CompiledChannelShuffle {
     node_id: NodeId,
-    red: Deferred<String>,
-    green: Deferred<String>,
-    blue: Deferred<String>,
-    alpha: Deferred<String>,
+    params: ChannelShuffleParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for ChannelShuffleFrameBinding {
+impl GpuCompiledNode for CompiledChannelShuffle {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
         let selectors = [
-            compiler::channel_selector(
-                self.node_id,
-                "red",
-                &self.red.resolve_string(
-                    self.node_id,
-                    "red",
-                    &ctx.expr_context(self.node_id, "red"),
-                )?,
-            )?,
-            compiler::channel_selector(
-                self.node_id,
-                "green",
-                &self.green.resolve_string(
-                    self.node_id,
-                    "green",
-                    &ctx.expr_context(self.node_id, "green"),
-                )?,
-            )?,
-            compiler::channel_selector(
-                self.node_id,
-                "blue",
-                &self.blue.resolve_string(
-                    self.node_id,
-                    "blue",
-                    &ctx.expr_context(self.node_id, "blue"),
-                )?,
-            )?,
-            compiler::channel_selector(
-                self.node_id,
-                "alpha",
-                &self.alpha.resolve_string(
-                    self.node_id,
-                    "alpha",
-                    &ctx.expr_context(self.node_id, "alpha"),
-                )?,
-            )?,
+            compiler::channel_selector(self.node_id, "red", params.red.as_spec())?,
+            compiler::channel_selector(self.node_id, "green", params.green.as_spec())?,
+            compiler::channel_selector(self.node_id, "blue", params.blue.as_spec())?,
+            compiler::channel_selector(self.node_id, "alpha", params.alpha.as_spec())?,
         ];
-        let params = compiler::ChannelShuffleParams {
+        let gpu_params = compiler::ChannelShuffleParams {
             selector_indices: selectors.map(|selector| selector.index),
             selector_values: selectors.map(|selector| selector.value),
         };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
     }
 }
@@ -140,12 +135,9 @@ impl GpuCompileNode for ChannelShuffle {
             SHADER,
             std::mem::size_of::<compiler::ChannelShuffleParams>() as u64,
         )?;
-        ctx.push_frame_binding(ChannelShuffleFrameBinding {
+        ctx.register_compiled_node(CompiledChannelShuffle {
             node_id: self.id,
-            red: self.params.red.clone(),
-            green: self.params.green.clone(),
-            blue: self.params.blue.clone(),
-            alpha: self.params.alpha.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {

@@ -1,30 +1,28 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("raster_multimerge.wgsl");
 
 /// Composites a variadic stack of raster layers in order.
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedRasterMultiMergeParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct RasterMultiMergeParams {
     /// Opacity applied to each layer as it is composited.
-    #[param(kind = "float", min = 0, max = 1, step = 0.05)]
-    pub opacity: Deferred<f64>,
+    #[meta(min = 0, max = 1, step = 0.05)]
+    pub opacity: f64,
     /// Blend mode used for each layer in the stack.
-    #[param(kind = "enum", enum_type = crate::node::compositing::BlendMode)]
-    pub blend_mode: Deferred<i64>,
+    #[meta(kind = "enum", enum_type = crate::node::compositing::BlendMode)]
+    pub blend_mode: i64,
 }
 
 impl Default for RasterMultiMergeParams {
     fn default() -> Self {
         Self {
-            opacity: Deferred::value(1.0),
-            blend_mode: Deferred::value(0),
+            opacity: 1.0,
+            blend_mode: 0,
         }
     }
 }
@@ -39,7 +37,7 @@ impl Default for RasterMultiMergeParams {
 pub struct RasterMultiMerge {
     pub id: NodeId,
     #[params]
-    pub params: RasterMultiMergeParams,
+    pub params: RasterMultiMergeParamsDelegate,
 
     #[input(optional, variadic)]
     pub layers: Vec<PortRef>,
@@ -49,38 +47,33 @@ impl Default for RasterMultiMerge {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: RasterMultiMergeParams::default(),
+            params: RasterMultiMergeParamsDelegate::default(),
             layers: Vec::new(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct RasterMultiMergeFrameBinding {
+struct RasterMultiCompiledMerge {
     node_id: NodeId,
-    opacity: Deferred<f64>,
-    blend_mode: Deferred<i64>,
+    params: RasterMultiMergeParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for RasterMultiMergeFrameBinding {
+impl GpuCompiledNode for RasterMultiCompiledMerge {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
         let params = compiler::RasterMultiMergeParams {
             values: [
-                self.opacity.resolve_float(
-                    self.node_id,
-                    "opacity",
-                    &ctx.expr_context(self.node_id, "opacity"),
-                )? as f32,
-                self.blend_mode.resolve_int(
-                    self.node_id,
-                    "blend_mode",
-                    &ctx.expr_context(self.node_id, "blend_mode"),
-                )? as f32,
+                evaluated.opacity as f32,
+                evaluated.blend_mode as f32,
                 0.0,
                 0.0,
             ],
@@ -183,10 +176,9 @@ impl GpuCompileNode for RasterMultiMerge {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        ctx.push_frame_binding(RasterMultiMergeFrameBinding {
+        ctx.register_compiled_node(RasterMultiCompiledMerge {
             node_id: self.id,
-            opacity: self.params.opacity.clone(),
-            blend_mode: self.params.blend_mode.clone(),
+            params: self.params.clone(),
             buffer: params,
         });
 

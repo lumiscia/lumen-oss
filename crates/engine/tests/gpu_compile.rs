@@ -9,49 +9,52 @@ use lumen_engine::{
     node::{
         Deferred, NodeId, NodeKind, PortRef,
         compositing::{
-            merge::{Merge, MergeParams},
-            raster_multimerge::{RasterMultiMerge, RasterMultiMergeParams},
-            switch::{Switch, SwitchParams},
+            merge::{Merge, MergeParamsDelegate},
+            raster_multimerge::{RasterMultiMerge, RasterMultiMergeParamsDelegate},
+            switch::{Switch, SwitchParamsDelegate},
         },
         media_output::MediaOutput,
         processing::{
-            alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParams},
-            channel_shuffle::{ChannelShuffle, ChannelShuffleParams},
-            color_grade::{ColorGrade, ColorGradeParams},
-            crop::{Crop, CropParams},
-            exposure::{Exposure, ExposureParams},
-            hue_saturation::{HueSaturation, HueSaturationParams},
-            levels::{Levels, LevelsParams},
-            memo::{Memo, MemoParams},
-            resize::{Resize, ResizeParams},
-            time_remap::{TimeRemap, TimeRemapParams},
-            transform::{Transform, TransformParams},
+            alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParamsDelegate},
+            channel_shuffle::{ChannelSelector, ChannelShuffle, ChannelShuffleParamsDelegate},
+            color_grade::{ColorGrade, ColorGradeParamsDelegate},
+            crop::{Crop, CropParamsDelegate},
+            exposure::{Exposure, ExposureParamsDelegate},
+            hue_saturation::{HueSaturation, HueSaturationParamsDelegate},
+            levels::{Levels, LevelsParamsDelegate},
+            memo::{Memo, MemoParamsDelegate},
+            resize::{Resize, ResizeMode, ResizeParamsDelegate, ResizeSampling},
+            time_remap::{TimeRemap, TimeRemapParamsDelegate},
+            transform::{Transform, TransformParamsDelegate},
         },
         source::{
-            media_in::{MediaIn, MediaInParams},
-            solid_color::{SolidColor, SolidColorParams},
-            text::{Text, TextParams},
+            background::{Background, BackgroundParamsDelegate},
+            media_in::{MediaIn, MediaInParamsDelegate},
+            text::{Text, TextParamsDelegate},
         },
         vector::{
-            path::{Path, PathParams},
-            shape::{Shape, ShapeParams},
+            paint::Paint,
+            path::{Path, PathParamsDelegate},
+            shape::{Shape, ShapeParamsDelegate},
         },
     },
 };
 use std::sync::Arc;
 
 #[test]
-fn compiles_solid_color_exposure_media_output_to_gpu_plan() {
+fn compiles_background_exposure_media_output_to_gpu_plan() {
     let solid = NodeId::new(1);
     let exposure = NodeId::new(2);
     let output = NodeId::new(3);
     let mut graph = Graph::new();
     graph.nodes.insert(
         solid,
-        NodeKind::SolidColor(SolidColor {
+        NodeKind::Background(Background {
             id: solid,
-            params: SolidColorParams {
-                color: Deferred::value([64, 128, 255, 255]),
+            params: BackgroundParamsDelegate {
+                paint: lumen_engine::node::vector::paint::PaintDelegate::from(
+                    lumen_engine::node::vector::paint::Paint::solid([64, 128, 255, 255]),
+                ),
                 width: Deferred::value(8),
                 height: Deferred::value(4),
             },
@@ -61,7 +64,7 @@ fn compiles_solid_color_exposure_media_output_to_gpu_plan() {
         exposure,
         NodeKind::Exposure(Exposure {
             id: exposure,
-            params: ExposureParams {
+            params: ExposureParamsDelegate {
                 exposure: Deferred::value(1.0),
                 contrast: Deferred::value(1.0),
                 offset: Deferred::value(0.0),
@@ -111,7 +114,7 @@ fn compiles_solid_color_exposure_media_output_to_gpu_plan() {
     assert_eq!(compiled.plan.buffers().len(), 2);
     assert_eq!(compiled.plan.programs().len(), 2);
     assert_eq!(compiled.plan.passes().len(), 2);
-    assert_eq!(compiled.frame_bindings.len(), 2);
+    assert_eq!(compiled.compiled_nodes.len(), 2);
     assert_eq!(
         compiled.output.domain.storage_size,
         lumen_gpu::Size::new(8, 4)
@@ -126,10 +129,12 @@ fn frame_binding_updates_expression_uniforms_without_recompile() {
     let mut graph = Graph::new();
     graph.nodes.insert(
         solid,
-        NodeKind::SolidColor(SolidColor {
+        NodeKind::Background(Background {
             id: solid,
-            params: SolidColorParams {
-                color: Deferred::value([64, 128, 255, 255]),
+            params: BackgroundParamsDelegate {
+                paint: lumen_engine::node::vector::paint::PaintDelegate::from(
+                    lumen_engine::node::vector::paint::Paint::solid([64, 128, 255, 255]),
+                ),
                 width: Deferred::value(8),
                 height: Deferred::value(4),
             },
@@ -139,7 +144,7 @@ fn frame_binding_updates_expression_uniforms_without_recompile() {
         exposure,
         NodeKind::Exposure(Exposure {
             id: exposure,
-            params: ExposureParams {
+            params: ExposureParamsDelegate {
                 exposure: Deferred::Expr(
                     lumen_engine::expr::Expression::parse("frame / 10").unwrap(),
                 ),
@@ -209,8 +214,8 @@ fn compiles_gpu_plan_from_json_composition() {
             "timeline": { "fps": 24, "duration_frames": 12 },
             "render_settings": { "width": 8, "height": 4 },
             "nodes": [
-                { "id": 1, "type": "solid_color", "properties": { "color": [64, 128, 255, 255], "width": 8, "height": 4 } },
-                { "id": 2, "type": "exposure", "properties": { "exposure": "=frame / 10", "contrast": 1.0, "offset": 0.0 } },
+                { "id": 1, "type": "background", "params": { "paint": [64, 128, 255, 255], "width": 8, "height": 4 } },
+                { "id": 2, "type": "exposure", "params": { "exposure": "=frame / 10", "contrast": 1.0, "offset": 0.0 } },
                 { "id": 3, "type": "media_output" }
             ],
             "connections": [
@@ -225,7 +230,7 @@ fn compiles_gpu_plan_from_json_composition() {
 
     assert_eq!(compiled.plan.textures().len(), 2);
     assert_eq!(compiled.plan.programs().len(), 2);
-    assert_eq!(compiled.frame_bindings.len(), 2);
+    assert_eq!(compiled.compiled_nodes.len(), 2);
 }
 
 #[test]
@@ -237,7 +242,7 @@ fn compiles_media_input_as_frame_texture_boundary() {
         media,
         NodeKind::MediaIn(MediaIn {
             id: media,
-            params: MediaInParams {
+            params: MediaInParamsDelegate {
                 kind: Deferred::value(0),
                 source: Deferred::value("plate".to_string()),
                 ..Default::default()
@@ -279,7 +284,7 @@ fn compiles_media_input_as_frame_texture_boundary() {
     assert_eq!(compiled.plan.buffers().len(), 0);
     assert_eq!(compiled.plan.programs().len(), 0);
     assert_eq!(compiled.plan.passes().len(), 0);
-    assert_eq!(compiled.frame_bindings.len(), 1);
+    assert_eq!(compiled.compiled_nodes.len(), 1);
     assert_eq!(compiled.plan.params().len(), 1);
     assert_eq!(
         compiled.output.domain.storage_size,
@@ -296,12 +301,14 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
     let mut graph = Graph::new();
     graph.nodes.insert(
         base,
-        NodeKind::SolidColor(SolidColor {
+        NodeKind::Background(Background {
             id: base,
-            params: SolidColorParams {
+            params: BackgroundParamsDelegate {
                 width: Deferred::value(1920),
                 height: Deferred::value(1080),
-                color: Deferred::value([0, 0, 0, 255]),
+                paint: lumen_engine::node::vector::paint::PaintDelegate::from(
+                    lumen_engine::node::vector::paint::Paint::solid([0, 0, 0, 255]),
+                ),
             },
         }),
     );
@@ -309,7 +316,7 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
         overlay,
         NodeKind::MediaIn(MediaIn {
             id: overlay,
-            params: MediaInParams {
+            params: MediaInParamsDelegate {
                 source: Deferred::value("plate".to_string()),
                 ..Default::default()
             },
@@ -407,9 +414,8 @@ fn compiles_merge_to_gpu_blend_pass() {
         merge,
         NodeKind::Merge(Merge {
             id: merge,
-            params: MergeParams {
+            params: MergeParamsDelegate {
                 opacity: Deferred::value(0.5),
-                blend_mode: Deferred::value(0),
                 ..Default::default()
             },
             base: PortRef::new(base, "output".to_string()),
@@ -432,7 +438,7 @@ fn compiles_merge_to_gpu_blend_pass() {
     assert_eq!(compiled.plan.buffers().len(), 3);
     assert_eq!(compiled.plan.programs().len(), 3);
     assert_eq!(compiled.plan.passes().len(), 3);
-    assert_eq!(compiled.frame_bindings.len(), 3);
+    assert_eq!(compiled.compiled_nodes.len(), 3);
     assert!(compiled.plan.passes().iter().any(|pass| {
         matches!(
             &pass.desc,
@@ -457,7 +463,7 @@ fn compiles_raster_multimerge_with_blend_mode_binding() {
         multi,
         NodeKind::RasterMultiMerge(RasterMultiMerge {
             id: multi,
-            params: RasterMultiMergeParams {
+            params: RasterMultiMergeParamsDelegate {
                 opacity: Deferred::value(0.5),
                 blend_mode: Deferred::value(2),
                 ..Default::default()
@@ -481,12 +487,7 @@ fn compiles_raster_multimerge_with_blend_mode_binding() {
     let compiled = CompileContext::new(&composition).compile().unwrap();
 
     assert_eq!(compiled.plan.passes().len(), 5);
-    assert!(
-        compiled
-            .frame_bindings
-            .iter()
-            .any(|binding| binding.node_id() == multi)
-    );
+    assert!(compiled.compiled_nodes.contains_key(&multi));
 }
 
 #[test]
@@ -502,7 +503,7 @@ fn compiles_switch_as_selected_gpu_alias() {
         switch,
         NodeKind::Switch(Switch {
             id: switch,
-            params: SwitchParams {
+            params: SwitchParamsDelegate {
                 selected_layer: Deferred::value(0),
                 ..Default::default()
             },
@@ -539,7 +540,7 @@ fn compiles_switch_as_selected_gpu_alias() {
 
     assert_eq!(compiled.plan.textures().len(), 1);
     assert_eq!(compiled.plan.passes().len(), 1);
-    assert_eq!(compiled.frame_bindings.len(), 2);
+    assert_eq!(compiled.compiled_nodes.len(), 2);
     assert_eq!(switched.texture, selected.texture);
 }
 
@@ -556,7 +557,7 @@ fn compiles_switch_expression_as_frame_selected_gpu_alias() {
         switch,
         NodeKind::Switch(Switch {
             id: switch,
-            params: SwitchParams {
+            params: SwitchParamsDelegate {
                 selected_layer: Deferred::Expr(
                     lumen_engine::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
                 ),
@@ -630,7 +631,7 @@ fn compiles_switch_expression_as_frame_selected_gpu_alias() {
 }
 
 #[test]
-fn compiles_memo_and_time_remap_as_gpu_aliases_with_frame_bindings() {
+fn compiles_memo_and_time_remap_as_gpu_aliases_with_compiled_nodes() {
     let solid_id = NodeId::new(1);
     let time_remap = NodeId::new(2);
     let memo = NodeId::new(3);
@@ -643,7 +644,7 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_frame_bindings() {
         time_remap,
         NodeKind::TimeRemap(TimeRemap {
             id: time_remap,
-            params: TimeRemapParams {
+            params: TimeRemapParamsDelegate {
                 frame: Deferred::value(8.0),
                 loop_enabled: Deferred::value(true),
                 loop_start: Deferred::value(4),
@@ -657,7 +658,7 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_frame_bindings() {
         memo,
         NodeKind::Memo(Memo {
             id: memo,
-            params: MemoParams {
+            params: MemoParamsDelegate {
                 cache_id: Deferred::value("cached-comp".to_string()),
                 allow_expressions: Deferred::value(false),
                 ..Default::default()
@@ -699,7 +700,7 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_frame_bindings() {
 
     assert_eq!(compiled.plan.textures().len(), 1);
     assert_eq!(compiled.plan.passes().len(), 1);
-    assert_eq!(compiled.frame_bindings.len(), 3);
+    assert_eq!(compiled.compiled_nodes.len(), 3);
     assert_eq!(remapped.texture, source.texture);
     assert_eq!(memoized.texture, source.texture);
 }
@@ -718,7 +719,7 @@ fn time_remap_compiles_source_with_remapped_frame_context() {
         switch,
         NodeKind::Switch(Switch {
             id: switch,
-            params: SwitchParams {
+            params: SwitchParamsDelegate {
                 selected_layer: Deferred::Expr(
                     lumen_engine::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
                 ),
@@ -734,7 +735,7 @@ fn time_remap_compiles_source_with_remapped_frame_context() {
         time_remap,
         NodeKind::TimeRemap(TimeRemap {
             id: time_remap,
-            params: TimeRemapParams {
+            params: TimeRemapParamsDelegate {
                 frame: Deferred::value(0.0),
                 loop_enabled: Deferred::value(false),
                 loop_start: Deferred::value(0),
@@ -795,7 +796,7 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
         exposure,
         NodeKind::Exposure(Exposure {
             id: exposure,
-            params: ExposureParams {
+            params: ExposureParamsDelegate {
                 exposure: Deferred::Expr(lumen_engine::expr::Expression::parse("frame").unwrap()),
                 contrast: Deferred::value(1.0),
                 offset: Deferred::value(0.0),
@@ -807,7 +808,7 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
         time_remap,
         NodeKind::TimeRemap(TimeRemap {
             id: time_remap,
-            params: TimeRemapParams {
+            params: TimeRemapParamsDelegate {
                 frame: Deferred::value(8.0),
                 loop_enabled: Deferred::value(false),
                 loop_start: Deferred::value(0),
@@ -875,7 +876,7 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
         transform,
         NodeKind::Transform(Transform {
             id: transform,
-            params: TransformParams {
+            params: TransformParamsDelegate {
                 translate_x: Deferred::Expr(
                     lumen_engine::expr::Expression::parse("frame").unwrap(),
                 ),
@@ -891,7 +892,7 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
         crop,
         NodeKind::Crop(Crop {
             id: crop,
-            params: CropParams {
+            params: CropParamsDelegate {
                 x: Deferred::value(1),
                 y: Deferred::value(1),
                 width: Deferred::value(6),
@@ -905,11 +906,11 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
         resize,
         NodeKind::Resize(Resize {
             id: resize,
-            params: ResizeParams {
+            params: ResizeParamsDelegate {
                 width: Deferred::value(4),
                 height: Deferred::value(2),
-                mode: Deferred::value(1),
-                sampling: Deferred::value(1),
+                mode: ResizeMode::Fit.into(),
+                sampling: ResizeSampling::Linear.into(),
                 ..Default::default()
             },
             source: PortRef::new(crop, "output".to_string()),
@@ -944,10 +945,10 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
     assert_eq!(compiled.plan.buffers().len(), 4);
     assert_eq!(compiled.plan.programs().len(), 5);
     assert_eq!(compiled.plan.passes().len(), 5);
-    assert_eq!(compiled.frame_bindings.len(), 4);
-    assert_eq!(compiled.frame_bindings[1].node_id(), transform);
-    assert_eq!(compiled.frame_bindings[2].node_id(), crop);
-    assert_eq!(compiled.frame_bindings[3].node_id(), resize);
+    assert_eq!(compiled.compiled_nodes.len(), 4);
+    assert!(compiled.compiled_nodes.contains_key(&transform));
+    assert!(compiled.compiled_nodes.contains_key(&crop));
+    assert!(compiled.compiled_nodes.contains_key(&resize));
     assert_eq!(transformed.domain.storage_size, lumen_gpu::Size::new(8, 4));
     assert_eq!(resized.domain.storage_size, lumen_gpu::Size::new(4, 2));
 
@@ -957,7 +958,7 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
 }
 
 #[test]
-fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
+fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
     let solid_id = NodeId::new(1);
     let alpha = NodeId::new(2);
     let shuffle = NodeId::new(3);
@@ -973,7 +974,7 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         alpha,
         NodeKind::AlphaPremultiply(AlphaPremultiply {
             id: alpha,
-            params: AlphaPremultiplyParams {
+            params: AlphaPremultiplyParamsDelegate {
                 mode: Deferred::value("unpremultiply".to_string()),
                 ..Default::default()
             },
@@ -984,11 +985,11 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         shuffle,
         NodeKind::ChannelShuffle(ChannelShuffle {
             id: shuffle,
-            params: ChannelShuffleParams {
-                red: Deferred::value("blue".to_string()),
-                green: Deferred::value("green".to_string()),
-                blue: Deferred::value("red".to_string()),
-                alpha: Deferred::value("0.5".to_string()),
+            params: ChannelShuffleParamsDelegate {
+                red: ChannelSelector::Blue.into(),
+                green: ChannelSelector::Green.into(),
+                blue: ChannelSelector::Red.into(),
+                alpha: ChannelSelector::One.into(),
                 ..Default::default()
             },
             source: PortRef::new(alpha, "output".to_string()),
@@ -998,7 +999,7 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         levels,
         NodeKind::Levels(Levels {
             id: levels,
-            params: LevelsParams {
+            params: LevelsParamsDelegate {
                 black_point: Deferred::value(0.1),
                 white_point: Deferred::value(0.9),
                 gamma: Deferred::value(1.2),
@@ -1013,7 +1014,7 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         hue,
         NodeKind::HueSaturation(HueSaturation {
             id: hue,
-            params: HueSaturationParams {
+            params: HueSaturationParamsDelegate {
                 hue_degrees: Deferred::Expr(
                     lumen_engine::expr::Expression::parse("frame * 10").unwrap(),
                 ),
@@ -1028,7 +1029,7 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
         grade,
         NodeKind::ColorGrade(ColorGrade {
             id: grade,
-            params: ColorGradeParams {
+            params: ColorGradeParamsDelegate {
                 lut_source: Deferred::value("rgb1d: 0,0,0; 255,128,0".to_string()),
                 strength: Deferred::value(0.5),
                 interpolation: Deferred::value(1),
@@ -1057,12 +1058,12 @@ fn compiles_color_math_nodes_to_gpu_passes_with_frame_bindings() {
     assert_eq!(compiled.plan.programs().len(), 6);
     assert_eq!(compiled.plan.passes().len(), 6);
     assert_eq!(compiled.plan.params().len(), 7);
-    assert_eq!(compiled.frame_bindings.len(), 6);
-    assert_eq!(compiled.frame_bindings[1].node_id(), alpha);
-    assert_eq!(compiled.frame_bindings[2].node_id(), shuffle);
-    assert_eq!(compiled.frame_bindings[3].node_id(), levels);
-    assert_eq!(compiled.frame_bindings[4].node_id(), hue);
-    assert_eq!(compiled.frame_bindings[5].node_id(), grade);
+    assert_eq!(compiled.compiled_nodes.len(), 6);
+    assert!(compiled.compiled_nodes.contains_key(&alpha));
+    assert!(compiled.compiled_nodes.contains_key(&shuffle));
+    assert!(compiled.compiled_nodes.contains_key(&levels));
+    assert!(compiled.compiled_nodes.contains_key(&hue));
+    assert!(compiled.compiled_nodes.contains_key(&grade));
     assert_eq!(update.uploads().len(), 7);
 }
 
@@ -1077,11 +1078,11 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         shape,
         NodeKind::Shape(Shape {
             id: shape,
-            params: ShapeParams {
+            params: ShapeParamsDelegate {
                 width: Deferred::value(6),
                 height: Deferred::value(4),
                 position: Deferred::value((1.0, 0.0)),
-                fill_color: Deferred::value([255, 0, 0, 255]),
+                fill_paint: Paint::solid([255, 0, 0, 255]).into(),
                 ..Default::default()
             },
             ..Shape::default()
@@ -1091,10 +1092,10 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         text,
         NodeKind::Text(Text {
             id: text,
-            params: TextParams {
+            params: TextParamsDelegate {
                 content: Deferred::value("hi".to_string()),
                 font_size: Deferred::value(4.0),
-                color: Deferred::value([255, 255, 255, 255]),
+                color: Paint::solid([255, 255, 255, 255]).into(),
                 ..Default::default()
             },
             ..Text::default()
@@ -1125,8 +1126,8 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
 
     assert_eq!(compiled.plan.textures().len(), 4);
     assert_eq!(compiled.plan.programs().len(), 3);
-    assert_eq!(compiled.frame_bindings[0].node_id(), shape);
-    assert_eq!(compiled.frame_bindings[1].node_id(), text);
+    assert!(compiled.compiled_nodes.contains_key(&shape));
+    assert!(compiled.compiled_nodes.contains_key(&text));
     assert_eq!(bound.frame_update().uploads().len(), 5);
 
     let unchanged = FrameBindContext::new(&composition, 0)
@@ -1144,9 +1145,9 @@ fn compiles_vector_path_through_shared_renderer() {
         path,
         NodeKind::Path(Path {
             id: path,
-            params: PathParams {
+            params: PathParamsDelegate {
                 data: Deferred::value("M 1 1 L 6 1 L 6 3 L 1 3 Z".to_string()),
-                fill_color: Deferred::value([0, 255, 0, 255]),
+                fill_paint: Paint::solid([0, 255, 0, 255]).into(),
                 stroke_enabled: Deferred::value(true),
                 stroke_width: Deferred::value(1.0),
                 ..Default::default()
@@ -1168,15 +1169,17 @@ fn compiles_vector_path_through_shared_renderer() {
         .bind(&compiled)
         .unwrap();
 
-    assert_eq!(compiled.frame_bindings[0].node_id(), path);
+    assert!(compiled.compiled_nodes.contains_key(&path));
     assert_eq!(bound.frame_update().uploads().len(), 2);
 }
 
 fn solid(id: NodeId, color: [u8; 4]) -> NodeKind {
-    NodeKind::SolidColor(SolidColor {
+    NodeKind::Background(Background {
         id,
-        params: SolidColorParams {
-            color: Deferred::value(color),
+        params: BackgroundParamsDelegate {
+            paint: lumen_engine::node::vector::paint::PaintDelegate::from(
+                lumen_engine::node::vector::paint::Paint::solid(color),
+            ),
             width: Deferred::value(8),
             height: Deferred::value(4),
         },

@@ -232,6 +232,7 @@ fn node_property_type_name(value: &PropertyValue) -> &'static str {
         PropertyValue::Bool(_) => "bool",
         PropertyValue::String(_) => "string",
         PropertyValue::Color(_) => "color",
+        PropertyValue::Paint(_) => "paint",
         PropertyValue::Vec2(_) => "vec2",
         PropertyValue::FloatVec(_) => "float[]",
         PropertyValue::IntVec(_) => "int[]",
@@ -369,7 +370,7 @@ mod tests {
             text_id,
             NodeKind::Text(Text {
                 id: text_id,
-                params: crate::node::source::text::TextParams {
+                params: crate::node::source::text::TextParamsDelegate {
                     content: crate::node::Deferred::value("Morning, update posted.".to_string()),
                     font_family: crate::node::Deferred::value("Roboto".to_string()),
                     font_size: crate::node::Deferred::value(32.0),

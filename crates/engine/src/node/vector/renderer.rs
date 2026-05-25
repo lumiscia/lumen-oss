@@ -5,11 +5,11 @@ use crate::{
     node::{NodeId, PortRef},
 };
 
-use crate::node::source::text::{Text, TextFrameBinding};
+use crate::node::source::text::{CompiledText, Text};
 
 use super::{
-    path::{Path, PathFrameBinding},
-    shape::{Shape, ShapeFrameBinding},
+    path::{CompiledPath, Path},
+    shape::{CompiledShape, Shape},
 };
 
 pub(crate) const SHAPE_SHADER: &str = include_str!("shape_renderer.wgsl");
@@ -42,18 +42,9 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             SHAPE_SHADER,
             std::mem::size_of::<ShapeParams>() as u64,
         )?;
-        self.ctx.push_frame_binding(ShapeFrameBinding {
+        self.ctx.register_compiled_node(CompiledShape {
             node_id: shape.id,
-            geometry_kind: shape.params.geometry_kind.clone(),
-            width: shape.params.width.clone(),
-            height: shape.params.height.clone(),
-            border_radius: shape.params.border_radius.clone(),
-            position: shape.params.position.clone(),
-            fill_enabled: shape.params.fill_enabled.clone(),
-            fill_color: shape.params.fill_color.clone(),
-            stroke_enabled: shape.params.stroke_enabled.clone(),
-            stroke_color: shape.params.stroke_color.clone(),
-            stroke_width: shape.params.stroke_width.clone(),
+            params: shape.params.clone(),
             buffer: params,
         });
 
@@ -139,15 +130,9 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        self.ctx.push_frame_binding(PathFrameBinding {
+        self.ctx.register_compiled_node(CompiledPath {
             node_id: path.id,
-            data: path.params.data.clone(),
-            position: path.params.position.clone(),
-            fill_enabled: path.params.fill_enabled.clone(),
-            fill_color: path.params.fill_color.clone(),
-            stroke_enabled: path.params.stroke_enabled.clone(),
-            stroke_color: path.params.stroke_color.clone(),
-            stroke_width: path.params.stroke_width.clone(),
+            params: path.params.clone(),
             params_buffer: params,
             points_buffer: points,
             max_points: MAX_PATH_POINTS,
@@ -275,18 +260,9 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 }),
                 scissor: None,
             });
-        self.ctx.push_frame_binding(TextFrameBinding {
+        self.ctx.register_compiled_node(CompiledText {
             node_id: text.id,
-            content: text.params.content.clone(),
-            font_family: text.params.font_family.clone(),
-            font_size: text.params.font_size.clone(),
-            font_weight: text.params.font_weight.clone(),
-            font_style: text.params.font_style.clone(),
-            max_width: text.params.max_width.clone(),
-            position: text.params.position.clone(),
-            color: text.params.color.clone(),
-            alignment_horizontal: text.params.alignment_horizontal.clone(),
-            alignment_vertical: text.params.alignment_vertical.clone(),
+            params: text.params.clone(),
             atlas_texture,
             globals_buffer,
             instances_buffer,
@@ -374,8 +350,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ShapeParams {
-    pub(crate) fill_color: [f32; 4],
-    pub(crate) stroke_color: [f32; 4],
+    pub(crate) fill_paint: super::paint::GpuPaint,
+    pub(crate) stroke_paint: super::paint::GpuPaint,
     pub(crate) position: [f32; 2],
     pub(crate) size: [f32; 2],
     pub(crate) border_radius: f32,
@@ -387,9 +363,11 @@ pub(crate) struct ShapeParams {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct PathParams {
-    pub(crate) fill_color: [f32; 4],
-    pub(crate) stroke_color: [f32; 4],
+    pub(crate) fill_paint: super::paint::GpuPaint,
+    pub(crate) stroke_paint: super::paint::GpuPaint,
     pub(crate) position: [f32; 2],
+    pub(crate) bounds_min: [f32; 2],
+    pub(crate) bounds_size: [f32; 2],
     pub(crate) stroke_width: f32,
     pub(crate) flags: u32,
     pub(crate) point_count: u32,

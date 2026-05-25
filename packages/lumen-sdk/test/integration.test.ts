@@ -120,19 +120,19 @@ function tinyComposition(): Composition {
       duration_frames: 1,
     },
   });
-  const solid = composition.addNode({
-    type: "solid_color",
+  const background = composition.addNode({
+    type: "background",
     params: {
       width: 64,
       height: 64,
-      color: [255, 64, 32, 255],
+      paint: [255, 64, 32, 255],
     },
   });
   const output = composition.addNode({
     type: "media_output",
   });
 
-  composition.connect(solid, output, {
+  composition.connect(background, output, {
     toPort: "source",
   });
 

@@ -1,33 +1,31 @@
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuFrameBinding, RasterHandle,
+    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("exposure.wgsl");
 
-#[derive(Debug, Clone, lumen_macros::NodeParams)]
-#[params(evaluated = EvaluatedExposureParams)]
-#[cfg_attr(feature = "json", derive(serde::Deserialize), serde(default))]
+#[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ExposureParams {
     /// Exposure offset in stops.
-    #[param(kind = "float", step = 0.01)]
-    pub exposure: Deferred<f64>,
+    #[meta(step = 0.01)]
+    pub exposure: f64,
     /// Contrast multiplier.
-    #[param(kind = "float", min = 0, step = 0.01)]
-    pub contrast: Deferred<f64>,
+    #[meta(min = 0, step = 0.01)]
+    pub contrast: f64,
     /// Linear color offset.
-    #[param(kind = "float", step = 0.01)]
-    pub offset: Deferred<f64>,
+    #[meta(step = 0.01)]
+    pub offset: f64,
 }
 
 impl Default for ExposureParams {
     fn default() -> Self {
         Self {
-            exposure: Deferred::value(0.0),
-            contrast: Deferred::value(1.0),
-            offset: Deferred::value(0.0),
+            exposure: 0.0,
+            contrast: 1.0,
+            offset: 0.0,
         }
     }
 }
@@ -38,7 +36,7 @@ impl Default for ExposureParams {
 pub struct Exposure {
     pub id: NodeId,
     #[params]
-    pub params: ExposureParams,
+    pub params: ExposureParamsDelegate,
     #[input()]
     pub source: PortRef,
 }
@@ -47,20 +45,20 @@ impl Default for Exposure {
     fn default() -> Self {
         Self {
             id: NodeId::new(0),
-            params: ExposureParams::default(),
+            params: ExposureParamsDelegate::default(),
             source: PortRef::empty(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct ExposureFrameBinding {
+struct CompiledExposure {
     node_id: NodeId,
-    params: ExposureParams,
+    params: ExposureParamsDelegate,
     buffer: lumen_gpu::BufferId,
 }
 
-impl GpuFrameBinding for ExposureFrameBinding {
+impl GpuCompiledNode for CompiledExposure {
     fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -95,7 +93,7 @@ impl GpuCompileNode for Exposure {
             SHADER,
             std::mem::size_of::<compiler::ExposureParams>() as u64,
         )?;
-        ctx.push_frame_binding(ExposureFrameBinding {
+        ctx.register_compiled_node(CompiledExposure {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,

@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [features]
 ffmpeg = ["dep:ffmpeg-next", "dep:lumen-ffmpeg"]
 image = ["dep:image"]
-json = ["dep:anyhow", "dep:serde_json", "dep:serde_path_to_error"]
+json = ["dep:anyhow", "dep:serde_path_to_error"]
 metadata = []
 webgl = []
 metal = ["dep:objc2-metal", "lumen-ffmpeg?/metal", "lumen-gpu/metal"]
@@ -36,7 +36,7 @@ image = { version = "0.25.9", default-features = false, features = [
   "ico",
 ], optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = { version = "1.0.145", optional = true }
+serde_json = { version = "1.0.145" }
 serde_path_to_error = { version = "0.1.20", optional = true }
 anyhow = { version = "1.0.101", optional = true }
 smallvec = "1.15.1"

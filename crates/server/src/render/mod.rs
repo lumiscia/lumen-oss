@@ -95,9 +95,9 @@ mod tests {
             "nodes": [
                 {
                     "id": 1,
-                    "type": "solid_color",
+                    "type": "background",
                     "properties": {
-                        "color": [255, 255, 255, 255],
+                        "paint": [255, 255, 255, 255],
                         "width": 64,
                         "height": 64
                     }
