@@ -86,6 +86,16 @@ fn enum_eval_match_tokens(
     })
 }
 
+fn enum_to_int_match_tokens(variant: &Variant) -> Result<proc_macro2::TokenStream> {
+    let ident = &variant.ident;
+    Ok(quote!(Self::#ident => Self::#ident as i64))
+}
+
+fn enum_from_int_match_tokens(variant: &Variant) -> Result<proc_macro2::TokenStream> {
+    let ident = &variant.ident;
+    Ok(quote!(value if value == Self::#ident as i64 => ::core::option::Option::Some(Self::#ident)))
+}
+
 fn enum_field_types(variants: &Punctuated<Variant, Token![,]>) -> Vec<Type> {
     variants
         .iter()
@@ -161,6 +171,77 @@ pub(crate) fn expand_enum_delegate(
         .into_iter()
         .map(|ty| quote!(__lumen_delegate_assert_delegated::<#ty>();))
         .collect::<Vec<_>>();
+    let deferred_value_impl = if is_enum_kind {
+        let to_int_matches = variants
+            .iter()
+            .map(enum_to_int_match_tokens)
+            .collect::<Result<Vec<_>>>()?;
+        let from_int_matches = variants
+            .iter()
+            .map(enum_from_int_match_tokens)
+            .collect::<Result<Vec<_>>>()?;
+        quote! {
+            impl ::lumen_engine::node::DeferredValue for #ident {
+                fn eval_deferred(
+                    deferred: &::lumen_engine::node::Deferred<Self>,
+                    node_id: ::lumen_engine::node::NodeId,
+                    property_path: &str,
+                    ctx: &::lumen_engine::expr::ExpressionContext<'_>,
+                ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
+                    match deferred {
+                        ::lumen_engine::node::Deferred::Value(value) => Ok(*value),
+                        ::lumen_engine::node::Deferred::Expr(expr) => {
+                            let value = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
+                                ::lumen_engine::node::PropertyValue::invalid_type(
+                                    node_id,
+                                    property_path,
+                                    "Enum",
+                                    "expression",
+                                )
+                            })? as i64;
+                            Self::from_i64(value).ok_or_else(|| {
+                                ::lumen_engine::node::PropertyValue::invalid_type(
+                                    node_id,
+                                    property_path,
+                                    "Enum",
+                                    "range",
+                                )
+                            })
+                        }
+                    }
+                }
+
+                fn to_property_value(value: &Self) -> ::lumen_engine::node::PropertyValue {
+                    ::lumen_engine::node::PropertyValue::Int(value.to_i64())
+                }
+
+                fn from_property_value(value: ::lumen_engine::node::PropertyValue) -> ::core::option::Option<Self> {
+                    value.coerce_int().and_then(Self::from_i64)
+                }
+
+                fn property_kind_name() -> &'static str {
+                    "Enum"
+                }
+            }
+
+            impl #ident {
+                pub fn to_i64(self) -> i64 {
+                    match self {
+                        #(#to_int_matches,)*
+                    }
+                }
+
+                pub fn from_i64(value: i64) -> ::core::option::Option<Self> {
+                    match value {
+                        #(#from_int_matches,)*
+                        _ => ::core::option::Option::None,
+                    }
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     let enum_property_methods = if has_kind {
         quote! {
@@ -284,6 +365,7 @@ pub(crate) fn expand_enum_delegate(
         }
 
         #node_meta_type_impl
+        #deferred_value_impl
 
         const _: fn() = || {
             fn __lumen_delegate_assert_delegated<T: ::lumen_engine::node::Delegated>() {}

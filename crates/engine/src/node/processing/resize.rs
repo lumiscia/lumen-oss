@@ -7,39 +7,27 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("resize.wgsl");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum")]
 pub enum ResizeMode {
+    #[default]
     Stretch = 0,
     Fit = 1,
     Fill = 2,
 }
 
-impl ResizeMode {
-    pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Fit,
-            2 => Self::Fill,
-            _ => Self::Stretch,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum")]
 pub enum ResizeSampling {
     Nearest = 0,
+    #[default]
     Linear = 1,
-}
-
-impl ResizeSampling {
-    pub fn from_int(value: i64) -> Self {
-        if value == Self::Nearest as i64 {
-            Self::Nearest
-        } else {
-            Self::Linear
-        }
-    }
 }
 
 /// Resamples a raster into static output bounds.
@@ -53,10 +41,10 @@ pub struct ResizeParams {
     pub height: i64,
     /// How the source raster should fit the output bounds.
     #[meta(kind = "enum", enum_type = ResizeMode)]
-    pub mode: i64,
+    pub mode: ResizeMode,
     /// Sampling filter used when resizing.
     #[meta(kind = "enum", enum_type = ResizeSampling)]
-    pub sampling: i64,
+    pub sampling: ResizeSampling,
 }
 
 impl Default for ResizeParams {
@@ -64,8 +52,8 @@ impl Default for ResizeParams {
         Self {
             width: 1,
             height: 1,
-            mode: ResizeMode::Stretch as i64,
-            sampling: ResizeSampling::Linear as i64,
+            mode: ResizeMode::Stretch,
+            sampling: ResizeSampling::Linear,
         }
     }
 }
@@ -170,8 +158,8 @@ impl GpuCompiledNode for CompiledResize {
                 evaluated.width.max(1) as u32,
                 evaluated.height.max(1) as u32,
             ],
-            mode: ResizeMode::from_int(evaluated.mode) as u32,
-            sampling: ResizeSampling::from_int(evaluated.sampling) as u32,
+            mode: evaluated.mode as u32,
+            sampling: evaluated.sampling as u32,
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())

@@ -527,42 +527,162 @@
                   "alpha": {
                     "default": "alpha",
                     "description": "Source channel mapped into the alpha output channel.",
+                    "enum": ["red", "green", "blue", "alpha", "zero", "one"],
                     "title": "Alpha",
                     "type": "string",
-                    "x-lumen-constraints": {
-                      "format": "channel_selector"
-                    },
-                    "x-lumen-kind": "string"
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Red",
+                        "name": "red",
+                        "value": 0
+                      },
+                      {
+                        "label": "Green",
+                        "name": "green",
+                        "value": 1
+                      },
+                      {
+                        "label": "Blue",
+                        "name": "blue",
+                        "value": 2
+                      },
+                      {
+                        "label": "Alpha",
+                        "name": "alpha",
+                        "value": 3
+                      },
+                      {
+                        "label": "Zero",
+                        "name": "zero",
+                        "value": 4
+                      },
+                      {
+                        "label": "One",
+                        "name": "one",
+                        "value": 5
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   },
                   "blue": {
                     "default": "blue",
                     "description": "Source channel mapped into the blue output channel.",
+                    "enum": ["red", "green", "blue", "alpha", "zero", "one"],
                     "title": "Blue",
                     "type": "string",
-                    "x-lumen-constraints": {
-                      "format": "channel_selector"
-                    },
-                    "x-lumen-kind": "string"
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Red",
+                        "name": "red",
+                        "value": 0
+                      },
+                      {
+                        "label": "Green",
+                        "name": "green",
+                        "value": 1
+                      },
+                      {
+                        "label": "Blue",
+                        "name": "blue",
+                        "value": 2
+                      },
+                      {
+                        "label": "Alpha",
+                        "name": "alpha",
+                        "value": 3
+                      },
+                      {
+                        "label": "Zero",
+                        "name": "zero",
+                        "value": 4
+                      },
+                      {
+                        "label": "One",
+                        "name": "one",
+                        "value": 5
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   },
                   "green": {
                     "default": "green",
                     "description": "Source channel mapped into the green output channel.",
+                    "enum": ["red", "green", "blue", "alpha", "zero", "one"],
                     "title": "Green",
                     "type": "string",
-                    "x-lumen-constraints": {
-                      "format": "channel_selector"
-                    },
-                    "x-lumen-kind": "string"
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Red",
+                        "name": "red",
+                        "value": 0
+                      },
+                      {
+                        "label": "Green",
+                        "name": "green",
+                        "value": 1
+                      },
+                      {
+                        "label": "Blue",
+                        "name": "blue",
+                        "value": 2
+                      },
+                      {
+                        "label": "Alpha",
+                        "name": "alpha",
+                        "value": 3
+                      },
+                      {
+                        "label": "Zero",
+                        "name": "zero",
+                        "value": 4
+                      },
+                      {
+                        "label": "One",
+                        "name": "one",
+                        "value": 5
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   },
                   "red": {
                     "default": "red",
                     "description": "Source channel mapped into the red output channel.",
+                    "enum": ["red", "green", "blue", "alpha", "zero", "one"],
                     "title": "Red",
                     "type": "string",
-                    "x-lumen-constraints": {
-                      "format": "channel_selector"
-                    },
-                    "x-lumen-kind": "string"
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Red",
+                        "name": "red",
+                        "value": 0
+                      },
+                      {
+                        "label": "Green",
+                        "name": "green",
+                        "value": 1
+                      },
+                      {
+                        "label": "Blue",
+                        "name": "blue",
+                        "value": 2
+                      },
+                      {
+                        "label": "Alpha",
+                        "name": "alpha",
+                        "value": 3
+                      },
+                      {
+                        "label": "Zero",
+                        "name": "zero",
+                        "value": 4
+                      },
+                      {
+                        "label": "One",
+                        "name": "one",
+                        "value": 5
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   }
                 },
                 "type": "object"
@@ -1372,13 +1492,6 @@
                     },
                     "x-lumen-kind": "string"
                   },
-                  "fill_color": {
-                    "$ref": "#/$defs/color",
-                    "default": [255, 255, 255, 255],
-                    "description": "Fill color.",
-                    "title": "Fill Color",
-                    "x-lumen-kind": "color"
-                  },
                   "fill_enabled": {
                     "default": true,
                     "description": "Enables fill rendering.",
@@ -1399,13 +1512,6 @@
                     "description": "Path origin in pixels.",
                     "title": "Position",
                     "x-lumen-kind": "vec2"
-                  },
-                  "stroke_color": {
-                    "$ref": "#/$defs/color",
-                    "default": [0, 0, 0, 255],
-                    "description": "Stroke color.",
-                    "title": "Stroke Color",
-                    "x-lumen-kind": "color"
                   },
                   "stroke_enabled": {
                     "default": false,
@@ -1658,11 +1764,14 @@
                 "additionalProperties": false,
                 "properties": {
                   "color": {
-                    "$ref": "#/$defs/color",
+                    "$ref": "#/$defs/paint",
                     "default": [0, 0, 0, 255],
                     "description": "Shadow color.",
                     "title": "Color",
-                    "x-lumen-kind": "color"
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "paint"
                   },
                   "offset_x": {
                     "default": 8.0,
@@ -1758,13 +1867,6 @@
                     },
                     "x-lumen-kind": "float"
                   },
-                  "fill_color": {
-                    "$ref": "#/$defs/color",
-                    "default": [255, 255, 255, 255],
-                    "description": "Fill color.",
-                    "title": "Fill Color",
-                    "x-lumen-kind": "color"
-                  },
                   "fill_enabled": {
                     "default": true,
                     "description": "Enables fill rendering.",
@@ -1834,13 +1936,6 @@
                     "description": "Shape origin in pixels.",
                     "title": "Position",
                     "x-lumen-kind": "vec2"
-                  },
-                  "stroke_color": {
-                    "$ref": "#/$defs/color",
-                    "default": [0, 0, 0, 255],
-                    "description": "Stroke color.",
-                    "title": "Stroke Color",
-                    "x-lumen-kind": "color"
                   },
                   "stroke_enabled": {
                     "default": false,
@@ -2013,11 +2108,14 @@
                     "x-lumen-kind": "enum"
                   },
                   "color": {
-                    "$ref": "#/$defs/color",
+                    "$ref": "#/$defs/paint",
                     "default": [255, 255, 255, 255],
                     "description": "Text color.",
                     "title": "Color",
-                    "x-lumen-kind": "color"
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "paint"
                   },
                   "content": {
                     "default": "",

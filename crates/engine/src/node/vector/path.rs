@@ -19,18 +19,12 @@ pub struct PathParams {
     /// Enables fill rendering.
     #[meta()]
     pub fill_enabled: bool,
-    /// Fill color.
-    #[meta()]
-    pub fill_color: [u8; 4],
     /// Fill paint. Accepts a solid color or gradient.
     #[meta()]
     pub fill_paint: Paint,
     /// Enables stroke rendering.
     #[meta()]
     pub stroke_enabled: bool,
-    /// Stroke color.
-    #[meta()]
-    pub stroke_color: [u8; 4],
     /// Stroke paint. Accepts a solid color or gradient.
     #[meta()]
     pub stroke_paint: Paint,
@@ -45,10 +39,8 @@ impl Default for PathParams {
             data: "M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string(),
             position: (0.0, 0.0),
             fill_enabled: true,
-            fill_color: [255, 255, 255, 255],
             fill_paint: Paint::solid([255, 255, 255, 255]),
             stroke_enabled: false,
-            stroke_color: [0, 0, 0, 255],
             stroke_paint: Paint::solid([0, 0, 0, 255]),
             stroke_width: 1.0,
         }
@@ -113,8 +105,8 @@ impl GpuCompiledNode for CompiledPath {
         }
 
         let params = super::renderer::PathParams {
-            fill_paint: evaluated.fill_paint.to_gpu(evaluated.fill_color),
-            stroke_paint: evaluated.stroke_paint.to_gpu(evaluated.stroke_color),
+            fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
+            stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
             position: [x as f32, y as f32],
             bounds_min: bounds_min(&points),
             bounds_size: bounds_size(&points),

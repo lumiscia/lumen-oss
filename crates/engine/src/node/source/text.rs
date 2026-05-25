@@ -9,62 +9,43 @@ use std::time::Instant;
 
 use crate::error::{LumenError, RenderError};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum")]
 pub enum TextFontStyle {
+    #[default]
     Normal = 0,
     Italic = 1,
     Oblique = 2,
 }
 
-impl TextFontStyle {
-    pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Italic,
-            2 => Self::Oblique,
-            _ => Self::Normal,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum")]
 pub enum TextAlignmentHorizontal {
+    #[default]
     Left = 0,
     Center = 1,
     Right = 2,
     Justify = 3,
 }
 
-impl TextAlignmentHorizontal {
-    pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Center,
-            2 => Self::Right,
-            3 => Self::Justify,
-            _ => Self::Left,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum")]
 pub enum TextAlignmentVertical {
+    #[default]
     Top = 0,
     Middle = 1,
     Bottom = 2,
-}
-
-impl TextAlignmentVertical {
-    pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Middle,
-            2 => Self::Bottom,
-            _ => Self::Top,
-        }
-    }
 }
 
 /// Produces a text raster source.
@@ -84,7 +65,7 @@ pub struct TextParams {
     pub font_weight: i64,
     /// Font style.
     #[meta(kind = "enum", enum_type = TextFontStyle)]
-    pub font_style: i64,
+    pub font_style: TextFontStyle,
     /// Maximum line width in pixels. Use 0 for automatic width.
     #[meta(min = 0, step = 1)]
     pub max_width: f64,
@@ -92,14 +73,14 @@ pub struct TextParams {
     #[meta()]
     pub position: (f64, f64),
     /// Text color.
-    #[meta()]
-    pub color: [u8; 4],
+    #[meta(role = "color")]
+    pub color: Paint,
     /// Horizontal text alignment.
     #[meta(kind = "enum", enum_type = TextAlignmentHorizontal)]
-    pub alignment_horizontal: i64,
+    pub alignment_horizontal: TextAlignmentHorizontal,
     /// Vertical text alignment.
     #[meta(kind = "enum", enum_type = TextAlignmentVertical)]
-    pub alignment_vertical: i64,
+    pub alignment_vertical: TextAlignmentVertical,
 }
 
 impl Default for TextParams {
@@ -109,12 +90,12 @@ impl Default for TextParams {
             font_family: lumen_text::DEFAULT_FONT_FAMILY.to_string(),
             font_size: 16.0,
             font_weight: 400,
-            font_style: TextFontStyle::Normal as i64,
+            font_style: TextFontStyle::Normal,
             max_width: 0.0,
             position: (0.0, 0.0),
-            color: [255, 255, 255, 255],
-            alignment_horizontal: TextAlignmentHorizontal::Left as i64,
-            alignment_vertical: TextAlignmentVertical::Top as i64,
+            color: Paint::solid([255, 255, 255, 255]),
+            alignment_horizontal: TextAlignmentHorizontal::Left,
+            alignment_vertical: TextAlignmentVertical::Top,
         }
     }
 }
@@ -172,15 +153,14 @@ impl GpuCompiledNode for CompiledText {
         })?;
         let content = evaluated.content;
         let font_family = evaluated.font_family;
-        let color = evaluated.color;
+        let color = evaluated.color.to_gpu([255, 255, 255, 255]).colors[0];
         let (position_x, position_y) = evaluated.position;
         let font_size = evaluated.font_size as f32;
         let max_width = evaluated.max_width as f32;
-        let alignment_horizontal =
-            TextAlignmentHorizontal::from_int(evaluated.alignment_horizontal);
-        let alignment_vertical = TextAlignmentVertical::from_int(evaluated.alignment_vertical);
+        let alignment_horizontal = evaluated.alignment_horizontal;
+        let alignment_vertical = evaluated.alignment_vertical;
         let font_weight = evaluated.font_weight;
-        let font_style = TextFontStyle::from_int(evaluated.font_style);
+        let font_style = evaluated.font_style;
 
         let mut request = lumen_text::TextLayoutRequest::new(content.clone());
         request.font_family = font_family.clone();
@@ -193,7 +173,7 @@ impl GpuCompiledNode for CompiledText {
         };
         request.max_width = (max_width > 0.0).then_some(max_width);
         request.origin = [0.0, 0.0];
-        let color_f32 = rgba8_to_f32(color);
+        let color_f32 = color;
         request.color = [1.0; 4];
         request.align = match alignment_horizontal {
             TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
@@ -221,7 +201,7 @@ impl GpuCompiledNode for CompiledText {
             atlas_key: atlas_key.clone(),
             position_x_bits: (position_x as f32).to_bits(),
             position_y_bits: (position_y as f32).to_bits(),
-            color,
+            color: color.map(|component| (component.clamp(0.0, 1.0) * 255.0).round() as u8),
             alignment_vertical,
             output_width: self.size.width,
             output_height: self.size.height,
@@ -490,13 +470,4 @@ fn trace_now_ms() -> f64 {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn trace_now_ms() -> f64 {
     js_sys::Date::now()
-}
-
-fn rgba8_to_f32(color: [u8; 4]) -> [f32; 4] {
-    [
-        f32::from(color[0]) / 255.0,
-        f32::from(color[1]) / 255.0,
-        f32::from(color[2]) / 255.0,
-        f32::from(color[3]) / 255.0,
-    ]
 }

@@ -29,6 +29,12 @@ impl NodeParamType for u8 {
     }
 }
 
+impl NodeParamType for u32 {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Int
+    }
+}
+
 impl NodeParamType for i64 {
     fn property_kind() -> PropertyKind {
         PropertyKind::Int

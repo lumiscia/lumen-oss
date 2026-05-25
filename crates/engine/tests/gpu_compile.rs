@@ -16,14 +16,14 @@ use lumen_engine::{
         media_output::MediaOutput,
         processing::{
             alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParamsDelegate},
-            channel_shuffle::{ChannelShuffle, ChannelShuffleParamsDelegate},
+            channel_shuffle::{ChannelSelector, ChannelShuffle, ChannelShuffleParamsDelegate},
             color_grade::{ColorGrade, ColorGradeParamsDelegate},
             crop::{Crop, CropParamsDelegate},
             exposure::{Exposure, ExposureParamsDelegate},
             hue_saturation::{HueSaturation, HueSaturationParamsDelegate},
             levels::{Levels, LevelsParamsDelegate},
             memo::{Memo, MemoParamsDelegate},
-            resize::{Resize, ResizeParamsDelegate},
+            resize::{Resize, ResizeMode, ResizeParamsDelegate, ResizeSampling},
             time_remap::{TimeRemap, TimeRemapParamsDelegate},
             transform::{Transform, TransformParamsDelegate},
         },
@@ -33,6 +33,7 @@ use lumen_engine::{
             text::{Text, TextParamsDelegate},
         },
         vector::{
+            paint::Paint,
             path::{Path, PathParamsDelegate},
             shape::{Shape, ShapeParamsDelegate},
         },
@@ -908,8 +909,8 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
             params: ResizeParamsDelegate {
                 width: Deferred::value(4),
                 height: Deferred::value(2),
-                mode: Deferred::value(1),
-                sampling: Deferred::value(1),
+                mode: ResizeMode::Fit.into(),
+                sampling: ResizeSampling::Linear.into(),
                 ..Default::default()
             },
             source: PortRef::new(crop, "output".to_string()),
@@ -985,10 +986,10 @@ fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
         NodeKind::ChannelShuffle(ChannelShuffle {
             id: shuffle,
             params: ChannelShuffleParamsDelegate {
-                red: Deferred::value("blue".to_string()),
-                green: Deferred::value("green".to_string()),
-                blue: Deferred::value("red".to_string()),
-                alpha: Deferred::value("0.5".to_string()),
+                red: ChannelSelector::Blue.into(),
+                green: ChannelSelector::Green.into(),
+                blue: ChannelSelector::Red.into(),
+                alpha: ChannelSelector::One.into(),
                 ..Default::default()
             },
             source: PortRef::new(alpha, "output".to_string()),
@@ -1081,7 +1082,7 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
                 width: Deferred::value(6),
                 height: Deferred::value(4),
                 position: Deferred::value((1.0, 0.0)),
-                fill_color: Deferred::value([255, 0, 0, 255]),
+                fill_paint: Paint::solid([255, 0, 0, 255]).into(),
                 ..Default::default()
             },
             ..Shape::default()
@@ -1094,7 +1095,7 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
             params: TextParamsDelegate {
                 content: Deferred::value("hi".to_string()),
                 font_size: Deferred::value(4.0),
-                color: Deferred::value([255, 255, 255, 255]),
+                color: Paint::solid([255, 255, 255, 255]).into(),
                 ..Default::default()
             },
             ..Text::default()
@@ -1146,7 +1147,7 @@ fn compiles_vector_path_through_shared_renderer() {
             id: path,
             params: PathParamsDelegate {
                 data: Deferred::value("M 1 1 L 6 1 L 6 3 L 1 3 Z".to_string()),
-                fill_color: Deferred::value([0, 255, 0, 255]),
+                fill_paint: Paint::solid([0, 255, 0, 255]).into(),
                 stroke_enabled: Deferred::value(true),
                 stroke_width: Deferred::value(1.0),
                 ..Default::default()

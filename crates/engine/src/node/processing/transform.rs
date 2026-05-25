@@ -7,21 +7,15 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("transform.wgsl");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum")]
 pub enum TransformSampling {
     Nearest = 0,
+    #[default]
     Linear = 1,
-}
-
-impl TransformSampling {
-    pub fn from_int(value: i64) -> Self {
-        if value == Self::Nearest as i64 {
-            Self::Nearest
-        } else {
-            Self::Linear
-        }
-    }
 }
 
 /// Transforms a raster inside its existing static bounds.
@@ -50,7 +44,7 @@ pub struct TransformParams {
     pub pivot_y: f64,
     /// Sampling filter used when transforming.
     #[meta(kind = "enum", enum_type = TransformSampling)]
-    pub sampling: i64,
+    pub sampling: TransformSampling,
 }
 
 impl Default for TransformParams {
@@ -63,7 +57,7 @@ impl Default for TransformParams {
             rotate: 0.0,
             pivot_x: 0.0,
             pivot_y: 0.0,
-            sampling: TransformSampling::Linear as i64,
+            sampling: TransformSampling::Linear,
         }
     }
 }
@@ -139,7 +133,7 @@ impl GpuCompiledNode for CompiledTransform {
             translate: [evaluated.translate_x as f32, evaluated.translate_y as f32],
             pivot: [evaluated.pivot_x as f32, evaluated.pivot_y as f32],
             rotate_radians: (evaluated.rotate as f32).to_radians(),
-            sampling: TransformSampling::from_int(evaluated.sampling) as u32,
+            sampling: evaluated.sampling as u32,
             _pad: [0; 4],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));

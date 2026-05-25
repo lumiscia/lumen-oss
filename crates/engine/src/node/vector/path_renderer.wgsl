@@ -15,6 +15,8 @@ struct Paint {
     _pad1: u32,
 }
 
+// TODO: move common shader structs/functions such as Paint into a shared WGSL
+// include once the shader assembly path can concatenate common modules.
 struct PathParams {
     fill_paint: Paint,
     stroke_paint: Paint,

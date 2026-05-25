@@ -258,6 +258,7 @@ impl_delegated_deferred!(
     f64,
     f32,
     i64,
+    u32,
     u8,
     bool,
     String,
@@ -367,6 +368,38 @@ impl DeferredValue for i64 {
 
     fn property_kind_name() -> &'static str {
         "Int"
+    }
+}
+
+impl DeferredValue for u32 {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        let value = match deferred {
+            Deferred::Value(value) => i64::from(*value),
+            Deferred::Expr(expr) => expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
+                PropertyValue::invalid_type(node_id, property_path, "UInt", "expression")
+            })? as i64,
+        };
+        u32::try_from(value)
+            .map_err(|_| PropertyValue::invalid_type(node_id, property_path, "UInt", "range"))
+    }
+
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Int(i64::from(*value))
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        value
+            .coerce_int()
+            .and_then(|value| u32::try_from(value).ok())
+    }
+
+    fn property_kind_name() -> &'static str {
+        "UInt"
     }
 }
 
@@ -597,6 +630,14 @@ impl DeferredJsonValue for u8 {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         let value = i64::from_json_value(value)?;
         u8::try_from(value).map_err(|_| "expected u8".to_string())
+    }
+}
+
+#[cfg(feature = "json")]
+impl DeferredJsonValue for u32 {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        let value = i64::from_json_value(value)?;
+        u32::try_from(value).map_err(|_| "expected u32".to_string())
     }
 }
 

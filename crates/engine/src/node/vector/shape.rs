@@ -2,22 +2,16 @@ use super::paint::Paint;
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum")]
 pub enum ShapeGeometryKind {
+    #[default]
     Rectangle = 0,
     Ellipse = 1,
     Polygon = 2,
-}
-
-impl ShapeGeometryKind {
-    pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Ellipse,
-            2 => Self::Polygon,
-            _ => Self::Rectangle,
-        }
-    }
 }
 
 /// Produces a vector shape layer for GPU rasterization.
@@ -25,7 +19,7 @@ impl ShapeGeometryKind {
 pub struct ShapeParams {
     /// Geometry primitive to rasterize.
     #[meta(kind = "enum", enum_type = ShapeGeometryKind)]
-    pub geometry_kind: i64,
+    pub geometry_kind: ShapeGeometryKind,
     /// Shape width in pixels.
     #[meta(min = 1, step = 1)]
     pub width: i64,
@@ -49,18 +43,12 @@ pub struct ShapeParams {
     /// Enables fill rendering.
     #[meta()]
     pub fill_enabled: bool,
-    /// Fill color.
-    #[meta()]
-    pub fill_color: [u8; 4],
     /// Fill paint. Accepts a solid color or gradient.
     #[meta()]
     pub fill_paint: Paint,
     /// Enables stroke rendering.
     #[meta()]
     pub stroke_enabled: bool,
-    /// Stroke color.
-    #[meta()]
-    pub stroke_color: [u8; 4],
     /// Stroke paint. Accepts a solid color or gradient.
     #[meta()]
     pub stroke_paint: Paint,
@@ -72,17 +60,15 @@ pub struct ShapeParams {
 impl Default for ShapeParams {
     fn default() -> Self {
         Self {
-            geometry_kind: ShapeGeometryKind::Rectangle as i64,
+            geometry_kind: ShapeGeometryKind::Rectangle,
             width: 1,
             height: 1,
             border_radius: 0.0,
             polygon_points: String::new(),
             position: (0.0, 0.0),
             fill_enabled: true,
-            fill_color: [255, 255, 255, 255],
             fill_paint: Paint::solid([255, 255, 255, 255]),
             stroke_enabled: false,
-            stroke_color: [0, 0, 0, 255],
             stroke_paint: Paint::solid([0, 0, 0, 255]),
             stroke_width: 1.0,
         }
@@ -143,8 +129,8 @@ impl GpuCompiledNode for CompiledShape {
             flags |= 2;
         }
         let params = super::renderer::ShapeParams {
-            fill_paint: evaluated.fill_paint.to_gpu(evaluated.fill_color),
-            stroke_paint: evaluated.stroke_paint.to_gpu(evaluated.stroke_color),
+            fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
+            stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
             position: [x as f32, y as f32],
             size: [
                 evaluated.width.max(1) as f32,
@@ -152,7 +138,7 @@ impl GpuCompiledNode for CompiledShape {
             ],
             border_radius: evaluated.border_radius as f32,
             stroke_width: evaluated.stroke_width as f32,
-            geometry_kind: ShapeGeometryKind::from_int(evaluated.geometry_kind) as u32,
+            geometry_kind: evaluated.geometry_kind as u32,
             flags,
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));

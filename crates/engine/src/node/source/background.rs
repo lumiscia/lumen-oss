@@ -14,10 +14,10 @@ pub struct BackgroundParams {
     pub paint: Paint,
     /// Output width in pixels. Use 0 to match the composition width.
     #[meta(min = 0, step = 1)]
-    pub width: i64,
+    pub width: u32,
     /// Output height in pixels. Use 0 to match the composition height.
     #[meta(min = 0, step = 1)]
-    pub height: i64,
+    pub height: u32,
 }
 
 impl Default for BackgroundParams {
@@ -88,8 +88,8 @@ impl GpuCompileNode for Background {
             node_id: self.id,
             expr: &ctx.expr_context(self.id, "params"),
         })?;
-        let width = ctx.static_dimension_value(params.width, "width");
-        let height = ctx.static_dimension_value(params.height, "height");
+        let width = ctx.static_dimension_value(i64::from(params.width), "width");
+        let height = ctx.static_dimension_value(i64::from(params.height), "height");
         let size = lumen_gpu::Size::new(width, height);
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),

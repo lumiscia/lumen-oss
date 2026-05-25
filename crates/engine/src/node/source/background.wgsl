@@ -18,6 +18,7 @@ struct Paint {
 @group(0) @binding(0) var<uniform> paint: Paint;
 @group(0) @binding(1) var output_tex: texture_storage_2d<rgba8unorm, write>;
 
+// TODO: support interpolation modes beyond the current sRGB mix path.
 fn spread_t(value: f32) -> f32 {
     if (paint.spread == 1u) {
         return fract(value);

@@ -1,16 +1,18 @@
+#[cfg(feature = "json")]
+use serde::Deserialize;
 use serde_json::Value;
 
-use super::types::{
-    GradientInterpolation, GradientPaint, GradientSpread, GradientStop, GradientUnits, Paint,
-    PaintKind,
-};
+use super::types::{GradientPaint, GradientStop, Paint};
 
 #[cfg(feature = "json")]
 pub fn from_json_value(value: &Value) -> Option<Paint> {
     if let Some(color) = crate::json::parse_color(value) {
         return Some(Paint::solid(color));
     }
-    parse_gradient(value).map(Paint::Gradient)
+    serde_json::from_value::<GradientPaintJsonOwned>(value.clone())
+        .ok()
+        .map(GradientPaint::from)
+        .map(Paint::Gradient)
 }
 
 pub fn to_json_value(paint: &Paint) -> Value {
@@ -21,132 +23,127 @@ pub fn to_json_value(paint: &Paint) -> Value {
                 .map(|value| Value::from(*value))
                 .collect(),
         ),
-        Paint::Gradient(gradient) => gradient_to_json_value(gradient),
+        Paint::Gradient(gradient) => serde_json::to_value(GradientPaintJsonRef::from(gradient))
+            .expect("gradient paint serializes to JSON"),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct GradientPaintJsonRef<'a> {
+    #[serde(rename = "type")]
+    kind: super::types::PaintKind,
+    units: super::types::GradientUnits,
+    spread: super::types::GradientSpread,
+    interpolation: super::types::GradientInterpolation,
+    start: [f32; 2],
+    end: [f32; 2],
+    center: [f32; 2],
+    radius: [f32; 2],
+    angle: f32,
+    stops: &'a [GradientStop],
+}
+
+#[cfg(feature = "json")]
+#[derive(serde::Deserialize)]
+struct GradientPaintJsonOwned {
+    #[serde(rename = "type")]
+    kind: super::types::PaintKind,
+    #[serde(default)]
+    units: super::types::GradientUnits,
+    #[serde(default)]
+    spread: super::types::GradientSpread,
+    #[serde(default)]
+    interpolation: super::types::GradientInterpolation,
+    #[serde(default)]
+    start: [f32; 2],
+    #[serde(default = "default_end")]
+    end: [f32; 2],
+    #[serde(default = "default_center")]
+    center: [f32; 2],
+    #[serde(default = "default_radius")]
+    radius: [f32; 2],
+    #[serde(default)]
+    angle: f32,
+    #[serde(deserialize_with = "deserialize_stops")]
+    stops: Vec<GradientStop>,
+}
+
+impl<'a> From<&'a GradientPaint> for GradientPaintJsonRef<'a> {
+    fn from(gradient: &'a GradientPaint) -> Self {
+        Self {
+            kind: gradient.kind,
+            units: gradient.units,
+            spread: gradient.spread,
+            interpolation: gradient.interpolation,
+            start: gradient.start,
+            end: gradient.end,
+            center: gradient.center,
+            radius: gradient.radius,
+            angle: gradient.angle,
+            stops: &gradient.stops,
+        }
     }
 }
 
 #[cfg(feature = "json")]
-fn parse_gradient(value: &Value) -> Option<GradientPaint> {
-    let object = value.as_object()?;
-
-    let kind = match string_field(object, "type")? {
-        "linear_gradient" | "linear" => PaintKind::LinearGradient,
-        "radial_gradient" | "radial" => PaintKind::RadialGradient,
-        "conic_gradient" | "conic" => PaintKind::ConicGradient,
-        _ => return None,
-    };
-    let units = match string_field(object, "units").unwrap_or("object_bounding_box") {
-        "user_space" | "userSpaceOnUse" => GradientUnits::UserSpace,
-        _ => GradientUnits::ObjectBoundingBox,
-    };
-    let spread = match string_field(object, "spread").unwrap_or("pad") {
-        "repeat" => GradientSpread::Repeat,
-        "reflect" => GradientSpread::Reflect,
-        _ => GradientSpread::Pad,
-    };
-    let interpolation = match string_field(object, "interpolation").unwrap_or("srgb") {
-        "linear_srgb" | "linear" => GradientInterpolation::LinearSrgb,
-        _ => GradientInterpolation::Srgb,
-    };
-    let start = vec2_field(object, "start", [0.0, 0.0]);
-    let end = vec2_field(object, "end", [1.0, 0.0]);
-    let center = vec2_field(object, "center", [0.5, 0.5]);
-    let radius = number_field(object, "radius", 0.5) as f32;
-    let radius = vec2_field(object, "radius", [radius, radius]);
-    let angle = number_field(object, "angle", 0.0) as f32;
-    let mut stops = object
-        .get("stops")
-        .and_then(Value::as_array)?
-        .iter()
-        .filter_map(parse_stop)
-        .collect::<Vec<_>>();
-    stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
-    Some(GradientPaint {
-        kind,
-        units,
-        spread,
-        interpolation,
-        start,
-        end,
-        center,
-        radius,
-        angle,
-        stops,
-    })
-}
-
-fn gradient_to_json_value(gradient: &GradientPaint) -> Value {
-    let kind = match gradient.kind {
-        PaintKind::LinearGradient => "linear_gradient",
-        PaintKind::RadialGradient => "radial_gradient",
-        PaintKind::ConicGradient => "conic_gradient",
-    };
-    let units = match gradient.units {
-        GradientUnits::ObjectBoundingBox => "object_bounding_box",
-        GradientUnits::UserSpace => "user_space",
-    };
-    let spread = match gradient.spread {
-        GradientSpread::Pad => "pad",
-        GradientSpread::Repeat => "repeat",
-        GradientSpread::Reflect => "reflect",
-    };
-    let interpolation = match gradient.interpolation {
-        GradientInterpolation::Srgb => "srgb",
-        GradientInterpolation::LinearSrgb => "linear_srgb",
-    };
-    serde_json::json!({
-        "type": kind,
-        "units": units,
-        "spread": spread,
-        "interpolation": interpolation,
-        "start": gradient.start,
-        "end": gradient.end,
-        "center": gradient.center,
-        "radius": gradient.radius,
-        "angle": gradient.angle,
-        "stops": gradient.stops.iter().map(|stop| {
-            serde_json::json!({ "offset": stop.offset, "color": stop.color })
-        }).collect::<Vec<_>>(),
-    })
-}
-
-#[cfg(feature = "json")]
-fn parse_stop(value: &Value) -> Option<GradientStop> {
-    if let Some(array) = value.as_array()
-        && array.len() >= 2
-    {
-        return Some(GradientStop {
-            offset: array[0].as_f64()? as f32,
-            color: crate::json::parse_color(&array[1])?,
-        });
+impl From<GradientPaintJsonOwned> for GradientPaint {
+    fn from(value: GradientPaintJsonOwned) -> Self {
+        let mut stops = value.stops;
+        stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+        Self {
+            kind: value.kind,
+            units: value.units,
+            spread: value.spread,
+            interpolation: value.interpolation,
+            start: value.start,
+            end: value.end,
+            center: value.center,
+            radius: value.radius,
+            angle: value.angle,
+            stops,
+        }
     }
-    let object = value.as_object()?;
-    Some(GradientStop {
-        offset: object.get("offset")?.as_f64()? as f32,
-        color: crate::json::parse_color(object.get("color")?)?,
-    })
 }
 
 #[cfg(feature = "json")]
-fn string_field<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a str> {
-    object.get(key).and_then(Value::as_str)
+fn default_end() -> [f32; 2] {
+    [1.0, 0.0]
 }
 
 #[cfg(feature = "json")]
-fn number_field(object: &serde_json::Map<String, Value>, key: &str, fallback: f64) -> f64 {
-    object.get(key).and_then(Value::as_f64).unwrap_or(fallback)
+fn default_center() -> [f32; 2] {
+    [0.5, 0.5]
 }
 
 #[cfg(feature = "json")]
-fn vec2_field(object: &serde_json::Map<String, Value>, key: &str, fallback: [f32; 2]) -> [f32; 2] {
-    let Some(array) = object.get(key).and_then(Value::as_array) else {
-        return fallback;
-    };
-    if array.len() != 2 {
-        return fallback;
-    }
-    [
-        array[0].as_f64().unwrap_or(f64::from(fallback[0])) as f32,
-        array[1].as_f64().unwrap_or(f64::from(fallback[1])) as f32,
-    ]
+fn default_radius() -> [f32; 2] {
+    [0.5, 0.5]
+}
+
+#[cfg(feature = "json")]
+fn deserialize_stops<'de, D>(deserializer: D) -> Result<Vec<GradientStop>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let values = Vec::<Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|value| {
+            if let Some(array) = value.as_array()
+                && array.len() >= 2
+            {
+                return Ok(GradientStop {
+                    offset: array[0]
+                        .as_f64()
+                        .ok_or_else(|| D::Error::custom("gradient stop offset must be numeric"))?
+                        as f32,
+                    color: crate::json::parse_color(&array[1])
+                        .ok_or_else(|| D::Error::custom("gradient stop color must be a color"))?,
+                });
+            }
+            serde_json::from_value(value).map_err(D::Error::custom)
+        })
+        .collect()
 }

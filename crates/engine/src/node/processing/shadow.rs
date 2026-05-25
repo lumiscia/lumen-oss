@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
@@ -20,8 +20,8 @@ pub struct ShadowParams {
     #[meta(name = "Blur radius", min = 0, step = 0.5)]
     pub radius: f64,
     /// Shadow color.
-    #[meta()]
-    pub color: [u8; 4],
+    #[meta(role = "color")]
+    pub color: Paint,
     /// Shadow opacity.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub opacity: f64,
@@ -33,7 +33,7 @@ impl Default for ShadowParams {
             offset_x: 8.0,
             offset_y: 8.0,
             radius: 8.0,
-            color: [0, 0, 0, 255],
+            color: Paint::solid([0, 0, 0, 255]),
             opacity: 0.5,
         }
     }
@@ -180,7 +180,7 @@ impl GpuCompiledNode for CompiledShadow {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
-        let color = compiler::ColorParams::from_rgba8(evaluated.color).color;
+        let color = evaluated.color.to_gpu([0, 0, 0, 255]).colors[0];
         let gpu_params = compiler::ShadowParams {
             color,
             values: [
