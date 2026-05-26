@@ -23,6 +23,7 @@ pub(super) fn render_project_mp4_cuda(
     height: u32,
     fps: f32,
     total_frames: u32,
+    encoder_name: &str,
     codec: VideoCodec,
     verbose_debug: bool,
     on_progress: &mut dyn FnMut(RenderProgress),
@@ -99,6 +100,7 @@ pub(super) fn render_project_mp4_cuda(
     let include_audio = has_audio(composition);
     let mut config =
         VideoEncoderConfig::cpu_rgba(width, height, fps.round().max(1.0) as u32, codec);
+    config.encoder_name = Some(encoder_name.to_string());
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     config.bit_rate = 14_000_000;
     let audio = include_audio.then(|| {
