@@ -5,7 +5,7 @@ use std::{ffi::CStr, mem::MaybeUninit, sync::Arc};
 use cudarc::driver::{CudaContext as CudaContextInner, result, sys};
 
 use super::{CudaExternalMemoryHandle, CudaVideoFrame, interop, kernel};
-use interop::ImportedCudaExternalImage;
+pub use interop::ImportedCudaExternalImage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CudaDeviceInfo {
