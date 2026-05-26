@@ -106,13 +106,14 @@ describeIntegration("Lumen SDK with lumen-server", () => {
 });
 
 function tinyComposition(): Composition {
+  const size = Number(process.env.LUMEN_SDK_INTEGRATION_SIZE ?? "64");
   const composition = new Composition({
     metadata: {
       name: "SDK integration test",
     },
     renderSettings: {
-      width: 64,
-      height: 64,
+      width: size,
+      height: size,
       background_color: [0, 0, 0, 255],
     },
     timeline: {
@@ -123,8 +124,8 @@ function tinyComposition(): Composition {
   const background = composition.addNode({
     type: "background",
     params: {
-      width: 64,
-      height: 64,
+      width: size,
+      height: size,
       paint: [255, 64, 32, 255],
     },
   });
