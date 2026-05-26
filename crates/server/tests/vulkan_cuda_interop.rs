@@ -189,7 +189,7 @@ async fn decodes_cuda_frame_into_exportable_vulkan_texture() {
         .create_primary_context()
         .expect("create CUDA primary context");
     let converter = driver
-        .create_nv12_to_rgba_converter()
+        .create_nv12_to_rgba_converter(&context)
         .expect("create CUDA NV12 converter");
     let rgba = driver
         .allocate_rgba_frame(width, height)

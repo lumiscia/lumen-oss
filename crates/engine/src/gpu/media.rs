@@ -186,7 +186,7 @@ struct CudaMediaImporter {
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 struct CudaMediaTexture {
     size: lumen_gpu::Size,
-    imported: lumen_ffmpeg::ImportedCudaExternalImage<'static>,
+    imported: lumen_ffmpeg::ImportedCudaExternalImage,
     rgba: lumen_ffmpeg::CudaDeviceAllocation<'static>,
     exportable: lumen_gpu::ExportableVulkanTexture,
 }
@@ -203,7 +203,7 @@ impl CudaMediaImporter {
             .map(|device| device.ordinal)
             .unwrap_or(0);
         let context = driver.create_primary_context_for_ordinal(cuda_ordinal)?;
-        let converter = driver.create_nv12_to_rgba_converter()?;
+        let converter = driver.create_nv12_to_rgba_converter(&context)?;
         Ok(Self {
             driver,
             context,

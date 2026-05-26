@@ -11,6 +11,7 @@ pub(super) fn render_project_mp4_cuda(
     _height: u32,
     _fps: f32,
     _total_frames: u32,
+    _encoder_name: &str,
     _codec: VideoCodec,
     _verbose_debug: bool,
     _on_progress: &mut dyn FnMut(RenderProgress),

@@ -107,6 +107,7 @@ pub fn render_project_mp4(
             height,
             fps,
             total_frames,
+            &encoder.name,
             encoder.codec,
             options.verbose_debug,
             on_progress,
