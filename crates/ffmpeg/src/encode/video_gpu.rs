@@ -1,9 +1,9 @@
 use std::time::Instant;
 
-#[cfg(feature = "metal")]
-use std::ptr::NonNull;
 #[cfg(feature = "cuda")]
 use std::ptr;
+#[cfg(feature = "metal")]
+use std::ptr::NonNull;
 
 #[cfg(feature = "metal")]
 use objc2_core_foundation::CFRetained;

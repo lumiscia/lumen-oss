@@ -187,8 +187,13 @@ impl VideoDecoder {
                     .with_codec(stable_codec)
                     .with_stream_index(config.stream_index)
             })?;
-            (*decoder.context).thread_count = 0;
-            (*decoder.context).thread_type = sys::FF_THREAD_FRAME | sys::FF_THREAD_SLICE;
+            if matches!(config.mode, DecodeMode::Gpu(_)) {
+                (*decoder.context).thread_count = 1;
+                (*decoder.context).thread_type = 0;
+            } else {
+                (*decoder.context).thread_count = 0;
+                (*decoder.context).thread_type = sys::FF_THREAD_FRAME | sys::FF_THREAD_SLICE;
+            }
         }
 
         if let DecodeMode::Gpu(backend) = config.mode {
