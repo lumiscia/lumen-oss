@@ -87,6 +87,14 @@ jobs:
       - name: Check Rust workspace
         run: cargo check
 
+      - name: Install CUDA toolkit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit
+
+      - name: Check CUDA ffmpeg crate
+        run: cargo check -p lumen-engine-ffmpeg --features cuda
+
       - name: Test Rust workspace
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json

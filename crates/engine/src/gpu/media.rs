@@ -203,7 +203,7 @@ impl CudaMediaImporter {
             .map(|device| device.ordinal)
             .unwrap_or(0);
         let context = driver.create_primary_context_for_ordinal(cuda_ordinal)?;
-        let converter = driver.create_nv12_to_rgba_converter()?;
+        let converter = driver.create_nv12_to_rgba_converter(&context)?;
         Ok(Self {
             driver,
             context,

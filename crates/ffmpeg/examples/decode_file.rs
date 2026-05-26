@@ -153,7 +153,7 @@ impl CudaRgbaState {
         }
         let driver = Box::leak(Box::new(CudaDriver::load()?));
         let context = driver.create_primary_context()?;
-        let converter = driver.create_nv12_to_rgba_converter()?;
+        let converter = driver.create_nv12_to_rgba_converter(&context)?;
         let destination = driver.allocate_rgba_frame(width, height)?;
         Ok(Some(Self {
             converter,
