@@ -35,9 +35,9 @@ axum = { version = "0.8.7", default-features = false, features = [
   "tokio",
   "ws",
 ], optional = true }
-lumen-engine = { version = "0.2.0", path = "../engine", features = ["ffmpeg", "image", "json"] }
-lumen-gpu = { package = "lumen-engine-gpu", version = "0.2.0", path = "../gpu" }
-lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.2.0", path = "../ffmpeg" }
+lumen-engine = { version = "0.2.1", path = "../engine", features = ["ffmpeg", "image", "json"] }
+lumen-gpu = { package = "lumen-engine-gpu", version = "0.2.1", path = "../gpu" }
+lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.2.1", path = "../ffmpeg" }
 reqwest = { version = "0.12.24", default-features = false, features = [
   "json",
   "rustls-tls",

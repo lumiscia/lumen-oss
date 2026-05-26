@@ -1,7 +1,9 @@
 #[cfg(feature = "json")]
 use serde::Deserialize;
+#[cfg(feature = "json")]
 use serde_json::Value;
 
+#[cfg(feature = "json")]
 use super::types::{GradientPaint, GradientStop, Paint};
 
 #[cfg(feature = "json")]
@@ -15,6 +17,7 @@ pub fn from_json_value(value: &Value) -> Option<Paint> {
         .map(Paint::Gradient)
 }
 
+#[cfg(feature = "json")]
 pub fn to_json_value(paint: &Paint) -> Value {
     match paint {
         Paint::SolidColor(r, g, b, a) => Value::Array(
@@ -28,6 +31,7 @@ pub fn to_json_value(paint: &Paint) -> Value {
     }
 }
 
+#[cfg(feature = "json")]
 #[derive(serde::Serialize)]
 struct GradientPaintJsonRef<'a> {
     #[serde(rename = "type")]
@@ -68,6 +72,7 @@ struct GradientPaintJsonOwned {
     stops: Vec<GradientStop>,
 }
 
+#[cfg(feature = "json")]
 impl<'a> From<&'a GradientPaint> for GradientPaintJsonRef<'a> {
     fn from(gradient: &'a GradientPaint) -> Self {
         Self {

@@ -1,27 +1,21 @@
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { publishCrates } from "./crates.js";
 
 const dirnamePath = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(dirnamePath, "../../..");
 
-const crates = [
-  "lumen-engine-ffmpeg",
-  "lumen-engine-gpu",
-  "lumen-engine-macros",
-  "lumen-engine-text",
-  "lumen-engine",
-  "lumen-server",
-] as const;
-
 const retryDelayMs = 20_000;
 const maxAttempts = 6;
 
-for (const crate of crates) {
+for (const crate of publishCrates) {
   await publishCrate(crate);
 }
 
 async function publishCrate(crate: string): Promise<void> {
+  await verifyPublishable(crate);
+
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const result = await run("cargo", ["publish", "-p", crate]);
     if (result.status === "success") {
@@ -45,6 +39,20 @@ async function publishCrate(crate: string): Promise<void> {
 
     throw new Error(`${crate} publish failed:\n${result.output}`);
   }
+}
+
+async function verifyPublishable(crate: string): Promise<void> {
+  const result = await run("cargo", ["publish", "--dry-run", "-p", crate]);
+  if (result.status === "success") {
+    return;
+  }
+
+  if (isAlreadyPublished(result.output)) {
+    console.log(`${crate} is already published; skipping pre-publish verification.`);
+    return;
+  }
+
+  throw new Error(`${crate} failed pre-publish verification:\n${result.output}`);
 }
 
 function shouldRetry(output: string): boolean {

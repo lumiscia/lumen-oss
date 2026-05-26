@@ -1,0 +1,88 @@
+name: Dry Release
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/dry-release.yml
+      - .github/workflows/publish-packages.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - packages/**
+      - tooling/release/**
+      - package.json
+      - pnpm-lock.yaml
+      - justfile
+
+concurrency:
+  group: dry-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Dry Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: extractions/setup-just@v3
+
+      - name: Install Rust targets
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libavcodec-dev \
+            libavdevice-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswresample-dev \
+            libswscale-dev \
+            pkg-config
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install WASM tooling
+        run: cargo install wasm-bindgen-cli --version 0.2.118 --locked
+
+      - name: Check release readiness
+        run: |
+          pending_changeset="$(find .changeset -type f -name '*.md' ! -name README.md -print -quit)"
+          if [ -n "$pending_changeset" ]; then
+            echo "Pending changeset found: $pending_changeset"
+            echo "Run the Version Packages workflow and merge its PR before publishing."
+            exit 1
+          fi
+
+          release_version="$(node -p "require('./packages/lumen-types/package.json').version")"
+          if [ "$release_version" = "0.0.0" ]; then
+            echo "Package versions are still 0.0.0. Run the Version Packages workflow before publishing."
+            exit 1
+          fi
+
+          pnpm sync:cargo-version
+          git diff --exit-code Cargo.toml pnpm-lock.yaml packages/*/package.json
+          cargo metadata --no-deps --format-version 1 > /dev/null
+
+      - name: Dry-run release build and crate publish verification
+        run: pnpm release:dry-run

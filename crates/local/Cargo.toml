@@ -21,7 +21,7 @@ image = { version = "0.25.9", default-features = false, features = ["png", "jpeg
 tempfile = "3.23.0"
 lumen-engine = { path = "../engine", features = ["ffmpeg", "image", "json"] }
 lumen-gpu = { package = "lumen-engine-gpu", path = "../gpu" }
-lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.2.0", path = "../ffmpeg", features = [
+lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.2.1", path = "../ffmpeg", features = [
   "vulkan",
 ] }
 pollster = "0.4.0"
