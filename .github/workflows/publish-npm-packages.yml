@@ -1,0 +1,66 @@
+name: Publish npm Packages
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish npm
+    runs-on: ubuntu-latest
+    environment: release
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - uses: extractions/setup-just@v3
+
+      - name: Install Rust targets
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install WASM tooling
+        run: cargo install wasm-bindgen-cli --version 0.2.118 --locked
+
+      - name: Verify npm publish access
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is empty in the release environment."
+            exit 1
+          fi
+
+          npm whoami
+          npm access ls-packages "$(npm whoami)" | rg '^@lumiscia/' || {
+            echo "The npm user above cannot see @lumiscia packages."
+            exit 1
+          }
+
+      - name: Publish npm packages
+        run: pnpm release:publish-npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
