@@ -26,6 +26,7 @@ impl Paint {
         }
     }
 
+    #[cfg(feature = "json")]
     pub fn to_json_value(&self) -> serde_json::Value {
         json::to_json_value(self)
     }

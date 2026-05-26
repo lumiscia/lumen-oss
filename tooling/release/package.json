@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "publish-crates": "pnpm run build && node dist/publish-crates.js",
+    "verify-crates": "pnpm run build && node dist/verify-crates.js",
     "sync-cargo-version": "pnpm run build && node dist/sync-cargo-version.js",
     "check": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",

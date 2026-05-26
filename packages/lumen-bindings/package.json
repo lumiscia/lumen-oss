@@ -1,6 +1,6 @@
 {
   "name": "@lumiscia/lumen-bindings",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Generated WebAssembly bindings for Lumen browser and Node preview runtimes.",
   "keywords": [
     "gpu",
