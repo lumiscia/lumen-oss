@@ -186,7 +186,7 @@ struct CudaMediaImporter {
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 struct CudaMediaTexture {
     size: lumen_gpu::Size,
-    imported: lumen_ffmpeg::ImportedCudaExternalImage<'static>,
+    imported: lumen_ffmpeg::ImportedCudaExternalImage,
     rgba: lumen_ffmpeg::CudaDeviceAllocation<'static>,
     exportable: lumen_gpu::ExportableVulkanTexture,
 }

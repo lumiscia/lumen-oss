@@ -37,7 +37,7 @@ impl CudaDriver {
         let inner =
             CudaContextInner::new(ordinal.max(0) as usize).map_err(|error| error.to_string())?;
         Ok(CudaContext {
-            driver: self,
+            _driver: self,
             inner,
         })
     }
@@ -118,7 +118,7 @@ impl CudaDriver {
             .map_err(|error| error.to_string())?;
         }
         Ok(CudaDeviceAllocation {
-            driver: self,
+            _driver: self,
             device_ptr: unsafe { device_ptr.assume_init() },
             width,
             height,
@@ -174,7 +174,7 @@ impl CudaDriver {
 }
 
 pub struct CudaContext<'a> {
-    driver: &'a CudaDriver,
+    _driver: &'a CudaDriver,
     inner: Arc<CudaContextInner>,
 }
 
@@ -191,7 +191,7 @@ impl CudaContext<'_> {
 }
 
 pub struct CudaDeviceAllocation<'a> {
-    driver: &'a CudaDriver,
+    _driver: &'a CudaDriver,
     device_ptr: sys::CUdeviceptr,
     width: u32,
     height: u32,

@@ -25,7 +25,7 @@ pub struct CudaNvencTarget {
     driver: &'static CudaDriver,
     external: lumen_gpu::ExternalTexture,
     cuda_frame: CudaDeviceAllocation<'static>,
-    imported: ImportedCudaExternalImage<'static>,
+    imported: ImportedCudaExternalImage,
     exportable: lumen_gpu::ExportableVulkanTexture,
     context: CudaContext<'static>,
 }
