@@ -57,6 +57,7 @@ pub struct VideoEncoder {
     pub(in crate::encode) context: *mut sys::AVCodecContext,
     frame: AvFrame,
     scaler: *mut sys::SwsContext,
+    #[allow(dead_code)]
     pub(in crate::encode) hw_device: Option<AvBufferRef>,
     pub(in crate::encode) hw_frames: Option<AvBufferRef>,
     pub(in crate::encode) next_pts: i64,

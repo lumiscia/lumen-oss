@@ -4,7 +4,8 @@ use std::{ffi::CStr, mem::MaybeUninit, sync::Arc};
 
 use cudarc::driver::{CudaContext as CudaContextInner, result, sys};
 
-use super::{CudaExternalMemoryHandle, CudaVideoFrame, ImportedCudaExternalImage, interop, kernel};
+use super::{CudaExternalMemoryHandle, CudaVideoFrame, interop, kernel};
+use interop::ImportedCudaExternalImage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CudaDeviceInfo {
@@ -94,7 +95,7 @@ impl CudaDriver {
         } else {
             "no CUDA error description available".to_string()
         };
-        format!("{name} ({result}): {description}")
+        format!("{name} ({result:?}): {description}")
     }
 
     pub fn allocate_rgba_frame(
@@ -188,8 +189,6 @@ impl CudaContext<'_> {
             .map_err(|error| error.to_string())
     }
 }
-
-impl Drop for CudaContext<'_> {}
 
 pub struct CudaDeviceAllocation<'a> {
     driver: &'a CudaDriver,

@@ -58,13 +58,11 @@ impl CudaNv12ToRgbaConverter {
             .bind_to_thread()
             .map_err(|error| error.to_string())?;
 
-        let mut src = source.device_ptr();
-        let mut dst = destination.device_ptr();
-        let mut src_pitch = source.pitch() as u32;
-        let mut dst_pitch = destination.pitch() as u32;
+        let src = source.device_ptr();
+        let dst = destination.device_ptr();
+        let src_pitch = source.pitch() as u32;
+        let dst_pitch = destination.pitch() as u32;
         let (width, height) = source.dimensions();
-        let mut width = width;
-        let mut height = height;
 
         let block_x = 16;
         let block_y = 16;
@@ -75,12 +73,14 @@ impl CudaNv12ToRgbaConverter {
         };
 
         let mut builder = self.stream.launch_builder(&self.function);
-        builder.arg(&mut src);
-        builder.arg(&mut dst);
-        builder.arg(&mut src_pitch);
-        builder.arg(&mut dst_pitch);
-        builder.arg(&mut width);
-        builder.arg(&mut height);
-        unsafe { builder.launch(config) }.map_err(|error| error.to_string())
+        builder.arg(&src);
+        builder.arg(&dst);
+        builder.arg(&src_pitch);
+        builder.arg(&dst_pitch);
+        builder.arg(&width);
+        builder.arg(&height);
+        unsafe { builder.launch(config) }
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }

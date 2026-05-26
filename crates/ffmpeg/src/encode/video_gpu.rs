@@ -1,16 +1,23 @@
-use std::ptr::{self, NonNull};
 use std::time::Instant;
+
+#[cfg(feature = "metal")]
+use std::ptr::NonNull;
+#[cfg(feature = "cuda")]
+use std::ptr;
 
 #[cfg(feature = "metal")]
 use objc2_core_foundation::CFRetained;
 #[cfg(feature = "metal")]
 use objc2_core_video::CVPixelBuffer;
 
-use crate::ffi::{self, AvFrame, sys};
+use crate::ffi::{AvFrame, sys};
 use crate::gpu::{GpuBackend, GpuVideoInput};
 use crate::video::EncodeMode;
 use crate::{FfmpegError, Result};
-use sys::AVPixelFormat::{AV_PIX_FMT_CUDA, AV_PIX_FMT_VIDEOTOOLBOX};
+#[cfg(feature = "cuda")]
+use sys::AVPixelFormat::AV_PIX_FMT_CUDA;
+#[cfg(feature = "metal")]
+use sys::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX;
 
 use super::output::OutputContext;
 use super::telemetry::GpuUploadDescriptor;
