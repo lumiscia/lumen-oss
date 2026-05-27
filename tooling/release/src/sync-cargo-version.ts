@@ -33,7 +33,9 @@ console.log(`Synced Cargo workspace version to ${version}`);
 
 const syncedDependencyManifests = await syncInternalCrateDependencyVersions(version);
 if (syncedDependencyManifests > 0) {
-  console.log(`Synced internal crate dependency versions in ${syncedDependencyManifests} manifests`);
+  console.log(
+    `Synced internal crate dependency versions in ${syncedDependencyManifests} manifests`,
+  );
 }
 
 interface SyncResult {
