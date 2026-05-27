@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/dry-release.yml
       - .github/workflows/publish-packages.yml
+      - .changeset/**
       - Cargo.toml
       - Cargo.lock
       - crates/**
@@ -65,10 +66,14 @@ jobs:
       - name: Install WASM tooling
         run: cargo install wasm-bindgen-cli --version 0.2.118 --locked
 
+      - name: Apply pull request changesets
+        if: github.event_name == 'pull_request'
+        run: pnpm release:version
+
       - name: Check release readiness
         run: |
           pending_changeset="$(find .changeset -type f -name '*.md' ! -name README.md -print -quit)"
-          if [ -n "$pending_changeset" ]; then
+          if [ "${{ github.event_name }}" != "pull_request" ] && [ -n "$pending_changeset" ]; then
             echo "Pending changeset found: $pending_changeset"
             echo "Run the Version Packages workflow and merge its PR before publishing."
             exit 1
@@ -81,7 +86,9 @@ jobs:
           fi
 
           pnpm sync:cargo-version
-          git diff --exit-code Cargo.toml pnpm-lock.yaml packages/*/package.json
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            git diff --exit-code Cargo.toml pnpm-lock.yaml packages/*/package.json
+          fi
           cargo metadata --no-deps --format-version 1 > /dev/null
 
       - name: Dry-run release build and crate publish verification
