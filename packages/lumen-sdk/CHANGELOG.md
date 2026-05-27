@@ -1,5 +1,12 @@
 # @lumiscia/lumen-sdk
 
+## 0.2.2
+
+### Patch Changes
+
+- @lumiscia/lumen-shared@0.2.2
+- @lumiscia/lumen-types@0.2.2
+
 ## 0.2.0
 
 ### Minor Changes

@@ -187,6 +187,13 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 (MAX_TEXT_GLYPHS * std::mem::size_of::<lumen_text::GpuGlyphInstance>()) as u64,
             ),
         );
+        let paint_buffer = self.ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(text.id.0),
+            Some(format!("text:{}:paint", text.id.0)),
+            lumen_gpu::BufferDesc::uniform(
+                std::mem::size_of::<crate::node::vector::paint::GpuPaint>() as u64,
+            ),
+        );
         let atlas_sampler = self.ctx.builder_mut().sampler(
             Some(format!("text:{}:atlas-sampler", text.id.0)),
             lumen_gpu::wgpu::SamplerDescriptor {
@@ -225,6 +232,10 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                         lumen_gpu::wgpu::ShaderStages::VERTEX,
                         true,
                     ),
+                    lumen_gpu::BindingLayoutEntry::uniform(
+                        4,
+                        lumen_gpu::wgpu::ShaderStages::FRAGMENT,
+                    ),
                 ]),
                 targets: vec![Some(lumen_gpu::wgpu::ColorTargetState {
                     format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
@@ -251,6 +262,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                     lumen_gpu::Binding::sampled_texture(0, 1, atlas_texture),
                     lumen_gpu::Binding::sampler(0, 2, atlas_sampler),
                     lumen_gpu::Binding::storage_buffer(0, 3, instances_buffer),
+                    lumen_gpu::Binding::uniform(0, 4, paint_buffer),
                 ],
                 vertex_buffers: Vec::new(),
                 index_buffer: None,
@@ -266,6 +278,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             atlas_texture,
             globals_buffer,
             instances_buffer,
+            paint_buffer,
             atlas_size: TEXT_ATLAS_SIZE,
             max_glyphs: MAX_TEXT_GLYPHS,
             size,

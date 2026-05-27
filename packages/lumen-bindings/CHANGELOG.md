@@ -1,5 +1,12 @@
 # @lumiscia/lumen-bindings
 
+## 0.2.2
+
+### Patch Changes
+
+- 9d1fc11: Fix gradient paint rendering for conic angle offsets and text fills.
+  - @lumiscia/lumen-preview@0.2.2
+
 ## 0.2.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@lumiscia/lumen-sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "TypeScript SDK for creating media and render jobs with Lumen.",
   "keywords": [
     "composition",
