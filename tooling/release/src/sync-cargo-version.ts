@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,6 +6,7 @@ const dirnamePath = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(dirnamePath, "../../..");
 const packageJsonPath = resolve(repoRoot, "packages/lumen-types/package.json");
 const cargoTomlPath = resolve(repoRoot, "Cargo.toml");
+const cratesPath = resolve(repoRoot, "crates");
 
 interface PackageJson {
   readonly version?: unknown;
@@ -29,6 +30,13 @@ if (contents !== cargoToml) {
   await writeFile(cargoTomlPath, contents);
 }
 console.log(`Synced Cargo workspace version to ${version}`);
+
+const syncedDependencyManifests = await syncInternalCrateDependencyVersions(version);
+if (syncedDependencyManifests > 0) {
+  console.log(
+    `Synced internal crate dependency versions in ${syncedDependencyManifests} manifests`,
+  );
+}
 
 interface SyncResult {
   readonly found: boolean;
@@ -64,4 +72,56 @@ function syncWorkspacePackageVersion(cargoToml: string, version: string): SyncRe
   }
 
   return { found: false, contents: cargoToml };
+}
+
+async function syncInternalCrateDependencyVersions(version: string): Promise<number> {
+  let changedManifests = 0;
+  const crateDirs = await readdir(cratesPath, { withFileTypes: true });
+
+  for (const crateDir of crateDirs) {
+    if (!crateDir.isDirectory()) {
+      continue;
+    }
+
+    const manifestPath = resolve(cratesPath, crateDir.name, "Cargo.toml");
+    const manifest = await readFile(manifestPath, "utf8");
+    const contents = syncPathDependencyVersions(manifest, version);
+
+    if (contents !== manifest) {
+      await writeFile(manifestPath, contents);
+      changedManifests += 1;
+    }
+  }
+
+  return changedManifests;
+}
+
+function syncPathDependencyVersions(cargoToml: string, version: string): string {
+  const lines = cargoToml.split(/\r?\n/);
+  let dependencyStart: number | undefined;
+  let dependencyHasPath = false;
+
+  for (const [index, line] of lines.entries()) {
+    if (dependencyStart === undefined) {
+      if (/^\s*[\w-]+\s*=\s*\{/.test(line)) {
+        dependencyStart = index;
+        dependencyHasPath = /\bpath\s*=\s*"\.\.\//.test(line);
+      } else {
+        continue;
+      }
+    } else if (/\bpath\s*=\s*"\.\.\//.test(line)) {
+      dependencyHasPath = true;
+    }
+
+    if (dependencyHasPath && /\bversion\s*=/.test(line)) {
+      lines[index] = line.replace(/\bversion\s*=\s*"[^"]+"/, `version = "${version}"`);
+    }
+
+    if (line.includes("}")) {
+      dependencyStart = undefined;
+      dependencyHasPath = false;
+    }
+  }
+
+  return lines.join("\n");
 }
