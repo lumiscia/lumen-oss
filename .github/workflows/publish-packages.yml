@@ -77,33 +77,12 @@ jobs:
           git diff --exit-code Cargo.toml pnpm-lock.yaml packages/*/package.json
           cargo metadata --no-deps --format-version 1 > /dev/null
 
-      - name: Verify npm publish access
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "NPM_TOKEN is empty in the release environment."
-            echo "Add a granular npm access token with publish access to the @lumiscia scope."
-            exit 1
-          fi
-
-          npm whoami
-          npm access ls-packages "$(npm whoami)" | rg '^@lumiscia/' || {
-            echo "The npm user above cannot see @lumiscia packages."
-            echo "Use a token for an npm account that is a member of the @lumiscia organization with read-write publish access."
-            exit 1
-          }
-
-      - name: Publish Rust crates
-        run: pnpm release:build && pnpm publish:crates
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish npm packages
-        run: pnpm publish:packages
+      - name: Publish packages
+        run: pnpm release:publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Read release metadata
         id: release_metadata

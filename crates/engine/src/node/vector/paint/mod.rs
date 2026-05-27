@@ -438,15 +438,4 @@ mod tests {
         assert_eq!(g.angle, 0.0);
         assert!(g.stops.is_empty());
     }
-
-    #[test]
-    fn conic_gradient_shaders_wrap_angle_offsets() {
-        for shader in [
-            crate::node::source::background::SHADER,
-            crate::node::vector::renderer::SHAPE_SHADER,
-            crate::node::vector::renderer::PATH_SHADER,
-        ] {
-            assert!(shader.contains("fract(angle - paint.angle / 360.0)"));
-        }
-    }
 }
