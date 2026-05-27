@@ -791,6 +791,8 @@ mod tests {
     #[test]
     fn exposes_wgsl_shader_sources() {
         assert!(ALPHA_TEXT_SHADER.contains("textureSample"));
+        assert!(ALPHA_TEXT_SHADER.contains("@binding(4) var<uniform> paint: Paint"));
+        assert!(ALPHA_TEXT_SHADER.contains("sample_paint(in.position.xy)"));
         #[cfg(feature = "experimental-msdf")]
         {
             assert!(MSDF_TEXT_SHADER.contains("median3"));

@@ -135,6 +135,7 @@ pub(crate) struct CompiledText {
     pub(crate) atlas_texture: lumen_gpu::TextureId,
     pub(crate) globals_buffer: lumen_gpu::BufferId,
     pub(crate) instances_buffer: lumen_gpu::BufferId,
+    pub(crate) paint_buffer: lumen_gpu::BufferId,
     pub(crate) atlas_size: lumen_gpu::Size,
     pub(crate) max_glyphs: usize,
     pub(crate) size: lumen_gpu::Size,
@@ -153,7 +154,7 @@ impl GpuCompiledNode for CompiledText {
         })?;
         let content = evaluated.content;
         let font_family = evaluated.font_family;
-        let color = evaluated.color.to_gpu([255, 255, 255, 255]).colors[0];
+        let paint = evaluated.color.to_gpu([255, 255, 255, 255]);
         let (position_x, position_y) = evaluated.position;
         let font_size = evaluated.font_size as f32;
         let max_width = evaluated.max_width as f32;
@@ -173,7 +174,7 @@ impl GpuCompiledNode for CompiledText {
         };
         request.max_width = (max_width > 0.0).then_some(max_width);
         request.origin = [0.0, 0.0];
-        let color_f32 = color;
+        let color_f32 = [1.0; 4];
         request.color = [1.0; 4];
         request.align = match alignment_horizontal {
             TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
@@ -201,7 +202,7 @@ impl GpuCompiledNode for CompiledText {
             atlas_key: atlas_key.clone(),
             position_x_bits: (position_x as f32).to_bits(),
             position_y_bits: (position_y as f32).to_bits(),
-            color: color.map(|component| (component.clamp(0.0, 1.0) * 255.0).round() as u8),
+            paint: evaluated.color.clone(),
             alignment_vertical,
             output_width: self.size.width,
             output_height: self.size.height,
@@ -275,6 +276,7 @@ impl GpuCompiledNode for CompiledText {
         };
 
         bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
+        bound.write_buffer(self.paint_buffer, 0, bytemuck::bytes_of(&paint));
         if !instances.is_empty() {
             bound.write_buffer(self.instances_buffer, 0, bytemuck::cast_slice(&instances));
         }
@@ -317,12 +319,12 @@ struct TextAtlasCacheKey {
     max_glyphs: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct TextFrameCacheKey {
     atlas_key: TextAtlasCacheKey,
     position_x_bits: u32,
     position_y_bits: u32,
-    color: [u8; 4],
+    paint: Paint,
     alignment_vertical: TextAlignmentVertical,
     output_width: u32,
     output_height: u32,

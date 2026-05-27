@@ -82,7 +82,7 @@ fn sample_paint(paint: Paint, pixel: vec2<f32>, local01: vec2<f32>) -> vec4<f32>
     }
     if (paint.kind == 3u) {
         let angle = atan2(p.y - paint.center.y, p.x - paint.center.x) / 6.28318530718 + 0.5;
-        return interpolate_color(paint, angle - paint.angle / 360.0);
+        return interpolate_color(paint, fract(angle - paint.angle / 360.0));
     }
     return paint.colors[0];
 }

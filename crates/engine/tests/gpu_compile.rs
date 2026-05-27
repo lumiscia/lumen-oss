@@ -33,7 +33,7 @@ use lumen_engine::{
             text::{Text, TextParamsDelegate},
         },
         vector::{
-            paint::Paint,
+            paint::{GradientPaint, GradientStop, Paint, PaintKind},
             path::{Path, PathParamsDelegate},
             shape::{Shape, ShapeParamsDelegate},
         },
@@ -1095,7 +1095,21 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
             params: TextParamsDelegate {
                 content: Deferred::value("hi".to_string()),
                 font_size: Deferred::value(4.0),
-                color: Paint::solid([255, 255, 255, 255]).into(),
+                color: Paint::Gradient(GradientPaint {
+                    kind: PaintKind::LinearGradient,
+                    stops: vec![
+                        GradientStop {
+                            offset: 0.0,
+                            color: [255, 0, 0, 255],
+                        },
+                        GradientStop {
+                            offset: 1.0,
+                            color: [0, 0, 255, 255],
+                        },
+                    ],
+                    ..Default::default()
+                })
+                .into(),
                 ..Default::default()
             },
             ..Text::default()
@@ -1125,10 +1139,11 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         .unwrap();
 
     assert_eq!(compiled.plan.textures().len(), 4);
+    assert_eq!(compiled.plan.buffers().len(), 5);
     assert_eq!(compiled.plan.programs().len(), 3);
     assert!(compiled.compiled_nodes.contains_key(&shape));
     assert!(compiled.compiled_nodes.contains_key(&text));
-    assert_eq!(bound.frame_update().uploads().len(), 5);
+    assert_eq!(bound.frame_update().uploads().len(), 6);
 
     let unchanged = FrameBindContext::new(&composition, 0)
         .bind(&compiled)
