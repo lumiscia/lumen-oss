@@ -349,6 +349,13 @@
                     "title": "Paint",
                     "x-lumen-kind": "paint"
                   },
+                  "paint_supersample": {
+                    "default": true,
+                    "description": "Enables 4×4 supersampling when evaluating paint at each pixel.",
+                    "title": "Paint Supersample",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
+                  },
                   "width": {
                     "default": 0,
                     "description": "Output width in pixels. Use 0 to match the composition width.",
@@ -1492,6 +1499,13 @@
                     },
                     "x-lumen-kind": "string"
                   },
+                  "edge_antialias": {
+                    "default": true,
+                    "description": "Enables analytic distance-based edge antialiasing.",
+                    "title": "Edge Antialias",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
+                  },
                   "fill_enabled": {
                     "default": true,
                     "description": "Enables fill rendering.",
@@ -1867,6 +1881,13 @@
                     },
                     "x-lumen-kind": "float"
                   },
+                  "edge_antialias": {
+                    "default": true,
+                    "description": "Enables analytic distance-based edge antialiasing.",
+                    "title": "Edge Antialias",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
+                  },
                   "fill_enabled": {
                     "default": true,
                     "description": "Enables fill rendering.",
@@ -2200,6 +2221,13 @@
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"
+                  },
+                  "paint_supersample": {
+                    "default": true,
+                    "description": "Enables 4×4 supersampling when evaluating paint at each glyph pixel.",
+                    "title": "Paint Supersample",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
                   },
                   "position": {
                     "$ref": "#/$defs/vec2",

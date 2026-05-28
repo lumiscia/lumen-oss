@@ -32,7 +32,7 @@ fn node_schemas_are_derived_from_node_structs() {
             .iter()
             .map(|property| property.id)
             .collect::<Vec<_>>(),
-        vec!["paint", "width", "height"]
+        vec!["paint", "width", "height", "paint_supersample"]
     );
     assert!(matches!(
         background

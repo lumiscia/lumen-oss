@@ -11,8 +11,8 @@ struct Paint {
     spread: u32,
     interpolation: u32,
     stop_count: u32,
-    _pad0: u32,
-    _pad1: u32,
+    paint_supersample: u32,
+    _pad: u32,
 }
 
 struct ShapeParams {
@@ -89,6 +89,43 @@ fn sd_ellipse(p: vec2<f32>, half_size: vec2<f32>) -> f32 {
     return (length(normalized) - 1.0) * min(safe_half.x, safe_half.y);
 }
 
+fn edge_coverage(distance: f32, edge_antialias: bool) -> f32 {
+    return select(
+        select(0.0, 1.0, distance <= 0.0),
+        clamp(0.5 - distance, 0.0, 1.0),
+        edge_antialias,
+    );
+}
+
+fn shape_distance(pixel: vec2<f32>) -> f32 {
+    let half_size = max(params.size * 0.5, vec2<f32>(0.5));
+    let center = params.position + half_size;
+    let local = pixel - center;
+    return select(
+        sd_rect(local, half_size, params.border_radius),
+        sd_ellipse(local, half_size),
+        params.geometry_kind == 1u,
+    );
+}
+
+fn sample_shape(pixel: vec2<f32>) -> vec4<f32> {
+    let distance = shape_distance(pixel);
+    let fill_enabled = (params.flags & 1u) != 0u;
+    let stroke_enabled = (params.flags & 2u) != 0u;
+    let edge_antialias = (params.flags & 4u) != 0u;
+    let fill_alpha = select(0.0, edge_coverage(distance, edge_antialias), fill_enabled);
+    let stroke_distance = abs(distance) - params.stroke_width * 0.5;
+    let stroke_alpha = select(
+        0.0,
+        edge_coverage(stroke_distance, edge_antialias),
+        stroke_enabled,
+    );
+    let local01 = clamp((pixel - params.position) / max(params.size, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));
+    let fill = sample_paint(params.fill_paint, pixel, local01) * fill_alpha;
+    let stroke = sample_paint(params.stroke_paint, pixel, local01) * stroke_alpha;
+    return mix(fill, stroke, stroke_alpha);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = textureDimensions(output_tex);
@@ -96,23 +133,6 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let pixel = vec2<f32>(f32(id.x) + 0.5, f32(id.y) + 0.5);
-    let half_size = max(params.size * 0.5, vec2<f32>(0.5));
-    let center = params.position + half_size;
-    let local = pixel - center;
-    let distance = select(
-        sd_rect(local, half_size, params.border_radius),
-        sd_ellipse(local, half_size),
-        params.geometry_kind == 1u,
-    );
-    let fill_enabled = (params.flags & 1u) != 0u;
-    let stroke_enabled = (params.flags & 2u) != 0u;
-    let fill_alpha = select(0.0, clamp(0.5 - distance, 0.0, 1.0), fill_enabled);
-    let stroke_distance = abs(distance) - params.stroke_width * 0.5;
-    let stroke_alpha = select(0.0, clamp(0.5 - stroke_distance, 0.0, 1.0), stroke_enabled);
-    let local01 = clamp((pixel - params.position) / max(params.size, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));
-    let fill = sample_paint(params.fill_paint, pixel, local01) * fill_alpha;
-    let stroke = sample_paint(params.stroke_paint, pixel, local01) * stroke_alpha;
-    let color = mix(fill, stroke, stroke_alpha);
-    textureStore(output_tex, vec2<i32>(id.xy), color);
+    let pixel_origin = vec2<f32>(f32(id.x), f32(id.y));
+    textureStore(output_tex, vec2<i32>(id.xy), sample_shape(pixel_origin + vec2<f32>(0.5)));
 }

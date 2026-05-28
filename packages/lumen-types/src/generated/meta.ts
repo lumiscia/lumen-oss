@@ -145,6 +145,7 @@ export interface BackgroundNode extends CompositionNodeBase<"background"> {
   readonly params?: {
     readonly "height"?: ExpressionValue<number>;
     readonly "paint"?: ExpressionValue<Paint>;
+    readonly "paint_supersample"?: ExpressionValue<boolean>;
     readonly "width"?: ExpressionValue<number>;
   };
 }
@@ -253,6 +254,7 @@ export interface MergeNode extends CompositionNodeBase<"merge"> {
 export interface PathNode extends CompositionNodeBase<"path"> {
   readonly params?: {
     readonly "data"?: ExpressionValue<string>;
+    readonly "edge_antialias"?: ExpressionValue<boolean>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
     readonly "fill_paint"?: ExpressionValue<Paint>;
     readonly "position"?: ExpressionValue<Vec2>;
@@ -291,6 +293,7 @@ export interface ShadowNode extends CompositionNodeBase<"shadow"> {
 export interface ShapeNode extends CompositionNodeBase<"shape"> {
   readonly params?: {
     readonly "border_radius"?: ExpressionValue<number>;
+    readonly "edge_antialias"?: ExpressionValue<boolean>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
     readonly "fill_paint"?: ExpressionValue<Paint>;
     readonly "geometry_kind"?: ExpressionValue<ShapeGeometryKind>;
@@ -321,6 +324,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "font_style"?: ExpressionValue<TextFontStyle>;
     readonly "font_weight"?: ExpressionValue<number>;
     readonly "max_width"?: ExpressionValue<number>;
+    readonly "paint_supersample"?: ExpressionValue<boolean>;
     readonly "position"?: ExpressionValue<Vec2>;
   };
 }

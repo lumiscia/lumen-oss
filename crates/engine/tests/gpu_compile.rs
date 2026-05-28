@@ -57,6 +57,7 @@ fn compiles_background_exposure_media_output_to_gpu_plan() {
                 ),
                 width: Deferred::value(8),
                 height: Deferred::value(4),
+                paint_supersample: Deferred::value(true),
             },
         }),
     );
@@ -137,6 +138,7 @@ fn frame_binding_updates_expression_uniforms_without_recompile() {
                 ),
                 width: Deferred::value(8),
                 height: Deferred::value(4),
+                paint_supersample: Deferred::value(true),
             },
         }),
     );
@@ -309,6 +311,7 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
                 paint: lumen_engine::node::vector::paint::PaintDelegate::from(
                     lumen_engine::node::vector::paint::Paint::solid([0, 0, 0, 255]),
                 ),
+                paint_supersample: Deferred::value(true),
             },
         }),
     );
@@ -1197,6 +1200,7 @@ fn solid(id: NodeId, color: [u8; 4]) -> NodeKind {
             ),
             width: Deferred::value(8),
             height: Deferred::value(4),
+            paint_supersample: Deferred::value(true),
         },
     })
 }

@@ -20,7 +20,8 @@ pub(crate) struct GpuPaint {
     pub(crate) spread: u32,
     pub(crate) interpolation: u32,
     pub(crate) stop_count: u32,
-    pub(crate) _pad: [u32; 2],
+    pub(crate) paint_supersample: u32,
+    pub(crate) _pad: u32,
 }
 
 impl GpuPaint {

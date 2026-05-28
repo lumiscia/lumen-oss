@@ -104,6 +104,14 @@ const DEMOS: &[DemoComposition] = &[
         name: "feature_showcase",
         source: include_str!("../../../local/demo/feature-showcase.json"),
     },
+    DemoComposition {
+        name: "antialiasing_worst_cases_aa",
+        source: include_str!("../../../local/demo/antialiasing-worst-cases.json"),
+    },
+    DemoComposition {
+        name: "antialiasing_worst_cases_noaa",
+        source: include_str!("../../../local/demo/antialiasing-worst-cases-noaa.json"),
+    },
 ];
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -203,7 +211,9 @@ fn parse_args() -> anyhow::Result<Args> {
                 ));
             }
             "--list" => {
-                println!("compositions: all, announcement_gpu, feature_showcase");
+                println!(
+                    "compositions: all, announcement_gpu, feature_showcase, antialiasing_worst_cases_aa, antialiasing_worst_cases_noaa"
+                );
                 println!(
                     "modes: all, render-only, render-profile, readback, readback-profile, cpu-encode, cpu-encode-profile, metal-videotoolbox, metal-videotoolbox-profile, vk-cuda-export, vk-cuda-nvenc"
                 );
@@ -226,7 +236,7 @@ fn parse_args() -> anyhow::Result<Args> {
 
 fn print_help() {
     println!(
-        "usage: lumen-bench-composition [--composition all|announcement_gpu|feature_showcase] [--mode all|render-only|render-profile|readback|readback-profile|cpu-encode|cpu-encode-profile|metal-videotoolbox|metal-videotoolbox-profile|vk-cuda-export|vk-cuda-nvenc] [--frames N] [--save PATH]"
+        "usage: lumen-bench-composition [--composition all|announcement_gpu|feature_showcase|antialiasing_worst_cases_aa|antialiasing_worst_cases_noaa] [--mode all|render-only|render-profile|readback|readback-profile|cpu-encode|cpu-encode-profile|metal-videotoolbox|metal-videotoolbox-profile|vk-cuda-export|vk-cuda-nvenc] [--frames N] [--save PATH]"
     );
 }
 

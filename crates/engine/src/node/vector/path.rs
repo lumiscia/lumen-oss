@@ -31,6 +31,9 @@ pub struct PathParams {
     /// Stroke width in pixels.
     #[meta(min = 0, step = 0.5)]
     pub stroke_width: f64,
+    /// Enables analytic distance-based edge antialiasing.
+    #[meta()]
+    pub edge_antialias: bool,
 }
 
 impl Default for PathParams {
@@ -43,6 +46,7 @@ impl Default for PathParams {
             stroke_enabled: false,
             stroke_paint: Paint::solid([0, 0, 0, 255]),
             stroke_width: 1.0,
+            edge_antialias: true,
         }
     }
 }
@@ -102,6 +106,9 @@ impl GpuCompiledNode for CompiledPath {
         }
         if evaluated.stroke_enabled {
             flags |= 2;
+        }
+        if evaluated.edge_antialias {
+            flags |= 4;
         }
 
         let params = super::renderer::PathParams {
