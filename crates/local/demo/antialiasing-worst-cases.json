@@ -1,7 +1,7 @@
 {
   "timeline": {
     "fps": 30,
-    "duration_frames": 1
+    "duration_frames": 120
   },
   "render_settings": {
     "width": 1920,
