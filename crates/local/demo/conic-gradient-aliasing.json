@@ -39,7 +39,5 @@
       "type": "media_output"
     }
   ],
-  "connections": [
-    { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
-  ]
+  "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
 }
