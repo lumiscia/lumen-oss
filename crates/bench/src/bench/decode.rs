@@ -1,8 +1,9 @@
 use std::{
     fs,
+    io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, anyhow};
@@ -51,37 +52,22 @@ fn run_inner() -> anyhow::Result<()> {
     let crate_elapsed = crate_start.elapsed();
     let crate_rss = max_rss_platform_units();
 
-    let cli_start = Instant::now();
-    let status = Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            path.to_str().expect("path"),
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-",
-        ])
-        .stdout(Stdio::null())
-        .status()
-        .context("run ffmpeg decode")?;
-    if !status.success() {
-        return Err(anyhow!("ffmpeg CLI decode failed"));
-    }
-    let cli_elapsed = cli_start.elapsed();
+    // Warm up source media and codec pages so the timed CLI run measures decode work,
+    // not cold file cache or one-off process startup.
+    let _ = time_ffmpeg_cli_decode(&path)?;
+
+    let (cli_startup, cli_decode) = time_ffmpeg_cli_decode(&path)?;
     let cli_rss = max_rss_platform_units();
 
     println!(
-        "decode_bench frames={} crate_frames={} crate_decode_ms={} ffmpeg_cli_decode_ms={} crate_fps={:.2} ffmpeg_cli_fps={:.2} crate_max_rss_platform_units={} after_cli_max_rss_platform_units={} source={}",
+        "decode_bench frames={} crate_frames={} crate_decode_ms={} ffmpeg_cli_startup_ms={} ffmpeg_cli_decode_ms={} crate_fps={:.2} ffmpeg_cli_fps={:.2} crate_max_rss_platform_units={} after_cli_max_rss_platform_units={} source={}",
         args.frames,
         crate_frames,
         crate_elapsed.as_millis(),
-        cli_elapsed.as_millis(),
+        cli_startup.as_millis(),
+        cli_decode.as_millis(),
         args.frames as f64 / crate_elapsed.as_secs_f64().max(1e-9),
-        args.frames as f64 / cli_elapsed.as_secs_f64().max(1e-9),
+        args.frames as f64 / cli_decode.as_secs_f64().max(1e-9),
         crate_rss,
         cli_rss,
         path.display()
@@ -102,12 +88,12 @@ fn run_inner() -> anyhow::Result<()> {
     summary.push_row(vec![
         "ffmpeg CLI".to_string(),
         frames.to_string(),
-        format_duration(cli_elapsed),
-        format_fps(frames, cli_elapsed),
+        format_duration(cli_decode),
+        format_fps(frames, cli_decode),
         cli_rss.to_string(),
     ]);
-    if frames > 0 && !crate_elapsed.is_zero() && !cli_elapsed.is_zero() {
-        let speedup = cli_elapsed.as_secs_f64() / crate_elapsed.as_secs_f64();
+    if frames > 0 && !crate_elapsed.is_zero() && !cli_decode.is_zero() {
+        let speedup = cli_decode.as_secs_f64() / crate_elapsed.as_secs_f64();
         summary.push_row(vec![
             "crate vs CLI".to_string(),
             "-".to_string(),
@@ -193,6 +179,42 @@ fn frame(width: u32, height: u32, pts: i64) -> CpuVideoFrame {
         pts: Some(pts),
         data,
     }
+}
+
+fn time_ffmpeg_cli_decode(path: &Path) -> anyhow::Result<(Duration, Duration)> {
+    let startup_start = Instant::now();
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            path.to_str().expect("path"),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("spawn ffmpeg decode")?;
+    let startup = startup_start.elapsed();
+
+    let decode_start = Instant::now();
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("ffmpeg stdout unavailable"))?;
+    io::copy(&mut stdout, &mut io::sink()).context("drain ffmpeg decode output")?;
+    let decode = decode_start.elapsed();
+
+    let status = child.wait().context("wait for ffmpeg decode")?;
+    if !status.success() {
+        return Err(anyhow!("ffmpeg CLI decode failed"));
+    }
+    Ok((startup, decode))
 }
 
 fn decode_with_crate(path: &Path) -> anyhow::Result<usize> {
