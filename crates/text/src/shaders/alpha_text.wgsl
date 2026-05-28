@@ -89,6 +89,17 @@ fn sample_paint(pixel: vec2<f32>) -> vec4<f32> {
     return paint.colors[0];
 }
 
+fn sample_paint_aa(pixel: vec2<f32>) -> vec4<f32> {
+    var color = vec4<f32>(0.0);
+    for (var y = 0u; y < 4u; y = y + 1u) {
+        for (var x = 0u; x < 4u; x = x + 1u) {
+            let offset = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) * 0.25 - vec2<f32>(0.5);
+            color += sample_paint(pixel + offset);
+        }
+    }
+    return color * 0.0625;
+}
+
 @vertex
 fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
@@ -129,7 +140,7 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let sample = textureSample(atlas_texture, atlas_sampler, in.uv);
-    let text_paint = sample_paint(in.position.xy);
+    let text_paint = sample_paint_aa(in.position.xy);
     if (in.mode == 1u) {
         return vec4<f32>(sample.rgb, sample.a * in.color.a * text_paint.a);
     }

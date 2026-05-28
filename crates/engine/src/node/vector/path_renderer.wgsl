@@ -132,14 +132,7 @@ fn path_edge_distance(p: vec2<f32>) -> f32 {
     return min_distance;
 }
 
-@compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let dims = textureDimensions(output_tex);
-    if (id.x >= dims.x || id.y >= dims.y) {
-        return;
-    }
-
-    let pixel = vec2<f32>(f32(id.x) + 0.5, f32(id.y) + 0.5);
+fn sample_path(pixel: vec2<f32>) -> vec4<f32> {
     let fill_enabled = (params.flags & 1u) != 0u;
     let stroke_enabled = (params.flags & 2u) != 0u;
     let distance = path_edge_distance(pixel);
@@ -153,6 +146,28 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let local01 = clamp((pixel - bounds_origin) / max(params.bounds_size, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));
     let fill = sample_paint(params.fill_paint, pixel, local01) * fill_alpha;
     let stroke = sample_paint(params.stroke_paint, pixel, local01) * stroke_alpha;
-    let color = mix(fill, stroke, stroke_alpha);
+    return mix(fill, stroke, stroke_alpha);
+}
+
+fn sample_path_aa(pixel_origin: vec2<f32>) -> vec4<f32> {
+    var color = vec4<f32>(0.0);
+    for (var y = 0u; y < 4u; y = y + 1u) {
+        for (var x = 0u; x < 4u; x = x + 1u) {
+            let offset = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) * 0.25;
+            color += sample_path(pixel_origin + offset);
+        }
+    }
+    return color * 0.0625;
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let dims = textureDimensions(output_tex);
+    if (id.x >= dims.x || id.y >= dims.y) {
+        return;
+    }
+
+    let pixel_origin = vec2<f32>(f32(id.x), f32(id.y));
+    let color = sample_path_aa(pixel_origin);
     textureStore(output_tex, vec2<i32>(id.xy), color);
 }

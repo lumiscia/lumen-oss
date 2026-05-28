@@ -1,0 +1,45 @@
+{
+  "timeline": {
+    "fps": 30,
+    "duration_frames": 1
+  },
+  "render_settings": {
+    "width": 1920,
+    "height": 1080,
+    "background_color": [8, 10, 14, 255]
+  },
+  "metadata": {
+    "title": "Conic Gradient Aliasing",
+    "description": "A full-frame conic gradient with a 45 degree angle and intentionally different edge colors."
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "type": "background",
+      "params": {
+        "width": 1920,
+        "height": 1080,
+        "paint": {
+          "type": "conic_gradient",
+          "center": [0.5, 0.5],
+          "angle": 45,
+          "stops": [
+            { "offset": 0, "color": [255, 59, 48, 255] },
+            { "offset": 0.18, "color": [255, 204, 0, 255] },
+            { "offset": 0.38, "color": [52, 199, 89, 255] },
+            { "offset": 0.58, "color": [0, 122, 255, 255] },
+            { "offset": 0.78, "color": [191, 90, 242, 255] },
+            { "offset": 1, "color": [8, 10, 14, 255] }
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "media_output"
+    }
+  ],
+  "connections": [
+    { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
+  ]
+}
