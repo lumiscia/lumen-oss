@@ -31,9 +31,9 @@
         "height": 420,
         "position": [210, 150],
         "fill_enabled": true,
-        "fill_color": [39, 52, 105, 255],
+        "fill_paint": [39, 52, 105, 255],
         "stroke_enabled": true,
-        "stroke_color": [94, 234, 212, 255],
+        "stroke_paint": [94, 234, 212, 255],
         "stroke_width": 4
       }
     },
@@ -44,9 +44,9 @@
         "data": "0,-115 35,-38 122,-35 52,18 75,105 0,58 -75,105 -52,18 -122,-35 -35,-38",
         "position": [420, 360],
         "fill_enabled": true,
-        "fill_color": [244, 114, 182, 220],
+        "fill_paint": [244, 114, 182, 220],
         "stroke_enabled": true,
-        "stroke_color": [254, 240, 138, 255],
+        "stroke_paint": [254, 240, 138, 255],
         "stroke_width": 5
       }
     },
