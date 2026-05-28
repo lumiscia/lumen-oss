@@ -265,7 +265,10 @@ fn composition_source(demo: &DemoComposition) -> anyhow::Result<String> {
                 .get_mut("params")
                 .and_then(serde_json::Value::as_object_mut)
         {
-            params.insert("anti_alias".to_string(), serde_json::Value::Bool(anti_alias));
+            params.insert(
+                "anti_alias".to_string(),
+                serde_json::Value::Bool(anti_alias),
+            );
         }
     }
     serde_json::to_string(&value).context("failed to encode benchmark composition")
