@@ -135,11 +135,23 @@ fn path_edge_distance(p: vec2<f32>) -> f32 {
 fn sample_path(pixel: vec2<f32>) -> vec4<f32> {
     let fill_enabled = (params.flags & 1u) != 0u;
     let stroke_enabled = (params.flags & 2u) != 0u;
+    let anti_alias = (params.flags & 4u) != 0u;
     let distance = path_edge_distance(pixel);
-    let fill_alpha = select(0.0, 1.0, fill_enabled && polygon_contains(pixel));
+    let inside = polygon_contains(pixel);
+    let signed_distance = select(distance, -distance, inside);
+    let fill_coverage = select(
+        select(0.0, 1.0, inside),
+        clamp(0.5 - signed_distance, 0.0, 1.0),
+        anti_alias,
+    );
+    let fill_alpha = select(0.0, fill_coverage, fill_enabled);
     let stroke_alpha = select(
         0.0,
-        clamp(0.5 - (distance - params.stroke_width * 0.5), 0.0, 1.0),
+        select(
+            select(0.0, 1.0, distance <= params.stroke_width * 0.5),
+            clamp(0.5 - (distance - params.stroke_width * 0.5), 0.0, 1.0),
+            anti_alias,
+        ),
         stroke_enabled,
     );
     let bounds_origin = params.position + params.bounds_min;
@@ -147,17 +159,6 @@ fn sample_path(pixel: vec2<f32>) -> vec4<f32> {
     let fill = sample_paint(params.fill_paint, pixel, local01) * fill_alpha;
     let stroke = sample_paint(params.stroke_paint, pixel, local01) * stroke_alpha;
     return mix(fill, stroke, stroke_alpha);
-}
-
-fn sample_path_aa(pixel_origin: vec2<f32>) -> vec4<f32> {
-    var color = vec4<f32>(0.0);
-    for (var y = 0u; y < 4u; y = y + 1u) {
-        for (var x = 0u; x < 4u; x = x + 1u) {
-            let offset = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) * 0.25;
-            color += sample_path(pixel_origin + offset);
-        }
-    }
-    return color * 0.0625;
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -168,10 +169,5 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let pixel_origin = vec2<f32>(f32(id.x), f32(id.y));
-    if ((params.flags & 4u) == 0u) {
-        textureStore(output_tex, vec2<i32>(id.xy), sample_path(pixel_origin + vec2<f32>(0.5)));
-        return;
-    }
-    let color = sample_path_aa(pixel_origin);
-    textureStore(output_tex, vec2<i32>(id.xy), color);
+    textureStore(output_tex, vec2<i32>(id.xy), sample_path(pixel_origin + vec2<f32>(0.5)));
 }
