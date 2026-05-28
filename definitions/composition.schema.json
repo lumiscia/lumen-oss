@@ -330,13 +330,6 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
-                  "anti_alias": {
-                    "default": true,
-                    "description": "Enables supersampled paint antialiasing.",
-                    "title": "Anti Alias",
-                    "type": "boolean",
-                    "x-lumen-kind": "bool"
-                  },
                   "height": {
                     "default": 0,
                     "description": "Output height in pixels. Use 0 to match the composition height.",
@@ -355,6 +348,13 @@
                     "description": "Background paint.",
                     "title": "Paint",
                     "x-lumen-kind": "paint"
+                  },
+                  "paint_supersample": {
+                    "default": true,
+                    "description": "Enables 4×4 supersampling when evaluating paint at each pixel.",
+                    "title": "Paint Supersample",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
                   },
                   "width": {
                     "default": 0,
@@ -1487,13 +1487,6 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
-                  "anti_alias": {
-                    "default": true,
-                    "description": "Enables supersampled edge and paint antialiasing.",
-                    "title": "Anti Alias",
-                    "type": "boolean",
-                    "x-lumen-kind": "bool"
-                  },
                   "data": {
                     "default": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
                     "description": "SVG-style path data.",
@@ -1505,6 +1498,13 @@
                       "recommendedRows": 5
                     },
                     "x-lumen-kind": "string"
+                  },
+                  "edge_antialias": {
+                    "default": true,
+                    "description": "Enables analytic distance-based edge antialiasing.",
+                    "title": "Edge Antialias",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
                   },
                   "fill_enabled": {
                     "default": true,
@@ -1869,13 +1869,6 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
-                  "anti_alias": {
-                    "default": true,
-                    "description": "Enables supersampled edge and paint antialiasing.",
-                    "title": "Anti Alias",
-                    "type": "boolean",
-                    "x-lumen-kind": "bool"
-                  },
                   "border_radius": {
                     "default": 0.0,
                     "description": "Corner radius for rectangle geometry.",
@@ -1887,6 +1880,13 @@
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"
+                  },
+                  "edge_antialias": {
+                    "default": true,
+                    "description": "Enables analytic distance-based edge antialiasing.",
+                    "title": "Edge Antialias",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
                   },
                   "fill_enabled": {
                     "default": true,
@@ -2128,13 +2128,6 @@
                     ],
                     "x-lumen-kind": "enum"
                   },
-                  "anti_alias": {
-                    "default": true,
-                    "description": "Enables supersampled paint antialiasing.",
-                    "title": "Anti Alias",
-                    "type": "boolean",
-                    "x-lumen-kind": "bool"
-                  },
                   "color": {
                     "$ref": "#/$defs/paint",
                     "default": [255, 255, 255, 255],
@@ -2228,6 +2221,13 @@
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"
+                  },
+                  "paint_supersample": {
+                    "default": true,
+                    "description": "Enables 4×4 supersampling when evaluating paint at each glyph pixel.",
+                    "title": "Paint Supersample",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
                   },
                   "position": {
                     "$ref": "#/$defs/vec2",

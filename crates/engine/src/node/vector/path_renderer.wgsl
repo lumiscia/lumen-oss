@@ -11,7 +11,7 @@ struct Paint {
     spread: u32,
     interpolation: u32,
     stop_count: u32,
-    anti_alias: u32,
+    paint_supersample: u32,
     _pad: u32,
 }
 
@@ -116,6 +116,22 @@ fn polygon_contains(p: vec2<f32>) -> bool {
     return inside;
 }
 
+fn edge_coverage(distance: f32, edge_antialias: bool) -> f32 {
+    return select(
+        select(0.0, 1.0, distance <= 0.0),
+        clamp(0.5 - distance, 0.0, 1.0),
+        edge_antialias,
+    );
+}
+
+fn fill_coverage(signed_distance: f32, inside: bool, edge_antialias: bool) -> f32 {
+    return select(
+        select(0.0, 1.0, inside),
+        clamp(0.5 - signed_distance, 0.0, 1.0),
+        edge_antialias,
+    );
+}
+
 fn path_edge_distance(p: vec2<f32>) -> f32 {
     let count = params.point_count;
     if (count < 2u) {
@@ -135,23 +151,19 @@ fn path_edge_distance(p: vec2<f32>) -> f32 {
 fn sample_path(pixel: vec2<f32>) -> vec4<f32> {
     let fill_enabled = (params.flags & 1u) != 0u;
     let stroke_enabled = (params.flags & 2u) != 0u;
-    let anti_alias = (params.flags & 4u) != 0u;
+    let edge_antialias = (params.flags & 4u) != 0u;
     let distance = path_edge_distance(pixel);
     let inside = polygon_contains(pixel);
     let signed_distance = select(distance, -distance, inside);
-    let fill_coverage = select(
-        select(0.0, 1.0, inside),
-        clamp(0.5 - signed_distance, 0.0, 1.0),
-        anti_alias,
+    let fill_alpha = select(
+        0.0,
+        fill_coverage(signed_distance, inside, edge_antialias),
+        fill_enabled,
     );
-    let fill_alpha = select(0.0, fill_coverage, fill_enabled);
+    let stroke_half_width = params.stroke_width * 0.5;
     let stroke_alpha = select(
         0.0,
-        select(
-            select(0.0, 1.0, distance <= params.stroke_width * 0.5),
-            clamp(0.5 - (distance - params.stroke_width * 0.5), 0.0, 1.0),
-            anti_alias,
-        ),
+        edge_coverage(distance - stroke_half_width, edge_antialias),
         stroke_enabled,
     );
     let bounds_origin = params.position + params.bounds_min;

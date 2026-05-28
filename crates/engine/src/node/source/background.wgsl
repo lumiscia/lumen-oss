@@ -11,7 +11,7 @@ struct Paint {
     spread: u32,
     interpolation: u32,
     stop_count: u32,
-    anti_alias: u32,
+    paint_supersample: u32,
     _pad: u32,
 }
 
@@ -71,7 +71,7 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let pixel_origin = vec2<f32>(f32(id.x), f32(id.y));
     let target_size = vec2<f32>(f32(size.x), f32(size.y));
-    if (paint.anti_alias == 0u) {
+    if (paint.paint_supersample == 0u) {
         let pixel = pixel_origin + vec2<f32>(0.5);
         textureStore(output_tex, vec2<i32>(id.xy), sample_paint(pixel, pixel / target_size));
         return;

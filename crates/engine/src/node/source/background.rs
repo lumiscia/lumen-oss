@@ -18,9 +18,9 @@ pub struct BackgroundParams {
     /// Output height in pixels. Use 0 to match the composition height.
     #[meta(min = 0, step = 1)]
     pub height: u32,
-    /// Enables supersampled paint antialiasing.
+    /// Enables 4×4 supersampling when evaluating paint at each pixel.
     #[meta()]
-    pub anti_alias: bool,
+    pub paint_supersample: bool,
 }
 
 impl Default for BackgroundParams {
@@ -29,7 +29,7 @@ impl Default for BackgroundParams {
             paint: Paint::solid([0, 0, 0, 255]),
             width: 0,
             height: 0,
-            anti_alias: true,
+            paint_supersample: true,
         }
     }
 }
@@ -70,7 +70,7 @@ impl GpuCompiledNode for CompiledBackground {
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
         let mut paint = params.paint.to_gpu([0, 0, 0, 255]);
-        paint.anti_alias = u32::from(params.anti_alias);
+        paint.paint_supersample = u32::from(params.paint_supersample);
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&paint));
         Ok(())
     }

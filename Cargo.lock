@@ -1613,7 +1613,6 @@ dependencies = [
  "lumen-engine-gpu",
  "lumen-engine-text",
  "nalgebra",
- "serde_json",
  "skrifa",
  "tokio",
 ]

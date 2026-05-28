@@ -17,7 +17,7 @@ struct Paint {
     spread: u32,
     interpolation: u32,
     stop_count: u32,
-    anti_alias: u32,
+    paint_supersample: u32,
     _pad: u32,
 }
 
@@ -141,7 +141,7 @@ fn vs_main(
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let sample = textureSample(atlas_texture, atlas_sampler, in.uv);
     var text_paint = sample_paint(in.position.xy);
-    if (paint.anti_alias != 0u) {
+    if (paint.paint_supersample != 0u) {
         text_paint = sample_paint_aa(in.position.xy);
     }
     if (in.mode == 1u) {

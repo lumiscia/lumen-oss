@@ -2,4 +2,4 @@
 "@lumiscia/lumen-types": patch
 ---
 
-Add antialiasing metadata for background, shape, path, and text nodes.
+Add `paint_supersample` for background and text nodes and `edge_antialias` for shape and path nodes.
