@@ -330,6 +330,13 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "anti_alias": {
+                    "default": true,
+                    "description": "Enables supersampled paint antialiasing.",
+                    "title": "Anti Alias",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
+                  },
                   "height": {
                     "default": 0,
                     "description": "Output height in pixels. Use 0 to match the composition height.",
@@ -1480,6 +1487,13 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "anti_alias": {
+                    "default": true,
+                    "description": "Enables supersampled edge and paint antialiasing.",
+                    "title": "Anti Alias",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
+                  },
                   "data": {
                     "default": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
                     "description": "SVG-style path data.",
@@ -1855,6 +1869,13 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "anti_alias": {
+                    "default": true,
+                    "description": "Enables supersampled edge and paint antialiasing.",
+                    "title": "Anti Alias",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
+                  },
                   "border_radius": {
                     "default": 0.0,
                     "description": "Corner radius for rectangle geometry.",
@@ -2106,6 +2127,13 @@
                       }
                     ],
                     "x-lumen-kind": "enum"
+                  },
+                  "anti_alias": {
+                    "default": true,
+                    "description": "Enables supersampled paint antialiasing.",
+                    "title": "Anti Alias",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
                   },
                   "color": {
                     "$ref": "#/$defs/paint",

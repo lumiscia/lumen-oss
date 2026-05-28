@@ -17,8 +17,8 @@ struct Paint {
     spread: u32,
     interpolation: u32,
     stop_count: u32,
-    _pad0: u32,
-    _pad1: u32,
+    anti_alias: u32,
+    _pad: u32,
 }
 
 struct GlyphInstance {
@@ -140,7 +140,10 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let sample = textureSample(atlas_texture, atlas_sampler, in.uv);
-    let text_paint = sample_paint_aa(in.position.xy);
+    var text_paint = sample_paint(in.position.xy);
+    if (paint.anti_alias != 0u) {
+        text_paint = sample_paint_aa(in.position.xy);
+    }
     if (in.mode == 1u) {
         return vec4<f32>(sample.rgb, sample.a * in.color.a * text_paint.a);
     }

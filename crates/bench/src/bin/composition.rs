@@ -93,16 +93,29 @@ impl Mode {
 struct DemoComposition {
     name: &'static str,
     source: &'static str,
+    anti_alias: Option<bool>,
 }
 
 const DEMOS: &[DemoComposition] = &[
     DemoComposition {
         name: "announcement_gpu",
         source: include_str!("../../../local/demo/announcement-gpu.json"),
+        anti_alias: None,
     },
     DemoComposition {
         name: "feature_showcase",
         source: include_str!("../../../local/demo/feature-showcase.json"),
+        anti_alias: None,
+    },
+    DemoComposition {
+        name: "antialiasing_worst_cases_aa",
+        source: include_str!("../../../local/demo/antialiasing-worst-cases.json"),
+        anti_alias: Some(true),
+    },
+    DemoComposition {
+        name: "antialiasing_worst_cases_noaa",
+        source: include_str!("../../../local/demo/antialiasing-worst-cases.json"),
+        anti_alias: Some(false),
     },
 ];
 
@@ -123,7 +136,8 @@ async fn main() -> anyhow::Result<()> {
     let demos = selected_compositions(&args.composition)?;
 
     for demo in demos {
-        let composition = lumen_engine::json::parse(demo.source)
+        let source = composition_source(demo)?;
+        let composition = lumen_engine::json::parse(&source)
             .with_context(|| format!("failed to parse composition {}", demo.name))?;
         let frames = args
             .frames
@@ -203,7 +217,9 @@ fn parse_args() -> anyhow::Result<Args> {
                 ));
             }
             "--list" => {
-                println!("compositions: all, announcement_gpu, feature_showcase");
+                println!(
+                    "compositions: all, announcement_gpu, feature_showcase, antialiasing_worst_cases_aa, antialiasing_worst_cases_noaa"
+                );
                 println!(
                     "modes: all, render-only, render-profile, readback, readback-profile, cpu-encode, cpu-encode-profile, metal-videotoolbox, metal-videotoolbox-profile, vk-cuda-export, vk-cuda-nvenc"
                 );
@@ -226,8 +242,33 @@ fn parse_args() -> anyhow::Result<Args> {
 
 fn print_help() {
     println!(
-        "usage: lumen-bench-composition [--composition all|announcement_gpu|feature_showcase] [--mode all|render-only|render-profile|readback|readback-profile|cpu-encode|cpu-encode-profile|metal-videotoolbox|metal-videotoolbox-profile|vk-cuda-export|vk-cuda-nvenc] [--frames N] [--save PATH]"
+        "usage: lumen-bench-composition [--composition all|announcement_gpu|feature_showcase|antialiasing_worst_cases_aa|antialiasing_worst_cases_noaa] [--mode all|render-only|render-profile|readback|readback-profile|cpu-encode|cpu-encode-profile|metal-videotoolbox|metal-videotoolbox-profile|vk-cuda-export|vk-cuda-nvenc] [--frames N] [--save PATH]"
     );
+}
+
+fn composition_source(demo: &DemoComposition) -> anyhow::Result<String> {
+    let Some(anti_alias) = demo.anti_alias else {
+        return Ok(demo.source.to_string());
+    };
+    let mut value: serde_json::Value = serde_json::from_str(demo.source)
+        .with_context(|| format!("failed to decode composition {}", demo.name))?;
+    let nodes = value
+        .get_mut("nodes")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| anyhow!("composition {} is missing nodes", demo.name))?;
+    for node in nodes {
+        let Some(node_type) = node.get("type").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if matches!(node_type, "background" | "shape" | "path" | "text")
+            && let Some(params) = node
+                .get_mut("params")
+                .and_then(serde_json::Value::as_object_mut)
+        {
+            params.insert("anti_alias".to_string(), serde_json::Value::Bool(anti_alias));
+        }
+    }
+    serde_json::to_string(&value).context("failed to encode benchmark composition")
 }
 
 fn selected_compositions(name: &str) -> anyhow::Result<Vec<&'static DemoComposition>> {

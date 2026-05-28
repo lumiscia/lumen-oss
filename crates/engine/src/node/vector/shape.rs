@@ -55,6 +55,9 @@ pub struct ShapeParams {
     /// Stroke width in pixels.
     #[meta(min = 0, step = 0.5)]
     pub stroke_width: f64,
+    /// Enables supersampled edge and paint antialiasing.
+    #[meta()]
+    pub anti_alias: bool,
 }
 
 impl Default for ShapeParams {
@@ -71,6 +74,7 @@ impl Default for ShapeParams {
             stroke_enabled: false,
             stroke_paint: Paint::solid([0, 0, 0, 255]),
             stroke_width: 1.0,
+            anti_alias: true,
         }
     }
 }
@@ -127,6 +131,9 @@ impl GpuCompiledNode for CompiledShape {
         }
         if evaluated.stroke_enabled {
             flags |= 2;
+        }
+        if evaluated.anti_alias {
+            flags |= 4;
         }
         let params = super::renderer::ShapeParams {
             fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),

@@ -81,6 +81,9 @@ pub struct TextParams {
     /// Vertical text alignment.
     #[meta(kind = "enum", enum_type = TextAlignmentVertical)]
     pub alignment_vertical: TextAlignmentVertical,
+    /// Enables supersampled paint antialiasing.
+    #[meta()]
+    pub anti_alias: bool,
 }
 
 impl Default for TextParams {
@@ -96,6 +99,7 @@ impl Default for TextParams {
             color: Paint::solid([255, 255, 255, 255]),
             alignment_horizontal: TextAlignmentHorizontal::Left,
             alignment_vertical: TextAlignmentVertical::Top,
+            anti_alias: true,
         }
     }
 }
@@ -154,7 +158,8 @@ impl GpuCompiledNode for CompiledText {
         })?;
         let content = evaluated.content;
         let font_family = evaluated.font_family;
-        let paint = evaluated.color.to_gpu([255, 255, 255, 255]);
+        let mut paint = evaluated.color.to_gpu([255, 255, 255, 255]);
+        paint.anti_alias = u32::from(evaluated.anti_alias);
         let (position_x, position_y) = evaluated.position;
         let font_size = evaluated.font_size as f32;
         let max_width = evaluated.max_width as f32;
@@ -203,6 +208,7 @@ impl GpuCompiledNode for CompiledText {
             position_x_bits: (position_x as f32).to_bits(),
             position_y_bits: (position_y as f32).to_bits(),
             paint: evaluated.color.clone(),
+            anti_alias: evaluated.anti_alias,
             alignment_vertical,
             output_width: self.size.width,
             output_height: self.size.height,
@@ -325,6 +331,7 @@ struct TextFrameCacheKey {
     position_x_bits: u32,
     position_y_bits: u32,
     paint: Paint,
+    anti_alias: bool,
     alignment_vertical: TextAlignmentVertical,
     output_width: u32,
     output_height: u32,

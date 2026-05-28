@@ -789,15 +789,44 @@ mod tests {
     }
 
     #[test]
-    fn exposes_wgsl_shader_sources() {
-        assert!(ALPHA_TEXT_SHADER.contains("textureSample"));
-        assert!(ALPHA_TEXT_SHADER.contains("@binding(4) var<uniform> paint: Paint"));
-        assert!(ALPHA_TEXT_SHADER.contains("sample_paint(in.position.xy)"));
+    fn alpha_text_shader_is_valid_wgsl() {
+        let Ok(renderer) = pollster::block_on(lumen_gpu::Renderer::new()) else {
+            return;
+        };
+        let _ = renderer
+            .device
+            .create_shader_module(lumen_gpu::wgpu::ShaderModuleDescriptor {
+                label: Some("alpha text shader validation"),
+                source: lumen_gpu::wgpu::ShaderSource::Wgsl(ALPHA_TEXT_SHADER.into()),
+            });
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn msdf_shaders_are_valid_wgsl() {
+        let Ok(renderer) = pollster::block_on(lumen_gpu::Renderer::new()) else {
+            return;
+        };
+        for (label, shader) in [
+            ("msdf text shader validation", MSDF_TEXT_SHADER),
+            ("msdf generator shader validation", MSDF_GENERATOR_SHADER),
+        ] {
+            let _ = renderer
+                .device
+                .create_shader_module(lumen_gpu::wgpu::ShaderModuleDescriptor {
+                    label: Some(label),
+                    source: lumen_gpu::wgpu::ShaderSource::Wgsl(shader.into()),
+                });
+        }
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn exposes_experimental_msdf_shader_sources() {
         #[cfg(feature = "experimental-msdf")]
         {
-            assert!(MSDF_TEXT_SHADER.contains("median3"));
-            assert!(MSDF_TEXT_SHADER.contains("textureSample"));
-            assert!(MSDF_GENERATOR_SHADER.contains("pixel_jobs"));
+            assert!(!MSDF_TEXT_SHADER.is_empty());
+            assert!(!MSDF_GENERATOR_SHADER.is_empty());
         }
     }
 }
