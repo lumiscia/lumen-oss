@@ -97,8 +97,6 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
             .with_context(|| {
                 format!("connecting {from_node}:{from_port} -> {to_node}:{to_port}")
             })?;
-
-        node::wire_port_ref(&mut graph, to_node, &to_port, from_node, &from_port)?;
     }
 
     let metadata = obj.get("metadata").map(|v| CompositionMetadata {

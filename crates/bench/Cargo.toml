@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[lib]
+name = "lumen_bench"
+path = "src/lib.rs"
+
 [features]
 default = []
 cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
@@ -37,3 +41,7 @@ path = "src/bin/decode.rs"
 [[bin]]
 name = "lumen-bench-text"
 path = "src/bin/text.rs"
+
+[[bin]]
+name = "lumen-bench-json-parse"
+path = "src/bin/json_parse.rs"

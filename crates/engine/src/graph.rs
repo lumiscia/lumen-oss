@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::{
     error::{GraphValidationError, LumenError},
-    node::{Node, NodeId, NodeKind},
+    node::{Node, NodeId, NodeKind, PortRef},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,7 +53,28 @@ impl Graph {
             .outgoing_connection_counts
             .entry(connection.from_node)
             .or_default() += 1;
-        self.connections.push(connection);
+
+        let Connection {
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+        } = connection;
+
+        #[cfg(feature = "json")]
+        wire_input_port(
+            self,
+            to_node,
+            &to_port,
+            PortRef::new(from_node, from_port.clone()),
+        )?;
+
+        self.connections.push(Connection {
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+        });
         Ok(())
     }
 
@@ -222,4 +243,54 @@ impl Graph {
 
         Ok(())
     }
+}
+
+#[cfg(feature = "json")]
+fn wire_input_port(
+    graph: &mut Graph,
+    to_node: NodeId,
+    to_port: &str,
+    source: PortRef,
+) -> crate::Result<()> {
+    use crate::node::JsonNode;
+
+    let node = graph
+        .nodes
+        .get_mut(&to_node)
+        .ok_or(GraphValidationError::MissingTargetNode { node_id: to_node })?;
+
+    let wire = |error: anyhow::Error| GraphValidationError::MissingTargetPort {
+        node_id: to_node,
+        port: format!("{to_port} ({error})"),
+    };
+
+    match node {
+        NodeKind::MediaIn(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Background(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Text(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Path(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Shape(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Boolean(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Merge(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::RasterMultiMerge(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::AlphaPremultiply(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Blur(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::ChannelShuffle(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::ColorGrade(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Curves(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Exposure(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::HueSaturation(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Levels(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Memo(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::TimeRemap(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Transform(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Crop(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Resize(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Shadow(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::WgslShader(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Switch(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::MediaOutput(node) => node.set_input_json(to_port, source).map_err(wire)?,
+    }
+
+    Ok(())
 }
