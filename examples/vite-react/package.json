@@ -14,14 +14,14 @@
     "@lumiscia/lumen-preview": "workspace:*",
     "@lumiscia/lumen-react": "workspace:*",
     "@lumiscia/lumen-shared": "workspace:*",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   },
   "devDependencies": {
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^5.0.0",
-    "vite": "^7.0.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "vite": "^7.3.6",
     "vite-plugin-top-level-await": "^1.6.0",
     "vite-plugin-wasm": "^3.6.0"
   }

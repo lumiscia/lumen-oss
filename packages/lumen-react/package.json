@@ -42,7 +42,7 @@
     "@lumiscia/lumen-preview": "workspace:*"
   },
   "devDependencies": {
-    "@types/react": "^19.0.0"
+    "@types/react": "^19.2.17"
   },
   "peerDependencies": {
     "react": ">=18"

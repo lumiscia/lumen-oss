@@ -12,6 +12,6 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.20.1"
   }
 }

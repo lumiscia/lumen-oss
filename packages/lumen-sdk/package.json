@@ -46,10 +46,10 @@
   "dependencies": {
     "@lumiscia/lumen-shared": "workspace:*",
     "@lumiscia/lumen-types": "workspace:*",
-    "ws": "^8.18.0"
+    "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.0"
+    "@types/ws": "^8.18.1"
   },
   "engines": {
     "node": ">=20"
