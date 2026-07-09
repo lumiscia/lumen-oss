@@ -3,6 +3,46 @@ import { describe, expect, test } from "vitest";
 import { AudioTrack } from "../src/audio.js";
 import { Composition } from "../src/composition.js";
 
+describe("Composition node IDs", () => {
+  test("assigns sequential IDs when none are provided", () => {
+    const composition = new Composition();
+
+    const first = composition.addNode({ type: "media_output" });
+    const second = composition.addNode({ type: "media_output" });
+
+    expect([first.id, second.id]).toEqual([0, 1]);
+  });
+
+  test("skips explicit IDs when allocating automatic IDs", () => {
+    const composition = new Composition();
+
+    const explicit = composition.addNode({ id: 1, type: "media_output" });
+    const firstAutomatic = composition.addNode({ type: "media_output" });
+    const secondAutomatic = composition.addNode({ type: "media_output" });
+
+    expect([explicit.id, firstAutomatic.id, secondAutomatic.id]).toEqual([1, 0, 2]);
+  });
+
+  test("rejects duplicate explicit IDs", () => {
+    const composition = new Composition();
+    composition.addNode({ id: 4, type: "media_output" });
+
+    expect(() => composition.addNode({ id: 4, type: "media_output" })).toThrow(
+      "Node `4` already exists.",
+    );
+    expect(composition.toJSON().nodes).toHaveLength(1);
+  });
+
+  test("rejects an explicit ID already assigned automatically", () => {
+    const composition = new Composition();
+    const automatic = composition.addNode({ type: "media_output" });
+
+    expect(() => composition.addNode({ id: automatic.id, type: "media_output" })).toThrow(
+      "already exists",
+    );
+  });
+});
+
 describe("Composition audio helpers", () => {
   test("adds audio tracks with their clips using canonical JSON fields", () => {
     const composition = new Composition();
