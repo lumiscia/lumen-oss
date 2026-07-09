@@ -1,7 +1,8 @@
 definitions_out := justfile_directory() / "definitions"
 wasm_bindings_out := justfile_directory() / "packages/lumen-bindings/src"
+generated_types_out := justfile_directory() / "packages/lumen-types/src/generated"
 
-ready: ci-typescript-artifacts verify-definitions
+ready: verify-typescript-artifacts verify-definitions
     pnpm check
     pnpm test
     pnpm build
@@ -16,6 +17,9 @@ generate-types: generate-definitions
     pnpm --filter @lumiscia/generate-types generate
 
 ci-typescript-artifacts: generate-types wasm-bindings-debug
+
+verify-typescript-artifacts: ci-typescript-artifacts
+    git diff --exit-code -- {{ definitions_out }}/composition.schema.json {{ generated_types_out }} {{ wasm_bindings_out }}
 
 generate-definitions:
     cargo run -p lumen-generators -- definitions --out-dir {{ definitions_out }}

@@ -52,8 +52,8 @@ jobs:
       - name: Install WASM tooling
         run: cargo install wasm-bindgen-cli --version 0.2.118 --locked
 
-      - name: Generate TypeScript artifacts
-        run: just ci-typescript-artifacts
+      - name: Check generated TypeScript artifacts
+        run: just verify-typescript-artifacts
 
       - name: Check TypeScript workspace
         run: pnpm check
