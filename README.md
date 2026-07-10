@@ -15,7 +15,9 @@ The supported native targets today are:
 - Linux with Vulkan rendering and optional CUDA/NVENC interop for hardware video paths.
 - macOS with Metal rendering and VideoToolbox encoding paths.
 
-Other platforms may compile in pieces, especially schema/type generation or pure data crates, but they are not supported render targets yet. Windows support is not currently a target of this open-source tree.
+Other platforms may compile in pieces, especially schema/type generation or pure data crates, but they are not supported render targets yet. Windows is a basic development target for TypeScript packages and pure Rust crates, not a supported native renderer target; see [docs/windows.md](docs/windows.md) for the covered paths and known gaps.
+
+See [docs/support-matrix.md](docs/support-matrix.md) for the current operating system, GPU backend, adapter, encoder, and CI coverage matrix.
 
 ## Hosted vs Self-Hosted
 
