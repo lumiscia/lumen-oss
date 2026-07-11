@@ -4,7 +4,7 @@
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "enum" | "float" | "int" | "paint" | "string" | "vec2";
-export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 
@@ -251,6 +251,12 @@ export interface MergeNode extends CompositionNodeBase<"merge"> {
   };
 }
 
+export interface OpacityNode extends CompositionNodeBase<"opacity"> {
+  readonly params?: {
+    readonly "opacity"?: ExpressionValue<number>;
+  };
+}
+
 export interface PathNode extends CompositionNodeBase<"path"> {
   readonly params?: {
     readonly "data"?: ExpressionValue<string>;
@@ -376,6 +382,7 @@ export interface CompositionNodeByKind {
   readonly "media_output": MediaOutputNode;
   readonly "memo": MemoNode;
   readonly "merge": MergeNode;
+  readonly "opacity": OpacityNode;
   readonly "path": PathNode;
   readonly "raster_multimerge": RasterMultimergeNode;
   readonly "resize": ResizeNode;
@@ -432,6 +439,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "merge": Omit<MergeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "opacity": Omit<OpacityNode, "id"> & {
     readonly id?: number;
   };
   readonly "path": Omit<PathNode, "id"> & {

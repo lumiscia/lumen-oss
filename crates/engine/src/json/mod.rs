@@ -402,6 +402,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_opacity_node() {
+        let json = r#"{
+            "timeline": { "fps": 30, "duration_frames": 60 },
+            "render_settings": { "width": 100, "height": 100 },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0], "width": 100, "height": 100 } },
+                { "id": 2, "type": "opacity", "params": { "opacity": "=frame / 60" } },
+                { "id": 3, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" },
+                { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "source" }
+            ]
+        }"#;
+
+        let comp = parse(json).expect("should parse");
+        let opacity = comp.graph.nodes.get(&NodeId::new(2)).expect("opacity");
+        assert!(matches!(opacity, crate::node::NodeKind::Opacity(_)));
+        assert_eq!(
+            opacity.input_ports(),
+            vec![crate::node::PortRef::new(
+                NodeId::new(1),
+                "output".to_string()
+            )]
+        );
+    }
+
+    #[test]
     fn parse_enum_property_names() {
         let json = r#"{
             "timeline": { "fps": 30, "duration_frames": 60 },

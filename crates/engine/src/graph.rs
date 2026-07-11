@@ -293,6 +293,7 @@ fn wire_input_port(
         NodeKind::HueSaturation(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::Levels(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::Memo(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Opacity(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::TimeRemap(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::Transform(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::Crop(node) => node.set_input_json(to_port, source).map_err(wire)?,

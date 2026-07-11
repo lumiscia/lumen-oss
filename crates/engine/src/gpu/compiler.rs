@@ -210,6 +210,7 @@ impl<'a> CompileContext<'a> {
             NodeKind::HueSaturation(node) => node.compile_gpu(self, port)?,
             NodeKind::Levels(node) => node.compile_gpu(self, port)?,
             NodeKind::Memo(node) => node.compile_gpu(self, port)?,
+            NodeKind::Opacity(node) => node.compile_gpu(self, port)?,
             NodeKind::TimeRemap(node) => node.compile_gpu(self, port)?,
             NodeKind::Transform(node) => node.compile_gpu(self, port)?,
             NodeKind::Crop(node) => node.compile_gpu(self, port)?,

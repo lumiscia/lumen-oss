@@ -2,11 +2,11 @@ use lumen_engine::{
     composition::{Composition, RenderSettings, TimelineSettings},
     error::{GraphValidationError, LumenError},
     expr::Expression,
-    gpu::{CompileContext, FrameBindContext},
+    gpu::{AlphaMode, CompileContext, FrameBindContext},
     graph::{Connection, Graph},
     media::{
         CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
-        VideoMetadata,
+        VideoMetadata, collect_frame_requirements,
     },
     node::{
         Deferred, NodeId, NodeKind, PortRef,
@@ -25,6 +25,7 @@ use lumen_engine::{
             hue_saturation::{HueSaturation, HueSaturationParamsDelegate},
             levels::{Levels, LevelsParamsDelegate},
             memo::{Memo, MemoParamsDelegate},
+            opacity::{Opacity, OpacityParamsDelegate},
             resize::{Resize, ResizeMode, ResizeParamsDelegate, ResizeSampling},
             time_remap::{TimeRemap, TimeRemapParamsDelegate},
             transform::{Transform, TransformParamsDelegate},
@@ -937,6 +938,219 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
     let exposure_value = f32::from_ne_bytes(exposure_upload[0..4].try_into().unwrap());
 
     assert_eq!(exposure_value, 8.0);
+}
+
+#[test]
+fn opacity_compiles_and_binds_animated_multiplier() {
+    let solid_id = NodeId::new(1);
+    let opacity = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(solid_id, solid(solid_id, [64, 128, 255, 128]));
+    graph.nodes.insert(
+        opacity,
+        NodeKind::Opacity(Opacity {
+            id: opacity,
+            params: OpacityParamsDelegate {
+                opacity: Deferred::Expr(
+                    lumen_engine::expr::Expression::parse("frame / 10").unwrap(),
+                ),
+            },
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(opacity, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let opacity_buffer = compiled
+        .plan
+        .params()
+        .iter()
+        .find_map(|param| match param.target {
+            lumen_gpu::ParamTarget::Buffer(buffer)
+                if param.key.owner == lumen_gpu::NodeKey(opacity.0) =>
+            {
+                Some(buffer)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let opacity_raster = compiled
+        .node_outputs
+        .get(&PortRef::new(opacity, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(opacity, "output")
+        .unwrap();
+    let source_raster = compiled
+        .node_outputs
+        .get(&PortRef::new(solid_id, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(solid_id, "output")
+        .unwrap();
+    assert_eq!(opacity_raster.domain, source_raster.domain);
+    assert_eq!(opacity_raster.metadata, source_raster.metadata);
+
+    let bound = FrameBindContext::new(&composition, 5)
+        .bind(&compiled)
+        .unwrap();
+    let opacity_upload = bound
+        .frame_update()
+        .uploads()
+        .iter()
+        .find_map(|upload| match upload {
+            lumen_gpu::Upload::Buffer { id, data, .. } if *id == opacity_buffer => Some(*data),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        f32::from_ne_bytes(opacity_upload[0..4].try_into().unwrap()),
+        0.5
+    );
+    assert_eq!(
+        f32::from_ne_bytes(opacity_upload[4..8].try_into().unwrap()),
+        1.0,
+        "premultiplied RGB must be scaled with alpha",
+    );
+}
+
+#[test]
+fn opacity_preserves_unpremultiplied_rgb_representation() {
+    let solid_id = NodeId::new(1);
+    let unpremultiply = NodeId::new(2);
+    let opacity = NodeId::new(3);
+    let output = NodeId::new(4);
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(solid_id, solid(solid_id, [64, 128, 255, 128]));
+    graph.nodes.insert(
+        unpremultiply,
+        NodeKind::AlphaPremultiply(AlphaPremultiply {
+            id: unpremultiply,
+            params: AlphaPremultiplyParamsDelegate {
+                mode: Deferred::value("unpremultiply".to_string()),
+            },
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        opacity,
+        NodeKind::Opacity(Opacity {
+            id: opacity,
+            params: OpacityParamsDelegate {
+                opacity: Deferred::value(0.25),
+            },
+            source: PortRef::new(unpremultiply, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(opacity, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let opacity_buffer = compiled
+        .plan
+        .params()
+        .iter()
+        .find_map(|param| match param.target {
+            lumen_gpu::ParamTarget::Buffer(buffer)
+                if param.key.owner == lumen_gpu::NodeKey(opacity.0) =>
+            {
+                Some(buffer)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let opacity_raster = compiled
+        .node_outputs
+        .get(&PortRef::new(opacity, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(opacity, "output")
+        .unwrap();
+    assert_eq!(
+        opacity_raster.metadata.alpha_mode,
+        AlphaMode::Unpremultiplied
+    );
+
+    let bound = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap();
+    let opacity_upload = bound
+        .frame_update()
+        .uploads()
+        .iter()
+        .find_map(|upload| match upload {
+            lumen_gpu::Upload::Buffer { id, data, .. } if *id == opacity_buffer => Some(*data),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        f32::from_ne_bytes(opacity_upload[0..4].try_into().unwrap()),
+        0.25
+    );
+    assert_eq!(
+        f32::from_ne_bytes(opacity_upload[4..8].try_into().unwrap()),
+        0.0,
+        "unpremultiplied RGB must remain unchanged while alpha is scaled",
+    );
+}
+
+#[test]
+fn opacity_direct_source_is_traversed_for_media_prediction() {
+    let media = NodeId::new(1);
+    let opacity = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        media,
+        NodeKind::MediaIn(MediaIn {
+            id: media,
+            params: MediaInParamsDelegate {
+                kind: Deferred::value(0),
+                source: Deferred::value("plate".to_string()),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        opacity,
+        NodeKind::Opacity(Opacity {
+            id: opacity,
+            source: PortRef::new(media, "output".to_string()),
+            ..Opacity::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(opacity, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let requirements =
+        collect_frame_requirements(&composition, &TestMediaStore::image("plate", 8, 4), 0).unwrap();
+
+    assert_eq!(requirements.images, vec!["plate"]);
+    assert!(requirements.videos.is_empty());
 }
 
 #[test]
