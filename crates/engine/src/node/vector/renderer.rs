@@ -391,4 +391,6 @@ pub(crate) struct PathParams {
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct PathPoint {
     pub(crate) position: [f32; 2],
+    pub(crate) contour_start: u32,
+    pub(crate) flags: u32,
 }

@@ -130,52 +130,73 @@ impl GpuCompiledNode for CompiledPath {
     }
 }
 
+const PATH_FLATTENING_TOLERANCE: f32 = 0.25;
+const PATH_MAX_FLATTENING_ATTEMPTS: usize = 12;
+const PATH_END: u32 = 1;
+const PATH_CLOSED: u32 = 2;
+
 fn parse_path_points(data: &str, max_points: usize) -> Vec<super::renderer::PathPoint> {
+    let Some(path) = build_lyon_path(data) else {
+        return Vec::new();
+    };
+    if max_points == 0 {
+        return Vec::new();
+    }
+
+    let mut tolerance = PATH_FLATTENING_TOLERANCE;
+    for _ in 0..PATH_MAX_FLATTENING_ATTEMPTS {
+        if let Some(points) = flatten_path(&path, tolerance, max_points) {
+            return points;
+        }
+        tolerance *= 2.0;
+    }
+
+    flatten_path_capped(&path, tolerance, max_points)
+}
+
+fn build_lyon_path(data: &str) -> Option<lyon_path::Path> {
+    use lyon_path::{
+        builder::SvgPathBuilder,
+        geom::{ArcFlags, SvgArc},
+        math::{Angle, point, vector},
+    };
     use svgtypes::PathSegment;
 
-    const CURVE_STEPS: usize = 16;
-    let mut points = Vec::new();
-    let mut current = [0.0_f32; 2];
-    let mut subpath_start = current;
-    let mut cubic_control = None;
-    let mut quadratic_control = None;
-
-    let absolute = |abs: bool, x: f64, y: f64, origin: [f32; 2]| {
-        let point = [x as f32, y as f32];
-        if abs {
-            point
-        } else {
-            [origin[0] + point[0], origin[1] + point[1]]
-        }
-    };
-    let mut push = |point: [f32; 2]| {
-        if points.len() < max_points
-            && points
-                .last()
-                .is_none_or(|last: &super::renderer::PathPoint| last.position != point)
-        {
-            points.push(super::renderer::PathPoint { position: point });
-        }
-    };
-
-    for segment in svgtypes::PathParser::from(data).flatten() {
+    let mut builder = lyon_path::Path::svg_builder();
+    for segment in svgtypes::PathParser::from(data) {
+        let segment = segment.ok()?;
         match segment {
             PathSegment::MoveTo { abs, x, y } => {
-                current = absolute(abs, x, y, current);
-                subpath_start = current;
-                push(current);
+                finite(&[x, y])?;
+                if abs {
+                    builder.move_to(point(x as f32, y as f32));
+                } else {
+                    builder.relative_move_to(vector(x as f32, y as f32));
+                }
             }
             PathSegment::LineTo { abs, x, y } => {
-                current = absolute(abs, x, y, current);
-                push(current);
+                finite(&[x, y])?;
+                if abs {
+                    builder.line_to(point(x as f32, y as f32));
+                } else {
+                    builder.relative_line_to(vector(x as f32, y as f32));
+                }
             }
             PathSegment::HorizontalLineTo { abs, x } => {
-                current[0] = if abs { x as f32 } else { current[0] + x as f32 };
-                push(current);
+                finite(&[x])?;
+                if abs {
+                    builder.horizontal_line_to(x as f32);
+                } else {
+                    builder.relative_horizontal_line_to(x as f32);
+                }
             }
             PathSegment::VerticalLineTo { abs, y } => {
-                current[1] = if abs { y as f32 } else { current[1] + y as f32 };
-                push(current);
+                finite(&[y])?;
+                if abs {
+                    builder.vertical_line_to(y as f32);
+                } else {
+                    builder.relative_vertical_line_to(y as f32);
+                }
             }
             PathSegment::CurveTo {
                 abs,
@@ -186,107 +207,189 @@ fn parse_path_points(data: &str, max_points: usize) -> Vec<super::renderer::Path
                 x,
                 y,
             } => {
-                let start = current;
-                let control1 = absolute(abs, x1, y1, start);
-                let control2 = absolute(abs, x2, y2, start);
-                let end = absolute(abs, x, y, start);
-                flatten_cubic(&mut push, start, control1, control2, end, CURVE_STEPS);
-                current = end;
-                cubic_control = Some(control2);
+                finite(&[x1, y1, x2, y2, x, y])?;
+                if abs {
+                    builder.cubic_bezier_to(
+                        point(x1 as f32, y1 as f32),
+                        point(x2 as f32, y2 as f32),
+                        point(x as f32, y as f32),
+                    );
+                } else {
+                    builder.relative_cubic_bezier_to(
+                        vector(x1 as f32, y1 as f32),
+                        vector(x2 as f32, y2 as f32),
+                        vector(x as f32, y as f32),
+                    );
+                }
             }
             PathSegment::SmoothCurveTo { abs, x2, y2, x, y } => {
-                let start = current;
-                let control1 = cubic_control.map_or(start, |point| reflect(point, start));
-                let control2 = absolute(abs, x2, y2, start);
-                let end = absolute(abs, x, y, start);
-                flatten_cubic(&mut push, start, control1, control2, end, CURVE_STEPS);
-                current = end;
-                cubic_control = Some(control2);
+                finite(&[x2, y2, x, y])?;
+                if abs {
+                    builder.smooth_cubic_bezier_to(
+                        point(x2 as f32, y2 as f32),
+                        point(x as f32, y as f32),
+                    );
+                } else {
+                    builder.smooth_relative_cubic_bezier_to(
+                        vector(x2 as f32, y2 as f32),
+                        vector(x as f32, y as f32),
+                    );
+                }
             }
             PathSegment::Quadratic { abs, x1, y1, x, y } => {
-                let start = current;
-                let control = absolute(abs, x1, y1, start);
-                let end = absolute(abs, x, y, start);
-                flatten_quadratic(&mut push, start, control, end, CURVE_STEPS);
-                current = end;
-                quadratic_control = Some(control);
+                finite(&[x1, y1, x, y])?;
+                if abs {
+                    builder.quadratic_bezier_to(
+                        point(x1 as f32, y1 as f32),
+                        point(x as f32, y as f32),
+                    );
+                } else {
+                    builder.relative_quadratic_bezier_to(
+                        vector(x1 as f32, y1 as f32),
+                        vector(x as f32, y as f32),
+                    );
+                }
             }
             PathSegment::SmoothQuadratic { abs, x, y } => {
-                let start = current;
-                let control = quadratic_control.map_or(start, |point| reflect(point, start));
-                let end = absolute(abs, x, y, start);
-                flatten_quadratic(&mut push, start, control, end, CURVE_STEPS);
-                current = end;
-                quadratic_control = Some(control);
+                finite(&[x, y])?;
+                if abs {
+                    builder.smooth_quadratic_bezier_to(point(x as f32, y as f32));
+                } else {
+                    builder.smooth_relative_quadratic_bezier_to(vector(x as f32, y as f32));
+                }
             }
-            PathSegment::EllipticalArc { abs, x, y, .. } => {
-                current = absolute(abs, x, y, current);
-                push(current);
+            PathSegment::EllipticalArc {
+                abs,
+                rx,
+                ry,
+                x_axis_rotation,
+                large_arc,
+                sweep,
+                x,
+                y,
+            } => {
+                finite(&[rx, ry, x_axis_rotation, x, y])?;
+                let from = builder.current_position();
+                let to = if abs {
+                    point(x as f32, y as f32)
+                } else {
+                    from + vector(x as f32, y as f32)
+                };
+                let arc = SvgArc {
+                    from,
+                    to,
+                    radii: vector(rx.abs() as f32, ry.abs() as f32),
+                    x_rotation: Angle::degrees(x_axis_rotation as f32),
+                    flags: ArcFlags { large_arc, sweep },
+                };
+                if arc.is_straight_line() {
+                    builder.line_to(to);
+                } else {
+                    arc.for_each_quadratic_bezier(&mut |curve| {
+                        builder.quadratic_bezier_to(curve.ctrl, curve.to);
+                    });
+                    builder.line_to(to);
+                }
             }
-            PathSegment::ClosePath { .. } => {
-                current = subpath_start;
-                push(current);
-            }
-        }
-        if !matches!(
-            segment,
-            PathSegment::CurveTo { .. } | PathSegment::SmoothCurveTo { .. }
-        ) {
-            cubic_control = None;
-        }
-        if !matches!(
-            segment,
-            PathSegment::Quadratic { .. } | PathSegment::SmoothQuadratic { .. }
-        ) {
-            quadratic_control = None;
+            PathSegment::ClosePath { .. } => builder.close(),
         }
     }
-    points
+    Some(builder.build())
 }
 
-fn reflect(point: [f32; 2], around: [f32; 2]) -> [f32; 2] {
-    [2.0 * around[0] - point[0], 2.0 * around[1] - point[1]]
+fn finite(values: &[f64]) -> Option<()> {
+    values.iter().all(|value| value.is_finite()).then_some(())
 }
 
-fn flatten_cubic(
-    push: &mut impl FnMut([f32; 2]),
-    start: [f32; 2],
-    control1: [f32; 2],
-    control2: [f32; 2],
-    end: [f32; 2],
-    steps: usize,
-) {
-    for step in 1..=steps {
-        let t = step as f32 / steps as f32;
-        let inverse = 1.0 - t;
-        push([
-            inverse.powi(3) * start[0]
-                + 3.0 * inverse.powi(2) * t * control1[0]
-                + 3.0 * inverse * t.powi(2) * control2[0]
-                + t.powi(3) * end[0],
-            inverse.powi(3) * start[1]
-                + 3.0 * inverse.powi(2) * t * control1[1]
-                + 3.0 * inverse * t.powi(2) * control2[1]
-                + t.powi(3) * end[1],
-        ]);
+fn flatten_path(
+    path: &lyon_path::Path,
+    tolerance: f32,
+    max_points: usize,
+) -> Option<Vec<super::renderer::PathPoint>> {
+    collect_flattened_path(path, tolerance, max_points, false)
+}
+
+fn flatten_path_capped(
+    path: &lyon_path::Path,
+    tolerance: f32,
+    max_points: usize,
+) -> Vec<super::renderer::PathPoint> {
+    collect_flattened_path(path, tolerance, max_points, true).unwrap_or_default()
+}
+
+fn collect_flattened_path(
+    path: &lyon_path::Path,
+    tolerance: f32,
+    max_points: usize,
+    truncate: bool,
+) -> Option<Vec<super::renderer::PathPoint>> {
+    use lyon_path::{PathEvent, iterator::PathIterator};
+
+    let mut points = Vec::new();
+    let mut contour_start = 0_u32;
+    for event in path.iter().flattened(tolerance) {
+        match event {
+            PathEvent::Begin { at } => {
+                contour_start = points.len() as u32;
+                if !push_path_point(&mut points, at, contour_start, max_points) {
+                    return truncated(points, truncate);
+                }
+            }
+            PathEvent::Line { to, .. } => {
+                if points
+                    .last()
+                    .is_none_or(|last| last.position != [to.x, to.y])
+                {
+                    if !push_path_point(&mut points, to, contour_start, max_points) {
+                        return truncated(points, truncate);
+                    }
+                }
+            }
+            PathEvent::End { close, .. } => {
+                if let Some(last) = points.last_mut()
+                    && last.contour_start == contour_start
+                {
+                    last.flags |= PATH_END;
+                    if close {
+                        last.flags |= PATH_CLOSED;
+                    }
+                }
+            }
+            PathEvent::Quadratic { .. } | PathEvent::Cubic { .. } => unreachable!(),
+        }
     }
+    Some(points)
 }
 
-fn flatten_quadratic(
-    push: &mut impl FnMut([f32; 2]),
-    start: [f32; 2],
-    control: [f32; 2],
-    end: [f32; 2],
-    steps: usize,
-) {
-    for step in 1..=steps {
-        let t = step as f32 / steps as f32;
-        let inverse = 1.0 - t;
-        push([
-            inverse.powi(2) * start[0] + 2.0 * inverse * t * control[0] + t.powi(2) * end[0],
-            inverse.powi(2) * start[1] + 2.0 * inverse * t * control[1] + t.powi(2) * end[1],
-        ]);
+fn push_path_point(
+    points: &mut Vec<super::renderer::PathPoint>,
+    point: lyon_path::math::Point,
+    contour_start: u32,
+    max_points: usize,
+) -> bool {
+    if points.len() >= max_points {
+        return false;
     }
+    points.push(super::renderer::PathPoint {
+        position: [point.x, point.y],
+        contour_start,
+        flags: 0,
+    });
+    true
+}
+
+fn truncated(
+    mut points: Vec<super::renderer::PathPoint>,
+    truncate: bool,
+) -> Option<Vec<super::renderer::PathPoint>> {
+    if !truncate {
+        return None;
+    }
+    if let Some(last) = points.last_mut() {
+        last.flags |= PATH_END;
+        last.flags &= !PATH_CLOSED;
+    }
+    Some(points)
 }
 
 fn bounds_min(points: &[super::renderer::PathPoint]) -> [f32; 2] {
@@ -319,41 +422,103 @@ mod tests {
 
     #[test]
     fn parses_absolute_relative_and_close_commands() {
+        let points = parse_path_points("M 10 20 h 10 v 10 l -5 5 z", 128);
         assert_eq!(
-            positions("M 10 20 h 10 v 10 l -5 5 z"),
-            vec![
-                [10.0, 20.0],
-                [20.0, 20.0],
-                [20.0, 30.0],
-                [15.0, 35.0],
-                [10.0, 20.0]
-            ]
+            points
+                .iter()
+                .map(|point| point.position)
+                .collect::<Vec<_>>(),
+            vec![[10.0, 20.0], [20.0, 20.0], [20.0, 30.0], [15.0, 35.0]]
         );
+        assert_eq!(points.last().unwrap().flags, PATH_END | PATH_CLOSED);
     }
 
     #[test]
     fn flattens_cubic_and_smooth_curves() {
         let points = positions("M 0 0 C 0 100 100 100 100 0 S 200 -100 200 0");
-        assert_eq!(points.len(), 33);
+        assert!(points.len() > 8);
         assert_eq!(points[0], [0.0, 0.0]);
-        assert_eq!(points[16], [100.0, 0.0]);
-        assert_eq!(points[32], [200.0, 0.0]);
-        assert!(points[8][1] > 70.0);
-        assert!(points[24][1] < -70.0);
+        assert_eq!(*points.last().unwrap(), [200.0, 0.0]);
+        assert!(points.iter().any(|point| point[1] > 70.0));
+        assert!(points.iter().any(|point| point[1] < -70.0));
     }
 
     #[test]
     fn flattens_quadratic_and_smooth_curves() {
         let points = positions("M 0 0 Q 50 100 100 0 T 200 0");
-        assert_eq!(points.len(), 33);
-        assert_eq!(points[16], [100.0, 0.0]);
-        assert_eq!(points[32], [200.0, 0.0]);
-        assert_eq!(points[8], [50.0, 50.0]);
-        assert_eq!(points[24], [150.0, -50.0]);
+        assert!(points.len() > 8);
+        assert_eq!(points[0], [0.0, 0.0]);
+        assert_eq!(*points.last().unwrap(), [200.0, 0.0]);
+        assert!(points.iter().any(|point| point[1] > 45.0));
+        assert!(points.iter().any(|point| point[1] < -45.0));
+    }
+
+    #[test]
+    fn flattens_elliptical_arcs() {
+        let points = positions("M 0 0 A 50 25 30 0 1 100 0");
+        assert!(points.len() > 3);
+        assert_eq!(points[0], [0.0, 0.0]);
+        assert_eq!(*points.last().unwrap(), [100.0, 0.0]);
+        assert!(
+            points[1..points.len() - 1]
+                .iter()
+                .any(|point| point[1].abs() > 1.0)
+        );
+    }
+
+    #[test]
+    fn preserves_subpath_boundaries_and_closure() {
+        let points = parse_path_points("M 0 0 L 10 0 M 100 0 L 110 0 Z", 128);
+        assert_eq!(points.len(), 4);
+        assert_eq!(points[1].flags, PATH_END);
+        assert_eq!(points[1].contour_start, 0);
+        assert_eq!(points[2].contour_start, 2);
+        assert_eq!(points[3].contour_start, 2);
+        assert_eq!(points[3].flags, PATH_END | PATH_CLOSED);
+    }
+
+    #[test]
+    fn malformed_or_non_finite_paths_are_empty() {
+        assert!(parse_path_points("M 0 0 C nope", 128).is_empty());
+        assert!(parse_path_points("M 1e999 0 L 10 10", 128).is_empty());
+    }
+
+    #[test]
+    fn adaptive_tolerance_controls_point_count() {
+        let path = build_lyon_path("M 0 0 C 0 1000 1000 1000 1000 0").unwrap();
+        let fine = flatten_path(&path, 0.1, 1024).unwrap();
+        let coarse = flatten_path(&path, 10.0, 1024).unwrap();
+        assert!(fine.len() > coarse.len());
+        assert_eq!(fine.first().unwrap().position, [0.0, 0.0]);
+        assert_eq!(fine.last().unwrap().position, [1000.0, 0.0]);
+        assert_eq!(coarse.last().unwrap().position, [1000.0, 0.0]);
+    }
+
+    #[test]
+    fn smooth_controls_reset_after_non_curve_commands() {
+        let cubic = positions("M 0 0 C 0 100 100 100 100 0 L 200 0 S 300 100 300 0");
+        assert!(
+            cubic
+                .iter()
+                .filter(|point| point[0] >= 200.0)
+                .all(|point| point[1] >= -f32::EPSILON)
+        );
+
+        let quadratic = positions("M 0 0 Q 50 100 100 0 L 200 0 T 300 0");
+        assert!(
+            quadratic
+                .iter()
+                .filter(|point| point[0] >= 200.0)
+                .all(|point| point[1].abs() <= f32::EPSILON)
+        );
     }
 
     #[test]
     fn caps_flattened_output_to_gpu_buffer_capacity() {
-        assert_eq!(parse_path_points("M 0 0 C 0 100 100 100 100 0", 5).len(), 5);
+        let points = parse_path_points("M 0 0 C 0 1000 1000 1000 1000 0", 5);
+        assert!(points.len() <= 5);
+        assert_eq!(points.first().unwrap().position, [0.0, 0.0]);
+        assert_eq!(points.last().unwrap().position, [1000.0, 0.0]);
+        assert_ne!(points.last().unwrap().flags & PATH_END, 0);
     }
 }
