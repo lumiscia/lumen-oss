@@ -90,6 +90,7 @@ impl GpuCompileNode for Opacity {
             "opacity",
             SHADER,
             std::mem::size_of::<compiler::OpacityParams>() as u64,
+            None,
         )?;
         ctx.register_compiled_node(CompiledOpacity {
             node_id: self.id,
