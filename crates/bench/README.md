@@ -34,7 +34,16 @@ Linux-only benchmark modes such as `vk-cuda-export` and `vk-cuda-nvenc` require 
 
 Text measurement cases compare repeated `text_width` and `text_height` evaluation for literal arguments (`measure-literal`), expression-backed text-node properties (`measure-expression`), and nonrecursive nested measurement with property references (`measure-nested-reference`).
 
-Composition names: `simple_pipeline`, `vector_showcase`, `animated_showcase`, `antialiasing_stress_aa`, `antialiasing_stress_noaa`.
+Composition names: `simple_pipeline`, `small_media_transform`, `vector_showcase`, `animated_showcase`, `antialiasing_stress_aa`, `antialiasing_stress_noaa`.
+
+`small_media_transform` isolates the cost of transforming a native 320×180 media texture into a 1920×1080 composition canvas. Its checkerboard pixels are generated deterministically in memory, so the workload has no file or decoder dependency. To compare transform canvas-bound changes, run the same command and frame count on the base and candidate revisions:
+
+```bash
+cargo run --release -p lumen-bench --bin lumen-bench-composition -- \
+  --composition small_media_transform --mode render-only --frames 120
+```
+
+Use `--mode render-profile` for the bind/upload/submit/poll breakdown. Compare the reported `elapsed_ms` and `fps` on the same machine after a warm-up run.
 
 ## Development
 
