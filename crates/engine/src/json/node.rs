@@ -12,8 +12,9 @@ use crate::node::{
     processing::{
         alpha_premultiply::AlphaPremultiply, blur::Blur, channel_shuffle::ChannelShuffle,
         color_grade::ColorGrade, crop::Crop, curves::Curves, exposure::Exposure,
-        hue_saturation::HueSaturation, levels::Levels, memo::Memo, resize::Resize, shadow::Shadow,
-        time_remap::TimeRemap, transform::Transform, wgsl_shader::WgslShader,
+        hue_saturation::HueSaturation, levels::Levels, memo::Memo, opacity::Opacity,
+        resize::Resize, shadow::Shadow, time_remap::TimeRemap, transform::Transform,
+        wgsl_shader::WgslShader,
     },
     source::{background::Background, media_in::MediaIn, text::Text},
     vector::{path::Path, shape::Shape},
@@ -39,6 +40,7 @@ pub fn build_node(
         )?)),
         "switch" => Ok(NodeKind::Switch(Switch::from_json(id, params)?)),
         "memo" => Ok(NodeKind::Memo(Memo::from_json(id, params)?)),
+        "opacity" => Ok(NodeKind::Opacity(Opacity::from_json(id, params)?)),
         "alpha_premultiply" => Ok(NodeKind::AlphaPremultiply(AlphaPremultiply::from_json(
             id, params,
         )?)),

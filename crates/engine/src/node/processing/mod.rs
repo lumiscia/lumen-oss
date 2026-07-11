@@ -8,6 +8,7 @@ pub mod exposure;
 pub mod hue_saturation;
 pub mod levels;
 pub mod memo;
+pub mod opacity;
 pub mod resize;
 pub mod shadow;
 pub mod time_remap;

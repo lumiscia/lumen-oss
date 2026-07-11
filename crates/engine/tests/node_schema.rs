@@ -15,7 +15,7 @@ use lumen_engine::{
 fn node_schemas_are_derived_from_node_structs() {
     let schemas = NodeKind::schemas();
 
-    assert_eq!(schemas.len(), 25);
+    assert_eq!(schemas.len(), 26);
     assert!(schemas.iter().any(|schema| schema.kind == "media_output"));
     assert!(schemas.iter().any(|schema| schema.kind == "text"));
     assert!(schemas.iter().any(|schema| schema.kind == "path"));
@@ -59,6 +59,22 @@ fn node_schemas_are_derived_from_node_structs() {
     assert_eq!(opacity.name, "Opacity");
     assert_eq!(opacity.constraints.min, Some(0.0));
     assert_eq!(opacity.constraints.max, Some(1.0));
+
+    let opacity_node = schemas
+        .iter()
+        .find(|schema| schema.kind == "opacity")
+        .unwrap();
+    assert_eq!(opacity_node.name, "Opacity");
+    assert_eq!(opacity_node.category, NodeCategory::Processing);
+    assert_eq!(opacity_node.inputs.len(), 1);
+    assert_eq!(opacity_node.inputs[0].name, "source");
+    let amount = opacity_node
+        .properties
+        .iter()
+        .find(|property| property.id == "opacity")
+        .unwrap();
+    assert_eq!(amount.constraints.min, Some(0.0));
+    assert_eq!(amount.constraints.max, Some(1.0));
 
     let raster_multimerge = schemas
         .iter()

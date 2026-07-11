@@ -116,6 +116,7 @@
       "raster_multimerge",
       "switch",
       "memo",
+      "opacity",
       "alpha_premultiply",
       "blur",
       "channel_shuffle",
@@ -1467,6 +1468,56 @@
                 "kind": "raster_frame",
                 "name": "mask",
                 "optional": true,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster_frame",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "Uniformly adjusts raster opacity.",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "opacity": {
+                    "default": 1.0,
+                    "description": "Opacity multiplier applied to the raster.",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Opacity",
+                    "type": "number",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "opacity"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Opacity",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster_frame",
+                "name": "source",
+                "optional": false,
                 "variadic": false
               }
             ],
