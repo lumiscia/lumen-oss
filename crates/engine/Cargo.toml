@@ -48,6 +48,9 @@ lumen-text = { package = "lumen-engine-text", version = "0.2.2", path = "../text
 bytemuck = { version = "1.25.0", features = ["derive"] }
 objc2-metal = { version = "0.3.2", optional = true }
 
+[dev-dependencies]
+pollster = "0.4.0"
+
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 glemu = { version = "0.1.2", default-features = false, features = ["api", "video-frame"] }
 js-sys = "0.3"
