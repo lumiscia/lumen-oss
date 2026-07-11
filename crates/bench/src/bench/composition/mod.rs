@@ -184,7 +184,7 @@ fn parse_args() -> anyhow::Result<Args> {
 
 fn print_help() {
     println!(
-        "usage: lumen-bench-composition [--composition all|simple_pipeline|small_media_transform|vector_showcase|animated_showcase|antialiasing_stress_aa|antialiasing_stress_noaa] [--mode MODE] [--frames N] [--save PATH]"
+        "usage: lumen-bench-composition [--composition all|simple_pipeline|small_media_transform|small_media_transform_exposure|vector_showcase|animated_showcase|antialiasing_stress_aa|antialiasing_stress_noaa] [--mode MODE] [--frames N] [--save PATH]"
     );
 }
 

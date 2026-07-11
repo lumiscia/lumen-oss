@@ -34,13 +34,20 @@ Linux-only benchmark modes such as `vk-cuda-export` and `vk-cuda-nvenc` require 
 
 Text measurement cases compare repeated `text_width` and `text_height` evaluation for literal arguments (`measure-literal`), expression-backed text-node properties (`measure-expression`), and nonrecursive nested measurement with property references (`measure-nested-reference`).
 
-Composition names: `simple_pipeline`, `small_media_transform`, `vector_showcase`, `animated_showcase`, `antialiasing_stress_aa`, `antialiasing_stress_noaa`.
+Composition names: `simple_pipeline`, `small_media_transform`, `small_media_transform_exposure`, `vector_showcase`, `animated_showcase`, `antialiasing_stress_aa`, `antialiasing_stress_noaa`.
 
-`small_media_transform` isolates the cost of transforming a native 320×180 media texture into a 1920×1080 composition canvas. Its checkerboard pixels are generated deterministically in memory, so the workload has no file or decoder dependency. To compare transform canvas-bound changes, run the same command and frame count on the base and candidate revisions:
+The small-media fixtures use the same deterministic in-memory 320×180 checkerboard and 1920×1080 composition canvas, so they have no file or decoder dependency:
+
+- `small_media_transform` measures `Media → Transform → Output`.
+- `small_media_transform_exposure` measures `Media → Transform → Exposure → Output`, exposing the cost of a downstream unary filter after the transform expands to canvas bounds.
+
+To compare transform canvas-bound changes, run both workloads with the same command and frame count on the base and candidate revisions:
 
 ```bash
-cargo run --release -p lumen-bench --bin lumen-bench-composition -- \
-  --composition small_media_transform --mode render-only --frames 120
+for composition in small_media_transform small_media_transform_exposure; do
+  cargo run --release -p lumen-bench --bin lumen-bench-composition -- \
+    --composition "$composition" --mode render-only --frames 1200
+done
 ```
 
 Use `--mode render-profile` for the bind/upload/submit/poll breakdown. Compare the reported `elapsed_ms` and `fps` on the same machine after a warm-up run.

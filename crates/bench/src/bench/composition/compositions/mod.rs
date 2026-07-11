@@ -12,6 +12,7 @@ pub fn all() -> Vec<Box<dyn CompositionFixture>> {
     vec![
         Box::new(simple_pipeline::SimplePipeline),
         Box::new(small_media_transform::SmallMediaTransform),
+        Box::new(small_media_transform::SmallMediaTransformExposure),
         Box::new(vector_showcase::VectorShowcase),
         Box::new(animated_showcase::AnimatedShowcase),
         Box::new(antialiasing_stress::AntialiasingStress {
@@ -55,12 +56,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn small_media_transform_is_registered() {
+    fn small_media_transform_fixtures_are_registered() {
         let names: Vec<_> = all().into_iter().map(|fixture| fixture.name()).collect();
         assert!(names.contains(&"small_media_transform"));
+        assert!(names.contains(&"small_media_transform_exposure"));
         assert_eq!(
             by_name("small_media_transform").unwrap().name(),
             "small_media_transform"
+        );
+        assert_eq!(
+            by_name("small_media_transform_exposure").unwrap().name(),
+            "small_media_transform_exposure"
         );
     }
 }
