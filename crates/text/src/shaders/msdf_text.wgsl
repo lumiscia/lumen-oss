@@ -80,13 +80,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         return vec4<f32>(in.color.rgb, sample.a * in.color.a);
     }
 
-    let signed_distance = median3(sample.rgb) - 0.5;
+    let msdf_distance = median3(sample.rgb) - 0.5;
+    let sdf_distance = sample.a - 0.5;
+    let sign_disagrees = (msdf_distance >= 0.0) != (sdf_distance >= 0.0);
+    let signed_distance = select(msdf_distance, sdf_distance, sign_disagrees);
     let atlas_size = vec2<f32>(textureDimensions(atlas_texture, 0));
     let unit_range = vec2<f32>(globals.px_range) / atlas_size;
     let screen_tex_size = vec2<f32>(1.0) / uv_width;
     let screen_px_range = max(0.5 * dot(unit_range, screen_tex_size), 1.0);
-    let edge_width = max(0.5 / screen_px_range, 0.001);
-    let coverage = smoothstep(-edge_width, edge_width, signed_distance);
-    let alpha = smoothstep(0.45, 0.95, coverage) * in.color.a;
+    let screen_px_distance = screen_px_range * signed_distance;
+    let alpha = clamp(screen_px_distance + 0.5, 0.0, 1.0) * in.color.a;
     return vec4<f32>(in.color.rgb, alpha);
 }

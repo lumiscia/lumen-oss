@@ -1,6 +1,6 @@
 #![cfg(feature = "experimental-msdf")]
 
-use std::sync::mpsc;
+use std::{fmt::Write as _, sync::mpsc};
 
 use lumen_gpu::{
     BindGroupLayoutSpec, Binding, BindingLayoutEntry, BufferDesc, ComputePassDesc,
@@ -24,6 +24,9 @@ fn large_msdf_glyph_generates_non_solid_distance_field() {
         target_size: Size::new(512, 512),
         max_glyphs: 1,
         max_segments: 4096,
+        use_msdf: true,
+        opaque_background: false,
+        font: None,
     };
     let Some(result) = render_msdf_scenario(scenario) else {
         return;
@@ -36,10 +39,14 @@ fn large_msdf_glyph_generates_non_solid_distance_field() {
     let job = result.atlas.jobs[0];
     let mut outside = 0usize;
     let mut inside = 0usize;
+    let mut multichannel = 0usize;
     for y in job.atlas_rect[1]..job.atlas_rect[1] + job.atlas_rect[3] {
         for x in job.atlas_rect[0]..job.atlas_rect[0] + job.atlas_rect[2] {
             let index = ((y * result.atlas_size.width + x) * 4) as usize;
             let median = median3_f16(bytes[index], bytes[index + 1], bytes[index + 2]);
+            if bytes[index] != bytes[index + 1] || bytes[index + 1] != bytes[index + 2] {
+                multichannel += 1;
+            }
             if median < 0.44 {
                 outside += 1;
             } else if median > 0.56 {
@@ -50,6 +57,10 @@ fn large_msdf_glyph_generates_non_solid_distance_field() {
 
     assert!(outside > 0, "large glyph MSDF has no outside pixels");
     assert!(inside > 0, "large glyph MSDF has no inside pixels");
+    assert!(
+        multichannel > 0,
+        "large glyph field is monochrome rather than edge-colored MSDF"
+    );
 
     let (opaque, total) = rendered_alpha_stats(
         &result.renderer,
@@ -74,6 +85,9 @@ fn large_multiline_msdf_text_does_not_render_as_blocks() {
         target_size: Size::new(1920, 1080),
         max_glyphs: 64,
         max_segments: 32768,
+        use_msdf: true,
+        opaque_background: false,
+        font: None,
     };
     let Some(result) = render_msdf_scenario(scenario) else {
         return;
@@ -84,10 +98,7 @@ fn large_multiline_msdf_text_does_not_render_as_blocks() {
         "expected several outline glyphs to use MSDF jobs, got {}",
         result.atlas.jobs.len()
     );
-    assert_eq!(
-        result.atlas.glyph_count as usize,
-        result.atlas.instances.len()
-    );
+    assert_eq!(result.atlas.glyph_count, result.atlas.instances.len());
 
     if let Ok(path) = std::env::var("LUMEN_TEXT_MSDF_GPU_SNAPSHOT") {
         write_texture_png(&result.renderer, result.output, result.target_size, path);
@@ -109,6 +120,349 @@ fn large_multiline_msdf_text_does_not_render_as_blocks() {
     );
 }
 
+#[test]
+fn near_frame_height_msdf_matches_raster_coverage() {
+    let mut scenario = MsdfScenario {
+        text: "Ag",
+        font_size: 600.0,
+        origin: [32.5, 0.0],
+        px_range: 16,
+        atlas_size: Size::new(2048, 2048),
+        target_size: Size::new(1920, 720),
+        max_glyphs: 16,
+        max_segments: 16_384,
+        use_msdf: false,
+        opaque_background: false,
+        font: None,
+    };
+    let Some(raster) = render_msdf_scenario(scenario) else {
+        return;
+    };
+    scenario.use_msdf = true;
+    let Some(msdf) = render_msdf_scenario(scenario) else {
+        return;
+    };
+    assert_eq!(raster.atlas.glyph_count, 2);
+    assert_eq!(msdf.atlas.glyph_count, 2);
+
+    let raster_pixels = read_texture_rgba8(&raster.renderer, raster.output, raster.target_size);
+    let msdf_pixels = read_texture_rgba8(&msdf.renderer, msdf.output, msdf.target_size);
+    let mut intersection = 0usize;
+    let mut union = 0usize;
+    for (raster, msdf) in raster_pixels
+        .chunks_exact(4)
+        .zip(msdf_pixels.chunks_exact(4))
+    {
+        let raster_covered = raster[3] >= 128;
+        let msdf_covered = msdf[3] >= 128;
+        intersection += usize::from(raster_covered && msdf_covered);
+        union += usize::from(raster_covered || msdf_covered);
+    }
+
+    assert!(
+        union > 20_000,
+        "large-glyph fixture has too little coverage: union={union}"
+    );
+    assert!(
+        intersection * 100 >= union * 94,
+        "large MSDF/raster coverage diverged: intersection={intersection} union={union}"
+    );
+}
+
+#[test]
+fn writes_raster_msdf_gallery_when_requested() {
+    let Ok(directory) = std::env::var("LUMEN_TEXT_GPU_GALLERY_DIR") else {
+        return;
+    };
+    std::fs::create_dir_all(&directory).unwrap();
+    let scenes = [
+        (
+            "01_small_ui",
+            "Small interface text at 32 px\nQuarter-pixel positioning: 0.25  0.50  0.75",
+            32.0,
+            [48.25, 96.0],
+        ),
+        (
+            "02_body_copy",
+            "Lumen renders crisp body copy.\nThe quick brown fox jumps over 0123456789.\nPunctuation: @ # % & ? ! ( ) [ ]",
+            52.0,
+            [48.5, 100.0],
+        ),
+        ("03_headline", "MOTION\nDESIGN", 128.0, [70.25, 180.0]),
+        ("04_huge_glyphs", "LUMEN", 240.0, [32.5, 310.0]),
+        (
+            "05_corner_stress",
+            "MWA@#%\nVYXKZ&\n23456789",
+            112.0,
+            [56.75, 150.0],
+        ),
+        (
+            "06_dense_multiline",
+            "Large animated typography 0123456789\nLarge animated typography 0123456789\nLarge animated typography 0123456789\nLarge animated typography 0123456789",
+            72.0,
+            [36.25, 120.0],
+        ),
+        ("07_very_large_stems", "MWM", 360.0, [24.5, 10.0]),
+        ("08_very_large_counters", "B8@", 512.0, [30.25, 0.0]),
+        ("09_near_frame_height", "Ag", 600.0, [48.75, 0.0]),
+        ("10_repeated_large_rows", "WWWW\nMMMM", 280.0, [20.5, 0.0]),
+    ];
+
+    for (name, text, font_size, origin) in scenes {
+        for (suffix, use_msdf) in [("raster", false), ("msdf", true)] {
+            let scenario = MsdfScenario {
+                text,
+                font_size,
+                origin,
+                px_range: 12,
+                atlas_size: Size::new(2048, 2048),
+                target_size: Size::new(1280, 720),
+                max_glyphs: 512,
+                max_segments: 65_536,
+                use_msdf,
+                opaque_background: true,
+                font: None,
+            };
+            let result = render_msdf_scenario(scenario)
+                .unwrap_or_else(|| panic!("GPU renderer for gallery scene {name}_{suffix}"));
+            let path = std::path::Path::new(&directory).join(format!("{name}_{suffix}.png"));
+            write_texture_png(
+                &result.renderer,
+                result.output,
+                result.target_size,
+                path.display().to_string(),
+            );
+        }
+    }
+
+    let multilingual_scenes = [
+        (
+            "11_arabic_rtl",
+            "مرحبا بالعالم\nلغة عربية ١٢٣٤٥٦",
+            82.0,
+            [64.25, 100.0],
+            FontFixture {
+                path: "/System/Library/Fonts/SFArabic.ttf",
+                family: ".SF Arabic",
+            },
+        ),
+        (
+            "12_hebrew_rtl",
+            "שלום עולם\nעברית 12345 — בדיקה",
+            82.0,
+            [64.5, 100.0],
+            FontFixture {
+                path: "/System/Library/Fonts/SFHebrew.ttf",
+                family: ".SF Hebrew",
+            },
+        ),
+        (
+            "13_mixed_bidi",
+            "Order رقم 123 — السعر $45\nABC אבג 789 — test",
+            68.0,
+            [48.25, 100.0],
+            FontFixture {
+                path: "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+                family: "Arial Unicode MS",
+            },
+        ),
+        (
+            "14_devanagari_clusters",
+            "नमस्ते दुनिया\nकर्म क्षेत्र १२३४५",
+            82.0,
+            [48.5, 100.0],
+            FontFixture {
+                path: "/System/Library/Fonts/Supplemental/Devanagari Sangam MN.ttc",
+                family: "Devanagari Sangam MN",
+            },
+        ),
+        (
+            "15_cjk",
+            "中文排版测试\n日本語テキスト 한글 123",
+            76.0,
+            [48.25, 100.0],
+            FontFixture {
+                path: "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+                family: "Arial Unicode MS",
+            },
+        ),
+        (
+            "16_thai_clusters",
+            "ภาษาไทยทดสอบ\nการจัดวาง ๑๒๓๔๕",
+            76.0,
+            [48.75, 100.0],
+            FontFixture {
+                path: "/System/Library/Fonts/Supplemental/Thonburi.ttc",
+                family: "Thonburi",
+            },
+        ),
+        (
+            "17_combining_marks",
+            "Café  naïve  Å  é  ñ\nŻółć — stacked: ā́",
+            72.0,
+            [48.25, 100.0],
+            FontFixture {
+                path: "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+                family: "Arial Unicode MS",
+            },
+        ),
+        (
+            "18_greek_cyrillic",
+            "Ελληνικά: Καλημέρα κόσμε\nКириллица: Привет, мир",
+            64.0,
+            [48.5, 100.0],
+            FontFixture {
+                path: "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+                family: "Arial Unicode MS",
+            },
+        ),
+        (
+            "19_ligatures",
+            "office  affinity  efficient\nffi  fi  fl  ff  AV  To",
+            76.0,
+            [48.25, 100.0],
+            FontFixture {
+                path: "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+                family: "Arial Unicode MS",
+            },
+        ),
+        (
+            "20_emoji_fallback",
+            "Lumen 🍋  Motion 🚀  Film 🎬\nColor emoji fallback ✨ ❤️ 🌍",
+            72.0,
+            [48.5, 100.0],
+            FontFixture {
+                path: "/System/Library/Fonts/Apple Color Emoji.ttc",
+                family: "Apple Color Emoji",
+            },
+        ),
+    ];
+
+    for (name, text, font_size, origin, font) in multilingual_scenes {
+        for (suffix, use_msdf) in [("raster", false), ("msdf", true)] {
+            let scenario = MsdfScenario {
+                text,
+                font_size,
+                origin,
+                px_range: 12,
+                atlas_size: Size::new(2048, 2048),
+                target_size: Size::new(1280, 720),
+                max_glyphs: 512,
+                max_segments: 65_536,
+                use_msdf,
+                opaque_background: true,
+                font: Some(font),
+            };
+            let result = render_msdf_scenario(scenario)
+                .unwrap_or_else(|| panic!("GPU renderer for gallery scene {name}_{suffix}"));
+            let path = std::path::Path::new(&directory).join(format!("{name}_{suffix}.png"));
+            write_texture_png(
+                &result.renderer,
+                result.output,
+                result.target_size,
+                path.display().to_string(),
+            );
+        }
+    }
+
+    let mut raster_paths = std::fs::read_dir(&directory)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.to_string_lossy().ends_with("_raster.png"))
+        .collect::<Vec<_>>();
+    raster_paths.sort();
+    let mut metrics = String::from("scene\tcoverage_iou\trgb_mae\thard_mismatches\tlongest_run\n");
+    for raster_path in raster_paths {
+        let raster_name = raster_path.file_name().unwrap().to_string_lossy();
+        let scene = raster_name.trim_end_matches("_raster.png");
+        let msdf_path = raster_path.with_file_name(format!("{scene}_msdf.png"));
+        let (coverage_iou, rgb_mae, hard_mismatches, longest_run) =
+            compare_gallery_images(&raster_path, &msdf_path);
+        assert!(
+            coverage_iou >= 0.95,
+            "gallery scene {scene} diverged from raster coverage: {coverage_iou:.4}"
+        );
+        assert!(
+            rgb_mae <= 0.005,
+            "gallery scene {scene} diverged from raster color: {rgb_mae:.4}"
+        );
+        assert_eq!(
+            hard_mismatches, 0,
+            "gallery scene {scene} contains {hard_mismatches} strongly inverted pixels; longest contiguous run: {longest_run}"
+        );
+        writeln!(
+            metrics,
+            "{scene}\t{coverage_iou:.4}\t{rgb_mae:.4}\t{hard_mismatches}\t{longest_run}"
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        std::path::Path::new(&directory).join("comparison_metrics.tsv"),
+        metrics,
+    )
+    .unwrap();
+}
+
+fn compare_gallery_images(
+    raster_path: &std::path::Path,
+    msdf_path: &std::path::Path,
+) -> (f64, f64, usize, usize) {
+    let raster = image::open(raster_path).unwrap().into_rgb8();
+    let msdf = image::open(msdf_path).unwrap().into_rgb8();
+    assert_eq!(raster.dimensions(), msdf.dimensions());
+
+    let mut intersection = 0usize;
+    let mut union = 0usize;
+    let mut absolute_error = 0u64;
+    let mut hard_mismatches = 0usize;
+    let mut longest_run = 0usize;
+    let mut horizontal_run = 0usize;
+    let width = raster.width() as usize;
+    let mut vertical_runs = vec![0usize; width];
+    for (index, (raster, msdf)) in raster.pixels().zip(msdf.pixels()).enumerate() {
+        let raster_covered = raster.0.iter().copied().max().unwrap() >= 128;
+        let msdf_covered = msdf.0.iter().copied().max().unwrap() >= 128;
+        intersection += usize::from(raster_covered && msdf_covered);
+        union += usize::from(raster_covered || msdf_covered);
+        absolute_error += raster
+            .0
+            .iter()
+            .zip(msdf.0.iter())
+            .map(|(raster, msdf)| u64::from(raster.abs_diff(*msdf)))
+            .sum::<u64>();
+        let raster_value = raster.0.iter().copied().max().unwrap();
+        let msdf_value = msdf.0.iter().copied().max().unwrap();
+        let hard_mismatch =
+            (raster_value >= 224 && msdf_value <= 31) || (msdf_value >= 224 && raster_value <= 31);
+        let x = index % width;
+        if hard_mismatch {
+            hard_mismatches += 1;
+            horizontal_run += 1;
+            vertical_runs[x] += 1;
+            longest_run = longest_run.max(horizontal_run).max(vertical_runs[x]);
+        } else {
+            horizontal_run = 0;
+            vertical_runs[x] = 0;
+        }
+        if x + 1 == width {
+            horizontal_run = 0;
+        }
+    }
+
+    let coverage_iou = intersection as f64 / union.max(1) as f64;
+    let channel_count = u64::from(raster.width()) * u64::from(raster.height()) * 3;
+    let rgb_mae = absolute_error as f64 / (channel_count * 255) as f64;
+    (coverage_iou, rgb_mae, hard_mismatches, longest_run)
+}
+
+#[derive(Clone, Copy)]
+struct FontFixture<'a> {
+    path: &'a str,
+    family: &'a str,
+}
+
+#[derive(Clone, Copy)]
 struct MsdfScenario<'a> {
     text: &'a str,
     font_size: f32,
@@ -118,6 +472,9 @@ struct MsdfScenario<'a> {
     target_size: Size,
     max_glyphs: usize,
     max_segments: usize,
+    use_msdf: bool,
+    opaque_background: bool,
+    font: Option<FontFixture<'a>>,
 }
 
 struct MsdfRenderResult {
@@ -152,13 +509,17 @@ impl MsdfRenderResult {
 }
 
 fn render_msdf_scenario(scenario: MsdfScenario<'_>) -> Option<MsdfRenderResult> {
-    let Some(mut renderer) = renderer() else {
-        return None;
-    };
+    let mut renderer = renderer()?;
     let mut text_system = TextSystem::new();
+    if let Some(font) = scenario.font {
+        text_system.load_font_data(std::fs::read(font.path).ok()?);
+    }
     let mut request = TextLayoutRequest::new(scenario.text);
     request.font_size = scenario.font_size;
     request.origin = scenario.origin;
+    if let Some(font) = scenario.font {
+        request.font_family = font.family.to_string();
+    }
     let layout = text_system.layout(&request);
     let atlas = text_system.render_gpu_hybrid_atlas(
         &layout,
@@ -168,7 +529,11 @@ fn render_msdf_scenario(scenario: MsdfScenario<'_>) -> Option<MsdfRenderResult> 
             px_range: scenario.px_range,
         },
         scenario.max_glyphs,
-        scenario.max_segments,
+        if scenario.use_msdf {
+            scenario.max_segments
+        } else {
+            0
+        },
         scenario.atlas_size.width * scenario.atlas_size.height,
     );
 
@@ -191,7 +556,6 @@ fn render_msdf_scenario(scenario: MsdfScenario<'_>) -> Option<MsdfRenderResult> 
         (atlas.jobs.len().max(1) * std::mem::size_of::<lumen_text::GpuMsdfJob>()) as u64;
     let segments_size =
         (atlas.segments.len().max(1) * std::mem::size_of::<lumen_text::GpuMsdfSegment>()) as u64;
-    let pixel_jobs_size = (atlas.pixel_jobs.len().max(1) * std::mem::size_of::<u32>()) as u64;
     let instances_buffer = builder.buffer(
         Some("large msdf instances".to_string()),
         BufferDesc::storage(instances_size),
@@ -203,10 +567,6 @@ fn render_msdf_scenario(scenario: MsdfScenario<'_>) -> Option<MsdfRenderResult> 
     let segments_buffer = builder.buffer(
         Some("large msdf segments".to_string()),
         BufferDesc::storage(segments_size),
-    );
-    let pixel_jobs_buffer = builder.buffer(
-        Some("large msdf pixel jobs".to_string()),
-        BufferDesc::storage(pixel_jobs_size),
     );
     let output = builder.texture(
         Some("large msdf output".to_string()),
@@ -225,41 +585,41 @@ fn render_msdf_scenario(scenario: MsdfScenario<'_>) -> Option<MsdfRenderResult> 
             ..Default::default()
         },
     );
-    let program = builder.program(ProgramDesc::Compute(ComputeProgramDesc {
-        label: Some("large msdf generate".to_string()),
-        shader: MSDF_GENERATOR_SHADER.to_string(),
-        entry: "cs_main".to_string(),
-        bind_groups: BindGroupLayoutSpec::single(vec![
-            BindingLayoutEntry::uniform(0, wgpu::ShaderStages::COMPUTE),
-            BindingLayoutEntry::storage_texture(
-                1,
-                wgpu::ShaderStages::COMPUTE,
-                wgpu::TextureFormat::Rgba16Float,
-                wgpu::StorageTextureAccess::WriteOnly,
-            ),
-            BindingLayoutEntry::storage(2, wgpu::ShaderStages::COMPUTE, true),
-            BindingLayoutEntry::storage(3, wgpu::ShaderStages::COMPUTE, true),
-            BindingLayoutEntry::storage(4, wgpu::ShaderStages::COMPUTE, true),
-        ]),
-    }));
-    builder.compute_pass(ComputePassDesc {
-        label: Some("large msdf generate".to_string()),
-        owner: None,
-        program,
-        bindings: vec![
-            Binding::uniform(0, 0, globals_buffer),
-            Binding::storage_texture(0, 1, atlas_texture),
-            Binding::storage_buffer(0, 2, jobs_buffer),
-            Binding::storage_buffer(0, 3, segments_buffer),
-            Binding::storage_buffer(0, 4, pixel_jobs_buffer),
-        ],
-        dispatch: Dispatch {
-            x: atlas.msdf_pixel_count.div_ceil(64),
-            y: 1,
-            z: 1,
-        }
-        .into(),
-    });
+    if !atlas.jobs.is_empty() {
+        let program = builder.program(ProgramDesc::Compute(ComputeProgramDesc {
+            label: Some("large msdf generate".to_string()),
+            shader: MSDF_GENERATOR_SHADER.to_string(),
+            entry: "cs_main".to_string(),
+            bind_groups: BindGroupLayoutSpec::single(vec![
+                BindingLayoutEntry::uniform(0, wgpu::ShaderStages::COMPUTE),
+                BindingLayoutEntry::storage_texture(
+                    1,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::TextureFormat::Rgba16Float,
+                    wgpu::StorageTextureAccess::WriteOnly,
+                ),
+                BindingLayoutEntry::storage(2, wgpu::ShaderStages::COMPUTE, true),
+                BindingLayoutEntry::storage(3, wgpu::ShaderStages::COMPUTE, true),
+            ]),
+        }));
+        builder.compute_pass(ComputePassDesc {
+            label: Some("large msdf generate".to_string()),
+            owner: None,
+            program,
+            bindings: vec![
+                Binding::uniform(0, 0, globals_buffer),
+                Binding::storage_texture(0, 1, atlas_texture),
+                Binding::storage_buffer(0, 2, jobs_buffer),
+                Binding::storage_buffer(0, 3, segments_buffer),
+            ],
+            dispatch: Dispatch {
+                x: atlas.msdf_pixel_count.div_ceil(64),
+                y: 1,
+                z: 1,
+            }
+            .into(),
+        });
+    }
     let text_program = builder.program(ProgramDesc::Render(RenderProgramDesc {
         label: Some("large msdf render".to_string()),
         shader: MSDF_TEXT_SHADER.to_string(),
@@ -285,7 +645,11 @@ fn render_msdf_scenario(scenario: MsdfScenario<'_>) -> Option<MsdfRenderResult> 
         program: text_program,
         targets: vec![RenderTargetRef {
             texture: output,
-            load: LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            load: LoadOp::Clear(if scenario.opaque_background {
+                wgpu::Color::BLACK
+            } else {
+                wgpu::Color::TRANSPARENT
+            }),
             store: wgpu::StoreOp::Store,
         }],
         bindings: vec![
@@ -330,13 +694,10 @@ fn render_msdf_scenario(scenario: MsdfScenario<'_>) -> Option<MsdfRenderResult> 
     update.write_buffer(globals_buffer, 0, bytemuck::bytes_of(&globals));
     update.write_buffer(text_globals_buffer, 0, bytemuck::bytes_of(&text_globals));
     update.write_buffer(instances_buffer, 0, bytemuck::cast_slice(&atlas.instances));
-    update.write_buffer(jobs_buffer, 0, bytemuck::cast_slice(&atlas.jobs));
-    update.write_buffer(segments_buffer, 0, bytemuck::cast_slice(&atlas.segments));
-    update.write_buffer(
-        pixel_jobs_buffer,
-        0,
-        bytemuck::cast_slice(&atlas.pixel_jobs),
-    );
+    if !atlas.jobs.is_empty() {
+        update.write_buffer(jobs_buffer, 0, bytemuck::cast_slice(&atlas.jobs));
+        update.write_buffer(segments_buffer, 0, bytemuck::cast_slice(&atlas.segments));
+    }
     renderer.execute(&plan, &update).unwrap();
 
     Some(MsdfRenderResult {
