@@ -959,6 +959,9 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
                     lumen_engine::expr::Expression::parse("frame").unwrap(),
                 ),
                 translate_y: Deferred::value(2.0),
+                opacity: Deferred::Expr(
+                    lumen_engine::expr::Expression::parse("frame / 12").unwrap(),
+                ),
                 rotate: Deferred::value(15.0),
                 ..Default::default()
             },

@@ -36,6 +36,9 @@ pub struct TransformParams {
     /// Rotation in degrees.
     #[meta(name = "Rotate", step = 1)]
     pub rotate: f64,
+    /// Opacity multiplier applied to the transformed raster.
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub opacity: f64,
     /// Horizontal pivot point in pixels.
     #[meta(name = "Pivot X", step = 1)]
     pub pivot_x: f64,
@@ -55,6 +58,7 @@ impl Default for TransformParams {
             translate_x: 0.0,
             translate_y: 0.0,
             rotate: 0.0,
+            opacity: 1.0,
             pivot_x: 0.0,
             pivot_y: 0.0,
             sampling: TransformSampling::Linear,
@@ -133,8 +137,9 @@ impl GpuCompiledNode for CompiledTransform {
             translate: [evaluated.translate_x as f32, evaluated.translate_y as f32],
             pivot: [evaluated.pivot_x as f32, evaluated.pivot_y as f32],
             rotate_radians: (evaluated.rotate as f32).to_radians(),
+            opacity: evaluated.opacity.clamp(0.0, 1.0) as f32,
             sampling: evaluated.sampling as u32,
-            _pad: [0; 4],
+            _pad: [0; 3],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())

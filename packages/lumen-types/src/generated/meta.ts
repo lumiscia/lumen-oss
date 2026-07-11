@@ -342,6 +342,7 @@ export interface TimeRemapNode extends CompositionNodeBase<"time_remap"> {
 
 export interface TransformNode extends CompositionNodeBase<"transform"> {
   readonly params?: {
+    readonly "opacity"?: ExpressionValue<number>;
     readonly "pivot_x"?: ExpressionValue<number>;
     readonly "pivot_y"?: ExpressionValue<number>;
     readonly "rotate"?: ExpressionValue<number>;

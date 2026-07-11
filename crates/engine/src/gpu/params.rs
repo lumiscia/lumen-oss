@@ -186,8 +186,9 @@ pub(crate) struct TransformParams {
     pub(crate) translate: [f32; 2],
     pub(crate) pivot: [f32; 2],
     pub(crate) rotate_radians: f32,
+    pub(crate) opacity: f32,
     pub(crate) sampling: u32,
-    pub(crate) _pad: [u32; 4],
+    pub(crate) _pad: [u32; 3],
 }
 
 #[repr(C)]
