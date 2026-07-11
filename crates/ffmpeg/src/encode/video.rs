@@ -52,6 +52,8 @@ impl VideoEncoderConfig {
 }
 
 pub struct VideoEncoder {
+    width: u32,
+    height: u32,
     stream_index: usize,
     stream_time_base: sys::AVRational,
     pub(in crate::encode) context: *mut sys::AVCodecContext,
@@ -75,6 +77,30 @@ impl VideoEncoder {
                 "width, height, and fps must be greater than zero",
             ));
         }
+        let width = i32::try_from(config.width).map_err(|_| {
+            FfmpegError::new(
+                "VideoEncoder::create",
+                "width exceeds FFmpeg's supported integer range",
+            )
+        })?;
+        let height = i32::try_from(config.height).map_err(|_| {
+            FfmpegError::new(
+                "VideoEncoder::create",
+                "height exceeds FFmpeg's supported integer range",
+            )
+        })?;
+        let fps = i32::try_from(config.fps).map_err(|_| {
+            FfmpegError::new(
+                "VideoEncoder::create",
+                "fps exceeds FFmpeg's supported integer range",
+            )
+        })?;
+        let gop_size = fps.checked_mul(2).ok_or_else(|| {
+            FfmpegError::new(
+                "VideoEncoder::create",
+                "fps is too large to calculate the encoder GOP size",
+            )
+        })?;
         let codec = find_encoder(&config)?;
         if codec.is_null() {
             return Err(FfmpegError::new(
@@ -98,22 +124,16 @@ impl VideoEncoder {
             ));
         }
 
-        let time_base = sys::AVRational {
-            num: 1,
-            den: config.fps as i32,
-        };
+        let time_base = sys::AVRational { num: 1, den: fps };
         let hw_contexts = create_encoder_hw_contexts(&config)?;
 
         unsafe {
             (*context).codec_id = config.codec.to_av_codec_id();
             (*context).codec_type = AVMEDIA_TYPE_VIDEO;
-            (*context).width = config.width as i32;
-            (*context).height = config.height as i32;
+            (*context).width = width;
+            (*context).height = height;
             (*context).time_base = time_base;
-            (*context).framerate = sys::AVRational {
-                num: config.fps as i32,
-                den: 1,
-            };
+            (*context).framerate = sys::AVRational { num: fps, den: 1 };
             (*context).pix_fmt = match config.mode {
                 EncodeMode::GpuTexture(GpuBackend::Cuda) => AV_PIX_FMT_CUDA,
                 EncodeMode::GpuTexture(GpuBackend::Metal) => AV_PIX_FMT_VIDEOTOOLBOX,
@@ -122,7 +142,7 @@ impl VideoEncoder {
                 }
             };
             (*context).bit_rate = config.bit_rate;
-            (*context).gop_size = config.fps as i32 * 2;
+            (*context).gop_size = gop_size;
             if let Some(frames) = hw_contexts
                 .as_ref()
                 .and_then(|contexts| contexts.frames.as_ref())
@@ -154,8 +174,8 @@ impl VideoEncoder {
         let scaler = if config.mode == EncodeMode::CpuUpload {
             unsafe {
                 (*frame.as_mut_ptr()).format = AV_PIX_FMT_YUV420P as i32;
-                (*frame.as_mut_ptr()).width = config.width as i32;
-                (*frame.as_mut_ptr()).height = config.height as i32;
+                (*frame.as_mut_ptr()).width = width;
+                (*frame.as_mut_ptr()).height = height;
                 ffi::check(
                     sys::av_frame_get_buffer(frame.as_mut_ptr(), 32),
                     "av_frame_get_buffer",
@@ -164,11 +184,11 @@ impl VideoEncoder {
 
             let scaler = unsafe {
                 sys::sws_getContext(
-                    config.width as i32,
-                    config.height as i32,
+                    width,
+                    height,
                     PixelFormat::Rgba8.to_av_pixel_format(),
-                    config.width as i32,
-                    config.height as i32,
+                    width,
+                    height,
                     AV_PIX_FMT_YUV420P,
                     SWS_BILINEAR as i32,
                     ptr::null_mut(),
@@ -188,6 +208,8 @@ impl VideoEncoder {
         };
 
         Ok(Self {
+            width: config.width,
+            height: config.height,
             stream_index: unsafe { (*stream).index as usize },
             stream_time_base: time_base,
             context,
@@ -231,6 +253,7 @@ impl VideoEncoder {
             )
             .with_backend(backend));
         }
+        let layout = validate_cpu_frame(frame, self.width, self.height)?;
         unsafe {
             ffi::check(
                 sys::av_frame_make_writable(self.frame.as_mut_ptr()),
@@ -238,17 +261,20 @@ impl VideoEncoder {
             )?;
         }
         let src_data = [frame.data.as_ptr(), ptr::null(), ptr::null(), ptr::null()];
-        let src_stride = [frame.stride as i32, 0, 0, 0];
+        let src_stride = [layout.stride, 0, 0, 0];
         unsafe {
-            sys::sws_scale(
-                self.scaler,
-                src_data.as_ptr(),
-                src_stride.as_ptr(),
-                0,
-                frame.height as i32,
-                (*self.frame.as_mut_ptr()).data.as_mut_ptr(),
-                (*self.frame.as_mut_ptr()).linesize.as_mut_ptr(),
-            );
+            ffi::check(
+                sys::sws_scale(
+                    self.scaler,
+                    src_data.as_ptr(),
+                    src_stride.as_ptr(),
+                    0,
+                    layout.height,
+                    (*self.frame.as_mut_ptr()).data.as_mut_ptr(),
+                    (*self.frame.as_mut_ptr()).linesize.as_mut_ptr(),
+                ),
+                "sws_scale",
+            )?;
             (*self.frame.as_mut_ptr()).pts = frame.pts.unwrap_or(self.next_pts);
         }
         self.next_pts = self.next_pts.saturating_add(1);
@@ -300,6 +326,88 @@ impl VideoEncoder {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ValidatedCpuFrameLayout {
+    stride: i32,
+    height: i32,
+}
+
+fn validate_cpu_frame(
+    frame: &CpuVideoFrame,
+    expected_width: u32,
+    expected_height: u32,
+) -> Result<ValidatedCpuFrameLayout> {
+    const OPERATION: &str = "VideoEncoder::send_cpu_frame";
+
+    if frame.pixel_format != PixelFormat::Rgba8 {
+        return Err(FfmpegError::new(
+            OPERATION,
+            "CPU upload encoders require RGBA8 input frames",
+        ));
+    }
+    if frame.width != expected_width || frame.height != expected_height {
+        return Err(FfmpegError::new(
+            OPERATION,
+            format!(
+                "frame dimensions {}x{} do not match encoder dimensions {expected_width}x{expected_height}",
+                frame.width, frame.height
+            ),
+        ));
+    }
+
+    let width = usize::try_from(frame.width).map_err(|_| {
+        FfmpegError::new(OPERATION, "frame width exceeds the platform integer range")
+    })?;
+    let row_bytes = width.checked_mul(4).ok_or_else(|| {
+        FfmpegError::new(
+            OPERATION,
+            "frame row byte length exceeds the platform integer range",
+        )
+    })?;
+    if frame.stride < row_bytes {
+        return Err(FfmpegError::new(
+            OPERATION,
+            format!(
+                "frame stride {} is smaller than the required RGBA8 row length {row_bytes}",
+                frame.stride
+            ),
+        ));
+    }
+
+    let stride = i32::try_from(frame.stride).map_err(|_| {
+        FfmpegError::new(
+            OPERATION,
+            "frame stride exceeds FFmpeg's supported integer range",
+        )
+    })?;
+    let height = i32::try_from(frame.height).map_err(|_| {
+        FfmpegError::new(
+            OPERATION,
+            "frame height exceeds FFmpeg's supported integer range",
+        )
+    })?;
+    let required_len = frame
+        .stride
+        .checked_mul(frame.height as usize)
+        .ok_or_else(|| {
+            FfmpegError::new(
+                OPERATION,
+                "frame buffer length exceeds the platform integer range",
+            )
+        })?;
+    if frame.data.len() < required_len {
+        return Err(FfmpegError::new(
+            OPERATION,
+            format!(
+                "frame buffer contains {} bytes but its layout requires at least {required_len}",
+                frame.data.len()
+            ),
+        ));
+    }
+
+    Ok(ValidatedCpuFrameLayout { stride, height })
+}
+
 impl Drop for VideoEncoder {
     fn drop(&mut self) {
         unsafe {
@@ -308,5 +416,80 @@ impl Drop for VideoEncoder {
             }
             sys::avcodec_free_context(&mut self.context);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgba_frame(width: u32, height: u32) -> CpuVideoFrame {
+        let stride = width as usize * 4;
+        CpuVideoFrame {
+            width,
+            height,
+            stride,
+            pixel_format: PixelFormat::Rgba8,
+            pts: None,
+            data: vec![0; stride * height as usize],
+        }
+    }
+
+    #[test]
+    fn accepts_valid_rgba_frame_layout() {
+        let frame = rgba_frame(16, 9);
+
+        assert_eq!(
+            validate_cpu_frame(&frame, 16, 9).unwrap(),
+            ValidatedCpuFrameLayout {
+                stride: 64,
+                height: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_rgba_frame() {
+        let mut frame = rgba_frame(16, 9);
+        frame.pixel_format = PixelFormat::Bgra8;
+
+        let error = validate_cpu_frame(&frame, 16, 9).unwrap_err();
+        assert!(error.message.contains("require RGBA8"));
+    }
+
+    #[test]
+    fn rejects_mismatched_dimensions() {
+        let frame = rgba_frame(16, 9);
+
+        let error = validate_cpu_frame(&frame, 8, 9).unwrap_err();
+        assert!(error.message.contains("do not match encoder dimensions"));
+    }
+
+    #[test]
+    fn rejects_short_stride() {
+        let mut frame = rgba_frame(16, 9);
+        frame.stride -= 1;
+
+        let error = validate_cpu_frame(&frame, 16, 9).unwrap_err();
+        assert!(error.message.contains("smaller than the required"));
+    }
+
+    #[test]
+    fn rejects_undersized_buffer() {
+        let mut frame = rgba_frame(16, 9);
+        frame.data.pop();
+
+        let error = validate_cpu_frame(&frame, 16, 9).unwrap_err();
+        assert!(error.message.contains("layout requires at least"));
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn rejects_stride_outside_ffmpeg_integer_range() {
+        let mut frame = rgba_frame(1, 1);
+        frame.stride = i32::MAX as usize + 1;
+
+        let error = validate_cpu_frame(&frame, 1, 1).unwrap_err();
+        assert!(error.message.contains("stride exceeds FFmpeg"));
     }
 }
