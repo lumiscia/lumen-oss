@@ -16,10 +16,11 @@ use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, duration_samples},
     composition::Composition,
+    error::MediaError,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     gpu::GpuCompositionRenderer,
     image::ImageFileResolver,
-    media::{ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
+    media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_ffmpeg::EncodeMode;
@@ -194,6 +195,63 @@ impl MediaStore for LocalMediaStore {
         Some(Box::new(SharedAudioResolver(
             self.audio_resolver(&resolved)?,
         )))
+    }
+
+    fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
+        let font_dir = self.root.join("assets/fonts");
+        let prefix = format!("{font_family}-");
+        let mut files = fs::read_dir(&font_dir)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                let supported = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        matches!(
+                            extension.to_ascii_lowercase().as_str(),
+                            "otf" | "ttf" | "ttc"
+                        )
+                    });
+                let matches_family = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix));
+                supported && matches_family
+            })
+            .collect::<Vec<_>>();
+        files.sort();
+        (!files.is_empty()).then(|| {
+            Box::new(LocalFontResolver {
+                id: format!("local-font:{}:{}", font_family, font_dir.display()),
+                files,
+            }) as Box<dyn FontResolver>
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LocalFontResolver {
+    id: String,
+    files: Vec<PathBuf>,
+}
+
+impl FontResolver for LocalFontResolver {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> std::result::Result<Vec<Vec<u8>>, MediaError> {
+        self.files
+            .iter()
+            .map(|path| {
+                fs::read(path).map_err(|error| MediaError::Decode {
+                    media_source: path.display().to_string(),
+                    details: error.to_string(),
+                })
+            })
+            .collect()
     }
 }
 

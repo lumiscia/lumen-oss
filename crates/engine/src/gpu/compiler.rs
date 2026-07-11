@@ -133,6 +133,11 @@ impl<'a> CompileContext<'a> {
     }
 
     pub fn compile(mut self) -> crate::Result<CompiledComposition> {
+        if let Err(mut errors) = self.composition.validate_structure() {
+            // Structural validation can report several independent problems. The public compiler
+            // error remains typed, so return the first one before traversing any graph edges.
+            return Err(errors.remove(0));
+        }
         let output_node = self.media_output_node()?;
         let output_ref = PortRef::new(output_node, "output".to_string());
         let output = self

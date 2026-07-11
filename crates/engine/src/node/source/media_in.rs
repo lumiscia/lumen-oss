@@ -155,7 +155,11 @@ pub fn map_to_source_frame(
     }
     let span = end - start;
     let comp_fps = composition_fps.max(1.0);
-    let media_fps = source_fps.max(comp_fps);
+    let media_fps = if source_fps.is_finite() && source_fps > 0.0 {
+        source_fps
+    } else {
+        comp_fps
+    };
     let relative =
         (((frame as f64 / comp_fps as f64) * media_fps as f64) * speed.abs() as f64).floor() as u32;
     let forward = speed >= 0.0;
@@ -183,6 +187,35 @@ pub fn map_to_source_frame(
         }
     };
     (mapped < frame_count).then_some(mapped)
+}
+
+#[cfg(test)]
+mod frame_mapping_tests {
+    use super::{LoopMode, map_to_source_frame};
+
+    #[test]
+    fn lower_fps_media_repeats_frames_at_composition_rate() {
+        let mapped = (0..6)
+            .map(|frame| {
+                map_to_source_frame(frame, 30.0, 15.0, 100, None, 1.0, LoopMode::Clamp)
+                    .expect("mapped frame")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(mapped, vec![0, 0, 1, 1, 2, 2]);
+    }
+
+    #[test]
+    fn higher_fps_media_advances_at_source_rate() {
+        let mapped = (0..3)
+            .map(|frame| {
+                map_to_source_frame(frame, 30.0, 60.0, 100, None, 1.0, LoopMode::Clamp)
+                    .expect("mapped frame")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(mapped, vec![0, 2, 4]);
+    }
 }
 
 impl GpuCompileNode for MediaIn {

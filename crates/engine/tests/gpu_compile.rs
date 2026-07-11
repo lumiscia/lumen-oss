@@ -1,5 +1,6 @@
 use lumen_engine::{
     composition::{Composition, RenderSettings, TimelineSettings},
+    error::{GraphValidationError, LumenError},
     gpu::{CompileContext, FrameBindContext},
     graph::{Connection, Graph},
     media::{
@@ -40,6 +41,79 @@ use lumen_engine::{
     },
 };
 use std::sync::Arc;
+
+#[test]
+fn compiler_rejects_cycle_before_recursive_port_traversal() {
+    let first = NodeId::new(1);
+    let second = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        first,
+        NodeKind::Exposure(Exposure {
+            id: first,
+            source: PortRef::new(second, "output".to_string()),
+            ..Exposure::default()
+        }),
+    );
+    graph.nodes.insert(
+        second,
+        NodeKind::Exposure(Exposure {
+            id: second,
+            source: PortRef::new(first, "output".to_string()),
+            ..Exposure::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(first, "output".to_string()),
+        }),
+    );
+    for connection in [
+        Connection {
+            from_node: first,
+            from_port: "output".to_string(),
+            to_node: second,
+            to_port: "source".to_string(),
+        },
+        Connection {
+            from_node: second,
+            from_port: "output".to_string(),
+            to_node: first,
+            to_port: "source".to_string(),
+        },
+        Connection {
+            from_node: first,
+            from_port: "output".to_string(),
+            to_node: output,
+            to_port: "source".to_string(),
+        },
+    ] {
+        graph.connect(connection).unwrap();
+    }
+    let composition = Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 30.0,
+            duration_frames: 1,
+        },
+        RenderSettings {
+            width: 100,
+            height: 100,
+            background_color: [0, 0, 0, 255],
+        },
+    );
+
+    let error = CompileContext::new(&composition)
+        .compile()
+        .expect_err("cyclic graph must be rejected before compilation");
+    assert!(matches!(
+        error,
+        LumenError::GraphValidation(GraphValidationError::Cycle { .. })
+    ));
+}
 
 #[test]
 fn compiles_background_exposure_media_output_to_gpu_plan() {

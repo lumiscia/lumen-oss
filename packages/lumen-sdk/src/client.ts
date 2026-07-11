@@ -287,15 +287,19 @@ export class Lumen {
     }
 
     return new Promise((resolve, reject) => {
-      let closed = false;
+      let settled = false;
       let subscription: RenderEventSubscription | undefined;
 
-      const close = () => {
-        closed = true;
-        subscription?.close();
+      const cleanup = () => {
+        options.signal?.removeEventListener("abort", onAbort);
       };
       const fail = (error: unknown) => {
-        close();
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        subscription?.close();
         reject(error);
       };
       const onAbort = () => fail(abortError());
@@ -305,8 +309,12 @@ export class Lumen {
         onEvent: (event) => {
           options.onEvent?.(event);
           if (event.type === "render.completed") {
-            close();
-            options.signal?.removeEventListener("abort", onAbort);
+            if (settled) {
+              return;
+            }
+            settled = true;
+            cleanup();
+            subscription?.close();
             resolve(event);
           }
           if (event.type === "render.failed") {
@@ -315,14 +323,15 @@ export class Lumen {
         },
         onError: fail,
         onClose: (event) => {
-          if (!closed && event.code !== 1000) {
-            fail(new Error(`Render subscription closed: ${event.code} ${event.reason}`));
+          if (!settled) {
+            const reason = event.reason ? ` ${event.reason}` : "";
+            fail(new Error(`Render subscription closed before completion: ${event.code}${reason}`));
           }
         },
       })
         .then((nextSubscription) => {
           subscription = nextSubscription;
-          if (closed) {
+          if (settled) {
             subscription.close();
           }
         })

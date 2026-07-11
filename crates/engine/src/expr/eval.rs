@@ -397,4 +397,71 @@ mod tests {
         assert!(matches!(width, ExpressionValue::Number(value) if value > 0.0));
         assert!(matches!(height, ExpressionValue::Number(value) if value > 32.0));
     }
+
+    #[test]
+    fn text_measure_builtins_evaluate_expression_backed_text_properties() {
+        let text_id = NodeId::new(8);
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            text_id,
+            NodeKind::Text(Text {
+                id: text_id,
+                params: crate::node::source::text::TextParamsDelegate {
+                    content: crate::node::Deferred::Expr(
+                        Expression::parse("\"Frame two\"").unwrap(),
+                    ),
+                    font_family: crate::node::Deferred::Expr(
+                        Expression::parse("\"Roboto\"").unwrap(),
+                    ),
+                    font_size: crate::node::Deferred::Expr(
+                        Expression::parse("24 + frame").unwrap(),
+                    ),
+                    max_width: crate::node::Deferred::Expr(Expression::parse("300").unwrap()),
+                    ..Default::default()
+                },
+                ..Text::default()
+            }),
+        );
+        let ctx = ExpressionContext {
+            frame: 2,
+            graph: Some(&graph),
+            ..test_context()
+        };
+
+        let result = Expression::parse("text_width(node(8))")
+            .unwrap()
+            .evaluate(&ctx);
+
+        assert!(matches!(result, Ok(ExpressionValue::Number(value)) if value > 0.0));
+    }
+
+    #[test]
+    fn recursive_text_measurement_returns_error_instead_of_panicking() {
+        let text_id = NodeId::new(8);
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            text_id,
+            NodeKind::Text(Text {
+                id: text_id,
+                params: crate::node::source::text::TextParamsDelegate {
+                    content: crate::node::Deferred::Expr(
+                        Expression::parse("text_width(node(8))").unwrap(),
+                    ),
+                    ..Default::default()
+                },
+                ..Text::default()
+            }),
+        );
+        let ctx = ExpressionContext {
+            graph: Some(&graph),
+            ..test_context()
+        };
+
+        let error = Expression::parse("text_width(node(8))")
+            .unwrap()
+            .evaluate(&ctx)
+            .expect_err("recursive text measurement must fail");
+
+        assert!(error.to_string().contains("recursive text measurement"));
+    }
 }
