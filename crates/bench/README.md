@@ -30,7 +30,9 @@ Linux-only benchmark modes such as `vk-cuda-export` and `vk-cuda-nvenc` require 
 - `lumen-bench-composition`: benchmark composition render and encode modes.
 - `lumen-bench-json-parse`: benchmark JSON composition parse and validate (uses demo JSON fixtures).
 - `lumen-bench-decode`: benchmark media decode paths.
-- `lumen-bench-text`: benchmark text layout, raster atlas, GPU hybrid atlas, color emoji, and raw glyph generation paths.
+- `lumen-bench-text`: benchmark text layout, raster atlas, GPU hybrid atlas, color emoji, raw glyph generation, and expression-driven text measurement paths.
+
+Text measurement cases compare repeated `text_width` and `text_height` evaluation for literal arguments (`measure-literal`), expression-backed text-node properties (`measure-expression`), and nonrecursive nested measurement with property references (`measure-nested-reference`).
 
 Composition names: `simple_pipeline`, `vector_showcase`, `animated_showcase`, `antialiasing_stress_aa`, `antialiasing_stress_noaa`.
 
@@ -42,6 +44,9 @@ cargo check -p lumen-bench --features vulkan,cuda
 cargo run -p lumen-bench --bin lumen-bench-composition -- --list
 cargo run -p lumen-bench --bin lumen-bench-json-parse -- --list
 cargo run -p lumen-bench --bin lumen-bench-text -- --iterations 20
+cargo run -p lumen-bench --bin lumen-bench-text -- --case measure-literal --iterations 100
+cargo run -p lumen-bench --bin lumen-bench-text -- --case measure-expression --iterations 100
+cargo run -p lumen-bench --bin lumen-bench-text -- --case measure-nested-reference --iterations 100
 ```
 
 Bench output includes per-phase timings (`phase=... ms=... us=...`) for setup, mode execution, and JSON parse loops.

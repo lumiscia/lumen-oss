@@ -8,6 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -61,3 +62,11 @@ jobs:
           else
             gh pr create --base main --head "$RELEASE_BRANCH" --title "$RELEASE_TITLE" --body "Version packages from pending changesets."
           fi
+
+      - name: Trigger release branch checks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_BRANCH: changeset-release/main
+        run: |
+          gh workflow run ci.yml --ref "$RELEASE_BRANCH"
+          gh workflow run dry-release.yml --ref "$RELEASE_BRANCH"

@@ -14,6 +14,11 @@ use fdsm::{
     transform::Transform,
 };
 use image::Rgb32FImage;
+use lumen_engine::{
+    expr::{Expression, ExpressionContext},
+    graph::Graph,
+    node::{Deferred, NodeId, NodeKind, source::text::Text},
+};
 use nalgebra::{Affine2, Matrix3};
 use skrifa::{FontRef, GlyphId, MetadataProvider, prelude::Size, raw::TableProvider};
 
@@ -39,6 +44,9 @@ enum CaseSelection {
     RawRaster,
     RawFdsm,
     RawFdsmBase,
+    MeasureLiteral,
+    MeasureExpression,
+    MeasureNestedReference,
 }
 
 impl CaseSelection {
@@ -61,6 +69,9 @@ impl CaseSelection {
             "raw-raster" => Ok(Self::RawRaster),
             "raw-fdsm" => Ok(Self::RawFdsm),
             "raw-fdsm-base" => Ok(Self::RawFdsmBase),
+            "measure-literal" => Ok(Self::MeasureLiteral),
+            "measure-expression" => Ok(Self::MeasureExpression),
+            "measure-nested-reference" => Ok(Self::MeasureNestedReference),
             _ => Err(anyhow!("unknown case `{value}`")),
         }
     }
@@ -75,6 +86,12 @@ impl CaseSelection {
                     | (Self::RawRaster, BenchCase::RawRaster)
                     | (Self::RawFdsm, BenchCase::RawFdsm)
                     | (Self::RawFdsmBase, BenchCase::RawFdsmBase)
+                    | (Self::MeasureLiteral, BenchCase::MeasureLiteral)
+                    | (Self::MeasureExpression, BenchCase::MeasureExpression)
+                    | (
+                        Self::MeasureNestedReference,
+                        BenchCase::MeasureNestedReference
+                    )
             )
             || {
                 #[cfg(feature = "experimental-msdf")]
@@ -99,6 +116,9 @@ enum BenchCase {
     RawRaster,
     RawFdsm,
     RawFdsmBase,
+    MeasureLiteral,
+    MeasureExpression,
+    MeasureNestedReference,
 }
 
 impl BenchCase {
@@ -112,6 +132,9 @@ impl BenchCase {
             Self::RawRaster => "raw_swash_raster_glyph",
             Self::RawFdsm => "raw_fdsm_msdf_glyph",
             Self::RawFdsmBase => "raw_fdsm_msdf_glyph_base",
+            Self::MeasureLiteral => "measure_literal",
+            Self::MeasureExpression => "measure_expression",
+            Self::MeasureNestedReference => "measure_nested_reference",
         }
     }
 }
@@ -154,6 +177,9 @@ fn run_inner() -> anyhow::Result<()> {
         BenchCase::RawRaster,
         BenchCase::RawFdsm,
         BenchCase::RawFdsmBase,
+        BenchCase::MeasureLiteral,
+        BenchCase::MeasureExpression,
+        BenchCase::MeasureNestedReference,
     ] {
         if !args.case.includes(case) {
             continue;
@@ -196,6 +222,14 @@ fn run_case(
     text_repeats: usize,
     atlas_config: lumen_text::AtlasConfig,
 ) -> anyhow::Result<BenchResult> {
+    if matches!(
+        case,
+        BenchCase::MeasureLiteral
+            | BenchCase::MeasureExpression
+            | BenchCase::MeasureNestedReference
+    ) {
+        return run_measurement_case(case, iterations);
+    }
     if matches!(
         case,
         BenchCase::RawRaster | BenchCase::RawFdsm | BenchCase::RawFdsmBase
@@ -251,6 +285,11 @@ fn run_once(
         BenchCase::RawRaster | BenchCase::RawFdsm | BenchCase::RawFdsmBase => {
             unreachable!("handled before run_once")
         }
+        BenchCase::MeasureLiteral
+        | BenchCase::MeasureExpression
+        | BenchCase::MeasureNestedReference => {
+            unreachable!("handled before run_once")
+        }
     }
     glyph_count
 }
@@ -259,6 +298,9 @@ fn request_for_case(case: BenchCase, text_repeats: usize) -> lumen_text::TextLay
     let content = match case {
         BenchCase::Emoji => "🍋✨🚀🎬 ".repeat(text_repeats.max(1)),
         BenchCase::RawRaster | BenchCase::RawFdsm | BenchCase::RawFdsmBase => "A".to_string(),
+        BenchCase::MeasureLiteral
+        | BenchCase::MeasureExpression
+        | BenchCase::MeasureNestedReference => String::new(),
         _ => "Hello from Lumen. Crisp text, ligatures, layout, and atlas generation. "
             .repeat(text_repeats.max(1)),
     };
@@ -310,7 +352,7 @@ fn parse_args() -> anyhow::Result<Args> {
             }
             "--list" => {
                 println!(
-                    "cases: all, layout, raster, gpu-msdf, emoji, raw-raster, raw-fdsm, raw-fdsm-base"
+                    "cases: all, layout, raster, gpu-msdf, emoji, raw-raster, raw-fdsm, raw-fdsm-base, measure-literal, measure-expression, measure-nested-reference"
                 );
                 std::process::exit(0);
             }
@@ -331,8 +373,127 @@ fn parse_args() -> anyhow::Result<Args> {
 
 fn print_help() {
     println!(
-        "usage: lumen-bench-text [--case all|layout|raster|gpu-msdf|emoji|raw-raster|raw-fdsm|raw-fdsm-base] [--iterations N] [--text-repeats N] [--px-range N]"
+        "usage: lumen-bench-text [--case all|layout|raster|gpu-msdf|emoji|raw-raster|raw-fdsm|raw-fdsm-base|measure-literal|measure-expression|measure-nested-reference] [--iterations N] [--text-repeats N] [--px-range N]"
     );
+}
+
+struct MeasurementFixture {
+    graph: Option<Graph>,
+    width: Expression,
+    height: Expression,
+}
+
+impl MeasurementFixture {
+    fn new(case: BenchCase) -> anyhow::Result<Self> {
+        let mut graph = Graph::new();
+        let target_id = NodeId::new(8);
+
+        match case {
+            BenchCase::MeasureLiteral => Ok(Self {
+                graph: None,
+                width: Expression::parse(
+                    "text_width(\"Hello from Lumen measurement.\", 64, 1400, \"Roboto\")",
+                )?,
+                height: Expression::parse(
+                    "text_height(\"Hello from Lumen measurement.\", 64, 1400, \"Roboto\")",
+                )?,
+            }),
+            BenchCase::MeasureExpression => {
+                graph.nodes.insert(
+                    target_id,
+                    NodeKind::Text(Text {
+                        id: target_id,
+                        params: lumen_engine::node::source::text::TextParamsDelegate {
+                            content: Deferred::Expr(Expression::parse(
+                                "\"Hello from Lumen measurement.\"",
+                            )?),
+                            font_family: Deferred::Expr(Expression::parse("\"Roboto\"")?),
+                            font_size: Deferred::Expr(Expression::parse("32 + frame")?),
+                            max_width: Deferred::Expr(Expression::parse("width")?),
+                            ..Default::default()
+                        },
+                    }),
+                );
+                Ok(Self::for_node(graph, target_id)?)
+            }
+            BenchCase::MeasureNestedReference => {
+                let source_id = NodeId::new(7);
+                graph.nodes.insert(
+                    source_id,
+                    NodeKind::Text(Text {
+                        id: source_id,
+                        params: lumen_engine::node::source::text::TextParamsDelegate {
+                            content: Deferred::value("Referenced text measurement.".to_string()),
+                            font_family: Deferred::value("Roboto".to_string()),
+                            font_size: Deferred::value(24.0),
+                            max_width: Deferred::value(700.0),
+                            ..Default::default()
+                        },
+                    }),
+                );
+                graph.nodes.insert(
+                    target_id,
+                    NodeKind::Text(Text {
+                        id: target_id,
+                        params: lumen_engine::node::source::text::TextParamsDelegate {
+                            content: Deferred::Expr(Expression::parse("node(7, \"content\")")?),
+                            font_family: Deferred::Expr(Expression::parse(
+                                "node(7, \"font_family\")",
+                            )?),
+                            font_size: Deferred::Expr(Expression::parse("text_height(node(7))")?),
+                            max_width: Deferred::Expr(Expression::parse("node(7, \"max_width\")")?),
+                            ..Default::default()
+                        },
+                    }),
+                );
+                Ok(Self::for_node(graph, target_id)?)
+            }
+            _ => unreachable!("only measurement cases are accepted here"),
+        }
+    }
+
+    fn for_node(
+        graph: Graph,
+        node_id: NodeId,
+    ) -> Result<Self, lumen_engine::error::ExpressionError> {
+        Ok(Self {
+            graph: Some(graph),
+            width: Expression::parse(&format!("text_width(node({}))", node_id.0))?,
+            height: Expression::parse(&format!("text_height(node({}))", node_id.0))?,
+        })
+    }
+
+    fn run_once(&self) -> anyhow::Result<()> {
+        let ctx = ExpressionContext {
+            frame: 48,
+            fps: 24.0,
+            width: 1400,
+            height: 900,
+            duration_frames: 240,
+            path: Some("text_benchmark".to_string()),
+            graph: self.graph.as_ref(),
+        };
+        std::hint::black_box(self.width.evaluate(&ctx)?);
+        std::hint::black_box(self.height.evaluate(&ctx)?);
+        Ok(())
+    }
+}
+
+fn run_measurement_case(case: BenchCase, iterations: usize) -> anyhow::Result<BenchResult> {
+    let fixture = MeasurementFixture::new(case)?;
+    let cold_started = Instant::now();
+    fixture.run_once()?;
+    let cold = cold_started.elapsed();
+
+    let started = Instant::now();
+    for _ in 0..iterations {
+        fixture.run_once()?;
+    }
+    Ok(BenchResult {
+        cold,
+        elapsed: started.elapsed(),
+        glyph_count: 2,
+    })
 }
 
 fn run_raw_case(case: BenchCase, iterations: usize) -> anyhow::Result<BenchResult> {
@@ -364,6 +525,11 @@ fn run_raw_case(case: BenchCase, iterations: usize) -> anyhow::Result<BenchResul
             }
             BenchCase::RawFdsmBase => {
                 std::hint::black_box(glyph.fdsm_base_once());
+            }
+            BenchCase::MeasureLiteral
+            | BenchCase::MeasureExpression
+            | BenchCase::MeasureNestedReference => {
+                unreachable!("only raw cases are accepted here")
             }
             _ => unreachable!("only raw cases are accepted here"),
         }

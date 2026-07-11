@@ -12,7 +12,7 @@ mod migrations;
 mod node;
 mod property;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 
 use crate::{
@@ -106,6 +106,14 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
     let mut comp = Composition::new(graph, timeline, render_settings);
     comp.metadata = metadata;
     comp.audio = root.get("audio").map(parse_audio_timeline).transpose()?;
+    if let Err(errors) = comp.validate_structure() {
+        let details = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!("composition structure validation failed: {details}");
+    }
     Ok(comp)
 }
 
@@ -412,5 +420,26 @@ mod tests {
 
         let err = parse(json).unwrap_err().to_string();
         assert!(err.contains("unsupported Lumen schema version `99.0.0`"));
+    }
+
+    #[test]
+    fn parse_rejects_cyclic_composition() {
+        let json = r#"{
+            "timeline": { "fps": 30, "duration_frames": 1 },
+            "render_settings": { "width": 100, "height": 100 },
+            "nodes": [
+                { "id": 1, "type": "exposure" },
+                { "id": 2, "type": "exposure" },
+                { "id": 3, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" },
+                { "from_node": 2, "from_port": "output", "to_node": 1, "to_port": "source" },
+                { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "source" }
+            ]
+        }"#;
+
+        let error = parse(json).expect_err("cyclic graph must be rejected");
+        assert!(error.to_string().contains("graph contains a cycle"));
     }
 }

@@ -159,7 +159,8 @@ mod tests {
     fn cuda_video_frame_reports_shape() {
         use super::*;
 
-        let frame = CudaVideoFrame::from_device_ptr(0xCAFE, 1920, 1080, 8192, Some(7));
+        // SAFETY: This metadata-only test never dereferences or submits the fake device pointer.
+        let frame = unsafe { CudaVideoFrame::from_device_ptr(0xCAFE, 1920, 1080, 8192, Some(7)) };
         let input = GpuVideoInput::Cuda(&frame);
 
         assert_eq!(input.backend(), GpuBackend::Cuda);

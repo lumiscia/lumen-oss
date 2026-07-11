@@ -1,4 +1,7 @@
-use std::sync::{Mutex, OnceLock};
+use std::{
+    cell::RefCell,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::{
     error::{ExpressionError, LumenError},
@@ -7,7 +10,7 @@ use crate::{
         ast::{BuiltinFn, ExprNode, ExpressionValue},
         eval::evaluate_expr,
     },
-    node::{NodeId, NodeKind, PropertyValue},
+    node::{NodeId, NodeKind},
 };
 
 pub fn evaluate_builtin(
@@ -319,6 +322,7 @@ fn measure_text_node(
     node_id: NodeId,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<lumen_text::TextMeasurement> {
+    let _measurement_guard = TextMeasurementGuard::enter(node_id, ctx)?;
     let graph = ctx.graph.ok_or_else(|| {
         text_measure_error(
             ctx,
@@ -336,31 +340,42 @@ fn measure_text_node(
         ));
     };
 
-    let content = resolve_string(
-        node_id,
-        "content",
-        &text.params.content.to_property_value(),
-        ctx,
-    )?;
-    let font_family = resolve_string(
-        node_id,
-        "font_family",
-        &text.params.font_family.to_property_value(),
-        ctx,
-    )?;
-    let font_size = resolve_number(
-        node_id,
-        "font_size",
-        &text.params.font_size.to_property_value(),
-        ctx,
-    )? as f32;
-    let max_width = resolve_number(
-        node_id,
-        "max_width",
-        &text.params.max_width.to_property_value(),
-        ctx,
-    )? as f32;
+    let content = text.params.content.eval(node_id, "content", ctx)?;
+    let font_family = text.params.font_family.eval(node_id, "font_family", ctx)?;
+    let font_size = text.params.font_size.eval(node_id, "font_size", ctx)? as f32;
+    let max_width = text.params.max_width.eval(node_id, "max_width", ctx)? as f32;
     measure_text_value(&content, &font_family, font_size, max_width)
+}
+
+thread_local! {
+    static TEXT_MEASUREMENT_STACK: RefCell<Vec<NodeId>> = const { RefCell::new(Vec::new()) };
+}
+
+struct TextMeasurementGuard(NodeId);
+
+impl TextMeasurementGuard {
+    fn enter(node_id: NodeId, ctx: &ExpressionContext<'_>) -> crate::Result<Self> {
+        TEXT_MEASUREMENT_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if stack.contains(&node_id) {
+                return Err(text_measure_error(
+                    ctx,
+                    format!("recursive text measurement for node `{}`", node_id.0),
+                ));
+            }
+            stack.push(node_id);
+            Ok(Self(node_id))
+        })
+    }
+}
+
+impl Drop for TextMeasurementGuard {
+    fn drop(&mut self) {
+        TEXT_MEASUREMENT_STACK.with(|stack| {
+            let removed = stack.borrow_mut().pop();
+            debug_assert_eq!(removed, Some(self.0));
+        });
+    }
 }
 
 fn measure_text_value(
@@ -384,43 +399,6 @@ fn measure_text_value(
     request.font_size = font_size;
     request.max_width = (max_width > 0.0).then_some(max_width);
     Ok(text_system.measure(&request))
-}
-
-fn resolve_string(
-    node_id: NodeId,
-    property: &str,
-    value: &PropertyValue,
-    ctx: &ExpressionContext<'_>,
-) -> crate::Result<String> {
-    match value {
-        PropertyValue::String(text) => Ok(text.clone()),
-        _ => Err(text_measure_error(
-            ctx,
-            format!(
-                "text node `{}` property `{property}` must be a string",
-                node_id.0
-            ),
-        )),
-    }
-}
-
-fn resolve_number(
-    node_id: NodeId,
-    property: &str,
-    value: &PropertyValue,
-    ctx: &ExpressionContext<'_>,
-) -> crate::Result<f64> {
-    match value {
-        PropertyValue::Float(number) => Ok(*number),
-        PropertyValue::Int(number) => Ok(*number as f64),
-        _ => Err(text_measure_error(
-            ctx,
-            format!(
-                "text node `{}` property `{property}` must be numeric",
-                node_id.0
-            ),
-        )),
-    }
 }
 
 fn text_measure_error(ctx: &ExpressionContext<'_>, details: String) -> LumenError {

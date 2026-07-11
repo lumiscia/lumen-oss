@@ -2,7 +2,9 @@
 use std::collections::VecDeque;
 use std::{
     collections::HashMap,
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     path::{Component, Path, PathBuf},
     sync::{Arc, RwLock, mpsc},
     thread::{self, JoinHandle},
@@ -16,10 +18,11 @@ use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, duration_samples},
     composition::Composition,
+    error::MediaError,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     gpu::GpuCompositionRenderer,
     image::ImageFileResolver,
-    media::{ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
+    media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_ffmpeg::EncodeMode;
@@ -34,6 +37,7 @@ struct CliArgs {
     composition: PathBuf,
     output: PathBuf,
     media_root: Option<PathBuf>,
+    font_dir: Option<PathBuf>,
     encoder: Option<String>,
     frame: Option<u32>,
 }
@@ -72,6 +76,7 @@ struct RenderTiming {
 
 struct LocalMediaStore {
     root: PathBuf,
+    font_catalogs: Vec<FontCatalog>,
     video_options: FfmpegResolverOptions,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
@@ -88,9 +93,25 @@ impl std::fmt::Debug for LocalMediaStore {
 }
 
 impl LocalMediaStore {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, font_dir: Option<PathBuf>) -> Self {
+        let bundled_font_dir = root.join("assets/fonts");
+        let mut font_dirs = Vec::new();
+        if let Some(font_dir) = font_dir {
+            font_dirs.push(("configured", font_dir));
+        }
+        if !font_dirs.iter().any(|(_, path)| path == &bundled_font_dir) {
+            font_dirs.push(("bundled", bundled_font_dir));
+        }
+
+        let mut font_catalogs = font_dirs
+            .into_iter()
+            .filter_map(|(name, path)| FontCatalog::from_dir(name, path))
+            .collect::<Vec<_>>();
+        font_catalogs.push(FontCatalog::system());
+
         Self {
             root,
+            font_catalogs,
             video_options: video_resolver_options_from_env(),
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
@@ -194,6 +215,89 @@ impl MediaStore for LocalMediaStore {
         Some(Box::new(SharedAudioResolver(
             self.audio_resolver(&resolved)?,
         )))
+    }
+
+    fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
+        self.font_catalogs
+            .iter()
+            .find_map(|catalog| catalog.resolve(font_family))
+            .map(|resolver| Box::new(resolver) as Box<dyn FontResolver>)
+    }
+}
+
+struct FontCatalog {
+    name: &'static str,
+    source: String,
+    database: fontdb::Database,
+}
+
+impl FontCatalog {
+    fn from_dir(name: &'static str, path: PathBuf) -> Option<Self> {
+        if !path.is_dir() {
+            return None;
+        }
+        let mut database = fontdb::Database::new();
+        database.load_fonts_dir(&path);
+        Some(Self {
+            name,
+            source: path.display().to_string(),
+            database,
+        })
+    }
+
+    fn system() -> Self {
+        let mut database = fontdb::Database::new();
+        database.load_system_fonts();
+        Self {
+            name: "system",
+            source: "system".to_string(),
+            database,
+        }
+    }
+
+    fn resolve(&self, font_family: &str) -> Option<LocalFontResolver> {
+        let face_ids = self
+            .database
+            .faces()
+            .filter(|face| {
+                face.families
+                    .iter()
+                    .any(|(family, _)| family.eq_ignore_ascii_case(font_family))
+            })
+            .map(|face| face.id)
+            .collect::<Vec<_>>();
+        if face_ids.is_empty() {
+            return None;
+        }
+
+        let mut data: Vec<Vec<u8>> = Vec::with_capacity(face_ids.len());
+        for face_id in face_ids {
+            self.database.with_face_data(face_id, |bytes, _| {
+                if !data.iter().any(|existing| existing.as_slice() == bytes) {
+                    data.push(bytes.to_vec());
+                }
+            })?;
+        }
+        (!data.is_empty()).then(|| LocalFontResolver {
+            id: format!("local-font:{}:{font_family}:{}", self.name, self.source),
+            data,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LocalFontResolver {
+    id: String,
+    data: Vec<Vec<u8>>,
+}
+
+impl FontResolver for LocalFontResolver {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> std::result::Result<Vec<Vec<u8>>, MediaError> {
+        Ok(self.data.clone())
     }
 }
 
@@ -373,6 +477,7 @@ where
     let mut composition = None;
     let mut output = None;
     let mut media_root = None;
+    let mut font_dir = None;
     let mut encoder = None;
     let mut frame = None;
 
@@ -395,6 +500,12 @@ where
                     .next()
                     .ok_or_else(|| anyhow!("missing value for --media-root"))?;
                 media_root = Some(PathBuf::from(value));
+            }
+            "--font-dir" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --font-dir"))?;
+                font_dir = Some(PathBuf::from(value));
             }
             "--encoder" => {
                 let value = args
@@ -432,6 +543,7 @@ where
         composition,
         output,
         media_root,
+        font_dir,
         encoder,
         frame,
     })
@@ -439,7 +551,7 @@ where
 
 fn print_usage() {
     eprintln!(
-        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--encoder <name>] [--frame <n>]"
+        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--font-dir <path>] [--encoder <name>] [--frame <n>]\n\n--font-dir overrides the LUMEN_FONT_DIR environment variable; bundled fonts and system fonts are fallback sources."
     )
 }
 
@@ -454,7 +566,8 @@ fn run() -> Result<()> {
     let args = parse_args().inspect_err(|_| print_usage())?;
     let composition = load_composition(&args.composition)?;
     let media_root = media_root(args.media_root.as_deref())?;
-    let media_store = LocalMediaStore::new(media_root);
+    let font_dir = resolve_font_dir(args.font_dir, env::var_os("LUMEN_FONT_DIR"));
+    let media_store = LocalMediaStore::new(media_root, font_dir);
 
     let extension = args
         .output
@@ -1053,6 +1166,17 @@ fn media_root(override_root: Option<&Path>) -> Result<PathBuf> {
         .with_context(|| format!("failed to canonicalize media root {}", root.display()))
 }
 
+fn resolve_font_dir(
+    cli_font_dir: Option<PathBuf>,
+    env_font_dir: Option<OsString>,
+) -> Option<PathBuf> {
+    cli_font_dir.or_else(|| {
+        env_font_dir
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    })
+}
+
 fn video_resolver_options_from_env() -> FfmpegResolverOptions {
     FfmpegResolverOptions {
         prefer_hardware_decode: env::var("LUMEN_HARDWARE_DECODE")
@@ -1143,7 +1267,14 @@ fn choose_video_encoder(override_encoder: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_video_encoder, parse_args_from, resolve_local_path_with_root};
+    use std::{ffi::OsString, fs, path::Path};
+
+    use lumen_engine::media::{FontResolver, MediaStore};
+
+    use super::{
+        FontCatalog, LocalMediaStore, choose_video_encoder, parse_args_from, resolve_font_dir,
+        resolve_local_path_with_root,
+    };
 
     fn argv(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
@@ -1167,6 +1298,96 @@ mod tests {
         ]))
         .expect_err("legacy project flag should fail");
         assert!(error.to_string().contains("no longer supported"));
+    }
+
+    #[test]
+    fn parse_args_accepts_font_directory() {
+        let args = parse_args_from(argv(&[
+            "lumen-local",
+            "--composition",
+            "in.json",
+            "--output",
+            "out.png",
+            "--font-dir",
+            "./fonts",
+        ]))
+        .expect("font directory should parse");
+        assert_eq!(args.font_dir.as_deref(), Some(Path::new("./fonts")));
+    }
+
+    #[test]
+    fn cli_font_directory_takes_precedence_over_environment() {
+        assert_eq!(
+            resolve_font_dir(
+                Some("cli-fonts".into()),
+                Some(OsString::from("environment-fonts")),
+            ),
+            Some("cli-fonts".into())
+        );
+        assert_eq!(
+            resolve_font_dir(None, Some(OsString::from("environment-fonts"))),
+            Some("environment-fonts".into())
+        );
+        assert_eq!(resolve_font_dir(None, Some(OsString::new())), None);
+    }
+
+    fn copy_roboto_to(directory: &Path, file_name: &str) {
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../text/assets/roboto/Roboto-Regular.ttf");
+        fs::create_dir_all(directory).expect("create font directory");
+        fs::copy(source, directory.join(file_name)).expect("copy test font");
+    }
+
+    #[test]
+    fn font_directory_matches_family_metadata_instead_of_filename() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        copy_roboto_to(tmp.path(), "name-does-not-match-family.ttf");
+        let catalog =
+            FontCatalog::from_dir("configured", tmp.path().to_path_buf()).expect("font catalog");
+
+        let resolver = catalog.resolve("Roboto").expect("Roboto resolver");
+        assert!(resolver.id().starts_with("local-font:configured:Roboto:"));
+        assert_eq!(resolver.data().expect("font bytes").len(), 1);
+        assert!(catalog.resolve("name-does-not-match-family").is_none());
+    }
+
+    #[test]
+    fn configured_fonts_take_precedence_over_bundled_fonts() {
+        let media_root = tempfile::tempdir().expect("media root");
+        let configured = tempfile::tempdir().expect("configured fonts");
+        copy_roboto_to(&media_root.path().join("assets/fonts"), "bundled.ttf");
+        copy_roboto_to(configured.path(), "configured.ttf");
+        let store = LocalMediaStore::new(
+            media_root.path().to_path_buf(),
+            Some(configured.path().to_path_buf()),
+        );
+
+        let resolver = store.get_font_resolver("Roboto").expect("Roboto resolver");
+        assert!(resolver.id().starts_with("local-font:configured:Roboto:"));
+    }
+
+    #[test]
+    fn bundled_fonts_take_precedence_over_system_fonts() {
+        let media_root = tempfile::tempdir().expect("media root");
+        copy_roboto_to(&media_root.path().join("assets/fonts"), "bundled.ttf");
+        let store = LocalMediaStore::new(media_root.path().to_path_buf(), None);
+
+        let resolver = store.get_font_resolver("Roboto").expect("Roboto resolver");
+        assert!(resolver.id().starts_with("local-font:bundled:Roboto:"));
+    }
+
+    #[test]
+    fn system_font_catalog_resolves_discovered_family() {
+        let catalog = FontCatalog::system();
+        let family = catalog
+            .database
+            .faces()
+            .find_map(|face| face.families.first().map(|(family, _)| family.clone()))
+            .expect("system should expose at least one font family");
+
+        let resolver = catalog.resolve(&family).expect("system font resolver");
+        assert!(resolver.id().starts_with("local-font:system:"));
+        assert!(!resolver.data().expect("system font bytes").is_empty());
     }
 
     #[test]

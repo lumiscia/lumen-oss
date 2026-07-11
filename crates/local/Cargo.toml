@@ -17,6 +17,7 @@ vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
 
 [dependencies]
 anyhow = "1.0.101"
+fontdb = "0.23.0"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 tempfile = "3.23.0"
 lumen-engine = { path = "../engine", features = ["ffmpeg", "image", "json"] }
