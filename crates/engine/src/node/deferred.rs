@@ -562,23 +562,53 @@ impl DeferredValue for vector::paint::Paint {
     }
 }
 
-impl_deferred_literal!((f64, f64), "Vec2", Vec2, "Vec2");
+impl DeferredValue for (f64, f64) {
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(*value),
+            Deferred::Expr(expr) => expr.evaluate(ctx)?.as_vec2().ok_or_else(|| {
+                PropertyValue::invalid_type(node_id, property_path, "Vec2", "expression")
+            }),
+        }
+    }
+
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Vec2(*value)
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Vec2(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Vec2"
+    }
+}
 
 impl DeferredValue for [f32; 2] {
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,
         property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
+        ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(_) => Err(PropertyValue::invalid_type(
-                node_id,
-                property_path,
-                "Vec2",
-                "expression",
-            )),
+            Deferred::Expr(expr) => expr
+                .evaluate(ctx)?
+                .as_vec2()
+                .map(|(x, y)| [x as f32, y as f32])
+                .ok_or_else(|| {
+                    PropertyValue::invalid_type(node_id, property_path, "Vec2", "expression")
+                }),
         }
     }
 

@@ -665,6 +665,7 @@ fn builtin_for_name(name: &str) -> Option<BuiltinFn> {
         "text_width" => Some(BuiltinFn::TextWidth),
         "uppercase" => Some(BuiltinFn::Uppercase),
         "lowercase" => Some(BuiltinFn::Lowercase),
+        "vec2" => Some(BuiltinFn::Vec2),
         _ => None,
     }
 }

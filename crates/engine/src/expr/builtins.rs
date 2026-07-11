@@ -172,6 +172,18 @@ pub fn evaluate_builtin(
             )?;
             Ok(ExpressionValue::String(input.to_lowercase()))
         }
+        BuiltinFn::Vec2 => {
+            expect_len(2)?;
+            let x = to_number(
+                &args[0],
+                error("vec2 expects numeric arguments".to_string()),
+            )?;
+            let y = to_number(
+                &args[1],
+                error("vec2 expects numeric arguments".to_string()),
+            )?;
+            Ok(ExpressionValue::Vec2((x, y)))
+        }
     }
 }
 
@@ -218,6 +230,7 @@ fn to_number(value: &ExpressionValue, error: LumenError) -> crate::Result<f64> {
         ExpressionValue::Number(number) => Ok(*number),
         ExpressionValue::Boolean(boolean) => Ok(if *boolean { 1.0 } else { 0.0 }),
         ExpressionValue::String(text) => text.parse::<f64>().map_err(|_| error),
+        ExpressionValue::Vec2(_) => Err(error),
     }
 }
 
@@ -226,6 +239,7 @@ fn to_string(value: &ExpressionValue, _error: LumenError) -> crate::Result<Strin
         ExpressionValue::String(text) => Ok(text.clone()),
         ExpressionValue::Number(number) => Ok(number.to_string()),
         ExpressionValue::Boolean(boolean) => Ok(boolean.to_string()),
+        ExpressionValue::Vec2((x, y)) => Ok(format!("[{x}, {y}]")),
     }
 }
 
