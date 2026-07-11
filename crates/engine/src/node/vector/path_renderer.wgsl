@@ -31,8 +31,14 @@ struct PathParams {
     _pad2: u32,
 }
 
+struct PathPoint {
+    position: vec2<f32>,
+    contour_start: u32,
+    flags: u32,
+}
+
 struct PathPoints {
-    points: array<vec2<f32>>,
+    points: array<PathPoint>,
 }
 
 @group(0) @binding(0) var<uniform> params: PathParams;
@@ -96,22 +102,22 @@ fn distance_to_segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
 fn polygon_contains(p: vec2<f32>) -> bool {
     var inside = false;
     let count = params.point_count;
-    if (count < 3u) {
-        return false;
-    }
-
-    var j = count - 1u;
     for (var i = 0u; i < count; i = i + 1u) {
-        let pi = path_points.points[i] + params.position;
-        let pj = path_points.points[j] + params.position;
-        let denominator = pj.y - pi.y;
+        let current = path_points.points[i];
+        let is_end = (current.flags & 1u) != 0u;
+        let next_index = select(i + 1u, current.contour_start, is_end);
+        if (next_index >= count || next_index == i) {
+            continue;
+        }
+        let a = current.position + params.position;
+        let b = path_points.points[next_index].position + params.position;
+        let denominator = b.y - a.y;
         let safe_denominator = select(denominator, 0.000001, abs(denominator) < 0.000001);
-        let crosses = ((pi.y > p.y) != (pj.y > p.y)) &&
-            (p.x < (pj.x - pi.x) * (p.y - pi.y) / safe_denominator + pi.x);
+        let crosses = ((a.y > p.y) != (b.y > p.y)) &&
+            (p.x < (b.x - a.x) * (p.y - a.y) / safe_denominator + a.x);
         if (crosses) {
             inside = !inside;
         }
-        j = i;
     }
     return inside;
 }
@@ -139,11 +145,20 @@ fn path_edge_distance(p: vec2<f32>) -> f32 {
     }
 
     var min_distance = 1000000.0;
-    var previous = path_points.points[count - 1u] + params.position;
     for (var i = 0u; i < count; i = i + 1u) {
-        let current = path_points.points[i] + params.position;
-        min_distance = min(min_distance, distance_to_segment(p, previous, current));
-        previous = current;
+        let current = path_points.points[i];
+        let is_end = (current.flags & 1u) != 0u;
+        let is_closed = (current.flags & 2u) != 0u;
+        if (is_end && !is_closed) {
+            continue;
+        }
+        let next_index = select(i + 1u, current.contour_start, is_end);
+        if (next_index >= count || next_index == i) {
+            continue;
+        }
+        let a = current.position + params.position;
+        let b = path_points.points[next_index].position + params.position;
+        min_distance = min(min_distance, distance_to_segment(p, a, b));
     }
     return min_distance;
 }
