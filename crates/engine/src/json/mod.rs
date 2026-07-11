@@ -333,6 +333,53 @@ mod tests {
     }
 
     #[test]
+    fn parses_and_evaluates_vec2_expression() {
+        let json = r##"{
+            "timeline": { "fps": 24, "duration_frames": 48 },
+            "render_settings": { "width": 800, "height": 600 },
+            "nodes": [
+                { "id": 1, "type": "path", "params": {
+                    "data": "M 0 0 L 100 100",
+                    "position": "=vec2(frame * 2, time + 3)"
+                }},
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
+            ]
+        }"##;
+
+        let composition = parse(json).expect("should parse vec2 expression");
+        let crate::node::NodeKind::Path(path) = composition
+            .graph
+            .nodes
+            .get(&NodeId::new(1))
+            .expect("path node")
+        else {
+            panic!("expected path node");
+        };
+        for (frame, expected) in [(0, (0.0, 3.0)), (24, (48.0, 4.0)), (48, (96.0, 5.0))] {
+            let context = crate::expr::ExpressionContext {
+                frame,
+                fps: 24.0,
+                width: 800,
+                height: 600,
+                duration_frames: 48,
+                path: Some("1.position".to_string()),
+                graph: Some(&composition.graph),
+            };
+
+            assert_eq!(
+                path.params
+                    .position
+                    .eval(path.id, "position", &context)
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn parse_switch_node() {
         let json = r#"{
             "timeline": { "fps": 30, "duration_frames": 60 },
