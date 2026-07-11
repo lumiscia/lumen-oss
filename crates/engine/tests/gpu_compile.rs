@@ -1,6 +1,7 @@
 use lumen_engine::{
     composition::{Composition, RenderSettings, TimelineSettings},
     error::{GraphValidationError, LumenError},
+    expr::Expression,
     gpu::{CompileContext, FrameBindContext},
     graph::{Connection, Graph},
     media::{
@@ -40,7 +41,7 @@ use lumen_engine::{
         },
     },
 };
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 #[test]
 fn compiler_rejects_cycle_before_recursive_port_traversal() {
@@ -1263,6 +1264,148 @@ fn compiles_vector_path_through_shared_renderer() {
 
     assert!(compiled.compiled_nodes.contains_key(&path));
     assert_eq!(bound.frame_update().uploads().len(), 2);
+}
+
+#[test]
+fn path_fill_pixels_are_independent_of_stroke_trim_range() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = filled_path_composition();
+    let media = EmptyMediaStore;
+
+    let full_pixels = render_rgba8(&mut renderer, &composition, 0, &media);
+    let empty_pixels = render_rgba8(&mut renderer, &composition, 1, &media);
+
+    assert_eq!(
+        full_pixels, empty_pixels,
+        "stroke trim parameters must not change fill coverage or antialiasing"
+    );
+    assert!(
+        full_pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel[3] > 0 && pixel[3] < 255),
+        "subpixel path should exercise antialiased fill coverage"
+    );
+}
+
+fn filled_path_composition() -> Composition {
+    let path = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        path,
+        NodeKind::Path(Path {
+            id: path,
+            params: PathParamsDelegate {
+                data: Deferred::value(
+                    "M 1.25 0.75 L 6.75 0.75 L 6.75 3.25 L 1.25 3.25 Z".to_string(),
+                ),
+                fill_paint: Paint::solid([255, 255, 255, 255]).into(),
+                stroke_enabled: Deferred::value(false),
+                trim_start: Deferred::Expr(Expression::parse("frame * 0.5").unwrap()),
+                trim_end: Deferred::Expr(Expression::parse("1 - frame * 0.5").unwrap()),
+                edge_antialias: Deferred::value(true),
+                ..Default::default()
+            },
+            ..Path::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(path, "output".to_string()),
+        }),
+    );
+    test_composition(graph)
+}
+
+#[derive(Debug)]
+struct EmptyMediaStore;
+
+impl MediaStore for EmptyMediaStore {
+    fn get_image_resolver(&self, _source: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+}
+
+fn gpu_composition_renderer() -> Option<lumen_engine::gpu::GpuCompositionRenderer> {
+    match pollster::block_on(lumen_engine::gpu::GpuCompositionRenderer::new()) {
+        Ok(renderer) => Some(renderer),
+        Err(error) => {
+            eprintln!("skipping GPU-backed lumen-engine test: {error:#}");
+            None
+        }
+    }
+}
+
+fn render_rgba8(
+    renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+    composition: &Composition,
+    frame: u32,
+    media: &EmptyMediaStore,
+) -> Vec<u8> {
+    let raster = renderer.render_frame(composition, frame, media).unwrap();
+    let gpu = renderer.gpu_renderer();
+    let size = raster.domain.storage_size;
+    let bytes_per_pixel = 4;
+    let unpadded_bytes_per_row = size.width * bytes_per_pixel;
+    let padded_bytes_per_row = unpadded_bytes_per_row
+        .div_ceil(lumen_gpu::wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        * lumen_gpu::wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let output = gpu
+        .device
+        .create_buffer(&lumen_gpu::wgpu::BufferDescriptor {
+            label: Some("lumen-engine path fill test readback"),
+            size: u64::from(padded_bytes_per_row) * u64::from(size.height),
+            usage: lumen_gpu::wgpu::BufferUsages::COPY_DST
+                | lumen_gpu::wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+    let mut encoder =
+        gpu.device
+            .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
+                label: Some("lumen-engine path fill test readback encoder"),
+            });
+    encoder.copy_texture_to_buffer(
+        gpu.texture(raster.texture).unwrap().as_image_copy(),
+        lumen_gpu::wgpu::TexelCopyBufferInfo {
+            buffer: &output,
+            layout: lumen_gpu::wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(size.height),
+            },
+        },
+        size.as_extent(),
+    );
+    gpu.queue.submit([encoder.finish()]);
+
+    let slice = output.slice(..);
+    let (tx, rx) = mpsc::channel();
+    slice.map_async(lumen_gpu::wgpu::MapMode::Read, move |result| {
+        tx.send(result).unwrap();
+    });
+    gpu.device
+        .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let mapped = slice.get_mapped_range();
+    let mut pixels = vec![0; unpadded_bytes_per_row as usize * size.height as usize];
+    for row in 0..size.height as usize {
+        let source = row * padded_bytes_per_row as usize;
+        let destination = row * unpadded_bytes_per_row as usize;
+        pixels[destination..destination + unpadded_bytes_per_row as usize]
+            .copy_from_slice(&mapped[source..source + unpadded_bytes_per_row as usize]);
+    }
+    drop(mapped);
+    output.unmap();
+    pixels
 }
 
 fn solid(id: NodeId, color: [u8; 4]) -> NodeKind {

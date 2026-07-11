@@ -384,7 +384,9 @@ pub(crate) struct PathParams {
     pub(crate) stroke_width: f32,
     pub(crate) flags: u32,
     pub(crate) point_count: u32,
-    pub(crate) _pad: [u32; 3],
+    pub(crate) trim_start: f32,
+    pub(crate) trim_end: f32,
+    pub(crate) _pad: u32,
 }
 
 #[repr(C)]
@@ -393,4 +395,6 @@ pub(crate) struct PathPoint {
     pub(crate) position: [f32; 2],
     pub(crate) contour_start: u32,
     pub(crate) flags: u32,
+    pub(crate) offset: f32,
+    pub(crate) _pad: f32,
 }
