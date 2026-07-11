@@ -109,6 +109,8 @@ impl GpuCompiledNode for CompiledPath {
         let mut points = parse_path_points(&evaluated.data, self.max_points);
         normalize_contour_offsets(&mut points);
         let (x, y) = evaluated.position;
+        let (trim_start, trim_end) =
+            normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
         let mut flags = 0;
         if evaluated.fill_enabled {
             flags |= 1;
@@ -129,8 +131,8 @@ impl GpuCompiledNode for CompiledPath {
             stroke_width: evaluated.stroke_width as f32,
             flags,
             point_count: points.len() as u32,
-            trim_start: evaluated.trim_start.clamp(0.0, 1.0) as f32,
-            trim_end: evaluated.trim_end.clamp(0.0, 1.0) as f32,
+            trim_start,
+            trim_end,
             _pad: 0,
         };
         bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
@@ -418,6 +420,10 @@ fn point_distance(from: [f32; 2], to: [f32; 2]) -> f32 {
     (to[0] - from[0]).hypot(to[1] - from[1])
 }
 
+fn normalized_trim_range(start: f64, end: f64) -> (f32, f32) {
+    (start.clamp(0.0, 1.0) as f32, end.clamp(0.0, 1.0) as f32)
+}
+
 fn normalize_contour_offsets(points: &mut [super::renderer::PathPoint]) {
     let mut start = 0;
     while start < points.len() {
@@ -585,5 +591,12 @@ mod tests {
         let mut points = parse_path_points("M 5 5 L 5 5", 128);
         normalize_contour_offsets(&mut points);
         assert!(points.iter().all(|point| point.offset.is_finite()));
+    }
+
+    #[test]
+    fn trim_range_clamps_without_reordering_or_expanding_empty_ranges() {
+        assert_eq!(normalized_trim_range(-1.0, 2.0), (0.0, 1.0));
+        assert_eq!(normalized_trim_range(0.75, 0.25), (0.75, 0.25));
+        assert_eq!(normalized_trim_range(0.5, 0.5), (0.5, 0.5));
     }
 }
