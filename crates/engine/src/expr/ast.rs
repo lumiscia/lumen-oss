@@ -170,3 +170,28 @@ pub struct Expression {
     pub references: Vec<ExpressionReference>,
     pub source: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ExpressionValue;
+
+    #[test]
+    fn vec2_value_conversions_are_explicit() {
+        let value = ExpressionValue::Vec2((12.5, -3.0));
+
+        assert_eq!(value.type_name(), "vec2");
+        assert_eq!(value.as_f64(), None);
+        assert_eq!(value.as_vec2(), Some((12.5, -3.0)));
+        assert_eq!(value.as_string(), "[12.5, -3]");
+        assert!(value.as_bool());
+        assert!(!ExpressionValue::Vec2((0.0, 0.0)).as_bool());
+        assert!(!ExpressionValue::Vec2((f64::EPSILON, 0.0)).as_bool());
+    }
+
+    #[test]
+    fn non_vector_values_do_not_coerce_to_vec2() {
+        assert_eq!(ExpressionValue::Number(1.0).as_vec2(), None);
+        assert_eq!(ExpressionValue::Boolean(true).as_vec2(), None);
+        assert_eq!(ExpressionValue::String("1,2".to_string()).as_vec2(), None);
+    }
+}

@@ -734,3 +734,89 @@ impl DeferredJsonValue for [f32; 2] {
         Ok([x as f32, y as f32])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        error::{LumenError, PropertyError},
+        expr::{Expression, ExpressionContext},
+        node::{Deferred, NodeId},
+    };
+
+    fn context() -> ExpressionContext<'static> {
+        ExpressionContext {
+            frame: 12,
+            fps: 24.0,
+            width: 1920,
+            height: 1080,
+            duration_frames: 240,
+            path: Some("4.position".to_string()),
+            graph: None,
+        }
+    }
+
+    #[test]
+    fn evaluates_vec2_expression_for_f64_and_f32_targets() {
+        let expression = Expression::parse("vec2(frame / 2, time + 0.25)").unwrap();
+
+        assert_eq!(
+            Deferred::<(f64, f64)>::Expr(expression.clone())
+                .eval(NodeId::new(4), "position", &context())
+                .unwrap(),
+            (6.0, 0.75)
+        );
+        assert_eq!(
+            Deferred::<[f32; 2]>::Expr(expression)
+                .eval(NodeId::new(4), "position", &context())
+                .unwrap(),
+            [6.0, 0.75]
+        );
+    }
+
+    #[test]
+    fn vec2_targets_reject_scalar_results_with_property_context() {
+        for (error, expected_path) in [
+            (
+                Deferred::<(f64, f64)>::Expr(Expression::parse("42").unwrap())
+                    .eval(NodeId::new(4), "position", &context())
+                    .unwrap_err(),
+                "position",
+            ),
+            (
+                Deferred::<[f32; 2]>::Expr(Expression::parse("42").unwrap())
+                    .eval(NodeId::new(4), "anchor", &context())
+                    .unwrap_err(),
+                "anchor",
+            ),
+        ] {
+            let LumenError::Property(PropertyError::InvalidType {
+                node_id,
+                property_path,
+                expected,
+                actual,
+            }) = error
+            else {
+                panic!("expected property type error");
+            };
+            assert_eq!(node_id, NodeId::new(4));
+            assert_eq!(property_path, expected_path);
+            assert_eq!(expected, "Vec2");
+            assert_eq!(actual, "expression");
+        }
+    }
+
+    #[test]
+    fn vec2_expression_errors_preserve_expression_path() {
+        let error = Deferred::<(f64, f64)>::Expr(Expression::parse("vec2(1, vec2(2, 3))").unwrap())
+            .eval(NodeId::new(4), "position", &context())
+            .unwrap_err();
+
+        let LumenError::Expression(crate::error::ExpressionError::Evaluate { path, details }) =
+            error
+        else {
+            panic!("expected expression evaluation error");
+        };
+        assert_eq!(path.as_deref(), Some("4.position"));
+        assert_eq!(details, "vec2 expects numeric arguments");
+    }
+}

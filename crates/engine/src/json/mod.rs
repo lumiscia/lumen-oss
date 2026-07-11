@@ -358,23 +358,25 @@ mod tests {
         else {
             panic!("expected path node");
         };
-        let context = crate::expr::ExpressionContext {
-            frame: 48,
-            fps: 24.0,
-            width: 800,
-            height: 600,
-            duration_frames: 48,
-            path: Some("1.position".to_string()),
-            graph: Some(&composition.graph),
-        };
+        for (frame, expected) in [(0, (0.0, 3.0)), (24, (48.0, 4.0)), (48, (96.0, 5.0))] {
+            let context = crate::expr::ExpressionContext {
+                frame,
+                fps: 24.0,
+                width: 800,
+                height: 600,
+                duration_frames: 48,
+                path: Some("1.position".to_string()),
+                graph: Some(&composition.graph),
+            };
 
-        assert_eq!(
-            path.params
-                .position
-                .eval(path.id, "position", &context)
-                .unwrap(),
-            (96.0, 5.0)
-        );
+            assert_eq!(
+                path.params
+                    .position
+                    .eval(path.id, "position", &context)
+                    .unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]

@@ -365,6 +365,71 @@ mod tests {
     }
 
     #[test]
+    fn vec2_requires_exactly_two_components() {
+        for source in ["vec2()", "vec2(1)", "vec2(1, 2, 3)"] {
+            let error = Expression::parse(source)
+                .unwrap()
+                .evaluate(&test_context())
+                .expect_err("invalid arity must fail");
+
+            let LumenError::Expression(ExpressionError::Evaluate { path, details }) = error else {
+                panic!("expected expression evaluation error");
+            };
+            assert_eq!(path.as_deref(), Some("node.opacity"));
+            assert!(details.contains("builtin expects 2 arguments"), "{details}");
+        }
+    }
+
+    #[test]
+    fn vec2_coerces_boolean_and_numeric_string_components() {
+        for (source, expected) in [
+            ("vec2(true, false)", (1.0, 0.0)),
+            ("vec2(\"12.5\", \"-3\")", (12.5, -3.0)),
+            ("vec2(true, \"2.25\")", (1.0, 2.25)),
+        ] {
+            assert_eq!(
+                Expression::parse(source)
+                    .unwrap()
+                    .evaluate(&test_context())
+                    .unwrap(),
+                ExpressionValue::Vec2(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn vec2_rejects_invalid_component_types() {
+        for source in ["vec2(\"left\", 2)", "vec2(1, vec2(2, 3))"] {
+            let error = Expression::parse(source)
+                .unwrap()
+                .evaluate(&test_context())
+                .expect_err("nonnumeric component must fail");
+
+            let LumenError::Expression(ExpressionError::Evaluate { path, details }) = error else {
+                panic!("expected expression evaluation error");
+            };
+            assert_eq!(path.as_deref(), Some("node.opacity"));
+            assert_eq!(details, "vec2 expects numeric arguments");
+        }
+    }
+
+    #[test]
+    fn vec2_rejects_scalar_arithmetic_and_unary_negation() {
+        for source in ["vec2(1, 2) + 3", "3 * vec2(1, 2)", "-vec2(1, 2)"] {
+            let error = Expression::parse(source)
+                .unwrap()
+                .evaluate(&test_context())
+                .expect_err("vec2 scalar misuse must fail");
+
+            let LumenError::Expression(ExpressionError::Evaluate { path, details }) = error else {
+                panic!("expected expression evaluation error");
+            };
+            assert_eq!(path.as_deref(), Some("node.opacity"));
+            assert_eq!(details, "cannot convert vec2 into f64");
+        }
+    }
+
+    #[test]
     fn text_measure_builtins_use_explicit_text_inputs() {
         let ctx = test_context();
 
