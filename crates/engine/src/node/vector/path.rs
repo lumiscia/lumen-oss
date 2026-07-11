@@ -31,6 +31,12 @@ pub struct PathParams {
     /// Stroke width in pixels.
     #[meta(min = 0, step = 0.5)]
     pub stroke_width: f64,
+    /// Normalized start of the visible stroke range for each contour.
+    #[meta(name = "Trim start", min = 0, max = 1, step = 0.01)]
+    pub trim_start: f64,
+    /// Normalized end of the visible stroke range for each contour.
+    #[meta(name = "Trim end", min = 0, max = 1, step = 0.01)]
+    pub trim_end: f64,
     /// Enables analytic distance-based edge antialiasing.
     #[meta()]
     pub edge_antialias: bool,
@@ -46,6 +52,8 @@ impl Default for PathParams {
             stroke_enabled: false,
             stroke_paint: Paint::solid([0, 0, 0, 255]),
             stroke_width: 1.0,
+            trim_start: 0.0,
+            trim_end: 1.0,
             edge_antialias: true,
         }
     }
@@ -98,7 +106,8 @@ impl GpuCompiledNode for CompiledPath {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
-        let points = parse_path_points(&evaluated.data, self.max_points);
+        let mut points = parse_path_points(&evaluated.data, self.max_points);
+        normalize_contour_offsets(&mut points);
         let (x, y) = evaluated.position;
         let mut flags = 0;
         if evaluated.fill_enabled {
@@ -120,7 +129,9 @@ impl GpuCompiledNode for CompiledPath {
             stroke_width: evaluated.stroke_width as f32,
             flags,
             point_count: points.len() as u32,
-            _pad: [0; 3],
+            trim_start: evaluated.trim_start.clamp(0.0, 1.0) as f32,
+            trim_end: evaluated.trim_end.clamp(0.0, 1.0) as f32,
+            _pad: 0,
         };
         bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
         if !points.is_empty() {
@@ -374,6 +385,8 @@ fn push_path_point(
         position: [point.x, point.y],
         contour_start,
         flags: 0,
+        offset: 0.0,
+        _pad: 0.0,
     });
     true
 }
@@ -399,6 +412,39 @@ fn bounds_min(points: &[super::renderer::PathPoint]) -> [f32; 2] {
     points.iter().skip(1).fold(first.position, |acc, point| {
         [acc[0].min(point.position[0]), acc[1].min(point.position[1])]
     })
+}
+
+fn point_distance(from: [f32; 2], to: [f32; 2]) -> f32 {
+    (to[0] - from[0]).hypot(to[1] - from[1])
+}
+
+fn normalize_contour_offsets(points: &mut [super::renderer::PathPoint]) {
+    let mut start = 0;
+    while start < points.len() {
+        let end = points[start..]
+            .iter()
+            .position(|point| point.flags & PATH_END != 0)
+            .map_or(points.len() - 1, |offset| start + offset);
+        let closed = points[end].flags & PATH_CLOSED != 0;
+        let closing_length = if closed && end > start {
+            point_distance(points[end].position, points[start].position)
+        } else {
+            0.0
+        };
+        let total_length = points[start..=end]
+            .windows(2)
+            .map(|pair| point_distance(pair[0].position, pair[1].position))
+            .sum::<f32>()
+            + closing_length;
+        if total_length > f32::EPSILON {
+            let mut length = 0.0;
+            for index in start + 1..=end {
+                length += point_distance(points[index - 1].position, points[index].position);
+                points[index].offset = length / total_length;
+            }
+        }
+        start = end + 1;
+    }
 }
 
 fn bounds_size(points: &[super::renderer::PathPoint]) -> [f32; 2] {
@@ -520,5 +566,24 @@ mod tests {
         assert_eq!(points.first().unwrap().position, [0.0, 0.0]);
         assert_eq!(points.last().unwrap().position, [1000.0, 0.0]);
         assert_ne!(points.last().unwrap().flags & PATH_END, 0);
+    }
+
+    #[test]
+    fn normalizes_each_contour_by_its_drawn_length() {
+        let mut points = parse_path_points("M 0 0 L 25 0 L 100 0 M 0 10 L 0 30 Z", 128);
+        normalize_contour_offsets(&mut points);
+
+        assert_eq!(points[0].offset, 0.0);
+        assert_eq!(points[1].offset, 0.25);
+        assert_eq!(points[2].offset, 1.0);
+        assert_eq!(points[3].offset, 0.0);
+        assert_eq!(points[4].offset, 0.5);
+    }
+
+    #[test]
+    fn degenerate_contour_offsets_remain_finite() {
+        let mut points = parse_path_points("M 5 5 L 5 5", 128);
+        normalize_contour_offsets(&mut points);
+        assert!(points.iter().all(|point| point.offset.is_finite()));
     }
 }

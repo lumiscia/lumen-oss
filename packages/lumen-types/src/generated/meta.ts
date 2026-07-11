@@ -261,6 +261,8 @@ export interface PathNode extends CompositionNodeBase<"path"> {
     readonly "stroke_enabled"?: ExpressionValue<boolean>;
     readonly "stroke_paint"?: ExpressionValue<Paint>;
     readonly "stroke_width"?: ExpressionValue<number>;
+    readonly "trim_end"?: ExpressionValue<number>;
+    readonly "trim_start"?: ExpressionValue<number>;
   };
 }
 

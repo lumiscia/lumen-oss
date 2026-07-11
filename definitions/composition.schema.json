@@ -1552,6 +1552,34 @@
                       "step": 0.5
                     },
                     "x-lumen-kind": "float"
+                  },
+                  "trim_end": {
+                    "default": 1.0,
+                    "description": "Normalized end of the visible stroke range for each contour.",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Trim end",
+                    "type": "number",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "trim_start": {
+                    "default": 0.0,
+                    "description": "Normalized start of the visible stroke range for each contour.",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Trim start",
+                    "type": "number",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
                   }
                 },
                 "type": "object"

@@ -26,15 +26,17 @@ struct PathParams {
     stroke_width: f32,
     flags: u32,
     point_count: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    trim_start: f32,
+    trim_end: f32,
+    _pad: u32,
 }
 
 struct PathPoint {
     position: vec2<f32>,
     contour_start: u32,
     flags: u32,
+    offset: f32,
+    _pad: f32,
 }
 
 struct PathPoints {
@@ -145,6 +147,9 @@ fn path_edge_distance(p: vec2<f32>) -> f32 {
     }
 
     var min_distance = 1000000.0;
+    if (params.trim_start >= params.trim_end) {
+        return min_distance;
+    }
     for (var i = 0u; i < count; i = i + 1u) {
         let current = path_points.points[i];
         let is_end = (current.flags & 1u) != 0u;
@@ -156,9 +161,21 @@ fn path_edge_distance(p: vec2<f32>) -> f32 {
         if (next_index >= count || next_index == i) {
             continue;
         }
-        let a = current.position + params.position;
-        let b = path_points.points[next_index].position + params.position;
-        min_distance = min(min_distance, distance_to_segment(p, a, b));
+        let next = path_points.points[next_index];
+        let segment_end = select(next.offset, 1.0, is_end);
+        if (segment_end >= params.trim_start && current.offset <= params.trim_end) {
+            let span = max(segment_end - current.offset, 0.000001);
+            let start_t = clamp((params.trim_start - current.offset) / span, 0.0, 1.0);
+            let end_t = clamp((params.trim_end - current.offset) / span, 0.0, 1.0);
+            min_distance = min(
+                min_distance,
+                distance_to_segment(
+                    p,
+                    mix(current.position, next.position, start_t) + params.position,
+                    mix(current.position, next.position, end_t) + params.position,
+                ),
+            );
+        }
     }
     return min_distance;
 }
