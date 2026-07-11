@@ -1,8 +1,8 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("opacity.wgsl");
@@ -46,6 +46,7 @@ impl Default for Opacity {
 struct CompiledOpacity {
     node_id: NodeId,
     params: OpacityParamsDelegate,
+    alpha_mode: AlphaMode,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -59,8 +60,17 @@ impl GpuCompiledNode for CompiledOpacity {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
+        let premultiplied = match self.alpha_mode {
+            AlphaMode::Premultiplied => 1.0,
+            AlphaMode::Unpremultiplied => 0.0,
+        };
         let params = compiler::OpacityParams {
-            values: [evaluated.opacity.clamp(0.0, 1.0) as f32, 0.0, 0.0, 0.0],
+            values: [
+                evaluated.opacity.clamp(0.0, 1.0) as f32,
+                premultiplied,
+                0.0,
+                0.0,
+            ],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
@@ -84,6 +94,7 @@ impl GpuCompileNode for Opacity {
         ctx.register_compiled_node(CompiledOpacity {
             node_id: self.id,
             params: self.params.clone(),
+            alpha_mode: source.metadata.alpha_mode,
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
