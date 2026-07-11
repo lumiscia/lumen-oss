@@ -42,10 +42,13 @@
   },
   "devDependencies": {
     "@changesets/cli": "catalog:",
+    "@sveltejs/vite-plugin-svelte": "catalog:",
     "@types/react": "catalog:",
     "binaryen": "catalog:",
+    "jsdom": "^26.0.0",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
+    "svelte": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
