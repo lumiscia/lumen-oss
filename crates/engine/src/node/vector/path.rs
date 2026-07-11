@@ -130,47 +130,163 @@ impl GpuCompiledNode for CompiledPath {
     }
 }
 
-// Pragmatic fallback: this accepts SVG-like path strings by flattening every
-// numeric coordinate pair into a polygon. Curves/arcs are treated as straight
-// point chains until a full path tessellator lands here.
 fn parse_path_points(data: &str, max_points: usize) -> Vec<super::renderer::PathPoint> {
-    let mut numbers = Vec::new();
-    let mut token = String::new();
-    let mut previous = '\0';
+    use svgtypes::PathSegment;
 
-    for ch in data.chars() {
-        let starts_exponent = matches!(previous, 'e' | 'E') && matches!(ch, '+' | '-');
-        if matches!(ch, '-' | '+') && !starts_exponent {
-            if !token.is_empty() {
-                if let Ok(value) = token.parse::<f32>() {
-                    numbers.push(value);
-                }
-                token.clear();
-            }
-            token.push(ch);
-        } else if ch.is_ascii_digit() || ch == '.' || starts_exponent || matches!(ch, 'e' | 'E') {
-            token.push(ch);
-        } else if !token.is_empty() {
-            if let Ok(value) = token.parse::<f32>() {
-                numbers.push(value);
-            }
-            token.clear();
+    const CURVE_STEPS: usize = 16;
+    let mut points = Vec::new();
+    let mut current = [0.0_f32; 2];
+    let mut subpath_start = current;
+    let mut cubic_control = None;
+    let mut quadratic_control = None;
+
+    let absolute = |abs: bool, x: f64, y: f64, origin: [f32; 2]| {
+        let point = [x as f32, y as f32];
+        if abs {
+            point
+        } else {
+            [origin[0] + point[0], origin[1] + point[1]]
         }
-        previous = ch;
-    }
-    if !token.is_empty()
-        && let Ok(value) = token.parse::<f32>()
-    {
-        numbers.push(value);
-    }
+    };
+    let mut push = |point: [f32; 2]| {
+        if points.len() < max_points
+            && points
+                .last()
+                .is_none_or(|last: &super::renderer::PathPoint| last.position != point)
+        {
+            points.push(super::renderer::PathPoint { position: point });
+        }
+    };
 
-    numbers
-        .chunks_exact(2)
-        .take(max_points)
-        .map(|pair| super::renderer::PathPoint {
-            position: [pair[0], pair[1]],
-        })
-        .collect()
+    for segment in svgtypes::PathParser::from(data).flatten() {
+        match segment {
+            PathSegment::MoveTo { abs, x, y } => {
+                current = absolute(abs, x, y, current);
+                subpath_start = current;
+                push(current);
+            }
+            PathSegment::LineTo { abs, x, y } => {
+                current = absolute(abs, x, y, current);
+                push(current);
+            }
+            PathSegment::HorizontalLineTo { abs, x } => {
+                current[0] = if abs { x as f32 } else { current[0] + x as f32 };
+                push(current);
+            }
+            PathSegment::VerticalLineTo { abs, y } => {
+                current[1] = if abs { y as f32 } else { current[1] + y as f32 };
+                push(current);
+            }
+            PathSegment::CurveTo {
+                abs,
+                x1,
+                y1,
+                x2,
+                y2,
+                x,
+                y,
+            } => {
+                let start = current;
+                let control1 = absolute(abs, x1, y1, start);
+                let control2 = absolute(abs, x2, y2, start);
+                let end = absolute(abs, x, y, start);
+                flatten_cubic(&mut push, start, control1, control2, end, CURVE_STEPS);
+                current = end;
+                cubic_control = Some(control2);
+            }
+            PathSegment::SmoothCurveTo { abs, x2, y2, x, y } => {
+                let start = current;
+                let control1 = cubic_control.map_or(start, |point| reflect(point, start));
+                let control2 = absolute(abs, x2, y2, start);
+                let end = absolute(abs, x, y, start);
+                flatten_cubic(&mut push, start, control1, control2, end, CURVE_STEPS);
+                current = end;
+                cubic_control = Some(control2);
+            }
+            PathSegment::Quadratic { abs, x1, y1, x, y } => {
+                let start = current;
+                let control = absolute(abs, x1, y1, start);
+                let end = absolute(abs, x, y, start);
+                flatten_quadratic(&mut push, start, control, end, CURVE_STEPS);
+                current = end;
+                quadratic_control = Some(control);
+            }
+            PathSegment::SmoothQuadratic { abs, x, y } => {
+                let start = current;
+                let control = quadratic_control.map_or(start, |point| reflect(point, start));
+                let end = absolute(abs, x, y, start);
+                flatten_quadratic(&mut push, start, control, end, CURVE_STEPS);
+                current = end;
+                quadratic_control = Some(control);
+            }
+            PathSegment::EllipticalArc { abs, x, y, .. } => {
+                current = absolute(abs, x, y, current);
+                push(current);
+            }
+            PathSegment::ClosePath { .. } => {
+                current = subpath_start;
+                push(current);
+            }
+        }
+        if !matches!(
+            segment,
+            PathSegment::CurveTo { .. } | PathSegment::SmoothCurveTo { .. }
+        ) {
+            cubic_control = None;
+        }
+        if !matches!(
+            segment,
+            PathSegment::Quadratic { .. } | PathSegment::SmoothQuadratic { .. }
+        ) {
+            quadratic_control = None;
+        }
+    }
+    points
+}
+
+fn reflect(point: [f32; 2], around: [f32; 2]) -> [f32; 2] {
+    [2.0 * around[0] - point[0], 2.0 * around[1] - point[1]]
+}
+
+fn flatten_cubic(
+    push: &mut impl FnMut([f32; 2]),
+    start: [f32; 2],
+    control1: [f32; 2],
+    control2: [f32; 2],
+    end: [f32; 2],
+    steps: usize,
+) {
+    for step in 1..=steps {
+        let t = step as f32 / steps as f32;
+        let inverse = 1.0 - t;
+        push([
+            inverse.powi(3) * start[0]
+                + 3.0 * inverse.powi(2) * t * control1[0]
+                + 3.0 * inverse * t.powi(2) * control2[0]
+                + t.powi(3) * end[0],
+            inverse.powi(3) * start[1]
+                + 3.0 * inverse.powi(2) * t * control1[1]
+                + 3.0 * inverse * t.powi(2) * control2[1]
+                + t.powi(3) * end[1],
+        ]);
+    }
+}
+
+fn flatten_quadratic(
+    push: &mut impl FnMut([f32; 2]),
+    start: [f32; 2],
+    control: [f32; 2],
+    end: [f32; 2],
+    steps: usize,
+) {
+    for step in 1..=steps {
+        let t = step as f32 / steps as f32;
+        let inverse = 1.0 - t;
+        push([
+            inverse.powi(2) * start[0] + 2.0 * inverse * t * control[0] + t.powi(2) * end[0],
+            inverse.powi(2) * start[1] + 2.0 * inverse * t * control[1] + t.powi(2) * end[1],
+        ]);
+    }
 }
 
 fn bounds_min(points: &[super::renderer::PathPoint]) -> [f32; 2] {
@@ -188,4 +304,56 @@ fn bounds_size(points: &[super::renderer::PathPoint]) -> [f32; 2] {
         [acc[0].max(point.position[0]), acc[1].max(point.position[1])]
     });
     [(max[0] - min[0]).max(1.0), (max[1] - min[1]).max(1.0)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn positions(data: &str) -> Vec<[f32; 2]> {
+        parse_path_points(data, 128)
+            .into_iter()
+            .map(|point| point.position)
+            .collect()
+    }
+
+    #[test]
+    fn parses_absolute_relative_and_close_commands() {
+        assert_eq!(
+            positions("M 10 20 h 10 v 10 l -5 5 z"),
+            vec![
+                [10.0, 20.0],
+                [20.0, 20.0],
+                [20.0, 30.0],
+                [15.0, 35.0],
+                [10.0, 20.0]
+            ]
+        );
+    }
+
+    #[test]
+    fn flattens_cubic_and_smooth_curves() {
+        let points = positions("M 0 0 C 0 100 100 100 100 0 S 200 -100 200 0");
+        assert_eq!(points.len(), 33);
+        assert_eq!(points[0], [0.0, 0.0]);
+        assert_eq!(points[16], [100.0, 0.0]);
+        assert_eq!(points[32], [200.0, 0.0]);
+        assert!(points[8][1] > 70.0);
+        assert!(points[24][1] < -70.0);
+    }
+
+    #[test]
+    fn flattens_quadratic_and_smooth_curves() {
+        let points = positions("M 0 0 Q 50 100 100 0 T 200 0");
+        assert_eq!(points.len(), 33);
+        assert_eq!(points[16], [100.0, 0.0]);
+        assert_eq!(points[32], [200.0, 0.0]);
+        assert_eq!(points[8], [50.0, 50.0]);
+        assert_eq!(points[24], [150.0, -50.0]);
+    }
+
+    #[test]
+    fn caps_flattened_output_to_gpu_buffer_capacity() {
+        assert_eq!(parse_path_points("M 0 0 C 0 100 100 100 100 0", 5).len(), 5);
+    }
 }
