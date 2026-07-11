@@ -374,8 +374,9 @@ fn compiles_media_input_as_frame_texture_boundary() {
 fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
     let base = NodeId::new(1);
     let overlay = NodeId::new(2);
-    let merge = NodeId::new(3);
-    let output = NodeId::new(4);
+    let transform = NodeId::new(3);
+    let merge = NodeId::new(4);
+    let output = NodeId::new(5);
     let mut graph = Graph::new();
     graph.nodes.insert(
         base,
@@ -403,11 +404,19 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
         }),
     );
     graph.nodes.insert(
+        transform,
+        NodeKind::Transform(Transform {
+            id: transform,
+            source: PortRef::new(overlay, "output".to_string()),
+            ..Transform::default()
+        }),
+    );
+    graph.nodes.insert(
         merge,
         NodeKind::Merge(Merge {
             id: merge,
             base: PortRef::new(base, "output".to_string()),
-            overlay: PortRef::new(overlay, "output".to_string()),
+            overlay: PortRef::new(transform, "output".to_string()),
             ..Merge::default()
         }),
     );
@@ -454,10 +463,21 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
         .clone()
         .into_raster(merge, "output")
         .unwrap();
+    let transformed_raster = compiled
+        .node_outputs
+        .get(&PortRef::new(transform, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(transform, "output")
+        .unwrap();
 
     assert_eq!(
         media_raster.domain.storage_size,
         lumen_gpu::Size::new(320, 180)
+    );
+    assert_eq!(
+        transformed_raster.domain.storage_size,
+        lumen_gpu::Size::new(1920, 1080)
     );
     assert_eq!(
         merge_raster.domain.storage_size,

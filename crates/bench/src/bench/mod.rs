@@ -19,6 +19,9 @@ pub trait Bench {
 pub trait CompositionFixture {
     fn name(&self) -> &'static str;
     fn build(&self) -> lumen_engine::composition::Composition;
+    fn media_store(&self) -> media::BenchmarkMediaStore {
+        media::BenchmarkMediaStore::default()
+    }
     fn default_frames(&self, composition: &lumen_engine::composition::Composition) -> u32 {
         composition.timeline.duration_frames.min(90)
     }

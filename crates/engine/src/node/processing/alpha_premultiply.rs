@@ -101,6 +101,7 @@ impl GpuCompileNode for AlphaPremultiply {
             "alpha-premultiply",
             SHADER,
             std::mem::size_of::<compiler::AlphaPremultiplyParams>() as u64,
+            None,
         )?;
         ctx.register_compiled_node(CompiledAlphaPremultiply {
             node_id: self.id,

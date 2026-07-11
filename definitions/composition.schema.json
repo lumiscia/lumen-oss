@@ -2415,7 +2415,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Transforms a raster inside its existing static bounds.",
+            "description": "Transforms a raster into the composition canvas bounds.",
             "properties": {
               "id": {
                 "type": "integer"
