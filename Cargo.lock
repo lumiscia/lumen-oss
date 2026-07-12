@@ -1066,6 +1066,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror",
+ "windows",
 ]
 
 [[package]]
@@ -2472,6 +2473,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "range-alloc"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
+
+[[package]]
 name = "rangemap"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3693,6 +3700,7 @@ dependencies = [
  "android_system_properties",
  "arrayvec",
  "ash",
+ "bit-set 0.9.1",
  "bitflags",
  "block2",
  "bytemuck",
@@ -3715,11 +3723,13 @@ dependencies = [
  "objc2-foundation",
  "objc2-metal",
  "objc2-quartz-core",
+ "once_cell",
  "ordered-float",
  "parking_lot",
  "portable-atomic",
  "portable-atomic-util",
  "profiling",
+ "range-alloc",
  "raw-window-handle",
  "raw-window-metal",
  "renderdoc-sys",
@@ -3731,6 +3741,7 @@ dependencies = [
  "wgpu-naga-bridge",
  "wgpu-types",
  "windows",
+ "windows-core",
  "windows-result",
 ]
 
