@@ -31,7 +31,9 @@ const defaultTimeline = {
 
 export class Composition {
   readonly #connections: Connection[] = [];
+  readonly #nodeIds = new Set<number>();
   readonly #nodes: CompositionNode[] = [];
+  #nextNodeId = 0;
   #audio: AudioTimelineInput | undefined;
   #lumenSchemaVersion: string | undefined;
   #metadata: LumenComposition["metadata"] | undefined;
@@ -49,11 +51,26 @@ export class Composition {
   }
 
   addNode<TKind extends NodeKind>(node: NodeInput<TKind>): CompositionNode<TKind> {
-    const id = node.id ?? this.#nodes.length;
+    const id = node.id ?? this.#allocateNodeId();
+    if (this.#nodeIds.has(id)) {
+      throw new Error(`Node \`${id}\` already exists.`);
+    }
+
     const nextNode = { ...node, id } as CompositionNode<TKind>;
 
+    this.#nodeIds.add(id);
     this.#nodes.push(nextNode);
     return nextNode;
+  }
+
+  #allocateNodeId(): number {
+    while (this.#nodeIds.has(this.#nextNodeId)) {
+      this.#nextNodeId += 1;
+    }
+
+    const id = this.#nextNodeId;
+    this.#nextNodeId += 1;
+    return id;
   }
 
   connect(from: NodeReference, to: NodeReference, options: ConnectOptions = {}): this {
