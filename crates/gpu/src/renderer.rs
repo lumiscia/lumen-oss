@@ -49,6 +49,24 @@ pub struct Renderer {
     programs: Vec<RuntimeProgram>,
 }
 
+#[derive(Debug, Clone)]
+pub struct GpuPassTiming {
+    pub label: String,
+    pub kind: &'static str,
+    pub nanoseconds: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GpuPlanTiming {
+    pub passes: Vec<GpuPassTiming>,
+}
+
+impl GpuPlanTiming {
+    pub fn total_nanoseconds(&self) -> f64 {
+        self.passes.iter().map(|pass| pass.nanoseconds).sum()
+    }
+}
+
 #[derive(Clone)]
 pub struct ExternalTexture {
     texture: Arc<wgpu::Texture>,
@@ -164,8 +182,12 @@ impl Renderer {
             driver_info = %adapter_info.driver_info,
             "selected wgpu adapter"
         );
+        let device_descriptor = wgpu::DeviceDescriptor {
+            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
+            ..Default::default()
+        };
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&device_descriptor)
             .await
             .context("create wgpu device")?;
         Ok(Self::from_device_with_adapter_info(
@@ -209,6 +231,12 @@ impl Renderer {
 
     pub fn adapter_info(&self) -> &GpuAdapterInfo {
         &self.adapter_info
+    }
+
+    pub fn supports_timestamp_queries(&self) -> bool {
+        self.device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
     }
 
     pub fn prepare_plan(&mut self, plan: &RenderPlan) -> Result<()> {
@@ -412,13 +440,111 @@ impl Renderer {
 
         for pass in &plan.passes {
             match &pass.desc {
-                PassDesc::Render(desc) => self.execute_render_pass(desc, &mut encoder)?,
-                PassDesc::Compute(desc) => self.execute_compute_pass(desc, &mut encoder)?,
+                PassDesc::Render(desc) => self.execute_render_pass(desc, &mut encoder, None)?,
+                PassDesc::Compute(desc) => self.execute_compute_pass(desc, &mut encoder, None)?,
                 PassDesc::CopyTexture(desc) => self.execute_copy_texture(desc, &mut encoder)?,
             }
         }
 
         Ok(self.queue.submit([encoder.finish()]))
+    }
+
+    pub fn submit_plan_profiled(&mut self, plan: &RenderPlan) -> Result<Option<GpuPlanTiming>> {
+        self.validate_prepared(plan)?;
+        if !self.supports_timestamp_queries() {
+            return Ok(None);
+        }
+        let timed_passes = plan
+            .passes
+            .iter()
+            .filter(|pass| matches!(pass.desc, PassDesc::Render(_) | PassDesc::Compute(_)))
+            .count();
+        if timed_passes == 0 {
+            return Ok(Some(GpuPlanTiming::default()));
+        }
+        let query_count = (timed_passes * 2) as u32;
+        let query_set = self.device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("lumen-gpu plan timestamps"),
+            ty: wgpu::QueryType::Timestamp,
+            count: query_count,
+        });
+        let query_bytes = u64::from(query_count) * std::mem::size_of::<u64>() as u64;
+        let resolve = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lumen-gpu timestamp resolve"),
+            size: query_bytes,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lumen-gpu timestamp readback"),
+            size: query_bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("lumen-gpu profiled render-plan encoder"),
+            });
+        let mut metadata = Vec::with_capacity(timed_passes);
+        let mut timed_index = 0_u32;
+        for pass in &plan.passes {
+            match &pass.desc {
+                PassDesc::Render(desc) => {
+                    let start = timed_index * 2;
+                    self.execute_render_pass(desc, &mut encoder, Some((&query_set, start)))?;
+                    metadata.push((
+                        desc.label.clone().unwrap_or_else(|| "render".to_string()),
+                        "render",
+                    ));
+                    timed_index += 1;
+                }
+                PassDesc::Compute(desc) => {
+                    let start = timed_index * 2;
+                    self.execute_compute_pass(desc, &mut encoder, Some((&query_set, start)))?;
+                    metadata.push((
+                        desc.label.clone().unwrap_or_else(|| "compute".to_string()),
+                        "compute",
+                    ));
+                    timed_index += 1;
+                }
+                PassDesc::CopyTexture(desc) => self.execute_copy_texture(desc, &mut encoder)?,
+            }
+        }
+        encoder.resolve_query_set(&query_set, 0..query_count, &resolve, 0);
+        encoder.copy_buffer_to_buffer(&resolve, 0, &readback, 0, query_bytes);
+        let submission = self.queue.submit([encoder.finish()]);
+        self.device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: None,
+        })?;
+
+        let slice = readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely())?;
+        receiver
+            .recv()
+            .context("receive GPU timestamp mapping result")?
+            .context("map GPU timestamp readback")?;
+        let mapped = slice.get_mapped_range();
+        let timestamps = bytemuck::cast_slice::<u8, u64>(&mapped);
+        let period = f64::from(self.queue.get_timestamp_period());
+        let passes = metadata
+            .into_iter()
+            .enumerate()
+            .map(|(index, (label, kind))| GpuPassTiming {
+                label,
+                kind,
+                nanoseconds: timestamps[index * 2 + 1].saturating_sub(timestamps[index * 2]) as f64
+                    * period,
+            })
+            .collect();
+        drop(mapped);
+        readback.unmap();
+        Ok(Some(GpuPlanTiming { passes }))
     }
 
     pub fn execute_discard_submission(
@@ -701,6 +827,46 @@ impl Renderer {
                         texture.desc.domain.storage_size.as_extent(),
                     );
                 }
+                Upload::TextureRgba16FloatRegion {
+                    id,
+                    data,
+                    origin,
+                    size,
+                    bytes_per_row,
+                    rows_per_image,
+                } => {
+                    tracing::trace!(
+                        target: "lumen_gpu",
+                        ?id,
+                        bytes = std::mem::size_of_val(*data),
+                        origin_x = origin[0],
+                        origin_y = origin[1],
+                        origin_z = origin[2],
+                        width = size.width,
+                        height = size.height,
+                        "upload rgba16f texture region"
+                    );
+                    let texture = self.runtime_texture(*id)?;
+                    self.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &texture.texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d {
+                                x: origin[0],
+                                y: origin[1],
+                                z: origin[2],
+                            },
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        bytemuck::cast_slice(data),
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(*bytes_per_row),
+                            rows_per_image: Some(*rows_per_image),
+                        },
+                        size.as_extent(),
+                    );
+                }
             }
         }
         Ok(())
@@ -710,6 +876,7 @@ impl Renderer {
         &self,
         desc: &RenderPassDesc,
         encoder: &mut wgpu::CommandEncoder,
+        timestamps: Option<(&wgpu::QuerySet, u32)>,
     ) -> Result<()> {
         tracing::trace!(
             target: "lumen_gpu",
@@ -741,12 +908,18 @@ impl Renderer {
                 }))
             })
             .collect::<Result<Vec<_>>>()?;
+        let timestamp_writes =
+            timestamps.map(|(query_set, start)| wgpu::RenderPassTimestampWrites {
+                query_set,
+                beginning_of_pass_write_index: Some(start),
+                end_of_pass_write_index: Some(start + 1),
+            });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: desc.label.as_deref(),
             color_attachments: &attachments,
             depth_stencil_attachment: None,
             occlusion_query_set: None,
-            timestamp_writes: None,
+            timestamp_writes,
             multiview_mask: None,
         });
         pass.set_pipeline(&program.pipeline);
@@ -782,6 +955,7 @@ impl Renderer {
         &self,
         desc: &ComputePassDesc,
         encoder: &mut wgpu::CommandEncoder,
+        timestamps: Option<(&wgpu::QuerySet, u32)>,
     ) -> Result<()> {
         match desc.dispatch {
             ComputeDispatch::Direct(dispatch) => tracing::trace!(
@@ -805,9 +979,15 @@ impl Renderer {
         };
         let bind_groups =
             self.create_pass_bind_groups(&program.bind_group_layouts, &desc.bindings)?;
+        let timestamp_writes =
+            timestamps.map(|(query_set, start)| wgpu::ComputePassTimestampWrites {
+                query_set,
+                beginning_of_pass_write_index: Some(start),
+                end_of_pass_write_index: Some(start + 1),
+            });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: desc.label.as_deref(),
-            timestamp_writes: None,
+            timestamp_writes,
         });
         pass.set_pipeline(&program.pipeline);
         for (group, bind_group) in bind_groups.iter().enumerate() {

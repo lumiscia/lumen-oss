@@ -11,6 +11,7 @@ name = "lumen_text"
 path = "src/lib.rs"
 
 [features]
+default = ["experimental-msdf"]
 experimental-msdf = ["dep:fdsm", "dep:fdsm-skrifa", "dep:half", "dep:nalgebra", "dep:skrifa"]
 
 [dependencies]

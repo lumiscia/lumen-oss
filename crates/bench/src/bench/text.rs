@@ -29,9 +29,107 @@ const ROBOTO_BYTES: &[u8] = lumen_text::ROBOTO_REGULAR_BYTES;
 struct Args {
     iterations: usize,
     case: CaseSelection,
-    text_repeats: usize,
+    scenario: ScenarioSelection,
+    text_repeats: Option<usize>,
+    font_size: Option<f32>,
     px_range: u32,
+    atlas_size: Option<u32>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScenarioSelection {
+    All,
+    Baseline,
+    Large,
+    Dense,
+    SubpixelMotion,
+    GlyphChurn,
+}
+
+impl ScenarioSelection {
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "all" => Ok(Self::All),
+            "baseline" => Ok(Self::Baseline),
+            "large" => Ok(Self::Large),
+            "dense" => Ok(Self::Dense),
+            "subpixel-motion" => Ok(Self::SubpixelMotion),
+            "glyph-churn" => Ok(Self::GlyphChurn),
+            _ => Err(anyhow!("unknown scenario `{value}`")),
+        }
+    }
+
+    fn scenarios(self) -> &'static [TextScenario] {
+        match self {
+            Self::All => &SCENARIOS,
+            Self::Baseline => &SCENARIOS[0..1],
+            Self::Large => &SCENARIOS[1..2],
+            Self::Dense => &SCENARIOS[2..3],
+            Self::SubpixelMotion => &SCENARIOS[3..4],
+            Self::GlyphChurn => &SCENARIOS[4..5],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TextScenario {
+    name: &'static str,
+    font_size: f32,
+    text_repeats: usize,
+    target_size: [u32; 2],
+    atlas_size: u32,
+    animation: Animation,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Animation {
+    Static,
+    SubpixelMotion,
+    GlyphChurn,
+}
+
+const SCENARIOS: [TextScenario; 5] = [
+    TextScenario {
+        name: "baseline",
+        font_size: 64.0,
+        text_repeats: 1,
+        target_size: [1920, 1080],
+        atlas_size: 2048,
+        animation: Animation::Static,
+    },
+    TextScenario {
+        name: "large",
+        font_size: 240.0,
+        text_repeats: 8,
+        target_size: [1920, 1080],
+        atlas_size: 4096,
+        animation: Animation::Static,
+    },
+    TextScenario {
+        name: "dense",
+        font_size: 96.0,
+        text_repeats: 32,
+        target_size: [3840, 2160],
+        atlas_size: 4096,
+        animation: Animation::Static,
+    },
+    TextScenario {
+        name: "subpixel-motion",
+        font_size: 160.0,
+        text_repeats: 12,
+        target_size: [1920, 1080],
+        atlas_size: 4096,
+        animation: Animation::SubpixelMotion,
+    },
+    TextScenario {
+        name: "glyph-churn",
+        font_size: 128.0,
+        text_repeats: 16,
+        target_size: [3840, 2160],
+        atlas_size: 4096,
+        animation: Animation::GlyphChurn,
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CaseSelection {
@@ -158,14 +256,22 @@ impl Bench for TextBench {
 
 fn run_inner() -> anyhow::Result<()> {
     let args = parse_args()?;
-    let atlas_config = lumen_text::AtlasConfig {
-        px_range: args.px_range,
-        ..lumen_text::AtlasConfig::default()
-    };
 
     let mut summary = SummaryReport::new(
         "Text benchmark summary",
-        ["case", "glyphs", "iterations", "cold", "total", "mean/iter"],
+        [
+            "case",
+            "scenario",
+            "glyphs",
+            "rendered",
+            "frames",
+            "mean/frame",
+            "work bytes",
+            "atlas used",
+            "MSDF jobs",
+            "MSDF pixels",
+            "peak RSS",
+        ],
     );
 
     for case in [
@@ -184,25 +290,58 @@ fn run_inner() -> anyhow::Result<()> {
         if !args.case.includes(case) {
             continue;
         }
-        let result = run_case(case, args.iterations, args.text_repeats, atlas_config)?;
-        let mean = result.elapsed / args.iterations.max(1) as u32;
-        println!(
-            "text_bench case={} glyphs={} iterations={} cold_ms={} elapsed_ms={} mean_us={:.2}",
-            case.name(),
-            result.glyph_count,
-            args.iterations,
-            result.cold.as_millis(),
-            result.elapsed.as_millis(),
-            mean.as_secs_f64() * 1_000_000.0,
+        let scenario_sensitive = !matches!(
+            case,
+            BenchCase::RawRaster
+                | BenchCase::RawFdsm
+                | BenchCase::RawFdsmBase
+                | BenchCase::MeasureLiteral
+                | BenchCase::MeasureExpression
+                | BenchCase::MeasureNestedReference
         );
-        summary.push_row(vec![
-            case.name().to_string(),
-            result.glyph_count.to_string(),
-            args.iterations.to_string(),
-            format_duration(result.cold),
-            format_duration(result.elapsed),
-            format_duration(mean),
-        ]);
+        let scenarios = if scenario_sensitive {
+            args.scenario.scenarios()
+        } else {
+            &SCENARIOS[0..1]
+        };
+        for scenario in scenarios {
+            let result = run_case(case, &args, *scenario)?;
+            let mean = result.elapsed / args.iterations.max(1) as u32;
+            println!(
+                "text_bench case={} scenario={} target={}x{} font_px={} laid_out_min={} laid_out_max={} rendered_min={} rendered_max={} frames={} cold_ms={} elapsed_ms={} mean_us={:.2} max_working_set_bytes={} max_atlas_used_bytes={} max_msdf_jobs={} max_msdf_pixels={} peak_rss_bytes={}",
+                case.name(),
+                scenario.name,
+                scenario.target_size[0],
+                scenario.target_size[1],
+                args.font_size.unwrap_or(scenario.font_size),
+                result.laid_out_min,
+                result.laid_out_max,
+                result.rendered_min,
+                result.rendered_max,
+                args.iterations,
+                result.cold.as_millis(),
+                result.elapsed.as_millis(),
+                mean.as_secs_f64() * 1_000_000.0,
+                result.max_working_set_bytes,
+                result.max_atlas_used_bytes,
+                result.max_msdf_jobs,
+                result.max_msdf_pixels,
+                result.peak_rss_bytes,
+            );
+            summary.push_row(vec![
+                case.name().to_string(),
+                scenario.name.to_string(),
+                format!("{}..{}", result.laid_out_min, result.laid_out_max),
+                format!("{}..{}", result.rendered_min, result.rendered_max),
+                args.iterations.to_string(),
+                format_duration(mean),
+                format_bytes(result.max_working_set_bytes),
+                format_bytes(result.max_atlas_used_bytes),
+                result.max_msdf_jobs.to_string(),
+                result.max_msdf_pixels.to_string(),
+                format_bytes(result.peak_rss_bytes),
+            ]);
+        }
     }
 
     summary.print();
@@ -213,47 +352,112 @@ fn run_inner() -> anyhow::Result<()> {
 struct BenchResult {
     cold: Duration,
     elapsed: Duration,
-    glyph_count: usize,
+    laid_out_min: usize,
+    laid_out_max: usize,
+    rendered_min: usize,
+    rendered_max: usize,
+    max_working_set_bytes: usize,
+    max_atlas_used_bytes: usize,
+    max_msdf_jobs: usize,
+    max_msdf_pixels: u32,
+    peak_rss_bytes: usize,
 }
 
-fn run_case(
-    case: BenchCase,
-    iterations: usize,
-    text_repeats: usize,
-    atlas_config: lumen_text::AtlasConfig,
-) -> anyhow::Result<BenchResult> {
+fn run_case(case: BenchCase, args: &Args, scenario: TextScenario) -> anyhow::Result<BenchResult> {
     if matches!(
         case,
         BenchCase::MeasureLiteral
             | BenchCase::MeasureExpression
             | BenchCase::MeasureNestedReference
     ) {
-        return run_measurement_case(case, iterations);
+        return run_measurement_case(case, args.iterations);
     }
     if matches!(
         case,
         BenchCase::RawRaster | BenchCase::RawFdsm | BenchCase::RawFdsmBase
     ) {
-        return run_raw_case(case, iterations);
+        return run_raw_case(case, args.iterations);
     }
 
+    let atlas_size = args.atlas_size.unwrap_or(scenario.atlas_size);
+    let atlas_config = lumen_text::AtlasConfig {
+        width: atlas_size,
+        height: atlas_size,
+        px_range: args.px_range,
+    };
     let mut system = lumen_text::TextSystem::new();
-    let request = request_for_case(case, text_repeats);
+    let request = request_for_case(case, scenario, args, 0);
 
     let cold_started = Instant::now();
-    let cold_glyph_count = run_once(case, &mut system, &request, atlas_config);
+    let cold_sample = run_once(case, &mut system, &request, atlas_config);
     let cold = cold_started.elapsed();
 
     let started = Instant::now();
-    let mut glyph_count = cold_glyph_count;
-    for _ in 0..iterations {
-        glyph_count = run_once(case, &mut system, &request, atlas_config);
+    let mut aggregate = SampleAggregate::new(cold_sample);
+    for frame in 0..args.iterations {
+        let request = request_for_case(case, scenario, args, frame);
+        aggregate.push(run_once(case, &mut system, &request, atlas_config));
     }
     Ok(BenchResult {
         cold,
         elapsed: started.elapsed(),
-        glyph_count,
+        laid_out_min: aggregate.laid_out_min,
+        laid_out_max: aggregate.laid_out_max,
+        rendered_min: aggregate.rendered_min,
+        rendered_max: aggregate.rendered_max,
+        max_working_set_bytes: aggregate.max_working_set_bytes,
+        max_atlas_used_bytes: aggregate.max_atlas_used_bytes,
+        max_msdf_jobs: aggregate.max_msdf_jobs,
+        max_msdf_pixels: aggregate.max_msdf_pixels,
+        peak_rss_bytes: peak_rss_bytes(),
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BenchSample {
+    laid_out: usize,
+    rendered: usize,
+    working_set_bytes: usize,
+    atlas_used_bytes: usize,
+    msdf_jobs: usize,
+    msdf_pixels: u32,
+}
+
+struct SampleAggregate {
+    laid_out_min: usize,
+    laid_out_max: usize,
+    rendered_min: usize,
+    rendered_max: usize,
+    max_working_set_bytes: usize,
+    max_atlas_used_bytes: usize,
+    max_msdf_jobs: usize,
+    max_msdf_pixels: u32,
+}
+
+impl SampleAggregate {
+    fn new(sample: BenchSample) -> Self {
+        Self {
+            laid_out_min: sample.laid_out,
+            laid_out_max: sample.laid_out,
+            rendered_min: sample.rendered,
+            rendered_max: sample.rendered,
+            max_working_set_bytes: sample.working_set_bytes,
+            max_atlas_used_bytes: sample.atlas_used_bytes,
+            max_msdf_jobs: sample.msdf_jobs,
+            max_msdf_pixels: sample.msdf_pixels,
+        }
+    }
+
+    fn push(&mut self, sample: BenchSample) {
+        self.laid_out_min = self.laid_out_min.min(sample.laid_out);
+        self.laid_out_max = self.laid_out_max.max(sample.laid_out);
+        self.rendered_min = self.rendered_min.min(sample.rendered);
+        self.rendered_max = self.rendered_max.max(sample.rendered);
+        self.max_working_set_bytes = self.max_working_set_bytes.max(sample.working_set_bytes);
+        self.max_atlas_used_bytes = self.max_atlas_used_bytes.max(sample.atlas_used_bytes);
+        self.max_msdf_jobs = self.max_msdf_jobs.max(sample.msdf_jobs);
+        self.max_msdf_pixels = self.max_msdf_pixels.max(sample.msdf_pixels);
+    }
 }
 
 fn run_once(
@@ -261,26 +465,45 @@ fn run_once(
     system: &mut lumen_text::TextSystem,
     request: &lumen_text::TextLayoutRequest,
     atlas_config: lumen_text::AtlasConfig,
-) -> usize {
+) -> BenchSample {
     let layout = system.layout(request);
-    let glyph_count = layout.glyphs.len();
+    let laid_out = layout.glyphs.len();
     match case {
         BenchCase::Layout => {
             std::hint::black_box(layout);
+            BenchSample {
+                laid_out,
+                rendered: laid_out,
+                working_set_bytes: laid_out * std::mem::size_of::<lumen_text::TextGlyph>(),
+                atlas_used_bytes: 0,
+                msdf_jobs: 0,
+                msdf_pixels: 0,
+            }
         }
         BenchCase::Raster => {
             let atlas = system.render_alpha_atlas(&layout, atlas_config, MAX_GLYPHS);
+            let sample = alpha_sample(laid_out, &atlas);
             std::hint::black_box(atlas);
+            sample
         }
         BenchCase::Emoji => {
             let atlas = system.render_alpha_atlas(&layout, atlas_config, MAX_GLYPHS);
+            let sample = alpha_sample(laid_out, &atlas);
             std::hint::black_box(atlas);
+            sample
         }
         #[cfg(feature = "experimental-msdf")]
         BenchCase::GpuMsdf => {
-            let atlas =
-                system.render_gpu_hybrid_atlas(&layout, atlas_config, MAX_GLYPHS, 32768, 262_144);
+            let atlas = system.render_gpu_hybrid_atlas(
+                &layout,
+                atlas_config,
+                MAX_GLYPHS,
+                32768,
+                atlas_config.width.saturating_mul(atlas_config.height),
+            );
+            let sample = gpu_msdf_sample(laid_out, &atlas);
             std::hint::black_box(atlas);
+            sample
         }
         BenchCase::RawRaster | BenchCase::RawFdsm | BenchCase::RawFdsmBase => {
             unreachable!("handled before run_once")
@@ -291,23 +514,66 @@ fn run_once(
             unreachable!("handled before run_once")
         }
     }
-    glyph_count
 }
 
-fn request_for_case(case: BenchCase, text_repeats: usize) -> lumen_text::TextLayoutRequest {
+fn alpha_sample(laid_out: usize, atlas: &lumen_text::AlphaAtlasRender) -> BenchSample {
+    let used = atlas.atlas.used_size();
+    BenchSample {
+        laid_out,
+        rendered: atlas.glyph_count,
+        working_set_bytes: atlas.pixels.len()
+            + atlas.instances.len() * std::mem::size_of::<lumen_text::GpuGlyphInstance>(),
+        atlas_used_bytes: used[0] as usize * used[1] as usize * 4,
+        msdf_jobs: 0,
+        msdf_pixels: 0,
+    }
+}
+
+#[cfg(feature = "experimental-msdf")]
+fn gpu_msdf_sample(laid_out: usize, atlas: &lumen_text::GpuHybridAtlasRender) -> BenchSample {
+    let used = atlas.atlas.used_size();
+    BenchSample {
+        laid_out,
+        rendered: atlas.glyph_count,
+        working_set_bytes: atlas.pixels.len()
+            + atlas.instances.len() * std::mem::size_of::<lumen_text::GpuGlyphInstance>()
+            + atlas.jobs.len() * std::mem::size_of::<lumen_text::GpuMsdfJob>()
+            + atlas.segments.len() * std::mem::size_of::<lumen_text::GpuMsdfSegment>(),
+        atlas_used_bytes: used[0] as usize * used[1] as usize * 8,
+        msdf_jobs: atlas.jobs.len(),
+        msdf_pixels: atlas.msdf_pixel_count,
+    }
+}
+
+fn request_for_case(
+    case: BenchCase,
+    scenario: TextScenario,
+    args: &Args,
+    frame: usize,
+) -> lumen_text::TextLayoutRequest {
+    let text_repeats = args.text_repeats.unwrap_or(scenario.text_repeats).max(1);
     let content = match case {
         BenchCase::Emoji => "🍋✨🚀🎬 ".repeat(text_repeats.max(1)),
         BenchCase::RawRaster | BenchCase::RawFdsm | BenchCase::RawFdsmBase => "A".to_string(),
         BenchCase::MeasureLiteral
         | BenchCase::MeasureExpression
         | BenchCase::MeasureNestedReference => String::new(),
-        _ => "Hello from Lumen. Crisp text, ligatures, layout, and atlas generation. "
-            .repeat(text_repeats.max(1)),
+        _ => match scenario.animation {
+            Animation::GlyphChurn => format!(
+                "Frame {frame:06}: ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 !?@#$%&* — Lumen animated text. "
+            )
+            .repeat(text_repeats),
+            _ => "Hello from Lumen. Crisp text, ligatures, layout, and atlas generation. "
+                .repeat(text_repeats),
+        },
     };
     let mut request = lumen_text::TextLayoutRequest::new(content);
-    request.font_size = 64.0;
+    request.font_size = args.font_size.unwrap_or(scenario.font_size);
     request.font_weight = 700;
-    request.max_width = Some(1400.0);
+    request.max_width = Some(scenario.target_size[0] as f32 * 0.8);
+    if matches!(scenario.animation, Animation::SubpixelMotion) {
+        request.origin = [((frame % 8) as f32) * 0.125, ((frame % 5) as f32) * 0.2];
+    }
     if case == BenchCase::Emoji {
         request.font_family = "Apple Color Emoji".to_string();
     }
@@ -317,8 +583,11 @@ fn request_for_case(case: BenchCase, text_repeats: usize) -> lumen_text::TextLay
 fn parse_args() -> anyhow::Result<Args> {
     let mut iterations = 100;
     let mut case = CaseSelection::All;
-    let mut text_repeats = 1;
+    let mut scenario = ScenarioSelection::Baseline;
+    let mut text_repeats = None;
+    let mut font_size = None;
     let mut px_range = lumen_text::AtlasConfig::default().px_range;
+    let mut atlas_size = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -330,11 +599,20 @@ fn parse_args() -> anyhow::Result<Args> {
                     .context("--iterations must be a positive integer")?;
             }
             "--text-repeats" => {
-                text_repeats = args
-                    .next()
-                    .ok_or_else(|| anyhow!("--text-repeats requires a value"))?
-                    .parse::<usize>()
-                    .context("--text-repeats must be a positive integer")?;
+                text_repeats = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow!("--text-repeats requires a value"))?
+                        .parse::<usize>()
+                        .context("--text-repeats must be a positive integer")?,
+                );
+            }
+            "--font-size" => {
+                font_size = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow!("--font-size requires a value"))?
+                        .parse::<f32>()
+                        .context("--font-size must be a positive number")?,
+                );
             }
             "--px-range" => {
                 px_range = args
@@ -350,10 +628,26 @@ fn parse_args() -> anyhow::Result<Args> {
                         .ok_or_else(|| anyhow!("--case requires a value"))?,
                 )?;
             }
+            "--scenario" => {
+                scenario = ScenarioSelection::parse(
+                    &args
+                        .next()
+                        .ok_or_else(|| anyhow!("--scenario requires a value"))?,
+                )?;
+            }
+            "--atlas-size" => {
+                atlas_size = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow!("--atlas-size requires a value"))?
+                        .parse::<u32>()
+                        .context("--atlas-size must be a positive integer")?,
+                );
+            }
             "--list" => {
                 println!(
                     "cases: all, layout, raster, gpu-msdf, emoji, raw-raster, raw-fdsm, raw-fdsm-base, measure-literal, measure-expression, measure-nested-reference"
                 );
+                println!("scenarios: all, baseline, large, dense, subpixel-motion, glyph-churn");
                 std::process::exit(0);
             }
             "--help" | "-h" => {
@@ -366,14 +660,17 @@ fn parse_args() -> anyhow::Result<Args> {
     Ok(Args {
         iterations,
         case,
+        scenario,
         text_repeats,
+        font_size,
         px_range,
+        atlas_size,
     })
 }
 
 fn print_help() {
     println!(
-        "usage: lumen-bench-text [--case all|layout|raster|gpu-msdf|emoji|raw-raster|raw-fdsm|raw-fdsm-base|measure-literal|measure-expression|measure-nested-reference] [--iterations N] [--text-repeats N] [--px-range N]"
+        "usage: lumen-bench-text [--case CASE] [--scenario all|baseline|large|dense|subpixel-motion|glyph-churn] [--iterations N] [--text-repeats N] [--font-size PX] [--atlas-size PX] [--px-range N]"
     );
 }
 
@@ -492,7 +789,15 @@ fn run_measurement_case(case: BenchCase, iterations: usize) -> anyhow::Result<Be
     Ok(BenchResult {
         cold,
         elapsed: started.elapsed(),
-        glyph_count: 2,
+        laid_out_min: 2,
+        laid_out_max: 2,
+        rendered_min: 2,
+        rendered_max: 2,
+        max_working_set_bytes: 0,
+        max_atlas_used_bytes: 0,
+        max_msdf_jobs: 0,
+        max_msdf_pixels: 0,
+        peak_rss_bytes: peak_rss_bytes(),
     })
 }
 
@@ -538,8 +843,47 @@ fn run_raw_case(case: BenchCase, iterations: usize) -> anyhow::Result<BenchResul
     Ok(BenchResult {
         cold,
         elapsed: started.elapsed(),
-        glyph_count: 1,
+        laid_out_min: 1,
+        laid_out_max: 1,
+        rendered_min: 1,
+        rendered_max: 1,
+        max_working_set_bytes: 0,
+        max_atlas_used_bytes: 0,
+        max_msdf_jobs: 0,
+        max_msdf_pixels: 0,
+        peak_rss_bytes: peak_rss_bytes(),
     })
+}
+
+#[cfg(unix)]
+fn peak_rss_bytes() -> usize {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: getrusage initializes the provided rusage on success.
+    let value = unsafe {
+        if libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) == 0 {
+            usage.assume_init().ru_maxrss.max(0) as usize
+        } else {
+            0
+        }
+    };
+    if cfg!(target_os = "macos") {
+        value
+    } else {
+        value.saturating_mul(1024)
+    }
+}
+
+#[cfg(not(unix))]
+fn peak_rss_bytes() -> usize {
+    0
+}
+
+fn format_bytes(bytes: usize) -> String {
+    if bytes == 0 {
+        return "-".to_string();
+    }
+    const MIB: f64 = 1024.0 * 1024.0;
+    format!("{:.1} MiB", bytes as f64 / MIB)
 }
 
 struct RawGlyph {

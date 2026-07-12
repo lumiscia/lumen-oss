@@ -240,7 +240,8 @@ fn frame_update_records_buffer_and_texture_uploads_in_order() {
         }
         Upload::TextureRgba8 { .. }
         | Upload::TextureRgba8Region { .. }
-        | Upload::TextureRgba16Float { .. } => {
+        | Upload::TextureRgba16Float { .. }
+        | Upload::TextureRgba16FloatRegion { .. } => {
             panic!("expected buffer upload first")
         }
     }
@@ -258,9 +259,42 @@ fn frame_update_records_buffer_and_texture_uploads_in_order() {
         }
         Upload::Buffer { .. }
         | Upload::TextureRgba8Region { .. }
-        | Upload::TextureRgba16Float { .. } => {
+        | Upload::TextureRgba16Float { .. }
+        | Upload::TextureRgba16FloatRegion { .. } => {
             panic!("expected texture upload second")
         }
+    }
+}
+
+#[test]
+fn frame_update_records_rgba16_float_regions() {
+    let pixels = [0_u16; 16];
+    let mut update = FrameUpdate::new();
+    update.write_texture_rgba16_float_region(
+        TextureId(4),
+        &pixels,
+        [7, 9, 0],
+        Size::new(2, 2),
+        16,
+        2,
+    );
+    match &update.uploads()[0] {
+        Upload::TextureRgba16FloatRegion {
+            id,
+            data,
+            origin,
+            size,
+            bytes_per_row,
+            rows_per_image,
+        } => {
+            assert_eq!(*id, TextureId(4));
+            assert_eq!(*data, pixels);
+            assert_eq!(*origin, [7, 9, 0]);
+            assert_eq!(*size, Size::new(2, 2));
+            assert_eq!(*bytes_per_row, 16);
+            assert_eq!(*rows_per_image, 2);
+        }
+        _ => panic!("expected rgba16f region upload"),
     }
 }
 

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use cosmic_text::{
     Align, Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, Style,
-    SubpixelBin, SwashCache, SwashContent, SwashImage, Weight, Wrap,
+    SwashCache, SwashContent, SwashImage, Weight, Wrap,
 };
 
 mod gpu;
@@ -25,13 +25,22 @@ pub const MSDF_TEXT_SHADER: &str = include_str!("shaders/msdf_text.wgsl");
 pub const MSDF_GENERATOR_SHADER: &str = include_str!("shaders/msdf_generate.wgsl");
 pub const DEFAULT_FONT_FAMILY: &str = "Roboto";
 pub const ROBOTO_REGULAR_BYTES: &[u8] = include_bytes!("../assets/roboto/Roboto-Regular.ttf");
+#[cfg(feature = "experimental-msdf")]
+pub const MSDF_GENERATION_SIZE_PX: f32 = 96.0;
+
+#[cfg(feature = "experimental-msdf")]
+const MSDF_JOB_CACHE_MAX_ENTRIES: usize = 256;
+#[cfg(feature = "experimental-msdf")]
+const MSDF_JOB_CACHE_MAX_SEGMENTS: usize = 65_536;
+#[cfg(feature = "experimental-msdf")]
+const MSDF_ATLAS_PADDING: u32 = 1;
 
 #[derive(Debug)]
 pub struct TextSystem {
     font_system: FontSystem,
     swash_cache: SwashCache,
     #[cfg(feature = "experimental-msdf")]
-    msdf_job_cache: HashMap<GlyphKey, Option<MsdfGlyphJob>>,
+    msdf_job_cache: MsdfJobCache,
 }
 
 impl TextSystem {
@@ -42,7 +51,7 @@ impl TextSystem {
             font_system,
             swash_cache: SwashCache::new(),
             #[cfg(feature = "experimental-msdf")]
-            msdf_job_cache: HashMap::new(),
+            msdf_job_cache: MsdfJobCache::default(),
         }
     }
 
@@ -108,16 +117,13 @@ impl TextSystem {
             for glyph in run.glyphs {
                 let physical =
                     glyph.physical((request.origin[0], request.origin[1] + run.line_y), 1.0);
-                let mut cache_key = physical.cache_key;
-                cache_key.x_bin = SubpixelBin::Zero;
-                cache_key.y_bin = SubpixelBin::Zero;
-                let x = request.origin[0] + glyph.x + (glyph.font_size * glyph.x_offset);
-                let y =
-                    request.origin[1] + run.line_y + glyph.y - (glyph.font_size * glyph.y_offset);
                 glyphs.push(TextGlyph {
-                    key: GlyphKey(cache_key),
-                    x,
-                    y,
+                    // Swash rasterizes the fractional position encoded in the cache key.
+                    // Drawing that mask at Cosmic Text's integer physical position avoids
+                    // linearly filtering an already-antialiased glyph a second time.
+                    key: GlyphKey(physical.cache_key),
+                    x: physical.x as f32,
+                    y: physical.y as f32,
                     width: glyph.w,
                     height: run.line_height,
                     x_offset: glyph.x_offset,
@@ -156,12 +162,23 @@ impl TextSystem {
         let mut instances = Vec::with_capacity(max_glyphs.min(layout.glyphs.len()));
         let mut jobs = Vec::new();
         let mut segments = Vec::new();
-        let mut pixel_jobs = Vec::new();
         let mut msdf_pixel_count = 0_u32;
         let mut glyph_count = 0;
+        let mut prepared_msdf = HashMap::<GlyphKey, PreparedHybridGlyph>::new();
+        let mut prepared_raster = HashMap::<GlyphKey, PreparedHybridGlyph>::new();
 
         for glyph in layout.glyphs.iter().take(max_glyphs) {
             let msdf_key = glyph.key.msdf_key();
+            if let Some(prepared) = prepared_msdf.get(&msdf_key) {
+                instances.push(prepared.instance_for(glyph));
+                glyph_count += 1;
+                continue;
+            }
+            if let Some(prepared) = prepared_raster.get(&glyph.key) {
+                instances.push(prepared.instance_for(glyph));
+                glyph_count += 1;
+                continue;
+            }
             if let Some(msdf) = self.glyph_msdf_job(msdf_key, config) {
                 let glyph_size = [msdf.placement.width, msdf.placement.height];
                 let glyph_pixels = glyph_size[0].saturating_mul(glyph_size[1]);
@@ -169,15 +186,17 @@ impl TextSystem {
                     && segments.len().saturating_add(msdf.segments.len()) <= max_segments
                     && msdf_pixel_count.saturating_add(glyph_pixels) <= max_msdf_pixels
                 {
-                    let Some(entry) = atlas.ensure_glyph(msdf_key, glyph_size) else {
+                    // The generated field already contains `px_range` pixels around the
+                    // outline. Only reserve a texel for filtering isolation here; using the
+                    // normal atlas padding would charge the range twice for every large glyph.
+                    let Some(entry) = atlas.ensure_glyph_with_padding(msdf_key, glyph_size, 1)
+                    else {
                         continue;
                     };
                     let segment_start = segments.len() as u32;
                     let pixel_start = msdf_pixel_count;
-                    let job_index = jobs.len() as u32;
                     segments.extend(msdf.segments);
                     msdf_pixel_count = msdf_pixel_count.saturating_add(glyph_pixels);
-                    pixel_jobs.extend(std::iter::repeat(job_index).take(glyph_pixels as usize));
                     jobs.push(GpuMsdfJob {
                         atlas_rect: [
                             entry.origin[0],
@@ -190,22 +209,29 @@ impl TextSystem {
                         px_range: config.px_range.max(1) as f32,
                         _padding: [0; 3],
                     });
-                    instances.push(msdf_glyph_instance_for(glyph, entry, &msdf.placement));
+                    let prepared_glyph = PreparedHybridGlyph::Msdf {
+                        entry,
+                        placement: msdf.placement,
+                    };
+                    instances.push(prepared_glyph.instance_for(glyph));
+                    prepared_msdf.insert(msdf_key, prepared_glyph);
                 } else {
-                    let Some(instance) =
-                        self.raster_glyph_instance(glyph, &mut atlas, config, &mut pixels)
+                    let Some(prepared_glyph) =
+                        self.raster_glyph(glyph, &mut atlas, config, &mut pixels)
                     else {
                         continue;
                     };
-                    instances.push(instance);
+                    instances.push(prepared_glyph.instance_for(glyph));
+                    prepared_raster.insert(glyph.key, prepared_glyph);
                 }
             } else {
-                let Some(instance) =
-                    self.raster_glyph_instance(glyph, &mut atlas, config, &mut pixels)
+                let Some(prepared_glyph) =
+                    self.raster_glyph(glyph, &mut atlas, config, &mut pixels)
                 else {
                     continue;
                 };
-                instances.push(instance);
+                instances.push(prepared_glyph.instance_for(glyph));
+                prepared_raster.insert(glyph.key, prepared_glyph);
             }
             glyph_count += 1;
         }
@@ -216,10 +242,162 @@ impl TextSystem {
             instances,
             jobs,
             segments,
-            pixel_jobs,
             msdf_pixel_count,
             glyph_count,
         }
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    pub fn prepare_persistent_gpu_atlas(
+        &mut self,
+        cache: &mut PersistentTextAtlas,
+        layout: &TextLayout,
+        strategy: TextRenderStrategy,
+        limits: PersistentAtlasLimits,
+    ) -> GpuHybridAtlasUpdate {
+        let reset_count = cache.reset_count;
+        if cache.strategy != strategy {
+            cache.reset(strategy);
+        }
+        match self.prepare_persistent_gpu_atlas_inner(cache, layout, strategy, limits, true) {
+            Ok(mut update) => {
+                update.atlas_reset = cache.reset_count != reset_count;
+                update
+            }
+            Err(AtlasCapacityError) => {
+                cache.reset(strategy);
+                let mut update = self
+                    .prepare_persistent_gpu_atlas_inner(cache, layout, strategy, limits, false)
+                    .expect("capacity retry cannot request another reset");
+                update.atlas_reset = true;
+                update
+            }
+        }
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    fn prepare_persistent_gpu_atlas_inner(
+        &mut self,
+        cache: &mut PersistentTextAtlas,
+        layout: &TextLayout,
+        strategy: TextRenderStrategy,
+        limits: PersistentAtlasLimits,
+        reset_on_capacity: bool,
+    ) -> Result<GpuHybridAtlasUpdate, AtlasCapacityError> {
+        let mut update = GpuHybridAtlasUpdate {
+            instances: Vec::with_capacity(limits.max_glyphs.min(layout.glyphs.len())),
+            ..Default::default()
+        };
+
+        for glyph in layout.glyphs.iter().take(limits.max_glyphs) {
+            let msdf_key = glyph.key.msdf_key();
+            if strategy == TextRenderStrategy::HybridMsdf
+                && let Some(prepared) = cache.msdf_entries.get(&msdf_key)
+            {
+                update.instances.push(prepared.instance_for(glyph));
+                update.glyph_count += 1;
+                continue;
+            }
+            if let Some(prepared) = cache.raster_entries.get(&glyph.key) {
+                update.instances.push(prepared.instance_for(glyph));
+                update.glyph_count += 1;
+                continue;
+            }
+
+            let mut prepared = None;
+            if strategy == TextRenderStrategy::HybridMsdf
+                && let Some(msdf) = self.glyph_msdf_job(msdf_key, cache.config)
+            {
+                let glyph_size = [msdf.placement.width, msdf.placement.height];
+                let glyph_pixels = glyph_size[0].saturating_mul(glyph_size[1]);
+                if !msdf.segments.is_empty()
+                    && update.jobs.len() < limits.max_jobs
+                    && update.segments.len().saturating_add(msdf.segments.len())
+                        <= limits.max_segments
+                    && update.msdf_pixel_count.saturating_add(glyph_pixels)
+                        <= limits.max_msdf_pixels
+                {
+                    if let Some(entry) = cache.atlas.ensure_glyph_with_padding(
+                        msdf_key,
+                        glyph_size,
+                        MSDF_ATLAS_PADDING,
+                    ) {
+                        let segment_start = update.segments.len() as u32;
+                        let pixel_start = update.msdf_pixel_count;
+                        update.segments.extend(msdf.segments);
+                        update.msdf_pixel_count =
+                            update.msdf_pixel_count.saturating_add(glyph_pixels);
+                        update.jobs.push(GpuMsdfJob {
+                            atlas_rect: [
+                                entry.origin[0],
+                                entry.origin[1],
+                                entry.size[0],
+                                entry.size[1],
+                            ],
+                            segment_range: [
+                                segment_start,
+                                update.segments.len() as u32 - segment_start,
+                            ],
+                            pixel_range: [pixel_start, glyph_pixels],
+                            px_range: cache.config.px_range.max(1) as f32,
+                            _padding: [0; 3],
+                        });
+                        let glyph = PreparedHybridGlyph::Msdf {
+                            entry,
+                            placement: msdf.placement,
+                        };
+                        cache.msdf_entries.insert(msdf_key, glyph.clone());
+                        prepared = Some(glyph);
+                    } else if cache.atlas.glyph_fits(glyph_size, MSDF_ATLAS_PADDING)
+                        && reset_on_capacity
+                    {
+                        return Err(AtlasCapacityError);
+                    }
+                }
+            }
+
+            if prepared.is_none() {
+                let Some(image) = self.glyph_image(glyph.key) else {
+                    continue;
+                };
+                let glyph_size = [image.placement.width, image.placement.height];
+                if glyph_size[0] == 0 || glyph_size[1] == 0 {
+                    continue;
+                }
+                if let Some(entry) =
+                    cache
+                        .atlas
+                        .ensure_glyph_with_padding(glyph.key, glyph_size, MSDF_ATLAS_PADDING)
+                {
+                    update.raster_uploads.push(GpuAtlasUpload {
+                        origin: entry.origin,
+                        size: entry.size,
+                        pixels: glyph_image_to_rgba16_float(&image),
+                    });
+                    let prepared_glyph = PreparedHybridGlyph::Raster { entry, image };
+                    cache
+                        .raster_entries
+                        .insert(glyph.key, prepared_glyph.clone());
+                    prepared = Some(prepared_glyph);
+                } else if cache.atlas.glyph_fits(glyph_size, MSDF_ATLAS_PADDING)
+                    && reset_on_capacity
+                {
+                    return Err(AtlasCapacityError);
+                } else {
+                    update.dropped_glyphs += 1;
+                }
+            }
+
+            if let Some(prepared) = prepared {
+                update.instances.push(prepared.instance_for(glyph));
+                update.glyph_count += 1;
+            }
+        }
+
+        update.atlas_generation = cache.generation;
+        update.cached_glyphs = cache.msdf_entries.len() + cache.raster_entries.len();
+        update.atlas_used_size = cache.atlas.used_size();
+        Ok(update)
     }
 
     fn render_atlas(
@@ -263,37 +441,129 @@ impl TextSystem {
 
     #[cfg(feature = "experimental-msdf")]
     fn glyph_msdf_job(&mut self, key: GlyphKey, config: AtlasConfig) -> Option<MsdfGlyphJob> {
-        if let Some(cached) = self.msdf_job_cache.get(&key) {
-            return cached.clone();
+        let cache_key = MsdfJobCacheKey { glyph: key, config };
+        if let Some(cached) = self.msdf_job_cache.get(cache_key) {
+            return cached;
         }
-        self.font_system
+        let generated = self
+            .font_system
             .db()
             .with_face_data(key.0.font_id, |data, face_index| {
                 generate_msdf_job(data, face_index, key.0, config)
             })
-            .flatten()
-            .inspect(|job| {
-                self.msdf_job_cache.insert(key, Some(job.clone()));
-            })
-            .or_else(|| {
-                self.msdf_job_cache.insert(key, None);
-                None
-            })
+            .flatten();
+        self.msdf_job_cache.insert(cache_key, generated.clone());
+        generated
     }
 
     #[cfg(feature = "experimental-msdf")]
-    fn raster_glyph_instance(
+    fn raster_glyph(
         &mut self,
         glyph: &TextGlyph,
         atlas: &mut GlyphAtlas,
         config: AtlasConfig,
         pixels: &mut [u8],
-    ) -> Option<GpuGlyphInstance> {
+    ) -> Option<PreparedHybridGlyph> {
         let image = self.glyph_image(glyph.key)?;
         let glyph_size = [image.placement.width, image.placement.height];
         let entry = atlas.ensure_glyph(glyph.key, glyph_size)?;
         write_glyph_to_atlas(pixels, config, entry, &image);
-        Some(glyph_instance_for(glyph, entry, &image))
+        Some(PreparedHybridGlyph::Raster { entry, image })
+    }
+}
+
+#[cfg(feature = "experimental-msdf")]
+#[derive(Clone)]
+enum PreparedHybridGlyph {
+    Msdf {
+        entry: AtlasEntry,
+        placement: MsdfGlyphPlacement,
+    },
+    Raster {
+        entry: AtlasEntry,
+        image: SwashImage,
+    },
+}
+
+#[cfg(feature = "experimental-msdf")]
+impl PreparedHybridGlyph {
+    fn instance_for(&self, glyph: &TextGlyph) -> GpuGlyphInstance {
+        match self {
+            Self::Msdf { entry, placement } => msdf_glyph_instance_for(glyph, *entry, placement),
+            Self::Raster { entry, image } => glyph_instance_for(glyph, *entry, image),
+        }
+    }
+}
+
+#[cfg(feature = "experimental-msdf")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MsdfJobCacheKey {
+    glyph: GlyphKey,
+    config: AtlasConfig,
+}
+
+#[cfg(feature = "experimental-msdf")]
+#[derive(Debug, Clone)]
+struct CachedMsdfJob {
+    job: Option<MsdfGlyphJob>,
+    last_used: u64,
+    segment_count: usize,
+}
+
+#[cfg(feature = "experimental-msdf")]
+#[derive(Debug, Default)]
+struct MsdfJobCache {
+    entries: HashMap<MsdfJobCacheKey, CachedMsdfJob>,
+    clock: u64,
+    segment_count: usize,
+}
+
+#[cfg(feature = "experimental-msdf")]
+impl MsdfJobCache {
+    fn get(&mut self, key: MsdfJobCacheKey) -> Option<Option<MsdfGlyphJob>> {
+        let entry = self.entries.get_mut(&key)?;
+        self.clock = self.clock.wrapping_add(1);
+        entry.last_used = self.clock;
+        Some(entry.job.clone())
+    }
+
+    fn insert(&mut self, key: MsdfJobCacheKey, job: Option<MsdfGlyphJob>) {
+        self.clock = self.clock.wrapping_add(1);
+        let segment_count = job.as_ref().map_or(0, |job| job.segments.len());
+        if segment_count > MSDF_JOB_CACHE_MAX_SEGMENTS {
+            return;
+        }
+        if let Some(replaced) = self.entries.insert(
+            key,
+            CachedMsdfJob {
+                job,
+                last_used: self.clock,
+                segment_count,
+            },
+        ) {
+            self.segment_count = self.segment_count.saturating_sub(replaced.segment_count);
+        }
+        self.segment_count = self.segment_count.saturating_add(segment_count);
+        while self.entries.len() > MSDF_JOB_CACHE_MAX_ENTRIES
+            || self.segment_count > MSDF_JOB_CACHE_MAX_SEGMENTS
+        {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&oldest) {
+                self.segment_count = self.segment_count.saturating_sub(removed.segment_count);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.segment_count = 0;
     }
 }
 
@@ -402,11 +672,12 @@ impl GlyphKey {
         let mut key = self.0;
         key.x_bin = cosmic_text::SubpixelBin::Zero;
         key.y_bin = cosmic_text::SubpixelBin::Zero;
+        key.font_size_bits = MSDF_GENERATION_SIZE_PX.to_bits();
         Self(key)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AtlasConfig {
     pub width: u32,
     pub height: u32,
@@ -460,11 +731,24 @@ impl GlyphAtlas {
         self.entries.get(key).copied()
     }
 
+    fn glyph_fits(&self, size: [u32; 2], padding: u32) -> bool {
+        size[0].saturating_add(padding.saturating_mul(2)) <= self.config.width
+            && size[1].saturating_add(padding.saturating_mul(2)) <= self.config.height
+    }
+
     pub fn ensure_glyph(&mut self, key: GlyphKey, size: [u32; 2]) -> Option<AtlasEntry> {
+        self.ensure_glyph_with_padding(key, size, self.config.px_range.max(1))
+    }
+
+    fn ensure_glyph_with_padding(
+        &mut self,
+        key: GlyphKey,
+        size: [u32; 2],
+        padding: u32,
+    ) -> Option<AtlasEntry> {
         if let Some(entry) = self.entry(&key) {
             return Some(entry);
         }
-        let padding = self.config.px_range.max(1);
         let width = size[0].saturating_add(padding * 2).max(1);
         let height = size[1].saturating_add(padding * 2).max(1);
         if width > self.config.width || height > self.config.height {
@@ -513,10 +797,123 @@ pub struct GpuHybridAtlasRender {
     pub instances: Vec<GpuGlyphInstance>,
     pub jobs: Vec<GpuMsdfJob>,
     pub segments: Vec<GpuMsdfSegment>,
-    pub pixel_jobs: Vec<u32>,
     pub msdf_pixel_count: u32,
     pub glyph_count: usize,
 }
+
+#[cfg(feature = "experimental-msdf")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextRenderStrategy {
+    HybridMsdf,
+    Raster,
+}
+
+#[cfg(feature = "experimental-msdf")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistentAtlasLimits {
+    pub max_glyphs: usize,
+    pub max_jobs: usize,
+    pub max_segments: usize,
+    pub max_msdf_pixels: u32,
+}
+
+#[cfg(feature = "experimental-msdf")]
+#[derive(Clone)]
+pub struct PersistentTextAtlas {
+    config: AtlasConfig,
+    strategy: TextRenderStrategy,
+    atlas: GlyphAtlas,
+    msdf_entries: HashMap<GlyphKey, PreparedHybridGlyph>,
+    raster_entries: HashMap<GlyphKey, PreparedHybridGlyph>,
+    generation: u64,
+    reset_count: u64,
+}
+
+#[cfg(feature = "experimental-msdf")]
+impl std::fmt::Debug for PersistentTextAtlas {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PersistentTextAtlas")
+            .field("config", &self.config)
+            .field("strategy", &self.strategy)
+            .field("cached_glyphs", &self.cached_glyphs())
+            .field("generation", &self.generation)
+            .field("reset_count", &self.reset_count)
+            .finish()
+    }
+}
+
+#[cfg(feature = "experimental-msdf")]
+impl PersistentTextAtlas {
+    pub fn new(config: AtlasConfig, strategy: TextRenderStrategy) -> Self {
+        Self {
+            config,
+            strategy,
+            atlas: GlyphAtlas::new(config),
+            msdf_entries: HashMap::new(),
+            raster_entries: HashMap::new(),
+            generation: 0,
+            reset_count: 0,
+        }
+    }
+
+    pub fn config(&self) -> AtlasConfig {
+        self.config
+    }
+
+    pub fn cached_glyphs(&self) -> usize {
+        self.msdf_entries.len() + self.raster_entries.len()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn reset_count(&self) -> u64 {
+        self.reset_count
+    }
+
+    pub fn clear(&mut self) {
+        self.reset(self.strategy);
+    }
+
+    fn reset(&mut self, strategy: TextRenderStrategy) {
+        self.strategy = strategy;
+        self.atlas = GlyphAtlas::new(self.config);
+        self.msdf_entries.clear();
+        self.raster_entries.clear();
+        self.generation = self.generation.wrapping_add(1);
+        self.reset_count = self.reset_count.saturating_add(1);
+    }
+}
+
+#[cfg(feature = "experimental-msdf")]
+#[derive(Debug, Clone, Default)]
+pub struct GpuHybridAtlasUpdate {
+    pub instances: Vec<GpuGlyphInstance>,
+    pub jobs: Vec<GpuMsdfJob>,
+    pub segments: Vec<GpuMsdfSegment>,
+    pub raster_uploads: Vec<GpuAtlasUpload>,
+    pub msdf_pixel_count: u32,
+    pub glyph_count: usize,
+    pub dropped_glyphs: usize,
+    pub cached_glyphs: usize,
+    pub atlas_generation: u64,
+    pub atlas_reset: bool,
+    pub atlas_used_size: [u32; 2],
+}
+
+#[cfg(feature = "experimental-msdf")]
+#[derive(Debug, Clone)]
+pub struct GpuAtlasUpload {
+    pub origin: [u32; 2],
+    pub size: [u32; 2],
+    pub pixels: Vec<u16>,
+}
+
+#[cfg(feature = "experimental-msdf")]
+#[derive(Debug, Clone, Copy)]
+struct AtlasCapacityError;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AtlasEntry {
@@ -579,9 +976,45 @@ fn write_glyph_to_atlas(
     }
 }
 
+#[cfg(feature = "experimental-msdf")]
+fn glyph_image_to_rgba16_float(image: &SwashImage) -> Vec<u16> {
+    let pixel_count = image.placement.width as usize * image.placement.height as usize;
+    let mut pixels = vec![0_u8; pixel_count * 4];
+    match image.content {
+        SwashContent::Mask => {
+            for (source, target) in image.data.iter().zip(pixels.chunks_exact_mut(4)) {
+                target.copy_from_slice(&[255, 255, 255, *source]);
+            }
+        }
+        SwashContent::Color => pixels.copy_from_slice(&image.data),
+        SwashContent::SubpixelMask => {
+            for (source, target) in image.data.chunks_exact(3).zip(pixels.chunks_exact_mut(4)) {
+                let alpha = source[0].max(source[1]).max(source[2]);
+                target.copy_from_slice(&[255, 255, 255, alpha]);
+            }
+        }
+    }
+    rgba8_to_rgba16_float(&pixels)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "experimental-msdf")]
+    fn persistent_limits(
+        max_glyphs: usize,
+        max_jobs: usize,
+        max_segments: usize,
+        max_msdf_pixels: u32,
+    ) -> PersistentAtlasLimits {
+        PersistentAtlasLimits {
+            max_glyphs,
+            max_jobs,
+            max_segments,
+            max_msdf_pixels,
+        }
+    }
 
     #[test]
     fn measures_roboto_text() {
@@ -678,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn raster_keys_ignore_subpixel_position() {
+    fn raster_keys_retain_subpixel_position() {
         let mut system = TextSystem::new();
         let mut first = TextLayoutRequest::new("A");
         first.origin = [0.1, 0.0];
@@ -688,8 +1121,47 @@ mod tests {
         let first_glyph = system.layout(&first).glyphs[0].clone();
         let second_glyph = system.layout(&second).glyphs[0].clone();
 
-        assert_eq!(first_glyph.key, second_glyph.key);
-        assert_ne!(first_glyph.x, second_glyph.x);
+        assert_ne!(first_glyph.key, second_glyph.key);
+        assert_eq!(first_glyph.x.fract(), 0.0);
+        assert_eq!(second_glyph.x.fract(), 0.0);
+    }
+
+    #[test]
+    fn alpha_instances_use_integer_raster_positions() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("AV\nSharp text");
+        request.font_size = 31.0;
+        request.origin = [0.6, 0.3];
+        let layout = system.layout(&request);
+        let render = system.render_alpha_atlas(&layout, AtlasConfig::default(), 128);
+
+        assert!(!render.instances.is_empty());
+        assert!(render.instances.iter().all(|instance| {
+            instance.rect[0].fract() == 0.0 && instance.rect[1].fract() == 0.0
+        }));
+    }
+
+    #[test]
+    fn subpixel_rasters_change_without_changing_layout_measurement() {
+        let mut system = TextSystem::new();
+        let mut first = TextLayoutRequest::new("A");
+        first.font_size = 31.0;
+        first.origin = [0.0, 0.0];
+        let mut second = first.clone();
+        second.origin = [0.5, 0.0];
+
+        let first_layout = system.layout(&first);
+        let second_layout = system.layout(&second);
+        assert_eq!(first_layout.measurement, second_layout.measurement);
+        assert_ne!(first_layout.glyphs[0].key, second_layout.glyphs[0].key);
+
+        let first_image = system
+            .glyph_image(first_layout.glyphs[0].key)
+            .expect("first glyph raster");
+        let second_image = system
+            .glyph_image(second_layout.glyphs[0].key)
+            .expect("second glyph raster");
+        assert_ne!(first_image.data, second_image.data);
     }
 
     #[cfg(feature = "experimental-msdf")]
@@ -698,9 +1170,332 @@ mod tests {
         let mut system = TextSystem::new();
         let layout = system.layout(&TextLayoutRequest::new("A"));
         let render =
-            system.render_gpu_hybrid_atlas(&layout, AtlasConfig::default(), 16, 4096, 4096);
+            system.render_gpu_hybrid_atlas(&layout, AtlasConfig::default(), 16, 4096, 65_536);
 
         assert!(render.instances.iter().any(is_msdf_instance));
+        assert!(
+            render.segments.iter().any(|segment| segment.channels != 7),
+            "corner glyphs must use edge-colored channel masks"
+        );
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn repeated_large_glyphs_share_one_msdf_generation_job() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("W".repeat(128));
+        request.font_size = 180.0;
+        let layout = system.layout(&request);
+        let render = system.render_gpu_hybrid_atlas(
+            &layout,
+            AtlasConfig {
+                width: 512,
+                height: 512,
+                px_range: 8,
+            },
+            128,
+            4096,
+            512 * 512,
+        );
+
+        assert_eq!(render.instances.len(), 128);
+        assert_eq!(render.glyph_count, 128);
+        assert_eq!(render.jobs.len(), 1);
+        assert_eq!(render.jobs[0].pixel_range[1], render.msdf_pixel_count);
+        assert!(render.instances.iter().all(is_msdf_instance));
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn many_large_glyphs_have_disjoint_generation_regions() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+        request.font_size = 144.0;
+        let layout = system.layout(&request);
+        let render = system.render_gpu_hybrid_atlas(
+            &layout,
+            AtlasConfig {
+                width: 2048,
+                height: 2048,
+                px_range: 12,
+            },
+            64,
+            65_536,
+            2048 * 2048,
+        );
+
+        assert!(render.jobs.len() >= 30);
+        for (index, job) in render.jobs.iter().enumerate() {
+            assert_eq!(
+                job.pixel_range[0],
+                render.jobs[..index]
+                    .iter()
+                    .map(|job| job.pixel_range[1])
+                    .sum()
+            );
+            for other in render.jobs.iter().skip(index + 1) {
+                let [x, y, width, height] = job.atlas_rect;
+                let [other_x, other_y, other_width, other_height] = other.atlas_rect;
+                assert!(
+                    x + width <= other_x
+                        || other_x + other_width <= x
+                        || y + height <= other_y
+                        || other_y + other_height <= y,
+                    "MSDF generation jobs must never write overlapping atlas regions"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn msdf_job_cache_is_bounded_during_font_size_animation() {
+        let mut system = TextSystem::new();
+        let config = AtlasConfig::default();
+        for frame in 0..(MSDF_JOB_CACHE_MAX_ENTRIES * 2) {
+            let mut request = TextLayoutRequest::new("Animated");
+            request.font_size = 20.0 + frame as f32 * 0.25;
+            let layout = system.layout(&request);
+            let key = layout.glyphs[0].key.msdf_key();
+            let _ = system.glyph_msdf_job(key, config);
+        }
+
+        assert!(system.msdf_job_cache.entries.len() <= MSDF_JOB_CACHE_MAX_ENTRIES);
+        assert!(system.msdf_job_cache.segment_count <= MSDF_JOB_CACHE_MAX_SEGMENTS);
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn long_animated_large_text_sequence_stays_within_frame_budgets() {
+        let mut system = TextSystem::new();
+        let config = AtlasConfig {
+            width: 2048,
+            height: 2048,
+            px_range: 12,
+        };
+        let max_segments = 32_768;
+        let max_pixels = 1_500_000;
+        let content = "LUMENLARGETYPE0123456789".repeat(4);
+
+        for frame in 0..240 {
+            let phase = frame as f32 * 0.071;
+            let mut request = TextLayoutRequest::new(content.clone());
+            request.font_size = 96.0 + phase.sin().abs() * 112.0;
+            request.origin = [phase.cos() * 4.0 + 4.0, 240.0 + phase.sin() * 20.0];
+            request.max_width = Some(1800.0);
+            let layout = system.layout(&request);
+            let expected_glyphs = layout.glyphs.len().min(128);
+            let render =
+                system.render_gpu_hybrid_atlas(&layout, config, 128, max_segments, max_pixels);
+
+            assert_eq!(render.glyph_count, expected_glyphs, "frame {frame}");
+            assert_eq!(render.instances.len(), expected_glyphs, "frame {frame}");
+            assert!(render.segments.len() <= max_segments, "frame {frame}");
+            assert!(render.msdf_pixel_count <= max_pixels, "frame {frame}");
+            assert!(render.jobs.len() <= 22, "frame {frame}");
+            assert_eq!(
+                render
+                    .jobs
+                    .iter()
+                    .map(|job| job.pixel_range[1])
+                    .sum::<u32>(),
+                render.msdf_pixel_count,
+                "frame {frame}"
+            );
+        }
+
+        assert!(system.msdf_job_cache.entries.len() <= MSDF_JOB_CACHE_MAX_ENTRIES);
+        assert!(system.msdf_job_cache.segment_count <= MSDF_JOB_CACHE_MAX_SEGMENTS);
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn persistent_atlas_generates_each_glyph_once_across_frames() {
+        let mut system = TextSystem::new();
+        let config = AtlasConfig {
+            width: 512,
+            height: 512,
+            px_range: 8,
+        };
+        let mut cache = PersistentTextAtlas::new(config, TextRenderStrategy::HybridMsdf);
+        let mut request = TextLayoutRequest::new("ABBA");
+        request.font_size = 96.0;
+        let first_layout = system.layout(&request);
+        let first = system.prepare_persistent_gpu_atlas(
+            &mut cache,
+            &first_layout,
+            TextRenderStrategy::HybridMsdf,
+            persistent_limits(16, 16, 4096, 512 * 512),
+        );
+        assert_eq!(first.jobs.len(), 2);
+        assert_eq!(first.glyph_count, 4);
+
+        request.origin = [0.5, 0.25];
+        let moved_layout = system.layout(&request);
+        let moved = system.prepare_persistent_gpu_atlas(
+            &mut cache,
+            &moved_layout,
+            TextRenderStrategy::HybridMsdf,
+            persistent_limits(16, 16, 4096, 512 * 512),
+        );
+        assert!(moved.jobs.is_empty());
+        assert!(moved.segments.is_empty());
+        assert!(moved.raster_uploads.is_empty());
+        assert_eq!(moved.cached_glyphs, 2);
+        assert_eq!(moved.glyph_count, 4);
+        assert_eq!(cache.reset_count(), 0);
+
+        request.font_size = 240.0;
+        let scaled_layout = system.layout(&request);
+        let scaled = system.prepare_persistent_gpu_atlas(
+            &mut cache,
+            &scaled_layout,
+            TextRenderStrategy::HybridMsdf,
+            persistent_limits(16, 16, 4096, 512 * 512),
+        );
+        assert!(scaled.jobs.is_empty());
+        assert_eq!(scaled.cached_glyphs, 2);
+        assert!(scaled.instances[0].rect[2] > moved.instances[0].rect[2] * 2.0);
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn persistent_atlas_reuses_old_content_and_bounds_capacity_resets() {
+        let mut system = TextSystem::new();
+        let config = AtlasConfig {
+            width: 128,
+            height: 128,
+            px_range: 4,
+        };
+        let mut cache = PersistentTextAtlas::new(config, TextRenderStrategy::HybridMsdf);
+        for frame in 0..80 {
+            let mut request = TextLayoutRequest::new(format!("{frame:02X}"));
+            request.font_size = 52.0;
+            let layout = system.layout(&request);
+            let update = system.prepare_persistent_gpu_atlas(
+                &mut cache,
+                &layout,
+                TextRenderStrategy::HybridMsdf,
+                persistent_limits(8, 8, 4096, 128 * 128),
+            );
+            assert_eq!(update.glyph_count, layout.glyphs.len(), "frame {frame}");
+            assert_eq!(update.dropped_glyphs, 0, "frame {frame}");
+            assert!(update.cached_glyphs <= 8, "frame {frame}");
+        }
+        assert!(cache.reset_count() > 0);
+        assert!(cache.cached_glyphs() <= 8);
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn persistent_atlas_raster_override_and_strategy_switch_are_safe() {
+        let mut system = TextSystem::new();
+        let config = AtlasConfig {
+            width: 512,
+            height: 512,
+            px_range: 8,
+        };
+        let mut request = TextLayoutRequest::new("Raster fallback");
+        request.font_size = 48.0;
+        let layout = system.layout(&request);
+        let mut cache = PersistentTextAtlas::new(config, TextRenderStrategy::HybridMsdf);
+        let msdf = system.prepare_persistent_gpu_atlas(
+            &mut cache,
+            &layout,
+            TextRenderStrategy::HybridMsdf,
+            persistent_limits(64, 64, 4096, 512 * 512),
+        );
+        assert!(!msdf.jobs.is_empty());
+
+        let raster = system.prepare_persistent_gpu_atlas(
+            &mut cache,
+            &layout,
+            TextRenderStrategy::Raster,
+            persistent_limits(64, 64, 4096, 512 * 512),
+        );
+        assert!(raster.atlas_reset);
+        assert!(raster.jobs.is_empty());
+        assert!(!raster.raster_uploads.is_empty());
+        assert!(
+            raster
+                .instances
+                .iter()
+                .all(|instance| !is_msdf_instance(instance))
+        );
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn malformed_font_data_does_not_poison_persistent_text_rendering() {
+        let mut system = TextSystem::new();
+        system.load_font_data(b"not a font".to_vec());
+        let layout = system.layout(&TextLayoutRequest::new("Still valid"));
+        let config = AtlasConfig::default();
+        let mut cache = PersistentTextAtlas::new(config, TextRenderStrategy::HybridMsdf);
+        let update = system.prepare_persistent_gpu_atlas(
+            &mut cache,
+            &layout,
+            TextRenderStrategy::HybridMsdf,
+            persistent_limits(32, 32, 4096, config.width * config.height),
+        );
+        assert!(update.glyph_count > 0);
+        assert!(update.glyph_count <= layout.glyphs.len());
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn oversized_glyph_reports_capacity_drop_without_panicking() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("W");
+        request.font_size = 600.0;
+        let layout = system.layout(&request);
+        let config = AtlasConfig {
+            width: 32,
+            height: 32,
+            px_range: 8,
+        };
+        let mut cache = PersistentTextAtlas::new(config, TextRenderStrategy::HybridMsdf);
+        let update = system.prepare_persistent_gpu_atlas(
+            &mut cache,
+            &layout,
+            TextRenderStrategy::HybridMsdf,
+            persistent_limits(1, 1, 4096, 32 * 32),
+        );
+        assert_eq!(update.glyph_count, 0);
+        assert_eq!(update.dropped_glyphs, 1);
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn msdf_job_cache_accounts_for_generation_config() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("B");
+        request.font_size = 96.0;
+        let key = system.layout(&request).glyphs[0].key.msdf_key();
+        let narrow = system
+            .glyph_msdf_job(
+                key,
+                AtlasConfig {
+                    width: 512,
+                    height: 512,
+                    px_range: 2,
+                },
+            )
+            .unwrap();
+        let wide = system
+            .glyph_msdf_job(
+                key,
+                AtlasConfig {
+                    width: 512,
+                    height: 512,
+                    px_range: 16,
+                },
+            )
+            .unwrap();
+
+        assert!(wide.placement.width > narrow.placement.width);
+        assert!(wide.placement.height > narrow.placement.height);
+        assert_eq!(system.msdf_job_cache.entries.len(), 2);
     }
 
     #[cfg(feature = "experimental-msdf")]
@@ -715,8 +1510,32 @@ mod tests {
         let first_key = system.layout(&first).glyphs[0].key;
         let second_key = system.layout(&second).glyphs[0].key;
 
-        assert_eq!(first_key, second_key);
+        assert_ne!(first_key, second_key);
         assert_eq!(first_key.msdf_key(), second_key.msdf_key());
+    }
+
+    #[cfg(feature = "experimental-msdf")]
+    #[test]
+    fn msdf_instances_restore_normalized_subpixel_position() {
+        let mut system = TextSystem::new();
+        let mut first = TextLayoutRequest::new("A");
+        first.origin = [0.1, 0.0];
+        let mut second = first.clone();
+        second.origin = [0.6, 0.0];
+
+        let first_layout = system.layout(&first);
+        let second_layout = system.layout(&second);
+        let first_render =
+            system.render_gpu_hybrid_atlas(&first_layout, AtlasConfig::default(), 1, 4096, 65_536);
+        let second_render =
+            system.render_gpu_hybrid_atlas(&second_layout, AtlasConfig::default(), 1, 4096, 65_536);
+
+        assert!(is_msdf_instance(&first_render.instances[0]));
+        assert!(is_msdf_instance(&second_render.instances[0]));
+        assert_eq!(
+            second_render.instances[0].rect[0] - first_render.instances[0].rect[0],
+            0.5
+        );
     }
 
     #[cfg(feature = "experimental-msdf")]
@@ -742,7 +1561,7 @@ mod tests {
         let layout = system.layout(&request);
         let glyph_key = layout.glyphs[0].key;
         let msdf_key = glyph_key.msdf_key();
-        assert_eq!(glyph_key, msdf_key);
+        assert_ne!(glyph_key, msdf_key);
 
         let render =
             system.render_gpu_hybrid_atlas(&layout, AtlasConfig::default(), 16, 0, u32::MAX);
@@ -755,6 +1574,7 @@ mod tests {
                 .all(|instance| !is_msdf_instance(instance))
         );
         assert!(render.atlas.entry(&glyph_key).is_some());
+        assert!(render.atlas.entry(&msdf_key).is_none());
     }
 
     #[test]

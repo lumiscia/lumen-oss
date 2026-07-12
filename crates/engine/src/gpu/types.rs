@@ -77,6 +77,8 @@ pub trait GpuCompiledNode: std::fmt::Debug + Send + Sync {
         ctx: &crate::gpu::FrameBindContext<'_>,
         bound: &mut BoundFrame,
     ) -> crate::Result<()>;
+
+    fn invalidate_gpu_resources(&self) {}
 }
 
 #[derive(Debug)]
@@ -113,6 +115,14 @@ enum TextureUpload {
     Rgba16Float {
         id: lumen_gpu::TextureId,
         data: Vec<u16>,
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    },
+    Rgba16FloatRegion {
+        id: lumen_gpu::TextureId,
+        data: Vec<u16>,
+        origin: [u32; 3],
+        size: lumen_gpu::Size,
         bytes_per_row: u32,
         rows_per_image: u32,
     },
@@ -192,6 +202,25 @@ impl BoundFrame {
         });
     }
 
+    pub fn write_texture_rgba16_float_region(
+        &mut self,
+        id: lumen_gpu::TextureId,
+        data: impl Into<Vec<u16>>,
+        origin: [u32; 3],
+        size: lumen_gpu::Size,
+        bytes_per_row: u32,
+        rows_per_image: u32,
+    ) {
+        self.texture_uploads.push(TextureUpload::Rgba16FloatRegion {
+            id,
+            data: data.into(),
+            origin,
+            size,
+            bytes_per_row,
+            rows_per_image,
+        });
+    }
+
     pub fn use_media_texture(
         &mut self,
         texture: lumen_gpu::TextureId,
@@ -258,6 +287,23 @@ impl BoundFrame {
                     rows_per_image,
                 } => {
                     update.write_texture_rgba16_float(*id, data, *bytes_per_row, *rows_per_image);
+                }
+                TextureUpload::Rgba16FloatRegion {
+                    id,
+                    data,
+                    origin,
+                    size,
+                    bytes_per_row,
+                    rows_per_image,
+                } => {
+                    update.write_texture_rgba16_float_region(
+                        *id,
+                        data,
+                        *origin,
+                        *size,
+                        *bytes_per_row,
+                        *rows_per_image,
+                    );
                 }
             }
         }

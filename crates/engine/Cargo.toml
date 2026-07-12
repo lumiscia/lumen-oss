@@ -11,6 +11,7 @@ name = "lumen_engine"
 path = "src/lib.rs"
 
 [features]
+default = ["experimental-msdf"]
 ffmpeg = ["dep:ffmpeg-next", "dep:lumen-ffmpeg"]
 image = ["dep:image"]
 json = ["dep:anyhow", "dep:serde_path_to_error"]

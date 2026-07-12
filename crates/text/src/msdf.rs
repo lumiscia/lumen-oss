@@ -46,10 +46,15 @@ pub fn generate_msdf_job(
         .location(std::iter::empty::<skrifa::setting::VariationSetting>());
     let glyph_id = GlyphId::from(key.glyph_id);
     let metrics = glyph_metrics(&font, &axes, glyph_id, key, config)?;
-    let shape = load_transformed_shape(&font, &axes, glyph_id, &metrics)?;
+    let shape = Shape::edge_coloring_simple(
+        load_transformed_shape(&font, &axes, glyph_id, &metrics)?,
+        0.03,
+        u64::from(key.glyph_id),
+    );
     let mut segments = Vec::new();
     for contour in shape.contours {
-        for segment in contour.segments {
+        for colored_segment in contour.segments {
+            let segment = colored_segment.segment;
             let order = segment.order();
             let kind = match order {
                 fdsm::bezier::Order::Linear => MSDF_SEGMENT_LINE,
@@ -74,7 +79,7 @@ pub fn generate_msdf_job(
                 p2: [p2.x as f32, p2.y as f32],
                 p3: [p3.x as f32, p3.y as f32],
                 kind,
-                channels: 7,
+                channels: u32::from(colored_segment.color.value()),
                 _padding: [0; 2],
             });
         }

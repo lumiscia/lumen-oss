@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -240,7 +241,8 @@ async fn benchmark_render_profile(
     let mut bind = Duration::ZERO;
     let mut upload = Duration::ZERO;
     let mut submit = Duration::ZERO;
-    let mut poll = Duration::ZERO;
+    let mut gpu_pass_nanoseconds = BTreeMap::<(String, &'static str), f64>::new();
+    let mut timestamped_frames = 0_u32;
     let started = Instant::now();
     for frame in 0..frames {
         let step = Instant::now();
@@ -252,29 +254,37 @@ async fn benchmark_render_profile(
         upload += step.elapsed();
 
         let step = Instant::now();
-        let _ = renderer.submit_render()?;
+        let (_, timing) = renderer.submit_render_profiled()?;
         submit += step.elapsed();
-
-        let step = Instant::now();
-        renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())?;
-        poll += step.elapsed();
+        if let Some(timing) = timing {
+            timestamped_frames += 1;
+            for pass in timing.passes {
+                *gpu_pass_nanoseconds
+                    .entry((pass.label, pass.kind))
+                    .or_default() += pass.nanoseconds;
+            }
+        }
     }
     let elapsed = started.elapsed();
     println!(
-        "composition_profile frames={} bind_ms={} upload_ms={} submit_ms={} poll_ms={} bind_us_per_frame={:.2} upload_us_per_frame={:.2} submit_us_per_frame={:.2} poll_us_per_frame={:.2}",
+        "composition_profile frames={} timestamped_frames={} bind_ms={} upload_ms={} submit_and_gpu_wait_ms={} bind_us_per_frame={:.2} upload_us_per_frame={:.2} submit_and_gpu_wait_us_per_frame={:.2}",
         frames,
+        timestamped_frames,
         bind.as_millis(),
         upload.as_millis(),
         submit.as_millis(),
-        poll.as_millis(),
         micros_per_frame(bind, frames),
         micros_per_frame(upload, frames),
         micros_per_frame(submit, frames),
-        micros_per_frame(poll, frames),
     );
+    for ((label, kind), nanoseconds) in gpu_pass_nanoseconds {
+        println!(
+            "gpu_pass_profile label={label:?} kind={kind} frames={} total_ms={:.3} mean_us={:.3}",
+            timestamped_frames,
+            nanoseconds / 1_000_000.0,
+            nanoseconds / f64::from(timestamped_frames.max(1)) / 1_000.0,
+        );
+    }
     Ok(elapsed)
 }
 

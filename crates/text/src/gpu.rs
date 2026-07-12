@@ -1,9 +1,9 @@
 use bytemuck::{Pod, Zeroable};
 use cosmic_text::{SwashContent, SwashImage};
 
-#[cfg(feature = "experimental-msdf")]
-use crate::MsdfGlyphPlacement;
 use crate::{AtlasEntry, TextGlyph};
+#[cfg(feature = "experimental-msdf")]
+use crate::{MSDF_GENERATION_SIZE_PX, MsdfGlyphPlacement};
 
 const GLYPH_MODE_RASTER_MASK: u32 = 0;
 const GLYPH_MODE_RASTER_COLOR: u32 = 1;
@@ -98,10 +98,21 @@ pub fn msdf_glyph_instance_for(
     atlas_entry: AtlasEntry,
     placement: &MsdfGlyphPlacement,
 ) -> GpuGlyphInstance {
-    let x = glyph.x + placement.left;
-    let y = glyph.y - placement.top;
+    // MSDF outlines are shared across subpixel cache bins, so restore the
+    // fractional physical offset that is baked into raster glyph images.
+    // The atlas field is generated once at a canonical size and the quad is
+    // scaled here, allowing size animation to reuse the same glyph entry.
+    let font_size = f32::from_bits(glyph.key.0.font_size_bits).max(1.0);
+    let scale = font_size / MSDF_GENERATION_SIZE_PX;
+    let x = glyph.x + glyph.key.0.x_bin.as_float() + placement.left * scale;
+    let y = glyph.y + glyph.key.0.y_bin.as_float() - placement.top * scale;
     GpuGlyphInstance {
-        rect: [x, y, placement.width as f32, placement.height as f32],
+        rect: [
+            x,
+            y,
+            placement.width as f32 * scale,
+            placement.height as f32 * scale,
+        ],
         uv_rect: [
             atlas_entry.uv_min[0],
             atlas_entry.uv_min[1],

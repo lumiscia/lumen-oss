@@ -19,6 +19,10 @@ pub(crate) const TEXT_ATLAS_SIZE: lumen_gpu::Size = lumen_gpu::Size {
     height: 2048,
 };
 pub(crate) const MAX_TEXT_GLYPHS: usize = 2048;
+#[cfg(feature = "experimental-msdf")]
+pub(crate) const MAX_TEXT_MSDF_JOBS: usize = 512;
+#[cfg(feature = "experimental-msdf")]
+pub(crate) const MAX_TEXT_MSDF_SEGMENTS: usize = 65_536;
 pub(crate) const MAX_PATH_POINTS: usize = 128;
 
 pub(crate) struct VectorRenderer<'a, 'b> {
@@ -153,8 +157,6 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         if port.port != "output" {
             return Err(self.ctx.missing_output(text.id, &port.port));
         }
-        crate::node::source::text::clear_text_cache_for(text.id);
-
         let size = lumen_gpu::Size::new(
             self.ctx.composition().render_settings.width.max(1),
             self.ctx.composition().render_settings.height.max(1),
@@ -167,10 +169,22 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         let atlas_texture = self.ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(text.id.0),
             Some(format!("text:{}:atlas", text.id.0)),
-            lumen_gpu::TextureDesc::sampled(
-                TEXT_ATLAS_SIZE,
-                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-            ),
+            {
+                #[cfg(feature = "experimental-msdf")]
+                {
+                    lumen_gpu::TextureDesc::storage(
+                        TEXT_ATLAS_SIZE,
+                        lumen_gpu::wgpu::TextureFormat::Rgba16Float,
+                    )
+                }
+                #[cfg(not(feature = "experimental-msdf"))]
+                {
+                    lumen_gpu::TextureDesc::sampled(
+                        TEXT_ATLAS_SIZE,
+                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                    )
+                }
+            },
         );
         let globals_buffer =
             self.ctx.builder_mut().buffer_for(
@@ -194,6 +208,37 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 std::mem::size_of::<crate::node::vector::paint::GpuPaint>() as u64,
             ),
         );
+        #[cfg(feature = "experimental-msdf")]
+        let msdf_globals_buffer =
+            self.ctx.builder_mut().buffer_for(
+                lumen_gpu::NodeKey(text.id.0),
+                Some(format!("text:{}:msdf-globals", text.id.0)),
+                lumen_gpu::BufferDesc::uniform(
+                    std::mem::size_of::<lumen_text::GpuMsdfGlobals>() as u64
+                ),
+            );
+        #[cfg(feature = "experimental-msdf")]
+        let msdf_jobs_buffer = self.ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(text.id.0),
+            Some(format!("text:{}:msdf-jobs", text.id.0)),
+            lumen_gpu::BufferDesc::storage(
+                (MAX_TEXT_MSDF_JOBS * std::mem::size_of::<lumen_text::GpuMsdfJob>()) as u64,
+            ),
+        );
+        #[cfg(feature = "experimental-msdf")]
+        let msdf_segments_buffer = self.ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(text.id.0),
+            Some(format!("text:{}:msdf-segments", text.id.0)),
+            lumen_gpu::BufferDesc::storage(
+                (MAX_TEXT_MSDF_SEGMENTS * std::mem::size_of::<lumen_text::GpuMsdfSegment>()) as u64,
+            ),
+        );
+        #[cfg(feature = "experimental-msdf")]
+        let msdf_dispatch_buffer = self.ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(text.id.0),
+            Some(format!("text:{}:msdf-dispatch", text.id.0)),
+            lumen_gpu::BufferDesc::indirect(3 * std::mem::size_of::<u32>() as u64),
+        );
         let atlas_sampler = self.ctx.builder_mut().sampler(
             Some(format!("text:{}:atlas-sampler", text.id.0)),
             lumen_gpu::wgpu::SamplerDescriptor {
@@ -207,11 +252,70 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 ..Default::default()
             },
         );
+        #[cfg(feature = "experimental-msdf")]
+        {
+            let program = self.ctx.builder_mut().program_for(
+                lumen_gpu::NodeKey(text.id.0),
+                lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+                    label: Some("text MSDF generation".to_string()),
+                    shader: lumen_text::MSDF_GENERATOR_SHADER.to_string(),
+                    entry: "cs_main".to_string(),
+                    bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
+                        lumen_gpu::BindingLayoutEntry::uniform(
+                            0,
+                            lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                        ),
+                        lumen_gpu::BindingLayoutEntry::storage_texture(
+                            1,
+                            lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                            lumen_gpu::wgpu::TextureFormat::Rgba16Float,
+                            lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+                        ),
+                        lumen_gpu::BindingLayoutEntry::storage(
+                            2,
+                            lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                            true,
+                        ),
+                        lumen_gpu::BindingLayoutEntry::storage(
+                            3,
+                            lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                            true,
+                        ),
+                    ]),
+                }),
+            );
+            self.ctx
+                .builder_mut()
+                .compute_pass(lumen_gpu::ComputePassDesc {
+                    label: Some(format!("text:{}:msdf-generate", text.id.0)),
+                    owner: Some(lumen_gpu::NodeKey(text.id.0)),
+                    program,
+                    bindings: vec![
+                        lumen_gpu::Binding::uniform(0, 0, msdf_globals_buffer),
+                        lumen_gpu::Binding::storage_texture(0, 1, atlas_texture),
+                        lumen_gpu::Binding::storage_buffer(0, 2, msdf_jobs_buffer),
+                        lumen_gpu::Binding::storage_buffer(0, 3, msdf_segments_buffer),
+                    ],
+                    dispatch: lumen_gpu::ComputeDispatch::Indirect {
+                        buffer: msdf_dispatch_buffer,
+                        offset: 0,
+                    },
+                });
+        }
         let program = self.ctx.builder_mut().program_for(
             lumen_gpu::NodeKey(text.id.0),
             lumen_gpu::ProgramDesc::Render(lumen_gpu::RenderProgramDesc {
                 label: Some("text".to_string()),
-                shader: lumen_text::ALPHA_TEXT_SHADER.to_string(),
+                shader: {
+                    #[cfg(feature = "experimental-msdf")]
+                    {
+                        lumen_text::MSDF_TEXT_SHADER.to_string()
+                    }
+                    #[cfg(not(feature = "experimental-msdf"))]
+                    {
+                        lumen_text::ALPHA_TEXT_SHADER.to_string()
+                    }
+                },
                 vertex_entry: "vs_main".to_string(),
                 fragment_entry: "fs_main".to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
@@ -279,9 +383,18 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             globals_buffer,
             instances_buffer,
             paint_buffer,
+            #[cfg(feature = "experimental-msdf")]
+            msdf_globals_buffer,
+            #[cfg(feature = "experimental-msdf")]
+            msdf_jobs_buffer,
+            #[cfg(feature = "experimental-msdf")]
+            msdf_segments_buffer,
+            #[cfg(feature = "experimental-msdf")]
+            msdf_dispatch_buffer,
             atlas_size: TEXT_ATLAS_SIZE,
             max_glyphs: MAX_TEXT_GLYPHS,
             size,
+            cache: std::sync::Mutex::new(Default::default()),
         });
 
         Ok(CompiledOutput::Raster(RasterHandle {

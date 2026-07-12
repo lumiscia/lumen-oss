@@ -33,7 +33,7 @@ use lumen_engine::{
         source::{
             background::{Background, BackgroundParamsDelegate},
             media_in::{MediaIn, MediaInParamsDelegate},
-            text::{Text, TextParamsDelegate},
+            text::{Text, TextParamsDelegate, TextRenderMode},
         },
         vector::{
             paint::{GradientPaint, GradientStop, Paint, PaintKind},
@@ -1451,16 +1451,16 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         .unwrap();
 
     assert_eq!(compiled.plan.textures().len(), 4);
-    assert_eq!(compiled.plan.buffers().len(), 5);
-    assert_eq!(compiled.plan.programs().len(), 3);
+    assert_eq!(compiled.plan.buffers().len(), 9);
+    assert_eq!(compiled.plan.programs().len(), 4);
     assert!(compiled.compiled_nodes.contains_key(&shape));
     assert!(compiled.compiled_nodes.contains_key(&text));
-    assert_eq!(bound.frame_update().uploads().len(), 6);
+    assert_eq!(bound.frame_update().uploads().len(), 10);
 
     let unchanged = FrameBindContext::new(&composition, 0)
         .bind(&compiled)
         .unwrap();
-    assert_eq!(unchanged.frame_update().uploads().len(), 2);
+    assert_eq!(unchanged.frame_update().uploads().len(), 3);
 }
 
 #[test]
@@ -1498,6 +1498,96 @@ fn compiles_vector_path_through_shared_renderer() {
 
     assert!(compiled.compiled_nodes.contains_key(&path));
     assert_eq!(bound.frame_update().uploads().len(), 2);
+}
+
+#[test]
+fn production_msdf_text_matches_raster_and_survives_animated_frames() {
+    let Some(mut msdf_renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let media = EmptyMediaStore;
+    let msdf = animated_text_composition(TextRenderMode::Msdf);
+    let mut first_msdf = Vec::new();
+    for frame in 0..12 {
+        let pixels = render_rgba8(&mut msdf_renderer, &msdf, frame, &media);
+        let covered = pixels
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] >= 128)
+            .count();
+        assert!(covered > 500, "MSDF frame {frame} rendered too little text");
+        assert!(
+            covered < 640 * 360 / 2,
+            "MSDF frame {frame} rendered as a solid block"
+        );
+        if frame == 0 {
+            first_msdf = pixels;
+        }
+    }
+
+    let Some(mut raster_renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let raster = animated_text_composition(TextRenderMode::Raster);
+    let raster_pixels = render_rgba8(&mut raster_renderer, &raster, 0, &media);
+    let (mut intersection, mut union, mut hard_mismatches) = (0_usize, 0_usize, 0_usize);
+    for (msdf, raster) in first_msdf
+        .chunks_exact(4)
+        .zip(raster_pixels.chunks_exact(4))
+    {
+        let msdf_covered = msdf[3] >= 128;
+        let raster_covered = raster[3] >= 128;
+        intersection += usize::from(msdf_covered && raster_covered);
+        union += usize::from(msdf_covered || raster_covered);
+        hard_mismatches +=
+            usize::from((msdf[3] >= 224 && raster[3] <= 31) || (raster[3] >= 224 && msdf[3] <= 31));
+    }
+    assert!(intersection * 100 >= union * 94);
+    assert_eq!(hard_mismatches, 0);
+
+    pollster::block_on(msdf_renderer.recover_gpu_resources()).unwrap();
+    let rebuilt = render_rgba8(&mut msdf_renderer, &msdf, 0, &media);
+    assert_eq!(first_msdf, rebuilt, "resource rebuild changed MSDF output");
+}
+
+fn animated_text_composition(render_mode: TextRenderMode) -> Composition {
+    let text = NodeId::new(41);
+    let output = NodeId::new(42);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::value("Lumen 88\nAnimated MSDF".to_string()),
+                font_size: Deferred::Expr(Expression::parse("64 + frame * 2").unwrap()),
+                position: Deferred::value((48.25, 96.5)),
+                color: Paint::solid([255, 255, 255, 255]).into(),
+                paint_supersample: Deferred::value(false),
+                render_mode: render_mode.into(),
+                ..Default::default()
+            },
+            ..Text::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(text, "output".to_string()),
+        }),
+    );
+    Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 24.0,
+            duration_frames: 12,
+        },
+        RenderSettings {
+            width: 640,
+            height: 360,
+            background_color: [0, 0, 0, 255],
+        },
+    )
 }
 
 #[test]

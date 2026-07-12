@@ -132,3 +132,6 @@ jobs:
 
       - name: Check pure Rust crates
         run: cargo check -p lumen-engine -p lumen-engine-gpu -p lumen-generators -p lumen-engine-macros -p lumen-engine-text
+
+      - name: Test production text preparation
+        run: cargo test -p lumen-engine-text --lib

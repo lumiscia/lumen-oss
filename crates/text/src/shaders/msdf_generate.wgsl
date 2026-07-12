@@ -30,13 +30,33 @@ struct Segment {
 struct SignedDistance {
     distance: f32,
     param: f32,
+    orthogonality: f32,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var<storage, read> jobs: array<Job>;
 @group(0) @binding(3) var<storage, read> segments: array<Segment>;
-@group(0) @binding(4) var<storage, read> pixel_jobs: array<u32>;
+
+fn job_for_pixel(pixel: u32) -> u32 {
+    var low = 0u;
+    var high = globals.job_count;
+    loop {
+        if (low >= high) {
+            break;
+        }
+        let middle = low + (high - low) / 2u;
+        let job = jobs[middle];
+        if (pixel < job.pixel_range.x) {
+            high = middle;
+        } else if (pixel >= job.pixel_range.x + job.pixel_range.y) {
+            low = middle + 1u;
+        } else {
+            return middle;
+        }
+    }
+    return globals.job_count;
+}
 
 fn cross2(a: vec2<f32>, b: vec2<f32>) -> f32 {
     return a.x * b.y - a.y * b.x;
@@ -67,7 +87,13 @@ fn signed_line_distance(a: vec2<f32>, b: vec2<f32>, p: vec2<f32>) -> SignedDista
     let t = clamp(raw_t, 0.0, 1.0);
     let closest = a + ab * t;
     let distance = length(p - closest);
-    return SignedDistance(cross2_nonzero_sign(cross2(p - a, ab)) * distance, raw_t);
+    let orthogonality = abs(cross2(ab, closest - p))
+        / sqrt(max(dot(ab, ab) * dot(closest - p, closest - p), 0.000001));
+    return SignedDistance(
+        cross2_nonzero_sign(cross2(p - a, ab)) * distance,
+        raw_t,
+        orthogonality,
+    );
 }
 
 fn segment_tangent(segment: Segment, t: f32) -> vec2<f32> {
@@ -94,7 +120,13 @@ fn signed_curve_distance(segment: Segment, p: vec2<f32>, t0: f32) -> SignedDista
     let closest = point_on_segment(segment, t);
     let tangent = segment_tangent(segment, t);
     let distance = length(p - closest);
-    return SignedDistance(cross2_nonzero_sign(cross2(p - closest, tangent)) * distance, t);
+    let orthogonality = abs(cross2(tangent, closest - p))
+        / sqrt(max(dot(tangent, tangent) * dot(closest - p, closest - p), 0.000001));
+    return SignedDistance(
+        cross2_nonzero_sign(cross2(p - closest, tangent)) * distance,
+        t,
+        orthogonality,
+    );
 }
 
 fn endpoint_pseudo_distance(segment: Segment, signed_distance: SignedDistance, p: vec2<f32>) -> f32 {
@@ -121,9 +153,9 @@ fn endpoint_pseudo_distance(segment: Segment, signed_distance: SignedDistance, p
     return distance;
 }
 
-fn approximate_distance(segment: Segment, p: vec2<f32>) -> f32 {
+fn approximate_distance(segment: Segment, p: vec2<f32>) -> SignedDistance {
     if (segment.kind == 0u) {
-        return abs(endpoint_pseudo_distance(segment, signed_line_distance(segment.p0, segment.p1, p), p));
+        return signed_line_distance(segment.p0, segment.p1, p);
     }
 
     var best = 1.0e20;
@@ -140,71 +172,38 @@ fn approximate_distance(segment: Segment, p: vec2<f32>) -> f32 {
         }
         prev = next;
     }
-    return abs(endpoint_pseudo_distance(segment, signed_curve_distance(segment, p, best_t), p));
+    return signed_curve_distance(segment, p, best_t);
 }
 
-fn line_ray_crosses(a: vec2<f32>, b: vec2<f32>, p: vec2<f32>) -> u32 {
+fn line_ray_winding(a: vec2<f32>, b: vec2<f32>, p: vec2<f32>) -> i32 {
     if ((a.y > p.y) == (b.y > p.y)) {
-        return 0u;
+        return 0i;
     }
     let x = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
-    return select(0u, 1u, x > p.x);
+    if (x <= p.x) {
+        return 0i;
+    }
+    return select(-1i, 1i, b.y > a.y);
 }
 
-fn quadratic_ray_crosses(segment: Segment, p: vec2<f32>) -> u32 {
-    let a = segment.p0.y - 2.0 * segment.p1.y + segment.p2.y;
-    let b = 2.0 * (segment.p1.y - segment.p0.y);
-    let c = segment.p0.y - p.y;
-    var crossings = 0u;
-
-    if (abs(a) < 0.000001) {
-        if (abs(b) < 0.000001) {
-            return 0u;
-        }
-        let t = -c / b;
-        if (t >= 0.0 && t < 1.0) {
-            let q = point_on_segment(segment, t);
-            crossings = crossings + select(0u, 1u, q.x > p.x);
-        }
-        return crossings;
-    }
-
-    let discriminant = b * b - 4.0 * a * c;
-    if (discriminant < 0.0) {
-        return 0u;
-    }
-    let root = sqrt(discriminant);
-    let t0 = (-b - root) / (2.0 * a);
-    let t1 = (-b + root) / (2.0 * a);
-    if (t0 >= 0.0 && t0 < 1.0) {
-        let q = point_on_segment(segment, t0);
-        crossings = crossings + select(0u, 1u, q.x > p.x);
-    }
-    if (abs(t1 - t0) > 0.00001 && t1 >= 0.0 && t1 < 1.0) {
-        let q = point_on_segment(segment, t1);
-        crossings = crossings + select(0u, 1u, q.x > p.x);
-    }
-    return crossings;
-}
-
-fn segment_ray_crossings(segment: Segment, p: vec2<f32>) -> u32 {
+fn segment_ray_winding(segment: Segment, p: vec2<f32>) -> i32 {
     if (segment.kind == 0u) {
-        return line_ray_crosses(segment.p0, segment.p1, p);
-    }
-    if (segment.kind == 1u) {
-        return quadratic_ray_crosses(segment, p);
+        return line_ray_winding(segment.p0, segment.p1, p);
     }
 
-    var crossings = 0u;
-    var prev = segment.p0;
-    let steps = select(64u, 96u, segment.kind == 2u);
-    for (var i = 1u; i <= steps; i = i + 1u) {
-        let t = f32(i) / f32(steps);
-        let next = point_on_segment(segment, t);
-        crossings = crossings + line_ray_crosses(prev, next, p);
-        prev = next;
+    // Flattening gives quadratic and cubic contours the same half-open crossing
+    // rule as lines. Solving curve roots directly is faster in isolation, but
+    // roots at horizontal extrema can be counted twice or omitted and invert an
+    // entire atlas row. This work only occurs when a glyph enters the cache.
+    let steps = select(32u, 48u, segment.kind == 2u);
+    var winding = 0i;
+    var previous = segment.p0;
+    for (var i = 1u; i <= steps; i += 1u) {
+        let next = point_on_segment(segment, f32(i) / f32(steps));
+        winding += line_ray_winding(previous, next, p);
+        previous = next;
     }
-    return crossings;
+    return winding;
 }
 
 fn encode_distance(distance: f32, px_range: f32) -> f32 {
@@ -218,7 +217,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let job_index = pixel_jobs[dirty_pixel];
+    // Jobs have contiguous, sorted pixel ranges. Resolving the owner here avoids a
+    // four-byte CPU/GPU lookup entry for every generated atlas pixel.
+    let job_index = job_for_pixel(dirty_pixel);
     if (job_index >= globals.job_count) {
         return;
     }
@@ -232,27 +233,64 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let p = vec2<f32>(local) + vec2<f32>(0.5);
-    var nearest_distance = 1.0e20;
-    var crossings = 0u;
+    var nearest_true_distance = vec3<f32>(1.0e20);
+    var nearest_pseudo_distance = vec3<f32>(1.0e20);
+    var nearest_orthogonality = vec3<f32>(0.0);
+    var nearest_shape_distance = 1.0e20;
+    var nearest_shape_pseudo_distance = 1.0e20;
+    var nearest_shape_orthogonality = 0.0;
+    var winding = 0i;
     for (var i = 0u; i < job.segment_range.y; i = i + 1u) {
         let segment = segments[job.segment_range.x + i];
         let distance = approximate_distance(segment, p);
-        if (distance < nearest_distance) {
-            nearest_distance = distance;
+        let pseudo_distance = endpoint_pseudo_distance(segment, distance, p);
+        let shape_delta = abs(distance.distance) - abs(nearest_shape_distance);
+        if (shape_delta < -0.0001
+            || (abs(shape_delta) <= 0.0001
+                && distance.orthogonality > nearest_shape_orthogonality)) {
+            nearest_shape_distance = distance.distance;
+            nearest_shape_pseudo_distance = pseudo_distance;
+            nearest_shape_orthogonality = distance.orthogonality;
         }
-        crossings = crossings + segment_ray_crossings(segment, p);
+        winding += segment_ray_winding(segment, p);
+        let red_delta = abs(distance.distance) - abs(nearest_true_distance.r);
+        if ((segment.channels & 1u) != 0u
+            && (red_delta < -0.0001
+                || (abs(red_delta) <= 0.0001 && distance.orthogonality > nearest_orthogonality.r))) {
+            nearest_true_distance.r = distance.distance;
+            nearest_pseudo_distance.r = pseudo_distance;
+            nearest_orthogonality.r = distance.orthogonality;
+        }
+        let green_delta = abs(distance.distance) - abs(nearest_true_distance.g);
+        if ((segment.channels & 2u) != 0u
+            && (green_delta < -0.0001
+                || (abs(green_delta) <= 0.0001 && distance.orthogonality > nearest_orthogonality.g))) {
+            nearest_true_distance.g = distance.distance;
+            nearest_pseudo_distance.g = pseudo_distance;
+            nearest_orthogonality.g = distance.orthogonality;
+        }
+        let blue_delta = abs(distance.distance) - abs(nearest_true_distance.b);
+        if ((segment.channels & 4u) != 0u
+            && (blue_delta < -0.0001
+                || (abs(blue_delta) <= 0.0001 && distance.orthogonality > nearest_orthogonality.b))) {
+            nearest_true_distance.b = distance.distance;
+            nearest_pseudo_distance.b = pseudo_distance;
+            nearest_orthogonality.b = distance.orthogonality;
+        }
     }
-    let sign = select(-1.0, 1.0, (crossings & 1u) == 1u);
-    let shape_distance = nearest_distance * sign;
+    let shape_sign = select(-1.0, 1.0, winding != 0i);
 
     textureStore(
         atlas,
         pixel,
         vec4<f32>(
-            encode_distance(shape_distance, job.px_range),
-            encode_distance(shape_distance, job.px_range),
-            encode_distance(shape_distance, job.px_range),
-            1.0,
+            encode_distance(abs(nearest_pseudo_distance.r) * shape_sign, job.px_range),
+            encode_distance(abs(nearest_pseudo_distance.g) * shape_sign, job.px_range),
+            encode_distance(abs(nearest_pseudo_distance.b) * shape_sign, job.px_range),
+            encode_distance(
+                abs(nearest_shape_pseudo_distance) * shape_sign,
+                job.px_range,
+            ),
         ),
     );
 }
