@@ -2314,6 +2314,26 @@
                     "description": "Text origin in pixels.",
                     "title": "Position",
                     "x-lumen-kind": "vec2"
+                  },
+                  "render_mode": {
+                    "default": "msdf",
+                    "description": "Selects the glyph rendering path.",
+                    "enum": ["msdf", "raster"],
+                    "title": "Render Mode",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Msdf",
+                        "name": "msdf",
+                        "value": 0
+                      },
+                      {
+                        "label": "Raster",
+                        "name": "raster",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   }
                 },
                 "type": "object"

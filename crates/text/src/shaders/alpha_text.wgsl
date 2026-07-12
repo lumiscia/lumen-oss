@@ -141,7 +141,7 @@ fn vs_main(
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let sample = textureSample(atlas_texture, atlas_sampler, in.uv);
     var text_paint = sample_paint(in.position.xy);
-    if (paint.paint_supersample != 0u) {
+    if (paint.paint_supersample != 0u && paint.kind != 0u) {
         text_paint = sample_paint_aa(in.position.xy);
     }
     if (in.mode == 1u) {

@@ -127,6 +127,7 @@ export type ShapeGeometryKind = "rectangle" | "ellipse" | "polygon";
 export type TextAlignmentHorizontal = "left" | "center" | "right" | "justify";
 export type TextAlignmentVertical = "top" | "middle" | "bottom";
 export type TextFontStyle = "normal" | "italic" | "oblique";
+export type TextRenderMode = "msdf" | "raster";
 export type TransformSampling = "nearest" | "linear";
 
 export interface CompositionNodeBase<TKind extends NodeKind> {
@@ -334,6 +335,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "max_width"?: ExpressionValue<number>;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
     readonly "position"?: ExpressionValue<Vec2>;
+    readonly "render_mode"?: ExpressionValue<TextRenderMode>;
   };
 }
 

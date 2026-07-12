@@ -1,5 +1,5 @@
 ---
-"@lumiscia/lumen-types": patch
+"@lumiscia/lumen-types": minor
 ---
 
-Render sharper text by preserving the glyph rasterizer's physical subpixel placement without changing layout or animation positioning.
+Render sharper text, make persistent hybrid MSDF the default text path with bounded raster fallback, and expose a `render_mode` override for compositions that require CPU-rasterized glyphs.

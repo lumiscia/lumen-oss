@@ -48,6 +48,19 @@ pub enum TextAlignmentVertical {
     Bottom = 2,
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum")]
+pub enum TextRenderMode {
+    /// Uses the production hybrid MSDF path with raster fallback.
+    #[default]
+    Msdf = 0,
+    /// Forces CPU-rasterized glyph masks.
+    Raster = 1,
+}
+
 /// Produces a text raster source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TextParams {
@@ -84,6 +97,9 @@ pub struct TextParams {
     /// Enables 4×4 supersampling when evaluating paint at each glyph pixel.
     #[meta()]
     pub paint_supersample: bool,
+    /// Selects the glyph rendering path.
+    #[meta(kind = "enum", enum_type = TextRenderMode)]
+    pub render_mode: TextRenderMode,
 }
 
 impl Default for TextParams {
@@ -100,6 +116,7 @@ impl Default for TextParams {
             alignment_horizontal: TextAlignmentHorizontal::Left,
             alignment_vertical: TextAlignmentVertical::Top,
             paint_supersample: true,
+            render_mode: TextRenderMode::Msdf,
         }
     }
 }
@@ -132,7 +149,7 @@ impl GpuCompileNode for Text {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct CompiledText {
     pub(crate) node_id: NodeId,
     pub(crate) params: TextParamsDelegate,
@@ -140,9 +157,18 @@ pub(crate) struct CompiledText {
     pub(crate) globals_buffer: lumen_gpu::BufferId,
     pub(crate) instances_buffer: lumen_gpu::BufferId,
     pub(crate) paint_buffer: lumen_gpu::BufferId,
+    #[cfg(feature = "experimental-msdf")]
+    pub(crate) msdf_globals_buffer: lumen_gpu::BufferId,
+    #[cfg(feature = "experimental-msdf")]
+    pub(crate) msdf_jobs_buffer: lumen_gpu::BufferId,
+    #[cfg(feature = "experimental-msdf")]
+    pub(crate) msdf_segments_buffer: lumen_gpu::BufferId,
+    #[cfg(feature = "experimental-msdf")]
+    pub(crate) msdf_dispatch_buffer: lumen_gpu::BufferId,
     pub(crate) atlas_size: lumen_gpu::Size,
     pub(crate) max_glyphs: usize,
     pub(crate) size: lumen_gpu::Size,
+    pub(crate) cache: Mutex<CachedText>,
 }
 
 impl GpuCompiledNode for CompiledText {
@@ -167,6 +193,7 @@ impl GpuCompiledNode for CompiledText {
         let alignment_vertical = evaluated.alignment_vertical;
         let font_weight = evaluated.font_weight;
         let font_style = evaluated.font_style;
+        let render_mode = evaluated.render_mode;
 
         let mut request = lumen_text::TextLayoutRequest::new(content.clone());
         request.font_family = font_family.clone();
@@ -189,7 +216,16 @@ impl GpuCompiledNode for CompiledText {
         };
 
         let mut text_system = text_system()?;
-        load_font_family(&mut text_system, ctx, &font_family)?;
+        let font_epoch = load_font_family(&mut text_system, ctx, &font_family)?;
+        let mut cache = self.cache.lock().map_err(|_| {
+            LumenError::Render(RenderError::Gpu {
+                details: format!("text node {} cache lock was poisoned", self.node_id.0),
+            })
+        })?;
+        if cache.font_epoch != font_epoch {
+            *cache = CachedText::default();
+            cache.font_epoch = font_epoch;
+        }
 
         let atlas_key = TextAtlasCacheKey {
             content: content.clone(),
@@ -202,6 +238,7 @@ impl GpuCompiledNode for CompiledText {
             atlas_width: self.atlas_size.width,
             atlas_height: self.atlas_size.height,
             max_glyphs: self.max_glyphs,
+            render_mode,
         };
         let frame_key = TextFrameCacheKey {
             atlas_key: atlas_key.clone(),
@@ -213,23 +250,31 @@ impl GpuCompiledNode for CompiledText {
             output_width: self.size.width,
             output_height: self.size.height,
         };
-        if text_cache()?
-            .get(&self.node_id.0)
-            .is_some_and(|cached| cached.frame_key.as_ref() == Some(&frame_key))
-        {
+        #[cfg(feature = "experimental-msdf")]
+        bound.write_buffer(
+            self.msdf_dispatch_buffer,
+            0,
+            bytemuck::cast_slice(&[0_u32, 1, 1]),
+        );
+        if cache.frame_key.as_ref() == Some(&frame_key) {
             return Ok(());
         }
 
         let atlas_config = lumen_text::AtlasConfig {
             width: self.atlas_size.width,
             height: self.atlas_size.height,
+            #[cfg(feature = "experimental-msdf")]
+            px_range: 12,
+            #[cfg(not(feature = "experimental-msdf"))]
             px_range: 1,
         };
-        let mut cache = text_cache()?;
-        let cached = cache.entry(self.node_id.0).or_default();
+        let cached = &mut *cache;
         let atlas_changed = cached.atlas_key.as_ref() != Some(&atlas_key);
         let mut layout_ms = 0.0;
         let mut atlas_ms = 0.0;
+        #[cfg(feature = "experimental-msdf")]
+        let upload_ms = 0.0;
+        #[cfg(not(feature = "experimental-msdf"))]
         let mut upload_ms = 0.0;
         if atlas_changed {
             let layout_started = trace_started.map(|_| trace_now_ms());
@@ -238,29 +283,107 @@ impl GpuCompiledNode for CompiledText {
                 layout_ms = trace_now_ms() - started;
             }
             let atlas_started = trace_started.map(|_| trace_now_ms());
-            let atlas = text_system.render_alpha_atlas(&layout, atlas_config, self.max_glyphs);
+            #[cfg(feature = "experimental-msdf")]
+            let (base_instances, glyph_count) = {
+                let strategy = match render_mode {
+                    TextRenderMode::Msdf => lumen_text::TextRenderStrategy::HybridMsdf,
+                    TextRenderMode::Raster => lumen_text::TextRenderStrategy::Raster,
+                };
+                let atlas_cache = cached.persistent_atlas.get_or_insert_with(|| {
+                    lumen_text::PersistentTextAtlas::new(atlas_config, strategy)
+                });
+                let update = text_system.prepare_persistent_gpu_atlas(
+                    atlas_cache,
+                    &layout,
+                    strategy,
+                    lumen_text::PersistentAtlasLimits {
+                        max_glyphs: self.max_glyphs,
+                        max_jobs: crate::node::vector::renderer::MAX_TEXT_MSDF_JOBS,
+                        max_segments: crate::node::vector::renderer::MAX_TEXT_MSDF_SEGMENTS,
+                        max_msdf_pixels: self
+                            .atlas_size
+                            .width
+                            .saturating_mul(self.atlas_size.height),
+                    },
+                );
+                if update.dropped_glyphs > 0 {
+                    tracing::warn!(
+                        target: "lumen_text",
+                        node_id = self.node_id.0,
+                        dropped_glyphs = update.dropped_glyphs,
+                        cached_glyphs = update.cached_glyphs,
+                        atlas_generation = update.atlas_generation,
+                        atlas_width = self.atlas_size.width,
+                        atlas_height = self.atlas_size.height,
+                        "text atlas capacity dropped visible glyphs"
+                    );
+                }
+                for upload in update.raster_uploads {
+                    bound.write_texture_rgba16_float_region(
+                        self.atlas_texture,
+                        upload.pixels,
+                        [upload.origin[0], upload.origin[1], 0],
+                        lumen_gpu::Size::new(upload.size[0], upload.size[1]),
+                        upload.size[0] * 8,
+                        upload.size[1],
+                    );
+                }
+                let globals = lumen_text::GpuMsdfGlobals {
+                    atlas_size: [self.atlas_size.width, self.atlas_size.height],
+                    job_count: update.jobs.len() as u32,
+                    dirty_pixel_count: update.msdf_pixel_count,
+                    _padding: [0; 2],
+                };
+                bound.write_buffer(self.msdf_globals_buffer, 0, bytemuck::bytes_of(&globals));
+                if !update.jobs.is_empty() {
+                    bound.write_buffer(
+                        self.msdf_jobs_buffer,
+                        0,
+                        bytemuck::cast_slice(&update.jobs),
+                    );
+                    bound.write_buffer(
+                        self.msdf_segments_buffer,
+                        0,
+                        bytemuck::cast_slice(&update.segments),
+                    );
+                    bound.write_buffer(
+                        self.msdf_dispatch_buffer,
+                        0,
+                        bytemuck::cast_slice(&[update.msdf_pixel_count.div_ceil(64), 1_u32, 1_u32]),
+                    );
+                }
+                (update.instances, update.glyph_count)
+            };
+            #[cfg(not(feature = "experimental-msdf"))]
+            let (base_instances, glyph_count, atlas) = {
+                let atlas = text_system.render_alpha_atlas(&layout, atlas_config, self.max_glyphs);
+                (atlas.instances.clone(), atlas.glyph_count, atlas)
+            };
             if let Some(started) = atlas_started {
                 atlas_ms = trace_now_ms() - started;
             }
             cached.atlas_key = Some(atlas_key.clone());
-            cached.base_instances = atlas.instances;
-            cached.glyph_count = atlas.glyph_count;
+            cached.base_instances = base_instances;
+            cached.glyph_count = glyph_count;
             cached.measurement_height = layout.measurement.height;
-            let used_size = atlas.atlas.used_size();
-            let upload_height = used_size[1].max(1);
-            let upload_len = self.atlas_size.width as usize * upload_height as usize * 4;
-            let upload_pixels = atlas.pixels[..upload_len.min(atlas.pixels.len())].to_vec();
-            let upload_started = trace_started.map(|_| trace_now_ms());
-            bound.write_texture_rgba8_region(
-                self.atlas_texture,
-                upload_pixels,
-                [0, 0, 0],
-                lumen_gpu::Size::new(self.atlas_size.width, upload_height),
-                self.atlas_size.width * 4,
-                upload_height,
-            );
-            if let Some(started) = upload_started {
-                upload_ms = trace_now_ms() - started;
+            #[cfg(not(feature = "experimental-msdf"))]
+            {
+                let used_size = atlas.atlas.used_size();
+                let upload_height = used_size[1].max(1);
+                let upload_len = self.atlas_size.width as usize * upload_height as usize * 4;
+                let upload_pixels = atlas.pixels[..upload_len.min(atlas.pixels.len())].to_vec();
+                let upload_started = trace_started.map(|_| trace_now_ms());
+                bound.write_texture_rgba8_region(
+                    self.atlas_texture,
+                    upload_pixels,
+                    [0, 0, 0],
+                    lumen_gpu::Size::new(self.atlas_size.width, upload_height),
+                    self.atlas_size.width * 4,
+                    upload_height,
+                );
+                if let Some(started) = upload_started {
+                    upload_ms = trace_now_ms() - started;
+                }
             }
         }
 
@@ -300,15 +423,24 @@ impl GpuCompiledNode for CompiledText {
         }
         Ok(())
     }
+
+    fn invalidate_gpu_resources(&self) {
+        if let Ok(mut cache) = self.cache.lock() {
+            *cache = CachedText::default();
+        }
+    }
 }
 
-#[derive(Debug, Clone, Default)]
-struct CachedText {
+#[derive(Debug, Default)]
+pub(crate) struct CachedText {
     atlas_key: Option<TextAtlasCacheKey>,
     frame_key: Option<TextFrameCacheKey>,
     base_instances: Vec<lumen_text::GpuGlyphInstance>,
     glyph_count: usize,
     measurement_height: f32,
+    font_epoch: u64,
+    #[cfg(feature = "experimental-msdf")]
+    persistent_atlas: Option<lumen_text::PersistentTextAtlas>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +455,7 @@ struct TextAtlasCacheKey {
     atlas_width: u32,
     atlas_height: u32,
     max_glyphs: usize,
+    render_mode: TextRenderMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -371,30 +504,35 @@ fn load_font_family(
     text_system: &mut lumen_text::TextSystem,
     ctx: &FrameBindContext<'_>,
     font_family: &str,
-) -> crate::Result<()> {
+) -> crate::Result<u64> {
     if font_family.is_empty() {
-        return Ok(());
+        return Ok(font_epoch());
     }
     let Some(store) = ctx.media() else {
-        return Ok(());
+        return Ok(font_epoch());
     };
 
     let Some(resolver) = store.get_font_resolver(font_family) else {
-        return Ok(());
+        return Ok(font_epoch());
     };
     let resolver_id = resolver.id().to_string();
     if loaded_fonts()?
         .get(font_family)
         .is_some_and(|loaded_id| loaded_id == &resolver_id)
     {
-        return Ok(());
+        return Ok(font_epoch());
     }
     for data in resolver.data().map_err(LumenError::Media)? {
         text_system.load_font_data(data);
     }
     loaded_fonts()?.insert(font_family.to_string(), resolver_id);
-    text_cache()?.clear();
-    Ok(())
+    Ok(FONT_EPOCH.fetch_add(1, Ordering::AcqRel).saturating_add(1))
+}
+
+static FONT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn font_epoch() -> u64 {
+    FONT_EPOCH.load(Ordering::Acquire)
 }
 
 fn loaded_fonts() -> crate::Result<std::sync::MutexGuard<'static, HashMap<String, String>>> {
@@ -407,31 +545,6 @@ fn loaded_fonts() -> crate::Result<std::sync::MutexGuard<'static, HashMap<String
                 details: "loaded fonts lock was poisoned".to_string(),
             })
         })
-}
-
-fn text_cache() -> crate::Result<std::sync::MutexGuard<'static, HashMap<u64, CachedText>>> {
-    static TEXT_CACHE: OnceLock<Mutex<HashMap<u64, CachedText>>> = OnceLock::new();
-    TEXT_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .map_err(|_| {
-            LumenError::Render(RenderError::Gpu {
-                details: "text cache lock was poisoned".to_string(),
-            })
-        })
-}
-
-pub(crate) fn clear_text_cache_for(node_id: NodeId) {
-    if let Ok(mut cache) = text_cache() {
-        cache.remove(&node_id.0);
-    }
-    if crate::log_level_enabled(tracing::Level::TRACE) {
-        tracing::trace!(
-            target: "lumen_text",
-            node_id = node_id.0,
-            "text cache clear"
-        );
-    }
 }
 
 fn trace_text_bind(

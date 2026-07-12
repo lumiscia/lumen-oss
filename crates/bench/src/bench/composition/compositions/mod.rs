@@ -2,6 +2,7 @@ mod animated_showcase;
 mod antialiasing_stress;
 mod simple_pipeline;
 mod small_media_transform;
+mod text_stress;
 mod vector_showcase;
 
 use lumen_engine::composition::{RenderSettings, TimelineSettings};
@@ -20,6 +21,12 @@ pub fn all() -> Vec<Box<dyn CompositionFixture>> {
         }),
         Box::new(antialiasing_stress::AntialiasingStress {
             edge_antialias: false,
+        }),
+        Box::new(text_stress::TextStress {
+            render_mode: lumen_engine::node::source::text::TextRenderMode::Msdf,
+        }),
+        Box::new(text_stress::TextStress {
+            render_mode: lumen_engine::node::source::text::TextRenderMode::Raster,
         }),
     ]
 }

@@ -52,6 +52,49 @@ impl GpuCompositionRenderer {
         })
     }
 
+    pub async fn recover_gpu_resources(&mut self) -> crate::Result<()> {
+        let replacement = lumen_gpu::Renderer::new()
+            .await
+            .map_err(|error| RenderError::Gpu {
+                details: format!("failed to recreate GPU device: {error}"),
+            })?;
+        let device = replacement.device.clone();
+        let queue = replacement.queue.clone();
+        let adapter_info = replacement.adapter_info().clone();
+        let mut rebuilt = HashMap::with_capacity(self.compiled_plans.len());
+        for (key, prepared) in &self.compiled_plans {
+            let mut renderer = lumen_gpu::Renderer::from_device_with_adapter_info(
+                device.clone(),
+                queue.clone(),
+                adapter_info.clone(),
+            );
+            renderer
+                .prepare_plan(&prepared.compiled.plan)
+                .map_err(|error| RenderError::Gpu {
+                    details: format!("failed to rebuild compiled GPU plan: {error}"),
+                })?;
+            rebuilt.insert(key.clone(), renderer);
+        }
+
+        self.renderer = replacement;
+        for (key, prepared) in &mut self.compiled_plans {
+            let renderer = rebuilt.remove(key).ok_or_else(|| RenderError::Gpu {
+                details: "rebuilt GPU plan was unexpectedly missing".to_string(),
+            })?;
+            prepared.renderer = renderer;
+            prepared.current_media_textures.clear();
+            for node in prepared.compiled.compiled_nodes.values() {
+                node.invalidate_gpu_resources();
+            }
+        }
+        self.media_texture_cache.clear();
+        #[cfg(feature = "ffmpeg")]
+        {
+            self.gpu_media_importer = GpuMediaFrameImporter::default();
+        }
+        Ok(())
+    }
+
     pub fn from_device(device: lumen_gpu::wgpu::Device, queue: lumen_gpu::wgpu::Queue) -> Self {
         Self {
             renderer: lumen_gpu::Renderer::from_device(device, queue),
@@ -447,6 +490,19 @@ impl GpuCompositionRenderer {
                 details: error.to_string(),
             })?;
         Ok((prepared.compiled.output, submission))
+    }
+
+    pub fn submit_render_profiled(
+        &mut self,
+    ) -> crate::Result<(RasterHandle, Option<lumen_gpu::GpuPlanTiming>)> {
+        let prepared = self.active_prepared_mut()?;
+        let timing = prepared
+            .renderer
+            .submit_plan_profiled(&prepared.compiled.plan)
+            .map_err(|error| RenderError::Gpu {
+                details: error.to_string(),
+            })?;
+        Ok((prepared.compiled.output, timing))
     }
 
     pub fn gpu_renderer(&self) -> &lumen_gpu::Renderer {

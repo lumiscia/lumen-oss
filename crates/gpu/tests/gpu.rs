@@ -103,6 +103,48 @@ fn compute_pass_writes_storage_texture() {
 }
 
 #[test]
+fn profiled_submission_reports_gpu_pass_timestamps_when_supported() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let mut builder = RenderPlan::builder();
+    let output = builder.texture(
+        Some("profile output".to_string()),
+        TextureDesc::storage(Size::new(4, 4), wgpu::TextureFormat::Rgba8Unorm),
+    );
+    let program = builder.program(ProgramDesc::Compute(ComputeProgramDesc {
+        label: Some("profile fill".to_string()),
+        shader: COMPUTE_TEXTURE_SHADER.to_string(),
+        entry: "cs_main".to_string(),
+        bind_groups: BindGroupLayoutSpec::single(vec![BindingLayoutEntry::storage_texture(
+            0,
+            wgpu::ShaderStages::COMPUTE,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::StorageTextureAccess::WriteOnly,
+        )]),
+    }));
+    builder.compute_pass(ComputePassDesc {
+        label: Some("profiled compute".to_string()),
+        owner: None,
+        program,
+        bindings: vec![Binding::storage_texture(0, 0, output)],
+        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
+    });
+    let plan = builder.build();
+    renderer.prepare_plan(&plan).unwrap();
+    let timing = renderer.submit_plan_profiled(&plan).unwrap();
+    if renderer.supports_timestamp_queries() {
+        let timing = timing.expect("timestamp-capable adapter must return timing");
+        assert_eq!(timing.passes.len(), 1);
+        assert_eq!(timing.passes[0].label, "profiled compute");
+        assert_eq!(timing.passes[0].kind, "compute");
+        assert!(timing.passes[0].nanoseconds > 0.0);
+    } else {
+        assert!(timing.is_none());
+    }
+}
+
+#[test]
 fn uniform_upload_updates_compute_shader_output_without_replanning() {
     let Some(mut renderer) = renderer() else {
         return;
