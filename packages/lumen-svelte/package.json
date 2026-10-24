@@ -44,10 +44,10 @@
     "@lumiscia/lumen-preview": "workspace:*"
   },
   "devDependencies": {
-    "@sveltejs/package": "^2.5.4",
+    "@sveltejs/package": "^3.0.1",
     "@sveltejs/vite-plugin-svelte": "catalog:",
-    "jsdom": "^26.0.0",
-    "svelte": "^5.0.0",
+    "jsdom": "catalog:",
+    "svelte": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
