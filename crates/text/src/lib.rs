@@ -59,19 +59,12 @@ impl TextSystem {
     pub fn layout(&mut self, request: &TextLayoutRequest) -> TextLayout {
         let metrics = Metrics::new(request.font_size.max(1.0), request.line_height());
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
-        buffer.set_size(
-            &mut self.font_system,
-            request.max_width.filter(|width| *width > 0.0),
-            None,
-        );
-        buffer.set_wrap(
-            &mut self.font_system,
-            if request.max_width.is_some_and(|width| width > 0.0) {
-                Wrap::WordOrGlyph
-            } else {
-                Wrap::None
-            },
-        );
+        buffer.set_size(request.max_width.filter(|width| *width > 0.0), None);
+        buffer.set_wrap(if request.max_width.is_some_and(|width| width > 0.0) {
+            Wrap::WordOrGlyph
+        } else {
+            Wrap::None
+        });
         let attrs = Attrs::new()
             .family(Family::Name(&request.font_family))
             .weight(Weight(request.font_weight.clamp(1, 1000)))
@@ -86,7 +79,6 @@ impl TextSystem {
                 CacheKeyFlags::empty()
             });
         buffer.set_text(
-            &mut self.font_system,
             &request.content,
             &attrs,
             Shaping::Advanced,
