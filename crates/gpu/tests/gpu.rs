@@ -419,7 +419,7 @@ fn read_wgpu_texture_rgba8(renderer: &Renderer, texture: &wgpu::Texture, size: S
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     rx.recv().unwrap().unwrap();
-    let bytes = slice.get_mapped_range().to_vec();
+    let bytes = slice.get_mapped_range().unwrap().to_vec();
     output.unmap();
     bytes
 }

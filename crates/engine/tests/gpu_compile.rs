@@ -1629,7 +1629,7 @@ fn render_rgba8(
         .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())
         .unwrap();
     rx.recv().unwrap().unwrap();
-    let mapped = slice.get_mapped_range();
+    let mapped = slice.get_mapped_range().unwrap();
     let mut pixels = vec![0; unpadded_bytes_per_row as usize * size.height as usize];
     for row in 0..size.height as usize {
         let source = row * padded_bytes_per_row as usize;
