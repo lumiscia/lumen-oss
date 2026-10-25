@@ -9,7 +9,9 @@ use std::collections::VecDeque;
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use anyhow::Context;
 use anyhow::anyhow;
-use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
+use lumen_ffmpeg::{
+    CpuVideoFrame, MuxedEncoder, PixelFormat, Rational, VideoCodec, VideoEncoderConfig,
+};
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use lumen_engine::gpu::CudaNvencTargetPool;
@@ -352,7 +354,7 @@ async fn benchmark_render_cpu_encode(
     let height = composition.render_settings.height;
     let mut encoder = MuxedEncoder::create(
         output.to_string_lossy().to_string(),
-        video_config(composition, VideoCodec::H264),
+        video_config(composition, VideoCodec::H264)?,
     )?;
     let started = Instant::now();
     for frame in 0..frames {
@@ -387,7 +389,7 @@ async fn benchmark_render_cpu_encode_profile(
     let height = composition.render_settings.height;
     let mut encoder = MuxedEncoder::create(
         output.to_string_lossy().to_string(),
-        video_config(composition, VideoCodec::H264),
+        video_config(composition, VideoCodec::H264)?,
     )?;
     let mut render = Duration::ZERO;
     let mut readback = Duration::ZERO;
@@ -455,7 +457,7 @@ async fn benchmark_render_metal_videotoolbox(
     }
     let output_size = composition_size(composition);
     let mut target_pool = MetalVideoToolboxTargetPool::bgra8(renderer.gpu_renderer(), output_size)?;
-    let mut config = video_config(composition, VideoCodec::H264);
+    let mut config = video_config(composition, VideoCodec::H264)?;
     config.mode = lumen_ffmpeg::EncodeMode::GpuTexture(lumen_ffmpeg::GpuBackend::Metal);
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
     let mut pending = VecDeque::<PendingMetalEncodeFrame>::new();
@@ -625,7 +627,7 @@ async fn benchmark_render_vk_cuda_nvenc(
     let output_size = composition_size(composition);
     let target_pool = CudaNvencTargetPool::rgba8(renderer.gpu_renderer(), output_size)?;
     let target = target_pool.acquire(renderer.gpu_renderer())?;
-    let mut config = video_config(composition, VideoCodec::H264);
+    let mut config = video_config(composition, VideoCodec::H264)?;
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
 
@@ -683,15 +685,15 @@ pub(crate) async fn renderer_with_format(
 pub(crate) fn video_config(
     composition: &lumen_engine::composition::Composition,
     codec: VideoCodec,
-) -> VideoEncoderConfig {
+) -> anyhow::Result<VideoEncoderConfig> {
     let mut config = VideoEncoderConfig::cpu_rgba(
         composition.render_settings.width,
         composition.render_settings.height,
-        composition.timeline.fps.round().max(1.0) as u32,
+        Rational::from_fps(f64::from(composition.timeline.fps))?,
         codec,
     );
     config.bit_rate = 14_000_000;
-    config
+    Ok(config)
 }
 
 #[cfg(any(

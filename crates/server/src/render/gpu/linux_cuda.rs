@@ -3,7 +3,8 @@ use std::{fs, time::Instant};
 use lumen_engine::composition::Composition;
 use lumen_engine::gpu::CudaNvencTargetPool;
 use lumen_ffmpeg::{
-    AudioEncoderConfig, EncodeMode, GpuBackend, MuxedEncoder, VideoCodec, VideoEncoderConfig,
+    AudioEncoderConfig, EncodeMode, GpuBackend, MuxedEncoder, Rational, VideoCodec,
+    VideoEncoderConfig,
 };
 
 use crate::render::{
@@ -98,8 +99,12 @@ pub(super) fn render_project_mp4_cuda(
     );
 
     let include_audio = has_audio(composition);
-    let mut config =
-        VideoEncoderConfig::cpu_rgba(width, height, fps.round().max(1.0) as u32, codec);
+    let frame_rate = Rational::from_fps(f64::from(fps)).map_err(|err| RenderError {
+        code: "invalid_fps",
+        message: err.to_string(),
+        retryable: false,
+    })?;
+    let mut config = VideoEncoderConfig::cpu_rgba(width, height, frame_rate, codec);
     config.encoder_name = Some(encoder_name.to_string());
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     config.bit_rate = 14_000_000;

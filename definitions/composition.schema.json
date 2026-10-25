@@ -2423,6 +2423,13 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "custom_pivot": {
+                    "default": false,
+                    "description": "Uses the pivot as given; when off, a (0, 0) pivot means the source centre.",
+                    "title": "Custom pivot",
+                    "type": "boolean",
+                    "x-lumen-kind": "bool"
+                  },
                   "pivot_x": {
                     "default": 0.0,
                     "description": "Horizontal pivot point in pixels.",

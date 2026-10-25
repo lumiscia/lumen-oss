@@ -19,8 +19,9 @@ fn read_pixel(coord: vec2<i32>) -> vec4<f32> {
     return textureLoad(input_tex, coord, 0);
 }
 
+// Sample coordinates are continuous, with pixel centres at integer + 0.5.
 fn sample_nearest(coord: vec2<f32>) -> vec4<f32> {
-    return read_pixel(vec2<i32>(floor(coord + vec2<f32>(0.5))));
+    return read_pixel(vec2<i32>(floor(coord)));
 }
 
 fn sample_linear(coord: vec2<f32>) -> vec4<f32> {
@@ -41,18 +42,20 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let input_size = textureDimensions(input_tex);
-    let default_pivot = vec2<f32>(input_size) * 0.5;
-    let pivot = select(params.pivot, default_pivot, all(abs(params.pivot) <= vec2<f32>(0.000001)));
     let scale = select(params.scale, vec2<f32>(0.000001), abs(params.scale) <= vec2<f32>(0.000001));
-    let centered = vec2<f32>(id.xy) - pivot - params.translate;
+    let centered = vec2<f32>(id.xy) + vec2<f32>(0.5) - params.pivot - params.translate;
     let c = cos(-params.rotate_radians);
     let s = sin(-params.rotate_radians);
     let unrotated = vec2<f32>(
         centered.x * c - centered.y * s,
         centered.x * s + centered.y * c,
     );
-    let source_coord = (unrotated / scale) + pivot;
-    let color = select(sample_linear(source_coord), sample_nearest(source_coord), params.sampling == 0u);
+    let source_coord = (unrotated / scale) + params.pivot;
+    var color: vec4<f32>;
+    if (params.sampling == 0u) {
+        color = sample_nearest(source_coord);
+    } else {
+        color = sample_linear(source_coord);
+    }
     textureStore(output_tex, vec2<i32>(id.xy), color);
 }
