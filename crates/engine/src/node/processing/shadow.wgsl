@@ -1,3 +1,5 @@
+// `color.a` is 1.0 when the source raster is straight alpha. The shadow color
+// alpha is already folded into `values.w`.
 struct ShadowParams {
     color: vec4<f32>,
     values: vec4<f32>,
@@ -61,8 +63,8 @@ fn vertical_main(@builtin(global_invocation_id) id: vec3<u32>) {
         count = count + 1.0;
     }
 
-    let source = textureLoad(source_tex, pixel, 0);
-    let shadow_alpha = (alpha / max(count, 1.0)) * params.color.a * clamp(params.values.w, 0.0, 1.0);
+    let source = to_premultiplied_alpha(textureLoad(source_tex, pixel, 0), params.color.a >= 0.5);
+    let shadow_alpha = (alpha / max(count, 1.0)) * clamp(params.values.w, 0.0, 1.0);
     let shadow = vec4<f32>(params.color.rgb * shadow_alpha, shadow_alpha);
     let out_alpha = source.a + shadow.a * (1.0 - source.a);
     let out_rgb = source.rgb + shadow.rgb * (1.0 - source.a);

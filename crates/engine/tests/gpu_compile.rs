@@ -27,6 +27,7 @@ use lumen_engine::{
             memo::{Memo, MemoParamsDelegate},
             opacity::{Opacity, OpacityParamsDelegate},
             resize::{Resize, ResizeMode, ResizeParamsDelegate, ResizeSampling},
+            shadow::{Shadow, ShadowParamsDelegate},
             time_remap::{TimeRemap, TimeRemapParamsDelegate},
             transform::{Transform, TransformParamsDelegate, TransformSampling},
             wgsl_shader::WgslShader,
@@ -1901,6 +1902,80 @@ fn merge_and_adjustments_treat_rasters_as_premultiplied() {
         [0, 0, 0, 0],
         "adjusting a fully transparent pixel must keep it transparent black",
     );
+}
+
+#[test]
+fn shadow_composites_straight_alpha_source_in_premultiplied_space() {
+    let (solid_id, unpremultiply, shadow, base, merge, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(3),
+        NodeId::new(4),
+        NodeId::new(5),
+        NodeId::new(6),
+    );
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(solid_id, solid(solid_id, [255, 0, 0, 128]));
+    graph.nodes.insert(
+        unpremultiply,
+        NodeKind::AlphaPremultiply(AlphaPremultiply {
+            id: unpremultiply,
+            params: AlphaPremultiplyParamsDelegate {
+                mode: Deferred::value("unpremultiply".to_string()),
+            },
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        shadow,
+        NodeKind::Shadow(Shadow {
+            id: shadow,
+            params: ShadowParamsDelegate {
+                offset_x: Deferred::value(0.0),
+                offset_y: Deferred::value(0.0),
+                radius: Deferred::value(0.0),
+                color: Paint::solid([0, 255, 0, 255]).into(),
+                opacity: Deferred::value(1.0),
+            },
+            source: PortRef::new(unpremultiply, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(base, solid(base, [0, 0, 0, 255]));
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            params: MergeParamsDelegate::default(),
+            base: PortRef::new(base, "output".to_string()),
+            overlay: PortRef::new(shadow, "output".to_string()),
+            mask: PortRef::empty(),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let pixels = render_rgba8(&mut renderer, &test_composition(graph), 0, &EmptyMediaStore);
+    // Premultiplied red (0.5, 0, 0) over half-covered green shadow (0, 0.25, 0)
+    // on opaque black.
+    for pixel in pixels.chunks_exact(4) {
+        assert!(
+            pixel
+                .iter()
+                .zip([128u8, 64, 0, 255])
+                .all(|(channel, expected)| channel.abs_diff(expected) <= 1),
+            "shadow must composite in premultiplied space: got {pixel:?}"
+        );
+    }
 }
 
 #[test]
