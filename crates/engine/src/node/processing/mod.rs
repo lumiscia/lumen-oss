@@ -5,6 +5,7 @@ pub mod color_grade;
 pub mod crop;
 pub mod curves;
 pub mod exposure;
+pub(crate) mod gaussian;
 pub mod hue_saturation;
 pub mod levels;
 pub mod memo;

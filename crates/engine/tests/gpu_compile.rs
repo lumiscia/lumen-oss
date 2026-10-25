@@ -18,6 +18,7 @@ use lumen_engine::{
         media_output::MediaOutput,
         processing::{
             alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParamsDelegate},
+            blur::{Blur, BlurParamsDelegate},
             channel_shuffle::{ChannelSelector, ChannelShuffle, ChannelShuffleParamsDelegate},
             color_grade::{ColorGrade, ColorGradeParamsDelegate},
             crop::{Crop, CropParamsDelegate},
@@ -3891,4 +3892,171 @@ fn text_msdf_corners_stay_within_a_pixel_of_raster_at_1000px() {
         }
     }
     assert!(outliers <= 16, "{outliers} pixels off the raster outline");
+}
+
+/// Renders a white square on a transparent canvas through `blur` or `shadow`
+/// (black, opacity 1, no offset) and returns the RGBA pixels.
+fn blur_square(
+    canvas: u32,
+    square: (i64, f64),
+    radius: f64,
+    use_shadow: bool,
+    straight_alpha: bool,
+) -> Vec<u8> {
+    let (shape, convert, effect, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(3),
+        NodeId::new(4),
+    );
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        shape,
+        NodeKind::Shape(Shape {
+            id: shape,
+            params: ShapeParamsDelegate {
+                width: Deferred::value(square.0),
+                height: Deferred::value(square.0),
+                position: Deferred::value((square.1, square.1)),
+                ..Default::default()
+            },
+        }),
+    );
+    let mut source = shape;
+    if straight_alpha {
+        graph.nodes.insert(
+            convert,
+            NodeKind::AlphaPremultiply(AlphaPremultiply {
+                id: convert,
+                params: AlphaPremultiplyParamsDelegate {
+                    mode: Deferred::value("unpremultiply".to_string()),
+                },
+                source: PortRef::new(shape, "output".to_string()),
+            }),
+        );
+        source = convert;
+    }
+    let source = PortRef::new(source, "output".to_string());
+    graph.nodes.insert(
+        effect,
+        if use_shadow {
+            NodeKind::Shadow(Shadow {
+                id: effect,
+                params: ShadowParamsDelegate {
+                    offset_x: Deferred::value(0.0),
+                    offset_y: Deferred::value(0.0),
+                    radius: Deferred::value(radius),
+                    color: Paint::solid([0, 0, 0, 255]).into(),
+                    opacity: Deferred::value(1.0),
+                },
+                source,
+            })
+        } else {
+            NodeKind::Blur(Blur {
+                id: effect,
+                params: BlurParamsDelegate {
+                    radius: Deferred::value(radius),
+                },
+                source,
+            })
+        },
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(effect, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = canvas;
+    composition.render_settings.height = canvas;
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return Vec::new();
+    };
+    render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore)
+}
+
+fn alpha_at(pixels: &[u8], canvas: u32, x: u32, y: u32) -> f32 {
+    f32::from(pixels[((y * canvas + x) * 4 + 3) as usize])
+}
+
+#[test]
+fn blur_fractional_radius_changes_output_smoothly() {
+    // Pixel 2 texels outside the square's left edge.
+    let alpha = |radius| {
+        let pixels = blur_square(64, (16, 24.0), radius, false, false);
+        (!pixels.is_empty()).then(|| alpha_at(&pixels, 64, 22, 32))
+    };
+    let (Some(a20), Some(a25), Some(a30)) = (alpha(2.0), alpha(2.5), alpha(3.0)) else {
+        return;
+    };
+    assert!(
+        a20 + 2.0 < a25 && a25 + 2.0 < a30,
+        "alpha must grow smoothly with radius: 2.0 -> {a20}, 2.5 -> {a25}, 3.0 -> {a30}"
+    );
+}
+
+#[test]
+fn blur_supports_radii_above_32_and_preserves_energy() {
+    let canvas = 256;
+    let pixels = blur_square(canvas, (32, 112.0), 80.0, false, false);
+    if pixels.is_empty() {
+        return;
+    }
+    // 60 texels beyond the edge is outside the old 32 pixel reach.
+    let far = alpha_at(&pixels, canvas, 112 - 60, 128);
+    assert!(far > 0.0, "radius 80 must reach 60 pixels from the source");
+    let center = alpha_at(&pixels, canvas, 128, 128);
+    assert!(
+        center > 0.0 && center < 128.0,
+        "a 32 pixel square under radius 80 must be diluted: {center}"
+    );
+    let total: f32 = pixels
+        .chunks_exact(4)
+        .map(|pixel| f32::from(pixel[3]) / 255.0)
+        .sum();
+    let expected = 32.0 * 32.0;
+    assert!(
+        (total - expected).abs() / expected < 0.03,
+        "blur must preserve total alpha: expected about {expected}, got {total}"
+    );
+}
+
+#[test]
+fn shadow_blur_matches_blur_alpha() {
+    let blur = blur_square(64, (16, 24.0), 6.5, false, false);
+    let shadow = blur_square(64, (16, 24.0), 6.5, true, false);
+    if blur.is_empty() || shadow.is_empty() {
+        return;
+    }
+    // Outside the square the shadow output is just the blurred alpha.
+    for (x, y) in [(10, 32), (16, 20), (46, 32), (32, 48), (4, 4)] {
+        let (blur, shadow) = (alpha_at(&blur, 64, x, y), alpha_at(&shadow, 64, x, y));
+        assert!(
+            (blur - shadow).abs() <= 1.0,
+            "shadow and blur must share one kernel at ({x}, {y}): blur {blur}, shadow {shadow}"
+        );
+    }
+    let large = blur_square(256, (32, 112.0), 80.0, true, false);
+    assert!(
+        alpha_at(&large, 256, 112 - 60, 128) > 0.0,
+        "shadow must also support radii above 32"
+    );
+}
+
+#[test]
+fn blur_of_antialiased_edge_has_no_dark_fringe() {
+    for straight_alpha in [false, true] {
+        let pixels = blur_square(64, (16, 24.5), 5.0, false, straight_alpha);
+        if pixels.is_empty() {
+            return;
+        }
+        for pixel in pixels.as_chunks::<4>().0 {
+            assert!(
+                pixel[0].abs_diff(pixel[3]) <= 2 && pixel[2].abs_diff(pixel[3]) <= 2,
+                "white blurred over transparent must keep rgb equal to alpha (straight source: {straight_alpha}): {pixel:?}"
+            );
+        }
+    }
 }
