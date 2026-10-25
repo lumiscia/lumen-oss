@@ -39,8 +39,9 @@ impl PortRef {
         }
     }
 
+    /// Node ids start at 0, so only the port name marks an unconnected input.
     pub fn is_empty(&self) -> bool {
-        self.id.0 == 0
+        self.port.is_empty()
     }
 }
 
@@ -48,3 +49,14 @@ pub const SINGLE_RASTER_OUTPUT: &[OutputPortDef] = &[OutputPortDef {
     name: "output",
     kind: PortKind::Raster,
 }];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn port_from_node_zero_is_connected() {
+        assert!(PortRef::empty().is_empty());
+        assert!(!PortRef::new(NodeId::new(0), "output".to_string()).is_empty());
+    }
+}
