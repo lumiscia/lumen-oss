@@ -13,7 +13,7 @@ use super::{BoundFrame, CompiledComposition, FramePortRef, TimeRemapPath};
 #[derive(Debug)]
 pub struct FrameBindContext<'a> {
     composition: &'a Composition,
-    frame: u32,
+    frame: f64,
     media: Option<&'a dyn MediaStore>,
 }
 
@@ -21,7 +21,7 @@ impl<'a> FrameBindContext<'a> {
     pub fn new(composition: &'a Composition, frame: u32) -> Self {
         Self {
             composition,
-            frame,
+            frame: f64::from(frame),
             media: None,
         }
     }
@@ -29,6 +29,15 @@ impl<'a> FrameBindContext<'a> {
     pub fn with_media<M: MediaStore>(
         composition: &'a Composition,
         frame: u32,
+        media: &'a M,
+    ) -> Self {
+        Self::with_media_at(composition, f64::from(frame), media)
+    }
+
+    /// Binds at a fractional frame time, e.g. `12.5` is halfway between frames 12 and 13.
+    pub fn with_media_at<M: MediaStore>(
+        composition: &'a Composition,
+        frame: f64,
         media: &'a M,
     ) -> Self {
         Self {
@@ -77,7 +86,7 @@ impl<'a> FrameBindContext<'a> {
         &self,
         compiled: &CompiledComposition,
         port: &PortRef,
-        frame: u32,
+        frame: f64,
         time_remaps: &mut TimeRemapPath,
         visited: &mut HashSet<(PortRef, TimeRemapPath)>,
         bound: &mut BoundFrame,
@@ -92,7 +101,7 @@ impl<'a> FrameBindContext<'a> {
             .nodes
             .get(&port.id)
             .ok_or(RenderError::MissingNode {
-                frame,
+                frame: frame as u32,
                 node_id: port.id,
             })?;
 
@@ -133,7 +142,7 @@ impl<'a> FrameBindContext<'a> {
         Ok(())
     }
 
-    fn with_frame(&self, frame: u32) -> Self {
+    fn with_frame(&self, frame: f64) -> Self {
         Self {
             composition: self.composition,
             frame,
@@ -182,7 +191,12 @@ impl<'a> FrameBindContext<'a> {
         }
     }
 
+    /// Integer frame containing the current frame time, for diagnostics.
     pub(crate) fn frame(&self) -> u32 {
+        self.frame as u32
+    }
+
+    pub(crate) fn frame_time(&self) -> f64 {
         self.frame
     }
 

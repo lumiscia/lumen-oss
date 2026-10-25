@@ -57,14 +57,14 @@ impl CompiledOutput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FramePortRef {
     pub port: PortRef,
-    pub frame: u32,
+    pub frame: f64,
 }
 
 impl FramePortRef {
-    pub fn new(port: PortRef, frame: u32) -> Self {
+    pub fn new(port: PortRef, frame: f64) -> Self {
         Self { port, frame }
     }
 }

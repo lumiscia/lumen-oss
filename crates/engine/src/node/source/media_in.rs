@@ -133,8 +133,10 @@ pub fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
     Some(start.max(0) as u32..end.max(0) as u32)
 }
 
+/// Maps a (possibly fractional) composition frame to the source frame shown at that instant.
+/// The source position is floored, so a frame stays on screen until the next one starts.
 pub fn map_to_source_frame(
-    frame: u32,
+    frame: f64,
     composition_fps: f32,
     source_fps: f32,
     frame_count: u32,
@@ -161,7 +163,7 @@ pub fn map_to_source_frame(
         comp_fps
     };
     let relative =
-        (((frame as f64 / comp_fps as f64) * media_fps as f64) * speed.abs() as f64).floor() as u32;
+        (((frame / comp_fps as f64) * media_fps as f64) * speed.abs() as f64).floor() as u32;
     let forward = speed >= 0.0;
     let mapped = match loop_mode {
         LoopMode::Clamp => {
@@ -197,7 +199,7 @@ mod frame_mapping_tests {
     fn lower_fps_media_repeats_frames_at_composition_rate() {
         let mapped = (0..6)
             .map(|frame| {
-                map_to_source_frame(frame, 30.0, 15.0, 100, None, 1.0, LoopMode::Clamp)
+                map_to_source_frame(frame.into(), 30.0, 15.0, 100, None, 1.0, LoopMode::Clamp)
                     .expect("mapped frame")
             })
             .collect::<Vec<_>>();
@@ -209,7 +211,7 @@ mod frame_mapping_tests {
     fn higher_fps_media_advances_at_source_rate() {
         let mapped = (0..3)
             .map(|frame| {
-                map_to_source_frame(frame, 30.0, 60.0, 100, None, 1.0, LoopMode::Clamp)
+                map_to_source_frame(frame.into(), 30.0, 60.0, 100, None, 1.0, LoopMode::Clamp)
                     .expect("mapped frame")
             })
             .collect::<Vec<_>>();
@@ -330,7 +332,7 @@ impl GpuCompiledNode for CompiledMediaInput {
                 })?;
                 let metadata = resolver.metadata();
                 let source_frame = map_to_source_frame(
-                    ctx.frame(),
+                    ctx.frame_time(),
                     ctx.expr_context(self.node_id, "source").fps,
                     metadata.fps,
                     metadata.frame_count,
@@ -370,15 +372,15 @@ mod tests {
     #[test]
     fn maps_negative_media_speed_in_reverse() {
         assert_eq!(
-            map_to_source_frame(0, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
+            map_to_source_frame(0.0, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
             Some(6)
         );
         assert_eq!(
-            map_to_source_frame(3, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
+            map_to_source_frame(3.0, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
             Some(3)
         );
         assert_eq!(
-            map_to_source_frame(99, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
+            map_to_source_frame(99.0, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
             Some(2)
         );
     }
@@ -386,7 +388,17 @@ mod tests {
     #[test]
     fn maps_ping_pong_loop_mode() {
         let frames = (0..8)
-            .map(|frame| map_to_source_frame(frame, 30.0, 30.0, 4, None, 1.0, LoopMode::PingPong))
+            .map(|frame| {
+                map_to_source_frame(
+                    f64::from(frame),
+                    30.0,
+                    30.0,
+                    4,
+                    None,
+                    1.0,
+                    LoopMode::PingPong,
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(
             frames,
@@ -404,9 +416,31 @@ mod tests {
     }
 
     #[test]
+    fn fractional_frames_show_the_source_frame_at_that_instant() {
+        let map = |frame, source_fps| {
+            map_to_source_frame(frame, 30.0, source_fps, 100, None, 1.0, LoopMode::Clamp)
+        };
+
+        assert_eq!(map(1.0, 30.0), Some(1));
+        assert_eq!(map(1.5, 30.0), Some(1));
+        assert_eq!(map(1.999, 30.0), Some(1));
+        assert_eq!(map(2.9, 60.0), Some(5));
+    }
+
+    #[test]
     fn maps_negative_ping_pong_loop_mode() {
         let frames = (0..8)
-            .map(|frame| map_to_source_frame(frame, 30.0, 30.0, 4, None, -1.0, LoopMode::PingPong))
+            .map(|frame| {
+                map_to_source_frame(
+                    f64::from(frame),
+                    30.0,
+                    30.0,
+                    4,
+                    None,
+                    -1.0,
+                    LoopMode::PingPong,
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(
             frames,

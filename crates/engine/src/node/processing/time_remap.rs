@@ -49,13 +49,17 @@ impl Default for TimeRemap {
     }
 }
 
-pub fn remap_frame(settings: TimeRemapSettings) -> u32 {
-    let mut frame = settings.frame.max(0.0).floor() as i64;
+/// Returns the (possibly fractional) source frame. Consumers that index media floor it themselves.
+pub fn remap_frame(settings: TimeRemapSettings) -> f64 {
+    let mut frame = settings.frame.max(0.0).min(f64::from(u32::MAX));
     if settings.loop_enabled && settings.loop_end > settings.loop_start {
-        let span = settings.loop_end - settings.loop_start;
-        frame = settings.loop_start + (frame - settings.loop_start).rem_euclid(span);
+        let start = settings.loop_start as f64;
+        let span = (settings.loop_end - settings.loop_start) as f64;
+        let offset = (frame - start).rem_euclid(span);
+        // `rem_euclid` can round tiny negative offsets up to `span`.
+        frame = start + if offset < span { offset } else { 0.0 };
     }
-    frame.max(0) as u32
+    frame.max(0.0)
 }
 
 impl GpuCompileNode for TimeRemap {
@@ -108,5 +112,34 @@ impl GpuCompiledNode for CompiledTimeRemap {
             loop_end: evaluated.loop_end,
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TimeRemapSettings, remap_frame};
+
+    fn remap(frame: f64, loop_enabled: bool) -> f64 {
+        remap_frame(TimeRemapSettings {
+            frame,
+            loop_enabled,
+            loop_start: 2,
+            loop_end: 6,
+        })
+    }
+
+    #[test]
+    fn keeps_fractional_target_frames() {
+        assert_eq!(remap(2.5, false), 2.5);
+        assert_eq!(remap(-1.5, false), 0.0);
+        assert_eq!(remap(7.25, true), 3.25);
+        assert_eq!(remap(1.5, true), 5.5);
+    }
+
+    #[test]
+    fn integer_target_frames_are_unchanged() {
+        assert_eq!(remap(9.0, false), 9.0);
+        assert_eq!(remap(6.0, true), 2.0);
+        assert_eq!(remap(11.0, true), 3.0);
     }
 }

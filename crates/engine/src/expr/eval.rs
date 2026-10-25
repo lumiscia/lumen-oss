@@ -126,7 +126,7 @@ pub(crate) fn evaluate_expr(
             evaluate_builtin(*builtin, &evaluated_args, ctx)
         }
         ExprNode::Global(global) => match global {
-            GlobalVar::Frame => Ok(ExpressionValue::Number(f64::from(ctx.frame))),
+            GlobalVar::Frame => Ok(ExpressionValue::Number(ctx.frame)),
             GlobalVar::Time => Ok(ExpressionValue::Number(ctx.time_seconds())),
             GlobalVar::Fps => Ok(ExpressionValue::Number(f64::from(ctx.fps))),
             GlobalVar::Width => Ok(ExpressionValue::Number(f64::from(ctx.width))),
@@ -257,7 +257,7 @@ mod tests {
 
     fn test_context() -> ExpressionContext<'static> {
         ExpressionContext {
-            frame: 48,
+            frame: 48.0,
             fps: 24.0,
             width: 1920,
             height: 1080,
@@ -287,6 +287,31 @@ mod tests {
         assert_eq!(
             evaluate_expr(&ExprNode::Global(GlobalVar::Height), &ctx).unwrap(),
             ExpressionValue::Number(1080.0)
+        );
+    }
+
+    #[test]
+    fn evaluates_fractional_frame_and_time() {
+        let ctx = ExpressionContext {
+            frame: 1.5,
+            ..test_context()
+        };
+
+        let expression = Expression::parse("vec2(frame * 2, time * 24)").unwrap();
+        assert_eq!(
+            expression.evaluate(&ctx).unwrap(),
+            ExpressionValue::Vec2((3.0, 1.5))
+        );
+    }
+
+    #[test]
+    fn integer_frames_evaluate_to_whole_numbers() {
+        let ctx = test_context();
+
+        let expression = Expression::parse("vec2(frame * 2, time)").unwrap();
+        assert_eq!(
+            expression.evaluate(&ctx).unwrap(),
+            ExpressionValue::Vec2((96.0, 2.0))
         );
     }
 
@@ -509,7 +534,7 @@ mod tests {
             }),
         );
         let ctx = ExpressionContext {
-            frame: 2,
+            frame: 2.0,
             graph: Some(&graph),
             ..test_context()
         };
