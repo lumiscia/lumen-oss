@@ -240,8 +240,16 @@ export type Builtins = {
   ) => Expr<KindValue<S["returns"]>>;
 };
 
-function call(spec: BuiltinSpec, args: readonly AnyArg[]): Expr {
+function call(spec: BuiltinSpec, given: readonly (AnyArg | undefined)[]): Expr {
   const { maxArgs, minArgs, name } = spec;
+  let end = given.length;
+  while (end > 0 && given[end - 1] === undefined) {
+    end -= 1;
+  }
+  const args = given.slice(0, end);
+  if (args.includes(undefined)) {
+    throw new TypeError(`\`${name}\` cannot skip an optional argument before a later one.`);
+  }
   if (args.length < minArgs || (maxArgs !== null && args.length > maxArgs)) {
     const expected =
       maxArgs === null
@@ -251,14 +259,17 @@ function call(spec: BuiltinSpec, args: readonly AnyArg[]): Expr {
           : `${minArgs} to ${maxArgs}`;
     throw new TypeError(`\`${name}\` expects ${expected} arguments, got ${args.length}.`);
   }
-  const [first] = args;
+  const [first] = args as readonly AnyArg[];
   const kind =
     spec.returns !== "any" ? spec.returns : first === undefined ? undefined : kindOf(first);
-  return new Expr(`${name}(${args.map(lower).join(", ")})`, kind);
+  return new Expr(`${name}(${(args as readonly AnyArg[]).map(lower).join(", ")})`, kind);
 }
 
 const builtins = Object.fromEntries(
-  expressionBuiltins.map((spec) => [camelCase(spec.name), (...args: AnyArg[]) => call(spec, args)]),
+  expressionBuiltins.map((spec) => [
+    camelCase(spec.name),
+    (...args: (AnyArg | undefined)[]) => call(spec, args),
+  ]),
 ) as unknown as Builtins;
 
 export interface Interpolate {
@@ -366,6 +377,14 @@ type CheckedSignature<A extends readonly unknown[]> = false extends {
   : FunctionSignature;
 
 const identifier = /^[A-Za-z_]\w*$/;
+const reservedNames: ReadonlySet<string> = new Set([
+  "if",
+  "node",
+  "true",
+  "false",
+  ...expressionBuiltins.map(({ name }) => name),
+  ...expressionGlobals.map(({ name }) => name),
+]);
 
 /**
  * Defines a composition function such as `rise(start)`. The implementation runs once, with each
@@ -380,6 +399,14 @@ export function fn<A extends readonly AnyArg[], R extends Value>(
   const params = list.trim() === "" ? [] : list.split(",").map((param) => param.trim());
   if (!identifier.test(name) || !params.every((param) => identifier.test(param))) {
     throw new TypeError(`Invalid function signature \`${signature}\`; expected \`name(a, b)\`.`);
+  }
+  const reserved = [name, ...params].find((identifier) => reservedNames.has(identifier));
+  if (reserved !== undefined) {
+    throw new TypeError(`\`${reserved}\` is a reserved name.`);
+  }
+  const repeated = params.find((param, index) => params.indexOf(param) !== index);
+  if (repeated !== undefined) {
+    throw new TypeError(`Parameter \`${repeated}\` is declared twice.`);
   }
   if (impl.length !== params.length) {
     throw new TypeError(
@@ -410,11 +437,11 @@ export function moves(
   steps: readonly Move<number>[] | readonly Move<Vec2>[],
 ): Expr {
   const kind = kindOf(base);
-  if (kind !== "number" && kind !== "vec2") {
+  if (kind === "color" || kind === "string") {
     throw new TypeError("`moves` needs a number or vec2 base.");
   }
-  const zero = kind === "number" ? 0 : vec2(0, 0);
   const initial = base instanceof Expr ? base : new Expr(lower(base), kind);
+  const zero = kind === "number" ? 0 : kind === "vec2" ? vec2(0, 0) : binary(initial, "-", initial);
   const untypedTween = tween as (...args: readonly AnyArg[]) => Expr;
   return steps.reduce<Expr>((sum, { by, start, duration, ease }) => {
     const args = [zero, by, start, duration, ...(ease === undefined ? [] : [ease])];

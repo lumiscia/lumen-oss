@@ -212,6 +212,35 @@ describe("expression helpers", () => {
     ).toThrow("Function `rise` already exists.");
   });
 
+  test("drop trailing undefined arguments", () => {
+    expect(String(tween(0, 1, 0, 12, undefined))).toBe("=tween(0, 1, 0, 12)");
+    expect(String(spring(0, undefined, undefined))).toBe("=spring(0)");
+    expect(() => spring(0, undefined, 20)).toThrow(
+      "`spring` cannot skip an optional argument before a later one.",
+    );
+  });
+
+  test("moves accepts expressions of unknown kind", () => {
+    const offset = fn("offset(x)", (x: Num) => moves(x, [{ by: 10, start: 0, duration: 10 }]));
+    expect(offset.body).toBe("(x + tween((x - x), 10, 0, 10))");
+    expect(String(offset(frame).add(1))).toBe("=(offset(frame) + 1)");
+    expect(fn("same(x)", (x: Num) => moves(x, [])).body).toBe("x");
+    expect(() => moves(hex("#fff000") as unknown as Num, [])).toThrow(
+      "`moves` needs a number or vec2 base.",
+    );
+  });
+
+  test("reject reserved and duplicate names in function signatures", () => {
+    const body = (x: Num) => x as Expr<number>;
+    expect(() => fn("frame(x)", body)).toThrow("`frame` is a reserved name.");
+    expect(() => fn("tween(x)", body)).toThrow("`tween` is a reserved name.");
+    expect(() => fn("f(frame)", body)).toThrow("`frame` is a reserved name.");
+    expect(() => fn("f(if)", body)).toThrow("`if` is a reserved name.");
+    expect(() => fn("f(x, x)", (x: Num, _y: Num) => x as Expr<number>)).toThrow(
+      "Parameter `x` is declared twice.",
+    );
+  });
+
   test("cover every builtin and global", () => {
     const exports: Record<string, unknown> = shared;
     for (const { name } of expressionBuiltins) {
