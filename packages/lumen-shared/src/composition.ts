@@ -81,10 +81,21 @@ export class Composition {
 
   /** Adds a function from `fn` to the composition's `functions`. */
   addFunction(definition: FunctionDefinition): this {
-    const name = definition.signature.slice(0, definition.signature.indexOf("("));
+    const name = functionName(definition);
     const existing = this.#functions.get(name);
     if (existing !== undefined && existing !== definition) {
       throw new Error(`Function \`${name}\` already exists.`);
+    }
+
+    for (const other of [...this.#functions.values(), definition]) {
+      const clash = functionParams(other).find(
+        (param) => param === name || this.#functions.has(param),
+      );
+      if (clash !== undefined) {
+        throw new Error(
+          `Parameter \`${clash}\` of \`${functionName(other)}\` has the same name as a function.`,
+        );
+      }
     }
 
     this.#functions.set(name, definition);
@@ -249,4 +260,17 @@ function emptyAudioTimeline(): AudioTimelineInput {
     clips: [],
     tracks: [],
   };
+}
+
+function functionName(definition: FunctionDefinition): string {
+  return definition.signature.slice(0, definition.signature.indexOf("("));
+}
+
+function functionParams(definition: FunctionDefinition): string[] {
+  const { signature } = definition;
+  return signature
+    .slice(signature.indexOf("(") + 1, signature.lastIndexOf(")"))
+    .split(",")
+    .map((param) => param.trim())
+    .filter((param) => param !== "");
 }

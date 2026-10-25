@@ -246,6 +246,14 @@ describe("expression helpers", () => {
     expect(() => fn("f(f)", (f: Num) => f as Expr<number>)).toThrow(
       "Parameter `f` has the same name as its function.",
     );
+    const g = fn("g()", () => frame);
+    const f = fn("f(g)", (start: Num) => tween(0, 1, start, 12));
+    expect(() => new Composition().addFunction(g).addFunction(f)).toThrow(
+      "Parameter `g` of `f` has the same name as a function.",
+    );
+    expect(() => new Composition().addFunction(f).addFunction(g)).toThrow(
+      "Parameter `g` of `f` has the same name as a function.",
+    );
     expect(() => fn("f(x, x)", (x: Num, _y: Num) => x as Expr<number>)).toThrow(
       "Parameter `x` is declared twice.",
     );
