@@ -42,6 +42,9 @@ pub struct TransformParams {
     /// Vertical pivot point in pixels.
     #[meta(name = "Pivot Y", step = 1)]
     pub pivot_y: f64,
+    /// Uses the pivot as given; when off, a (0, 0) pivot means the source centre.
+    #[meta(name = "Custom pivot")]
+    pub custom_pivot: bool,
     /// Sampling filter used when transforming.
     #[meta(kind = "enum", enum_type = TransformSampling)]
     pub sampling: TransformSampling,
@@ -57,6 +60,7 @@ impl Default for TransformParams {
             rotate: 0.0,
             pivot_x: 0.0,
             pivot_y: 0.0,
+            custom_pivot: false,
             sampling: TransformSampling::Linear,
         }
     }
@@ -105,6 +109,7 @@ impl GpuCompileNode for Transform {
         ctx.register_compiled_node(CompiledTransform {
             node_id: self.id,
             params: self.params.clone(),
+            source_size: source.domain.storage_size,
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -122,6 +127,7 @@ impl GpuCompileNode for Transform {
 struct CompiledTransform {
     node_id: NodeId,
     params: TransformParamsDelegate,
+    source_size: lumen_gpu::Size,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -135,10 +141,19 @@ impl GpuCompiledNode for CompiledTransform {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
+        let pivot =
+            if evaluated.custom_pivot || evaluated.pivot_x != 0.0 || evaluated.pivot_y != 0.0 {
+                [evaluated.pivot_x as f32, evaluated.pivot_y as f32]
+            } else {
+                [
+                    self.source_size.width as f32 * 0.5,
+                    self.source_size.height as f32 * 0.5,
+                ]
+            };
         let params = compiler::TransformParams {
             scale: [evaluated.scale_x as f32, evaluated.scale_y as f32],
             translate: [evaluated.translate_x as f32, evaluated.translate_y as f32],
-            pivot: [evaluated.pivot_x as f32, evaluated.pivot_y as f32],
+            pivot,
             rotate_radians: (evaluated.rotate as f32).to_radians(),
             sampling: evaluated.sampling as u32,
             _pad: [0; 4],

@@ -28,7 +28,7 @@ use lumen_engine::{
             opacity::{Opacity, OpacityParamsDelegate},
             resize::{Resize, ResizeMode, ResizeParamsDelegate, ResizeSampling},
             time_remap::{TimeRemap, TimeRemapParamsDelegate},
-            transform::{Transform, TransformParamsDelegate},
+            transform::{Transform, TransformParamsDelegate, TransformSampling},
         },
         source::{
             background::{Background, BackgroundParamsDelegate},
@@ -1521,6 +1521,81 @@ fn path_fill_pixels_are_independent_of_stroke_trim_range() {
             .any(|pixel| pixel[3] > 0 && pixel[3] < 255),
         "subpixel path should exercise antialiased fill coverage"
     );
+}
+
+#[test]
+fn identity_transform_with_linear_sampling_reproduces_input() {
+    let gradient = NodeId::new(1);
+    let transform = NodeId::new(2);
+    let output = NodeId::new(3);
+    let source = || {
+        NodeKind::Background(Background {
+            id: gradient,
+            params: BackgroundParamsDelegate {
+                paint: Paint::Gradient(GradientPaint {
+                    kind: PaintKind::LinearGradient,
+                    stops: vec![
+                        GradientStop {
+                            offset: 0.0,
+                            color: [255, 0, 0, 255],
+                        },
+                        GradientStop {
+                            offset: 1.0,
+                            color: [0, 0, 255, 255],
+                        },
+                    ],
+                    ..Default::default()
+                })
+                .into(),
+                width: Deferred::value(8),
+                height: Deferred::value(4),
+                paint_supersample: Deferred::value(false),
+            },
+        })
+    };
+    let render = |with_transform: bool| {
+        let mut graph = Graph::new();
+        graph.nodes.insert(gradient, source());
+        if with_transform {
+            graph.nodes.insert(
+                transform,
+                NodeKind::Transform(Transform {
+                    id: transform,
+                    params: TransformParamsDelegate {
+                        sampling: TransformSampling::Linear.into(),
+                        ..Default::default()
+                    },
+                    source: PortRef::new(gradient, "output".to_string()),
+                }),
+            );
+        }
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(
+                    if with_transform { transform } else { gradient },
+                    "output".to_string(),
+                ),
+            }),
+        );
+        // The renderer caches compiled plans, so each composition gets its own.
+        let mut renderer = gpu_composition_renderer()?;
+        Some(render_rgba8(
+            &mut renderer,
+            &test_composition(graph),
+            0,
+            &EmptyMediaStore,
+        ))
+    };
+    let Some(input) = render(false) else {
+        return;
+    };
+    let Some(transformed) = render(true) else {
+        return;
+    };
+
+    assert_eq!(transformed, input);
 }
 
 fn filled_path_composition() -> Composition {
