@@ -2118,9 +2118,12 @@ fn text_atlas_overflow_does_not_thrash_on_repeated_binds() {
         let oversized = renderer
             .bind_frame(&composition, frame, &EmptyMediaStore)
             .unwrap();
-        // The raster glyph is too big for the atlas, so one field is drawn instead
-        // and reused.
-        assert_eq!(oversized.texture_upload_count(), usize::from(frame == 4));
+        // With distance fields, the raster glyph is too big for the atlas, so one
+        // field is drawn instead and reused. Without them the glyph is dropped.
+        assert_eq!(
+            oversized.texture_upload_count(),
+            usize::from(cfg!(feature = "msdf") && frame == 4)
+        );
         renderer.upload_bound_frame(&oversized).unwrap();
     }
     let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(1)).unwrap() else {
@@ -3355,6 +3358,7 @@ fn text_spacing_and_variable_weight_change_output_smoothly() {
     assert_eq!(render(animated.clone(), 5), w450);
 }
 
+#[cfg(feature = "msdf")]
 #[test]
 fn text_glyphs_larger_than_the_atlas_still_draw() {
     let _guard = TEXT_TEST_LOCK.lock().unwrap();
@@ -3380,6 +3384,7 @@ fn text_glyphs_larger_than_the_atlas_still_draw() {
     assert!(inked > 256 * 256 / 2, "only {inked} pixels inked");
 }
 
+#[cfg(feature = "msdf")]
 #[test]
 fn text_msdf_corners_stay_within_a_pixel_of_raster_at_1000px() {
     use lumen_engine::node::source::text::TextRenderMode;

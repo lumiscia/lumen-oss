@@ -287,6 +287,7 @@ impl TextSystem {
         loop {
             let keys = atlas.keys_for(glyphs, mode);
             atlas.touch(&keys);
+            atlas.touch_oversized(glyphs);
             if !self.place_missing(atlas, &keys, retry_new, uploads) {
                 return false;
             }
@@ -734,6 +735,17 @@ impl GlyphAtlas {
         for key in keys {
             if let Some(glyph) = self.glyphs.get_mut(key) {
                 glyph.last_used = self.frame;
+            }
+        }
+    }
+
+    /// Keeps the oversized markers that route `glyphs` to distance fields.
+    fn touch_oversized(&mut self, glyphs: &[TextGlyph]) {
+        for glyph in glyphs {
+            if let Some(marker) = self.glyphs.get_mut(&AtlasKey::Raster(glyph.key.0))
+                && matches!(marker.image, AtlasImage::Oversized)
+            {
+                marker.last_used = self.frame;
             }
         }
     }
@@ -1619,6 +1631,35 @@ mod tests {
             let colour = prepare(&mut system, &mut atlas, &colour, TextRenderMode::Raster);
             assert_eq!(colour.instances.len(), 0);
             assert_eq!(colour.dropped_glyphs, 1);
+        }
+
+        #[test]
+        fn oversized_fallbacks_stay_stable_when_the_atlas_overflows() {
+            let mut system = TextSystem::new();
+            let mut request = TextLayoutRequest::new("HWI");
+            request.font_size = 1500.0;
+            let layout = system.layout(&request);
+            let mut atlas = GlyphAtlas::new(512);
+            let mut overfull = None;
+            let mut frames = Vec::new();
+            for _ in 0..6 {
+                atlas.begin_frame();
+                let prepared = system.prepare_glyphs(
+                    &mut atlas,
+                    &layout,
+                    TextRenderMode::Raster,
+                    usize::MAX,
+                    &mut overfull,
+                );
+                atlas.commit(prepared.frame);
+                frames.push((prepared.instances.len(), prepared.uploads.len()));
+            }
+            let (instances, _) = frames[0];
+            assert!(instances > 0);
+            for (frame, (count, uploads)) in frames.iter().enumerate() {
+                assert_eq!(*count, instances, "frame {frame}");
+                assert!(frame == 0 || *uploads == 0, "frame {frame} uploaded");
+            }
         }
 
         #[test]
