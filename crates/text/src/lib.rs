@@ -529,6 +529,11 @@ pub struct TextGlyph {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct GlyphKey(pub CacheKey);
 
+/// etagere indexes its items with `u16` and wraps silently past that. Each
+/// allocation uses at most two items plus one per shelf, so this keeps atlases
+/// up to 4096 pixels tall well within range.
+const MAX_ATLAS_GLYPHS: usize = 16 * 1024;
+
 /// Glyph atlas shared by every text layout drawn with one GPU texture.
 ///
 /// Raster glyphs and distance fields share one RGBA8 texture. Only placement
@@ -536,6 +541,7 @@ pub struct GlyphKey(pub CacheKey);
 /// a frame. A fixed size keeps every free rectangle available to large glyphs.
 pub struct GlyphAtlas {
     allocator: etagere::AtlasAllocator,
+    allocations: usize,
     size: u32,
     availability: u64,
     glyphs: HashMap<AtlasKey, AtlasGlyph>,
@@ -593,9 +599,10 @@ impl std::fmt::Debug for GlyphAtlas {
 
 impl GlyphAtlas {
     pub fn new(size: u32) -> Self {
-        let size = size.clamp(1, u16::MAX.into());
+        let size = size.clamp(1, 4096);
         Self {
             allocator: etagere::AtlasAllocator::new(size2(size as i32, size as i32)),
+            allocations: 0,
             size,
             availability: 0,
             glyphs: HashMap::new(),
@@ -690,6 +697,7 @@ impl GlyphAtlas {
     fn clear(&mut self) {
         self.glyphs.clear();
         self.allocator.clear();
+        self.allocations = 0;
         self.availability += 1;
     }
 
@@ -714,7 +722,10 @@ impl GlyphAtlas {
     ) -> Option<(AllocId, [u32; 2])> {
         let request = size2(size[0].max(1) as i32, size[1].max(1) as i32);
         loop {
-            if let Some(allocation) = self.allocator.allocate(request) {
+            if self.allocations < MAX_ATLAS_GLYPHS
+                && let Some(allocation) = self.allocator.allocate(request)
+            {
+                self.allocations += 1;
                 let min = allocation.rectangle.min;
                 return Some((allocation.id, [min.x as u32, min.y as u32]));
             }
@@ -726,6 +737,7 @@ impl GlyphAtlas {
                 }) = self.glyphs.remove(&key)
                 {
                     self.allocator.deallocate(placed.slot);
+                    self.allocations -= 1;
                     self.availability += 1;
                 }
             } else {
@@ -995,6 +1007,37 @@ mod tests {
                 previous = rendered_y;
             }
         }
+    }
+
+    #[test]
+    fn atlas_evicts_before_running_out_of_allocator_ids() {
+        let mut system = TextSystem::new();
+        let template = system.layout(&TextLayoutRequest::new("A")).glyphs[0].key.0;
+        let mut atlas = GlyphAtlas::new(512);
+        let mut stale = None;
+        for index in 0..70_000_u32 {
+            if index % 1000 == 0 {
+                atlas.begin_frame();
+                stale = None;
+            }
+            let (slot, origin) = atlas.allocate([1, 1], &mut stale).unwrap();
+            let key = CacheKey {
+                font_size_bits: index,
+                ..template
+            };
+            atlas.insert(
+                AtlasKey::Raster(key),
+                AtlasImage::Placed(PlacedGlyph {
+                    slot,
+                    origin,
+                    size: [1, 1],
+                    left: 0.0,
+                    top: 0.0,
+                    mode: GLYPH_MODE_RASTER_MASK,
+                }),
+            );
+        }
+        assert_eq!(atlas.len(), MAX_ATLAS_GLYPHS);
     }
 
     #[test]
