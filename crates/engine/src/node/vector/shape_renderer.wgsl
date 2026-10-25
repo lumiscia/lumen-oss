@@ -1,4 +1,4 @@
-struct ShapeParams {
+struct ShapeUniforms {
     fill_paint: Paint,
     stroke_paint: Paint,
     position: vec2<f32>,
@@ -9,7 +9,7 @@ struct ShapeParams {
     flags: u32,
 }
 
-@group(0) @binding(0) var<uniform> params: ShapeParams;
+@group(0) @binding(0) var<uniform> params: ShapeUniforms;
 @group(0) @binding(1) var output_tex: texture_storage_2d<rgba8unorm, write>;
 
 fn sd_rect(p: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
@@ -22,14 +22,6 @@ fn sd_ellipse(p: vec2<f32>, half_size: vec2<f32>) -> f32 {
     let safe_half = max(half_size, vec2<f32>(0.5));
     let normalized = p / safe_half;
     return (length(normalized) - 1.0) * min(safe_half.x, safe_half.y);
-}
-
-fn edge_coverage(distance: f32, edge_antialias: bool) -> f32 {
-    return select(
-        select(0.0, 1.0, distance <= 0.0),
-        clamp(0.5 - distance, 0.0, 1.0),
-        edge_antialias,
-    );
 }
 
 fn shape_distance(pixel: vec2<f32>) -> f32 {
@@ -45,9 +37,9 @@ fn shape_distance(pixel: vec2<f32>) -> f32 {
 
 fn sample_shape(pixel: vec2<f32>) -> vec4<f32> {
     let distance = shape_distance(pixel);
-    let fill_enabled = (params.flags & 1u) != 0u;
-    let stroke_enabled = (params.flags & 2u) != 0u;
-    let edge_antialias = (params.flags & 4u) != 0u;
+    let fill_enabled = (params.flags & STYLE_FILL_ENABLED) != 0u;
+    let stroke_enabled = (params.flags & STYLE_STROKE_ENABLED) != 0u;
+    let edge_antialias = (params.flags & STYLE_EDGE_ANTIALIAS) != 0u;
     let fill_alpha = select(0.0, edge_coverage(distance, edge_antialias), fill_enabled);
     let stroke_distance = abs(distance) - params.stroke_width * 0.5;
     let stroke_alpha = select(

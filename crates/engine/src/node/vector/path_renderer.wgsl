@@ -1,4 +1,4 @@
-struct PathParams {
+struct PathUniforms {
     fill_paint: Paint,
     stroke_paint: Paint,
     position: vec2<f32>,
@@ -12,6 +12,10 @@ struct PathParams {
     _pad: u32,
 }
 
+// Bits of `flags` in `PathPoint`; unrelated to the style bits in `PathUniforms.flags`.
+const POINT_END: u32 = 1u;
+const POINT_CLOSED: u32 = 2u;
+
 struct PathPoint {
     position: vec2<f32>,
     contour_start: u32,
@@ -24,7 +28,7 @@ struct PathPoints {
     points: array<PathPoint>,
 }
 
-@group(0) @binding(0) var<uniform> params: PathParams;
+@group(0) @binding(0) var<uniform> params: PathUniforms;
 @group(0) @binding(1) var<storage, read> path_points: PathPoints;
 @group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
 
@@ -39,7 +43,7 @@ fn polygon_contains(p: vec2<f32>) -> bool {
     let count = params.point_count;
     for (var i = 0u; i < count; i = i + 1u) {
         let current = path_points.points[i];
-        let is_end = (current.flags & 1u) != 0u;
+        let is_end = (current.flags & POINT_END) != 0u;
         let next_index = select(i + 1u, current.contour_start, is_end);
         if (next_index >= count || next_index == i) {
             continue;
@@ -55,14 +59,6 @@ fn polygon_contains(p: vec2<f32>) -> bool {
         }
     }
     return inside;
-}
-
-fn edge_coverage(distance: f32, edge_antialias: bool) -> f32 {
-    return select(
-        select(0.0, 1.0, distance <= 0.0),
-        clamp(0.5 - distance, 0.0, 1.0),
-        edge_antialias,
-    );
 }
 
 fn fill_coverage(signed_distance: f32, inside: bool, edge_antialias: bool) -> f32 {
@@ -85,12 +81,12 @@ fn path_edge_distances(p: vec2<f32>) -> PathEdgeDistances {
     }
 
     var distances = PathEdgeDistances(1000000.0, 1000000.0);
-    let fill_enabled = (params.flags & 1u) != 0u;
-    let trimmed_stroke_enabled = (params.flags & 2u) != 0u && params.trim_start < params.trim_end;
+    let fill_enabled = (params.flags & STYLE_FILL_ENABLED) != 0u;
+    let trimmed_stroke_enabled = (params.flags & STYLE_STROKE_ENABLED) != 0u && params.trim_start < params.trim_end;
     for (var i = 0u; i < count; i = i + 1u) {
         let current = path_points.points[i];
-        let is_end = (current.flags & 1u) != 0u;
-        let is_closed = (current.flags & 2u) != 0u;
+        let is_end = (current.flags & POINT_END) != 0u;
+        let is_closed = (current.flags & POINT_CLOSED) != 0u;
         if (is_end && !is_closed) {
             continue;
         }
@@ -127,9 +123,9 @@ fn path_edge_distances(p: vec2<f32>) -> PathEdgeDistances {
 }
 
 fn sample_path(pixel: vec2<f32>) -> vec4<f32> {
-    let fill_enabled = (params.flags & 1u) != 0u;
-    let stroke_enabled = (params.flags & 2u) != 0u;
-    let edge_antialias = (params.flags & 4u) != 0u;
+    let fill_enabled = (params.flags & STYLE_FILL_ENABLED) != 0u;
+    let stroke_enabled = (params.flags & STYLE_STROKE_ENABLED) != 0u;
+    let edge_antialias = (params.flags & STYLE_EDGE_ANTIALIAS) != 0u;
     let distances = path_edge_distances(pixel);
     let inside = polygon_contains(pixel);
     let signed_distance = select(distances.full, -distances.full, inside);
