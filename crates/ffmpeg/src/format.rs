@@ -13,8 +13,65 @@ pub struct Rational {
 }
 
 impl Rational {
+    pub const fn new(numerator: i32, denominator: i32) -> Self {
+        Self {
+            numerator,
+            denominator,
+        }
+    }
+
+    /// Converts a floating-point frame rate to an exact rational.
+    ///
+    /// Whole rates map to `n/1`, NTSC rates (23.976, 29.97, 59.94, ...) map to `n*1000/1001`, and
+    /// any other rate is rounded to the nearest 1/1000 and reduced.
+    pub fn from_fps(fps: f64) -> Result<Self> {
+        const OPERATION: &str = "Rational::from_fps";
+        const WHOLE_TOLERANCE: f64 = 1e-6;
+        const NTSC_TOLERANCE: f64 = 1e-3;
+        if !fps.is_finite() || fps <= 0.0 || fps > 1_000_000.0 {
+            return Err(crate::FfmpegError::new(
+                OPERATION,
+                format!("frame rate {fps} must be a finite value between 0 and 1,000,000"),
+            ));
+        }
+        let whole = fps.round();
+        if whole >= 1.0 && (fps - whole).abs() < WHOLE_TOLERANCE {
+            return Ok(Self::new(whole as i32, 1));
+        }
+        let ntsc = (fps * 1.001).round();
+        if ntsc >= 1.0 && (fps * 1.001 - ntsc).abs() < NTSC_TOLERANCE {
+            return Ok(Self::new(ntsc as i32 * 1000, 1001));
+        }
+        let millis = (fps * 1000.0).round() as i64;
+        if millis == 0 {
+            return Err(crate::FfmpegError::new(
+                OPERATION,
+                format!("frame rate {fps} rounds to zero at millisecond precision"),
+            ));
+        }
+        let divisor = gcd(millis, 1000);
+        Ok(Self::new(
+            (millis / divisor) as i32,
+            (1000 / divisor) as i32,
+        ))
+    }
+
     pub fn as_f64(self) -> Option<f64> {
         (self.denominator != 0).then_some(self.numerator as f64 / self.denominator as f64)
+    }
+}
+
+fn gcd(mut a: i64, mut b: i64) -> i64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a.max(1)
+}
+
+impl From<u32> for Rational {
+    /// Interprets the value as a whole number of frames per second.
+    fn from(value: u32) -> Self {
+        Self::new(i32::try_from(value).unwrap_or(i32::MAX), 1)
     }
 }
 
@@ -297,5 +354,35 @@ mod tests {
             .as_f64(),
             Some(0.5)
         );
+    }
+
+    #[test]
+    fn maps_common_frame_rates_exactly() {
+        assert_eq!(Rational::from_fps(30.0).unwrap(), Rational::new(30, 1));
+        assert_eq!(
+            Rational::from_fps(23.976).unwrap(),
+            Rational::new(24_000, 1001)
+        );
+        assert_eq!(
+            Rational::from_fps(f64::from(29.97_f32)).unwrap(),
+            Rational::new(30_000, 1001)
+        );
+        assert_eq!(
+            Rational::from_fps(59.94).unwrap(),
+            Rational::new(60_000, 1001)
+        );
+        assert_eq!(Rational::from_fps(12.5).unwrap(), Rational::new(25, 2));
+        assert_eq!(
+            Rational::from_fps(24.0009).unwrap(),
+            Rational::new(24_001, 1000)
+        );
+        assert_eq!(Rational::from_fps(0.0009).unwrap(), Rational::new(1, 1000));
+    }
+
+    #[test]
+    fn rejects_invalid_frame_rates() {
+        for fps in [0.0, 0.0004, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(Rational::from_fps(fps).is_err());
+        }
     }
 }

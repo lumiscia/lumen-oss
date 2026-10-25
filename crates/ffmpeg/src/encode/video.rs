@@ -1,10 +1,15 @@
 use std::ptr;
 
 use crate::ffi::{self, AvFrame, AvPacket, SWS_BILINEAR, sys};
+use crate::format::Rational;
 use crate::gpu::GpuBackend;
 use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec};
 use crate::{FfmpegError, Result};
 use sys::{
+    AVColorPrimaries::AVCOL_PRI_BT709,
+    AVColorRange::AVCOL_RANGE_MPEG,
+    AVColorSpace::AVCOL_SPC_BT709,
+    AVColorTransferCharacteristic::AVCOL_TRC_BT709,
     AVMediaType::AVMEDIA_TYPE_VIDEO,
     AVPixelFormat::{AV_PIX_FMT_CUDA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
 };
@@ -15,11 +20,16 @@ use super::hw::{AvBufferRef, create_encoder_hw_contexts};
 use super::output::OutputContext;
 use super::telemetry::GpuEncodeTelemetry;
 
+// swscale range flags: 1 is full (JPEG) range, 0 is limited (MPEG) range.
+const SWS_RANGE_FULL: i32 = 1;
+const SWS_RANGE_LIMITED: i32 = 0;
+
 #[derive(Debug, Clone)]
 pub struct VideoEncoderConfig {
     pub width: u32,
     pub height: u32,
-    pub fps: u32,
+    /// Exact frames per second; use `Rational::from_fps` to convert a floating-point rate.
+    pub fps: Rational,
     pub codec: VideoCodec,
     pub encoder_name: Option<String>,
     pub mode: EncodeMode,
@@ -27,11 +37,11 @@ pub struct VideoEncoderConfig {
 }
 
 impl VideoEncoderConfig {
-    pub fn cpu_rgba(width: u32, height: u32, fps: u32, codec: VideoCodec) -> Self {
+    pub fn cpu_rgba(width: u32, height: u32, fps: impl Into<Rational>, codec: VideoCodec) -> Self {
         Self {
             width,
             height,
-            fps,
+            fps: fps.into(),
             codec,
             encoder_name: None,
             mode: EncodeMode::CpuUpload,
@@ -39,7 +49,7 @@ impl VideoEncoderConfig {
         }
     }
 
-    pub fn h264_videotoolbox(width: u32, height: u32, fps: u32) -> Self {
+    pub fn h264_videotoolbox(width: u32, height: u32, fps: impl Into<Rational>) -> Self {
         Self {
             encoder_name: Some("h264_videotoolbox".to_string()),
             ..Self::cpu_rgba(width, height, fps, VideoCodec::H264)
@@ -67,7 +77,11 @@ unsafe impl Send for VideoEncoder {}
 
 impl VideoEncoder {
     pub fn create(output: &mut OutputContext, config: VideoEncoderConfig) -> Result<Self> {
-        if config.width == 0 || config.height == 0 || config.fps == 0 {
+        if config.width == 0
+            || config.height == 0
+            || config.fps.numerator <= 0
+            || config.fps.denominator <= 0
+        {
             return Err(FfmpegError::new(
                 "VideoEncoder::create",
                 "width, height, and fps must be greater than zero",
@@ -85,13 +99,14 @@ impl VideoEncoder {
                 "height exceeds FFmpeg's supported integer range",
             )
         })?;
-        let fps = i32::try_from(config.fps).map_err(|_| {
-            FfmpegError::new(
-                "VideoEncoder::create",
-                "fps exceeds FFmpeg's supported integer range",
-            )
-        })?;
-        let gop_size = fps.checked_mul(2).ok_or_else(|| {
+        let framerate = sys::AVRational {
+            num: config.fps.numerator,
+            den: config.fps.denominator,
+        };
+        // Two seconds of frames, rounded to the nearest whole frame.
+        let gop_frames = (i64::from(framerate.num) * 2 + i64::from(framerate.den) / 2)
+            / i64::from(framerate.den);
+        let gop_size = i32::try_from(gop_frames.max(1)).map_err(|_| {
             FfmpegError::new(
                 "VideoEncoder::create",
                 "fps is too large to calculate the encoder GOP size",
@@ -112,7 +127,8 @@ impl VideoEncoder {
                 "failed to allocate output stream",
             ));
         }
-        let context = unsafe { sys::avcodec_alloc_context3(codec) };
+        let mut context_guard = CodecContextGuard(unsafe { sys::avcodec_alloc_context3(codec) });
+        let context = context_guard.0;
         if context.is_null() {
             return Err(FfmpegError::new(
                 "avcodec_alloc_context3",
@@ -120,7 +136,10 @@ impl VideoEncoder {
             ));
         }
 
-        let time_base = sys::AVRational { num: 1, den: fps };
+        let time_base = sys::AVRational {
+            num: framerate.den,
+            den: framerate.num,
+        };
         let hw_contexts = create_encoder_hw_contexts(&config)?;
 
         unsafe {
@@ -129,7 +148,7 @@ impl VideoEncoder {
             (*context).width = width;
             (*context).height = height;
             (*context).time_base = time_base;
-            (*context).framerate = sys::AVRational { num: fps, den: 1 };
+            (*context).framerate = framerate;
             (*context).pix_fmt = match config.mode {
                 EncodeMode::GpuTexture(GpuBackend::Cuda) => AV_PIX_FMT_CUDA,
                 EncodeMode::GpuTexture(GpuBackend::Metal) => AV_PIX_FMT_VIDEOTOOLBOX,
@@ -137,6 +156,10 @@ impl VideoEncoder {
                     AV_PIX_FMT_YUV420P
                 }
             };
+            (*context).color_primaries = AVCOL_PRI_BT709;
+            (*context).color_trc = AVCOL_TRC_BT709;
+            (*context).colorspace = AVCOL_SPC_BT709;
+            (*context).color_range = AVCOL_RANGE_MPEG;
             (*context).bit_rate = config.bit_rate;
             (*context).gop_size = gop_size;
             if let Some(frames) = hw_contexts
@@ -198,6 +221,27 @@ impl VideoEncoder {
                     "failed to create encoder color conversion context",
                 ));
             }
+            // Full-range RGB in, BT.709 limited-range YUV out, matching the stream's colour tags.
+            let coefficients = unsafe { sys::sws_getCoefficients(sys::SWS_CS_ITU709) };
+            let configured = unsafe {
+                sys::sws_setColorspaceDetails(
+                    scaler,
+                    coefficients,
+                    SWS_RANGE_FULL,
+                    coefficients,
+                    SWS_RANGE_LIMITED,
+                    0,
+                    1 << 16,
+                    1 << 16,
+                )
+            };
+            if configured < 0 {
+                unsafe { sys::sws_freeContext(scaler) };
+                return Err(FfmpegError::new(
+                    "sws_setColorspaceDetails",
+                    "failed to configure BT.709 color conversion",
+                ));
+            }
             scaler
         } else {
             ptr::null_mut()
@@ -208,7 +252,7 @@ impl VideoEncoder {
             height: config.height,
             stream_index: unsafe { (*stream).index as usize },
             stream_time_base: time_base,
-            context,
+            context: context_guard.release(),
             frame,
             scaler,
             hw_device: hw_contexts
@@ -402,6 +446,21 @@ fn validate_cpu_frame(
     }
 
     Ok(ValidatedCpuFrameLayout { stride, height })
+}
+
+/// Frees the codec context on early returns until ownership moves into the encoder.
+struct CodecContextGuard(*mut sys::AVCodecContext);
+
+impl CodecContextGuard {
+    fn release(&mut self) -> *mut sys::AVCodecContext {
+        std::mem::replace(&mut self.0, ptr::null_mut())
+    }
+}
+
+impl Drop for CodecContextGuard {
+    fn drop(&mut self) {
+        unsafe { sys::avcodec_free_context(&mut self.0) };
+    }
 }
 
 impl Drop for VideoEncoder {
