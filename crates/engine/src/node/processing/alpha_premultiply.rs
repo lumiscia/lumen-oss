@@ -14,7 +14,7 @@ pub(crate) const SHADER: &str = concat!(
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct AlphaPremultiplyParams {
     /// Alpha conversion mode.
-    #[meta(format = "alpha_premultiply_mode")]
+    #[meta(format = "alpha_premultiply_mode", constant)]
     pub mode: String,
 }
 

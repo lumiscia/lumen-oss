@@ -224,6 +224,9 @@ fn property_def_tokens(property: &PropertyAttr) -> proc_macro2::TokenStream {
             description: #description,
             #[cfg(feature = "metadata")]
             constraints: #constraints,
+            // `#[property]` fields hold a raw `PropertyExpression` from `parse_property`.
+            #[cfg(feature = "metadata")]
+            accepts_expressions: true,
         }
     }
 }

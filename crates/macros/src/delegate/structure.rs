@@ -103,12 +103,20 @@ pub(crate) fn expand_struct_delegate(
             }
         } else {
             let property_def = property_def_tokens(&meta.property, ty);
+            let reject_expression = meta.property.constant.then(|| {
+                quote! {
+                    if matches!(parsed, ::lumen_engine::node::PropertyExpression::Expr(_)) {
+                        ::anyhow::bail!("`{}` does not support expressions", #name);
+                    }
+                }
+            });
             quote! {
                 if let Some(value) = params.and_then(|params| params.get(#name)) {
                     let def = #property_def;
-                    metas.#ident = ::lumen_engine::node::DelegateValue::from_property_expression(
-                        ::lumen_engine::json::parse_property(value, Some(&def), #name)?,
-                    )?;
+                    let parsed = ::lumen_engine::json::parse_property(value, Some(&def), #name)?;
+                    #reject_expression
+                    metas.#ident =
+                        ::lumen_engine::node::DelegateValue::from_property_expression(parsed)?;
                 }
             }
         }

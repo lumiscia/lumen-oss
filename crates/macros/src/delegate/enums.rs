@@ -182,6 +182,8 @@ pub(crate) fn expand_enum_delegate(
             .collect::<Result<Vec<_>>>()?;
         quote! {
             impl ::lumen_engine::node::DeferredValue for #ident {
+                const ACCEPTS_EXPRESSIONS: bool = true;
+
                 fn eval_deferred(
                     deferred: &::lumen_engine::node::Deferred<Self>,
                     node_id: ::lumen_engine::node::NodeId,
@@ -361,6 +363,8 @@ pub(crate) fn expand_enum_delegate(
         }
 
         impl ::lumen_engine::node::DelegateValue for #delegate_ident {
+            const ACCEPTS_EXPRESSIONS: bool = false;
+
             #enum_property_methods
         }
 

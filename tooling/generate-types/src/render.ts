@@ -63,7 +63,11 @@ const renderNodeInterface = (spec: NodeSpec): string => {
       : `{\n${params
           .map(
             (param) =>
-              `    readonly ${quote(param.id)}?: ExpressionValue<${paramType(spec.kind, param)}>;`,
+              `    readonly ${quote(param.id)}?: ${
+                param.acceptsExpressions
+                  ? `ExpressionValue<${paramType(spec.kind, param)}>`
+                  : paramType(spec.kind, param)
+              };`,
           )
           .join("\n")}\n  }`;
 
@@ -183,15 +187,7 @@ export type NodeLiteralValue =
   | readonly string[];
 
 export type ExpressionString = \`=\${string}\`;
-export type ExpressionValue<T> =
-  | ExpressionString
-  | (T extends string | number | boolean
-      ? T
-      : T extends readonly (infer U)[]
-        ? readonly ExpressionValue<U>[]
-        : T extends object
-          ? { readonly [K in keyof T]: ExpressionValue<T[K]> }
-          : T);
+export type ExpressionValue<T> = T | ExpressionString;
 export type Vec2 = readonly [number, number];
 export type Color =
   | readonly [number, number, number]

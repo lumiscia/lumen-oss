@@ -49,6 +49,9 @@ pub struct PropertyDef {
     pub description: &'static str,
     #[cfg(feature = "metadata")]
     pub constraints: PropertyConstraints,
+    /// Whether the param accepts an `"=..."` expression in place of a literal.
+    #[cfg(feature = "metadata")]
+    pub accepts_expressions: bool,
 }
 
 #[cfg(feature = "metadata")]

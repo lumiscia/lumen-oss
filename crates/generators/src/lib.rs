@@ -1,3 +1,6 @@
+// The composition schema is one large `json!` literal.
+#![recursion_limit = "256"]
+
 use std::{
     collections::BTreeMap,
     fs,
@@ -88,6 +91,7 @@ pub struct NodeParamSpec {
     pub kind: NodeParamKind,
     pub description: String,
     pub default_value: NodeLiteralValue,
+    pub accepts_expressions: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub enum_options: Vec<NodeEnumOptionSpec>,
     #[serde(skip_serializing_if = "PropertyConstraintsSpec::is_empty")]
@@ -305,6 +309,11 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
             },
             "$defs": {
                 "nodeKinds": manifest.node_kinds,
+                "expression": {
+                    "description": "An expression evaluated per frame in place of a literal value.",
+                    "type": "string",
+                    "pattern": "^=([^=]|$)"
+                },
                 "color": {
                     "oneOf": [
                         {
@@ -463,10 +472,14 @@ fn node_schema_json(spec: &NodeSpec) -> Value {
 }
 
 fn property_schema_json(property: &NodeParamSpec) -> Value {
-    let mut schema = match property.kind {
+    let value_schema = match property.kind {
         NodeParamKind::Float => numeric_property_schema_json("number", property),
         NodeParamKind::Int => numeric_property_schema_json("integer", property),
         NodeParamKind::Bool => json!({ "type": "boolean" }),
+        // A single leading `=` parses as an expression; `==` escapes a literal `=`.
+        NodeParamKind::String if !property.accepts_expressions => {
+            json!({ "type": "string", "not": { "pattern": "^=([^=]|$)" } })
+        }
         NodeParamKind::String => json!({ "type": "string" }),
         NodeParamKind::Color => json!({ "$ref": "#/$defs/color" }),
         NodeParamKind::Paint => json!({ "$ref": "#/$defs/paint" }),
@@ -479,6 +492,11 @@ fn property_schema_json(property: &NodeParamSpec) -> Value {
                 .collect::<Vec<_>>();
             json!({ "type": "string", "enum": values })
         }
+    };
+    let mut schema = if property.accepts_expressions {
+        json!({ "anyOf": [value_schema, { "$ref": "#/$defs/expression" }] })
+    } else {
+        value_schema
     };
     if let Value::Object(object) = &mut schema {
         object.insert("title".to_string(), json!(property.name));
@@ -550,6 +568,7 @@ fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpe
                 kind: property_kind_from_schema(property.expected),
                 description: property.description.to_string(),
                 default_value: raw_default_value,
+                accepts_expressions: property.accepts_expressions,
                 enum_options,
                 constraints: constraints_from_schema(property.constraints),
             })
@@ -668,4 +687,124 @@ fn write_if_changed(path: &Path, content: &str) -> Result<()> {
         return Ok(());
     }
     fs::write(path, content).with_context(|| format!("failed to write `{}`", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SOURCE_ID: i64 = 100;
+    const OUTPUT_ID: i64 = 101;
+
+    fn composition(node: Value, connections: Vec<Value>, background_color: Value) -> Value {
+        json!({
+            "timeline": { "fps": 30, "duration_frames": 10 },
+            "render_settings": { "width": 16, "height": 16, "background_color": background_color },
+            "nodes": [
+                node,
+                { "id": SOURCE_ID, "type": "background" },
+                { "id": OUTPUT_ID, "type": "media_output" }
+            ],
+            "connections": connections
+        })
+    }
+
+    /// A renderable composition containing `spec` with `params`, its required inputs fed by a
+    /// background node, and its output wired to the media output.
+    fn composition_with_node(spec: &NodeSpec, params: Value) -> Value {
+        let mut connections = spec
+            .inputs
+            .iter()
+            .filter(|input| !input.optional)
+            .map(|input| json!({ "from_node": SOURCE_ID, "to_node": 1, "to_port": input.name }))
+            .collect::<Vec<_>>();
+        connections.push(json!({ "from_node": 1, "to_node": OUTPUT_ID, "to_port": "source" }));
+        composition(
+            json!({ "id": 1, "type": spec.kind, "params": params }),
+            connections,
+            json!([0, 0, 0, 255]),
+        )
+    }
+
+    fn schema_validator() -> jsonschema::Validator {
+        let artifacts = render_definition_artifacts().unwrap();
+        let mut schema: Value = serde_json::from_str(&artifacts.composition_schema_json).unwrap();
+        // `$defs.nodeKinds` is a plain array rather than a schema, which the meta-schema rejects.
+        schema["$defs"].as_object_mut().unwrap().remove("nodeKinds");
+        jsonschema::validator_for(&schema).unwrap()
+    }
+
+    #[test]
+    fn expression_support_matches_engine_parsing() {
+        let manifest = meta_manifest().unwrap();
+        let validator = schema_validator();
+        for spec in manifest.node_specs.values() {
+            for param in &spec.params {
+                let label = format!("{}.{}", spec.kind, param.id);
+                let literal = composition_with_node(
+                    spec,
+                    json!({ param.id.clone(): param.default_value.clone() }),
+                );
+                lumen_engine::json::parse_value(&literal)
+                    .unwrap_or_else(|error| panic!("{label} literal should parse: {error:#}"));
+                assert!(
+                    validator.is_valid(&literal),
+                    "{label} literal should validate"
+                );
+
+                let expression = composition_with_node(spec, json!({ param.id.clone(): "=1" }));
+                let engine_accepts = lumen_engine::json::parse_value(&expression).is_ok();
+                assert_eq!(engine_accepts, param.accepts_expressions, "{label} engine");
+                assert_eq!(
+                    validator.is_valid(&expression),
+                    param.accepts_expressions,
+                    "{label} schema"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn schema_accepts_expressions_only_for_expression_params() {
+        let manifest = meta_manifest().unwrap();
+        let validator = schema_validator();
+        let node =
+            |kind: &str, params: Value| composition_with_node(&manifest.node_specs[kind], params);
+
+        assert!(validator.is_valid(&node("exposure", json!({ "exposure": "=frame * 0.1" }))));
+        assert!(validator.is_valid(&node("text", json!({ "position": "=vec2(frame, 0)" }))));
+        // `media_in.kind` is an `i64`-backed enum, so it evaluates expressions.
+        assert!(validator.is_valid(&node("media_in", json!({ "kind": "=1" }))));
+
+        assert!(!validator.is_valid(&node("exposure", json!({ "exposure": "frame" }))));
+        assert!(!validator.is_valid(&node("text", json!({ "color": "=frame" }))));
+        assert!(!validator.is_valid(&node("text", json!({ "position": ["=frame", 0] }))));
+        assert!(!validator.is_valid(&node("transform", json!({ "sampling": "=1" }))));
+        // `alpha_premultiply.mode` decides output metadata, so it is literal-only.
+        let mode = manifest.node_specs["alpha_premultiply"]
+            .params
+            .iter()
+            .find(|param| param.id == "mode")
+            .unwrap();
+        assert!(!mode.accepts_expressions);
+        let expression_mode = node("alpha_premultiply", json!({ "mode": "='premultiply'" }));
+        assert!(!validator.is_valid(&expression_mode));
+        assert!(lumen_engine::json::parse_value(&expression_mode).is_err());
+        let escaped_mode = node("alpha_premultiply", json!({ "mode": "==premultiply" }));
+        assert!(validator.is_valid(&escaped_mode));
+        assert!(lumen_engine::json::parse_value(&escaped_mode).is_ok());
+        let gradient_with_expression_stop = json!({
+            "type": "linear",
+            "stops": [{ "offset": 0, "color": "=frame" }]
+        });
+        assert!(!validator.is_valid(&node(
+            "text",
+            json!({ "color": gradient_with_expression_stop })
+        )));
+        assert!(!validator.is_valid(&composition(
+            json!({ "id": 1, "type": "background" }),
+            vec![json!({ "from_node": 1, "to_node": OUTPUT_ID, "to_port": "source" })],
+            json!("=frame"),
+        )));
+    }
 }

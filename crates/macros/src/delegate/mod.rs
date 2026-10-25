@@ -30,6 +30,7 @@ struct PropertyAttr {
     kind: Option<Ident>,
     enum_type: Option<Path>,
     constraints: PropertyConstraintsAttr,
+    constant: bool,
     docs: Vec<String>,
 }
 
@@ -77,6 +78,7 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
     let mut name = None;
     let mut kind = None;
     let mut enum_type = None;
+    let mut constant = false;
     let mut constraints = PropertyConstraintsAttr::default();
 
     attr.parse_nested_meta(|meta| {
@@ -88,6 +90,8 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
             kind = Some(ident_value(&meta)?);
         } else if meta.path.is_ident("enum_type") {
             enum_type = Some(meta.value()?.parse()?);
+        } else if meta.path.is_ident("constant") {
+            constant = optional_bool(&meta)?;
         } else if meta.path.is_ident("min") {
             constraints.min = Some(float_value(&meta)?);
         } else if meta.path.is_ident("max") {
@@ -115,6 +119,7 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
         kind,
         enum_type,
         constraints,
+        constant,
         docs: doc_lines(attrs),
     })
 }
@@ -132,6 +137,13 @@ fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::Token
     };
     let description = doc_string(&property.docs);
     let constraints = property_constraints_tokens(&property.constraints);
+    // `Vec` fields are deserialized whole by serde, so an expression string never parses.
+    // Constant fields reject expressions at parse time.
+    let accepts_expressions = if property.constant || structure::is_vec_type(ty) {
+        quote!(false)
+    } else {
+        quote!(<<#ty as ::lumen_engine::node::Delegated>::Delegate as ::lumen_engine::node::DelegateValue>::ACCEPTS_EXPRESSIONS)
+    };
     quote! {
         ::lumen_engine::node::PropertyDef {
             id: #id,
@@ -144,6 +156,8 @@ fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::Token
             description: #description,
             #[cfg(feature = "metadata")]
             constraints: #constraints,
+            #[cfg(feature = "metadata")]
+            accepts_expressions: #accepts_expressions,
         }
     }
 }
