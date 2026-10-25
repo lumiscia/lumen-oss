@@ -1,8 +1,6 @@
-use super::{
-    ids::NodeId,
-    ports::{InputPortDef, PortRef},
-    property::PropertyValue,
-};
+#[cfg(feature = "json")]
+use super::{ids::NodeId, ports::PortRef};
+use super::{ports::InputPortDef, property::PropertyValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]

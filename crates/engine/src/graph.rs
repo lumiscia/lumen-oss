@@ -2,9 +2,11 @@
 
 use std::collections::{HashMap, VecDeque};
 
+#[cfg(feature = "json")]
+use crate::node::PortRef;
 use crate::{
     error::{GraphValidationError, LumenError},
-    node::{Node, NodeId, NodeKind, PortRef},
+    node::{Node, NodeId, NodeKind},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

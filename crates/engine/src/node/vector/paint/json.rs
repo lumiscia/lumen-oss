@@ -151,23 +151,80 @@ where
 {
     use serde::de::Error;
 
-    let values = Vec::<Value>::deserialize(deserializer)?;
-    values
-        .into_iter()
-        .map(|value| {
-            if let Some(array) = value.as_array()
-                && array.len() >= 2
-            {
-                return Ok(GradientStop {
-                    offset: array[0]
-                        .as_f64()
-                        .ok_or_else(|| D::Error::custom("gradient stop offset must be numeric"))?
-                        as f32,
-                    color: crate::json::parse_color(&array[1])
-                        .ok_or_else(|| D::Error::custom("gradient stop color must be a color"))?,
-                });
-            }
-            serde_json::from_value(value).map_err(D::Error::custom)
+    Vec::<Value>::deserialize(deserializer)?
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            parse_stop(value)
+                .map_err(|message| D::Error::custom(format!("stop {index}: {message}")))
         })
         .collect()
+}
+
+/// Parses `[offset, color]` or `{ "offset": number, "color": color }`.
+#[cfg(feature = "json")]
+fn parse_stop(value: &Value) -> Result<GradientStop, String> {
+    let (offset, color) = match value {
+        Value::Array(array) => match array.as_slice() {
+            [offset, color] => (offset, color),
+            _ => {
+                return Err(format!(
+                    "expected [offset, color], got array of length {}",
+                    array.len()
+                ));
+            }
+        },
+        Value::Object(object) => {
+            if let Some(key) = object
+                .keys()
+                .find(|key| !matches!(key.as_str(), "offset" | "color"))
+            {
+                return Err(format!("unknown field `{key}`"));
+            }
+            (
+                object.get("offset").ok_or("missing field `offset`")?,
+                object.get("color").ok_or("missing field `color`")?,
+            )
+        }
+        _ => return Err("expected [offset, color] or { offset, color }".to_string()),
+    };
+    Ok(GradientStop {
+        offset: offset.as_f64().ok_or("offset must be a number")? as f32,
+        color: crate::json::parse_color(color).ok_or("color must be a color")?,
+    })
+}
+
+#[cfg(all(test, feature = "json"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_array_and_object_stops() {
+        let paint = from_json_value(&serde_json::json!({
+            "type": "linear",
+            "stops": [[1.0, [0, 0, 255]], { "offset": 0.0, "color": "#ff0000" }]
+        }))
+        .unwrap();
+        let Paint::Gradient(gradient) = paint else {
+            panic!("expected gradient");
+        };
+        assert_eq!(gradient.stops[0].color, [255, 0, 0, 255]);
+        assert_eq!(gradient.stops[1].color, [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn rejects_malformed_stops() {
+        for stop in [
+            serde_json::json!([0.0, [255, 0, 0], "extra"]),
+            serde_json::json!([0.0]),
+            serde_json::json!([0.0, [256, 0, 0]]),
+            serde_json::json!({ "offset": 0.0, "color": [255, 0, 0], "extra": 1 }),
+            serde_json::json!({ "color": [255, 0, 0] }),
+            serde_json::json!(0.5),
+        ] {
+            let error = from_json_value(&serde_json::json!({ "type": "linear", "stops": [stop] }))
+                .unwrap_err();
+            assert!(error.contains("stop 0"), "{stop}: {error}");
+        }
+    }
 }

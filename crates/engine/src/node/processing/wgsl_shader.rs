@@ -200,11 +200,22 @@ fn parse_binding_values(
     } else {
         &[' ', '\t']
     };
-    Ok(raw_value
+    raw_value
         .split(delimiter)
-        .filter(|part| !part.trim().is_empty())
-        .filter_map(|part| part.trim().parse::<f32>().ok())
-        .collect())
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.parse::<f32>().map_err(|_| {
+                crate::error::PropertyError::InvalidType {
+                    node_id,
+                    property_path: format!("bindings.{name}"),
+                    expected: "Float",
+                    actual: "String",
+                }
+                .into()
+            })
+        })
+        .collect()
 }
 
 fn field_offset(fields: &[UniformField], name: &str) -> Option<usize> {
@@ -276,5 +287,40 @@ fn lanes_for_wgsl_type(ty: &str) -> usize {
         2
     } else {
         1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context() -> crate::expr::ExpressionContext<'static> {
+        crate::expr::ExpressionContext {
+            frame: 0,
+            fps: 30.0,
+            width: 1,
+            height: 1,
+            duration_frames: 1,
+            path: None,
+            graph: None,
+            media: None,
+        }
+    }
+
+    #[test]
+    fn binding_components_must_be_numbers() {
+        let node_id = NodeId::new(7);
+        let ctx = context();
+        assert_eq!(
+            parse_binding_values(node_id, "tint", "1, 0.5 ,0", &ctx).unwrap(),
+            vec![1.0, 0.5, 0.0]
+        );
+        for raw in ["1, abc", "0.5 oops"] {
+            let error = parse_binding_values(node_id, "tint", raw, &ctx).unwrap_err();
+            assert!(
+                error.to_string().contains("bindings.tint"),
+                "{raw}: {error}"
+            );
+        }
     }
 }

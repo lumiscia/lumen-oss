@@ -141,31 +141,28 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
     }
 }
 
+/// Parses `[r, g, b]`, `[r, g, b, a]` with integer components in 0–255, or a
+/// `#RRGGBB` / `#RRGGBBAA` string. Anything else returns `None`.
 pub fn parse_color(val: &Value) -> Option<[u8; 4]> {
-    if let Some(arr) = val.as_array()
-        && arr.len() >= 3
-    {
-        let r = arr[0].as_u64()? as u8;
-        let g = arr[1].as_u64()? as u8;
-        let b = arr[2].as_u64()? as u8;
-        let a = arr.get(3).and_then(|v| v.as_u64()).unwrap_or(255) as u8;
-        return Some([r, g, b, a]);
+    if let Some(arr) = val.as_array() {
+        let channel = |value: &Value| u8::try_from(value.as_u64()?).ok();
+        return match arr.as_slice() {
+            [r, g, b] => Some([channel(r)?, channel(g)?, channel(b)?, 255]),
+            [r, g, b, a] => Some([channel(r)?, channel(g)?, channel(b)?, channel(a)?]),
+            _ => None,
+        };
     }
-    if let Some(s) = val.as_str() {
-        let s = s.strip_prefix('#')?;
-        if s.len() == 6 || s.len() == 8 {
-            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-            let a = if s.len() == 8 {
-                u8::from_str_radix(&s[6..8], 16).ok()?
-            } else {
-                255
-            };
-            return Some([r, g, b, a]);
-        }
+    let hex = val.as_str()?.strip_prefix('#')?;
+    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
     }
-    None
+    let byte = |index: usize| u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok();
+    Some([
+        byte(0)?,
+        byte(1)?,
+        byte(2)?,
+        if hex.len() == 8 { byte(3)? } else { 255 },
+    ])
 }
 
 fn parse_color_or_vec(arr: &[Value], name: &str) -> Result<PropertyValue> {
@@ -203,6 +200,23 @@ mod tests {
 
         let c = parse_color(&serde_json::json!([128, 64, 32, 100])).unwrap();
         assert_eq!(c, [128, 64, 32, 100]);
+    }
+
+    #[test]
+    fn rejects_out_of_range_and_malformed_colors() {
+        for value in [
+            serde_json::json!([256, 0, 0]),
+            serde_json::json!([0, 0, 0, 300]),
+            serde_json::json!([-1, 0, 0]),
+            serde_json::json!([1.5, 0, 0]),
+            serde_json::json!(["1", 0, 0]),
+            serde_json::json!([0, 0, 0, "x"]),
+            serde_json::json!([0, 0, 0, 255, 0]),
+            serde_json::json!("#+f+f+f"),
+            serde_json::json!("#ééé"),
+        ] {
+            assert_eq!(parse_color(&value), None, "{value}");
+        }
     }
 
     #[test]
