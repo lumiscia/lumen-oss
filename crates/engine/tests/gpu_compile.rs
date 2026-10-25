@@ -2542,6 +2542,54 @@ fn polygon_shape_renders_its_points_instead_of_a_rectangle() {
 }
 
 #[test]
+fn polygon_shape_with_invalid_points_draws_nothing_without_stale_geometry() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shape = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        shape,
+        NodeKind::Shape(Shape {
+            id: shape,
+            params: ShapeParamsDelegate {
+                geometry_kind: ShapeGeometryKind::Polygon.into(),
+                polygon_points: Deferred::Expr(
+                    Expression::parse("if(frame == 1, \"\", \"0,0; 12,0; 0,12\")").unwrap(),
+                ),
+                position: Deferred::value((2.0, 2.0)),
+                fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(shape, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 16;
+    composition.render_settings.height = 16;
+
+    for (frame, expected) in [
+        (0, [255, 0, 0, 255]),
+        (1, [0, 0, 0, 0]),
+        (2, [255, 0, 0, 255]),
+    ] {
+        let pixels = render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore);
+        assert_eq!(
+            &pixels[(3 * 16 + 3) * 4..][..4],
+            expected,
+            "frame {frame} pixel inside the triangle"
+        );
+    }
+}
+
+#[test]
 fn identity_transform_with_linear_sampling_reproduces_input() {
     let gradient = NodeId::new(1);
     let transform = NodeId::new(2);

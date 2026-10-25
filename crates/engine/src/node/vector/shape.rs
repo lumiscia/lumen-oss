@@ -1,6 +1,5 @@
 use super::paint::Paint;
 use super::renderer::VectorRenderer;
-use crate::error::RenderError;
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
@@ -169,8 +168,9 @@ impl GpuCompiledNode for CompiledPolygonShape {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
-        let vertices = parse_polygon_points(&evaluated.polygon_points, self.max_points)
-            .map_err(|details| shape_error(ctx, self.node_id, details))?;
+        // Invalid or incomplete point lists draw nothing, so editing the field never fails the frame.
+        let vertices =
+            parse_polygon_points(&evaluated.polygon_points, self.max_points).unwrap_or_default();
         let points = super::path::closed_contour(&vertices);
         let (x, y) = evaluated.position;
         let params = super::renderer::PathParams {
@@ -187,7 +187,9 @@ impl GpuCompiledNode for CompiledPolygonShape {
             _pad: 0,
         };
         bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
-        bound.write_buffer(self.points_buffer, 0, bytemuck::cast_slice(&points));
+        if !points.is_empty() {
+            bound.write_buffer(self.points_buffer, 0, bytemuck::cast_slice(&points));
+        }
         Ok(())
     }
 }
@@ -206,48 +208,29 @@ fn shape_flags(params: &ShapeParams) -> u32 {
     flags
 }
 
-fn shape_error(
-    ctx: &FrameBindContext<'_>,
-    node_id: NodeId,
-    details: impl Into<String>,
-) -> crate::error::LumenError {
-    RenderError::NodeEvaluation {
-        frame: ctx.frame(),
-        node_id,
-        node_kind: "Shape",
-        details: details.into(),
-    }
-    .into()
-}
-
 /// Parses `x,y` pairs separated by `;` into polygon vertices. Newlines are accepted as
-/// separators too, since the editor field is multiline.
-fn parse_polygon_points(text: &str, max_points: usize) -> Result<Vec<[f32; 2]>, String> {
+/// separators too, since the editor field is multiline. Returns `None` unless the list is
+/// well-formed and has 3 to `max_points` finite points.
+fn parse_polygon_points(text: &str, max_points: usize) -> Option<Vec<[f32; 2]>> {
     let vertices = text
         .split([';', '\n'])
         .map(str::trim)
         .filter(|pair| !pair.is_empty())
         .map(|pair| {
-            let invalid = || format!("polygon point `{pair}` must be two finite numbers as `x,y`");
-            let (x, y) = pair.split_once(',').ok_or_else(invalid)?;
+            let (x, y) = pair.split_once(',')?;
             let coordinate = |value: &str| {
                 value
                     .trim()
                     .parse::<f32>()
                     .ok()
                     .filter(|value| value.is_finite())
-                    .ok_or_else(invalid)
             };
-            Ok([coordinate(x)?, coordinate(y)?])
+            Some([coordinate(x)?, coordinate(y)?])
         })
-        .collect::<Result<Vec<_>, String>>()?;
-    if !(3..=max_points).contains(&vertices.len()) {
-        return Err(format!(
-            "polygon_points must contain 3 to {max_points} points, found {}",
-            vertices.len()
-        ));
-    }
-    Ok(vertices)
+        .collect::<Option<Vec<_>>>()?;
+    (3..=max_points)
+        .contains(&vertices.len())
+        .then_some(vertices)
 }
 
 #[cfg(test)]
@@ -258,12 +241,12 @@ mod tests {
     fn parses_semicolon_and_newline_separated_points() {
         assert_eq!(
             parse_polygon_points("0,0; 10.5, 0\n 5,-8;", 128),
-            Ok(vec![[0.0, 0.0], [10.5, 0.0], [5.0, -8.0]])
+            Some(vec![[0.0, 0.0], [10.5, 0.0], [5.0, -8.0]])
         );
     }
 
     #[test]
-    fn rejects_malformed_points_and_invalid_counts() {
+    fn invalid_or_incomplete_points_draw_nothing() {
         for text in [
             "0,0; 1,0; 1",
             "0,0; 1,0; 1,1,1",
@@ -272,10 +255,10 @@ mod tests {
             "",
         ] {
             assert!(
-                parse_polygon_points(text, 128).is_err(),
-                "{text:?} should be rejected"
+                parse_polygon_points(text, 128).is_none(),
+                "{text:?} should draw nothing"
             );
         }
-        assert!(parse_polygon_points("0,0; 1,0; 1,1; 0,1", 3).is_err());
+        assert!(parse_polygon_points("0,0; 1,0; 1,1; 0,1", 3).is_none());
     }
 }
