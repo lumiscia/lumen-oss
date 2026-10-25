@@ -433,3 +433,59 @@ fn decodes_and_resamples_audio_with_cli_fixture() {
 
     let _ = fs::remove_file(path);
 }
+
+#[test]
+fn decodes_rgba_frames_across_resolution_change() {
+    let clips = [("64x48", 64usize, 48usize), ("32x24", 32, 24)];
+    let mut stream = Vec::new();
+    for (size, _, _) in clips {
+        let path = temp_path("resolution_clip", "h264");
+        let status = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", &format!("testsrc=size={size}:rate=10:duration=0.5")])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "h264"])
+            .arg(&path)
+            .status();
+        if !matches!(status, Ok(status) if status.success()) {
+            eprintln!("ffmpeg CLI with libx264 unavailable; skipping resolution change test");
+            return;
+        }
+        stream.extend(fs::read(&path).expect("read clip"));
+        let _ = fs::remove_file(path);
+    }
+    let path = temp_path("resolution_change", "h264");
+    fs::write(&path, stream).expect("write stream");
+
+    let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open stream");
+    let stream_index = input
+        .best_video_stream()
+        .expect("video stream")
+        .stream_index;
+    let mut decoder = VideoDecoder::open(
+        &input,
+        VideoDecoderConfig {
+            stream_index,
+            mode: DecodeMode::Cpu,
+        },
+    )
+    .expect("decoder");
+
+    let mut sizes = Vec::new();
+    let mut drain = |decoder: &mut VideoDecoder| {
+        while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
+            assert_eq!(frame.stride, frame.width as usize * 4);
+            assert_eq!(frame.data.len(), frame.stride * frame.height as usize);
+            sizes.push((frame.width as usize, frame.height as usize));
+        }
+    };
+    while let Some(packet) = input.read_packet().expect("read packet") {
+        decoder.send_packet(&packet).expect("send packet");
+        drain(&mut decoder);
+    }
+    decoder.send_eof().expect("send eof");
+    drain(&mut decoder);
+
+    assert!(sizes.contains(&(clips[0].1, clips[0].2)));
+    assert!(sizes.contains(&(clips[1].1, clips[1].2)));
+    let _ = fs::remove_file(path);
+}

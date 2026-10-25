@@ -319,45 +319,70 @@ impl VideoDecoder {
     }
 
     fn frame_to_rgba(&mut self, frame: &AvFrame) -> Result<CpuVideoFrame> {
+        if matches!(
+            frame.format(),
+            AV_PIX_FMT_CUDA | AV_PIX_FMT_VULKAN | AV_PIX_FMT_VIDEOTOOLBOX
+        ) {
+            let mut cpu_frame = AvFrame::new()?;
+            unsafe {
+                ffi::check(
+                    sys::av_hwframe_transfer_data(cpu_frame.as_mut_ptr(), frame.as_ptr(), 0),
+                    "av_hwframe_transfer_data",
+                )?;
+                ffi::check(
+                    sys::av_frame_copy_props(cpu_frame.as_mut_ptr(), frame.as_ptr()),
+                    "av_frame_copy_props",
+                )?;
+            }
+            return self.frame_to_rgba(&cpu_frame);
+        }
+
         let width = frame.width();
         let height = frame.height();
-        let stride = width as usize * 4;
-        let mut data = vec![0; stride.saturating_mul(height as usize)];
-        let src_format = match frame.format() {
-            AV_PIX_FMT_CUDA | AV_PIX_FMT_VULKAN | AV_PIX_FMT_VIDEOTOOLBOX => {
-                let mut cpu_frame = AvFrame::new()?;
-                unsafe {
-                    ffi::check(
-                        sys::av_hwframe_transfer_data(cpu_frame.as_mut_ptr(), frame.as_ptr(), 0),
-                        "av_hwframe_transfer_data",
-                    )?;
-                }
-                return self.frame_to_rgba(&cpu_frame);
-            }
-            other => other,
+        if width == 0 || height == 0 {
+            return Err(FfmpegError::new(
+                "receive_rgba_frame",
+                "decoded frame has zero width or height",
+            ));
+        }
+        let (Ok(av_width), Ok(av_height)) = (i32::try_from(width), i32::try_from(height)) else {
+            return Err(FfmpegError::new(
+                "receive_rgba_frame",
+                "decoded frame dimensions exceed FFmpeg's supported integer range",
+            ));
         };
+        let stride = (width as usize).checked_mul(4).ok_or_else(|| {
+            FfmpegError::new("receive_rgba_frame", "decoded frame row is too large")
+        })?;
+        let av_stride = i32::try_from(stride).map_err(|_| {
+            FfmpegError::new("receive_rgba_frame", "decoded frame row is too large")
+        })?;
+        let len = stride
+            .checked_mul(height as usize)
+            .ok_or_else(|| FfmpegError::new("receive_rgba_frame", "decoded frame is too large"))?;
+        let mut data = vec![0; len];
 
+        // Rebuilds the converter whenever the frame's geometry or pixel format changes.
+        self.scaler = unsafe {
+            sys::sws_getCachedContext(
+                self.scaler,
+                av_width,
+                av_height,
+                frame.format(),
+                av_width,
+                av_height,
+                AV_PIX_FMT_RGBA,
+                SWS_BILINEAR,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+            )
+        };
         if self.scaler.is_null() {
-            self.scaler = unsafe {
-                sys::sws_getContext(
-                    width as i32,
-                    height as i32,
-                    src_format,
-                    width as i32,
-                    height as i32,
-                    AV_PIX_FMT_RGBA,
-                    SWS_BILINEAR,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null(),
-                )
-            };
-            if self.scaler.is_null() {
-                return Err(FfmpegError::new(
-                    "sws_getContext",
-                    "failed to create RGBA conversion context",
-                ));
-            }
+            return Err(FfmpegError::new(
+                "sws_getCachedContext",
+                "failed to create RGBA conversion context",
+            ));
         }
 
         let mut dst_data = [
@@ -366,17 +391,20 @@ impl VideoDecoder {
             ptr::null_mut(),
             ptr::null_mut(),
         ];
-        let mut dst_stride = [stride as i32, 0, 0, 0];
+        let mut dst_stride = [av_stride, 0, 0, 0];
         unsafe {
-            sys::sws_scale(
-                self.scaler,
-                (*frame.as_ptr()).data.as_ptr() as *const *const u8,
-                (*frame.as_ptr()).linesize.as_ptr(),
-                0,
-                height as i32,
-                dst_data.as_mut_ptr(),
-                dst_stride.as_mut_ptr(),
-            );
+            ffi::check(
+                sys::sws_scale(
+                    self.scaler,
+                    (*frame.as_ptr()).data.as_ptr() as *const *const u8,
+                    (*frame.as_ptr()).linesize.as_ptr(),
+                    0,
+                    av_height,
+                    dst_data.as_mut_ptr(),
+                    dst_stride.as_mut_ptr(),
+                ),
+                "sws_scale",
+            )?;
         }
 
         Ok(CpuVideoFrame {
