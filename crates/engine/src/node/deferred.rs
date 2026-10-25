@@ -911,6 +911,15 @@ mod tests {
             error.contains("property `width` on node 7 has invalid type: expected UInt"),
             "{error}"
         );
+
+        let json = json
+            .replace("background", "text")
+            .replace(r#""width": -1"#, r#""position": [0, "bad"]"#);
+        let error = format!("{:#}", crate::json::parse(&json).unwrap_err());
+        assert!(
+            error.contains("node 7") && error.contains("position[1]"),
+            "{error}"
+        );
     }
 
     #[cfg(feature = "json")]
