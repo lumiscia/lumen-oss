@@ -28,12 +28,10 @@ struct CachedFrame {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct VideoFrameCache {
     entries: HashMap<u32, CachedFrame>,
-    pinned: HashSet<u32>,
     bytes: usize,
 }
 
 impl VideoFrameCache {
-    /// Drops the cached frames; pins describe what the playhead needs, so they are kept.
     pub fn clear(&mut self) {
         self.entries.clear();
         self.bytes = 0;
@@ -62,17 +60,18 @@ impl VideoFrameCache {
         }
     }
 
-    fn pin(&mut self, frames: &[u32]) {
-        self.pinned = frames.iter().copied().collect();
-    }
-
-    /// The unpinned frame to evict first: frames behind the playhead (the earliest pinned frame)
-    /// go before frames ahead of it, farthest first. Without a playhead the oldest insert goes.
-    fn eviction_candidate(&self, keep: Option<u32>) -> Option<(EvictionRank, u32)> {
-        let playhead = self.pinned.iter().min().copied();
+    /// The unprotected frame to evict first: frames behind the playhead (the earliest protected
+    /// frame) go before frames ahead of it, farthest first. Without a playhead the oldest insert
+    /// goes.
+    fn eviction_candidate(
+        &self,
+        protected: &HashSet<u32>,
+        keep: Option<u32>,
+    ) -> Option<(EvictionRank, u32)> {
+        let playhead = protected.iter().min().copied();
         self.entries
             .iter()
-            .filter(|(frame, _)| Some(**frame) != keep && !self.pinned.contains(frame))
+            .filter(|(frame, _)| Some(**frame) != keep && !protected.contains(frame))
             .map(|(frame, entry)| {
                 let rank = match playhead {
                     None => (2, u64::MAX - entry.inserted),
@@ -90,6 +89,9 @@ type EvictionRank = (u8, u64);
 #[derive(Debug)]
 struct VideoStore {
     streams: HashMap<String, StoredVideo>,
+    /// Frames eviction must keep, by stream id. Replaced wholesale by whoever owns the playhead
+    /// and independent of stream registration, so it cannot go stale when streams change.
+    protected: HashMap<String, HashSet<u32>>,
     budget_bytes: usize,
     insert_clock: u64,
 }
@@ -98,6 +100,7 @@ impl Default for VideoStore {
     fn default() -> Self {
         Self {
             streams: HashMap::new(),
+            protected: HashMap::new(),
             budget_bytes: DEFAULT_VIDEO_FRAME_CACHE_BYTES,
             insert_clock: 0,
         }
@@ -117,9 +120,10 @@ impl VideoStore {
         self.evict_to_budget(Some((&stream_id, frame)));
     }
 
-    /// Evicts unpinned frames until the cache fits its byte budget. Pinned frames and the
+    /// Evicts unprotected frames until the cache fits its byte budget. Protected frames and the
     /// `keep` frame are never evicted, so the budget can be exceeded by frames in use.
     fn evict_to_budget(&mut self, keep: Option<(&str, u32)>) {
+        let unprotected = HashSet::new();
         let mut total: usize = self.streams.values().map(|video| video.frames.bytes).sum();
         while total > self.budget_bytes {
             let victim = self
@@ -129,9 +133,10 @@ impl VideoStore {
                     let keep = keep
                         .filter(|(keep_id, _)| keep_id == stream_id)
                         .map(|(_, frame)| frame);
+                    let protected = self.protected.get(stream_id).unwrap_or(&unprotected);
                     video
                         .frames
-                        .eviction_candidate(keep)
+                        .eviction_candidate(protected, keep)
                         .map(|(rank, frame)| (rank, stream_id, frame))
                 })
                 .max()
@@ -293,8 +298,8 @@ impl WasmMediaStore {
         Ok(())
     }
 
-    /// Protects the frames each stream needs at the playhead from eviction.
-    pub fn pin_video_frames(
+    /// Replaces the set of frames eviction must keep with `requirements`.
+    pub fn protect_video_frames(
         &self,
         requirements: &[VideoFrameRequirement],
     ) -> Result<(), &'static str> {
@@ -303,12 +308,13 @@ impl WasmMediaStore {
             .videos
             .write()
             .map_err(|_| "media store lock poisoned")?;
-        for (stream_id, video) in &mut videos.streams {
-            let frames = requirements
-                .iter()
-                .find(|requirement| requirement.stream_id == *stream_id)
-                .map_or(&[][..], |requirement| requirement.frames.as_slice());
-            video.frames.pin(frames);
+        videos.protected.clear();
+        for requirement in requirements {
+            videos
+                .protected
+                .entry(requirement.stream_id.clone())
+                .or_default()
+                .extend(requirement.frames.iter().copied());
         }
         videos.evict_to_budget(None);
         Ok(())
@@ -507,9 +513,9 @@ impl VideoFrameResolver for WasmVideoResolver {
         let Ok(mut videos) = self.store.videos.write() else {
             return;
         };
-        if let Some(entry) = videos.streams.get_mut(&self.id) {
-            entry.frames.pin(frames);
-        }
+        videos
+            .protected
+            .insert(self.id.clone(), frames.iter().copied().collect());
         videos.evict_to_budget(None);
     }
 }
@@ -716,15 +722,15 @@ mod tests {
     }
 
     #[test]
-    fn video_cache_evicts_farthest_from_pinned_playhead_first() {
+    fn video_cache_evicts_farthest_from_protected_playhead_first() {
         let store = WasmMediaStore::default();
         insert_frames(&store, "a", 0..6);
         store
-            .pin_video_frames(&[VideoFrameRequirement {
+            .protect_video_frames(&[VideoFrameRequirement {
                 stream_id: "a".to_string(),
                 frames: vec![2],
             }])
-            .expect("pin frames");
+            .expect("protect frames");
         store
             .set_video_frame_cache_bytes(3 * FRAME_BYTES)
             .expect("set budget");
@@ -738,30 +744,30 @@ mod tests {
             !store.has_video_frame("a", 5),
             "then the farthest frame ahead"
         );
-        assert!(store.has_video_frame("a", 2), "pinned frame is kept");
+        assert!(store.has_video_frame("a", 2), "protected frame is kept");
         assert!(store.has_video_frame("a", 3));
         assert!(store.has_video_frame("a", 4));
     }
 
     #[test]
-    fn moving_pins_lets_next_frames_of_every_stream_coexist() {
+    fn moving_protection_lets_next_frames_of_every_stream_coexist() {
         let store = WasmMediaStore::default();
         store
             .set_video_frame_cache_bytes(2 * FRAME_BYTES)
             .expect("set budget");
-        let pin = |frame: u32| {
+        let protect = |frame: u32| {
             store
-                .pin_video_frames(&["a", "b"].map(|stream_id| VideoFrameRequirement {
+                .protect_video_frames(&["a", "b"].map(|stream_id| VideoFrameRequirement {
                     stream_id: stream_id.to_string(),
                     frames: vec![frame],
                 }))
-                .expect("pin frames");
+                .expect("protect frames");
         };
-        pin(0);
+        protect(0);
         insert_frames(&store, "a", 0..1);
         insert_frames(&store, "b", 0..1);
 
-        pin(1);
+        protect(1);
         insert_frames(&store, "a", 1..2);
         insert_frames(&store, "b", 1..2);
 

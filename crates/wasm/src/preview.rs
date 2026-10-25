@@ -58,6 +58,8 @@ struct PreviewState {
     duration_frames: u32,
     fps: f64,
     current_frame: u32,
+    /// The frame playback is advancing to, set by `tick` and cleared when the playhead moves.
+    next_frame: Option<u32>,
     lookahead_count: u32,
     playing: bool,
     dirty: bool,
@@ -79,6 +81,7 @@ impl Default for PreviewState {
             duration_frames: 0,
             fps: 30.0,
             current_frame: 0,
+            next_frame: None,
             lookahead_count: 8,
             playing: false,
             dirty: false,
@@ -101,6 +104,7 @@ impl PreviewState {
         self.height = 0;
         self.duration_frames = 0;
         self.current_frame = 0;
+        self.next_frame = None;
         self.playing = false;
         self.dirty = false;
         self.last_tick_ms = None;
@@ -110,7 +114,7 @@ impl PreviewState {
     }
 
     /// Replaces the loaded composition and parks the playhead on frame 0.
-    fn install_composition(&mut self, composition: Composition, media: &WasmMediaStore) {
+    fn install_composition(&mut self, composition: Composition) {
         self.width = composition.render_settings.width as usize;
         self.height = composition.render_settings.height as usize;
         self.duration_frames = composition.timeline.duration_frames;
@@ -120,20 +124,92 @@ impl PreviewState {
         self.render_metrics.reset();
         self.composition_sync_ms = 0.0;
         self.invalidate_renderer();
-        self.move_playhead(0, media);
+        self.move_playhead(0);
     }
 
-    /// Jumps the playhead to `frame` (clamped) and pins that frame's media needs so the frames
-    /// pinned for the previous position become evictable.
-    fn move_playhead(&mut self, frame: u32, media: &WasmMediaStore) {
+    /// Jumps the playhead to `frame` (clamped).
+    fn move_playhead(&mut self, frame: u32) {
         self.current_frame = self.clamp_frame(frame);
+        self.next_frame = None;
         self.last_tick_ms = None;
         self.frame_accumulator_ms = 0.0;
-        pin_frame(self, media, self.current_frame);
+    }
+
+    /// Replaces the media store's protected frames with what playback needs right now: the
+    /// current frame, plus the frame being advanced to while playing. Frames whose requirements
+    /// cannot be resolved yet (e.g. unregistered streams) protect nothing.
+    fn refresh_pins(&self, media: &WasmMediaStore) {
+        let Some(composition) = self.composition.as_ref() else {
+            let _ = media.protect_video_frames(&[]);
+            return;
+        };
+        let next_frame = self.playing.then(|| {
+            self.next_frame
+                .unwrap_or_else(|| (self.current_frame + 1) % self.duration_frames.max(1))
+        });
+        let protected: Vec<_> = std::iter::once(self.current_frame)
+            .chain(next_frame)
+            .filter_map(|frame| collect_frame_requirements(composition, media, frame).ok())
+            .flat_map(|requirements| requirements.videos)
+            .collect();
+        let _ = media.protect_video_frames(&protected);
     }
 
     fn ready(&self) -> bool {
         self.composition.is_some()
+    }
+
+    fn set_playing(&mut self, playing: bool) {
+        self.playing = playing;
+        self.last_tick_ms = None;
+    }
+
+    /// Advances the playhead by the time elapsed since the last tick once the next frame's media
+    /// is ready. Returns whether the current frame should be rendered.
+    fn advance_playback(&mut self, now_ms: f64, media: &WasmMediaStore) -> Result<bool, JsValue> {
+        if !self.ready() {
+            self.last_tick_ms = Some(now_ms);
+            return Ok(false);
+        }
+
+        if self.playing {
+            let last_tick_ms = self.last_tick_ms.replace(now_ms).unwrap_or(now_ms);
+            let elapsed_ms = (now_ms - last_tick_ms).max(0.0);
+            let target_frame_duration_ms = self.target_frame_duration_ms();
+
+            if target_frame_duration_ms > 0.0 && self.duration_frames > 0 {
+                self.frame_accumulator_ms += elapsed_ms;
+                if self.frame_accumulator_ms >= target_frame_duration_ms {
+                    let steps =
+                        (self.frame_accumulator_ms / target_frame_duration_ms).floor() as u32;
+                    let wrapped_steps = steps % self.duration_frames.max(1);
+                    let next_accumulator =
+                        self.frame_accumulator_ms - target_frame_duration_ms * f64::from(steps);
+                    let next_frame =
+                        (self.current_frame + wrapped_steps) % self.duration_frames.max(1);
+
+                    if next_frame != self.current_frame {
+                        if frame_ready(self, media, next_frame)? {
+                            self.frame_accumulator_ms = next_accumulator;
+                            self.current_frame = next_frame;
+                            self.next_frame = None;
+                            self.dirty = true;
+                        } else {
+                            self.next_frame = Some(next_frame);
+                            self.last_tick_ms = Some(now_ms);
+                            self.frame_accumulator_ms = 0.0;
+                            return Ok(false);
+                        }
+                    } else {
+                        self.frame_accumulator_ms = next_accumulator;
+                    }
+                }
+            }
+        } else {
+            self.last_tick_ms = Some(now_ms);
+        }
+
+        Ok(self.dirty && frame_ready(self, media, self.current_frame)?)
     }
 
     fn invalidate_renderer(&mut self) {
@@ -196,8 +272,8 @@ impl LumenPreviewController {
         let composition =
             composition_json_to_composition(composition_json).map_err(|e| JsValue::from_str(&e))?;
 
-        let mut state = self.state_mut()?;
-        state.install_composition(composition, &self.media);
+        self.update_state(|state| state.install_composition(composition))?;
+        let state = self.state()?;
         tracing::debug!(
             target: "lumen_wasm",
             width = state.width,
@@ -224,30 +300,24 @@ impl LumenPreviewController {
 
     /// Unloads the composition and media and destroys the GPU device.
     pub fn clear(&self) -> Result<(), JsValue> {
-        self.state_mut()?.clear();
-        self.media.clear().map_err(JsValue::from_str)
+        self.update_state(PreviewState::clear)?;
+        self.change_media(WasmMediaStore::clear)
     }
 
     pub fn play(&self) -> Result<(), JsValue> {
-        let mut state = self.state_mut()?;
-        state.playing = true;
-        state.last_tick_ms = None;
-        Ok(())
+        self.update_state(|state| state.set_playing(true))
     }
 
     pub fn pause(&self) -> Result<(), JsValue> {
-        let mut state = self.state_mut()?;
-        state.playing = false;
-        state.last_tick_ms = None;
-        Ok(())
+        self.update_state(|state| state.set_playing(false))
     }
 
     #[wasm_bindgen(js_name = "togglePlay")]
     pub fn toggle_play(&self) -> Result<bool, JsValue> {
-        let mut state = self.state_mut()?;
-        state.playing = !state.playing;
-        state.last_tick_ms = None;
-        Ok(state.playing)
+        self.update_state(|state| {
+            state.set_playing(!state.playing);
+            state.playing
+        })
     }
 
     #[wasm_bindgen(js_name = "isPlaying")]
@@ -257,10 +327,10 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "setFrame")]
     pub fn set_frame(&self, frame: u32) -> Result<(), JsValue> {
-        let mut state = self.state_mut()?;
-        state.move_playhead(frame, &self.media);
-        state.dirty = state.ready();
-        Ok(())
+        self.update_state(|state| {
+            state.move_playhead(frame);
+            state.dirty = state.ready();
+        })
     }
 
     #[wasm_bindgen(js_name = "currentFrame")]
@@ -323,56 +393,10 @@ impl LumenPreviewController {
     /// Advances playback and renders when the current frame changed. Returns whether a frame was
     /// presented; it is `false` while another call is still creating the GPU device.
     pub async fn tick(&self, now_ms: f64, canvas: JsValue) -> Result<bool, JsValue> {
-        {
-            let mut state = self.state_mut()?;
-            if !state.ready() {
-                state.last_tick_ms = Some(now_ms);
-                return Ok(false);
-            }
-
-            if state.playing {
-                let last_tick_ms = state.last_tick_ms.replace(now_ms).unwrap_or(now_ms);
-                let elapsed_ms = (now_ms - last_tick_ms).max(0.0);
-                let target_frame_duration_ms = state.target_frame_duration_ms();
-
-                if target_frame_duration_ms > 0.0 && state.duration_frames > 0 {
-                    state.frame_accumulator_ms += elapsed_ms;
-                    if state.frame_accumulator_ms >= target_frame_duration_ms {
-                        let steps =
-                            (state.frame_accumulator_ms / target_frame_duration_ms).floor() as u32;
-                        let wrapped_steps = steps % state.duration_frames.max(1);
-                        let next_accumulator = state.frame_accumulator_ms
-                            - target_frame_duration_ms * f64::from(steps);
-                        let next_frame =
-                            (state.current_frame + wrapped_steps) % state.duration_frames.max(1);
-
-                        if next_frame != state.current_frame {
-                            // Move the pins first so the previous frame's working set can be
-                            // evicted to make room for the next one.
-                            pin_frame(&state, &self.media, next_frame);
-                            if frame_ready(&state, &self.media, next_frame)? {
-                                state.frame_accumulator_ms = next_accumulator;
-                                state.current_frame = next_frame;
-                                state.dirty = true;
-                            } else {
-                                state.last_tick_ms = Some(now_ms);
-                                state.frame_accumulator_ms = 0.0;
-                                return Ok(false);
-                            }
-                        } else {
-                            state.frame_accumulator_ms = next_accumulator;
-                        }
-                    }
-                }
-            } else {
-                state.last_tick_ms = Some(now_ms);
-            }
-
-            if !state.dirty || !frame_ready(&state, &self.media, state.current_frame)? {
-                return Ok(false);
-            }
+        self.state()?.refresh_pins(&self.media);
+        if !self.update_state(|state| state.advance_playback(now_ms, &self.media))?? {
+            return Ok(false);
         }
-
         self.render_current_frame(&canvas).await
     }
 
@@ -429,45 +453,37 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "clearMedia")]
     pub fn clear_media(&self) -> Result<(), JsValue> {
-        self.media.clear().map_err(JsValue::from_str)?;
+        self.change_media(WasmMediaStore::clear)?;
         self.reset_renderer()
     }
 
     #[wasm_bindgen(js_name = "clearVideos")]
     pub fn clear_videos(&self) -> Result<(), JsValue> {
-        self.media.clear_video_frames().map_err(JsValue::from_str)?;
+        self.change_media(WasmMediaStore::clear_video_frames)?;
         self.mark_dirty()
     }
 
     #[wasm_bindgen(js_name = "clearVideoSource")]
     pub fn clear_video_source(&self, stream_id: &str) -> Result<(), JsValue> {
-        self.media
-            .clear_video_frames_for_stream(stream_id)
-            .map_err(JsValue::from_str)?;
+        self.change_media(|media| media.clear_video_frames_for_stream(stream_id))?;
         self.mark_dirty()
     }
 
     #[wasm_bindgen(js_name = "removeImageSource")]
     pub fn remove_image_source(&self, image_id: &str) -> Result<(), JsValue> {
-        self.media
-            .remove_image(image_id)
-            .map_err(JsValue::from_str)?;
+        self.change_media(|media| media.remove_image(image_id))?;
         self.reset_renderer()
     }
 
     #[wasm_bindgen(js_name = "removeVideoSource")]
     pub fn remove_video_source(&self, stream_id: &str) -> Result<(), JsValue> {
-        self.media
-            .remove_video(stream_id)
-            .map_err(JsValue::from_str)?;
+        self.change_media(|media| media.remove_video(stream_id))?;
         self.reset_renderer()
     }
 
     #[wasm_bindgen(js_name = "removeFontFamily")]
     pub fn remove_font_family(&self, font_family: &str) -> Result<(), JsValue> {
-        self.media
-            .remove_font(font_family)
-            .map_err(JsValue::from_str)?;
+        self.change_media(|media| media.remove_font(font_family))?;
         self.reset_renderer()
     }
 
@@ -490,9 +506,7 @@ impl LumenPreviewController {
     /// kept even when they exceed it.
     #[wasm_bindgen(js_name = "setVideoFrameCacheBytes")]
     pub fn set_video_frame_cache_bytes(&self, bytes: u32) -> Result<(), JsValue> {
-        self.media
-            .set_video_frame_cache_bytes(bytes as usize)
-            .map_err(JsValue::from_str)
+        self.change_media(|media| media.set_video_frame_cache_bytes(bytes as usize))
     }
 
     #[wasm_bindgen(js_name = "setImage")]
@@ -511,17 +525,13 @@ impl LumenPreviewController {
         }
         let frame =
             image_frame_from_rgba(width, height, rgba).map_err(|e| JsValue::from_str(&e))?;
-        self.media
-            .set_image(image_id.to_string(), frame)
-            .map_err(JsValue::from_str)?;
+        self.change_media(|media| media.set_image(image_id.to_string(), frame))?;
         self.reset_renderer()
     }
 
     #[wasm_bindgen(js_name = "setFont")]
     pub fn set_font(&self, font_family: &str, data: Vec<u8>) -> Result<(), JsValue> {
-        self.media
-            .set_font(font_family.to_string(), data)
-            .map_err(JsValue::from_str)?;
+        self.change_media(|media| media.set_font(font_family.to_string(), data))?;
         self.reset_renderer()
     }
 
@@ -542,9 +552,7 @@ impl LumenPreviewController {
         }
         let image =
             image_frame_from_rgba(width, height, rgba).map_err(|e| JsValue::from_str(&e))?;
-        self.media
-            .set_video_frame(stream_id.to_string(), frame, image)
-            .map_err(JsValue::from_str)?;
+        self.change_media(|media| media.set_video_frame(stream_id.to_string(), frame, image))?;
         self.mark_dirty()
     }
 
@@ -563,17 +571,13 @@ impl LumenPreviewController {
         if !fps.is_finite() || fps <= 0.0 {
             return Err(JsValue::from_str("video fps must be a finite value > 0"));
         }
-        self.media
-            .set_video_metadata(
-                stream_id.to_string(),
-                VideoMetadata {
-                    width,
-                    height,
-                    frame_count,
-                    fps,
-                },
-            )
-            .map_err(JsValue::from_str)?;
+        let metadata = VideoMetadata {
+            width,
+            height,
+            frame_count,
+            fps,
+        };
+        self.change_media(|media| media.set_video_metadata(stream_id.to_string(), metadata))?;
         self.reset_renderer()
     }
 }
@@ -591,6 +595,28 @@ impl LumenPreviewController {
         self.state
             .try_borrow_mut()
             .map_err(|_| JsValue::from_str("preview controller is busy"))
+    }
+
+    /// Applies a playback state change, then re-derives the protected frames from it.
+    fn update_state<T>(&self, update: impl FnOnce(&mut PreviewState) -> T) -> Result<T, JsValue> {
+        let mut state = self.state_mut()?;
+        let result = update(&mut state);
+        state.refresh_pins(&self.media);
+        Ok(result)
+    }
+
+    /// Applies a media change with protected frames derived from the playback state both before
+    /// (so uploads evict against the current playhead) and after (so registration, removal and
+    /// timing changes take effect).
+    fn change_media(
+        &self,
+        change: impl FnOnce(&WasmMediaStore) -> Result<(), &'static str>,
+    ) -> Result<(), JsValue> {
+        let state = self.state()?;
+        state.refresh_pins(&self.media);
+        change(&self.media).map_err(JsValue::from_str)?;
+        state.refresh_pins(&self.media);
+        Ok(())
     }
 
     fn mark_dirty(&self) -> Result<(), JsValue> {
@@ -637,7 +663,6 @@ impl LumenPreviewController {
 
         let mut guard = self.state_mut()?;
         let frame = guard.current_frame;
-        pin_frame(&guard, &self.media, frame);
         let canvas = guard
             .render_canvas
             .clone()
@@ -688,16 +713,6 @@ fn validate_frame(state: &PreviewState, frame: u32) -> Result<(), JsValue> {
     Ok(())
 }
 
-/// Keeps the video frames needed at `frame` out of cache eviction.
-fn pin_frame(state: &PreviewState, media: &WasmMediaStore, frame: u32) {
-    let Some(composition) = state.composition.as_ref() else {
-        return;
-    };
-    if let Ok(requirements) = collect_frame_requirements(composition, media, frame) {
-        let _ = media.pin_video_frames(&requirements.videos);
-    }
-}
-
 fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Result<bool, JsValue> {
     let composition = state
         .composition
@@ -731,8 +746,6 @@ fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use lumen_engine::media::VideoMetadata;
-
     use super::*;
 
     const COMPOSITION_JSON: &str = r#"{
@@ -751,26 +764,6 @@ mod tests {
         ]
     }"#;
 
-    fn load_composition() -> Composition {
-        composition_json_to_composition(COMPOSITION_JSON).expect("composition")
-    }
-
-    fn add_streams(media: &WasmMediaStore) {
-        for stream_id in ["a", "b"] {
-            media
-                .set_video_metadata(
-                    stream_id.to_string(),
-                    VideoMetadata {
-                        width: 1,
-                        height: 1,
-                        frame_count: 200,
-                        fps: 30.0,
-                    },
-                )
-                .expect("set metadata");
-        }
-    }
-
     fn upload(media: &WasmMediaStore, frame: u32) {
         for stream_id in ["a", "b"] {
             let image = image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
@@ -782,39 +775,155 @@ mod tests {
 
     #[test]
     fn reloading_with_an_occupied_cache_pins_frame_zero() {
-        let media = WasmMediaStore::default();
-        add_streams(&media);
         // Room for two frames: one per stream.
-        media.set_video_frame_cache_bytes(8).expect("set budget");
+        let controller = controller(8);
+        register(&controller, "a", 30.0);
+        register(&controller, "b", 30.0);
+        controller
+            .load_composition(COMPOSITION_JSON)
+            .expect("load composition");
+        controller.set_frame(100).expect("seek");
+        upload(&controller.media, 100);
 
-        let mut state = PreviewState::default();
-        state.install_composition(load_composition(), &media);
-        state.move_playhead(100, &media);
-        upload(&media, 100);
+        controller
+            .load_composition(COMPOSITION_JSON)
+            .expect("reload composition");
+        assert_eq!(controller.current_frame().expect("current frame"), 0);
+        upload_one(&controller, "a", 0);
+        upload_one(&controller, "b", 0);
 
-        state.install_composition(load_composition(), &media);
-        assert_eq!(state.current_frame, 0);
-        upload(&media, 0);
-
-        assert!(frame_ready(&state, &media, 0).expect("frame readiness"));
-        assert!(!media.has_video_frame("a", 100));
-        assert!(!media.has_video_frame("b", 100));
+        assert!(ready_at_playhead(&controller));
+        assert!(!controller.media.has_video_frame("a", 100));
+        assert!(!controller.media.has_video_frame("b", 100));
     }
 
     #[test]
     fn clearing_videos_keeps_the_playhead_pinned() {
-        let media = WasmMediaStore::default();
-        add_streams(&media);
         // Room for one frame, but the playhead needs one frame from each of the two streams.
-        media.set_video_frame_cache_bytes(4).expect("set budget");
+        let controller = controller(4);
+        register(&controller, "a", 30.0);
+        register(&controller, "b", 30.0);
+        controller
+            .load_composition(COMPOSITION_JSON)
+            .expect("load composition");
+        upload_one(&controller, "a", 0);
+        upload_one(&controller, "b", 0);
 
-        let mut state = PreviewState::default();
-        state.install_composition(load_composition(), &media);
-        upload(&media, 0);
+        controller.clear_videos().expect("clear video frames");
+        upload_one(&controller, "a", 0);
+        upload_one(&controller, "b", 0);
 
-        media.clear_video_frames().expect("clear video frames");
-        upload(&media, 0);
+        assert!(ready_at_playhead(&controller));
+    }
 
-        assert!(frame_ready(&state, &media, 0).expect("frame readiness"));
+    fn controller(budget_bytes: usize) -> LumenPreviewController {
+        let controller = LumenPreviewController {
+            state: RefCell::new(PreviewState::default()),
+            media: WasmMediaStore::default(),
+        };
+        controller
+            .media
+            .set_video_frame_cache_bytes(budget_bytes)
+            .expect("set budget");
+        controller
+    }
+
+    fn register(controller: &LumenPreviewController, stream_id: &str, fps: f32) {
+        controller
+            .set_video_metadata(stream_id, 1, 1, 200, fps)
+            .expect("set metadata");
+    }
+
+    fn upload_one(controller: &LumenPreviewController, stream_id: &str, frame: u32) {
+        controller
+            .set_video_frame(stream_id, frame, 1, 1, vec![255, 0, 0, 255])
+            .expect("set frame");
+    }
+
+    fn ready_at_playhead(controller: &LumenPreviewController) -> bool {
+        let state = controller.state.borrow();
+        frame_ready(&state, &controller.media, state.current_frame).expect("frame readiness")
+    }
+
+    fn tick(controller: &LumenPreviewController, now_ms: f64) -> bool {
+        let future = std::pin::pin!(controller.tick(now_ms, JsValue::UNDEFINED));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::future::Future::poll(future, &mut context) {
+            std::task::Poll::Ready(result) => result.expect("tick"),
+            std::task::Poll::Pending => panic!("tick should not wait without a GPU render"),
+        }
+    }
+
+    #[test]
+    fn registering_streams_after_load_pins_the_playhead() {
+        let controller = controller(4);
+        controller
+            .load_composition(COMPOSITION_JSON)
+            .expect("load composition");
+        register(&controller, "a", 30.0);
+        register(&controller, "b", 30.0);
+        upload_one(&controller, "a", 0);
+        upload_one(&controller, "b", 0);
+
+        assert!(ready_at_playhead(&controller));
+    }
+
+    #[test]
+    fn re_adding_a_removed_stream_pins_its_frames() {
+        let controller = controller(4);
+        register(&controller, "a", 30.0);
+        register(&controller, "b", 30.0);
+        controller
+            .load_composition(COMPOSITION_JSON)
+            .expect("load composition");
+        upload_one(&controller, "a", 0);
+
+        controller.remove_video_source("b").expect("remove stream");
+        register(&controller, "b", 30.0);
+        upload_one(&controller, "b", 0);
+        upload_one(&controller, "a", 0);
+
+        assert!(ready_at_playhead(&controller));
+    }
+
+    #[test]
+    fn changing_stream_fps_pins_the_remapped_frames() {
+        let controller = controller(4);
+        register(&controller, "a", 30.0);
+        register(&controller, "b", 30.0);
+        controller
+            .load_composition(COMPOSITION_JSON)
+            .expect("load composition");
+        controller.set_frame(30).expect("seek");
+
+        register(&controller, "a", 15.0);
+        register(&controller, "b", 15.0);
+        upload_one(&controller, "a", 15);
+        upload_one(&controller, "b", 15);
+
+        assert!(ready_at_playhead(&controller));
+    }
+
+    #[test]
+    fn pausing_after_a_blocked_advance_lets_the_playhead_refill() {
+        let controller = controller(8);
+        register(&controller, "a", 30.0);
+        register(&controller, "b", 30.0);
+        controller
+            .load_composition(COMPOSITION_JSON)
+            .expect("load composition");
+        upload(&controller.media, 0);
+        controller.state.borrow_mut().dirty = false;
+
+        controller.play().expect("play");
+        assert!(!tick(&controller, 0.0));
+        assert!(!tick(&controller, 40.0), "frame 1 is not loaded yet");
+        upload(&controller.media, 1);
+        controller.pause().expect("pause");
+
+        upload_one(&controller, "a", 0);
+        upload_one(&controller, "b", 0);
+        assert_eq!(controller.current_frame().expect("current frame"), 0);
+        assert!(ready_at_playhead(&controller));
     }
 }

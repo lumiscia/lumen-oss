@@ -187,7 +187,9 @@ impl LumenRenderer {
         if let Ok(requirements) =
             collect_frame_requirements(composition, media.as_wasm_store(), frame)
         {
-            let _ = media.as_wasm_store().pin_video_frames(&requirements.videos);
+            let _ = media
+                .as_wasm_store()
+                .protect_video_frames(&requirements.videos);
         }
         let size = renderer.render_frame(
             &canvas,
