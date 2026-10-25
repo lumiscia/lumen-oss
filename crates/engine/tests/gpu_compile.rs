@@ -3883,12 +3883,23 @@ fn merge_without_a_feather_skips_the_gaussian_passes() {
         "the expression feather allocates the blur's textures"
     );
 
-    // Skipping the blur does not change the matte, including for a smaller mask.
+    // A feather that evaluates to zero reads the mask exactly like a literal zero, including
+    // a translucent straight-alpha mask.
     let rectangle = |graph: &mut Graph| {
-        let mask = NodeId::new(5);
+        let (shape, mask) = (NodeId::new(5), NodeId::new(6));
         graph
             .nodes
-            .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 255, 255, 255]));
+            .insert(shape, edged_rectangle(shape, 8.5, 8, [200, 90, 40, 150]));
+        graph.nodes.insert(
+            mask,
+            NodeKind::AlphaPremultiply(AlphaPremultiply {
+                id: mask,
+                params: AlphaPremultiplyParamsDelegate {
+                    mode: Deferred::value("unpremultiply".to_string()),
+                },
+                source: PortRef::new(shape, "output".to_string()),
+            }),
+        );
         mask
     };
     for mask_mode in [MaskMode::Alpha, MaskMode::Luma] {

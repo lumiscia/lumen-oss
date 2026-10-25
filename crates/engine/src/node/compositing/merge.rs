@@ -89,12 +89,18 @@ impl Default for Merge {
     }
 }
 
+/// `MergeParams::mask_source`: no mask, the feathered mask, or the mask as is. A feather
+/// that evaluates to zero reads the mask as is, the same as a literal zero.
+const MASK_NONE: u32 = 0;
+const MASK_FEATHERED: u32 = 1;
+const MASK_RAW: u32 = 2;
+
 #[derive(Debug, Clone)]
 struct CompiledMerge {
     node_id: NodeId,
     params: MergeParamsDelegate,
     has_mask: bool,
-    /// Bit 0: base, bit 1: overlay, bit 2: a mask that is read without feathering.
+    /// Bit 0: base, bit 1: overlay, bit 2: mask.
     straight_inputs: u32,
     /// Feathered mask passes, present when the node has a `mask` input and a feather that
     /// is not a literal zero.
@@ -121,7 +127,11 @@ impl GpuCompiledNode for CompiledMerge {
         let params = compiler::MergeParams {
             opacity: evaluated.opacity as f32,
             blend_mode: evaluated.blend_mode as u32,
-            has_mask: u32::from(self.has_mask),
+            mask_source: match &self.feather {
+                _ if !self.has_mask => MASK_NONE,
+                Some(_) if evaluated.feather > 0.0 => MASK_FEATHERED,
+                _ => MASK_RAW,
+            },
             straight_inputs: self.straight_inputs,
             mask_mode: evaluated.mask_mode as u32,
             invert: u32::from(evaluated.invert),
@@ -192,7 +202,6 @@ impl GpuCompileNode for Merge {
                 straight_mask: straight(&mask),
             }
         });
-        let bare_mask = mask.filter(|_| !feathered);
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("merge:{}:output", self.id.0)),
@@ -226,6 +235,10 @@ impl GpuCompileNode for Merge {
                         3,
                         lumen_gpu::wgpu::ShaderStages::COMPUTE,
                     ),
+                    lumen_gpu::BindingLayoutEntry::texture(
+                        5,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                    ),
                     lumen_gpu::BindingLayoutEntry::storage_texture(
                         4,
                         lumen_gpu::wgpu::ShaderStages::COMPUTE,
@@ -245,11 +258,14 @@ impl GpuCompileNode for Merge {
                 lumen_gpu::Binding::sampled_texture(
                     0,
                     2,
-                    match (&feather, &bare_mask) {
-                        (Some(feather), _) => feather.passes.output,
-                        (None, Some(mask)) => mask.texture,
-                        (None, None) => base.texture,
-                    },
+                    feather
+                        .as_ref()
+                        .map_or(base.texture, |feather| feather.passes.output),
+                ),
+                lumen_gpu::Binding::sampled_texture(
+                    0,
+                    5,
+                    mask.as_ref().map_or(base.texture, |mask| mask.texture),
                 ),
                 lumen_gpu::Binding::uniform(0, 3, params),
                 lumen_gpu::Binding::storage_texture(0, 4, texture),
@@ -269,7 +285,7 @@ impl GpuCompileNode for Merge {
             has_mask: !self.mask.is_empty(),
             straight_inputs: u32::from(straight(&base))
                 | (u32::from(straight(&overlay)) << 1)
-                | (u32::from(bare_mask.as_ref().is_some_and(straight)) << 2),
+                | (u32::from(mask.as_ref().is_some_and(straight)) << 2),
             feather,
             buffer: params,
         });

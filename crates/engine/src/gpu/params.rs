@@ -160,7 +160,7 @@ pub(crate) struct WgslShaderParams {
 pub(crate) struct MergeParams {
     pub(crate) opacity: f32,
     pub(crate) blend_mode: u32,
-    pub(crate) has_mask: u32,
+    pub(crate) mask_source: u32,
     pub(crate) straight_inputs: u32,
     pub(crate) mask_mode: u32,
     pub(crate) invert: u32,
