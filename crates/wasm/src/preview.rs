@@ -751,18 +751,11 @@ mod tests {
         ]
     }"#;
 
-    fn upload(media: &WasmMediaStore, frame: u32) {
-        for stream_id in ["a", "b"] {
-            let image = image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
-            media
-                .set_video_frame(stream_id.to_string(), frame, image)
-                .expect("set frame");
-        }
+    fn load_composition() -> Composition {
+        composition_json_to_composition(COMPOSITION_JSON).expect("composition")
     }
 
-    #[test]
-    fn reloading_with_an_occupied_cache_pins_frame_zero() {
-        let media = WasmMediaStore::default();
+    fn add_streams(media: &WasmMediaStore) {
         for stream_id in ["a", "b"] {
             media
                 .set_video_metadata(
@@ -776,21 +769,52 @@ mod tests {
                 )
                 .expect("set metadata");
         }
+    }
+
+    fn upload(media: &WasmMediaStore, frame: u32) {
+        for stream_id in ["a", "b"] {
+            let image = image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
+            media
+                .set_video_frame(stream_id.to_string(), frame, image)
+                .expect("set frame");
+        }
+    }
+
+    #[test]
+    fn reloading_with_an_occupied_cache_pins_frame_zero() {
+        let media = WasmMediaStore::default();
+        add_streams(&media);
         // Room for two frames: one per stream.
         media.set_video_frame_cache_bytes(8).expect("set budget");
 
-        let load = || composition_json_to_composition(COMPOSITION_JSON).expect("composition");
         let mut state = PreviewState::default();
-        state.install_composition(load(), &media);
+        state.install_composition(load_composition(), &media);
         state.move_playhead(100, &media);
         upload(&media, 100);
 
-        state.install_composition(load(), &media);
+        state.install_composition(load_composition(), &media);
         assert_eq!(state.current_frame, 0);
         upload(&media, 0);
 
         assert!(frame_ready(&state, &media, 0).expect("frame readiness"));
         assert!(!media.has_video_frame("a", 100));
         assert!(!media.has_video_frame("b", 100));
+    }
+
+    #[test]
+    fn clearing_videos_keeps_the_playhead_pinned() {
+        let media = WasmMediaStore::default();
+        add_streams(&media);
+        // Room for one frame, but the playhead needs one frame from each of the two streams.
+        media.set_video_frame_cache_bytes(4).expect("set budget");
+
+        let mut state = PreviewState::default();
+        state.install_composition(load_composition(), &media);
+        upload(&media, 0);
+
+        media.clear_video_frames().expect("clear video frames");
+        upload(&media, 0);
+
+        assert!(frame_ready(&state, &media, 0).expect("frame readiness"));
     }
 }

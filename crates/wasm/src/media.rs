@@ -33,9 +33,9 @@ pub(crate) struct VideoFrameCache {
 }
 
 impl VideoFrameCache {
+    /// Drops the cached frames; pins describe what the playhead needs, so they are kept.
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.pinned.clear();
         self.bytes = 0;
     }
 
