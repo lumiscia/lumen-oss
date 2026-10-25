@@ -4,7 +4,9 @@ use lumen_engine::{
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    debug_error, install_panic_hook, media::LumenMediaStore, types::FrameRequirementsPayload,
+    debug_error, install_panic_hook,
+    media::{LumenMediaStore, WasmMediaStore},
+    types::FrameRequirementsPayload,
     utils::composition_json_to_composition,
 };
 
@@ -122,6 +124,12 @@ impl LumenRenderer {
         self.render_frame_to_canvas(frame, media, canvas).await
     }
 
+    /// Protects the video frames `frame` needs so loading them cannot evict one another.
+    #[wasm_bindgen(js_name = "prepareFrame")]
+    pub fn prepare_frame(&self, frame: u32, media: &LumenMediaStore) -> Result<(), JsValue> {
+        self.protect_frame_media(frame, media.as_wasm_store())
+    }
+
     #[wasm_bindgen(js_name = "frameRequirements")]
     pub fn frame_requirements(
         &self,
@@ -176,6 +184,7 @@ impl LumenRenderer {
         if self.renderer.is_none() {
             self.renderer = Some(SurfaceCompositionRenderer::new(&canvas).await?);
         }
+        let _ = self.protect_frame_media(frame, media.as_wasm_store());
         let composition = self
             .composition
             .as_ref()
@@ -184,13 +193,6 @@ impl LumenRenderer {
             .renderer
             .as_mut()
             .ok_or_else(|| JsValue::from_str("GPU renderer is unavailable"))?;
-        if let Ok(requirements) =
-            collect_frame_requirements(composition, media.as_wasm_store(), frame)
-        {
-            let _ = media
-                .as_wasm_store()
-                .protect_video_frames(&requirements.videos);
-        }
         let size = renderer.render_frame(
             &canvas,
             composition,
@@ -208,6 +210,15 @@ impl LumenRenderer {
             "rendered frame to canvas"
         );
         Ok(())
+    }
+
+    fn protect_frame_media(&self, frame: u32, store: &WasmMediaStore) -> Result<(), JsValue> {
+        self.validate_frame(frame)?;
+        let requirements = collect_frame_requirements(self.require_composition()?, store, frame)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        store
+            .protect_video_frames(&requirements.videos)
+            .map_err(JsValue::from_str)
     }
 
     fn validate_frame(&self, frame: u32) -> Result<(), JsValue> {
@@ -475,4 +486,72 @@ pub(crate) fn collect_requirement_window(
         .collect();
 
     Ok(FrameRequirementsPayload::from(requirements))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::image_frame_from_rgba;
+
+    const COMPOSITION_JSON: &str = r#"{
+        "timeline": { "fps": 30, "duration_frames": 200 },
+        "render_settings": { "width": 8, "height": 4 },
+        "nodes": [
+            { "id": 1, "type": "media_in", "params": { "kind": "video", "source": "a" } },
+            { "id": 2, "type": "media_in", "params": { "kind": "video", "source": "b" } },
+            { "id": 3, "type": "merge", "params": {} },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "base" },
+            { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "overlay" },
+            { "from_node": 3, "from_port": "output", "to_node": 4, "to_port": "source" }
+        ]
+    }"#;
+
+    fn upload(store: &WasmMediaStore, frame: u32) {
+        for stream_id in ["a", "b"] {
+            let image = image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
+            store
+                .set_video_frame(stream_id.to_string(), frame, image)
+                .expect("set frame");
+        }
+    }
+
+    #[test]
+    fn preparing_a_frame_lets_its_streams_load_within_the_budget() {
+        let mut renderer = LumenRenderer::new();
+        renderer
+            .load_composition(COMPOSITION_JSON)
+            .expect("load composition");
+        let store = WasmMediaStore::default();
+        for stream_id in ["a", "b"] {
+            store
+                .set_video_metadata(
+                    stream_id.to_string(),
+                    lumen_engine::media::VideoMetadata {
+                        width: 1,
+                        height: 1,
+                        frame_count: 200,
+                        fps: 30.0,
+                    },
+                )
+                .expect("set metadata");
+        }
+        // Room for one frame per stream.
+        store.set_video_frame_cache_bytes(8).expect("set budget");
+
+        renderer.protect_frame_media(0, &store).expect("prepare 0");
+        upload(&store, 0);
+        renderer.protect_frame_media(1, &store).expect("prepare 1");
+        upload(&store, 1);
+
+        for stream_id in ["a", "b"] {
+            assert!(store.has_video_frame(stream_id, 1), "{stream_id}:1 cached");
+            assert!(
+                !store.has_video_frame(stream_id, 0),
+                "{stream_id}:0 evicted"
+            );
+        }
+    }
 }

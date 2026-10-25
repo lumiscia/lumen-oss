@@ -98,6 +98,7 @@ export interface LumenRendererBinding {
   frameRequirements(frame: number, media: LumenMediaStoreBinding): string;
   frameRequirementsWindow(frame: number, media: LumenMediaStoreBinding): string;
   loadComposition(compositionJson: string): void;
+  prepareFrame(frame: number, media: LumenMediaStoreBinding): void;
   renderFrame(
     frame: number,
     media: LumenMediaStoreBinding,
@@ -349,6 +350,7 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
         this.media = media;
         this.requirements.reset();
       }
+      super.prepareFrame(frame, media);
       await this.requirements.loadFrame(frame);
       await this.renderFrame(frame, media, canvas);
       this.requirements.prefetchWindow(frame + 1);
