@@ -1,4 +1,4 @@
-use std::ptr;
+use std::{ffi::CStr, ptr};
 
 use crate::ffi::{self, AvFrame, AvPacket, SWS_BILINEAR, sys};
 use crate::format::Rational;
@@ -18,6 +18,7 @@ use super::codec::find_encoder;
 use super::common::refresh_stream_time_base;
 use super::hw::{AvBufferRef, create_encoder_hw_contexts};
 use super::output::OutputContext;
+use super::quality::{QualityOptions, RateControl, quality_options};
 use super::telemetry::GpuEncodeTelemetry;
 
 // swscale range flags: 1 is full (JPEG) range, 0 is limited (MPEG) range.
@@ -34,6 +35,10 @@ pub struct VideoEncoderConfig {
     pub encoder_name: Option<String>,
     pub mode: EncodeMode,
     pub bit_rate: i64,
+    /// Overrides `bit_rate` when set.
+    pub rate_control: Option<RateControl>,
+    /// Encoder preset: `ultrafast`..`placebo` for libx264, `p1`..`p7` for NVENC.
+    pub preset: Option<String>,
 }
 
 impl VideoEncoderConfig {
@@ -46,6 +51,8 @@ impl VideoEncoderConfig {
             encoder_name: None,
             mode: EncodeMode::CpuUpload,
             bit_rate: 8_000_000,
+            rate_control: None,
+            preset: None,
         }
     }
 
@@ -120,6 +127,15 @@ impl VideoEncoder {
             )
             .with_codec(config.codec));
         }
+        let encoder_name = unsafe { CStr::from_ptr((*codec).name) }.to_string_lossy();
+        let quality = quality_options(
+            &encoder_name,
+            config
+                .rate_control
+                .unwrap_or_else(|| RateControl::Bitrate(config.bit_rate.max(0) as u64)),
+            config.preset.as_deref(),
+        )
+        .map_err(|error| error.with_codec(config.codec))?;
         let stream = unsafe { sys::avformat_new_stream(output.ptr, ptr::null()) };
         if stream.is_null() {
             return Err(FfmpegError::new(
@@ -135,6 +151,8 @@ impl VideoEncoder {
                 "failed to allocate encoder context",
             ));
         }
+
+        apply_private_options(context, &quality, &encoder_name)?;
 
         let time_base = sys::AVRational {
             num: framerate.den,
@@ -163,7 +181,7 @@ impl VideoEncoder {
             (*context).color_trc = AVCOL_TRC_BT709;
             (*context).colorspace = AVCOL_SPC_BT709;
             (*context).color_range = AVCOL_RANGE_MPEG;
-            (*context).bit_rate = config.bit_rate;
+            (*context).bit_rate = quality.bit_rate;
             (*context).gop_size = gop_size;
             if let Some(contexts) = &hw_contexts {
                 (*context).sw_pix_fmt = contexts.sw_format;
@@ -382,6 +400,27 @@ impl VideoEncoder {
         }
         Ok(())
     }
+}
+
+fn apply_private_options(
+    context: *mut sys::AVCodecContext,
+    quality: &QualityOptions,
+    encoder_name: &str,
+) -> Result<()> {
+    for (name, value) in &quality.options {
+        let c_name = ffi::cstring("av_opt_set", name)?;
+        let c_value = ffi::cstring("av_opt_set", value)?;
+        let code =
+            unsafe { sys::av_opt_set((*context).priv_data, c_name.as_ptr(), c_value.as_ptr(), 0) };
+        ffi::check(code, "av_opt_set").map_err(|mut error| {
+            error.message = format!(
+                "failed to set `{name}={value}` on encoder `{encoder_name}`: {}",
+                error.message
+            );
+            error
+        })?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

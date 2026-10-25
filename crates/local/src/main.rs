@@ -26,6 +26,7 @@ use lumen_engine::{
 };
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_ffmpeg::EncodeMode;
+use lumen_ffmpeg::encode::RateControl;
 use lumen_ffmpeg::{
     AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, Rational,
     SampleFormat, VideoCodec, VideoEncoderConfig,
@@ -39,7 +40,26 @@ struct CliArgs {
     media_root: Option<PathBuf>,
     font_dir: Option<PathBuf>,
     encoder: Option<String>,
+    quality: EncoderQuality,
     frame: Option<u32>,
+}
+
+/// Encoder quality flags. With none set the encoder keeps its default 14 Mb/s target.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct EncoderQuality {
+    rate_control: Option<RateControl>,
+    preset: Option<String>,
+}
+
+impl EncoderQuality {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn apply(&self, config: &mut VideoEncoderConfig) {
+        config.rate_control = self.rate_control;
+        config.preset = self.preset.clone();
+    }
 }
 
 const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
@@ -389,6 +409,7 @@ impl LumenFfmpegEncoder {
         height: u32,
         fps: f32,
         encoder: &str,
+        quality: &EncoderQuality,
         include_audio: bool,
     ) -> Result<Self> {
         let codec = match encoder {
@@ -400,6 +421,7 @@ impl LumenFfmpegEncoder {
             VideoEncoderConfig::cpu_rgba(width, height, Rational::from_fps(f64::from(fps))?, codec);
         config.encoder_name = Some(encoder.to_string());
         config.bit_rate = 14_000_000;
+        quality.apply(&mut config);
         let audio = include_audio
             .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
         let (message_tx, message_rx) =
@@ -498,6 +520,10 @@ where
     let mut media_root = None;
     let mut font_dir = None;
     let mut encoder = None;
+    let mut bitrate = None;
+    let mut crf = None;
+    let mut qp = None;
+    let mut preset = None;
     let mut frame = None;
 
     while let Some(flag) = args.next() {
@@ -532,6 +558,41 @@ where
                     .ok_or_else(|| anyhow!("missing value for --encoder"))?;
                 encoder = Some(value);
             }
+            "--bitrate" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --bitrate"))?;
+                bitrate = Some(
+                    parse_bitrate(&value)
+                        .with_context(|| format!("invalid value for --bitrate: {value}"))?,
+                );
+            }
+            "--crf" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --crf"))?;
+                crf = Some(
+                    value
+                        .parse::<u8>()
+                        .with_context(|| format!("invalid value for --crf: {value}"))?,
+                );
+            }
+            "--qp" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --qp"))?;
+                qp = Some(
+                    value
+                        .parse::<u8>()
+                        .with_context(|| format!("invalid value for --qp: {value}"))?,
+                );
+            }
+            "--preset" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --preset"))?;
+                preset = Some(value);
+            }
             "--frame" => {
                 let value = args
                     .next()
@@ -557,6 +618,13 @@ where
 
     let composition = composition.ok_or_else(|| anyhow!("--composition is required"))?;
     let output = output.ok_or_else(|| anyhow!("--output is required"))?;
+    let rate_control = match (bitrate, crf, qp) {
+        (None, None, None) => None,
+        (Some(bitrate), None, None) => Some(RateControl::Bitrate(bitrate)),
+        (None, Some(crf), None) => Some(RateControl::Crf(crf)),
+        (None, None, Some(qp)) => Some(RateControl::Qp(qp)),
+        _ => return Err(anyhow!("--bitrate, --crf and --qp are mutually exclusive")),
+    };
 
     Ok(CliArgs {
         composition,
@@ -564,13 +632,36 @@ where
         media_root,
         font_dir,
         encoder,
+        quality: EncoderQuality {
+            rate_control,
+            preset,
+        },
         frame,
     })
 }
 
+/// Parses bits per second, with optional `k` or `M` suffixes (`14M` is 14,000,000).
+fn parse_bitrate(value: &str) -> Result<u64> {
+    let (digits, multiplier) = match value.strip_suffix(['k', 'K']) {
+        Some(digits) => (digits, 1_000),
+        None => match value.strip_suffix(['m', 'M']) {
+            Some(digits) => (digits, 1_000_000),
+            None => (value, 1),
+        },
+    };
+    let bitrate = digits
+        .parse::<u64>()?
+        .checked_mul(multiplier)
+        .ok_or_else(|| anyhow!("bitrate is too large"))?;
+    if bitrate == 0 {
+        return Err(anyhow!("bitrate must be greater than zero"));
+    }
+    Ok(bitrate)
+}
+
 fn print_usage() {
     eprintln!(
-        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--font-dir <path>] [--encoder <name>] [--frame <n>]\n\n--font-dir overrides the LUMEN_FONT_DIR environment variable; bundled fonts and system fonts are fallback sources."
+        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--font-dir <path>] [--encoder <name>] [--bitrate <bps|Nk|NM> | --crf <n> | --qp <n>] [--preset <name>] [--frame <n>]\n\n--font-dir overrides the LUMEN_FONT_DIR environment variable; bundled fonts and system fonts are fallback sources.\n\nOn .mp4 output the default is a 14 Mb/s target. --bitrate, --crf, --qp and --preset override it where the encoder supports them (--crf: libx264, NVENC; --qp: libx264, NVENC, Vulkan, VAAPI; --preset: libx264 ultrafast..placebo, NVENC p1..p7) and fail otherwise."
     )
 }
 
@@ -596,7 +687,14 @@ fn run() -> Result<()> {
         .unwrap_or_default();
 
     match extension.as_str() {
-        "png" => render_single_png(&composition, &media_store, &args.output, args.frame),
+        "png" => {
+            if !args.quality.is_default() {
+                return Err(anyhow!(
+                    "--bitrate, --crf, --qp and --preset are only supported when output is .mp4"
+                ));
+            }
+            render_single_png(&composition, &media_store, &args.output, args.frame)
+        }
         "mp4" => {
             if args.frame.is_some() {
                 return Err(anyhow!("--frame is only supported when output is .png"));
@@ -606,6 +704,7 @@ fn run() -> Result<()> {
                 media_store,
                 &args.output,
                 args.encoder.as_deref(),
+                &args.quality,
             )
         }
         _ => Err(anyhow!(
@@ -660,6 +759,7 @@ fn render_mp4(
     media_store: LocalMediaStore,
     output: &Path,
     override_encoder: Option<&str>,
+    quality: &EncoderQuality,
 ) -> Result<()> {
     if composition.timeline.fps <= 0.0 {
         return Err(anyhow!(
@@ -691,6 +791,7 @@ fn render_mp4(
             height,
             total_frames,
             &encoder,
+            quality,
         );
     }
     let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
@@ -713,6 +814,7 @@ fn render_mp4(
         height,
         composition.timeline.fps,
         &encoder,
+        quality,
         include_audio,
     )?;
     let render_started = Instant::now();
@@ -819,6 +921,7 @@ fn render_mp4(
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
+#[allow(clippy::too_many_arguments)]
 fn render_video_gpu_videotoolbox(
     composition: Composition,
     media_store: LocalMediaStore,
@@ -827,6 +930,7 @@ fn render_video_gpu_videotoolbox(
     height: u32,
     total_frames: u32,
     encoder: &str,
+    quality: &EncoderQuality,
 ) -> Result<()> {
     let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
         .context("failed to create GPU renderer")?;
@@ -849,6 +953,7 @@ fn render_video_gpu_videotoolbox(
     );
     config.mode = EncodeMode::GpuTexture(GpuBackend::Metal);
     config.bit_rate = 14_000_000;
+    quality.apply(&mut config);
     let include_audio = has_audio(&composition);
     let audio =
         include_audio.then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
@@ -964,6 +1069,7 @@ fn encode_ready_gpu_frame(
 }
 
 #[cfg(not(all(target_os = "macos", feature = "metal")))]
+#[allow(clippy::too_many_arguments)]
 fn render_video_gpu_videotoolbox(
     _composition: Composition,
     _media_store: LocalMediaStore,
@@ -972,6 +1078,7 @@ fn render_video_gpu_videotoolbox(
     _height: u32,
     _total_frames: u32,
     _encoder: &str,
+    _quality: &EncoderQuality,
 ) -> Result<()> {
     Err(anyhow!(
         "VideoToolbox GPU texture encode is only available on macOS"
@@ -1293,8 +1400,8 @@ mod tests {
     use lumen_engine::media::{FontResolver, MediaStore};
 
     use super::{
-        FontCatalog, LocalMediaStore, choose_video_encoder, parse_args_from, resolve_font_dir,
-        resolve_local_path_with_root,
+        EncoderQuality, FontCatalog, LocalMediaStore, RateControl, choose_video_encoder,
+        parse_args_from, parse_bitrate, resolve_font_dir, resolve_local_path_with_root,
     };
 
     fn argv(values: &[&str]) -> Vec<String> {
@@ -1334,6 +1441,56 @@ mod tests {
         ]))
         .expect("font directory should parse");
         assert_eq!(args.font_dir.as_deref(), Some(Path::new("./fonts")));
+    }
+
+    fn parse_quality(flags: &[&str]) -> anyhow::Result<EncoderQuality> {
+        let mut values = vec![
+            "lumen-local",
+            "--composition",
+            "in.json",
+            "--output",
+            "o.mp4",
+        ];
+        values.extend(flags);
+        parse_args_from(argv(&values)).map(|args| args.quality)
+    }
+
+    #[test]
+    fn quality_flags_default_to_unset() {
+        assert!(parse_quality(&[]).unwrap().is_default());
+    }
+
+    #[test]
+    fn parse_args_accepts_quality_flags() {
+        let quality = parse_quality(&["--crf", "23", "--preset", "fast"]).unwrap();
+        assert_eq!(quality.rate_control, Some(RateControl::Crf(23)));
+        assert_eq!(quality.preset.as_deref(), Some("fast"));
+
+        let quality = parse_quality(&["--qp", "30"]).unwrap();
+        assert_eq!(quality.rate_control, Some(RateControl::Qp(30)));
+
+        let quality = parse_quality(&["--bitrate", "8M"]).unwrap();
+        assert_eq!(quality.rate_control, Some(RateControl::Bitrate(8_000_000)));
+    }
+
+    #[test]
+    fn parse_args_rejects_conflicting_or_invalid_quality_flags() {
+        let error = parse_quality(&["--crf", "23", "--qp", "20"]).unwrap_err();
+        assert!(error.to_string().contains("mutually exclusive"));
+        let error = parse_quality(&["--bitrate", "1M", "--crf", "23"]).unwrap_err();
+        assert!(error.to_string().contains("mutually exclusive"));
+        assert!(parse_quality(&["--crf", "300"]).is_err());
+        assert!(parse_quality(&["--crf"]).is_err());
+    }
+
+    #[test]
+    fn parse_bitrate_accepts_suffixes() {
+        assert_eq!(parse_bitrate("14000000").unwrap(), 14_000_000);
+        assert_eq!(parse_bitrate("500k").unwrap(), 500_000);
+        assert_eq!(parse_bitrate("14M").unwrap(), 14_000_000);
+        assert!(parse_bitrate("0").is_err());
+        assert!(parse_bitrate("fast").is_err());
+        assert!(parse_bitrate("18446744073709551615M").is_err());
     }
 
     #[test]
