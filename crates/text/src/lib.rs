@@ -86,7 +86,8 @@ impl TextSystem {
         // cosmic-text adds tracking after every glyph, including the last on a
         // line, so every line is `letter_spacing` wider than its ink. Widening
         // the layout width by the same amount makes wrapping and alignment see
-        // the trimmed line widths.
+        // the trimmed line widths. cosmic-text clamps negative widths to zero, so a
+        // negative spacing larger than `max_width` wraps less than it should.
         let layout_width = request
             .max_width
             .filter(|width| *width > 0.0)
