@@ -476,6 +476,10 @@ fn property_schema_json(property: &NodeParamSpec) -> Value {
         NodeParamKind::Float => numeric_property_schema_json("number", property),
         NodeParamKind::Int => numeric_property_schema_json("integer", property),
         NodeParamKind::Bool => json!({ "type": "boolean" }),
+        // A leading `=` always parses as an expression, so literal-only strings exclude it.
+        NodeParamKind::String if !property.accepts_expressions => {
+            json!({ "type": "string", "not": { "pattern": "^=" } })
+        }
         NodeParamKind::String => json!({ "type": "string" }),
         NodeParamKind::Color => json!({ "$ref": "#/$defs/color" }),
         NodeParamKind::Paint => json!({ "$ref": "#/$defs/paint" }),
@@ -776,6 +780,16 @@ mod tests {
         assert!(!validator.is_valid(&node("text", json!({ "color": "=frame" }))));
         assert!(!validator.is_valid(&node("text", json!({ "position": ["=frame", 0] }))));
         assert!(!validator.is_valid(&node("transform", json!({ "sampling": "=1" }))));
+        // `alpha_premultiply.mode` decides output metadata, so it is literal-only.
+        let mode = manifest.node_specs["alpha_premultiply"]
+            .params
+            .iter()
+            .find(|param| param.id == "mode")
+            .unwrap();
+        assert!(!mode.accepts_expressions);
+        let expression_mode = node("alpha_premultiply", json!({ "mode": "='premultiply'" }));
+        assert!(!validator.is_valid(&expression_mode));
+        assert!(lumen_engine::json::parse_value(&expression_mode).is_err());
         let gradient_with_expression_stop = json!({
             "type": "linear",
             "stops": [{ "offset": 0, "color": "=frame" }]

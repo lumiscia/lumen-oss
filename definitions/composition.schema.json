@@ -291,17 +291,13 @@
                 "additionalProperties": false,
                 "properties": {
                   "mode": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
                     "default": "premultiply",
                     "description": "Alpha conversion mode.",
+                    "not": {
+                      "pattern": "^="
+                    },
                     "title": "Mode",
+                    "type": "string",
                     "x-lumen-constraints": {
                       "format": "alpha_premultiply_mode"
                     },

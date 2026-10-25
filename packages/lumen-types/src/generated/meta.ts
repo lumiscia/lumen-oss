@@ -130,7 +130,7 @@ export interface CompositionNodeBase<TKind extends NodeKind> {
 
 export interface AlphaPremultiplyNode extends CompositionNodeBase<"alpha_premultiply"> {
   readonly params?: {
-    readonly "mode"?: ExpressionValue<string>;
+    readonly "mode"?: string;
   };
 }
 
