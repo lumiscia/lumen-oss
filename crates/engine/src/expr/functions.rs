@@ -14,10 +14,101 @@ use crate::{
     },
 };
 
+/// Largest AST, in nodes, that expanding a function may produce.
+const MAX_EXPANDED_NODES: usize = 10_000;
+/// Deepest AST nesting that expanding a function may produce.
+const MAX_EXPANDED_DEPTH: usize = 64;
+
 struct Function {
     params: Vec<String>,
     body: ExprNode,
+    shape: Shape,
     references: Vec<ExpressionReference>,
+}
+
+/// The size of a tree, with each use of a parameter left as a hole to be filled by an argument.
+struct Shape {
+    nodes: usize,
+    depth: usize,
+    param_uses: Vec<usize>,
+    param_depth: Vec<usize>,
+}
+
+impl Shape {
+    fn of(node: &ExprNode, params: &[String]) -> Self {
+        let mut shape = Self {
+            nodes: 0,
+            depth: 0,
+            param_uses: vec![0; params.len()],
+            param_depth: vec![0; params.len()],
+        };
+        shape.measure(node, params, 1);
+        shape
+    }
+
+    fn measure(&mut self, node: &ExprNode, params: &[String], depth: usize) {
+        if let ExprNode::Global(GlobalVar::Custom(name)) = node
+            && let Some(index) = params.iter().position(|param| param == name)
+        {
+            self.param_uses[index] += 1;
+            self.param_depth[index] = self.param_depth[index].max(depth);
+            return;
+        }
+        self.nodes = self.nodes.saturating_add(1);
+        self.depth = self.depth.max(depth);
+        match node {
+            ExprNode::Binary(lhs, _, rhs) => {
+                self.measure(lhs, params, depth + 1);
+                self.measure(rhs, params, depth + 1);
+            }
+            ExprNode::Unary(_, value) => self.measure(value, params, depth + 1),
+            ExprNode::Builtin(_, args) => {
+                for arg in args {
+                    self.measure(arg, params, depth + 1);
+                }
+            }
+            ExprNode::Conditional(condition, when_true, when_false) => {
+                self.measure(condition, params, depth + 1);
+                self.measure(when_true, params, depth + 1);
+                self.measure(when_false, params, depth + 1);
+            }
+            ExprNode::Literal(_)
+            | ExprNode::Global(_)
+            | ExprNode::SymbolicPath(_)
+            | ExprNode::Node(_)
+            | ExprNode::PropertyValue(..)
+            | ExprNode::VirtualProperty(_) => {}
+        }
+    }
+
+    /// The `(nodes, depth)` of the tree once each parameter is replaced by a tree of the given
+    /// `(nodes, depth)`, computed without building it.
+    fn expanded(&self, args: &[(usize, usize)]) -> (usize, usize) {
+        let mut nodes = self.nodes;
+        let mut depth = self.depth;
+        for (index, &(arg_nodes, arg_depth)) in args.iter().enumerate() {
+            let uses = self.param_uses[index];
+            if uses > 0 {
+                nodes = nodes.saturating_add(uses.saturating_mul(arg_nodes));
+                depth = depth.max(self.param_depth[index] - 1 + arg_depth);
+            }
+        }
+        (nodes, depth)
+    }
+}
+
+fn limit_error(subject: &str, (nodes, depth): (usize, usize)) -> Option<ExpressionError> {
+    if nodes > MAX_EXPANDED_NODES {
+        Some(parse_error(format!(
+            "{subject} expands to more than {MAX_EXPANDED_NODES} nodes"
+        )))
+    } else if depth > MAX_EXPANDED_DEPTH {
+        Some(parse_error(format!(
+            "{subject} expands to more than {MAX_EXPANDED_DEPTH} levels of nesting"
+        )))
+    } else {
+        None
+    }
 }
 
 pub(crate) struct Expansion {
@@ -69,9 +160,16 @@ impl FunctionScope {
                 let details = format!("unknown variable `{variable}`");
                 return Err(function_error(&name, body, details));
             }
+            let shape = Shape::of(&expression.ast, params);
+            let ones = vec![(1, 1); params.len()];
+            if let Some(error) = limit_error(&format!("`functions.{name}`"), shape.expanded(&ones))
+            {
+                return Err(error);
+            }
             let function = Function {
                 params: params.clone(),
                 body: expression.ast,
+                shape,
                 references: expression.references,
             };
             FUNCTIONS.with_borrow_mut(|functions| functions.insert(name, function));
@@ -98,6 +196,19 @@ pub(crate) fn expand(name: &str, args: &[ExprNode]) -> Result<Option<Expansion>,
                 function.params.len(),
                 args.len()
             )));
+        }
+        let arg_sizes: Vec<_> = args
+            .iter()
+            .map(|arg| {
+                let shape = Shape::of(arg, &[]);
+                (shape.nodes, shape.depth)
+            })
+            .collect();
+        if let Some(error) = limit_error(
+            &format!("call to `{name}`"),
+            function.shape.expanded(&arg_sizes),
+        ) {
+            return Err(error);
         }
         Ok(Some(Expansion {
             node: substitute(&function.body, &function.params, args),
@@ -342,6 +453,51 @@ mod tests {
             let error = scope_error(entries);
             assert!(error.contains(expected), "{entries:?}: {error}");
         }
+    }
+
+    #[test]
+    fn rejects_functions_that_expand_exponentially() {
+        let mut entries = vec![("f0(x)".to_string(), "x + x".to_string())];
+        for n in 1..=5 {
+            entries.push((format!("f{n}(x)"), format!("f{}(f{}(x))", n - 1, n - 1)));
+        }
+        let definitions: BTreeMap<_, _> = entries.into_iter().collect();
+        let error = FunctionScope::enter(&definitions)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains("functions.f4") && error.contains("expands to more than 10000 nodes"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_call_sites_that_expand_too_far() {
+        let _scope =
+            FunctionScope::enter(&definitions(&[("f(x)", "x + x + x + x + x + x + x + x")]))
+                .unwrap();
+        let mut source = "1".to_string();
+        for _ in 0..5 {
+            source = format!("f({source})");
+        }
+        let error = Expression::parse(&source).unwrap_err().to_string();
+        assert!(
+            error.contains("call to `f` expands to more than 10000 nodes"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_call_sites_that_nest_too_deep() {
+        let _scope = FunctionScope::enter(&definitions(&[("next(x)", "x + 1")])).unwrap();
+        let nested = |depth: usize| (0..depth).fold("0".to_string(), |s, _| format!("next({s})"));
+        assert!(Expression::parse(&nested(60)).is_ok());
+        let error = Expression::parse(&nested(70)).unwrap_err().to_string();
+        assert!(
+            error.contains("call to `next` expands to more than 64 levels"),
+            "{error}"
+        );
     }
 
     #[test]

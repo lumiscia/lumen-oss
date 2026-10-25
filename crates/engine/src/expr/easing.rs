@@ -166,7 +166,7 @@ pub fn spring(t: f64, stiffness: f64, damping: f64) -> f64 {
     }
     let w0 = stiffness.sqrt();
     let zeta = damping / (2.0 * w0);
-    let decay = zeta * w0;
+    let decay = damping / 2.0;
     if (zeta - 1.0).abs() < 1e-9 {
         return 1.0 - (-w0 * t).exp() * (1.0 + w0 * t);
     }
@@ -174,11 +174,17 @@ pub fn spring(t: f64, stiffness: f64, damping: f64) -> f64 {
         let wd = w0 * (1.0 - zeta * zeta).sqrt();
         return 1.0 - (-decay * t).exp() * ((wd * t).cos() + decay / wd * (wd * t).sin());
     }
-    // `e^(-decay t) cosh(wd t)` written as two exponentials so large `t` can't overflow.
-    let wd = w0 * (zeta * zeta - 1.0).sqrt();
-    let slow = ((wd - decay) * t).exp();
-    let fast = (-(wd + decay) * t).exp();
-    1.0 - ((slow + fast) + decay / wd * (slow - fast)) / 2.0
+    // The real roots are `-slow_rate` and `-fast_rate`, where `slow_rate * fast_rate = stiffness`.
+    // Taking the slow one from the product avoids cancelling `decay - wd`, and scaling by
+    // `decay` keeps the square root from overflowing.
+    let ratio = w0 / decay;
+    let wd = decay * ((1.0 - ratio) * (1.0 + ratio)).sqrt();
+    let fast_rate = decay + wd;
+    let slow_rate = stiffness / fast_rate;
+    let rate_ratio = slow_rate / fast_rate;
+    let slow = (-slow_rate * t).exp();
+    let fast = (-fast_rate * t).exp();
+    1.0 - (slow - rate_ratio * fast) / (1.0 - rate_ratio)
 }
 
 #[cfg(test)]
@@ -250,6 +256,34 @@ mod tests {
             spring(0.3, 100.0, 2.0) > 1.0,
             "underdamped springs overshoot"
         );
+    }
+
+    #[test]
+    fn overdamped_spring_is_stable_at_extreme_rates() {
+        // Both have a slow root of about -1, so the response is 1 - e^-1 at t = 1.
+        let expected = 1.0 - (-1f64).exp();
+        for (stiffness, damping) in [(1e18, 1e18), (1.0, 1e200)] {
+            let x = spring(1.0, stiffness, damping);
+            assert!(x.is_finite(), "{stiffness}, {damping}: {x}");
+        }
+        let x = spring(1.0, 1e18, 1e18);
+        assert!((x - expected).abs() < 1e-9, "{x}");
+        assert!(spring(1.0, 1.0, 1e200) < 1e-100);
+        assert!((spring(1e200, 1.0, 1e200) - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spring_is_continuous_across_critical_damping() {
+        for t in [0.01, 0.1, 0.5, 2.0] {
+            let critical = spring(t, 100.0, 20.0);
+            for damping in [20.0 * (1.0 - 1e-9), 20.0 * (1.0 + 1e-9)] {
+                let x = spring(t, 100.0, damping);
+                assert!(
+                    (x - critical).abs() < 1e-6,
+                    "t = {t}, damping = {damping}: {x}"
+                );
+            }
+        }
     }
 
     #[test]
