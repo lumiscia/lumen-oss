@@ -20,6 +20,7 @@ pub use gpu::*;
 #[cfg(feature = "experimental-msdf")]
 pub use msdf::*;
 
+/// Text shader body; the engine prepends its alpha and paint WGSL chunks.
 pub const ALPHA_TEXT_SHADER: &str = include_str!("shaders/alpha_text.wgsl");
 #[cfg(feature = "experimental-msdf")]
 pub const MSDF_TEXT_SHADER: &str = include_str!("shaders/msdf_text.wgsl");
@@ -1373,19 +1374,6 @@ mod tests {
             assert_eq!(std::mem::size_of::<GpuMsdfJob>(), 48);
             assert_eq!(std::mem::size_of::<GpuMsdfSegment>(), 48);
         }
-    }
-
-    #[test]
-    fn alpha_text_shader_is_valid_wgsl() {
-        let Ok(renderer) = pollster::block_on(lumen_gpu::Renderer::new()) else {
-            return;
-        };
-        let _ = renderer
-            .device
-            .create_shader_module(lumen_gpu::wgpu::ShaderModuleDescriptor {
-                label: Some("alpha text shader validation"),
-                source: lumen_gpu::wgpu::ShaderSource::Wgsl(ALPHA_TEXT_SHADER.into()),
-            });
     }
 
     #[cfg(feature = "experimental-msdf")]

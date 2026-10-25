@@ -26,6 +26,14 @@ pub(crate) const TEXT_ATLAS_SIZE: lumen_gpu::Size = lumen_gpu::Size {
     width: 2048,
     height: 2048,
 };
+fn text_shader() -> String {
+    [
+        include_str!("../../gpu/shaders/alpha.wgsl"),
+        include_str!("paint/paint.wgsl"),
+        lumen_text::ALPHA_TEXT_SHADER,
+    ]
+    .concat()
+}
 pub(crate) const MAX_TEXT_GLYPHS: usize = 2048;
 pub(crate) const MAX_PATH_POINTS: usize = 128;
 
@@ -219,7 +227,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             lumen_gpu::NodeKey(text.id.0),
             lumen_gpu::ProgramDesc::Render(lumen_gpu::RenderProgramDesc {
                 label: Some("text".to_string()),
-                shader: lumen_text::ALPHA_TEXT_SHADER.to_string(),
+                shader: text_shader(),
                 vertex_entry: "vs_main".to_string(),
                 fragment_entry: "fs_main".to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
