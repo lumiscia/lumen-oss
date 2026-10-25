@@ -161,3 +161,12 @@ describe("Composition audio helpers", () => {
     ).toThrow("frame-based timing");
   });
 });
+
+describe("Composition timeline defaults", () => {
+  test("defaults to 30 fps", () => {
+    const composition = new Composition();
+
+    expect(composition.toJSON().timeline.fps).toBe(30);
+    expect(composition.setDurationSeconds(2).toJSON().timeline.duration_frames).toBe(60);
+  });
+});
