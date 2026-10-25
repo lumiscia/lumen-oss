@@ -51,12 +51,14 @@ pub enum GraphValidationError {
 
 #[derive(Debug, Error, Clone)]
 pub enum PropertyError {
-    #[error("property `{property_path}` is missing")]
+    #[error("property `{property_path}` on node {node_id} is missing")]
     MissingProperty {
         node_id: NodeId,
         property_path: String,
     },
-    #[error("property `{property_path}` has invalid type")]
+    #[error(
+        "property `{property_path}` on node {node_id} has invalid type: expected {expected}, got {actual}"
+    )]
     InvalidType {
         node_id: NodeId,
         property_path: String,
@@ -102,7 +104,7 @@ pub enum MediaError {
 pub enum RenderError {
     #[error("frame is out of range")]
     FrameOutOfRange { frame: u32, duration_frames: u32 },
-    #[error("node evaluation failed")]
+    #[error("{node_kind} node {node_id} evaluation failed: {details}")]
     NodeEvaluation {
         frame: u32,
         node_id: NodeId,

@@ -8,6 +8,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{ImplItem, ItemImpl, parse_macro_input};
 
+mod common;
 mod delegate;
 mod schema;
 

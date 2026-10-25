@@ -85,7 +85,15 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     });
     let json_metas_sets = metas.iter().map(|(field, _)| {
         quote! {
-            node.#field = ::lumen_engine::node::NodeParams::from_json(params)?;
+            node.#field = ::lumen_engine::node::NodeParams::from_json(id, params)?;
+        }
+    });
+    let assert_no_vec_fields = metas.iter().map(|(_, ty)| {
+        quote! {
+            const _: () = assert!(
+                !<#ty as ::lumen_engine::node::NodeParams>::HAS_VEC_FIELDS,
+                "node params cannot have `Vec` fields: the node schema has no array kind",
+            );
         }
     });
     let json_metas_known = metas
@@ -126,6 +134,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
 
     Ok(quote! {
         const #input_static: &[::lumen_engine::node::InputPortDef] = &[#(#input_defs),*];
+        #(#assert_no_vec_fields)*
 
         #[cfg(feature = "metadata")]
         impl ::lumen_engine::node::NodeSchema for #ident {

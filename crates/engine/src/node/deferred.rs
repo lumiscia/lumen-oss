@@ -54,7 +54,11 @@ impl<T> Deferred<T> {
         }
     }
 
-    pub fn from_property_expression(value: PropertyExpression) -> crate::Result<Self>
+    pub fn from_property_expression(
+        value: PropertyExpression,
+        node_id: NodeId,
+        property_path: &str,
+    ) -> crate::Result<Self>
     where
         T: DeferredValue,
     {
@@ -63,13 +67,19 @@ impl<T> Deferred<T> {
                 .map(Self::Value)
                 .ok_or_else(|| {
                     PropertyValue::invalid_type(
-                        NodeId::new(0),
-                        "",
+                        node_id,
+                        property_path,
                         T::property_kind_name(),
-                        "property",
+                        "incompatible value",
                     )
                 }),
-            PropertyExpression::Expr(expr) => Ok(Self::Expr(expr)),
+            PropertyExpression::Expr(expr) if T::ACCEPTS_EXPRESSIONS => Ok(Self::Expr(expr)),
+            PropertyExpression::Expr(_) => Err(PropertyValue::invalid_type(
+                node_id,
+                property_path,
+                T::property_kind_name(),
+                "expression",
+            )),
         }
     }
 }
@@ -170,7 +180,7 @@ impl Deferred<(f64, f64)> {
 #[cfg(feature = "json")]
 impl<'de, T> serde::Deserialize<'de> for Deferred<T>
 where
-    T: DeferredJsonValue,
+    T: DeferredJsonValue + DeferredValue,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -180,6 +190,12 @@ where
 
         let mut value = serde_json::Value::deserialize(deserializer)?;
         match value.as_str().and_then(classify_string) {
+            Some(StringParam::Expression(_)) if !T::ACCEPTS_EXPRESSIONS => {
+                return Err(serde::de::Error::custom(format!(
+                    "{} does not support expressions",
+                    T::property_kind_name()
+                )));
+            }
             Some(StringParam::Expression(source)) => {
                 return Expression::parse(source)
                     .map(Self::Expr)
@@ -244,8 +260,12 @@ where
         Deferred::to_property_expression(self)
     }
 
-    fn from_property_expression(value: PropertyExpression) -> crate::Result<Self> {
-        Deferred::from_property_expression(value)
+    fn from_property_expression(
+        value: PropertyExpression,
+        node_id: NodeId,
+        property_path: &str,
+    ) -> crate::Result<Self> {
+        Deferred::from_property_expression(value, node_id, property_path)
     }
 }
 
@@ -401,8 +421,9 @@ impl DeferredValue for u32 {
                 PropertyValue::invalid_type(node_id, property_path, "UInt", "expression")
             })? as i64,
         };
-        u32::try_from(value)
-            .map_err(|_| PropertyValue::invalid_type(node_id, property_path, "UInt", "range"))
+        u32::try_from(value).map_err(|_| {
+            PropertyValue::invalid_type(node_id, property_path, "UInt", "out-of-range value")
+        })
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -435,8 +456,9 @@ impl DeferredValue for u8 {
                 PropertyValue::invalid_type(node_id, property_path, "Int", "expression")
             })? as i64,
         };
-        u8::try_from(value)
-            .map_err(|_| PropertyValue::invalid_type(node_id, property_path, "U8", "range"))
+        u8::try_from(value).map_err(|_| {
+            PropertyValue::invalid_type(node_id, property_path, "U8", "out-of-range value")
+        })
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -771,7 +793,7 @@ mod tests {
     use crate::{
         error::{LumenError, PropertyError},
         expr::{Expression, ExpressionContext},
-        node::{Deferred, NodeId},
+        node::{Deferred, NodeId, PropertyExpression},
     };
 
     fn context() -> ExpressionContext<'static> {
@@ -850,6 +872,54 @@ mod tests {
         };
         assert_eq!(path.as_deref(), Some("4.position"));
         assert_eq!(details, "vec2 expects numeric arguments");
+    }
+
+    #[test]
+    fn color_rejects_expressions_when_parsed() {
+        let error = Deferred::<[u8; 4]>::from_property_expression(
+            PropertyExpression::Expr(Expression::parse("frame").unwrap()),
+            NodeId::new(3),
+            "color",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "property resolution error: property `color` on node 3 has invalid type: \
+             expected Color, got expression"
+        );
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn color_rejects_expressions_when_deserialized() {
+        let error = serde_json::from_value::<Deferred<[u8; 4]>>("=frame".into()).unwrap_err();
+        assert_eq!(error.to_string(), "Color does not support expressions");
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn parse_errors_name_the_node_and_property() {
+        let json = r#"{
+            "timeline": { "fps": 30, "duration_frames": 1 },
+            "render_settings": { "width": 100, "height": 100 },
+            "nodes": [{ "id": 7, "type": "background", "params": { "width": -1 } }],
+            "connections": []
+        }"#;
+
+        let error = crate::json::parse(json).unwrap_err().to_string();
+        assert!(
+            error.contains("property `width` on node 7 has invalid type: expected UInt"),
+            "{error}"
+        );
+
+        let json = json
+            .replace("background", "text")
+            .replace(r#""width": -1"#, r#""position": [0, "bad"]"#);
+        let error = format!("{:#}", crate::json::parse(&json).unwrap_err());
+        assert!(
+            error.contains("node 7") && error.contains("position[1]"),
+            "{error}"
+        );
     }
 
     #[cfg(feature = "json")]

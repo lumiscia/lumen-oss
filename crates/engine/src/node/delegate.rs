@@ -34,7 +34,11 @@ pub trait DelegateValue: DelegateEvaluable {
     fn to_property_expression(&self) -> PropertyExpression {
         PropertyExpression::Value(self.to_property_value())
     }
-    fn from_property_expression(value: PropertyExpression) -> crate::Result<Self>
+    fn from_property_expression(
+        value: PropertyExpression,
+        node_id: NodeId,
+        property_path: &str,
+    ) -> crate::Result<Self>
     where
         Self: Sized;
 }
@@ -53,6 +57,9 @@ pub struct NodeParamEvalContext<'a> {
 pub trait NodeParams: Clone + Default {
     type Evaluated;
 
+    /// Whether any field is a `Vec`, which the node schema cannot describe.
+    const HAS_VEC_FIELDS: bool = false;
+
     fn property_defs() -> Vec<PropertyDef>;
     fn is_property(id: &str) -> bool;
     fn default_properties(&self) -> Vec<(&'static str, PropertyValue)>;
@@ -61,6 +68,7 @@ pub trait NodeParams: Clone + Default {
 
     #[cfg(feature = "json")]
     fn from_json(
+        _node_id: NodeId,
         params: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> anyhow::Result<Self>
     where
@@ -124,5 +132,32 @@ where
         DelegateVec {
             items: self.into_iter().map(Delegated::into_delegate).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, Default, lumen_macros::Delegate)]
+    pub enum Spread {
+        #[default]
+        Pad,
+        Repeat,
+    }
+
+    #[test]
+    fn delegate_enums_without_kind_reject_property_values() {
+        let error = SpreadDelegate::from_property_expression(
+            PropertyExpression::Value(PropertyValue::String("repeat".to_string())),
+            NodeId::new(2),
+            "spread",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "property resolution error: property `spread` on node 2 has invalid type: \
+             expected Spread, got property value"
+        );
     }
 }
