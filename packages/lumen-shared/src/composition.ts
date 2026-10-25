@@ -126,7 +126,9 @@ export class Composition {
   }
 
   setDurationSeconds(durationSeconds: number): this {
-    return this.setDurationFrames(Math.ceil(durationSeconds * (this.#timeline.fps ?? defaultTimeline.fps)));
+    return this.setDurationFrames(
+      Math.ceil(durationSeconds * (this.#timeline.fps ?? defaultTimeline.fps)),
+    );
   }
 
   setMetadata(metadata: LumenComposition["metadata"]): this {
