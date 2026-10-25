@@ -84,7 +84,7 @@ pub struct VideoEncoder {
     pub(in crate::encode) mode: EncodeMode,
     pub(in crate::encode) gpu_telemetry: GpuEncodeTelemetry,
     #[cfg(feature = "vulkan")]
-    pub(in crate::encode) vulkan_uploader: Option<crate::gpu::vulkan::VulkanFrameUploader>,
+    pub(in crate::encode) vulkan_device: Option<crate::gpu::VulkanDevice>,
 }
 
 unsafe impl Send for VideoEncoder {}
@@ -127,10 +127,20 @@ impl VideoEncoder {
             )
         })?;
         #[cfg(feature = "vulkan")]
-        if config.mode == EncodeMode::GpuTexture(GpuBackend::Vulkan)
-            && config.vulkan_device.is_none()
-        {
-            return Err(super::hw::missing_vulkan_device());
+        if config.mode == EncodeMode::GpuTexture(GpuBackend::Vulkan) {
+            if !config.width.is_multiple_of(2) || !config.height.is_multiple_of(2) {
+                return Err(FfmpegError::new(
+                    "VideoEncoder::create",
+                    format!(
+                        "Vulkan texture encode needs even dimensions for NV12, got {}x{}",
+                        config.width, config.height,
+                    ),
+                )
+                .with_backend(GpuBackend::Vulkan));
+            }
+            if config.vulkan_device.is_none() {
+                return Err(super::hw::missing_vulkan_device());
+            }
         }
         let codec = find_encoder(&config)?;
         if codec.is_null() {
@@ -285,12 +295,10 @@ impl VideoEncoder {
         };
 
         #[cfg(feature = "vulkan")]
-        let vulkan_uploader = match &config.vulkan_device {
-            Some(device) if config.mode == EncodeMode::GpuTexture(GpuBackend::Vulkan) => Some(
-                crate::gpu::vulkan::VulkanFrameUploader::new(device.clone())?,
-            ),
-            _ => None,
-        };
+        let vulkan_device = config
+            .vulkan_device
+            .clone()
+            .filter(|_| config.mode == EncodeMode::GpuTexture(GpuBackend::Vulkan));
 
         Ok(Self {
             width: config.width,
@@ -308,7 +316,7 @@ impl VideoEncoder {
             mode: config.mode,
             gpu_telemetry: GpuEncodeTelemetry::default(),
             #[cfg(feature = "vulkan")]
-            vulkan_uploader,
+            vulkan_device,
         })
     }
 
@@ -548,9 +556,6 @@ impl Drop for CodecContextGuard {
 
 impl Drop for VideoEncoder {
     fn drop(&mut self) {
-        // Waits for in-flight copies into encoder frames before the frames are freed.
-        #[cfg(feature = "vulkan")]
-        drop(self.vulkan_uploader.take());
         unsafe {
             if !self.scaler.is_null() {
                 sys::sws_freeContext(self.scaler);

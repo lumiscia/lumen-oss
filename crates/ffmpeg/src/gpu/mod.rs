@@ -12,13 +12,17 @@ pub use cuda::{
     CudaContext, CudaDeviceAllocation, CudaDriver, CudaNv12ToRgbaConverter,
     ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image, import_vulkan_opaque_fd_image,
 };
+#[cfg(feature = "cuda")]
+pub use cuda::{
+    CudaExternalMemoryHandle, CudaExternalSemaphoreHandle, CudaVideoFrame, VulkanToCudaExport,
+};
 #[cfg(feature = "metal")]
 pub use metal::{
     MetalDecodedFrame, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache,
     Objc2MetalDevice, Objc2MetalTexture,
 };
 #[cfg(feature = "vulkan")]
-pub use vulkan::{VulkanDevice, VulkanDeviceDesc, VulkanVideoFrame};
+pub use vulkan::{VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuBackend {
@@ -180,6 +184,7 @@ mod tests {
         // SAFETY: This metadata-only test never submits work that reads the fake buffer.
         let frame = unsafe {
             VulkanVideoFrame::new(
+                ash::vk::Device::from_raw(7),
                 ash::vk::Buffer::from_raw(11),
                 640,
                 480,
@@ -192,6 +197,7 @@ mod tests {
         assert_eq!(input.backend(), GpuBackend::Vulkan);
         assert_eq!(input.dimensions(), (640, 480));
         assert_eq!(input.pts(), Some(3));
+        assert_eq!(frame.device().as_raw(), 7);
         assert_eq!(frame.buffer().as_raw(), 11);
         assert_eq!(VulkanVideoFrame::nv12_pitch(642), 644);
         assert_eq!(VulkanVideoFrame::nv12_chroma_offset(640, 480), 640 * 480);

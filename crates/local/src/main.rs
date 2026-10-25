@@ -1134,11 +1134,16 @@ fn start_vulkan_video_encode(
     encoder: &str,
     quality: &EncoderQuality,
 ) -> Result<VulkanVideoSession> {
-    let (renderer, device) = pollster::block_on(GpuCompositionRenderer::new_vulkan_video())?;
     let (width, height) = (
         composition.render_settings.width,
         composition.render_settings.height,
     );
+    if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+        return Err(anyhow!(
+            "NV12 frames need even dimensions, got {width}x{height}"
+        ));
+    }
+    let (renderer, device) = pollster::block_on(GpuCompositionRenderer::new_vulkan_video())?;
     let target =
         VulkanVideoTarget::nv12(renderer.gpu_renderer(), lumen_gpu::Size::new(width, height));
     let mut config = VideoEncoderConfig::cpu_rgba(

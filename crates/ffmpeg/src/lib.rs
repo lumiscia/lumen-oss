@@ -10,6 +10,8 @@ pub mod format;
 pub mod gpu;
 pub mod video;
 
+#[cfg(feature = "vulkan")]
+pub use ash;
 pub use audio::{AudioDecoder, AudioFrame, AudioResampler, AudioResamplerConfig, SampleFormat};
 pub use encode::{
     AudioEncoder, AudioEncoderConfig, GpuEncodeEvent, GpuEncodeOutcome, GpuEncodeStage,
@@ -35,7 +37,7 @@ pub use gpu::{
     Objc2MetalDevice, Objc2MetalTexture,
 };
 #[cfg(feature = "vulkan")]
-pub use gpu::{VulkanDevice, VulkanDeviceDesc, VulkanVideoFrame};
+pub use gpu::{VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame};
 pub use video::{
     CpuVideoFrame, DecodeMode, EncodeMode, PixelFormat, VideoCodec, VideoDecoder,
     VideoDecoderConfig,

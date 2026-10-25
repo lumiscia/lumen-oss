@@ -25,9 +25,6 @@ pub struct VulkanVideoDevice {
     pub device_extensions: Vec<&'static CStr>,
     /// `(family index, queue count, capabilities)` of the queues video work may use.
     pub queue_families: Vec<(u32, u32, vk::QueueFlags)>,
-    /// The queue wgpu submits to.
-    pub queue: vk::Queue,
-    pub queue_family: u32,
 }
 
 impl Renderer {
@@ -70,8 +67,6 @@ impl Renderer {
                 device: hal_device.raw_device().handle(),
                 device_extensions: hal_device.enabled_device_extensions().to_vec(),
                 queue_families,
-                queue: hal_device.raw_queue(),
-                queue_family: hal_device.queue_family_index(),
             }
         };
         Ok((
@@ -85,6 +80,57 @@ pub fn raw_vulkan_buffer(buffer: &wgpu::Buffer) -> Result<vk::Buffer> {
     let hal_buffer = unsafe { buffer.as_hal::<wgpu_hal::api::Vulkan>() }
         .context("wgpu buffer is not a Vulkan buffer")?;
     Ok(unsafe { hal_buffer.raw_handle() })
+}
+
+pub fn raw_vulkan_device(device: &wgpu::Device) -> Result<vk::Device> {
+    let hal_device = unsafe { device.as_hal::<wgpu_hal::api::Vulkan>() }
+        .context("wgpu device is not a Vulkan device")?;
+    Ok(hal_device.raw_device().handle())
+}
+
+/// Records raw commands with `record` into a wgpu command buffer and submits it through `queue`,
+/// so the submission takes wgpu's queue lock. It waits for and signals the given timeline
+/// semaphore values.
+///
+/// wgpu attaches the semaphores to the next submission on `queue`, so another thread submitting
+/// to `queue` concurrently can take them instead.
+///
+/// # Safety
+///
+/// `record` must record valid commands for `device`, and everything they use must stay alive until
+/// the submission has finished executing.
+pub unsafe fn submit_raw_vulkan(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    record: impl FnOnce(vk::CommandBuffer),
+    waits: &[(vk::Semaphore, u64)],
+    signals: &[(vk::Semaphore, u64)],
+) -> Result<()> {
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("lumen raw Vulkan commands"),
+    });
+    unsafe {
+        encoder.as_hal_mut::<wgpu_hal::api::Vulkan, _, _>(|hal| {
+            hal.map(|hal| record(hal.raw_handle()))
+        })
+    }
+    .context("wgpu command encoder is not a Vulkan encoder")?;
+    {
+        let hal_queue = unsafe { queue.as_hal::<wgpu_hal::api::Vulkan>() }
+            .context("wgpu queue is not a Vulkan queue")?;
+        for &(semaphore, value) in waits {
+            hal_queue.add_wait_semaphore(
+                semaphore,
+                Some(value),
+                vk::PipelineStageFlags::ALL_COMMANDS,
+            );
+        }
+        for &(semaphore, value) in signals {
+            hal_queue.add_signal_semaphore(semaphore, Some(value));
+        }
+    }
+    queue.submit([encoder.finish()]);
+    Ok(())
 }
 
 type VideoQueueFamilies = Vec<(u32, u32, vk::QueueFlags)>;
@@ -165,29 +211,43 @@ fn open_video_device(
     av1_encode.p_next = std::ptr::null_mut();
 
     let families = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
-    let find_family = |wanted: vk::QueueFlags, unwanted: vk::QueueFlags| {
-        families.iter().enumerate().find_map(|(index, family)| {
-            (family.queue_flags.contains(wanted) && !family.queue_flags.intersects(unwanted))
-                .then_some((index as u32, family.queue_count, wanted))
-        })
+    // wgpu-hal renders on queue 0 of family 0. FFmpeg submits to every queue of the families it is
+    // given capabilities for, so it only gets other families.
+    let find_family = |wanted: vk::QueueFlags| {
+        families
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, family)| {
+                family
+                    .queue_flags
+                    .contains(wanted)
+                    .then_some((index as u32, family.queue_count))
+            })
     };
-    let encode = find_family(vk::QueueFlags::VIDEO_ENCODE_KHR, vk::QueueFlags::empty()).context(
+    let encode = find_family(vk::QueueFlags::VIDEO_ENCODE_KHR).context(
         "Vulkan device has no video encode queue (RADV needs RADV_PERFTEST=video_encode)",
     )?;
-    // A dedicated compute family keeps FFmpeg's own submissions off wgpu's queue.
-    let compute = find_family(
-        vk::QueueFlags::COMPUTE | vk::QueueFlags::TRANSFER,
-        vk::QueueFlags::GRAPHICS,
-    );
-    // wgpu-hal always renders on queue 0 of family 0.
-    let render = (
-        0,
-        1,
-        families[0].queue_flags
-            & (vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE | vk::QueueFlags::TRANSFER),
-    );
-    let extra_families: Vec<_> = compute.into_iter().chain([encode]).collect();
-    let queue_families = compute.into_iter().chain([render, encode]).collect();
+    // FFmpeg prepares and transfers frames on a compute queue.
+    let compute = find_family(vk::QueueFlags::COMPUTE)
+        .context("Vulkan device has no compute queue family separate from the render family")?;
+    // The render family has no capabilities, so FFmpeg's frames can be used on wgpu's queue but
+    // FFmpeg never submits to it.
+    let mut queue_families = vec![(0, 1, vk::QueueFlags::empty())];
+    for (index, count, flags) in [
+        (
+            compute.0,
+            compute.1,
+            vk::QueueFlags::COMPUTE | vk::QueueFlags::TRANSFER,
+        ),
+        (encode.0, encode.1, vk::QueueFlags::VIDEO_ENCODE_KHR),
+    ] {
+        match queue_families.iter_mut().find(|family| family.0 == index) {
+            Some(family) => family.2 |= flags,
+            None => queue_families.push((index, count, flags)),
+        }
+    }
+    // wgpu-hal creates its queue with priority 1.0.
     let priorities = vec![
         1.0_f32;
         families
@@ -203,12 +263,24 @@ fn open_video_device(
                 args.extensions.push(extension);
             }
         }
-        for &(index, count, _) in &extra_families {
-            args.queue_create_infos.push(
-                vk::DeviceQueueCreateInfo::default()
-                    .queue_family_index(index)
-                    .queue_priorities(&priorities[..count as usize]),
-            );
+        // Each family may appear only once, with enough queues for every user.
+        for &(index, count, _) in &queue_families {
+            let priorities = &priorities[..count as usize];
+            match args
+                .queue_create_infos
+                .iter_mut()
+                .find(|info| info.queue_family_index == index)
+            {
+                Some(info) if info.queue_count < count => {
+                    *info = info.queue_priorities(priorities);
+                }
+                Some(_) => {}
+                None => args.queue_create_infos.push(
+                    vk::DeviceQueueCreateInfo::default()
+                        .queue_family_index(index)
+                        .queue_priorities(priorities),
+                ),
+            }
         }
         synchronization2.synchronization2 = vk::TRUE;
         video_maintenance1.video_maintenance1 = vk::TRUE;

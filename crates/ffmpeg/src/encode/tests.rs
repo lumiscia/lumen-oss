@@ -35,6 +35,7 @@ fn telemetry_tracks_upload_and_encode_events() {
     // SAFETY: Telemetry only reads frame metadata and never submits work on the fake buffer.
     let frame = unsafe {
         VulkanVideoFrame::new(
+            ash::vk::Device::from_raw(1),
             ash::vk::Buffer::from_raw(1),
             1280,
             720,
@@ -99,6 +100,7 @@ fn cpu_upload_encoder_rejects_gpu_input() {
     // SAFETY: The CPU encoder rejects the frame before any work could read the fake buffer.
     let frame = unsafe {
         VulkanVideoFrame::new(
+            ash::vk::Device::from_raw(1),
             ash::vk::Buffer::from_raw(1),
             16,
             16,
@@ -134,6 +136,25 @@ fn vulkan_texture_encoder_without_device_errors_at_create() {
     assert!(error.message.contains("vulkan_device"), "{error}");
 
     let _ = fs::remove_file(path);
+}
+
+#[cfg(feature = "vulkan")]
+#[test]
+fn vulkan_texture_encoder_rejects_odd_dimensions() {
+    for (width, height) in [(15, 16), (16, 15)] {
+        let path = temp_path("gpu_odd_size", "mp4");
+        let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::H264);
+        config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
+
+        let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+            Ok(_) => panic!("Vulkan texture encode at {width}x{height} should fail at create"),
+            Err(error) => error,
+        };
+        assert_eq!(error.operation, "VideoEncoder::create");
+        assert!(error.message.contains("even dimensions"), "{error}");
+
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[test]

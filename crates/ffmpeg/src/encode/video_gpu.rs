@@ -190,8 +190,8 @@ impl VideoEncoder {
             )
             .with_backend(GpuBackend::Vulkan));
         }
-        let (Some(hw_frames), Some(uploader)) =
-            (self.hw_frames.as_ref(), self.vulkan_uploader.as_mut())
+        let (Some(hw_frames), Some(device)) =
+            (self.hw_frames.as_ref(), self.vulkan_device.as_ref())
         else {
             return Err(FfmpegError::new(
                 "VideoEncoder::send_vulkan_frame",
@@ -210,6 +210,17 @@ impl VideoEncoder {
             )
             .with_backend(GpuBackend::Vulkan));
         }
+        if frame.device() != device.handle() {
+            return Err(FfmpegError::new(
+                "VideoEncoder::send_vulkan_frame",
+                format!(
+                    "Vulkan frame is on device {:?}, but the encoder uses device {:?}",
+                    frame.device(),
+                    device.handle(),
+                ),
+            )
+            .with_backend(GpuBackend::Vulkan));
+        }
 
         let mut av_frame = AvFrame::new()?;
         unsafe {
@@ -224,7 +235,7 @@ impl VideoEncoder {
             if let Some(lock) = (*vulkan_frames).lock_frame {
                 lock(frames_context, target);
             }
-            let uploaded = uploader.upload(frame, target);
+            let uploaded = device.upload(frame, target);
             if let Some(unlock) = (*vulkan_frames).unlock_frame {
                 unlock(frames_context, target);
             }

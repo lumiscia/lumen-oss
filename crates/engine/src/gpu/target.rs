@@ -9,7 +9,7 @@ use lumen_ffmpeg::{
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_ffmpeg::{GpuVideoInput, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache};
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
-use lumen_ffmpeg::{VulkanDevice, VulkanDeviceDesc, VulkanVideoFrame};
+use lumen_ffmpeg::{VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame, ash::vk};
 
 use crate::error::RenderError;
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
@@ -40,17 +40,46 @@ impl GpuCompositionRenderer {
             device: video.device,
             device_extensions: &video.device_extensions,
             queue_families: &video.queue_families,
-            queue: video.queue,
-            queue_family: video.queue_family,
         };
-        // SAFETY: The handles come from the wgpu device, which the FFmpeg device retains, and
-        // frames are encoded on the thread that renders them.
-        let device =
-            unsafe { VulkanDevice::from_raw(&desc, std::sync::Arc::new(renderer.device.clone())) }
-                .map_err(|error| RenderError::Gpu {
-                    details: error.to_string(),
-                })?;
+        let render_queue = std::sync::Arc::new(WgpuRenderQueue {
+            device: renderer.device.clone(),
+            queue: renderer.queue.clone(),
+        });
+        // SAFETY: The handles come from the wgpu device, which `render_queue` retains. wgpu's queue
+        // is in the render family, which `new_vulkan_video` lists without capabilities, and
+        // `render_queue` submits to it through wgpu.
+        let device = unsafe { VulkanDevice::from_raw(&desc, render_queue) }.map_err(|error| {
+            RenderError::Gpu {
+                details: error.to_string(),
+            }
+        })?;
         Ok((Self::from_renderer(renderer), device))
+    }
+}
+
+/// Submits FFmpeg's frame copies through wgpu, which serialises them with the renderer's own
+/// submissions.
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+struct WgpuRenderQueue {
+    device: lumen_gpu::wgpu::Device,
+    queue: lumen_gpu::wgpu::Queue,
+}
+
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+impl VulkanRenderQueue for WgpuRenderQueue {
+    fn submit(
+        &self,
+        record: &mut dyn FnMut(vk::CommandBuffer),
+        waits: &[(vk::Semaphore, u64)],
+        signals: &[(vk::Semaphore, u64)],
+        retain: Box<dyn Send>,
+    ) -> Result<(), String> {
+        // SAFETY: lumen-ffmpeg records commands on this device and `retain` keeps what they use
+        // alive until wgpu reports the submission done.
+        unsafe { lumen_gpu::submit_raw_vulkan(&self.device, &self.queue, record, waits, signals) }
+            .map_err(|error| format!("{error:#}"))?;
+        self.queue.on_submitted_work_done(move || drop(retain));
+        Ok(())
     }
 }
 
@@ -150,14 +179,18 @@ impl VulkanVideoTarget {
         }
         renderer.queue.submit([encoder.finish()]);
 
+        let device =
+            lumen_gpu::raw_vulkan_device(&renderer.device).map_err(|error| RenderError::Gpu {
+                details: error.to_string(),
+            })?;
         let buffer =
             lumen_gpu::raw_vulkan_buffer(&self.nv12).map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
         let (width, height) = (self.size.width, self.size.height);
-        // SAFETY: The buffer lives on the encoder's shared device, the conversion writing it was
-        // just submitted to that device's queue, and the frame retains the buffer.
-        Ok(unsafe { VulkanVideoFrame::new(buffer, width, height, pts, self.nv12.clone()) })
+        // SAFETY: The buffer lives on `device`, the conversion writing it was just submitted to
+        // that device's render queue, and the frame retains the buffer, which retains the device.
+        Ok(unsafe { VulkanVideoFrame::new(device, buffer, width, height, pts, self.nv12.clone()) })
     }
 }
 
@@ -483,6 +516,7 @@ fn external_output_usage() -> lumen_gpu::wgpu::TextureUsages {
 
 #[cfg(all(test, target_os = "linux", feature = "vulkan"))]
 mod tests {
+    use lumen_ffmpeg::ash::vk::Handle;
     use lumen_ffmpeg::{
         EncodeMode, GpuBackend, GpuVideoInput, InputContext, MuxedEncoder, VideoCodec,
         VideoEncoderConfig,
@@ -569,6 +603,22 @@ mod tests {
             }
             Err(error) => panic!("av1_vulkan is available but failed to initialise: {error}"),
         };
+        // SAFETY: The encoder rejects the frame's foreign device before recording any command.
+        let foreign = unsafe {
+            VulkanVideoFrame::new(
+                vk::Device::from_raw(1),
+                vk::Buffer::from_raw(1),
+                width,
+                height,
+                None,
+                std::sync::Arc::new(()),
+            )
+        };
+        let error = encoder
+            .write_gpu_frame(&GpuVideoInput::Vulkan(&foreign))
+            .expect_err("a frame from another device must be rejected");
+        assert!(error.message.contains("device"), "{error}");
+
         for frame in 0..10 {
             let video_frame = target.convert(gpu, &texture, Some(frame)).expect("convert");
             encoder
