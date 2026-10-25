@@ -1,13 +1,9 @@
 use std::ptr;
 
-use crate::ffi::{self, AvFrame, AvPacket, sys};
+use crate::ffi::{self, AvFrame, AvPacket, SWS_BILINEAR, sys};
 use crate::gpu::GpuBackend;
 use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec};
 use crate::{FfmpegError, Result};
-#[cfg(target_os = "linux")]
-use sys::SWS_BILINEAR;
-#[cfg(not(target_os = "linux"))]
-use sys::SwsFlags::SWS_BILINEAR;
 use sys::{
     AVMediaType::AVMEDIA_TYPE_VIDEO,
     AVPixelFormat::{AV_PIX_FMT_CUDA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
@@ -170,7 +166,7 @@ impl VideoEncoder {
                     config.width as i32,
                     config.height as i32,
                     AV_PIX_FMT_YUV420P,
-                    SWS_BILINEAR as i32,
+                    SWS_BILINEAR,
                     ptr::null_mut(),
                     ptr::null_mut(),
                     ptr::null(),

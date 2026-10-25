@@ -51,7 +51,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install WASM tooling
-        run: cargo install wasm-bindgen-cli --version 0.2.118 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
 
       - name: Generate TypeScript artifacts
         run: just ci-typescript-artifacts

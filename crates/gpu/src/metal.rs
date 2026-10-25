@@ -29,7 +29,14 @@ pub fn texture_from_metal(
                 height: desc.size.height,
                 depth: desc.size.depth_or_array_layers,
             },
+            None,
         )
     };
-    unsafe { device.create_texture_from_hal::<wgpu::hal::api::Metal>(hal_texture, desc) }
+    unsafe {
+        device.create_texture_from_hal::<wgpu::hal::api::Metal>(
+            hal_texture,
+            desc,
+            wgpu::TextureUses::UNINITIALIZED,
+        )
+    }
 }

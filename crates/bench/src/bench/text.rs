@@ -553,7 +553,6 @@ impl RawGlyph {
         font_system.db_mut().load_font_data(ROBOTO_BYTES.to_vec());
         let mut buffer = Buffer::new(&mut font_system, Metrics::new(64.0, 76.8));
         buffer.set_text(
-            &mut font_system,
             "A",
             &Attrs::new()
                 .family(Family::Name("Roboto"))
