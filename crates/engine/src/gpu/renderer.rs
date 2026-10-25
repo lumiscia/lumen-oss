@@ -277,6 +277,7 @@ impl GpuCompositionRenderer {
             media_textures = bound.media_textures().len(),
             "upload bound frame"
         );
+        bound.validate_uploads()?;
         self.upload_media_textures(bound)?;
         let update = bound.frame_update();
         let prepared = self.active_prepared_mut()?;
@@ -286,7 +287,7 @@ impl GpuCompositionRenderer {
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        bound.mark_uploaded();
+        bound.mark_uploaded()?;
         Ok(())
     }
 

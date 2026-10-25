@@ -1566,7 +1566,7 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         first_uploads,
         "text uploads that were never applied must be repeated"
     );
-    rebound.mark_uploaded();
+    rebound.mark_uploaded().unwrap();
 
     let unchanged = FrameBindContext::new(&composition, 0)
         .bind(&compiled)
@@ -1605,20 +1605,60 @@ fn text_bind_ahead_restores_committed_frame_after_pending_frame() {
             .unwrap()
     };
     let first = bind(0);
-    first.mark_uploaded();
+    first.mark_uploaded().unwrap();
     let ahead = bind(1);
     let restored = bind(0);
     assert!(restored.buffer_upload_count() > 0);
 
-    ahead.mark_uploaded();
-    // Completion records the update just uploaded, even with a newer bind pending.
-    let after_ahead = bind(1);
-    assert!(after_ahead.buffer_upload_count() > 0);
-    after_ahead.mark_uploaded();
-    assert_eq!(bind(1).buffer_upload_count(), 0);
-    restored.mark_uploaded();
+    assert!(ahead.mark_uploaded().is_err());
+    restored.mark_uploaded().unwrap();
     assert_eq!(bind(0).buffer_upload_count(), 0);
     assert!(bind(1).buffer_upload_count() > 0);
+}
+
+#[test]
+fn text_rejects_stale_upload_after_atlas_slot_reuse() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let text = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::Expr(Expression::parse("if(frame == 0, \"W\", \"M\")").unwrap()),
+                font_size: Deferred::value(2000.0),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(text, "output".to_string()),
+        }),
+    );
+    let composition = test_composition(graph);
+    let older = renderer
+        .bind_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    let current = renderer
+        .bind_frame(&composition, 1, &EmptyMediaStore)
+        .unwrap();
+    assert!(older.texture_upload_count() > 0);
+    assert!(current.texture_upload_count() > 0);
+    renderer.upload_bound_frame(&current).unwrap();
+    let error = renderer.upload_bound_frame(&older).unwrap_err();
+    assert!(error.to_string().contains("stale bound text frame"));
+    let rebound = renderer
+        .bind_frame(&composition, 1, &EmptyMediaStore)
+        .unwrap();
+    assert_eq!(rebound.texture_upload_count(), 0);
+    renderer.submit_bound_frame(&rebound).unwrap();
 }
 
 #[test]

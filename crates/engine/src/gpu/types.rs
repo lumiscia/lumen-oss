@@ -98,16 +98,7 @@ pub struct BoundFrame {
     buffer_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
     texture_uploads: Vec<TextureUpload>,
     media_textures: Vec<MediaTextureUpload>,
-    upload_callbacks: Vec<UploadCallback>,
-}
-
-#[derive(Clone)]
-struct UploadCallback(std::sync::Arc<dyn Fn() + Send + Sync>);
-
-impl std::fmt::Debug for UploadCallback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("UploadCallback")
-    }
+    text_bindings: Vec<crate::node::source::text::TextBinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -223,18 +214,25 @@ impl BoundFrame {
         });
     }
 
-    /// Runs `callback` after this frame's uploads have been applied, so nodes can
-    /// commit state that depends on them.
-    pub fn on_upload(&mut self, callback: impl Fn() + Send + Sync + 'static) {
-        self.upload_callbacks
-            .push(UploadCallback(std::sync::Arc::new(callback)));
+    pub(crate) fn bind_text(&mut self, binding: crate::node::source::text::TextBinding) {
+        self.text_bindings.push(binding);
+    }
+
+    /// Rejects frames superseded by a newer bind of any of their text nodes.
+    pub fn validate_uploads(&self) -> crate::Result<()> {
+        for binding in &self.text_bindings {
+            binding.validate()?;
+        }
+        Ok(())
     }
 
     /// Notifies nodes that this frame's uploads were applied.
-    pub fn mark_uploaded(&self) {
-        for callback in &self.upload_callbacks {
-            (callback.0)();
+    pub fn mark_uploaded(&self) -> crate::Result<()> {
+        self.validate_uploads()?;
+        for binding in &self.text_bindings {
+            binding.commit()?;
         }
+        Ok(())
     }
 
     pub fn media_textures(&self) -> &[MediaTextureUpload] {
