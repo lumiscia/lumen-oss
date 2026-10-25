@@ -291,7 +291,7 @@ export interface LumenComposition {
   readonly schemaVersion?: string;
   readonly timeline: {
     readonly duration_frames: number;
-    readonly fps: number;
+    readonly fps?: number;
   };
   readonly [key: string]: unknown;
 }

@@ -272,10 +272,14 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
             "properties": {
                 "timeline": {
                     "type": "object",
-                    "required": ["fps", "duration_frames"],
+                    "required": ["duration_frames"],
                     "properties": {
-                        "fps": { "type": "number" },
-                        "duration_frames": { "type": "integer", "minimum": 1 }
+                        "fps": { "type": "number", "exclusiveMinimum": 0, "default": 30 },
+                        "duration_frames": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 4294967295u32
+                        }
                     },
                     "additionalProperties": true
                 },
@@ -298,8 +302,8 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                     "type": "object",
                     "required": ["width", "height"],
                     "properties": {
-                        "width": { "type": "integer", "minimum": 1 },
-                        "height": { "type": "integer", "minimum": 1 },
+                        "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                        "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
                         "background_color": { "$ref": "#/$defs/color" }
                     },
                     "additionalProperties": true
@@ -767,6 +771,37 @@ mod tests {
                     "{label} schema"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn timeline_schema_matches_engine_parsing() {
+        let manifest = meta_manifest().unwrap();
+        let validator = schema_validator();
+        let with_timeline = |timeline: Value| {
+            let mut value = composition_with_node(&manifest.node_specs["exposure"], json!({}));
+            value["timeline"] = timeline;
+            value
+        };
+
+        for (timeline, valid) in [
+            (json!({ "duration_frames": 10 }), true),
+            (json!({ "fps": 24, "duration_frames": 10.0 }), true),
+            (json!({ "fps": 0, "duration_frames": 10 }), false),
+            (json!({ "fps": -30, "duration_frames": 10 }), false),
+            (json!({ "fps": 30, "duration_frames": 0 }), false),
+            (
+                json!({ "fps": 30, "duration_frames": 4294967296u64 }),
+                false,
+            ),
+        ] {
+            let composition = with_timeline(timeline.clone());
+            assert_eq!(validator.is_valid(&composition), valid, "{timeline}");
+            assert_eq!(
+                lumen_engine::json::parse_value(&composition).is_ok(),
+                valid,
+                "{timeline}"
+            );
         }
     }
 

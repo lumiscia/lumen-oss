@@ -25,6 +25,8 @@ use crate::{
 pub use property::parse_color;
 pub(crate) use property::{StringParam, classify_string, parse_property};
 
+const DEFAULT_FPS: f32 = 30.0;
+
 /// Parse a JSON string into a [`Composition`].
 pub fn parse(json: &str) -> Result<Composition> {
     let root: Value = serde_json::from_str(json).context("invalid JSON")?;
@@ -126,12 +128,23 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
 
 fn parse_timeline(val: &Value) -> Result<TimelineSettings> {
     let obj = val.as_object().context("`timeline` must be an object")?;
+    let fps = match obj.get("fps") {
+        None => DEFAULT_FPS,
+        Some(value) => value
+            .as_f64()
+            .map(|fps| fps as f32)
+            .filter(|fps| fps.is_finite() && *fps > 0.0)
+            .context("`timeline.fps` must be a positive, finite number")?,
+    };
+    let duration_frames = obj
+        .get("duration_frames")
+        .context("missing `timeline.duration_frames`")?;
+    let duration_frames = integral_u32(duration_frames)
+        .filter(|frames| *frames >= 1)
+        .context("`timeline.duration_frames` must be an integer of at least 1")?;
     Ok(TimelineSettings {
-        fps: obj.get("fps").and_then(|v| v.as_f64()).unwrap_or(30.0) as f32,
-        duration_frames: obj
-            .get("duration_frames")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1) as u32,
+        fps,
+        duration_frames,
     })
 }
 
@@ -140,17 +153,32 @@ fn parse_render_settings(val: &Value) -> Result<RenderSettings> {
         .as_object()
         .context("`render_settings` must be an object")?;
     Ok(RenderSettings {
-        width: obj
-            .get("width")
-            .and_then(|v| v.as_u64())
-            .context("render_settings.width")? as u32,
-        height: obj
-            .get("height")
-            .and_then(|v| v.as_u64())
-            .context("render_settings.height")? as u32,
-        background_color: parse_color(obj.get("background_color").unwrap_or(&Value::Null))
+        width: render_dimension(obj, "width")?,
+        height: render_dimension(obj, "height")?,
+        background_color: obj
+            .get("background_color")
+            .map(|value| {
+                parse_color(value).context("`render_settings.background_color` expected a color")
+            })
+            .transpose()?
             .unwrap_or([0, 0, 0, 255]),
     })
+}
+
+fn render_dimension(obj: &Map<String, Value>, key: &str) -> Result<u32> {
+    obj.get(key)
+        .and_then(integral_u32)
+        .filter(|size| *size >= 1)
+        .with_context(|| format!("`render_settings.{key}` must be an integer of at least 1"))
+}
+
+/// Reads a JSON number as a `u32`, accepting integral floats such as `1.0` like JSON Schema does.
+fn integral_u32(value: &Value) -> Option<u32> {
+    if let Some(integer) = value.as_u64() {
+        return u32::try_from(integer).ok();
+    }
+    let float = value.as_f64()?;
+    (float.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&float)).then_some(float as u32)
 }
 
 fn parse_audio_timeline(val: &Value, fps: f32) -> Result<AudioTimeline> {
@@ -552,5 +580,100 @@ mod tests {
 
         let error = parse(json).expect_err("cyclic graph must be rejected");
         assert!(error.to_string().contains("graph contains a cycle"));
+    }
+
+    fn composition_json(timeline: &str, render_settings: &str) -> String {
+        format!(
+            r#"{{
+                "timeline": {timeline},
+                "render_settings": {render_settings},
+                "nodes": [
+                    {{ "id": 1, "type": "background", "params": {{ "paint": [255, 0, 0], "width": 100, "height": 100 }} }},
+                    {{ "id": 2, "type": "media_output" }}
+                ],
+                "connections": [
+                    {{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }}
+                ]
+            }}"#
+        )
+    }
+
+    #[test]
+    fn parse_rejects_invalid_fps() {
+        for fps in ["0", "-30", "\"30\"", "null", "1e300"] {
+            let json = composition_json(
+                &format!(r#"{{ "fps": {fps}, "duration_frames": 10 }}"#),
+                r#"{ "width": 100, "height": 100 }"#,
+            );
+            let err = parse(&json).unwrap_err().to_string();
+            assert!(err.contains("timeline.fps"), "{fps}: {err}");
+        }
+    }
+
+    #[test]
+    fn parse_rejects_missing_or_invalid_duration_frames() {
+        for timeline in [
+            r#"{ "fps": 30 }"#,
+            r#"{ "fps": 30, "duration_frames": 0 }"#,
+            r#"{ "fps": 30, "duration_frames": -5 }"#,
+            r#"{ "fps": 30, "duration_frames": 1.5 }"#,
+            r#"{ "fps": 30, "duration_frames": 4294967296 }"#,
+        ] {
+            let json = composition_json(timeline, r#"{ "width": 100, "height": 100 }"#);
+            let err = parse(&json).unwrap_err().to_string();
+            assert!(
+                err.contains("timeline.duration_frames"),
+                "{timeline}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn background_color_defaults_to_black_but_rejects_malformed_values() {
+        let timeline = r#"{ "fps": 30, "duration_frames": 10 }"#;
+        let json = composition_json(timeline, r#"{ "width": 100, "height": 100 }"#);
+        assert_eq!(
+            parse(&json).unwrap().render_settings.background_color,
+            [0, 0, 0, 255]
+        );
+
+        for color in [r#""red""#, "[256, 0, 0]", "null"] {
+            let json = composition_json(
+                timeline,
+                &format!(r#"{{ "width": 100, "height": 100, "background_color": {color} }}"#),
+            );
+            let err = parse(&json).unwrap_err().to_string();
+            assert!(
+                err.contains("render_settings.background_color"),
+                "{color}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn dimensions_and_frames_reject_wrapping_or_zero_and_accept_integral_floats() {
+        let timeline = r#"{ "fps": 30, "duration_frames": 10 }"#;
+        for (settings, field) in [
+            (r#"{ "width": 4294967297, "height": 100 }"#, "width"),
+            (r#"{ "width": 100, "height": 4294967296 }"#, "height"),
+            (r#"{ "width": 0, "height": 100 }"#, "width"),
+            (r#"{ "width": 100, "height": 1.5 }"#, "height"),
+        ] {
+            let err = parse(&composition_json(timeline, settings))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(&format!("render_settings.{field}")), "{err}");
+        }
+
+        let comp = parse(&composition_json(
+            r#"{ "fps": 30, "duration_frames": 10.0 }"#,
+            r#"{ "width": 100.0, "height": 50.0 }"#,
+        ))
+        .unwrap();
+        assert_eq!(comp.timeline.duration_frames, 10);
+        assert_eq!(
+            (comp.render_settings.width, comp.render_settings.height),
+            (100, 50)
+        );
     }
 }

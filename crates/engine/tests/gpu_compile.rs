@@ -329,7 +329,6 @@ fn compiles_media_input_as_frame_texture_boundary() {
                 source: Deferred::value("plate".to_string()),
                 ..Default::default()
             },
-            ..MediaIn::default()
         }),
     );
     graph.nodes.insert(
@@ -404,7 +403,6 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
                 source: Deferred::value("plate".to_string()),
                 ..Default::default()
             },
-            ..MediaIn::default()
         }),
     );
     graph.nodes.insert(
@@ -569,7 +567,6 @@ fn compiles_raster_multimerge_with_blend_mode_binding() {
             params: RasterMultiMergeParamsDelegate {
                 opacity: Deferred::value(0.5),
                 blend_mode: Deferred::value(2),
-                ..Default::default()
             },
             layers: vec![
                 PortRef::new(first, "output".to_string()),
@@ -608,7 +605,6 @@ fn compiles_switch_as_selected_gpu_alias() {
             id: switch,
             params: SwitchParamsDelegate {
                 selected_layer: Deferred::value(0),
-                ..Default::default()
             },
             layers: vec![
                 PortRef::new(first, "output".to_string()),
@@ -664,7 +660,6 @@ fn compiles_switch_expression_as_frame_selected_gpu_alias() {
                 selected_layer: Deferred::Expr(
                     lumen_engine::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
                 ),
-                ..Default::default()
             },
             layers: vec![
                 PortRef::new(first, "output".to_string()),
@@ -752,7 +747,6 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_compiled_nodes() {
                 loop_enabled: Deferred::value(true),
                 loop_start: Deferred::value(4),
                 loop_end: Deferred::value(12),
-                ..Default::default()
             },
             source: PortRef::new(solid_id, "output".to_string()),
         }),
@@ -764,7 +758,6 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_compiled_nodes() {
             params: MemoParamsDelegate {
                 cache_id: Deferred::value("cached-comp".to_string()),
                 allow_expressions: Deferred::value(false),
-                ..Default::default()
             },
             source: PortRef::new(time_remap, "output".to_string()),
         }),
@@ -826,7 +819,6 @@ fn time_remap_compiles_source_with_remapped_frame_context() {
                 selected_layer: Deferred::Expr(
                     lumen_engine::expr::Expression::parse("if(frame < 6, 0, 1)").unwrap(),
                 ),
-                ..Default::default()
             },
             layers: vec![
                 PortRef::new(first, "output".to_string()),
@@ -843,7 +835,6 @@ fn time_remap_compiles_source_with_remapped_frame_context() {
                 loop_enabled: Deferred::value(false),
                 loop_start: Deferred::value(0),
                 loop_end: Deferred::value(0),
-                ..Default::default()
             },
             source: PortRef::new(switch, "output".to_string()),
         }),
@@ -916,7 +907,6 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
                 loop_enabled: Deferred::value(false),
                 loop_start: Deferred::value(0),
                 loop_end: Deferred::value(0),
-                ..Default::default()
             },
             source: PortRef::new(exposure, "output".to_string()),
         }),
@@ -997,7 +987,6 @@ fn time_remap_binds_shared_source_once_per_frame_branch() {
                 loop_enabled: Deferred::value(false),
                 loop_start: Deferred::value(0),
                 loop_end: Deferred::value(0),
-                ..Default::default()
             },
             source: exposure_ref.clone(),
         }),
@@ -1300,7 +1289,6 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
                 ..Default::default()
             },
             source: PortRef::new(solid_id, "output".to_string()),
-            ..Transform::default()
         }),
     );
     graph.nodes.insert(
@@ -1312,7 +1300,6 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
                 y: Deferred::value(1),
                 width: Deferred::value(6),
                 height: Deferred::value(3),
-                ..Default::default()
             },
             source: PortRef::new(transform, "output".to_string()),
         }),
@@ -1326,7 +1313,6 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
                 height: Deferred::value(2),
                 mode: ResizeMode::Fit.into(),
                 sampling: ResizeSampling::Linear.into(),
-                ..Default::default()
             },
             source: PortRef::new(crop, "output".to_string()),
         }),
@@ -1391,7 +1377,6 @@ fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
             id: alpha,
             params: AlphaPremultiplyParamsDelegate {
                 mode: Deferred::value("unpremultiply".to_string()),
-                ..Default::default()
             },
             source: PortRef::new(solid_id, "output".to_string()),
         }),
@@ -1405,7 +1390,6 @@ fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
                 green: ChannelSelector::Green.into(),
                 blue: ChannelSelector::Red.into(),
                 alpha: ChannelSelector::One.into(),
-                ..Default::default()
             },
             source: PortRef::new(alpha, "output".to_string()),
         }),
@@ -1420,7 +1404,6 @@ fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
                 gamma: Deferred::value(1.2),
                 output_black: Deferred::value(0.0),
                 output_white: Deferred::value(1.0),
-                ..Default::default()
             },
             source: PortRef::new(shuffle, "output".to_string()),
         }),
@@ -1435,7 +1418,6 @@ fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
                 ),
                 saturation: Deferred::value(0.75),
                 lightness: Deferred::value(0.1),
-                ..Default::default()
             },
             source: PortRef::new(levels, "output".to_string()),
         }),
@@ -1448,7 +1430,6 @@ fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
                 lut_source: Deferred::value("rgb1d: 0,0,0; 255,128,0".to_string()),
                 strength: Deferred::value(0.5),
                 interpolation: Deferred::value(1),
-                ..Default::default()
             },
             source: PortRef::new(hue, "output".to_string()),
         }),
@@ -1501,7 +1482,6 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
                 fill_paint: Paint::solid([255, 0, 0, 255]).into(),
                 ..Default::default()
             },
-            ..Shape::default()
         }),
     );
     graph.nodes.insert(
@@ -1528,7 +1508,6 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
                 .into(),
                 ..Default::default()
             },
-            ..Text::default()
         }),
     );
     graph.nodes.insert(
@@ -1661,7 +1640,7 @@ fn text_rejects_stale_upload_after_atlas_slot_reuse() {
     assert!(current.texture_upload_count() > 0);
     renderer.upload_bound_frame(&current).unwrap();
     let expected = render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
-    assert!(expected.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    assert!(expected.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
     let error = renderer.upload_bound_frame(&older).unwrap_err();
     assert!(error.to_string().contains("stale bound text frame"));
     let rebound = renderer
@@ -1758,7 +1737,7 @@ fn text_rejects_stale_upload_from_another_compiled_plan() {
     assert_eq!(rebound.texture_upload_count(), 0);
     assert!(rebound.buffer_upload_count() > 0);
     let pixels = render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
-    assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
     let mut reference = gpu_composition_renderer().unwrap();
     assert_eq!(
         pixels,
@@ -1856,7 +1835,9 @@ fn text_msdf_coverage_matches_raster_for_plain_italic_and_variable_weight() {
                 };
                 *id == instances
                     && data
-                        .chunks_exact(std::mem::size_of::<lumen_text::GpuGlyphInstance>())
+                        .as_chunks::<{ std::mem::size_of::<lumen_text::GpuGlyphInstance>() }>()
+                        .0
+                        .iter()
                         .any(|bytes| {
                             bytemuck::pod_read_unaligned::<lumen_text::GpuGlyphInstance>(bytes).mode
                                 == lumen_text::GLYPH_MODE_MSDF
@@ -1868,8 +1849,10 @@ fn text_msdf_coverage_matches_raster_for_plain_italic_and_variable_weight() {
             );
             let msdf = render_rgba8(&mut renderer, &composition, 0, &InterFont);
             let (intersection, union) = raster
-                .chunks_exact(4)
-                .zip(msdf.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(msdf.as_chunks::<4>().0.iter())
                 .fold((0u64, 0u64), |(i, u), (a, b)| {
                     (i + u64::from(a[3].min(b[3])), u + u64::from(a[3].max(b[3])))
                 });
@@ -1942,7 +1925,10 @@ fn text_standalone_compile_bind_execute_requires_injected_atlas() {
         gpu.execute(&compiled.plan, &bound.frame_update()).unwrap();
         bound.mark_uploaded().unwrap();
         let pixels = read_rgba8(&gpu, compiled.output);
-        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 0), "{mode:?}");
+        assert!(
+            pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0),
+            "{mode:?}"
+        );
         assert!(pollster::block_on(validation.pop()).is_none());
     }
 }
@@ -2062,14 +2048,16 @@ fn text_nodes_share_one_fixed_atlas_with_large_second_node() {
         };
         *id == instances_id
             && data
-                .chunks_exact(std::mem::size_of::<lumen_text::GpuGlyphInstance>())
+                .as_chunks::<{ std::mem::size_of::<lumen_text::GpuGlyphInstance>() }>()
+                .0
+                .iter()
                 .any(|bytes| {
                     let glyph = bytemuck::pod_read_unaligned::<lumen_text::GpuGlyphInstance>(bytes);
                     glyph.rect[2] > 2500.0 && glyph.rect[3] > 2500.0
                 })
     }));
     let enlarged = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
-    assert!(enlarged.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    assert!(enlarged.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
     let mut reference = gpu_composition_renderer().unwrap();
     assert_eq!(
         enlarged,
@@ -2178,8 +2166,19 @@ fn text_transparent_gradient_midpoint_is_premultiplied() {
             });
             renderer.release_resources();
             let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
-            assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] >= 126));
-            for pixel in pixels.chunks_exact(4).filter(|pixel| pixel[3] >= 126) {
+            assert!(
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|pixel| pixel[3] >= 126)
+            );
+            for pixel in pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[3] >= 126)
+            {
                 assert!(
                     pixel[0] <= 1
                         && pixel[1] <= 1
@@ -2255,7 +2254,9 @@ fn text_measurement_loads_time_remapped_family_on_first_bind() {
     }
     let table_count = u16::from_be_bytes(font[4..6].try_into().unwrap()) as usize;
     let head = font[12..12 + table_count * 16]
-        .chunks_exact(16)
+        .as_chunks::<16>()
+        .0
+        .iter()
         .find(|table| &table[..4] == b"head")
         .unwrap();
     let units_offset = u32::from_be_bytes(head[8..12].try_into().unwrap()) as usize + 18;
@@ -2415,7 +2416,9 @@ fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
         })
         .unwrap();
     let rects: Vec<[f32; 4]> = instances
-        .chunks_exact(std::mem::size_of::<lumen_text::GpuGlyphInstance>())
+        .as_chunks::<{ std::mem::size_of::<lumen_text::GpuGlyphInstance>() }>()
+        .0
+        .iter()
         .map(|instance| bytemuck::pod_read_unaligned(&instance[..16]))
         .collect();
 
@@ -2444,7 +2447,6 @@ fn compiles_vector_path_through_shared_renderer() {
                 stroke_width: Deferred::value(1.0),
                 ..Default::default()
             },
-            ..Path::default()
         }),
     );
     graph.nodes.insert(
@@ -2482,7 +2484,9 @@ fn path_fill_pixels_are_independent_of_stroke_trim_range() {
     );
     assert!(
         full_pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|pixel| pixel[3] > 0 && pixel[3] < 255),
         "subpixel path should exercise antialiased fill coverage"
     );
@@ -2744,7 +2748,13 @@ fn linear_resize_keeps_source_edges_opaque_and_identity_reproduces_input() {
         return;
     };
     assert_eq!(upscaled.len(), 8 * 4 * 4);
-    assert!(upscaled.chunks_exact(4).all(|pixel| pixel[3] == 255));
+    assert!(
+        upscaled
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == 255)
+    );
 }
 
 #[test]
@@ -2800,7 +2810,7 @@ fn merge_and_adjustments_treat_rasters_as_premultiplied() {
             return;
         };
         let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
-        for pixel in pixels.chunks_exact(4) {
+        for pixel in pixels.as_chunks::<4>().0 {
             assert!(
                 pixel
                     .iter()
@@ -2932,7 +2942,7 @@ fn shadow_composites_straight_alpha_source_in_premultiplied_space() {
     let pixels = render_rgba8(&mut renderer, &test_composition(graph), 0, &EmptyMediaStore);
     // Premultiplied red (0.5, 0, 0) over half-covered green shadow (0, 0.25, 0)
     // on opaque black.
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         assert!(
             pixel
                 .iter()
@@ -3000,7 +3010,6 @@ fn filled_path_composition() -> Composition {
                 edge_antialias: Deferred::value(true),
                 ..Default::default()
             },
-            ..Path::default()
         }),
     );
     graph.nodes.insert(
