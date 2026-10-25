@@ -125,7 +125,6 @@ export type TransformSampling = "nearest" | "linear";
 export interface CompositionNodeBase<TKind extends NodeKind> {
   readonly id: number;
   readonly type: TKind;
-  readonly map?: Readonly<Record<string, readonly [number, number]>>;
 }
 
 export interface AlphaPremultiplyNode extends CompositionNodeBase<"alpha_premultiply"> {

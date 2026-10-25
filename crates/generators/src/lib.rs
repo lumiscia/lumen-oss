@@ -20,6 +20,12 @@ pub struct CliArgs {
     pub out_dir: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    Generate(CliArgs),
+    Help,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenerateTarget {
     Definitions,
@@ -162,7 +168,7 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-pub fn parse_args_from<I>(args: I) -> Result<CliArgs>
+pub fn parse_args_from<I>(args: I) -> Result<Command>
 where
     I: IntoIterator<Item = String>,
 {
@@ -179,15 +185,12 @@ where
                         .ok_or_else(|| anyhow!("missing value for --out-dir"))?,
                 );
             }
-            "--help" | "-h" => {
-                print_usage();
-                std::process::exit(0);
-            }
+            "--help" | "-h" => return Ok(Command::Help),
             unknown => bail!("unknown argument: {unknown}"),
         }
     }
 
-    Ok(CliArgs { target, out_dir })
+    Ok(Command::Generate(CliArgs { target, out_dir }))
 }
 
 pub fn print_usage() {
@@ -219,13 +222,15 @@ pub struct DefinitionArtifacts {
 
 pub fn render_definition_artifacts() -> Result<DefinitionArtifacts> {
     let manifest = meta_manifest()?;
+    let composition_schema_json = render_composition_schema_json(&manifest)?;
+    validate_generated_artifacts(&composition_schema_json)?;
     Ok(DefinitionArtifacts {
-        composition_schema_json: render_composition_schema_json(&manifest)?,
+        composition_schema_json,
         manifest,
     })
 }
 
-pub fn validate_generated_artifacts(composition_schema_json: &str) -> Result<()> {
+fn validate_generated_artifacts(composition_schema_json: &str) -> Result<()> {
     let composition_schema: Value = serde_json::from_str(composition_schema_json)?;
     jsonschema::meta::validate(&composition_schema)
         .map_err(|error| anyhow!("generated composition schema is invalid: {error}"))?;
@@ -260,6 +265,7 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
         serde_json::to_string_pretty(&json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "x-lumen-schemaVersion": manifest.schema_version,
+            "x-lumen-nodeKinds": manifest.node_kinds,
             "type": "object",
             "required": ["timeline", "render_settings", "nodes", "connections"],
             "additionalProperties": true,
@@ -308,7 +314,6 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                 }
             },
             "$defs": {
-                "nodeKinds": manifest.node_kinds,
                 "expression": {
                     "description": "An expression evaluated per frame in place of a literal value.",
                     "type": "string",
@@ -593,10 +598,13 @@ fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpe
                 variadic: input.variadic,
             })
             .collect(),
-        outputs: vec![NodeOutputPortSpec {
-            name: "output".to_string(),
-            kind: NodePortKind::RasterFrame,
-        }],
+        outputs: lumen_engine::node::SINGLE_RASTER_OUTPUT
+            .iter()
+            .map(|output| NodeOutputPortSpec {
+                name: output.name.to_string(),
+                kind: port_kind_from_schema(output.kind),
+            })
+            .collect(),
         params,
         default_params,
     })
@@ -728,9 +736,7 @@ mod tests {
 
     fn schema_validator() -> jsonschema::Validator {
         let artifacts = render_definition_artifacts().unwrap();
-        let mut schema: Value = serde_json::from_str(&artifacts.composition_schema_json).unwrap();
-        // `$defs.nodeKinds` is a plain array rather than a schema, which the meta-schema rejects.
-        schema["$defs"].as_object_mut().unwrap().remove("nodeKinds");
+        let schema: Value = serde_json::from_str(&artifacts.composition_schema_json).unwrap();
         jsonschema::validator_for(&schema).unwrap()
     }
 

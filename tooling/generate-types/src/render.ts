@@ -7,26 +7,17 @@ const union = (values: readonly string[]): string =>
 
 const uniqueSorted = (values: readonly string[]): string[] => [...new Set(values)].sort();
 
-const typeNameForNode = (kind: string): string =>
-  `${kind
+const pascalCase = (value: string): string =>
+  value
     .split(/[^a-zA-Z0-9]+/u)
     .filter(Boolean)
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
-    .join("")}Node`;
+    .join("");
 
-const typeNameForEnumParam = (nodeKind: string, paramName: string): string =>
-  `${nodeKind
-    .split(/[^a-zA-Z0-9]+/u)
-    .filter(Boolean)
-    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
-    .join("")}${paramName
-    .split(/[^a-zA-Z0-9]+/u)
-    .filter(Boolean)
-    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
-    .join("")}`;
+const typeNameForNode = (kind: string): string => `${pascalCase(kind)}Node`;
 
 const enumTypeForParam = (nodeKind: string, param: NodeParamSpec): string =>
-  typeNameForEnumParam(nodeKind, param.id);
+  `${pascalCase(nodeKind)}${pascalCase(param.id)}`;
 
 const paramType = (nodeKind: string, param: NodeParamSpec): string => {
   switch (param.kind) {
@@ -221,7 +212,6 @@ ${enumTypes}
 export interface CompositionNodeBase<TKind extends NodeKind> {
   readonly id: number;
   readonly type: TKind;
-  readonly map?: Readonly<Record<string, readonly [number, number]>>;
 }
 
 ${nodeInterfaces}
@@ -306,11 +296,4 @@ export interface LumenComposition {
   readonly [key: string]: unknown;
 }
 `;
-}
-
-export function rewriteSchemaTypeReferences(schemaTypes: string, manifest: MetaManifest): string {
-  return Object.values(manifest.nodeSpecs).reduce((content, spec) => {
-    const originalName = typeNameForNode(spec.kind).replace(/Node$/u, "");
-    return content.replace(new RegExp(`\\b${originalName}\\b`, "gu"), typeNameForNode(spec.kind));
-  }, schemaTypes);
 }

@@ -62,10 +62,8 @@ export async function readCompositionSchemaManifest(path: string): Promise<MetaM
 
 function manifestFromCompositionSchema(schema: JsonSchema): MetaManifest {
   const schemaVersion = numberValue(schema["x-lumen-schemaVersion"]) ?? 1;
-  const nodeVariants = arrayValue(
-    objectValue(objectValue(schema.properties)?.nodes)?.items &&
-      objectValue(objectValue(objectValue(schema.properties)?.nodes)?.items)?.oneOf,
-  );
+  const nodesSchema = objectValue(objectValue(schema.properties).nodes);
+  const nodeVariants = arrayValue(objectValue(nodesSchema.items).oneOf);
   const nodeSpecs = Object.fromEntries(
     nodeVariants.map((variant) => {
       const spec = nodeSpecFromSchema(objectValue(variant));
