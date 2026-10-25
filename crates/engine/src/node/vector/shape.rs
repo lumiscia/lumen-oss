@@ -1,4 +1,5 @@
 use super::paint::Paint;
+use super::renderer::VectorRenderer;
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
@@ -20,16 +21,16 @@ pub struct ShapeParams {
     /// Geometry primitive to rasterize.
     #[meta(kind = "enum", enum_type = ShapeGeometryKind)]
     pub geometry_kind: ShapeGeometryKind,
-    /// Shape width in pixels.
+    /// Shape width in pixels. Ignored for polygon geometry.
     #[meta(min = 1, step = 1)]
     pub width: i64,
-    /// Shape height in pixels.
+    /// Shape height in pixels. Ignored for polygon geometry.
     #[meta(min = 1, step = 1)]
     pub height: i64,
     /// Corner radius for rectangle geometry.
     #[meta(min = 0, step = 1)]
     pub border_radius: f64,
-    /// Polygon point list formatted as `x,y; x,y`.
+    /// Polygon vertices in pixels relative to `position`, as `x,y; x,y` (3 to 128 points).
     #[meta(
         name = "Polygon points",
         format = "point_list",
@@ -103,7 +104,12 @@ impl GpuCompileNode for Shape {
         ctx: &mut crate::gpu::CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        crate::node::vector::renderer::VectorRenderer::new(ctx).compile_shape(self, port)
+        let mut renderer = VectorRenderer::new(ctx);
+        // Enum params are always constants, so the pipeline can be chosen here.
+        match self.params.geometry_kind {
+            ShapeGeometryKindDelegate::Polygon => renderer.compile_polygon_shape(self, port),
+            _ => renderer.compile_shape(self, port),
+        }
     }
 }
 
@@ -125,16 +131,6 @@ impl GpuCompiledNode for CompiledShape {
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
         let (x, y) = evaluated.position;
-        let mut flags = 0;
-        if evaluated.fill_enabled {
-            flags |= 1;
-        }
-        if evaluated.stroke_enabled {
-            flags |= 2;
-        }
-        if evaluated.edge_antialias {
-            flags |= 4;
-        }
         let params = super::renderer::ShapeParams {
             fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
             stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
@@ -146,9 +142,123 @@ impl GpuCompiledNode for CompiledShape {
             border_radius: evaluated.border_radius as f32,
             stroke_width: evaluated.stroke_width as f32,
             geometry_kind: evaluated.geometry_kind as u32,
-            flags,
+            flags: shape_flags(&evaluated),
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledPolygonShape {
+    pub(crate) node_id: NodeId,
+    pub(crate) params: ShapeParamsDelegate,
+    pub(crate) params_buffer: lumen_gpu::BufferId,
+    pub(crate) points_buffer: lumen_gpu::BufferId,
+    pub(crate) max_points: usize,
+}
+
+impl GpuCompiledNode for CompiledPolygonShape {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(self.node_id, "params"),
+        })?;
+        // Invalid or incomplete point lists draw nothing, so editing the field never fails the frame.
+        let vertices =
+            parse_polygon_points(&evaluated.polygon_points, self.max_points).unwrap_or_default();
+        let points = super::path::closed_contour(&vertices);
+        let (x, y) = evaluated.position;
+        let params = super::renderer::PathParams {
+            fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
+            stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
+            position: [x as f32, y as f32],
+            bounds_min: super::path::bounds_min(&points),
+            bounds_size: super::path::bounds_size(&points),
+            stroke_width: evaluated.stroke_width as f32,
+            flags: shape_flags(&evaluated),
+            point_count: points.len() as u32,
+            trim_start: 0.0,
+            trim_end: 1.0,
+            _pad: 0,
+        };
+        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
+        if !points.is_empty() {
+            bound.write_buffer(self.points_buffer, 0, bytemuck::cast_slice(&points));
+        }
+        Ok(())
+    }
+}
+
+fn shape_flags(params: &ShapeParams) -> u32 {
+    let mut flags = 0;
+    if params.fill_enabled {
+        flags |= 1;
+    }
+    if params.stroke_enabled {
+        flags |= 2;
+    }
+    if params.edge_antialias {
+        flags |= 4;
+    }
+    flags
+}
+
+/// Parses `x,y` pairs separated by `;` into polygon vertices. Newlines are accepted as
+/// separators too, since the editor field is multiline. Returns `None` unless the list is
+/// well-formed and has 3 to `max_points` finite points.
+fn parse_polygon_points(text: &str, max_points: usize) -> Option<Vec<[f32; 2]>> {
+    let vertices = text
+        .split([';', '\n'])
+        .map(str::trim)
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (x, y) = pair.split_once(',')?;
+            let coordinate = |value: &str| {
+                value
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|value| value.is_finite())
+            };
+            Some([coordinate(x)?, coordinate(y)?])
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (3..=max_points)
+        .contains(&vertices.len())
+        .then_some(vertices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_semicolon_and_newline_separated_points() {
+        assert_eq!(
+            parse_polygon_points("0,0; 10.5, 0\n 5,-8;", 128),
+            Some(vec![[0.0, 0.0], [10.5, 0.0], [5.0, -8.0]])
+        );
+    }
+
+    #[test]
+    fn invalid_or_incomplete_points_draw_nothing() {
+        for text in [
+            "0,0; 1,0; 1",
+            "0,0; 1,0; 1,1,1",
+            "0,0; 1,0; inf,1",
+            "0,0; 1,1",
+            "",
+        ] {
+            assert!(
+                parse_polygon_points(text, 128).is_none(),
+                "{text:?} should draw nothing"
+            );
+        }
+        assert!(parse_polygon_points("0,0; 1,0; 1,1; 0,1", 3).is_none());
     }
 }

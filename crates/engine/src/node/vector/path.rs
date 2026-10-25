@@ -167,6 +167,25 @@ fn parse_path_points(data: &str, max_points: usize) -> Vec<super::renderer::Path
     flatten_path_capped(&path, tolerance, max_points)
 }
 
+/// Builds a single closed contour from polygon vertices.
+pub(super) fn closed_contour(vertices: &[[f32; 2]]) -> Vec<super::renderer::PathPoint> {
+    let mut points: Vec<_> = vertices
+        .iter()
+        .map(|&position| super::renderer::PathPoint {
+            position,
+            contour_start: 0,
+            flags: 0,
+            offset: 0.0,
+            _pad: 0.0,
+        })
+        .collect();
+    if let Some(last) = points.last_mut() {
+        last.flags = PATH_END | PATH_CLOSED;
+    }
+    normalize_contour_offsets(&mut points);
+    points
+}
+
 fn build_lyon_path(data: &str) -> Option<lyon_path::Path> {
     use lyon_path::{
         builder::SvgPathBuilder,
@@ -407,7 +426,7 @@ fn truncated(
     Some(points)
 }
 
-fn bounds_min(points: &[super::renderer::PathPoint]) -> [f32; 2] {
+pub(super) fn bounds_min(points: &[super::renderer::PathPoint]) -> [f32; 2] {
     let Some(first) = points.first() else {
         return [0.0, 0.0];
     };
@@ -453,7 +472,7 @@ fn normalize_contour_offsets(points: &mut [super::renderer::PathPoint]) {
     }
 }
 
-fn bounds_size(points: &[super::renderer::PathPoint]) -> [f32; 2] {
+pub(super) fn bounds_size(points: &[super::renderer::PathPoint]) -> [f32; 2] {
     let min = bounds_min(points);
     let max = points.iter().fold(min, |acc, point| {
         [acc[0].max(point.position[0]), acc[1].max(point.position[1])]

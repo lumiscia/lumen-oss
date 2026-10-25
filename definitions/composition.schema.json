@@ -2008,7 +2008,7 @@
                   },
                   "height": {
                     "default": 1,
-                    "description": "Shape height in pixels.",
+                    "description": "Shape height in pixels. Ignored for polygon geometry.",
                     "minimum": 1.0,
                     "title": "Height",
                     "type": "integer",
@@ -2020,7 +2020,7 @@
                   },
                   "polygon_points": {
                     "default": "",
-                    "description": "Polygon point list formatted as `x,y; x,y`.",
+                    "description": "Polygon vertices in pixels relative to `position`, as `x,y; x,y` (3 to 128 points).",
                     "title": "Polygon points",
                     "type": "string",
                     "x-lumen-constraints": {
@@ -2065,7 +2065,7 @@
                   },
                   "width": {
                     "default": 1,
-                    "description": "Shape width in pixels.",
+                    "description": "Shape width in pixels. Ignored for polygon geometry.",
                     "minimum": 1.0,
                     "title": "Width",
                     "type": "integer",

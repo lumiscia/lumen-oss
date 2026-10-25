@@ -40,7 +40,7 @@ use lumen_engine::{
         vector::{
             paint::{GradientPaint, GradientStop, Paint, PaintKind},
             path::{Path, PathParamsDelegate},
-            shape::{Shape, ShapeParamsDelegate},
+            shape::{Shape, ShapeGeometryKind, ShapeParamsDelegate},
         },
     },
 };
@@ -2486,6 +2486,107 @@ fn path_fill_pixels_are_independent_of_stroke_trim_range() {
             .any(|pixel| pixel[3] > 0 && pixel[3] < 255),
         "subpixel path should exercise antialiased fill coverage"
     );
+}
+
+#[test]
+fn polygon_shape_renders_its_points_instead_of_a_rectangle() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shape = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        shape,
+        NodeKind::Shape(Shape {
+            id: shape,
+            params: ShapeParamsDelegate {
+                geometry_kind: ShapeGeometryKind::Polygon.into(),
+                width: Deferred::value(12),
+                height: Deferred::value(12),
+                polygon_points: Deferred::value("0,0; 12,0; 0,12".to_string()),
+                position: Deferred::value((2.0, 2.0)),
+                fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(shape, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 16;
+    composition.render_settings.height = 16;
+
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let pixel = |x: usize, y: usize| &pixels[(y * 16 + x) * 4..][..4];
+
+    for (x, y) in [(3, 3), (10, 3), (3, 10), (6, 6)] {
+        assert_eq!(
+            pixel(x, y),
+            [255, 0, 0, 255],
+            "({x}, {y}) is inside the triangle"
+        );
+    }
+    for (x, y) in [(13, 13), (12, 8), (8, 12), (0, 0), (15, 15)] {
+        assert_eq!(
+            pixel(x, y),
+            [0, 0, 0, 0],
+            "({x}, {y}) is outside the triangle"
+        );
+    }
+}
+
+#[test]
+fn polygon_shape_with_invalid_points_draws_nothing_without_stale_geometry() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shape = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        shape,
+        NodeKind::Shape(Shape {
+            id: shape,
+            params: ShapeParamsDelegate {
+                geometry_kind: ShapeGeometryKind::Polygon.into(),
+                polygon_points: Deferred::Expr(
+                    Expression::parse("if(frame == 1, \"\", \"0,0; 12,0; 0,12\")").unwrap(),
+                ),
+                position: Deferred::value((2.0, 2.0)),
+                fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(shape, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 16;
+    composition.render_settings.height = 16;
+
+    for (frame, expected) in [
+        (0, [255, 0, 0, 255]),
+        (1, [0, 0, 0, 0]),
+        (2, [255, 0, 0, 255]),
+    ] {
+        let pixels = render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore);
+        assert_eq!(
+            &pixels[(3 * 16 + 3) * 4..][..4],
+            expected,
+            "frame {frame} pixel inside the triangle"
+        );
+    }
 }
 
 #[test]
