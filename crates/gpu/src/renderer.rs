@@ -137,10 +137,18 @@ impl From<wgpu::AdapterInfo> for GpuAdapterInfo {
     }
 }
 
+/// Builds the instance options from the build config and environment, always discarding HAL
+/// labels: concurrent devices from separate instances crash inside the Vulkan loader in
+/// `vkSetDebugUtilsObjectNameEXT` otherwise (https://github.com/gfx-rs/wgpu/issues/5270).
+fn instance_descriptor() -> wgpu::InstanceDescriptor {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    descriptor.flags |= wgpu::InstanceFlags::DISCARD_HAL_LABELS;
+    descriptor
+}
+
 impl Renderer {
     pub async fn new() -> Result<Self> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let instance = wgpu::Instance::new(instance_descriptor());
         let power_preference =
             wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
         let force_fallback_adapter = env_flag("LUMEN_GPU_FORCE_FALLBACK_ADAPTER");

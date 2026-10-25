@@ -48,34 +48,41 @@ use std::sync::{Arc, mpsc};
 
 static TEXT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-// Vulkan devices from separate wgpu instances crash inside the loader
-// (`vkSetDebugUtilsObjectNameEXT`) when used from several threads at once, so GPU tests run one
-// at a time. The lock is reentrant per thread for tests that hold two renderers.
+// Vulkan devices from separate wgpu instances can still crash inside the loader when used from
+// several threads at once, even with HAL labels discarded, so GPU tests run one at a time. The
+// lock is reentrant per thread for tests that hold two renderers, and is released only when the
+// last holder on that thread drops.
 static GPU_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 thread_local! {
-    static GPU_LOCK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static GPU_LOCK_HELD: std::cell::RefCell<(usize, Option<std::sync::MutexGuard<'static, ()>>)> =
+        const { std::cell::RefCell::new((0, None)) };
 }
 
-struct GpuTestLock {
-    _guard: Option<std::sync::MutexGuard<'static, ()>>,
-}
+struct GpuTestLock;
 
 impl GpuTestLock {
     fn acquire() -> Self {
-        let nested = GPU_LOCK_DEPTH.with(|depth| {
-            depth.set(depth.get() + 1);
-            depth.get() > 1
+        GPU_LOCK_HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            if held.0 == 0 {
+                held.1 = Some(GPU_LOCK.lock().unwrap_or_else(|error| error.into_inner()));
+            }
+            held.0 += 1;
         });
-        Self {
-            _guard: (!nested).then(|| GPU_LOCK.lock().unwrap_or_else(|error| error.into_inner())),
-        }
+        Self
     }
 }
 
 impl Drop for GpuTestLock {
     fn drop(&mut self) {
-        GPU_LOCK_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        GPU_LOCK_HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            held.0 -= 1;
+            if held.0 == 0 {
+                held.1 = None;
+            }
+        });
     }
 }
 

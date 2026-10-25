@@ -40,6 +40,8 @@
           "type": "string"
         },
         "volume": {
+          "maximum": 3.4028234663852886e38,
+          "minimum": 0,
           "type": "number"
         }
       },
@@ -62,6 +64,8 @@
           "type": "boolean"
         },
         "volume": {
+          "maximum": 3.4028234663852886e38,
+          "minimum": 0,
           "type": "number"
         }
       },

@@ -22,8 +22,8 @@ use crate::{
     node::NodeId,
 };
 
-pub use property::parse_color;
 pub(crate) use property::{StringParam, classify_string, integral_i64, parse_property};
+pub use property::{parse_color, try_parse_color};
 
 const DEFAULT_FPS: f32 = 30.0;
 
@@ -158,7 +158,7 @@ fn parse_render_settings(val: &Value) -> Result<RenderSettings> {
         background_color: obj
             .get("background_color")
             .map(|value| {
-                parse_color(value).map_err(|error| {
+                try_parse_color(value).map_err(|error| {
                     anyhow::anyhow!("`render_settings.background_color` expected a color: {error}")
                 })
             })
@@ -257,8 +257,9 @@ fn audio_volume(obj: &Map<String, Value>, owner: &str) -> Result<f32> {
     };
     value
         .as_f64()
+        .filter(|volume| *volume >= 0.0)
         .map(|volume| volume as f32)
-        .filter(|volume| volume.is_finite() && *volume >= 0.0)
+        .filter(|volume| volume.is_finite())
         .with_context(|| format!("{owner} `volume` must be a finite number of at least 0"))
 }
 
@@ -389,6 +390,7 @@ mod tests {
 
         for invalid in [
             serde_json::json!(-0.5),
+            serde_json::json!(-1e-50),
             serde_json::json!(1e300),
             serde_json::json!("loud"),
         ] {

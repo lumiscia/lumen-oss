@@ -745,7 +745,7 @@ impl DeferredJsonValue for String {
 #[cfg(feature = "json")]
 impl DeferredJsonValue for [u8; 4] {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        crate::json::parse_color(value).map_err(|error| format!("expected color: {error}"))
+        crate::json::try_parse_color(value).map_err(|error| format!("expected color: {error}"))
     }
 }
 

@@ -98,7 +98,7 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
                 .with_context(|| format!("`{name}` expected string"))?;
             Ok(PropertyValue::String(s.to_string()))
         }
-        PropertyKind::Color => parse_color(val)
+        PropertyKind::Color => try_parse_color(val)
             .map_err(|error| anyhow!("`{name}` expected color: {error}"))
             .map(PropertyValue::Color),
         PropertyKind::Paint => crate::node::vector::paint::Paint::from_json_value(val)
@@ -152,7 +152,12 @@ pub(crate) fn integral_i64(value: &Value) -> Option<i64> {
 
 /// Parses `[r, g, b]`, `[r, g, b, a]` with integer components in 0–255, or a
 /// `#RRGGBB` / `#RRGGBBAA` string.
-pub fn parse_color(val: &Value) -> Result<[u8; 4], String> {
+pub fn parse_color(val: &Value) -> Option<[u8; 4]> {
+    try_parse_color(val).ok()
+}
+
+/// Like [`parse_color`], but says why a value is not a color.
+pub fn try_parse_color(val: &Value) -> Result<[u8; 4], String> {
     if let Some(arr) = val.as_array() {
         let channel = |index: usize| {
             arr[index]
@@ -204,7 +209,7 @@ fn parse_color_or_vec(arr: &[Value], name: &str) -> Result<PropertyValue> {
     }
     if arr.len() >= 3
         && arr.len() <= 4
-        && let Ok(c) = parse_color(&Value::Array(arr.to_vec()))
+        && let Some(c) = parse_color(&Value::Array(arr.to_vec()))
     {
         return Ok(PropertyValue::Color(c));
     }
@@ -246,22 +251,22 @@ mod tests {
             serde_json::json!("#+f+f+f"),
             serde_json::json!("#ééé"),
         ] {
-            assert!(parse_color(&value).is_err(), "{value}");
+            assert!(try_parse_color(&value).is_err(), "{value}");
         }
     }
 
     #[test]
     fn color_errors_name_the_offending_part() {
-        let error = parse_color(&serde_json::json!([0, 256, 0])).unwrap_err();
+        let error = try_parse_color(&serde_json::json!([0, 256, 0])).unwrap_err();
         assert!(
             error.contains("component 1") && error.contains("256"),
             "{error}"
         );
 
-        let error = parse_color(&serde_json::json!([0, 0])).unwrap_err();
+        let error = try_parse_color(&serde_json::json!([0, 0])).unwrap_err();
         assert!(error.contains("3 or 4 components"), "{error}");
 
-        let error = parse_color(&serde_json::json!("#12345")).unwrap_err();
+        let error = try_parse_color(&serde_json::json!("#12345")).unwrap_err();
         assert!(error.contains("#RRGGBB"), "{error}");
     }
 

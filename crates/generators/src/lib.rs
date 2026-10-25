@@ -423,7 +423,7 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                         "name": { "type": "string" },
                         "muted": { "type": "boolean" },
                         "solo": { "type": "boolean" },
-                        "volume": { "type": "number" }
+                        "volume": { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 }
                     },
                     "additionalProperties": true
                 },
@@ -441,7 +441,7 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                         "start_frame": { "type": "integer", "minimum": 0 },
                         "duration_frames": { "type": "integer", "minimum": 1 },
                         "source_start_seconds": { "type": "number", "minimum": 0 },
-                        "volume": { "type": "number" }
+                        "volume": { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 }
                     },
                     "additionalProperties": true
                 }
