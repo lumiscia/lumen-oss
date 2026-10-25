@@ -1575,6 +1575,53 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
 }
 
 #[test]
+fn text_bind_ahead_restores_committed_frame_after_pending_frame() {
+    let text = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::value("Bind ahead".to_string()),
+                position: Deferred::Expr(Expression::parse("vec2(frame * 10, 0)").unwrap()),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(text, "output".to_string()),
+        }),
+    );
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let bind = |frame| {
+        FrameBindContext::new(&composition, frame)
+            .bind(&compiled)
+            .unwrap()
+    };
+    let first = bind(0);
+    first.mark_uploaded();
+    let ahead = bind(1);
+    let restored = bind(0);
+    assert!(restored.buffer_upload_count() > 0);
+
+    ahead.mark_uploaded();
+    // Completion records the update just uploaded, even with a newer bind pending.
+    let after_ahead = bind(1);
+    assert!(after_ahead.buffer_upload_count() > 0);
+    after_ahead.mark_uploaded();
+    assert_eq!(bind(1).buffer_upload_count(), 0);
+    restored.mark_uploaded();
+    assert_eq!(bind(0).buffer_upload_count(), 0);
+    assert!(bind(1).buffer_upload_count() > 0);
+}
+
+#[test]
 fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
     let text = NodeId::new(1);
     let output = NodeId::new(2);

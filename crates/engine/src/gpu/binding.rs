@@ -45,6 +45,7 @@ impl<'a> FrameBindContext<'a> {
             nodes = compiled.compiled_nodes.len(),
             "bind compiled frame"
         );
+        crate::node::source::text::preload_text_fonts(self.composition, self.media, self.frame)?;
         let mut bound = BoundFrame::new();
         let output = media_output_port(self.composition)?;
         let mut visited = HashSet::new();

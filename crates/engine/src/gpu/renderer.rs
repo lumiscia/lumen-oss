@@ -532,6 +532,11 @@ impl GpuCompositionRenderer {
         frame: u32,
         media: Option<&M>,
     ) -> crate::Result<()> {
+        crate::node::source::text::preload_text_fonts(
+            composition,
+            media.map(|store| store as &dyn MediaStore),
+            frame,
+        )?;
         let key = self.compiled_plan_key(composition, frame)?;
         if self.active_key.as_ref() == Some(&key) {
             tracing::trace!(target: "lumen_render", frame, "reuse active compiled plan");

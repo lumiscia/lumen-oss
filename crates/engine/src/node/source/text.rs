@@ -7,9 +7,14 @@ use std::{
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 
+use crate::composition::Composition;
 use crate::error::{LumenError, RenderError};
+use crate::expr::ExpressionContext;
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint};
+use crate::media::MediaStore;
+use crate::node::{
+    Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint,
+};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
@@ -170,7 +175,7 @@ impl GpuCompiledNode for CompiledText {
         );
 
         let mut text_system = text_system()?;
-        load_font_family(&mut text_system, ctx, &request.font_family)?;
+        load_font_family(&mut text_system, ctx.media(), &request.font_family)?;
         let mut state = self.state.lock().map_err(|_| {
             LumenError::Render(RenderError::Gpu {
                 details: format!("text node {} state lock was poisoned", self.node_id.0),
@@ -221,7 +226,7 @@ impl GpuCompiledNode for CompiledText {
             output_width: self.size.width,
             output_height: self.size.height,
         };
-        if state.committed.as_ref() == Some(&frame_key) {
+        if state.pending.is_none() && state.committed.as_ref() == Some(&frame_key) {
             return Ok(());
         }
 
@@ -283,11 +288,11 @@ impl GpuCompiledNode for CompiledText {
         }
 
         let atlas_frame = prepared.frame;
-        state.pending = Some((atlas_frame, frame_key));
+        state.pending = Some(atlas_frame);
         let commit_state = Arc::clone(&self.state);
         bound.on_upload(move || {
             if let Ok(mut state) = commit_state.lock() {
-                state.commit(atlas_frame);
+                state.commit(atlas_frame, frame_key.clone());
             }
         });
 
@@ -311,7 +316,7 @@ impl GpuCompiledNode for CompiledText {
 pub(crate) struct TextState {
     atlas: lumen_text::RasterAtlas,
     shaped: Option<(TextShapeKey, lumen_text::ShapedText)>,
-    pending: Option<(u64, TextFrameKey)>,
+    pending: Option<u64>,
     committed: Option<TextFrameKey>,
     dropping_glyphs: bool,
 }
@@ -327,14 +332,11 @@ impl TextState {
         }
     }
 
-    fn commit(&mut self, atlas_frame: u64) {
+    fn commit(&mut self, atlas_frame: u64, frame_key: TextFrameKey) {
         self.atlas.commit(atlas_frame);
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|(frame, _)| *frame == atlas_frame)
-        {
-            self.committed = self.pending.take().map(|(_, key)| key);
+        self.committed = Some(frame_key);
+        if self.pending == Some(atlas_frame) {
+            self.pending = None;
         }
     }
 }
@@ -404,15 +406,50 @@ pub(crate) fn text_system() -> crate::Result<std::sync::MutexGuard<'static, lume
         })
 }
 
+pub(crate) fn preload_text_fonts(
+    composition: &Composition,
+    media: Option<&dyn MediaStore>,
+    frame: u32,
+) -> crate::Result<()> {
+    if media.is_none() {
+        return Ok(());
+    }
+    for node in composition.graph.nodes.values() {
+        if let NodeKind::Text(text) = node
+            && let Deferred::Value(family) = &text.params.font_family
+        {
+            load_font_family(&mut *text_system()?, media, family)?;
+        }
+    }
+    for node in composition.graph.nodes.values() {
+        if let NodeKind::Text(text) = node
+            && matches!(text.params.font_family, Deferred::Expr(_))
+        {
+            let ctx = ExpressionContext {
+                frame,
+                fps: composition.timeline.fps,
+                width: composition.render_settings.width,
+                height: composition.render_settings.height,
+                duration_frames: composition.timeline.duration_frames,
+                path: Some(format!("{}.font_family", text.id)),
+                graph: Some(&composition.graph),
+            };
+            let family = text.params.font_family.eval(text.id, "font_family", &ctx)?;
+            load_font_family(&mut *text_system()?, media, &family)?;
+        }
+    }
+    Ok(())
+}
+
 fn load_font_family(
     text_system: &mut lumen_text::TextSystem,
-    ctx: &FrameBindContext<'_>,
+    media: Option<&dyn MediaStore>,
     font_family: &str,
 ) -> crate::Result<()> {
     if font_family.is_empty() {
         return Ok(());
     }
-    let Some(store) = ctx.media() else {
+    let Some(store) = media else {
         return Ok(());
     };
 
