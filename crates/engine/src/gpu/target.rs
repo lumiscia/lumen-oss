@@ -46,8 +46,8 @@ impl GpuCompositionRenderer {
             queue: renderer.queue.clone(),
         });
         // SAFETY: The handles come from the wgpu device, which `render_queue` retains. wgpu's queue
-        // is in the render family, which `new_vulkan_video` lists without capabilities, and
-        // `render_queue` submits to it through wgpu.
+        // is in the render family, which `new_vulkan_video` lists with only graphics capabilities,
+        // and `render_queue` submits to it through wgpu.
         let device = unsafe { VulkanDevice::from_raw(&desc, render_queue) }.map_err(|error| {
             RenderError::Gpu {
                 details: error.to_string(),

@@ -101,8 +101,9 @@ pub struct VulkanDeviceDesc<'a> {
     pub physical_device: vk::PhysicalDevice,
     pub device: vk::Device,
     pub device_extensions: &'a [&'static CStr],
-    /// `(family index, queue count, capabilities)` for each queue family FFmpeg may use. FFmpeg
-    /// submits to queues of every family listed with capabilities.
+    /// `(family index, queue count, capabilities)` for each queue family frames may be used on.
+    /// Capabilities must be non-zero. FFmpeg submits to queues of the families listed with compute,
+    /// transfer or video capabilities.
     pub queue_families: &'a [(u32, u32, vk::QueueFlags)],
 }
 
@@ -156,9 +157,9 @@ impl VulkanDevice {
     /// # Safety
     ///
     /// The handles in `desc` must be valid and describe the device as created, and `render_queue`
-    /// must keep them alive. No listed queue family with capabilities may contain a queue that is
-    /// used outside FFmpeg, and `render_queue` must submit to a queue of a listed family as its
-    /// documentation requires.
+    /// must keep them alive. No queue family listed with compute, transfer or video capabilities may
+    /// contain a queue that is used outside FFmpeg, and `render_queue` must submit to a queue of a
+    /// listed family as its documentation requires.
     pub unsafe fn from_raw(
         desc: &VulkanDeviceDesc<'_>,
         render_queue: Arc<dyn VulkanRenderQueue>,

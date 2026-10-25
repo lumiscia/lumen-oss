@@ -89,11 +89,8 @@ pub fn raw_vulkan_device(device: &wgpu::Device) -> Result<vk::Device> {
 }
 
 /// Records raw commands with `record` into a wgpu command buffer and submits it through `queue`,
-/// so the submission takes wgpu's queue lock. It waits for and signals the given timeline
-/// semaphore values.
-///
-/// wgpu attaches the semaphores to the next submission on `queue`, so another thread submitting
-/// to `queue` concurrently can take them instead.
+/// so the submission takes wgpu's queue lock. The commands run once every `waits` value is reached,
+/// and the `signals` values are set once they have finished.
 ///
 /// # Safety
 ///
@@ -106,6 +103,24 @@ pub unsafe fn submit_raw_vulkan(
     waits: &[(vk::Semaphore, u64)],
     signals: &[(vk::Semaphore, u64)],
 ) -> Result<()> {
+    // wgpu attaches staged semaphores to whichever submission on `queue` comes next, which may be
+    // another thread's. So the waits happen on the host, and the signals are staged only once the
+    // commands are submitted: any submission that takes them comes later, and a semaphore signal
+    // covers all work earlier in submission order.
+    if !waits.is_empty() {
+        let (semaphores, values): (Vec<_>, Vec<_>) = waits.iter().copied().unzip();
+        let hal_device = unsafe { device.as_hal::<wgpu_hal::api::Vulkan>() }
+            .context("wgpu device is not a Vulkan device")?;
+        unsafe {
+            hal_device.raw_device().wait_semaphores(
+                &vk::SemaphoreWaitInfo::default()
+                    .semaphores(&semaphores)
+                    .values(&values),
+                u64::MAX,
+            )
+        }
+        .context("wait for Vulkan semaphores")?;
+    }
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("lumen raw Vulkan commands"),
     });
@@ -115,21 +130,17 @@ pub unsafe fn submit_raw_vulkan(
         })
     }
     .context("wgpu command encoder is not a Vulkan encoder")?;
-    {
-        let hal_queue = unsafe { queue.as_hal::<wgpu_hal::api::Vulkan>() }
-            .context("wgpu queue is not a Vulkan queue")?;
-        for &(semaphore, value) in waits {
-            hal_queue.add_wait_semaphore(
-                semaphore,
-                Some(value),
-                vk::PipelineStageFlags::ALL_COMMANDS,
-            );
-        }
-        for &(semaphore, value) in signals {
-            hal_queue.add_signal_semaphore(semaphore, Some(value));
-        }
-    }
     queue.submit([encoder.finish()]);
+    if !signals.is_empty() {
+        {
+            let hal_queue = unsafe { queue.as_hal::<wgpu_hal::api::Vulkan>() }
+                .context("wgpu queue is not a Vulkan queue")?;
+            for &(semaphore, value) in signals {
+                hal_queue.add_signal_semaphore(semaphore, Some(value));
+            }
+        }
+        queue.submit([]);
+    }
     Ok(())
 }
 
@@ -211,8 +222,8 @@ fn open_video_device(
     av1_encode.p_next = std::ptr::null_mut();
 
     let families = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
-    // wgpu-hal renders on queue 0 of family 0. FFmpeg submits to every queue of the families it is
-    // given capabilities for, so it only gets other families.
+    // wgpu-hal renders on queue 0 of family 0, so FFmpeg's compute, transfer and encode work goes
+    // to other families.
     let find_family = |wanted: vk::QueueFlags| {
         families
             .iter()
@@ -231,9 +242,10 @@ fn open_video_device(
     // FFmpeg prepares and transfers frames on a compute queue.
     let compute = find_family(vk::QueueFlags::COMPUTE)
         .context("Vulkan device has no compute queue family separate from the render family")?;
-    // The render family has no capabilities, so FFmpeg's frames can be used on wgpu's queue but
-    // FFmpeg never submits to it.
-    let mut queue_families = vec![(0, 1, vk::QueueFlags::empty())];
+    // Listing the render family lets FFmpeg's frames be used on wgpu's queue. FFmpeg's hwcontext
+    // and Vulkan Video encoders pick submit queues by compute, transfer or encode capabilities, so
+    // they never submit to it.
+    let mut queue_families = vec![(0, 1, vk::QueueFlags::GRAPHICS)];
     for (index, count, flags) in [
         (
             compute.0,
@@ -302,4 +314,90 @@ fn open_video_device(
     }
     .context("create Vulkan device with video encode queues")?;
     Ok((open_device, queue_families))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::*;
+
+    #[test]
+    fn competing_submits_cannot_signal_before_raw_commands() {
+        let (renderer, _) = match pollster::block_on(Renderer::new_vulkan_video()) {
+            Ok(created) => created,
+            Err(error) => {
+                eprintln!("Vulkan Video unavailable ({error:#}); skipping");
+                return;
+            }
+        };
+        let raw = unsafe { renderer.device.as_hal::<wgpu_hal::api::Vulkan>() }
+            .expect("Vulkan device")
+            .raw_device()
+            .clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let competitor = {
+            let queue = renderer.queue.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    queue.submit([]);
+                }
+            })
+        };
+
+        let mut early_signals = 0;
+        for _ in 0..200 {
+            let mut timeline =
+                vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE);
+            let semaphore = unsafe {
+                raw.create_semaphore(
+                    &vk::SemaphoreCreateInfo::default().push_next(&mut timeline),
+                    None,
+                )
+            }
+            .expect("create semaphore");
+            let event = unsafe { raw.create_event(&vk::EventCreateInfo::default(), None) }
+                .expect("create event");
+            // The raw commands cannot finish until the host sets `event`.
+            unsafe {
+                submit_raw_vulkan(
+                    &renderer.device,
+                    &renderer.queue,
+                    |command_buffer| {
+                        raw.cmd_wait_events(
+                            command_buffer,
+                            &[event],
+                            vk::PipelineStageFlags::HOST,
+                            vk::PipelineStageFlags::ALL_COMMANDS,
+                            &[],
+                            &[],
+                            &[],
+                        )
+                    },
+                    &[(semaphore, 0)],
+                    &[(semaphore, 1)],
+                )
+            }
+            .expect("submit raw commands");
+            if unsafe { raw.get_semaphore_counter_value(semaphore) }.expect("read semaphore") != 0 {
+                early_signals += 1;
+            }
+            unsafe { raw.set_event(event) }.expect("set event");
+            renderer
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("wait for raw commands");
+            unsafe {
+                raw.destroy_event(event, None);
+                raw.destroy_semaphore(semaphore, None);
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        competitor.join().expect("competitor thread");
+        assert_eq!(early_signals, 0, "the signal ran ahead of the raw commands");
+    }
 }
