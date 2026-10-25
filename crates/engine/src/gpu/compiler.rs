@@ -174,8 +174,8 @@ impl<'a> CompileContext<'a> {
     /// Records the uniform holding a raster's logical bounds (`origin: vec2<i32>`,
     /// `size: vec2<u32>`), written every frame, within its storage texture.
     ///
-    /// Bounds are looked up by texture, so only a consumer wired directly to the publishing node
-    /// sees them. Nodes between the two produce new textures and do not forward them.
+    /// Bounds are looked up by texture, so they survive nodes that pass the same texture through
+    /// and stop at any node that writes a new texture.
     pub(crate) fn publish_raster_bounds(
         &mut self,
         texture: lumen_gpu::TextureId,
