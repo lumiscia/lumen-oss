@@ -7,9 +7,8 @@ use crate::gpu::{
 
 use super::gaussian;
 
-pub(crate) const SHADER: &str = concat!(
+const COMPOSITE_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
-    include_str!("gaussian.wgsl"),
     include_str!("shadow.wgsl")
 );
 
@@ -80,23 +79,65 @@ impl GpuCompileNode for Shadow {
         let source = ctx
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
-        let passes = gaussian::compile_passes(
-            ctx,
-            self.id,
-            "shadow",
-            SHADER,
-            source.texture,
-            source.domain.storage_size,
-            std::mem::size_of::<compiler::ShadowParams>() as u64,
+        let size = source.domain.storage_size;
+        let blurred = gaussian::compile_passes(ctx, self.id, "shadow", source.texture, size);
+        let owner = lumen_gpu::NodeKey(self.id.0);
+        let builder = ctx.builder_mut();
+        let output = builder.texture_for(
+            owner,
+            Some(format!("shadow:{}:output", self.id.0)),
+            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        );
+        let params = builder.buffer_for(
+            owner,
+            Some(format!("shadow:{}:params", self.id.0)),
+            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ShadowParams>() as u64),
+        );
+        let stage = lumen_gpu::wgpu::ShaderStages::COMPUTE;
+        let program = builder.program_for(
+            owner,
+            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+                label: Some("shadow-composite".to_string()),
+                shader: COMPOSITE_SHADER.to_string(),
+                entry: "composite_main".to_string(),
+                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
+                    lumen_gpu::BindingLayoutEntry::texture(0, stage),
+                    lumen_gpu::BindingLayoutEntry::texture(1, stage),
+                    lumen_gpu::BindingLayoutEntry::uniform(2, stage),
+                    lumen_gpu::BindingLayoutEntry::storage_texture(
+                        3,
+                        stage,
+                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+                    ),
+                ]),
+            }),
+        );
+        builder.compute_pass(lumen_gpu::ComputePassDesc {
+            label: Some(format!("shadow:{}:composite", self.id.0)),
+            owner: Some(owner),
+            program,
+            bindings: vec![
+                lumen_gpu::Binding::sampled_texture(0, 0, blurred.output),
+                lumen_gpu::Binding::sampled_texture(0, 1, source.texture),
+                lumen_gpu::Binding::uniform(0, 2, params),
+                lumen_gpu::Binding::storage_texture(0, 3, output),
+            ],
+            dispatch: compiler::dispatch_for(size).into(),
+        });
+        builder.param(
+            lumen_gpu::ParamKey { owner, slot: 1 },
+            lumen_gpu::ParamTarget::Buffer(params),
         );
         ctx.register_compiled_node(CompiledShadow {
             node_id: self.id,
             params: self.params.clone(),
-            buffer: passes.params,
+            blurred,
+            buffer: params,
             straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
-            texture: passes.output,
+            texture: output,
             domain: source.domain,
             metadata: RasterMetadata {
                 alpha_mode: AlphaMode::Premultiplied,
@@ -110,6 +151,7 @@ impl GpuCompileNode for Shadow {
 struct CompiledShadow {
     node_id: NodeId,
     params: ShadowParamsDelegate,
+    blurred: gaussian::GaussianPasses,
     buffer: lumen_gpu::BufferId,
     straight_source: bool,
 }
@@ -127,6 +169,15 @@ impl GpuCompiledNode for CompiledShadow {
         let color = evaluated.color.to_gpu([0, 0, 0, 255]).colors[0];
         // The color alpha is folded into the opacity so `color.w` can carry the
         // source's straight-alpha flag.
+        self.blurred.write(
+            bound,
+            &gaussian::GaussianSettings {
+                radius: evaluated.radius,
+                straight_source: self.straight_source,
+                transparent_edge: true,
+                offset: [evaluated.offset_x, evaluated.offset_y],
+            },
+        );
         let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * color[3];
         let gpu_params = compiler::ShadowParams {
             color: [
@@ -135,12 +186,7 @@ impl GpuCompiledNode for CompiledShadow {
                 color[2],
                 if self.straight_source { 1.0 } else { 0.0 },
             ],
-            values: [
-                evaluated.offset_x as f32,
-                evaluated.offset_y as f32,
-                gaussian::sigma_for_radius(evaluated.radius),
-                opacity,
-            ],
+            values: [0.0, 0.0, 0.0, opacity],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())

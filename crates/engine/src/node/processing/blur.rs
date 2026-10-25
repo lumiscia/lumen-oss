@@ -2,16 +2,10 @@ use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    RasterHandle, RasterMetadata,
 };
 
 use super::gaussian;
-
-pub(crate) const SHADER: &str = concat!(
-    include_str!("../../gpu/shaders/alpha.wgsl"),
-    include_str!("gaussian.wgsl"),
-    include_str!("blur.wgsl")
-);
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct BlurParams {
@@ -51,7 +45,7 @@ impl Default for Blur {
 struct CompiledBlur {
     node_id: NodeId,
     params: BlurParamsDelegate,
-    buffer: lumen_gpu::BufferId,
+    passes: gaussian::GaussianPasses,
     straight_source: bool,
 }
 
@@ -65,15 +59,15 @@ impl GpuCompiledNode for CompiledBlur {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
-        let params = compiler::BlurParams {
-            values: [
-                gaussian::sigma_for_radius(params.radius),
-                if self.straight_source { 1.0 } else { 0.0 },
-                0.0,
-                0.0,
-            ],
-        };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        self.passes.write(
+            bound,
+            &gaussian::GaussianSettings {
+                radius: params.radius,
+                straight_source: self.straight_source,
+                transparent_edge: false,
+                offset: [0.0; 2],
+            },
+        );
         Ok(())
     }
 }
@@ -95,19 +89,18 @@ impl GpuCompileNode for Blur {
             ctx,
             self.id,
             "blur",
-            SHADER,
             source.texture,
             source.domain.storage_size,
-            std::mem::size_of::<compiler::BlurParams>() as u64,
         );
+        let output = passes.output;
         ctx.register_compiled_node(CompiledBlur {
             node_id: self.id,
             params: self.params.clone(),
-            buffer: passes.params,
+            passes,
             straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
-            texture: passes.output,
+            texture: output,
             domain: source.domain,
             metadata: RasterMetadata {
                 alpha_mode: AlphaMode::Premultiplied,

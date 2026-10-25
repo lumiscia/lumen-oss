@@ -4060,3 +4060,66 @@ fn blur_of_antialiased_edge_has_no_dark_fringe() {
         }
     }
 }
+
+/// Mass and per-axis variance of the alpha along a row of the canvas.
+fn row_alpha_moments(pixels: &[u8], canvas: u32, row: u32, center: u32) -> (f32, f32) {
+    let mut mass = 0.0;
+    let mut second_moment = 0.0;
+    for x in 0..canvas {
+        let alpha = alpha_at(pixels, canvas, x, row);
+        let distance = x as f32 - center as f32;
+        mass += alpha;
+        second_moment += alpha * distance * distance;
+    }
+    (mass, second_moment / mass)
+}
+
+#[test]
+fn blur_small_radii_match_the_box_blur_they_replaced() {
+    for radius in [1u32, 2] {
+        let pixels = blur_square(32, (1, 16.0), f64::from(radius), false, false);
+        if pixels.is_empty() {
+            return;
+        }
+        // A (2r + 1)^2 box blur spreads a single white pixel evenly over the box.
+        let side = 2 * radius + 1;
+        let box_variance = (radius * (radius + 1)) as f32 / 3.0;
+        let box_center_alpha = 255.0 / (side * side) as f32;
+        let (mass, variance) = row_alpha_moments(&pixels, 32, 16, 16);
+        let center_alpha = alpha_at(&pixels, 32, 16, 16);
+        let total: f32 = pixels
+            .chunks_exact(4)
+            .map(|pixel| f32::from(pixel[3]))
+            .sum();
+        assert!(
+            (variance - box_variance).abs() <= 0.15 * box_variance,
+            "radius {radius}: variance along x must match the box blur's {box_variance}, got {variance}"
+        );
+        assert!(
+            (total - 255.0).abs() <= 8.0,
+            "radius {radius}: blur must preserve the impulse's alpha, got {total}"
+        );
+        assert!(
+            center_alpha > box_center_alpha && center_alpha < 3.0 * box_center_alpha,
+            "radius {radius}: centre alpha {center_alpha} must stay near the box blur's {box_center_alpha} (row mass {mass})"
+        );
+    }
+}
+
+#[test]
+fn blur_has_no_pop_where_the_reduced_levels_take_over() {
+    // The blur switches to a reduced copy at sigma 20 (radius ~34.15) and sigma 80 (radius ~138.0).
+    for (below, above) in [(34.0, 34.3), (137.5, 138.5)] {
+        let canvas = 512;
+        let a = blur_square(canvas, (128, 192.0), below, false, false);
+        let b = blur_square(canvas, (128, 192.0), above, false, false);
+        if a.is_empty() || b.is_empty() {
+            return;
+        }
+        let worst = a.iter().zip(&b).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        assert!(
+            worst <= 3,
+            "radius {below} -> {above} must not visibly change the output, got a difference of {worst}"
+        );
+    }
+}
