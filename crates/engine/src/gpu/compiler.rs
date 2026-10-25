@@ -125,7 +125,6 @@ impl<'a> CompileContext<'a> {
             // error remains typed, so return the first one before traversing any graph edges.
             return Err(errors.remove(0));
         }
-        crate::node::source::text::preload_text_fonts(self.composition, self.media, self.frame)?;
         let output_node = self.media_output_node()?;
         let output_ref = PortRef::new(output_node, "output".to_string());
         let output = self
@@ -519,6 +518,7 @@ impl<'a> CompileContext<'a> {
             duration_frames: self.composition.timeline.duration_frames,
             path: Some(format!("{node_id}.{property_path}")),
             graph: Some(&self.composition.graph),
+            media: self.media,
         }
     }
 

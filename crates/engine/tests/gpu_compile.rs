@@ -1631,6 +1631,7 @@ fn text_rejects_stale_upload_after_atlas_slot_reuse() {
             params: TextParamsDelegate {
                 content: Deferred::Expr(Expression::parse("if(frame == 0, \"W\", \"M\")").unwrap()),
                 font_size: Deferred::value(2000.0),
+                position: Deferred::value((0.0, -400.0)),
                 ..Default::default()
             },
         }),
@@ -1642,7 +1643,9 @@ fn text_rejects_stale_upload_after_atlas_slot_reuse() {
             source: PortRef::new(text, "output".to_string()),
         }),
     );
-    let composition = test_composition(graph);
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 512;
+    composition.render_settings.height = 512;
     let older = renderer
         .bind_frame(&composition, 0, &EmptyMediaStore)
         .unwrap();
@@ -1652,6 +1655,8 @@ fn text_rejects_stale_upload_after_atlas_slot_reuse() {
     assert!(older.texture_upload_count() > 0);
     assert!(current.texture_upload_count() > 0);
     renderer.upload_bound_frame(&current).unwrap();
+    let expected = render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
+    assert!(expected.chunks_exact(4).any(|pixel| pixel[3] > 0));
     let error = renderer.upload_bound_frame(&older).unwrap_err();
     assert!(error.to_string().contains("stale bound text frame"));
     let rebound = renderer
@@ -1659,6 +1664,153 @@ fn text_rejects_stale_upload_after_atlas_slot_reuse() {
         .unwrap();
     assert_eq!(rebound.texture_upload_count(), 0);
     renderer.submit_bound_frame(&rebound).unwrap();
+    assert_eq!(
+        render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore),
+        expected
+    );
+}
+
+#[test]
+fn text_measurement_loads_time_remapped_family_on_first_bind() {
+    #[derive(Debug, Clone)]
+    struct FontStore(Vec<u8>);
+
+    impl lumen_engine::media::FontResolver for FontStore {
+        fn id(&self) -> &str {
+            "remapped-text-test"
+        }
+
+        fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+            Ok(vec![self.0.clone()])
+        }
+    }
+
+    impl MediaStore for FontStore {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+            None
+        }
+
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            None
+        }
+
+        fn get_font_resolver(
+            &self,
+            family: &str,
+        ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+            (family == "RemapX").then(|| Box::new(self.clone()) as _)
+        }
+    }
+
+    // Give the fixture a unique family and half-size metrics to distinguish fallback.
+    let mut font = lumen_text::ROBOTO_REGULAR_BYTES.to_vec();
+    for (old, new) in [
+        (b"Roboto".as_slice(), b"RemapX".as_slice()),
+        (
+            b"\0R\0o\0b\0o\0t\0o".as_slice(),
+            b"\0R\0e\0m\0a\0p\0X".as_slice(),
+        ),
+    ] {
+        for offset in 0..=font.len() - old.len() {
+            if &font[offset..offset + old.len()] == old {
+                font[offset..offset + old.len()].copy_from_slice(new);
+            }
+        }
+    }
+    let table_count = u16::from_be_bytes(font[4..6].try_into().unwrap()) as usize;
+    let head = font[12..12 + table_count * 16]
+        .chunks_exact(16)
+        .find(|table| &table[..4] == b"head")
+        .unwrap();
+    let units_offset = u32::from_be_bytes(head[8..12].try_into().unwrap()) as usize + 18;
+    let units = u16::from_be_bytes(font[units_offset..units_offset + 2].try_into().unwrap());
+    font[units_offset..units_offset + 2].copy_from_slice(&(units * 2).to_be_bytes());
+    let store = FontStore(font.clone());
+    let mut request = lumen_text::TextLayoutRequest::new("WWW");
+    request.font_family = "RemapX".to_string();
+    request.font_size = 32.0;
+    let mut reference = lumen_text::TextSystem::new();
+    let fallback_width = reference.measure(&request).width;
+    reference.load_font_data(font);
+    let expected_width = reference.measure(&request).width;
+    assert!(expected_width < fallback_width * 0.75);
+
+    let text = NodeId::new(1);
+    let remap = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::value("WWW".to_string()),
+                font_family: Deferred::Expr(
+                    Expression::parse("if(frame == 1, \"RemapX\", \"Roboto\")").unwrap(),
+                ),
+                font_size: Deferred::value(32.0),
+                position: Deferred::Expr(
+                    Expression::parse("vec2(text_width(node(1)), text_height(node(1)))").unwrap(),
+                ),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        remap,
+        NodeKind::TimeRemap(TimeRemap {
+            id: remap,
+            source: PortRef::new(text, "output".to_string()),
+            params: TimeRemapParamsDelegate {
+                frame: Deferred::value(1.0),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(remap, "output".to_string()),
+        }),
+    );
+    let composition = test_composition(graph);
+    let compiled = CompileContext::with_media(
+        &composition,
+        &store,
+        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+    )
+    .compile()
+    .unwrap();
+    let bind = || {
+        FrameBindContext::with_media(&composition, 0, &store)
+            .bind(&compiled)
+            .unwrap()
+    };
+    let first = bind();
+    let second = bind();
+    let instance_buffer = compiled
+        .plan
+        .buffers()
+        .iter()
+        .find(|buffer| buffer.label.as_deref() == Some("text:1:instances"))
+        .unwrap()
+        .id;
+    let first_rect = |bound: &lumen_engine::gpu::BoundFrame| -> [f32; 4] {
+        bound
+            .frame_update()
+            .uploads()
+            .iter()
+            .find_map(|upload| match upload {
+                lumen_gpu::Upload::Buffer { id, data, .. } if *id == instance_buffer => {
+                    Some(bytemuck::pod_read_unaligned(&data[..16]))
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(first_rect(&first), first_rect(&second));
+    assert!((first_rect(&first)[0] - expected_width).abs() < 3.0);
 }
 
 #[test]

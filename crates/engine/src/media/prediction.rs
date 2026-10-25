@@ -273,6 +273,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
             duration_frames: self.composition.timeline.duration_frames,
             path: Some(path.to_string()),
             graph: Some(&self.composition.graph),
+            media: Some(self.media_store),
         }
     }
 }

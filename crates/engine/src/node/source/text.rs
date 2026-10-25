@@ -7,14 +7,10 @@ use std::{
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 
-use crate::composition::Composition;
 use crate::error::{LumenError, RenderError};
-use crate::expr::ExpressionContext;
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::media::MediaStore;
-use crate::node::{
-    Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint,
-};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
@@ -436,42 +432,7 @@ pub(crate) fn text_system() -> crate::Result<std::sync::MutexGuard<'static, lume
         })
 }
 
-pub(crate) fn preload_text_fonts(
-    composition: &Composition,
-    media: Option<&dyn MediaStore>,
-    frame: u32,
-) -> crate::Result<()> {
-    if media.is_none() {
-        return Ok(());
-    }
-    for node in composition.graph.nodes.values() {
-        if let NodeKind::Text(text) = node
-            && let Deferred::Value(family) = &text.params.font_family
-        {
-            load_font_family(&mut *text_system()?, media, family)?;
-        }
-    }
-    for node in composition.graph.nodes.values() {
-        if let NodeKind::Text(text) = node
-            && matches!(text.params.font_family, Deferred::Expr(_))
-        {
-            let ctx = ExpressionContext {
-                frame,
-                fps: composition.timeline.fps,
-                width: composition.render_settings.width,
-                height: composition.render_settings.height,
-                duration_frames: composition.timeline.duration_frames,
-                path: Some(format!("{}.font_family", text.id)),
-                graph: Some(&composition.graph),
-            };
-            let family = text.params.font_family.eval(text.id, "font_family", &ctx)?;
-            load_font_family(&mut *text_system()?, media, &family)?;
-        }
-    }
-    Ok(())
-}
-
-fn load_font_family(
+pub(crate) fn load_font_family(
     text_system: &mut lumen_text::TextSystem,
     media: Option<&dyn MediaStore>,
     font_family: &str,

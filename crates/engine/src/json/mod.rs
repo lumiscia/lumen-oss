@@ -367,6 +367,7 @@ mod tests {
                 duration_frames: 48,
                 path: Some("1.position".to_string()),
                 graph: Some(&composition.graph),
+                media: None,
             };
 
             assert_eq!(

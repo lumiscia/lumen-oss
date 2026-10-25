@@ -264,6 +264,7 @@ mod tests {
             duration_frames: 240,
             path: Some("node.opacity".to_string()),
             graph: None,
+            media: None,
         }
     }
 

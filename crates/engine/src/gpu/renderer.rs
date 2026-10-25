@@ -74,7 +74,7 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        let key = self.compiled_plan_key(composition, 0)?;
+        let key = self.compiled_plan_key(composition, 0, None)?;
         let compiled = CompileContext::with_frame(composition, 0, output_format).compile()?;
         self.prepare_compiled(key, compiled)
     }
@@ -211,7 +211,6 @@ impl GpuCompositionRenderer {
     ) -> crate::Result<(RasterHandle, lumen_gpu::wgpu::SubmissionIndex)> {
         let span = tracing::trace_span!(target: "lumen_render", "render frame", frame);
         let _entered = span.enter();
-        self.ensure_compiled_for_frame(composition, frame, Some(media))?;
         let bound = self.bind_frame(composition, frame, media)?;
         tracing::trace!(
             target: "lumen_render",
@@ -233,7 +232,6 @@ impl GpuCompositionRenderer {
     ) -> crate::Result<lumen_gpu::SubmittedExternalTexture> {
         let span = tracing::trace_span!(target: "lumen_render", "render frame into external texture", frame);
         let _entered = span.enter();
-        self.ensure_compiled_for_frame(composition, frame, Some(media))?;
         let bound = self.bind_frame(composition, frame, media)?;
         self.upload_bound_frame(&bound)?;
         let prepared = self.active_prepared_mut()?;
@@ -533,12 +531,11 @@ impl GpuCompositionRenderer {
         frame: u32,
         media: Option<&M>,
     ) -> crate::Result<()> {
-        crate::node::source::text::preload_text_fonts(
+        let key = self.compiled_plan_key(
             composition,
-            media.map(|store| store as &dyn MediaStore),
             frame,
+            media.map(|store| store as &dyn MediaStore),
         )?;
-        let key = self.compiled_plan_key(composition, frame)?;
         if self.active_key.as_ref() == Some(&key) {
             tracing::trace!(target: "lumen_render", frame, "reuse active compiled plan");
             return Ok(());
@@ -574,11 +571,19 @@ impl GpuCompositionRenderer {
         &self,
         composition: &Composition,
         frame: u32,
+        media: Option<&dyn MediaStore>,
     ) -> crate::Result<CompiledPlanKey> {
         let mut selections = Vec::new();
         let mut visited = std::collections::HashSet::new();
         let output = self.media_output_port(composition)?;
-        self.collect_plan_key(composition, &output, frame, &mut visited, &mut selections)?;
+        self.collect_plan_key(
+            composition,
+            &output,
+            frame,
+            media,
+            &mut visited,
+            &mut selections,
+        )?;
         selections.sort_by_key(|(node_id, _)| node_id.0);
         selections.dedup();
         Ok(CompiledPlanKey(selections))
@@ -589,6 +594,7 @@ impl GpuCompositionRenderer {
         composition: &Composition,
         port: &PortRef,
         frame: u32,
+        media: Option<&dyn MediaStore>,
         visited: &mut std::collections::HashSet<(NodeId, u32)>,
         selections: &mut Vec<(NodeId, Option<usize>)>,
     ) -> crate::Result<()> {
@@ -604,11 +610,13 @@ impl GpuCompositionRenderer {
                 composition,
                 &media_output.source,
                 frame,
+                media,
                 visited,
                 selections,
             ),
             NodeKind::TimeRemap(time_remap) => {
-                let ctx = self.expression_context(composition, frame, time_remap.id, "params");
+                let ctx =
+                    self.expression_context(composition, frame, media, time_remap.id, "params");
                 let params = time_remap.params.eval(&NodeParamEvalContext {
                     node_id: time_remap.id,
                     expr: &ctx,
@@ -625,17 +633,19 @@ impl GpuCompositionRenderer {
                     composition,
                     &time_remap.source,
                     target_frame,
+                    media,
                     visited,
                     selections,
                 )
             }
             NodeKind::Switch(switch) => {
-                let ctx = self.expression_context(composition, frame, switch.id, "selected_layer");
+                let ctx =
+                    self.expression_context(composition, frame, media, switch.id, "selected_layer");
                 let selection =
                     crate::node::compositing::switch::selected_layer_for_frame(switch, &ctx)?;
                 selections.push((switch.id, selection));
                 if let Some(layer) = selection.and_then(|index| switch.layers.get(index)) {
-                    self.collect_plan_key(composition, layer, frame, visited, selections)?;
+                    self.collect_plan_key(composition, layer, frame, media, visited, selections)?;
                 }
                 Ok(())
             }
@@ -649,7 +659,7 @@ impl GpuCompositionRenderer {
                         PortRef::new(connection.from_node, connection.from_port.clone())
                     })
                 {
-                    self.collect_plan_key(composition, &input, frame, visited, selections)?;
+                    self.collect_plan_key(composition, &input, frame, media, visited, selections)?;
                 }
                 Ok(())
             }
@@ -679,6 +689,7 @@ impl GpuCompositionRenderer {
         &self,
         composition: &'a Composition,
         frame: u32,
+        media: Option<&'a dyn MediaStore>,
         node_id: NodeId,
         property_path: &str,
     ) -> crate::expr::ExpressionContext<'a> {
@@ -690,6 +701,7 @@ impl GpuCompositionRenderer {
             duration_frames: composition.timeline.duration_frames,
             path: Some(format!("{node_id}.{property_path}")),
             graph: Some(&composition.graph),
+            media,
         }
     }
 }

@@ -752,6 +752,7 @@ mod tests {
             duration_frames: 240,
             path: Some("4.position".to_string()),
             graph: None,
+            media: None,
         }
     }
 

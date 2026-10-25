@@ -324,15 +324,18 @@ pub fn evaluate_text_measure_builtin(
         })
         .transpose()?
         .unwrap_or_else(|| "sans-serif".to_string());
-    let measurement = measure_text_value(layout_request(
-        text,
-        font_family,
-        font_size as f32,
-        400,
-        TextFontStyle::Normal,
-        max_width as f32,
-        TextAlignmentHorizontal::Left,
-    ))?;
+    let measurement = measure_text_value(
+        ctx,
+        layout_request(
+            text,
+            font_family,
+            font_size as f32,
+            400,
+            TextFontStyle::Normal,
+            max_width as f32,
+            TextAlignmentHorizontal::Left,
+        ),
+    )?;
     Ok(ExpressionValue::Number(match builtin {
         BuiltinFn::TextHeight => f64::from(measurement.height),
         BuiltinFn::TextWidth => f64::from(measurement.width),
@@ -380,15 +383,18 @@ fn measure_text_node(
             property_path: "alignment_horizontal",
             expr: ctx,
         })?;
-    measure_text_value(layout_request(
-        content,
-        font_family,
-        font_size,
-        font_weight,
-        font_style,
-        max_width,
-        alignment_horizontal,
-    ))
+    measure_text_value(
+        ctx,
+        layout_request(
+            content,
+            font_family,
+            font_size,
+            font_weight,
+            font_style,
+            max_width,
+            alignment_horizontal,
+        ),
+    )
 }
 
 thread_local! {
@@ -423,9 +429,12 @@ impl Drop for TextMeasurementGuard {
 }
 
 fn measure_text_value(
+    ctx: &ExpressionContext<'_>,
     request: lumen_text::TextLayoutRequest,
 ) -> crate::Result<lumen_text::TextMeasurement> {
-    Ok(crate::node::source::text::text_system()?.measure(&request))
+    let mut text_system = crate::node::source::text::text_system()?;
+    crate::node::source::text::load_font_family(&mut text_system, ctx.media, &request.font_family)?;
+    Ok(text_system.measure(&request))
 }
 
 fn text_measure_error(ctx: &ExpressionContext<'_>, details: String) -> LumenError {
