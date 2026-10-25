@@ -8,7 +8,7 @@ use crate::{
     node::{NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
 };
 
-use super::{BoundFrame, CompiledComposition, FramePortRef};
+use super::{BoundFrame, CompiledComposition, FramePortRef, TimeRemapPath};
 
 #[derive(Debug)]
 pub struct FrameBindContext<'a> {
@@ -48,7 +48,15 @@ impl<'a> FrameBindContext<'a> {
         let mut bound = BoundFrame::new();
         let output = media_output_port(self.composition)?;
         let mut visited = HashSet::new();
-        self.bind_port(compiled, &output, self.frame, &mut visited, &mut bound)?;
+        let mut time_remaps = TimeRemapPath::new();
+        self.bind_port(
+            compiled,
+            &output,
+            self.frame,
+            &mut time_remaps,
+            &mut visited,
+            &mut bound,
+        )?;
         Ok(bound)
     }
 
@@ -57,10 +65,11 @@ impl<'a> FrameBindContext<'a> {
         compiled: &CompiledComposition,
         port: &PortRef,
         frame: u32,
-        visited: &mut HashSet<FramePortRef>,
+        time_remaps: &mut TimeRemapPath,
+        visited: &mut HashSet<(PortRef, TimeRemapPath)>,
         bound: &mut BoundFrame,
     ) -> crate::Result<()> {
-        if port.is_empty() || !visited.insert(FramePortRef::new(port.clone(), frame)) {
+        if port.is_empty() || !visited.insert((port.clone(), time_remaps.clone())) {
             return Ok(());
         }
 
@@ -75,11 +84,29 @@ impl<'a> FrameBindContext<'a> {
             })?;
 
         let frame_ctx = self.with_frame(frame);
+        let is_time_remap = matches!(node, NodeKind::TimeRemap(_));
+        if is_time_remap {
+            time_remaps.push(port.id);
+        }
         for input in frame_ctx.frame_inputs(node)? {
-            self.bind_port(compiled, &input.port, input.frame, visited, bound)?;
+            self.bind_port(
+                compiled,
+                &input.port,
+                input.frame,
+                time_remaps,
+                visited,
+                bound,
+            )?;
+        }
+        if is_time_remap {
+            time_remaps.pop();
         }
 
-        if let Some(compiled_node) = compiled.compiled_nodes.get(&port.id) {
+        if let Some(compiled_node) = compiled
+            .compiled_nodes
+            .get(&port.id)
+            .and_then(|instances| instances.get(time_remaps.as_slice()))
+        {
             tracing::trace!(
                 target: "lumen_bind",
                 frame = self.frame,

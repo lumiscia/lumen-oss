@@ -961,6 +961,105 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
 }
 
 #[test]
+fn time_remap_binds_shared_source_once_per_frame_branch() {
+    let solid_id = NodeId::new(1);
+    let exposure = NodeId::new(2);
+    let time_remap = NodeId::new(3);
+    let merge = NodeId::new(4);
+    let output = NodeId::new(5);
+    let exposure_ref = PortRef::new(exposure, "output".to_string());
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(solid_id, solid(solid_id, [64, 128, 255, 255]));
+    graph.nodes.insert(
+        exposure,
+        NodeKind::Exposure(Exposure {
+            id: exposure,
+            params: ExposureParamsDelegate {
+                exposure: Deferred::Expr(lumen_engine::expr::Expression::parse("frame").unwrap()),
+                contrast: Deferred::value(1.0),
+                offset: Deferred::value(0.0),
+            },
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        time_remap,
+        NodeKind::TimeRemap(TimeRemap {
+            id: time_remap,
+            params: TimeRemapParamsDelegate {
+                frame: Deferred::value(8.0),
+                loop_enabled: Deferred::value(false),
+                loop_start: Deferred::value(0),
+                loop_end: Deferred::value(0),
+                ..Default::default()
+            },
+            source: exposure_ref.clone(),
+        }),
+    );
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            base: exposure_ref,
+            overlay: PortRef::new(time_remap, "output".to_string()),
+            ..Merge::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let compiled =
+        CompileContext::with_frame(&composition, 2, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+            .compile()
+            .unwrap();
+    let exposure_buffers = compiled
+        .plan
+        .params()
+        .iter()
+        .filter_map(|param| match param.target {
+            lumen_gpu::ParamTarget::Buffer(buffer)
+                if param.key.owner == lumen_gpu::NodeKey(exposure.0) =>
+            {
+                Some(buffer)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(exposure_buffers.len(), 2);
+
+    // Bind at a different frame than the compile frame, as cached plans are reused across frames.
+    let bound = FrameBindContext::new(&composition, 3)
+        .bind(&compiled)
+        .unwrap();
+    let update = bound.frame_update();
+    let mut exposure_values = exposure_buffers
+        .iter()
+        .map(|buffer| {
+            let data = update
+                .uploads()
+                .iter()
+                .find_map(|upload| match upload {
+                    lumen_gpu::Upload::Buffer { id, data, .. } if id == buffer => Some(*data),
+                    _ => None,
+                })
+                .expect("every exposure instance must be bound");
+            f32::from_ne_bytes(data[0..4].try_into().unwrap())
+        })
+        .collect::<Vec<_>>();
+    exposure_values.sort_by(f32::total_cmp);
+
+    assert_eq!(exposure_values, [3.0, 8.0]);
+}
+
+#[test]
 fn opacity_compiles_and_binds_animated_multiplier() {
     let solid_id = NodeId::new(1);
     let opacity = NodeId::new(2);

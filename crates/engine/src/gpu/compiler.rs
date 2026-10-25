@@ -6,7 +6,7 @@ use crate::{
     expr::ExpressionContext,
     gpu::{
         BoundFrame, CompiledComposition, CompiledOutput, FrameBindContext, GpuCompiledNode,
-        RasterHandle, RasterMetadata,
+        RasterHandle, RasterMetadata, TimeRemapPath,
     },
     media::MediaStore,
     node::{Deferred, NodeId, NodeKind, PortRef},
@@ -44,36 +44,22 @@ pub trait GpuCompileNode {
     ) -> crate::Result<CompiledOutput>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct CompiledPortKey {
     port: PortRef,
-    frame: u32,
-}
-
-impl PartialEq for CompiledPortKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.frame == other.frame && self.port == other.port
-    }
-}
-
-impl Eq for CompiledPortKey {}
-
-impl std::hash::Hash for CompiledPortKey {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.port.hash(state);
-        self.frame.hash(state);
-    }
+    time_remaps: TimeRemapPath,
 }
 
 #[derive(Debug)]
 pub struct CompileContext<'a> {
     composition: &'a Composition,
     frame: u32,
+    time_remaps: TimeRemapPath,
     media: Option<&'a dyn MediaStore>,
     builder: lumen_gpu::RenderPlanBuilder,
     outputs: HashMap<CompiledPortKey, CompiledOutput>,
     public_outputs: HashMap<PortRef, CompiledOutput>,
-    compiled_nodes: HashMap<NodeId, Box<dyn GpuCompiledNode>>,
+    compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
 }
 
@@ -123,6 +109,7 @@ impl<'a> CompileContext<'a> {
         Self {
             composition,
             frame,
+            time_remaps: TimeRemapPath::new(),
             media,
             builder: lumen_gpu::RenderPlan::builder(),
             outputs: HashMap::new(),
@@ -171,13 +158,16 @@ impl<'a> CompileContext<'a> {
     where
         N: GpuCompiledNode + 'static,
     {
-        self.compiled_nodes.insert(node.node_id(), Box::new(node));
+        self.compiled_nodes
+            .entry(node.node_id())
+            .or_default()
+            .insert(self.time_remaps.clone(), Box::new(node));
     }
 
     pub(crate) fn compile_port(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
         let key = CompiledPortKey {
             port: port.clone(),
-            frame: self.frame,
+            time_remaps: self.time_remaps.clone(),
         };
         if let Some(output) = self.outputs.get(&key) {
             return Ok(output.clone());
@@ -230,12 +220,15 @@ impl<'a> CompileContext<'a> {
 
     pub(crate) fn with_frame_context<T>(
         &mut self,
+        time_remap: NodeId,
         frame: u32,
         f: impl FnOnce(&mut Self) -> crate::Result<T>,
     ) -> crate::Result<T> {
         let original_frame = self.frame;
         self.frame = frame;
+        self.time_remaps.push(time_remap);
         let result = f(self);
+        self.time_remaps.pop();
         self.frame = original_frame;
         result
     }
