@@ -41,6 +41,29 @@ pub(crate) fn create_encoder_hw_contexts(
                 sw_format: AV_PIX_FMT_RGBA,
             }))
         }
+        #[cfg(feature = "vulkan")]
+        EncodeMode::GpuTexture(GpuBackend::Vulkan) => {
+            let device = config
+                .vulkan_device
+                .as_ref()
+                .ok_or_else(missing_vulkan_device)?
+                .hw_device()?;
+            let frames = AvBufferRef::new_hw_frames(
+                &device,
+                GpuBackend::Vulkan,
+                AV_PIX_FMT_VULKAN,
+                AV_PIX_FMT_NV12,
+                config.width,
+                config.height,
+            )?;
+            Ok(Some(EncoderHwContexts {
+                backend: GpuBackend::Vulkan,
+                device,
+                frames: Some(frames),
+                hw_format: AV_PIX_FMT_VULKAN,
+                sw_format: AV_PIX_FMT_NV12,
+            }))
+        }
         // Vulkan Video encoders only accept Vulkan frames, so CPU frames are uploaded as NV12.
         EncodeMode::CpuUpload if takes_hw_frames(codec, AV_PIX_FMT_VULKAN) => {
             let device = AvBufferRef::new_hw_device(AV_HWDEVICE_TYPE_VULKAN, GpuBackend::Vulkan)?;
@@ -62,6 +85,15 @@ pub(crate) fn create_encoder_hw_contexts(
         }
         _ => Ok(None),
     }
+}
+
+#[cfg(feature = "vulkan")]
+pub(crate) fn missing_vulkan_device() -> FfmpegError {
+    FfmpegError::new(
+        "VideoEncoder::create",
+        "Vulkan texture encode needs the shared device in `VideoEncoderConfig::vulkan_device`",
+    )
+    .with_backend(GpuBackend::Vulkan)
 }
 
 fn takes_hw_frames(codec: *const sys::AVCodec, pixel_format: sys::AVPixelFormat) -> bool {

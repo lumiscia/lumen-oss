@@ -2,7 +2,7 @@ mod audio;
 mod codec;
 mod common;
 mod hardware;
-mod hw;
+pub(crate) mod hw;
 mod muxed;
 mod output;
 mod quality;

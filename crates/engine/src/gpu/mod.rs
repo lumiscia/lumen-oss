@@ -11,12 +11,7 @@ mod params;
 mod renderer;
 #[cfg(any(
     all(target_os = "macos", feature = "ffmpeg", feature = "metal"),
-    all(
-        target_os = "linux",
-        feature = "ffmpeg",
-        feature = "cuda",
-        feature = "vulkan"
-    )
+    all(target_os = "linux", feature = "ffmpeg", feature = "vulkan")
 ))]
 mod target;
 mod types;
@@ -24,6 +19,8 @@ mod types;
 pub use binding::FrameBindContext;
 pub use compiler::{CompileContext, GpuCompileNode};
 pub use renderer::GpuCompositionRenderer;
+#[cfg(all(target_os = "linux", feature = "ffmpeg", feature = "vulkan"))]
+pub use target::VulkanVideoTarget;
 #[cfg(all(
     target_os = "linux",
     feature = "ffmpeg",

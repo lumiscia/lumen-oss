@@ -19,8 +19,6 @@ pub use encode::{
 pub use format::{AudioStreamInfo, InputContext, MediaInfo, Rational, VideoStreamInfo};
 #[cfg(feature = "cuda")]
 pub use gpu::CudaDecodedFrame;
-#[cfg(feature = "vulkan")]
-pub use gpu::VulkanVideoFrame;
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 pub use gpu::{
     CudaContext, CudaDeviceAllocation, CudaDriver, CudaNv12ToRgbaConverter,
@@ -36,6 +34,8 @@ pub use gpu::{
     MetalDecodedFrame, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache,
     Objc2MetalDevice, Objc2MetalTexture,
 };
+#[cfg(feature = "vulkan")]
+pub use gpu::{VulkanDevice, VulkanDeviceDesc, VulkanVideoFrame};
 pub use video::{
     CpuVideoFrame, DecodeMode, EncodeMode, PixelFormat, VideoCodec, VideoDecoder,
     VideoDecoderConfig,

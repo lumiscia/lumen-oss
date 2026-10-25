@@ -32,17 +32,16 @@ fn telemetry_tracks_upload_and_encode_events() {
 
     use crate::gpu::VulkanVideoFrame;
 
-    let frame = VulkanVideoFrame::new(
-        ash::vk::Image::from_raw(1),
-        ash::vk::ImageView::from_raw(2),
-        ash::vk::DeviceMemory::from_raw(3),
-        ash::vk::Format::R8G8B8A8_UNORM,
-        ash::vk::Extent3D {
-            width: 1280,
-            height: 720,
-            depth: 1,
-        },
-    );
+    // SAFETY: Telemetry only reads frame metadata and never submits work on the fake buffer.
+    let frame = unsafe {
+        VulkanVideoFrame::new(
+            ash::vk::Buffer::from_raw(1),
+            1280,
+            720,
+            None,
+            std::sync::Arc::new(()),
+        )
+    };
     let input = GpuVideoInput::Vulkan(&frame);
     let descriptor = GpuUploadDescriptor::from_frame(&input);
     let mut telemetry = GpuEncodeTelemetry::default();
@@ -97,17 +96,16 @@ fn cpu_upload_encoder_rejects_gpu_input() {
         eprintln!("H.264 encoder unavailable; skipping GPU input mismatch test");
         return;
     };
-    let frame = VulkanVideoFrame::new(
-        ash::vk::Image::from_raw(1),
-        ash::vk::ImageView::from_raw(2),
-        ash::vk::DeviceMemory::from_raw(3),
-        ash::vk::Format::R8G8B8A8_UNORM,
-        ash::vk::Extent3D {
-            width: 16,
-            height: 16,
-            depth: 1,
-        },
-    );
+    // SAFETY: The CPU encoder rejects the frame before any work could read the fake buffer.
+    let frame = unsafe {
+        VulkanVideoFrame::new(
+            ash::vk::Buffer::from_raw(1),
+            16,
+            16,
+            None,
+            std::sync::Arc::new(()),
+        )
+    };
     let input = GpuVideoInput::Vulkan(&frame);
 
     let error = encoder
@@ -122,17 +120,18 @@ fn cpu_upload_encoder_rejects_gpu_input() {
 
 #[cfg(feature = "vulkan")]
 #[test]
-fn unavailable_hardware_texture_encoder_errors_at_create() {
+fn vulkan_texture_encoder_without_device_errors_at_create() {
     let path = temp_path("gpu_create_failure", "mp4");
     let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, VideoCodec::H264);
     config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
 
     let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
-        Ok(_) => panic!("Vulkan texture encode should fail at create"),
+        Ok(_) => panic!("Vulkan texture encode without a shared device should fail at create"),
         Err(error) => error,
     };
     assert_eq!(error.operation, "VideoEncoder::create");
     assert_eq!(error.backend, Some(GpuBackend::Vulkan));
+    assert!(error.message.contains("vulkan_device"), "{error}");
 
     let _ = fs::remove_file(path);
 }

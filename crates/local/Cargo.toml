@@ -27,3 +27,6 @@ lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.2.2", path = "../
 ] }
 pollster = "1.0.1"
 serde_json = "1.0.145"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+lumen-engine = { path = "../engine", features = ["vulkan"] }
