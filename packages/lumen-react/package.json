@@ -43,11 +43,11 @@
     "@lumiscia/lumen-preview": "workspace:*"
   },
   "devDependencies": {
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "jsdom": "^26.0.0",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "jsdom": "catalog:",
     "react": "catalog:",
-    "react-dom": "^19.0.0",
+    "react-dom": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
