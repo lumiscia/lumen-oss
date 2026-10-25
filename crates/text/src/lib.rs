@@ -1241,6 +1241,48 @@ mod tests {
         }
 
         #[test]
+        fn small_raster_fallbacks_share_the_msdf_baseline() {
+            let mut system = TextSystem::new();
+            let mut request = TextLayoutRequest::new("SMALL SIZES AT FRACTIONAL POSITIONS");
+            request.font_size = 14.0;
+            let shaped = system.shape(&request);
+            let mut atlas = GlyphAtlas::new(1024);
+            for y in [24.0, 24.6, -24.6] {
+                let layout = shaped.place([40.3, y], [1.0; 4]);
+                atlas.begin_frame();
+                // Exercise mixed rendering without depending on system fonts' overlaps.
+                atlas.insert(
+                    AtlasKey::Msdf(msdf::msdf_key(layout.glyphs[0].key.0)),
+                    AtlasImage::RasterOnly,
+                );
+                let prepared = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Msdf);
+                assert!(msdf_instances(&prepared) > 0);
+                assert!(msdf_instances(&prepared) < prepared.instances.len());
+                let visible = layout.glyphs.iter().filter_map(|glyph| {
+                    let key = atlas.key_for(glyph.key, TextRenderMode::Msdf);
+                    match atlas.glyphs[&key].image {
+                        AtlasImage::Placed(placed) => Some((glyph, placed)),
+                        _ => None,
+                    }
+                });
+                for ((glyph, placed), instance) in visible.zip(&prepared.instances) {
+                    let baseline = if instance.mode == GLYPH_MODE_MSDF {
+                        instance.rect[1] + (placed.top - 0.5) * request.font_size / MSDF_EM_SIZE
+                    } else {
+                        // Swash's raster offset is in outline coordinates, where Y points up.
+                        instance.rect[1] + placed.top - glyph.key.0.y_bin.as_float()
+                    };
+                    assert!(
+                        (baseline - glyph.position[1]).abs() < 0.125,
+                        "glyph {:?}: rendered baseline {baseline}, layout baseline {}",
+                        glyph.key,
+                        glyph.position[1],
+                    );
+                }
+            }
+        }
+
+        #[test]
         fn font_size_sweep_generates_each_field_once() {
             let mut system = TextSystem::new();
             let mut atlas = GlyphAtlas::new(4096);
