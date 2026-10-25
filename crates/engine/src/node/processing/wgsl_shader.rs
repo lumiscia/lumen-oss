@@ -76,6 +76,7 @@ impl GpuCompileNode for WgslShader {
             "wgsl-shader",
             shader,
             std::mem::size_of::<compiler::WgslShaderParams>() as u64,
+            None,
         )?;
         ctx.register_compiled_node(CompiledWgslShader {
             node_id: self.id,

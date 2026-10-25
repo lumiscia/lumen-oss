@@ -26,6 +26,7 @@ pub enum ExpressionValue {
     Number(f64),
     Boolean(bool),
     String(String),
+    Vec2((f64, f64)),
 }
 
 impl ExpressionValue {
@@ -34,6 +35,7 @@ impl ExpressionValue {
             Self::Number(_) => "number",
             Self::Boolean(_) => "boolean",
             Self::String(_) => "string",
+            Self::Vec2(_) => "vec2",
         }
     }
 
@@ -42,6 +44,7 @@ impl ExpressionValue {
             Self::Number(n) => Some(*n),
             Self::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
             Self::String(s) => s.parse().ok(),
+            Self::Vec2(_) => None,
         }
     }
 
@@ -50,6 +53,7 @@ impl ExpressionValue {
             Self::Boolean(b) => *b,
             Self::Number(n) => n.abs() > f64::EPSILON,
             Self::String(s) => !s.is_empty(),
+            Self::Vec2((x, y)) => x.abs() > f64::EPSILON || y.abs() > f64::EPSILON,
         }
     }
 
@@ -58,6 +62,14 @@ impl ExpressionValue {
             Self::String(s) => s.clone(),
             Self::Number(n) => n.to_string(),
             Self::Boolean(b) => b.to_string(),
+            Self::Vec2((x, y)) => format!("[{x}, {y}]"),
+        }
+    }
+
+    pub fn as_vec2(&self) -> Option<(f64, f64)> {
+        match self {
+            Self::Vec2(value) => Some(*value),
+            _ => None,
         }
     }
 }
@@ -117,6 +129,7 @@ pub enum BuiltinFn {
     TextWidth,
     Uppercase,
     Lowercase,
+    Vec2,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -156,4 +169,29 @@ pub struct Expression {
     pub ast: ExprNode,
     pub references: Vec<ExpressionReference>,
     pub source: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExpressionValue;
+
+    #[test]
+    fn vec2_value_conversions_are_explicit() {
+        let value = ExpressionValue::Vec2((12.5, -3.0));
+
+        assert_eq!(value.type_name(), "vec2");
+        assert_eq!(value.as_f64(), None);
+        assert_eq!(value.as_vec2(), Some((12.5, -3.0)));
+        assert_eq!(value.as_string(), "[12.5, -3]");
+        assert!(value.as_bool());
+        assert!(!ExpressionValue::Vec2((0.0, 0.0)).as_bool());
+        assert!(!ExpressionValue::Vec2((f64::EPSILON, 0.0)).as_bool());
+    }
+
+    #[test]
+    fn non_vector_values_do_not_coerce_to_vec2() {
+        assert_eq!(ExpressionValue::Number(1.0).as_vec2(), None);
+        assert_eq!(ExpressionValue::Boolean(true).as_vec2(), None);
+        assert_eq!(ExpressionValue::String("1,2".to_string()).as_vec2(), None);
+    }
 }

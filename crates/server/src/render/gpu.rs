@@ -314,7 +314,9 @@ fn read_texture_rgba8(
         .map_err(|_| anyhow::anyhow!("GPU readback channel closed"))?
         .map_err(|error| anyhow::anyhow!("GPU readback map failed: {error}"))?;
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .map_err(|error| anyhow::anyhow!("GPU readback map range failed: {error}"))?;
     let mut pixels = vec![
         0;
         (size.width as usize)

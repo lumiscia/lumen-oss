@@ -133,6 +133,11 @@ impl<'a> CompileContext<'a> {
     }
 
     pub fn compile(mut self) -> crate::Result<CompiledComposition> {
+        if let Err(mut errors) = self.composition.validate_structure() {
+            // Structural validation can report several independent problems. The public compiler
+            // error remains typed, so return the first one before traversing any graph edges.
+            return Err(errors.remove(0));
+        }
         let output_node = self.media_output_node()?;
         let output_ref = PortRef::new(output_node, "output".to_string());
         let output = self
@@ -205,6 +210,7 @@ impl<'a> CompileContext<'a> {
             NodeKind::HueSaturation(node) => node.compile_gpu(self, port)?,
             NodeKind::Levels(node) => node.compile_gpu(self, port)?,
             NodeKind::Memo(node) => node.compile_gpu(self, port)?,
+            NodeKind::Opacity(node) => node.compile_gpu(self, port)?,
             NodeKind::TimeRemap(node) => node.compile_gpu(self, port)?,
             NodeKind::Transform(node) => node.compile_gpu(self, port)?,
             NodeKind::Crop(node) => node.compile_gpu(self, port)?,
@@ -242,6 +248,7 @@ impl<'a> CompileContext<'a> {
         label: &str,
         shader: &str,
         params_size: u64,
+        output_size: Option<lumen_gpu::Size>,
     ) -> crate::Result<(RasterHandle, lumen_gpu::TextureId, lumen_gpu::BufferId)> {
         if port.port != "output" {
             return Err(self.missing_output(node_id, &port.port));
@@ -250,7 +257,7 @@ impl<'a> CompileContext<'a> {
         let source = self
             .compile_port(source_ref)?
             .into_raster(source_ref.id, &source_ref.port)?;
-        let size = source.domain.storage_size;
+        let size = output_size.unwrap_or(source.domain.storage_size);
         let texture = self.builder.texture_for(
             lumen_gpu::NodeKey(node_id.0),
             Some(format!("{label}:{}:output", node_id.0)),

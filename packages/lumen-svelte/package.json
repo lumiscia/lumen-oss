@@ -37,15 +37,18 @@
   "scripts": {
     "build": "svelte-package",
     "check": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run"
   },
   "dependencies": {
     "@lumiscia/lumen-preview": "workspace:*"
   },
   "devDependencies": {
-    "@sveltejs/package": "^2.5.4",
+    "@sveltejs/package": "^3.0.1",
     "@sveltejs/vite-plugin-svelte": "catalog:",
-    "svelte": "^5.0.0"
+    "jsdom": "catalog:",
+    "svelte": "catalog:",
+    "vitest": "catalog:"
   },
   "peerDependencies": {
     "svelte": ">=5"

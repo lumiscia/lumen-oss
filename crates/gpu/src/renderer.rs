@@ -149,6 +149,7 @@ impl Renderer {
                 power_preference,
                 compatible_surface: None,
                 force_fallback_adapter,
+                apply_limit_buckets: false,
             })
             .await
             .context("no compatible wgpu adapter")?;
@@ -489,6 +490,7 @@ impl Renderer {
                 bind_group_layouts: &layout_refs,
                 immediate_size: 0,
             });
+        let vertex_buffers: Vec<_> = desc.vertex_buffers.iter().cloned().map(Some).collect();
         let pipeline = self
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -498,7 +500,7 @@ impl Renderer {
                     module: &shader,
                     entry_point: Some(&desc.vertex_entry),
                     compilation_options: Default::default(),
-                    buffers: &desc.vertex_buffers,
+                    buffers: &vertex_buffers,
                 },
                 primitive: desc.primitive,
                 depth_stencil: None,

@@ -17,21 +17,21 @@ bytemuck = { version = "1.25.0", features = ["derive"] }
 objc2 = { version = "0.6.4", optional = true }
 objc2-metal = { version = "0.3.2", optional = true }
 tracing = "0.1.44"
-wgpu = { version = "29.0.3", default-features = false, features = [
+wgpu = { version = "30.0.1", default-features = false, features = [
   "std",
   "webgpu",
   "webgl",
   "wgsl",
 ] }
-wgpu-hal = { version = "29.0.3", default-features = false, optional = true }
+wgpu-hal = { version = "30.0.1", default-features = false, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-wgpu = { version = "29.0.3", default-features = false, features = ["metal"] }
-wgpu-hal = { version = "29.0.3", default-features = false, features = ["metal"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["metal"] }
+wgpu-hal = { version = "30.0.1", default-features = false, features = ["metal"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-wgpu = { version = "29.0.3", default-features = false, features = ["vulkan"] }
-wgpu-hal = { version = "29.0.3", default-features = false, features = ["vulkan"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["vulkan"] }
+wgpu-hal = { version = "30.0.1", default-features = false, features = ["vulkan"] }
 
 [dev-dependencies]
-pollster = "0.4.0"
+pollster = "1.0.1"
