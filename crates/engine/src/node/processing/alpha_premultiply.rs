@@ -1,8 +1,8 @@
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, compiler,
+    RasterHandle, RasterMetadata, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -55,7 +55,7 @@ impl Default for AlphaPremultiply {
 #[derive(Debug, Clone)]
 struct CompiledAlphaPremultiply {
     node_id: NodeId,
-    params: AlphaPremultiplyParamsDelegate,
+    operation: f32,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -64,18 +64,9 @@ impl GpuCompiledNode for CompiledAlphaPremultiply {
         self.node_id
     }
 
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let evaluated = self.params.eval(&NodeParamEvalContext {
-            node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
-        })?;
+    fn bind(&self, _ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let gpu_params = compiler::AlphaPremultiplyParams {
-            values: [
-                compiler::alpha_operation(self.node_id, &evaluated.mode)?,
-                0.0,
-                0.0,
-                0.0,
-            ],
+            values: [self.operation, 0.0, 0.0, 0.0],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
@@ -88,15 +79,17 @@ impl GpuCompileNode for AlphaPremultiply {
         ctx: &mut crate::gpu::CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        let metadata = match &self.params.mode {
-            Deferred::Value(mode) if compiler::alpha_operation(self.id, mode)? < 0.5 => {
-                Some(AlphaMode::Premultiplied)
+        // The mode decides the output metadata, so it must be known at compile time.
+        let Deferred::Value(mode) = &self.params.mode else {
+            return Err(crate::error::PropertyError::InvalidType {
+                node_id: self.id,
+                property_path: "mode".to_string(),
+                expected: "constant `premultiply` or `unpremultiply`",
+                actual: "Expression",
             }
-            Deferred::Value(mode) if compiler::alpha_operation(self.id, mode)? >= 0.5 => {
-                Some(AlphaMode::Unpremultiplied)
-            }
-            _ => None,
+            .into());
         };
+        let operation = compiler::alpha_operation(self.id, mode)?;
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
             &self.source,
@@ -108,18 +101,22 @@ impl GpuCompileNode for AlphaPremultiply {
         )?;
         ctx.register_compiled_node(CompiledAlphaPremultiply {
             node_id: self.id,
-            params: self.params.clone(),
+            operation,
             buffer: params,
         });
 
-        let mut output_metadata = source.metadata;
-        if let Some(alpha_mode) = metadata {
-            output_metadata.alpha_mode = alpha_mode;
-        }
+        let alpha_mode = if operation >= 0.5 {
+            AlphaMode::Unpremultiplied
+        } else {
+            AlphaMode::Premultiplied
+        };
         Ok(CompiledOutput::Raster(RasterHandle {
             texture,
             domain: source.domain,
-            metadata: output_metadata,
+            metadata: RasterMetadata {
+                alpha_mode,
+                ..source.metadata
+            },
         }))
     }
 }

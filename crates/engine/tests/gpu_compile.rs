@@ -1,6 +1,6 @@
 use lumen_engine::{
     composition::{Composition, RenderSettings, TimelineSettings},
-    error::{GraphValidationError, LumenError},
+    error::{GraphValidationError, LumenError, PropertyError},
     expr::Expression,
     gpu::{AlphaMode, CompileContext, FrameBindContext},
     graph::{Connection, Graph},
@@ -29,6 +29,7 @@ use lumen_engine::{
             resize::{Resize, ResizeMode, ResizeParamsDelegate, ResizeSampling},
             time_remap::{TimeRemap, TimeRemapParamsDelegate},
             transform::{Transform, TransformParamsDelegate, TransformSampling},
+            wgsl_shader::WgslShader,
         },
         source::{
             background::{Background, BackgroundParamsDelegate},
@@ -1782,52 +1783,103 @@ fn linear_resize_keeps_source_edges_opaque_and_identity_reproduces_input() {
 
 #[test]
 fn merge_and_adjustments_treat_rasters_as_premultiplied() {
-    let Some(mut renderer) = gpu_composition_renderer() else {
-        return;
+    let output = NodeId::new(100);
+    let with_output = |mut graph: Graph, source: NodeId| {
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(source, "output".to_string()),
+            }),
+        );
+        test_composition(graph)
     };
-    let media = EmptyMediaStore;
+    let merge_over_black = |mut graph: Graph, overlay: NodeId| {
+        let base = NodeId::new(50);
+        let merge = NodeId::new(51);
+        graph.nodes.insert(base, solid(base, [0, 0, 0, 255]));
+        graph.nodes.insert(
+            merge,
+            NodeKind::Merge(Merge {
+                id: merge,
+                params: MergeParamsDelegate::default(),
+                base: PortRef::new(base, "output".to_string()),
+                overlay: PortRef::new(overlay, "output".to_string()),
+                mask: PortRef::empty(),
+            }),
+        );
+        with_output(graph, merge)
+    };
+    let straight_half_red = || {
+        let (solid_id, unpremultiply) = (NodeId::new(1), NodeId::new(2));
+        let mut graph = Graph::new();
+        graph
+            .nodes
+            .insert(solid_id, solid(solid_id, [255, 0, 0, 128]));
+        graph.nodes.insert(
+            unpremultiply,
+            NodeKind::AlphaPremultiply(AlphaPremultiply {
+                id: unpremultiply,
+                params: AlphaPremultiplyParamsDelegate {
+                    mode: Deferred::value("unpremultiply".to_string()),
+                },
+                source: PortRef::new(solid_id, "output".to_string()),
+            }),
+        );
+        (graph, unpremultiply)
+    };
+    let assert_pixels = |composition: Composition, expected: [u8; 4], message: &str| {
+        // The renderer caches compiled plans, so each composition gets its own.
+        let Some(mut renderer) = gpu_composition_renderer() else {
+            return;
+        };
+        let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+        for pixel in pixels.chunks_exact(4) {
+            assert!(
+                pixel
+                    .iter()
+                    .zip(expected)
+                    .all(|(channel, expected)| channel.abs_diff(expected) <= 1),
+                "{message}: expected {expected:?}, got {pixel:?}"
+            );
+        }
+    };
 
-    let base = NodeId::new(1);
-    let overlay = NodeId::new(2);
-    let merge = NodeId::new(3);
-    let output = NodeId::new(4);
+    let white = NodeId::new(1);
     let mut graph = Graph::new();
-    graph.nodes.insert(base, solid(base, [0, 0, 0, 255]));
     graph
         .nodes
-        .insert(overlay, solid(overlay, [255, 255, 255, 128]));
-    graph.nodes.insert(
-        merge,
-        NodeKind::Merge(Merge {
-            id: merge,
-            params: MergeParamsDelegate::default(),
-            base: PortRef::new(base, "output".to_string()),
-            overlay: PortRef::new(overlay, "output".to_string()),
-            mask: PortRef::empty(),
-        }),
+        .insert(white, solid(white, [255, 255, 255, 128]));
+    assert_pixels(
+        merge_over_black(graph, white),
+        [128, 128, 128, 255],
+        "50% white over opaque black should be 50% grey",
     );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(merge, "output".to_string()),
-        }),
-    );
-    let pixels = render_rgba8(&mut renderer, &test_composition(graph), 0, &media);
-    for pixel in pixels.chunks_exact(4) {
-        assert!(
-            pixel[..3].iter().all(|channel| channel.abs_diff(128) <= 1) && pixel[3] == 255,
-            "50% white over opaque black should be 50% grey, got {pixel:?}"
-        );
-    }
 
-    // The renderer caches compiled plans, so each composition gets its own.
-    let Some(mut renderer) = gpu_composition_renderer() else {
-        return;
-    };
-    let transparent = NodeId::new(1);
-    let exposure = NodeId::new(2);
-    let output = NodeId::new(3);
+    let (graph, straight) = straight_half_red();
+    assert_pixels(
+        merge_over_black(graph, straight),
+        [128, 0, 0, 255],
+        "straight-alpha overlay must be premultiplied before compositing",
+    );
+
+    let (mut graph, straight) = straight_half_red();
+    let shader = NodeId::new(3);
+    graph.nodes.insert(
+        shader,
+        NodeKind::WgslShader(WgslShader {
+            id: shader,
+            source: PortRef::new(straight, "output".to_string()),
+            ..WgslShader::default()
+        }),
+    );
+    assert_pixels(
+        with_output(graph, shader),
+        [255, 0, 0, 128],
+        "default WGSL shader with zero tint must preserve straight alpha",
+    );
+
+    let (transparent, exposure) = (NodeId::new(1), NodeId::new(2));
     let mut graph = Graph::new();
     graph
         .nodes
@@ -1844,17 +1896,48 @@ fn merge_and_adjustments_treat_rasters_as_premultiplied() {
             source: PortRef::new(transparent, "output".to_string()),
         }),
     );
+    assert_pixels(
+        with_output(graph, exposure),
+        [0, 0, 0, 0],
+        "adjusting a fully transparent pixel must keep it transparent black",
+    );
+}
+
+#[test]
+fn alpha_premultiply_rejects_expression_mode() {
+    let solid_id = NodeId::new(1);
+    let convert = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(solid_id, solid(solid_id, [255, 0, 0, 128]));
+    graph.nodes.insert(
+        convert,
+        NodeKind::AlphaPremultiply(AlphaPremultiply {
+            id: convert,
+            params: AlphaPremultiplyParamsDelegate {
+                mode: Deferred::Expr(Expression::parse("\"unpremultiply\"").unwrap()),
+            },
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
     graph.nodes.insert(
         output,
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: PortRef::new(exposure, "output".to_string()),
+            source: PortRef::new(convert, "output".to_string()),
         }),
     );
-    let pixels = render_rgba8(&mut renderer, &test_composition(graph), 0, &media);
+
+    let composition = test_composition(graph);
+    let error = CompileContext::new(&composition).compile().unwrap_err();
     assert!(
-        pixels.iter().all(|channel| *channel == 0),
-        "adjusting a fully transparent pixel must keep it transparent black"
+        matches!(
+            error,
+            LumenError::Property(PropertyError::InvalidType { node_id, .. }) if node_id == convert
+        ),
+        "unexpected error: {error:?}"
     );
 }
 

@@ -64,6 +64,7 @@ struct CompiledMerge {
     node_id: NodeId,
     params: MergeParamsDelegate,
     has_mask: bool,
+    straight_inputs: u32,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -81,7 +82,7 @@ impl GpuCompiledNode for CompiledMerge {
             opacity: evaluated.opacity as f32,
             blend_mode: evaluated.blend_mode as u32,
             has_mask: u32::from(self.has_mask),
-            _pad: 0,
+            straight_inputs: self.straight_inputs,
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
@@ -184,6 +185,8 @@ impl GpuCompileNode for Merge {
             node_id: self.id,
             params: self.params.clone(),
             has_mask: !self.mask.is_empty(),
+            straight_inputs: u32::from(base.metadata.alpha_mode == AlphaMode::Unpremultiplied)
+                | (u32::from(overlay.metadata.alpha_mode == AlphaMode::Unpremultiplied) << 1),
             buffer: params,
         });
 

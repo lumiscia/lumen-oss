@@ -158,7 +158,7 @@ pub(crate) struct MergeParams {
     pub(crate) opacity: f32,
     pub(crate) blend_mode: u32,
     pub(crate) has_mask: u32,
-    pub(crate) _pad: u32,
+    pub(crate) straight_inputs: u32,
 }
 
 #[repr(C)]

@@ -2,7 +2,8 @@ struct MergeParams {
     opacity: f32,
     blend_mode: u32,
     has_mask: u32,
-    _pad: u32,
+    // Bit 0: base is straight alpha. Bit 1: overlay is straight alpha.
+    straight_inputs: u32,
 }
 
 @group(0) @binding(0) var base_tex: texture_2d<f32>;
@@ -27,8 +28,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let pixel = id.xy;
-    let base = sample_or_transparent(base_tex, pixel);
-    let overlay = sample_or_transparent(overlay_tex, pixel);
+    let base = to_premultiplied_alpha(sample_or_transparent(base_tex, pixel), (params.straight_inputs & 1u) != 0u);
+    let overlay = to_premultiplied_alpha(sample_or_transparent(overlay_tex, pixel), (params.straight_inputs & 2u) != 0u);
     let mask = select(1.0, sample_or_transparent(mask_tex, pixel).a, params.has_mask == 1u);
     let opacity = clamp(params.opacity, 0.0, 1.0) * mask;
     textureStore(output_tex, vec2<i32>(pixel), composite(base, overlay * opacity, params.blend_mode));

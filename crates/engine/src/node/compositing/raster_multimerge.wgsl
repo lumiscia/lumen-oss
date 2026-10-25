@@ -22,8 +22,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let base = sample_or_transparent(base_tex, id.xy);
-    let overlay = sample_or_transparent(overlay_tex, id.xy);
+    let base = to_premultiplied_alpha(sample_or_transparent(base_tex, id.xy), params.values.z >= 0.5);
+    let overlay = to_premultiplied_alpha(sample_or_transparent(overlay_tex, id.xy), params.values.w >= 0.5);
     let opacity = clamp(params.values.x, 0.0, 1.0);
     textureStore(output_tex, vec2<i32>(id.xy), composite(base, overlay * opacity, u32(params.values.y)));
 }

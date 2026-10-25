@@ -22,8 +22,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let a = sample_or_transparent(a_tex, id.xy);
-    let b = sample_or_transparent(b_tex, id.xy);
+    let a = to_premultiplied_alpha(sample_or_transparent(a_tex, id.xy), params.values.z >= 0.5);
+    let b = to_premultiplied_alpha(sample_or_transparent(b_tex, id.xy), params.values.w >= 0.5);
     let operation = u32(params.values.x);
     let threshold = clamp(params.values.y, 0.0, 1.0);
     let aa = select(a.a, 1.0, a.a > threshold);
