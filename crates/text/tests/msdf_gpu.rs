@@ -273,7 +273,7 @@ fn render_msdf_scenario(scenario: MsdfScenario<'_>) -> Option<MsdfRenderResult> 
         ]),
         targets: vec![Some(wgpu::ColorTargetState {
             format: wgpu::TextureFormat::Rgba8Unorm,
-            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
             write_mask: wgpu::ColorWrites::ALL,
         })],
         vertex_buffers: Vec::new(),

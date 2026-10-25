@@ -73,11 +73,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let uv_width = fwidth(in.uv);
 
     if (in.mode == 1u) {
-        return vec4<f32>(sample.rgb, sample.a * in.color.a);
+        return sample * in.color.a;
     }
 
     if (in.mode == 0u) {
-        return vec4<f32>(in.color.rgb, sample.a * in.color.a);
+        let alpha = sample.a * in.color.a;
+        return vec4<f32>(in.color.rgb * alpha, alpha);
     }
 
     let signed_distance = median3(sample.rgb) - 0.5;
@@ -88,5 +89,5 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let edge_width = max(0.5 / screen_px_range, 0.001);
     let coverage = smoothstep(-edge_width, edge_width, signed_distance);
     let alpha = smoothstep(0.45, 0.95, coverage) * in.color.a;
-    return vec4<f32>(in.color.rgb, alpha);
+    return vec4<f32>(in.color.rgb * alpha, alpha);
 }
