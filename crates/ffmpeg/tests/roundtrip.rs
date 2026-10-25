@@ -230,6 +230,28 @@ fn make_cuda_video_with_nvenc_and_audio(path: &PathBuf, width: u32, height: u32)
     true
 }
 
+fn assert_bt709_tags(path: &Path) {
+    let Ok(output) = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
+        .arg("stream=color_space,color_transfer,color_primaries,color_range")
+        .args(["-of", "default=noprint_wrappers=1"])
+        .arg(path)
+        .output()
+    else {
+        eprintln!("ffprobe unavailable; skipping colour tag assertions");
+        return;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "color_space=bt709",
+        "color_transfer=bt709",
+        "color_primaries=bt709",
+        "color_range=tv",
+    ] {
+        assert!(text.contains(expected), "missing {expected} in {text}");
+    }
+}
+
 #[test]
 fn reports_missing_input_as_structured_error() {
     let error = InputContext::open("/definitely/not/a/media/file.mp4").expect_err("missing file");
@@ -284,6 +306,7 @@ fn encodes_opens_and_decodes_cpu_video() {
     assert_eq!(decoded.stride, 32 * 4);
     assert_eq!(decoded.data.len(), 32 * 24 * 4);
 
+    assert_bt709_tags(&path);
     let _ = fs::remove_file(path);
 }
 

@@ -5,6 +5,10 @@ use crate::gpu::GpuBackend;
 use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec};
 use crate::{FfmpegError, Result};
 use sys::{
+    AVColorPrimaries::AVCOL_PRI_BT709,
+    AVColorRange::AVCOL_RANGE_MPEG,
+    AVColorSpace::AVCOL_SPC_BT709,
+    AVColorTransferCharacteristic::AVCOL_TRC_BT709,
     AVMediaType::AVMEDIA_TYPE_VIDEO,
     AVPixelFormat::{AV_PIX_FMT_CUDA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
 };
@@ -14,6 +18,10 @@ use super::common::refresh_stream_time_base;
 use super::hw::{AvBufferRef, create_encoder_hw_contexts};
 use super::output::OutputContext;
 use super::telemetry::GpuEncodeTelemetry;
+
+// swscale range flags: 1 is full (JPEG) range, 0 is limited (MPEG) range.
+const SWS_RANGE_FULL: i32 = 1;
+const SWS_RANGE_LIMITED: i32 = 0;
 
 #[derive(Debug, Clone)]
 pub struct VideoEncoderConfig {
@@ -137,6 +145,10 @@ impl VideoEncoder {
                     AV_PIX_FMT_YUV420P
                 }
             };
+            (*context).color_primaries = AVCOL_PRI_BT709;
+            (*context).color_trc = AVCOL_TRC_BT709;
+            (*context).colorspace = AVCOL_SPC_BT709;
+            (*context).color_range = AVCOL_RANGE_MPEG;
             (*context).bit_rate = config.bit_rate;
             (*context).gop_size = gop_size;
             if let Some(frames) = hw_contexts
@@ -196,6 +208,27 @@ impl VideoEncoder {
                 return Err(FfmpegError::new(
                     "sws_getContext",
                     "failed to create encoder color conversion context",
+                ));
+            }
+            // Full-range RGB in, BT.709 limited-range YUV out, matching the stream's colour tags.
+            let coefficients = unsafe { sys::sws_getCoefficients(sys::SWS_CS_ITU709) };
+            let configured = unsafe {
+                sys::sws_setColorspaceDetails(
+                    scaler,
+                    coefficients,
+                    SWS_RANGE_FULL,
+                    coefficients,
+                    SWS_RANGE_LIMITED,
+                    0,
+                    1 << 16,
+                    1 << 16,
+                )
+            };
+            if configured < 0 {
+                unsafe { sys::sws_freeContext(scaler) };
+                return Err(FfmpegError::new(
+                    "sws_setColorspaceDetails",
+                    "failed to configure BT.709 color conversion",
                 ));
             }
             scaler
