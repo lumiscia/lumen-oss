@@ -105,6 +105,11 @@
       "required": ["from_node", "to_node", "to_port"],
       "type": "object"
     },
+    "expression": {
+      "description": "An expression evaluated per frame in place of a literal value.",
+      "pattern": "^=",
+      "type": "string"
+    },
     "nodeKinds": [
       "media_in",
       "background",
@@ -286,10 +291,17 @@
                 "additionalProperties": false,
                 "properties": {
                   "mode": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "premultiply",
                     "description": "Alpha conversion mode.",
                     "title": "Mode",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "format": "alpha_premultiply_mode"
                     },
@@ -332,11 +344,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "height": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0,
                     "description": "Output height in pixels. Use 0 to match the composition height.",
-                    "minimum": 0.0,
                     "title": "Height",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -351,18 +370,32 @@
                     "x-lumen-kind": "paint"
                   },
                   "paint_supersample": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": true,
                     "description": "Enables 4×4 supersampling when evaluating paint at each pixel.",
                     "title": "Paint Supersample",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "width": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0,
                     "description": "Output width in pixels. Use 0 to match the composition width.",
-                    "minimum": 0.0,
                     "title": "Width",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -399,11 +432,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "radius": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 4.0,
                     "description": "Blur radius in pixels.",
-                    "minimum": 0.0,
                     "title": "Radius",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 0.5
@@ -447,11 +487,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "operation": {
+                    "anyOf": [
+                      {
+                        "enum": ["union", "intersect", "subtract", "xor"],
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "union",
                     "description": "Boolean operation used to combine the two input masks.",
-                    "enum": ["union", "intersect", "subtract", "xor"],
                     "title": "Operation",
-                    "type": "string",
                     "x-lumen-enumOptions": [
                       {
                         "label": "Union",
@@ -477,12 +524,19 @@
                     "x-lumen-kind": "enum"
                   },
                   "threshold": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Alpha cutoff used before evaluating the boolean operation.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Threshold",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -729,20 +783,34 @@
                 "additionalProperties": false,
                 "properties": {
                   "interpolation": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1,
                     "description": "Sampling filter used when reading LUT data.",
                     "title": "Interpolation",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "format": "sampling_mode"
                     },
                     "x-lumen-kind": "int"
                   },
                   "lut_source": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "identity",
                     "description": "LUT data source or named LUT preset.",
                     "title": "LUT source",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "multiline": true,
                       "recommendedRows": 4,
@@ -751,12 +819,19 @@
                     "x-lumen-kind": "string"
                   },
                   "strength": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Blend amount for the LUT transform.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Strength",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -801,11 +876,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "height": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1,
                     "description": "Height of the crop region in pixels.",
-                    "minimum": 0.0,
                     "title": "Height",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -813,11 +895,18 @@
                     "x-lumen-kind": "int"
                   },
                   "width": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1,
                     "description": "Width of the crop region in pixels.",
-                    "minimum": 0.0,
                     "title": "Width",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -825,20 +914,34 @@
                     "x-lumen-kind": "int"
                   },
                   "x": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0,
                     "description": "Left edge of the crop region in pixels.",
                     "title": "X",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "step": 1.0
                     },
                     "x-lumen-kind": "int"
                   },
                   "y": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0,
                     "description": "Top edge of the crop region in pixels.",
                     "title": "Y",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "step": 1.0
                     },
@@ -881,10 +984,17 @@
                 "additionalProperties": false,
                 "properties": {
                   "curve_source": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "identity",
                     "description": "Curve table data source or named curve preset.",
                     "title": "Curve",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "multiline": true,
                       "recommendedRows": 4,
@@ -893,12 +1003,19 @@
                     "x-lumen-kind": "string"
                   },
                   "strength": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Blend amount for the curve adjustment.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Strength",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -943,11 +1060,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "contrast": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Contrast multiplier.",
-                    "minimum": 0.0,
                     "title": "Contrast",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 0.01
@@ -955,20 +1079,34 @@
                     "x-lumen-kind": "float"
                   },
                   "exposure": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Exposure offset in stops.",
                     "title": "Exposure",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 0.01
                     },
                     "x-lumen-kind": "float"
                   },
                   "offset": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Linear color offset.",
                     "title": "Offset",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 0.01
                     },
@@ -1011,30 +1149,51 @@
                 "additionalProperties": false,
                 "properties": {
                   "hue_degrees": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Hue rotation in degrees.",
                     "title": "Hue",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"
                   },
                   "lightness": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Lightness offset.",
                     "title": "Lightness",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 0.01
                     },
                     "x-lumen-kind": "float"
                   },
                   "saturation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Saturation multiplier.",
                     "title": "Saturation",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 0.01
                     },
@@ -1077,12 +1236,19 @@
                 "additionalProperties": false,
                 "properties": {
                   "black_point": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Input black point.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Black Point",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -1091,11 +1257,18 @@
                     "x-lumen-kind": "float"
                   },
                   "gamma": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.01,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Midtone gamma adjustment.",
-                    "minimum": 0.01,
                     "title": "Gamma",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "min": 0.01,
                       "step": 0.01
@@ -1103,12 +1276,19 @@
                     "x-lumen-kind": "float"
                   },
                   "output_black": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Output black level.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Output Black",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -1117,12 +1297,19 @@
                     "x-lumen-kind": "float"
                   },
                   "output_white": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Output white level.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Output White",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -1131,12 +1318,19 @@
                     "x-lumen-kind": "float"
                   },
                   "white_point": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Input white point.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "White Point",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -1181,11 +1375,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "kind": {
+                    "anyOf": [
+                      {
+                        "enum": ["image", "video"],
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "image",
                     "description": "Type of external media source.",
-                    "enum": ["image", "video"],
                     "title": "Media type",
-                    "type": "string",
                     "x-lumen-enumOptions": [
                       {
                         "label": "Image",
@@ -1201,11 +1402,18 @@
                     "x-lumen-kind": "enum"
                   },
                   "loop_mode": {
+                    "anyOf": [
+                      {
+                        "enum": ["clamp", "repeat", "ping_pong"],
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "clamp",
                     "description": "Behavior when playback leaves the source range.",
-                    "enum": ["clamp", "repeat", "ping_pong"],
                     "title": "Loop Mode",
-                    "type": "string",
                     "x-lumen-enumOptions": [
                       {
                         "label": "Clamp",
@@ -1226,11 +1434,18 @@
                     "x-lumen-kind": "enum"
                   },
                   "range_end": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0,
                     "description": "Last source frame to include.",
-                    "minimum": 0.0,
                     "title": "Range End",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -1238,11 +1453,18 @@
                     "x-lumen-kind": "int"
                   },
                   "range_start": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0,
                     "description": "First source frame to include.",
-                    "minimum": 0.0,
                     "title": "Range Start",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -1250,20 +1472,34 @@
                     "x-lumen-kind": "int"
                   },
                   "source": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "",
                     "description": "External media source identifier.",
                     "title": "Source",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "role": "source_id"
                     },
                     "x-lumen-kind": "string"
                   },
                   "speed": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Playback speed multiplier.",
                     "title": "Speed",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 0.1
                     },
@@ -1334,17 +1570,31 @@
                 "additionalProperties": false,
                 "properties": {
                   "allow_expressions": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": false,
                     "description": "Allows property expressions to be evaluated across this memo boundary.",
                     "title": "Allow Expressions",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "cache_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "",
                     "description": "Stable cache identifier for this memo boundary.",
                     "title": "Cache key",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "role": "cache_id"
                     },
@@ -1427,12 +1677,19 @@
                     "x-lumen-kind": "enum"
                   },
                   "opacity": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Overlay opacity applied before compositing.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Opacity",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -1489,12 +1746,19 @@
                 "additionalProperties": false,
                 "properties": {
                   "opacity": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Opacity multiplier applied to the raster.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Opacity",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -1539,10 +1803,17 @@
                 "additionalProperties": false,
                 "properties": {
                   "data": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
                     "description": "SVG-style path data.",
                     "title": "Path data",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "format": "path_data",
                       "multiline": true,
@@ -1551,17 +1822,31 @@
                     "x-lumen-kind": "string"
                   },
                   "edge_antialias": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": true,
                     "description": "Enables analytic distance-based edge antialiasing.",
                     "title": "Edge Antialias",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "fill_enabled": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": true,
                     "description": "Enables fill rendering.",
                     "title": "Fill Enabled",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "fill_paint": {
@@ -1572,17 +1857,31 @@
                     "x-lumen-kind": "paint"
                   },
                   "position": {
-                    "$ref": "#/$defs/vec2",
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": [0.0, 0.0],
                     "description": "Path origin in pixels.",
                     "title": "Position",
                     "x-lumen-kind": "vec2"
                   },
                   "stroke_enabled": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": false,
                     "description": "Enables stroke rendering.",
                     "title": "Stroke Enabled",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "stroke_paint": {
@@ -1593,11 +1892,18 @@
                     "x-lumen-kind": "paint"
                   },
                   "stroke_width": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Stroke width in pixels.",
-                    "minimum": 0.0,
                     "title": "Stroke Width",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 0.5
@@ -1605,12 +1911,19 @@
                     "x-lumen-kind": "float"
                   },
                   "trim_end": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Normalized end of the visible stroke range for each contour.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Trim end",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -1619,12 +1932,19 @@
                     "x-lumen-kind": "float"
                   },
                   "trim_start": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Normalized start of the visible stroke range for each contour.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Trim start",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -1662,11 +1982,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "blend_mode": {
+                    "anyOf": [
+                      {
+                        "enum": ["normal", "multiply", "screen", "overlay", "darken", "lighten"],
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "normal",
                     "description": "Blend mode used for each layer in the stack.",
-                    "enum": ["normal", "multiply", "screen", "overlay", "darken", "lighten"],
                     "title": "Blend Mode",
-                    "type": "string",
                     "x-lumen-enumOptions": [
                       {
                         "label": "Normal",
@@ -1702,12 +2029,19 @@
                     "x-lumen-kind": "enum"
                   },
                   "opacity": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Opacity applied to each layer as it is composited.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Opacity",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -1752,11 +2086,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "height": {
+                    "anyOf": [
+                      {
+                        "minimum": 1.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1,
                     "description": "Output height in pixels.",
-                    "minimum": 1.0,
                     "title": "Height",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 1.0,
                       "step": 1.0
@@ -1809,11 +2150,18 @@
                     "x-lumen-kind": "enum"
                   },
                   "width": {
+                    "anyOf": [
+                      {
+                        "minimum": 1.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1,
                     "description": "Output width in pixels.",
-                    "minimum": 1.0,
                     "title": "Width",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 1.0,
                       "step": 1.0
@@ -1867,32 +2215,53 @@
                     "x-lumen-kind": "paint"
                   },
                   "offset_x": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 8.0,
                     "description": "Horizontal shadow offset in pixels.",
                     "title": "Offset X",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"
                   },
                   "offset_y": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 8.0,
                     "description": "Vertical shadow offset in pixels.",
                     "title": "Offset Y",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"
                   },
                   "opacity": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.5,
                     "description": "Shadow opacity.",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
                     "title": "Opacity",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "max": 1.0,
                       "min": 0.0,
@@ -1901,11 +2270,18 @@
                     "x-lumen-kind": "float"
                   },
                   "radius": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 8.0,
                     "description": "Shadow blur radius in pixels.",
-                    "minimum": 0.0,
                     "title": "Blur radius",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 0.5
@@ -1949,11 +2325,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "border_radius": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Corner radius for rectangle geometry.",
-                    "minimum": 0.0,
                     "title": "Border Radius",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -1961,17 +2344,31 @@
                     "x-lumen-kind": "float"
                   },
                   "edge_antialias": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": true,
                     "description": "Enables analytic distance-based edge antialiasing.",
                     "title": "Edge Antialias",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "fill_enabled": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": true,
                     "description": "Enables fill rendering.",
                     "title": "Fill Enabled",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "fill_paint": {
@@ -2007,11 +2404,18 @@
                     "x-lumen-kind": "enum"
                   },
                   "height": {
+                    "anyOf": [
+                      {
+                        "minimum": 1.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1,
-                    "description": "Shape height in pixels. Ignored for polygon geometry.",
-                    "minimum": 1.0,
+                    "description": "Shape height in pixels.",
                     "title": "Height",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 1.0,
                       "step": 1.0
@@ -2019,10 +2423,17 @@
                     "x-lumen-kind": "int"
                   },
                   "polygon_points": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "",
-                    "description": "Polygon vertices in pixels relative to `position`, as `x,y; x,y` (3 to 128 points).",
+                    "description": "Polygon point list formatted as `x,y; x,y`.",
                     "title": "Polygon points",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "format": "point_list",
                       "multiline": true,
@@ -2031,17 +2442,31 @@
                     "x-lumen-kind": "string"
                   },
                   "position": {
-                    "$ref": "#/$defs/vec2",
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": [0.0, 0.0],
                     "description": "Shape origin in pixels.",
                     "title": "Position",
                     "x-lumen-kind": "vec2"
                   },
                   "stroke_enabled": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": false,
                     "description": "Enables stroke rendering.",
                     "title": "Stroke Enabled",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "stroke_paint": {
@@ -2052,11 +2477,18 @@
                     "x-lumen-kind": "paint"
                   },
                   "stroke_width": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Stroke width in pixels.",
-                    "minimum": 0.0,
                     "title": "Stroke Width",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 0.5
@@ -2064,11 +2496,18 @@
                     "x-lumen-kind": "float"
                   },
                   "width": {
+                    "anyOf": [
+                      {
+                        "minimum": 1.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1,
-                    "description": "Shape width in pixels. Ignored for polygon geometry.",
-                    "minimum": 1.0,
+                    "description": "Shape width in pixels.",
                     "title": "Width",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 1.0,
                       "step": 1.0
@@ -2105,11 +2544,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "selected_layer": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0,
                     "description": "Zero-based input index to route to the output.",
-                    "minimum": 0.0,
                     "title": "Selected layer",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -2218,10 +2664,17 @@
                     "x-lumen-kind": "paint"
                   },
                   "content": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "",
                     "description": "Text content to render.",
                     "title": "Content",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "multiline": true,
                       "recommendedRows": 4
@@ -2229,21 +2682,35 @@
                     "x-lumen-kind": "string"
                   },
                   "font_family": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "Roboto",
                     "description": "Font family name.",
                     "title": "Font Family",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "format": "font_family"
                     },
                     "x-lumen-kind": "string"
                   },
                   "font_size": {
+                    "anyOf": [
+                      {
+                        "minimum": 1.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 16.0,
                     "description": "Font size in pixels.",
-                    "minimum": 1.0,
                     "title": "Font Size",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "min": 1.0,
                       "step": 1.0
@@ -2276,12 +2743,19 @@
                     "x-lumen-kind": "enum"
                   },
                   "font_weight": {
+                    "anyOf": [
+                      {
+                        "maximum": 900.0,
+                        "minimum": 100.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 400,
                     "description": "Font weight.",
-                    "maximum": 900.0,
-                    "minimum": 100.0,
                     "title": "Font Weight",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "max": 900.0,
                       "min": 100.0,
@@ -2290,11 +2764,18 @@
                     "x-lumen-kind": "int"
                   },
                   "max_width": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Maximum line width in pixels. Use 0 for automatic width.",
-                    "minimum": 0.0,
                     "title": "Max Width",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -2302,14 +2783,28 @@
                     "x-lumen-kind": "float"
                   },
                   "paint_supersample": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": true,
                     "description": "Enables 4×4 supersampling when evaluating paint at each glyph pixel.",
                     "title": "Paint Supersample",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "position": {
-                    "$ref": "#/$defs/vec2",
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": [0.0, 0.0],
                     "description": "Text origin in pixels.",
                     "title": "Position",
@@ -2365,11 +2860,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "frame": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Source frame to sample.",
-                    "minimum": 0.0,
                     "title": "Frame",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -2377,18 +2879,32 @@
                     "x-lumen-kind": "float"
                   },
                   "loop_enabled": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": false,
                     "description": "Enables looping between the configured loop bounds.",
                     "title": "Loop Enabled",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "loop_end": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0,
                     "description": "Last frame in the loop range.",
-                    "minimum": 0.0,
                     "title": "Loop End",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -2396,11 +2912,18 @@
                     "x-lumen-kind": "int"
                   },
                   "loop_start": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0,
                     "description": "First frame in the loop range.",
-                    "minimum": 0.0,
                     "title": "Loop Start",
-                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -2444,37 +2967,65 @@
                 "additionalProperties": false,
                 "properties": {
                   "custom_pivot": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": false,
                     "description": "Uses the pivot as given; when off, a (0, 0) pivot means the source centre.",
                     "title": "Custom pivot",
-                    "type": "boolean",
                     "x-lumen-kind": "bool"
                   },
                   "pivot_x": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Horizontal pivot point in pixels.",
                     "title": "Pivot X",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"
                   },
                   "pivot_y": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Vertical pivot point in pixels.",
                     "title": "Pivot Y",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"
                   },
                   "rotate": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Rotation in degrees.",
                     "title": "Rotate",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 1.0
                     },
@@ -2501,40 +3052,68 @@
                     "x-lumen-kind": "enum"
                   },
                   "scale_x": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Horizontal scale multiplier.",
                     "title": "Scale X",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 0.1
                     },
                     "x-lumen-kind": "float"
                   },
                   "scale_y": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 1.0,
                     "description": "Vertical scale multiplier.",
                     "title": "Scale Y",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 0.1
                     },
                     "x-lumen-kind": "float"
                   },
                   "translate_x": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Horizontal translation in pixels.",
                     "title": "Translate X",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"
                   },
                   "translate_y": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": 0.0,
                     "description": "Vertical translation in pixels.",
                     "title": "Translate Y",
-                    "type": "number",
                     "x-lumen-constraints": {
                       "step": 1.0
                     },
@@ -2577,10 +3156,17 @@
                 "additionalProperties": false,
                 "properties": {
                   "bindings": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "",
                     "description": "JSON object describing shader binding values.",
                     "title": "Shader bindings",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "format": "json",
                       "multiline": true,
@@ -2589,10 +3175,17 @@
                     "x-lumen-kind": "string"
                   },
                   "shader": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "",
                     "description": "Custom WGSL compute shader source.",
                     "title": "Shader source",
-                    "type": "string",
                     "x-lumen-constraints": {
                       "format": "wgsl",
                       "multiline": true,

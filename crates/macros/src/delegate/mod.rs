@@ -132,6 +132,12 @@ fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::Token
     };
     let description = doc_string(&property.docs);
     let constraints = property_constraints_tokens(&property.constraints);
+    // `Vec` fields are deserialized whole by serde, so an expression string never parses.
+    let accepts_expressions = if structure::is_vec_type(ty) {
+        quote!(false)
+    } else {
+        quote!(<<#ty as ::lumen_engine::node::Delegated>::Delegate as ::lumen_engine::node::DelegateValue>::ACCEPTS_EXPRESSIONS)
+    };
     quote! {
         ::lumen_engine::node::PropertyDef {
             id: #id,
@@ -144,6 +150,8 @@ fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::Token
             description: #description,
             #[cfg(feature = "metadata")]
             constraints: #constraints,
+            #[cfg(feature = "metadata")]
+            accepts_expressions: #accepts_expressions,
         }
     }
 }

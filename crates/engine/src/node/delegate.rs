@@ -27,6 +27,9 @@ pub trait DelegateEvaluable: Clone {
 }
 
 pub trait DelegateValue: DelegateEvaluable {
+    /// Whether `from_property_expression` and evaluation accept `PropertyExpression::Expr`.
+    const ACCEPTS_EXPRESSIONS: bool;
+
     fn to_property_value(&self) -> PropertyValue;
     fn to_property_expression(&self) -> PropertyExpression {
         PropertyExpression::Value(self.to_property_value())

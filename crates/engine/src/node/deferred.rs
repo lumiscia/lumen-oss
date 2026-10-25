@@ -200,6 +200,9 @@ pub trait DeferredJsonValue: Sized {
 }
 
 pub trait DeferredValue: Clone {
+    /// Whether `eval_deferred` can resolve a `Deferred::Expr` to this type.
+    const ACCEPTS_EXPRESSIONS: bool;
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,
@@ -231,6 +234,8 @@ impl<T> DelegateValue for Deferred<T>
 where
     T: DeferredValue,
 {
+    const ACCEPTS_EXPRESSIONS: bool = T::ACCEPTS_EXPRESSIONS;
+
     fn to_property_value(&self) -> PropertyValue {
         Deferred::to_property_value(self)
     }
@@ -274,6 +279,8 @@ impl_delegated_deferred!(
 macro_rules! impl_deferred_float_expr {
     ($ty:ty, $conv:expr) => {
         impl DeferredValue for $ty {
+            const ACCEPTS_EXPRESSIONS: bool = true;
+
             fn eval_deferred(
                 deferred: &Deferred<Self>,
                 node_id: NodeId,
@@ -313,6 +320,8 @@ macro_rules! impl_deferred_float_expr {
 impl_deferred_float_expr!(f64, |value: f64| value);
 
 impl DeferredValue for f32 {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,
@@ -345,6 +354,8 @@ impl DeferredValue for f32 {
 }
 
 impl DeferredValue for i64 {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,
@@ -376,6 +387,8 @@ impl DeferredValue for i64 {
 }
 
 impl DeferredValue for u32 {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,
@@ -408,6 +421,8 @@ impl DeferredValue for u32 {
 }
 
 impl DeferredValue for u8 {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,
@@ -440,6 +455,8 @@ impl DeferredValue for u8 {
 }
 
 impl DeferredValue for bool {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         _node_id: NodeId,
@@ -466,6 +483,8 @@ impl DeferredValue for bool {
 }
 
 impl DeferredValue for String {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         _node_id: NodeId,
@@ -494,6 +513,8 @@ impl DeferredValue for String {
 macro_rules! impl_deferred_literal {
     ($ty:ty, $kind:literal, $variant:ident, $expr_err:literal) => {
         impl DeferredValue for $ty {
+            const ACCEPTS_EXPRESSIONS: bool = false;
+
             fn eval_deferred(
                 deferred: &Deferred<Self>,
                 node_id: NodeId,
@@ -532,6 +553,8 @@ macro_rules! impl_deferred_literal {
 impl_deferred_literal!([u8; 4], "Color", Color, "Color");
 
 impl DeferredValue for vector::paint::Paint {
+    const ACCEPTS_EXPRESSIONS: bool = false;
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,
@@ -567,6 +590,8 @@ impl DeferredValue for vector::paint::Paint {
 }
 
 impl DeferredValue for (f64, f64) {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,
@@ -598,6 +623,8 @@ impl DeferredValue for (f64, f64) {
 }
 
 impl DeferredValue for [f32; 2] {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,

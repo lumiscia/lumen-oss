@@ -28,6 +28,7 @@ export interface NodeParamSpec {
   readonly id: string;
   readonly name: string;
   readonly kind: string;
+  readonly acceptsExpressions: boolean;
   readonly description?: string;
   readonly defaultValue?: unknown;
   readonly enumOptions?: readonly NodeEnumOptionSpec[];
@@ -104,12 +105,23 @@ function nodeSpecFromSchema(schema: JsonSchema): NodeSpec {
   };
 }
 
+const expressionRef = "#/$defs/expression";
+
+const isExpressionSchema = (schema: unknown): boolean => objectValue(schema).$ref === expressionRef;
+
 function paramSpecFromSchema(id: string, schema: JsonSchema): NodeParamSpec {
-  const constraints = constraintsFromSchema(schema);
+  // Expression-capable params are `anyOf: [<literal schema>, { $ref: expressionRef }]`.
+  const branches = arrayValue(schema.anyOf);
+  const acceptsExpressions = branches.some(isExpressionSchema);
+  const valueSchema = acceptsExpressions
+    ? objectValue(branches.find((branch) => !isExpressionSchema(branch)))
+    : schema;
+  const constraints = constraintsFromSchema(schema, valueSchema);
   return {
     id,
     name: stringValue(schema.title) ?? id,
-    kind: stringValue(schema["x-lumen-kind"]) ?? paramKindFromSchema(schema),
+    kind: stringValue(schema["x-lumen-kind"]) ?? paramKindFromSchema(valueSchema),
+    acceptsExpressions,
     description: stringValue(schema.description) ?? "",
     defaultValue: schema.default,
     enumOptions: arrayValue(schema["x-lumen-enumOptions"]).map((value) => enumOptionSpec(value)),
@@ -117,11 +129,14 @@ function paramSpecFromSchema(id: string, schema: JsonSchema): NodeParamSpec {
   };
 }
 
-function constraintsFromSchema(schema: JsonSchema): ParamConstraintsSpec | undefined {
+function constraintsFromSchema(
+  schema: JsonSchema,
+  valueSchema: JsonSchema,
+): ParamConstraintsSpec | undefined {
   const custom = objectValue(schema["x-lumen-constraints"]);
   const constraints: Record<string, unknown> = {};
-  const min = numberValue(schema.minimum);
-  const max = numberValue(schema.maximum);
+  const min = numberValue(valueSchema.minimum);
+  const max = numberValue(valueSchema.maximum);
   const step = numberValue(custom.step);
   const format = stringValue(custom.format);
   const multiline = booleanValue(custom.multiline);
