@@ -444,12 +444,16 @@ impl GpuCompositionRenderer {
                 upload.size,
                 lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             );
-            prepared
+            let displaced = prepared
                 .renderer
                 .replace_texture_arc(upload.texture, texture, desc)
                 .map_err(|error| RenderError::Gpu {
                     details: error.to_string(),
                 })?;
+            // The plan's own placeholder is not shared, so free it now rather than at GC on web.
+            if Arc::strong_count(&displaced) == 1 {
+                displaced.destroy();
+            }
             prepared
                 .current_media_textures
                 .insert(upload.texture, upload.key.clone());

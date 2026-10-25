@@ -52,6 +52,7 @@ struct PreviewState {
     composition: Option<Composition>,
     gpu: GpuSlot,
     gpu_generation: u64,
+    render_canvas: Option<JsValue>,
     width: usize,
     height: usize,
     duration_frames: u32,
@@ -72,6 +73,7 @@ impl Default for PreviewState {
             composition: None,
             gpu: GpuSlot::Empty,
             gpu_generation: 0,
+            render_canvas: None,
             width: 0,
             height: 0,
             duration_frames: 0,
@@ -94,6 +96,7 @@ impl PreviewState {
         self.composition = None;
         self.gpu = GpuSlot::Empty;
         self.gpu_generation = self.gpu_generation.wrapping_add(1);
+        self.render_canvas = None;
         self.width = 0;
         self.height = 0;
         self.duration_frames = 0;
@@ -335,6 +338,9 @@ impl LumenPreviewController {
                             (state.current_frame + wrapped_steps) % state.duration_frames.max(1);
 
                         if next_frame != state.current_frame {
+                            // Move the pins first so the previous frame's working set can be
+                            // evicted to make room for the next one.
+                            pin_frame(&state, &self.media, next_frame);
                             if frame_ready(&state, &self.media, next_frame)? {
                                 state.frame_accumulator_ms = next_accumulator;
                                 state.current_frame = next_frame;
@@ -588,11 +594,13 @@ impl LumenPreviewController {
         Ok(())
     }
 
-    /// Renders the latest state. The GPU device is requested without holding the state borrow;
-    /// if `clear` ran meanwhile the new device is destroyed and nothing is rendered.
+    /// Renders the latest state to the most recently requested canvas. The GPU device is
+    /// requested without holding the state borrow; if `clear` ran meanwhile the new device is
+    /// destroyed and nothing is rendered.
     async fn render_current_frame(&self, canvas: &JsValue) -> Result<bool, JsValue> {
         let pending_generation = {
             let mut state = self.state_mut()?;
+            state.render_canvas = Some(canvas.clone());
             match state.gpu {
                 GpuSlot::Ready(_) => None,
                 GpuSlot::Pending => return Ok(false),
@@ -621,6 +629,10 @@ impl LumenPreviewController {
         let mut guard = self.state_mut()?;
         let frame = guard.current_frame;
         pin_frame(&guard, &self.media, frame);
+        let canvas = guard
+            .render_canvas
+            .clone()
+            .unwrap_or_else(|| canvas.clone());
         let state = &mut *guard;
         let GpuSlot::Ready(renderer) = &mut state.gpu else {
             return Ok(false);
@@ -631,7 +643,7 @@ impl LumenPreviewController {
             .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
         tracing::trace!(target: "lumen_wasm", frame, "render preview frame");
         let size = renderer.render_frame(
-            canvas,
+            &canvas,
             composition,
             frame,
             state.lookahead_count,

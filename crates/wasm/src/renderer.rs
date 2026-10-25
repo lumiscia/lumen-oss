@@ -305,9 +305,12 @@ struct SurfaceGpu {
     canvas: JsValue,
     surface: lumen_gpu::wgpu::Surface<'static>,
     config: lumen_gpu::wgpu::SurfaceConfiguration,
+    configured: bool,
 }
 
 impl SurfaceGpu {
+    /// Requests a device without configuring the canvas, so a discarded request never rebinds a
+    /// canvas that a newer device already owns.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     async fn new(canvas: &JsValue) -> Result<Self, JsValue> {
         let instance = lumen_gpu::wgpu::util::new_instance_with_webgpu_detection(
@@ -330,7 +333,6 @@ impl SurfaceGpu {
             .request_device(&lumen_gpu::wgpu::DeviceDescriptor::default())
             .await
             .map_err(|error| JsValue::from_str(&format!("create GPU device failed: {error}")))?;
-        surface.configure(&device, &config);
         Ok(Self {
             instance,
             adapter,
@@ -339,6 +341,7 @@ impl SurfaceGpu {
             canvas: canvas.clone(),
             surface,
             config,
+            configured: false,
         })
     }
 
@@ -349,7 +352,7 @@ impl SurfaceGpu {
         ))
     }
 
-    /// Rebinds the surface when the canvas changes and reconfigures it when the size changes.
+    /// Configures the canvas for this device on first use, after a canvas change, or on resize.
     fn prepare(&mut self, canvas: &JsValue, width: u32, height: u32) -> Result<(), JsValue> {
         let width = width.max(1);
         let height = height.max(1);
@@ -357,12 +360,15 @@ impl SurfaceGpu {
             self.surface = create_surface(&self.instance, canvas)?;
             self.config = surface_config(&self.surface, &self.adapter, width, height)?;
             self.canvas = canvas.clone();
-        } else if self.config.width == width && self.config.height == height {
+            self.configured = false;
+        }
+        if self.configured && self.config.width == width && self.config.height == height {
             return Ok(());
         }
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+        self.configured = true;
         Ok(())
     }
 }

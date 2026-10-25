@@ -744,6 +744,34 @@ mod tests {
     }
 
     #[test]
+    fn moving_pins_lets_next_frames_of_every_stream_coexist() {
+        let store = WasmMediaStore::default();
+        store
+            .set_video_frame_cache_bytes(2 * FRAME_BYTES)
+            .expect("set budget");
+        let pin = |frame: u32| {
+            store
+                .pin_video_frames(&["a", "b"].map(|stream_id| VideoFrameRequirement {
+                    stream_id: stream_id.to_string(),
+                    frames: vec![frame],
+                }))
+                .expect("pin frames");
+        };
+        pin(0);
+        insert_frames(&store, "a", 0..1);
+        insert_frames(&store, "b", 0..1);
+
+        pin(1);
+        insert_frames(&store, "a", 1..2);
+        insert_frames(&store, "b", 1..2);
+
+        assert!(store.has_video_frame("a", 1));
+        assert!(store.has_video_frame("b", 1));
+        assert!(!store.has_video_frame("a", 0));
+        assert!(!store.has_video_frame("b", 0));
+    }
+
+    #[test]
     fn clear_videos_preserves_metadata() {
         let store = WasmMediaStore::default();
         store
