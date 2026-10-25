@@ -72,8 +72,8 @@ pub struct TextParams {
     /// Font size in pixels.
     #[meta(min = 1, step = 1)]
     pub font_size: f64,
-    /// Font weight.
-    #[meta(min = 100, max = 900, step = 100)]
+    /// Font weight. Variable fonts render any value in their weight range.
+    #[meta(min = 1, max = 1000)]
     pub font_weight: i64,
     /// Font style.
     #[meta(kind = "enum", enum_type = TextFontStyle)]
@@ -84,6 +84,12 @@ pub struct TextParams {
     /// Maximum line width in pixels. Use 0 for automatic width.
     #[meta(min = 0, step = 1)]
     pub max_width: f64,
+    /// Extra space after every glyph in pixels. Negative values tighten the text.
+    #[meta(step = 0.1)]
+    pub letter_spacing: f64,
+    /// Distance between lines in pixels. Use 0 for 1.2 × the font size.
+    #[meta(min = 0, step = 1)]
+    pub line_height: f64,
     /// Text origin in pixels.
     #[meta()]
     pub position: (f64, f64),
@@ -111,6 +117,8 @@ impl Default for TextParams {
             font_style: TextFontStyle::Normal,
             render_mode: TextRenderMode::Raster,
             max_width: 0.0,
+            letter_spacing: 0.0,
+            line_height: 0.0,
             position: (0.0, 0.0),
             color: Paint::solid([255, 255, 255, 255]),
             alignment_horizontal: TextAlignmentHorizontal::Left,
@@ -175,7 +183,7 @@ impl GpuCompiledNode for CompiledText {
         let mut paint = evaluated.color.to_gpu([255, 255, 255, 255]);
         paint.paint_supersample = u32::from(evaluated.paint_supersample);
         let (position_x, position_y) = evaluated.position;
-        let request = layout_request(
+        let mut request = layout_request(
             evaluated.content,
             evaluated.font_family,
             evaluated.font_size as f32,
@@ -183,6 +191,11 @@ impl GpuCompiledNode for CompiledText {
             evaluated.font_style,
             evaluated.max_width as f32,
             evaluated.alignment_horizontal,
+        );
+        apply_line_spacing(
+            &mut request,
+            evaluated.letter_spacing,
+            evaluated.line_height,
         );
 
         let mut text_system = text_system()?;
@@ -201,6 +214,8 @@ impl GpuCompiledNode for CompiledText {
             font_weight: request.font_weight,
             font_style: evaluated.font_style,
             max_width_bits: request.max_width.unwrap_or(0.0).to_bits(),
+            letter_spacing_bits: request.letter_spacing.to_bits(),
+            line_height_bits: request.line_height.unwrap_or(0.0).to_bits(),
             alignment_horizontal: evaluated.alignment_horizontal,
             font_generation: text_system.font_generation(),
         };
@@ -343,6 +358,8 @@ struct TextShapeKey {
     font_weight: u16,
     font_style: TextFontStyle,
     max_width_bits: u32,
+    letter_spacing_bits: u32,
+    line_height_bits: u32,
     alignment_horizontal: TextAlignmentHorizontal,
     font_generation: u64,
 }
@@ -373,6 +390,16 @@ pub(crate) fn layout_request(
         TextAlignmentHorizontal::Left => lumen_text::TextAlign::Left,
     };
     request
+}
+
+/// A `line_height` of 0 or less keeps the automatic line height.
+pub(crate) fn apply_line_spacing(
+    request: &mut lumen_text::TextLayoutRequest,
+    letter_spacing: f64,
+    line_height: f64,
+) {
+    request.letter_spacing = letter_spacing as f32;
+    request.line_height = (line_height > 0.0).then_some(line_height as f32);
 }
 
 /// Shared by rendering and text measurement so both see the same loaded fonts.

@@ -82,13 +82,19 @@ impl TextSystem {
     pub fn shape(&mut self, request: &TextLayoutRequest) -> ShapedText {
         let metrics = Metrics::new(request.font_size.max(1.0), request.line_height());
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
-        buffer.set_size(request.max_width.filter(|width| *width > 0.0), None);
-        buffer.set_wrap(if request.max_width.is_some_and(|width| width > 0.0) {
-            Wrap::WordOrGlyph
-        } else {
-            Wrap::None
-        });
-        let attrs = Attrs::new()
+        let wraps = request.max_width.is_some_and(|width| width > 0.0);
+        // cosmic-text adds tracking after every glyph, including the last on a
+        // line, so every line is `letter_spacing` wider than its ink. Widening
+        // the layout width by the same amount makes wrapping and alignment see
+        // the trimmed line widths. cosmic-text clamps negative widths to zero, so a
+        // negative spacing larger than `max_width` wraps less than it should.
+        let layout_width = request
+            .max_width
+            .filter(|width| *width > 0.0)
+            .map(|width| width + request.letter_spacing);
+        buffer.set_size(layout_width, None);
+        buffer.set_wrap(if wraps { Wrap::WordOrGlyph } else { Wrap::None });
+        let mut attrs = Attrs::new()
             .family(Family::Name(&request.font_family))
             .weight(Weight(request.font_weight.clamp(1, 1000)))
             .style(match request.font_style {
@@ -101,6 +107,10 @@ impl TextSystem {
             } else {
                 CacheKeyFlags::empty()
             });
+        if request.letter_spacing != 0.0 {
+            // cosmic-text takes tracking in em and adds it to every glyph advance.
+            attrs = attrs.letter_spacing(request.letter_spacing / metrics.font_size);
+        }
         buffer.set_text(
             &request.content,
             &attrs,
@@ -120,11 +130,13 @@ impl TextSystem {
         let mut x_min = f32::INFINITY;
         let mut x_max = f32::NEG_INFINITY;
         for run in buffer.layout_runs() {
-            width = width.max(run.line_w);
+            if !run.glyphs.is_empty() {
+                width = width.max(run.line_w - request.letter_spacing);
+            }
             height = height.max(run.line_top + run.line_height);
             for glyph in run.glyphs {
                 x_min = x_min.min(glyph.x);
-                x_max = x_max.max(glyph.x + glyph.w);
+                x_max = x_max.max(glyph.x + glyph.w - request.letter_spacing);
                 glyphs.push(ShapedGlyph {
                     glyph: glyph.clone(),
                     line_y: run.line_y,
@@ -396,7 +408,10 @@ pub struct TextLayoutRequest {
     pub font_weight: u16,
     pub font_style: TextFontStyle,
     pub max_width: Option<f32>,
+    /// Line pitch in pixels; `None` is 1.2 × `font_size`.
     pub line_height: Option<f32>,
+    /// Extra advance in pixels after every glyph. May be negative.
+    pub letter_spacing: f32,
     pub align: TextAlign,
     pub origin: [f32; 2],
     pub color: [f32; 4],
@@ -413,6 +428,7 @@ impl TextLayoutRequest {
             font_style: TextFontStyle::Normal,
             max_width: None,
             line_height: None,
+            letter_spacing: 0.0,
             align: TextAlign::Left,
             origin: [0.0, 0.0],
             color: [1.0, 1.0, 1.0, 1.0],
@@ -1199,6 +1215,125 @@ mod tests {
         );
         assert_eq!(recovered.dropped_glyphs, 0);
         assert!(!recovered.uploads.is_empty());
+    }
+
+    #[test]
+    fn letter_spacing_widens_advance_and_line_height_spaces_lines() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("Spacing");
+        request.font_size = 40.0;
+        let base = system.layout(&request);
+        let glyph_x = |layout: &TextLayout, index: usize| layout.glyphs[index].position[0];
+
+        request.letter_spacing = 6.0;
+        let tracked = system.layout(&request);
+        let count = base.glyphs.len();
+        assert!(
+            (tracked.measurement.width - base.measurement.width - 6.0 * (count - 1) as f32).abs()
+                < 0.01
+        );
+        assert!(
+            (glyph_x(&tracked, count - 1) - glyph_x(&base, count - 1) - 6.0 * (count - 1) as f32)
+                .abs()
+                < 0.01
+        );
+
+        request.letter_spacing = -2.0;
+        let tight = system.layout(&request);
+        assert!(tight.measurement.width < base.measurement.width);
+
+        let line_gap = |system: &mut TextSystem, line_height| {
+            let mut request = TextLayoutRequest::new("a\nb");
+            request.font_size = 40.0;
+            request.line_height = line_height;
+            let layout = system.layout(&request);
+            layout.glyphs[1].position[1] - layout.glyphs[0].position[1]
+        };
+        assert!((line_gap(&mut system, None) - 48.0).abs() < 0.01);
+        assert!((line_gap(&mut system, Some(80.0)) - 80.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn trailing_letter_spacing_does_not_shift_alignment() {
+        let mut system = TextSystem::new();
+        let h_x = |system: &mut TextSystem, align, spacing| {
+            let mut request = TextLayoutRequest::new("H");
+            request.font_size = 40.0;
+            request.max_width = Some(200.0);
+            request.align = align;
+            request.letter_spacing = spacing;
+            system.layout(&request).glyphs[0].position[0]
+        };
+        for align in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
+            let base = h_x(&mut system, align, 0.0);
+            for spacing in [20.0, -10.0] {
+                assert!((h_x(&mut system, align, spacing) - base).abs() < 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn letter_spacing_wraps_on_trimmed_line_width() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("HH");
+        request.font_size = 40.0;
+        request.letter_spacing = 20.0;
+        let natural = system.measure(&request).width;
+        let line_count = |system: &mut TextSystem, request: &mut TextLayoutRequest, width| {
+            request.max_width = Some(width);
+            let layout = system.layout(request);
+            let mut ys: Vec<_> = layout
+                .glyphs
+                .iter()
+                .map(|glyph| glyph.position[1])
+                .collect();
+            ys.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+            ys.len()
+        };
+
+        assert_eq!(line_count(&mut system, &mut request, natural + 0.5), 1);
+        assert_eq!(line_count(&mut system, &mut request, natural - 0.5), 2);
+
+        request.letter_spacing = -10.0;
+        let natural = system.measure(&request).width;
+        assert_eq!(line_count(&mut system, &mut request, natural + 0.5), 1);
+        assert_eq!(line_count(&mut system, &mut request, natural - 0.5), 2);
+    }
+
+    #[test]
+    fn measured_width_excludes_trailing_letter_spacing() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("H");
+        request.font_size = 40.0;
+        let base = system.measure(&request).width;
+        for spacing in [20.0, -10.0] {
+            request.letter_spacing = spacing;
+            let shaped = system.shape(&request);
+            assert!((shaped.measurement.width - base).abs() < 0.01);
+            assert!((shaped.bounds[2] - base).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn variable_weight_is_not_quantised_to_hundreds() {
+        let mut system = TextSystem::new();
+        system.load_font_data(include_bytes!("../assets/inter/InterVariable-Latin.ttf").to_vec());
+        let width = |system: &mut TextSystem, weight| {
+            let mut request = TextLayoutRequest::new("Variable weight");
+            request.font_family = "Inter".to_string();
+            request.font_size = 64.0;
+            request.font_weight = weight;
+            system.measure(&request).width
+        };
+        let (light, between, regular) = (
+            width(&mut system, 400),
+            width(&mut system, 450),
+            width(&mut system, 500),
+        );
+        assert!(
+            light < between && between < regular,
+            "{light} {between} {regular}"
+        );
     }
 
     #[test]
