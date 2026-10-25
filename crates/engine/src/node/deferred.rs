@@ -705,7 +705,7 @@ impl DeferredJsonValue for [u8; 4] {
 #[cfg(feature = "json")]
 impl DeferredJsonValue for vector::paint::Paint {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        vector::paint::Paint::from_json_value(value).ok_or_else(|| "expected paint".to_string())
+        vector::paint::Paint::from_json_value(value)
     }
 }
 
