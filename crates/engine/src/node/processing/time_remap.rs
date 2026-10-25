@@ -50,16 +50,19 @@ impl Default for TimeRemap {
 }
 
 /// Returns the (possibly fractional) source frame. Consumers that index media floor it themselves.
+///
+/// Looping runs on the whole frame, exactly as for integer frames, and the fraction is carried
+/// separately so rounding can never cross into the next frame or the excluded loop end.
 pub fn remap_frame(settings: TimeRemapSettings) -> f64 {
-    let mut frame = settings.frame.max(0.0).min(f64::from(u32::MAX));
+    let frame = settings.frame.max(0.0);
+    let mut whole = frame.floor() as i64;
+    let fraction = frame - frame.floor();
     if settings.loop_enabled && settings.loop_end > settings.loop_start {
-        let start = settings.loop_start as f64;
-        let span = (settings.loop_end - settings.loop_start) as f64;
-        let offset = (frame - start).rem_euclid(span);
-        // `rem_euclid` can round tiny negative offsets up to `span`.
-        frame = start + if offset < span { offset } else { 0.0 };
+        let span = settings.loop_end - settings.loop_start;
+        whole = settings.loop_start + (whole - settings.loop_start).rem_euclid(span);
     }
-    frame.max(0.0)
+    let whole = whole.clamp(0, i64::from(u32::MAX)) as f64;
+    (whole + fraction).min((whole + 1.0).next_down())
 }
 
 impl GpuCompileNode for TimeRemap {
@@ -141,5 +144,28 @@ mod tests {
         assert_eq!(remap(9.0, false), 9.0);
         assert_eq!(remap(6.0, true), 2.0);
         assert_eq!(remap(11.0, true), 3.0);
+    }
+
+    #[test]
+    fn loop_boundaries_survive_float_rounding() {
+        let settings = |frame| TimeRemapSettings {
+            frame,
+            loop_enabled: true,
+            loop_start: 1,
+            loop_end: 2,
+        };
+        assert_eq!(remap_frame(settings(1.0 / 49.0 * 49.0)).floor(), 1.0);
+        assert!(remap_frame(settings(1.9999999999999998)) < 2.0);
+    }
+
+    #[test]
+    fn large_targets_loop_before_clamping() {
+        let frame = remap_frame(TimeRemapSettings {
+            frame: 4_294_967_296.0,
+            loop_enabled: true,
+            loop_start: 0,
+            loop_end: 10,
+        });
+        assert_eq!(frame, 6.0);
     }
 }
