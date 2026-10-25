@@ -1,18 +1,14 @@
 use bytemuck::{Pod, Zeroable};
 
-#[cfg(feature = "experimental-msdf")]
-use crate::MsdfGlyphPlacement;
-use crate::{AtlasEntry, GlyphPlacement, TextGlyph};
-
-const GLYPH_MODE_RASTER_MASK: u32 = 0;
-const GLYPH_MODE_RASTER_COLOR: u32 = 1;
-#[cfg(feature = "experimental-msdf")]
-const GLYPH_MODE_MSDF: u32 = 2;
+pub const GLYPH_MODE_RASTER_MASK: u32 = 0;
+pub const GLYPH_MODE_RASTER_COLOR: u32 = 1;
+pub const GLYPH_MODE_MSDF: u32 = 2;
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct GpuTextGlobals {
     pub target_size: [f32; 2],
+    /// Distance range of MSDF glyphs in atlas texels.
     pub px_range: f32,
     pub glyph_count: u32,
     /// Box that relative paint coordinates map to `0..1`, as `[x, y, width, height]`.
@@ -20,98 +16,12 @@ pub struct GpuTextGlobals {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct GpuGlyphInstance {
     pub rect: [f32; 4],
+    /// Atlas texel rectangle as `[x0, y0, x1, y1]`.
     pub uv_rect: [f32; 4],
     pub color: [f32; 4],
     pub mode: u32,
     pub _padding: [u32; 3],
-}
-
-#[cfg(feature = "experimental-msdf")]
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct GpuMsdfGlobals {
-    pub atlas_size: [u32; 2],
-    pub job_count: u32,
-    pub dirty_pixel_count: u32,
-    pub _padding: [u32; 2],
-}
-
-#[cfg(feature = "experimental-msdf")]
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct GpuMsdfJob {
-    pub atlas_rect: [u32; 4],
-    pub segment_range: [u32; 2],
-    pub pixel_range: [u32; 2],
-    pub px_range: f32,
-    pub _padding: [u32; 3],
-}
-
-#[cfg(feature = "experimental-msdf")]
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct GpuMsdfSegment {
-    pub p0: [f32; 2],
-    pub p1: [f32; 2],
-    pub p2: [f32; 2],
-    pub p3: [f32; 2],
-    pub kind: u32,
-    pub channels: u32,
-    pub _padding: [u32; 2],
-}
-
-pub fn glyph_instance_for(
-    glyph: &TextGlyph,
-    atlas_entry: AtlasEntry,
-    placement: GlyphPlacement,
-) -> GpuGlyphInstance {
-    let x = glyph.x + placement.left as f32;
-    let y = glyph.y - placement.top as f32;
-    GpuGlyphInstance {
-        rect: [x, y, placement.width as f32, placement.height as f32],
-        uv_rect: [
-            atlas_entry.uv_min[0],
-            atlas_entry.uv_min[1],
-            atlas_entry.uv_max[0],
-            atlas_entry.uv_max[1],
-        ],
-        color: glyph.color,
-        mode: if placement.color {
-            GLYPH_MODE_RASTER_COLOR
-        } else {
-            GLYPH_MODE_RASTER_MASK
-        },
-        _padding: [0; 3],
-    }
-}
-
-#[cfg(feature = "experimental-msdf")]
-pub fn msdf_glyph_instance_for(
-    glyph: &TextGlyph,
-    atlas_entry: AtlasEntry,
-    placement: &MsdfGlyphPlacement,
-) -> GpuGlyphInstance {
-    // Raster pen positions are whole pixels; outlines are shared across subpixel bins.
-    let x = glyph.x + glyph.key.0.x_bin.as_float() + placement.left;
-    let y = glyph.y - glyph.key.0.y_bin.as_float() - placement.top;
-    GpuGlyphInstance {
-        rect: [x, y, placement.width as f32, placement.height as f32],
-        uv_rect: [
-            atlas_entry.uv_min[0],
-            atlas_entry.uv_min[1],
-            atlas_entry.uv_max[0],
-            atlas_entry.uv_max[1],
-        ],
-        color: glyph.color,
-        mode: GLYPH_MODE_MSDF,
-        _padding: [0; 3],
-    }
-}
-
-#[cfg(feature = "experimental-msdf")]
-pub fn is_msdf_instance(instance: &GpuGlyphInstance) -> bool {
-    instance.mode == GLYPH_MODE_MSDF
 }

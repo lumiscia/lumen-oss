@@ -88,6 +88,8 @@ pub trait GpuCompiledNode: std::fmt::Debug + Send + Sync {
 #[derive(Debug)]
 pub struct CompiledComposition {
     pub plan: lumen_gpu::RenderPlan,
+    pub(crate) text_atlas_texture: Option<lumen_gpu::TextureId>,
+    pub(crate) text_atlas: std::sync::Arc<std::sync::Mutex<lumen_text::GlyphAtlas>>,
     pub output: RasterHandle,
     pub node_outputs: HashMap<PortRef, CompiledOutput>,
     pub compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
@@ -99,7 +101,10 @@ pub struct BoundFrame {
     buffer_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
     texture_uploads: Vec<TextureUpload>,
     media_textures: Vec<MediaTextureUpload>,
-    text_bindings: Vec<crate::node::source::text::TextBinding>,
+    pub(crate) text_atlas: Option<std::sync::Arc<std::sync::Mutex<lumen_text::GlyphAtlas>>>,
+    pub(crate) text_atlas_frame: u64,
+    pub(crate) text_generation_count: usize,
+    pub(crate) text_generation_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -215,15 +220,15 @@ impl BoundFrame {
         });
     }
 
-    pub(crate) fn bind_text(&mut self, binding: crate::node::source::text::TextBinding) {
-        self.text_bindings.push(binding);
-    }
-
-    /// Notifies nodes that this frame's uploads were applied.
     /// Call only after uploading the latest bind to its compiled plan.
     pub fn mark_uploaded(&self) -> crate::Result<()> {
-        for binding in &self.text_bindings {
-            binding.commit()?;
+        if let Some(atlas) = &self.text_atlas {
+            atlas
+                .lock()
+                .map_err(|_| crate::error::RenderError::Gpu {
+                    details: "text atlas lock was poisoned".to_string(),
+                })?
+                .commit(self.text_atlas_frame);
         }
         Ok(())
     }

@@ -30,7 +30,7 @@ Linux-only benchmark modes such as `vk-cuda-export` and `vk-cuda-nvenc` require 
 - `lumen-bench-composition`: benchmark composition render and encode modes.
 - `lumen-bench-json-parse`: benchmark JSON composition parse and validate (uses demo JSON fixtures).
 - `lumen-bench-decode`: benchmark media decode paths.
-- `lumen-bench-text`: benchmark text layout, raster atlas, GPU hybrid atlas, color emoji, raw glyph generation, and expression-driven text measurement paths.
+- `lumen-bench-text`: benchmark text layout, production raster/MSDF rendering (`--case raster` / `--case msdf`), emoji fallback, and expression-driven text measurement. Rendering varies font size each frame with bidi, combining marks, and wrapping.
 
 Text measurement cases compare repeated `text_width` and `text_height` evaluation for literal arguments (`measure-literal`), expression-backed text-node properties (`measure-expression`), and nonrecursive nested measurement with property references (`measure-nested-reference`).
 

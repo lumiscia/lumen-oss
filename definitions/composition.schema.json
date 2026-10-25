@@ -2144,7 +2144,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Produces a text raster source.",
+            "description": "Produces a text source.",
             "properties": {
               "id": {
                 "type": "integer"
@@ -2314,6 +2314,26 @@
                     "description": "Text origin in pixels.",
                     "title": "Position",
                     "x-lumen-kind": "vec2"
+                  },
+                  "render_mode": {
+                    "default": "raster",
+                    "description": "Glyph rendering mode. MSDF reuses outline distance fields at every size.",
+                    "enum": ["raster", "msdf"],
+                    "title": "Render Mode",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Raster",
+                        "name": "raster",
+                        "value": 0
+                      },
+                      {
+                        "label": "Msdf",
+                        "name": "msdf",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   }
                 },
                 "type": "object"

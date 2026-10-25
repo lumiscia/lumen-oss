@@ -665,18 +665,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdsm-skrifa"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88bf3e3014fa4c54d4b03ca13a4fa55ff867416731664c7e6ea1014f8edc405e"
-dependencies = [
- "fdsm",
- "image",
- "nalgebra",
- "skrifa 0.40.0",
-]
-
-[[package]]
 name = "ffmpeg-next"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1623,17 +1611,12 @@ name = "lumen-bench"
 version = "0.2.2"
 dependencies = [
  "anyhow",
- "cosmic-text",
- "fdsm",
- "fdsm-skrifa",
- "image",
  "libc",
  "lumen-engine",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",
  "lumen-engine-text",
- "nalgebra",
- "skrifa 0.40.0",
+ "pollster",
  "tokio",
 ]
 
@@ -1711,13 +1694,8 @@ dependencies = [
  "cosmic-text",
  "etagere",
  "fdsm",
- "fdsm-skrifa",
- "half",
  "image",
- "lumen-engine-gpu",
- "nalgebra",
- "pollster",
- "skrifa 0.40.0",
+ "kurbo",
  "swash",
 ]
 

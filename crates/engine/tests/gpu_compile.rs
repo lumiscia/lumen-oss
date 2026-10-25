@@ -1574,7 +1574,8 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
     let unchanged = FrameBindContext::new(&composition, 0)
         .bind(&compiled)
         .unwrap();
-    assert_eq!(unchanged.frame_update().uploads().len(), 2);
+    assert_eq!(unchanged.texture_upload_count(), 0);
+    assert!(unchanged.buffer_upload_count() > 0);
 }
 
 #[test]
@@ -1615,7 +1616,7 @@ fn text_bind_ahead_restores_committed_frame_after_pending_frame() {
     assert!(restored.buffer_upload_count() > 0);
 
     restored.mark_uploaded().unwrap();
-    assert_eq!(bind(0).buffer_upload_count(), 0);
+    assert_eq!(bind(0).texture_upload_count(), 0);
     assert!(bind(1).buffer_upload_count() > 0);
 }
 
@@ -1755,13 +1756,258 @@ fn text_rejects_stale_upload_from_another_compiled_plan() {
         .bind_frame(&composition, 1, &EmptyMediaStore)
         .unwrap();
     assert_eq!(rebound.texture_upload_count(), 0);
-    assert_eq!(rebound.buffer_upload_count(), 2);
+    assert!(rebound.buffer_upload_count() > 0);
     let pixels = render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
     assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 0));
     let mut reference = gpu_composition_renderer().unwrap();
     assert_eq!(
         pixels,
         render_rgba8(&mut reference, &composition, 1, &EmptyMediaStore)
+    );
+}
+
+#[cfg(feature = "msdf")]
+#[test]
+fn text_msdf_coverage_matches_raster_for_plain_italic_and_variable_weight() {
+    use lumen_engine::node::source::text::{TextFontStyle, TextRenderMode};
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    #[derive(Debug, Clone)]
+    struct InterFont;
+    impl lumen_engine::media::FontResolver for InterFont {
+        fn id(&self) -> &str {
+            "msdf-inter-coverage"
+        }
+        fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+            Ok(vec![
+                include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf").to_vec(),
+            ])
+        }
+    }
+    impl MediaStore for InterFont {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+            None
+        }
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            None
+        }
+        fn font_resolver_id(&self, family: &str) -> Option<String> {
+            (family == "Inter").then(|| "msdf-inter-coverage".to_string())
+        }
+        fn get_font_resolver(
+            &self,
+            family: &str,
+        ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+            (family == "Inter")
+                .then(|| Box::new(self.clone()) as Box<dyn lumen_engine::media::FontResolver>)
+        }
+    }
+    for (family, style, weight) in [
+        ("Roboto", TextFontStyle::Normal, 400),
+        ("Roboto", TextFontStyle::Italic, 400),
+        ("Inter", TextFontStyle::Normal, 250),
+        ("Inter", TextFontStyle::Normal, 850),
+    ] {
+        for size in [24.0, 72.0, 144.0] {
+            let mut composition = text_test_composition(TextParamsDelegate {
+                content: Deferred::value("AV text 28".to_string()),
+                font_family: Deferred::value(family.to_string()),
+                font_style: style.into(),
+                font_weight: Deferred::value(weight),
+                font_size: Deferred::value(size),
+                position: Deferred::value((12.25, 8.5)),
+                ..Default::default()
+            });
+            renderer
+                .compile_with_media(
+                    &composition,
+                    &InterFont,
+                    lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                )
+                .unwrap();
+            let raster = render_rgba8(&mut renderer, &composition, 0, &InterFont);
+            let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(1)).unwrap()
+            else {
+                unreachable!()
+            };
+            text.params.render_mode = TextRenderMode::Msdf.into();
+            renderer
+                .compile_with_media(
+                    &composition,
+                    &InterFont,
+                    lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                )
+                .unwrap();
+            let bound = renderer.bind_frame(&composition, 0, &InterFont).unwrap();
+            let instances = renderer
+                .compiled()
+                .unwrap()
+                .plan
+                .buffers()
+                .iter()
+                .find(|b| b.label.as_deref() == Some("text:1:instances"))
+                .unwrap()
+                .id;
+            let has_fields = bound.frame_update().uploads().iter().any(|upload| {
+                let lumen_gpu::Upload::Buffer { id, data, .. } = upload else {
+                    return false;
+                };
+                *id == instances
+                    && data
+                        .chunks_exact(std::mem::size_of::<lumen_text::GpuGlyphInstance>())
+                        .any(|bytes| {
+                            bytemuck::pod_read_unaligned::<lumen_text::GpuGlyphInstance>(bytes).mode
+                                == lumen_text::GLYPH_MODE_MSDF
+                        })
+            });
+            assert!(
+                has_fields,
+                "{family} {style:?} {weight} {size}: no MSDF glyphs"
+            );
+            let msdf = render_rgba8(&mut renderer, &composition, 0, &InterFont);
+            let (intersection, union) = raster
+                .chunks_exact(4)
+                .zip(msdf.chunks_exact(4))
+                .fold((0u64, 0u64), |(i, u), (a, b)| {
+                    (i + u64::from(a[3].min(b[3])), u + u64::from(a[3].max(b[3])))
+                });
+            let iou = intersection as f64 / union as f64;
+            eprintln!("{family} {style:?} weight={weight} size={size}: IoU={iou:.3}");
+            let minimum = if size == 24.0 { 0.68 } else { 0.90 };
+            assert!(
+                iou > minimum,
+                "{family} {style:?} weight={weight} size={size}: coverage IoU={iou:.3}"
+            );
+        }
+    }
+}
+
+fn text_test_composition(params: TextParamsDelegate) -> Composition {
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        NodeId::new(1),
+        NodeKind::Text(Text {
+            id: NodeId::new(1),
+            params,
+        }),
+    );
+    graph.nodes.insert(
+        NodeId::new(2),
+        NodeKind::MediaOutput(MediaOutput {
+            id: NodeId::new(2),
+            source: PortRef::new(NodeId::new(1), "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 1024;
+    composition.render_settings.height = 256;
+    composition
+}
+
+#[test]
+fn text_nodes_share_one_atlas_across_growth_and_recompiles() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut composition = text_test_composition(TextParamsDelegate {
+        content: Deferred::value("Atlas W".to_string()),
+        font_size: Deferred::value(72.0),
+        ..Default::default()
+    });
+    composition.graph.nodes.insert(
+        NodeId::new(3),
+        NodeKind::Text(Text {
+            id: NodeId::new(3),
+            params: TextParamsDelegate {
+                content: Deferred::value("Atlas M".to_string()),
+                font_size: Deferred::value(72.0),
+                position: Deferred::value((0.0, 100.0)),
+                ..Default::default()
+            },
+        }),
+    );
+    composition.graph.nodes.insert(
+        NodeId::new(4),
+        NodeKind::Merge(Merge {
+            id: NodeId::new(4),
+            base: PortRef::new(NodeId::new(1), "output".to_string()),
+            overlay: PortRef::new(NodeId::new(3), "output".to_string()),
+            ..Default::default()
+        }),
+    );
+    let NodeKind::MediaOutput(output) = composition.graph.nodes.get_mut(&NodeId::new(2)).unwrap()
+    else {
+        unreachable!()
+    };
+    output.source = PortRef::new(NodeId::new(4), "output".to_string());
+    let initial = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let atlas_resources: Vec<_> = renderer
+        .compiled()
+        .unwrap()
+        .plan
+        .textures()
+        .iter()
+        .filter(|t| t.label.as_deref() == Some("text:shared-atlas"))
+        .collect();
+    assert_eq!(atlas_resources.len(), 1);
+    let atlas = renderer
+        .gpu_renderer()
+        .texture_arc(atlas_resources[0].id)
+        .unwrap();
+    renderer.release_resources();
+    let rebound = renderer
+        .bind_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    assert_eq!(
+        rebound.texture_upload_count(),
+        0,
+        "recompilation retains atlas residency"
+    );
+    let atlas_id = renderer
+        .compiled()
+        .unwrap()
+        .plan
+        .textures()
+        .iter()
+        .find(|t| t.label.as_deref() == Some("text:shared-atlas"))
+        .unwrap()
+        .id;
+    assert!(Arc::ptr_eq(
+        &atlas,
+        &renderer.gpu_renderer().texture_arc(atlas_id).unwrap()
+    ));
+    assert_eq!(
+        initial,
+        render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore)
+    );
+    let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(3)).unwrap() else {
+        unreachable!()
+    };
+    text.params.font_size = Deferred::value(1800.0);
+    renderer.release_resources();
+    let bound = renderer
+        .bind_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    renderer.upload_bound_frame(&bound).unwrap();
+    let atlas_id = renderer
+        .compiled()
+        .unwrap()
+        .plan
+        .textures()
+        .iter()
+        .find(|t| t.label.as_deref() == Some("text:shared-atlas"))
+        .unwrap()
+        .id;
+    assert!(renderer.gpu_renderer().texture(atlas_id).unwrap().width() > atlas.width());
+    let grown = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    assert!(grown.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    let mut reference = gpu_composition_renderer().unwrap();
+    assert_eq!(
+        grown,
+        render_rgba8(&mut reference, &composition, 0, &EmptyMediaStore)
     );
 }
 
@@ -2512,7 +2758,7 @@ fn render_rgba8(
     renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
     composition: &Composition,
     frame: u32,
-    media: &EmptyMediaStore,
+    media: &impl MediaStore,
 ) -> Vec<u8> {
     let raster = renderer.render_frame(composition, frame, media).unwrap();
     let gpu = renderer.gpu_renderer();
