@@ -80,6 +80,7 @@ impl GpuCompileNode for Blur {
             "blur",
             SHADER,
             std::mem::size_of::<compiler::BlurParams>() as u64,
+            None,
         )?;
         ctx.register_compiled_node(CompiledBlur {
             node_id: self.id,

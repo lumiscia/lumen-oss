@@ -1,7 +1,5 @@
 use std::time::Instant;
 
-#[cfg(feature = "cuda")]
-use std::ptr;
 #[cfg(feature = "metal")]
 use std::ptr::NonNull;
 
@@ -147,16 +145,19 @@ impl VideoEncoder {
             }
 
             let data_ptr = frame.device_ptr() as usize as *mut u8;
+            let retained_frame = Box::new(frame.clone());
+            let retained_frame_ptr = Box::into_raw(retained_frame);
             (*av_frame.as_mut_ptr()).data[0] = data_ptr;
             (*av_frame.as_mut_ptr()).linesize[0] = frame.pitch() as i32;
             (*av_frame.as_mut_ptr()).buf[0] = sys::av_buffer_create(
                 data_ptr,
                 1,
                 Some(release_external_cuda_frame),
-                ptr::null_mut(),
+                retained_frame_ptr.cast(),
                 0,
             );
             if (*av_frame.as_mut_ptr()).buf[0].is_null() {
+                drop(Box::from_raw(retained_frame_ptr));
                 return Err(FfmpegError::new(
                     "av_buffer_create",
                     "failed to create external CUDA frame lifetime reference",
@@ -215,7 +216,11 @@ impl VideoEncoder {
 }
 
 #[cfg(feature = "cuda")]
-unsafe extern "C" fn release_external_cuda_frame(_opaque: *mut libc::c_void, _data: *mut u8) {}
+unsafe extern "C" fn release_external_cuda_frame(opaque: *mut libc::c_void, _data: *mut u8) {
+    if !opaque.is_null() {
+        drop(unsafe { Box::from_raw(opaque.cast::<crate::gpu::CudaVideoFrame>()) });
+    }
+}
 
 #[cfg(feature = "metal")]
 unsafe extern "C" fn release_cv_pixel_buffer(opaque: *mut libc::c_void, _data: *mut u8) {

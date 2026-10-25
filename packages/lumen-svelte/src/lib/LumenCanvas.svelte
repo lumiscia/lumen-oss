@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { untrack } from "svelte";
     import { LumenPreviewSession } from "@lumiscia/lumen-preview";
     import type {
         AudioSourceRegistration,
@@ -39,20 +39,32 @@
     let canvas = $state<HTMLCanvasElement | null>(null);
     let session: LumenPreviewSession | null = null;
 
-    onMount(() => {
-        const nextSession = new LumenPreviewSession({
-            preview: preview.core,
-            bindings,
-            audioSources,
-            compositionJson,
-            mediaSources,
-            ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
-            logLevel,
-            onStats: onStats ?? null,
-        });
+    $effect(() => {
+        const activeCanvas = canvas;
+        const activePreview = preview;
+        const activeBindings = bindings;
+        if (!activeCanvas) {
+            return;
+        }
+
+        const nextSession = untrack(() =>
+            new LumenPreviewSession({
+                preview: activePreview.core,
+                bindings: activeBindings,
+                audioSources,
+                compositionJson,
+                mediaSources,
+                ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
+                logLevel,
+                onStats: onStats ?? null,
+            }),
+        );
         session = nextSession;
-        void nextSession.attach(canvas).catch((error: unknown) => {
-            preview.update({
+        void nextSession.attach(activeCanvas).catch((error: unknown) => {
+            if (session !== nextSession) {
+                return;
+            }
+            activePreview.update({
                 error: error instanceof Error ? (error.stack ?? error.message) : String(error),
             });
         });

@@ -136,6 +136,9 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                     context.collect_port(&time_remap.source, collector)
                 })?;
             }
+            NodeKind::Opacity(opacity) => {
+                self.collect_port(&opacity.source, collector)?;
+            }
             NodeKind::Switch(switch) => {
                 if let Some(layer) = crate::node::compositing::switch::selected_layer_for_frame(
                     switch,

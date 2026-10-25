@@ -1,10 +1,12 @@
 use lumen_engine::{
     composition::{Composition, RenderSettings, TimelineSettings},
-    gpu::{CompileContext, FrameBindContext},
+    error::{GraphValidationError, LumenError},
+    expr::Expression,
+    gpu::{AlphaMode, CompileContext, FrameBindContext},
     graph::{Connection, Graph},
     media::{
         CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
-        VideoMetadata,
+        VideoMetadata, collect_frame_requirements,
     },
     node::{
         Deferred, NodeId, NodeKind, PortRef,
@@ -23,6 +25,7 @@ use lumen_engine::{
             hue_saturation::{HueSaturation, HueSaturationParamsDelegate},
             levels::{Levels, LevelsParamsDelegate},
             memo::{Memo, MemoParamsDelegate},
+            opacity::{Opacity, OpacityParamsDelegate},
             resize::{Resize, ResizeMode, ResizeParamsDelegate, ResizeSampling},
             time_remap::{TimeRemap, TimeRemapParamsDelegate},
             transform::{Transform, TransformParamsDelegate},
@@ -39,7 +42,80 @@ use lumen_engine::{
         },
     },
 };
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+
+#[test]
+fn compiler_rejects_cycle_before_recursive_port_traversal() {
+    let first = NodeId::new(1);
+    let second = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        first,
+        NodeKind::Exposure(Exposure {
+            id: first,
+            source: PortRef::new(second, "output".to_string()),
+            ..Exposure::default()
+        }),
+    );
+    graph.nodes.insert(
+        second,
+        NodeKind::Exposure(Exposure {
+            id: second,
+            source: PortRef::new(first, "output".to_string()),
+            ..Exposure::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(first, "output".to_string()),
+        }),
+    );
+    for connection in [
+        Connection {
+            from_node: first,
+            from_port: "output".to_string(),
+            to_node: second,
+            to_port: "source".to_string(),
+        },
+        Connection {
+            from_node: second,
+            from_port: "output".to_string(),
+            to_node: first,
+            to_port: "source".to_string(),
+        },
+        Connection {
+            from_node: first,
+            from_port: "output".to_string(),
+            to_node: output,
+            to_port: "source".to_string(),
+        },
+    ] {
+        graph.connect(connection).unwrap();
+    }
+    let composition = Composition::new(
+        graph,
+        TimelineSettings {
+            fps: 30.0,
+            duration_frames: 1,
+        },
+        RenderSettings {
+            width: 100,
+            height: 100,
+            background_color: [0, 0, 0, 255],
+        },
+    );
+
+    let error = CompileContext::new(&composition)
+        .compile()
+        .expect_err("cyclic graph must be rejected before compilation");
+    assert!(matches!(
+        error,
+        LumenError::GraphValidation(GraphValidationError::Cycle { .. })
+    ));
+}
 
 #[test]
 fn compiles_background_exposure_media_output_to_gpu_plan() {
@@ -298,8 +374,9 @@ fn compiles_media_input_as_frame_texture_boundary() {
 fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
     let base = NodeId::new(1);
     let overlay = NodeId::new(2);
-    let merge = NodeId::new(3);
-    let output = NodeId::new(4);
+    let transform = NodeId::new(3);
+    let merge = NodeId::new(4);
+    let output = NodeId::new(5);
     let mut graph = Graph::new();
     graph.nodes.insert(
         base,
@@ -327,11 +404,19 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
         }),
     );
     graph.nodes.insert(
+        transform,
+        NodeKind::Transform(Transform {
+            id: transform,
+            source: PortRef::new(overlay, "output".to_string()),
+            ..Transform::default()
+        }),
+    );
+    graph.nodes.insert(
         merge,
         NodeKind::Merge(Merge {
             id: merge,
             base: PortRef::new(base, "output".to_string()),
-            overlay: PortRef::new(overlay, "output".to_string()),
+            overlay: PortRef::new(transform, "output".to_string()),
             ..Merge::default()
         }),
     );
@@ -378,10 +463,21 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
         .clone()
         .into_raster(merge, "output")
         .unwrap();
+    let transformed_raster = compiled
+        .node_outputs
+        .get(&PortRef::new(transform, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(transform, "output")
+        .unwrap();
 
     assert_eq!(
         media_raster.domain.storage_size,
         lumen_gpu::Size::new(320, 180)
+    );
+    assert_eq!(
+        transformed_raster.domain.storage_size,
+        lumen_gpu::Size::new(1920, 1080)
     );
     assert_eq!(
         merge_raster.domain.storage_size,
@@ -865,6 +961,219 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
 }
 
 #[test]
+fn opacity_compiles_and_binds_animated_multiplier() {
+    let solid_id = NodeId::new(1);
+    let opacity = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(solid_id, solid(solid_id, [64, 128, 255, 128]));
+    graph.nodes.insert(
+        opacity,
+        NodeKind::Opacity(Opacity {
+            id: opacity,
+            params: OpacityParamsDelegate {
+                opacity: Deferred::Expr(
+                    lumen_engine::expr::Expression::parse("frame / 10").unwrap(),
+                ),
+            },
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(opacity, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let opacity_buffer = compiled
+        .plan
+        .params()
+        .iter()
+        .find_map(|param| match param.target {
+            lumen_gpu::ParamTarget::Buffer(buffer)
+                if param.key.owner == lumen_gpu::NodeKey(opacity.0) =>
+            {
+                Some(buffer)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let opacity_raster = compiled
+        .node_outputs
+        .get(&PortRef::new(opacity, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(opacity, "output")
+        .unwrap();
+    let source_raster = compiled
+        .node_outputs
+        .get(&PortRef::new(solid_id, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(solid_id, "output")
+        .unwrap();
+    assert_eq!(opacity_raster.domain, source_raster.domain);
+    assert_eq!(opacity_raster.metadata, source_raster.metadata);
+
+    let bound = FrameBindContext::new(&composition, 5)
+        .bind(&compiled)
+        .unwrap();
+    let opacity_upload = bound
+        .frame_update()
+        .uploads()
+        .iter()
+        .find_map(|upload| match upload {
+            lumen_gpu::Upload::Buffer { id, data, .. } if *id == opacity_buffer => Some(*data),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        f32::from_ne_bytes(opacity_upload[0..4].try_into().unwrap()),
+        0.5
+    );
+    assert_eq!(
+        f32::from_ne_bytes(opacity_upload[4..8].try_into().unwrap()),
+        1.0,
+        "premultiplied RGB must be scaled with alpha",
+    );
+}
+
+#[test]
+fn opacity_preserves_unpremultiplied_rgb_representation() {
+    let solid_id = NodeId::new(1);
+    let unpremultiply = NodeId::new(2);
+    let opacity = NodeId::new(3);
+    let output = NodeId::new(4);
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(solid_id, solid(solid_id, [64, 128, 255, 128]));
+    graph.nodes.insert(
+        unpremultiply,
+        NodeKind::AlphaPremultiply(AlphaPremultiply {
+            id: unpremultiply,
+            params: AlphaPremultiplyParamsDelegate {
+                mode: Deferred::value("unpremultiply".to_string()),
+            },
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        opacity,
+        NodeKind::Opacity(Opacity {
+            id: opacity,
+            params: OpacityParamsDelegate {
+                opacity: Deferred::value(0.25),
+            },
+            source: PortRef::new(unpremultiply, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(opacity, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let opacity_buffer = compiled
+        .plan
+        .params()
+        .iter()
+        .find_map(|param| match param.target {
+            lumen_gpu::ParamTarget::Buffer(buffer)
+                if param.key.owner == lumen_gpu::NodeKey(opacity.0) =>
+            {
+                Some(buffer)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let opacity_raster = compiled
+        .node_outputs
+        .get(&PortRef::new(opacity, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(opacity, "output")
+        .unwrap();
+    assert_eq!(
+        opacity_raster.metadata.alpha_mode,
+        AlphaMode::Unpremultiplied
+    );
+
+    let bound = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap();
+    let opacity_upload = bound
+        .frame_update()
+        .uploads()
+        .iter()
+        .find_map(|upload| match upload {
+            lumen_gpu::Upload::Buffer { id, data, .. } if *id == opacity_buffer => Some(*data),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        f32::from_ne_bytes(opacity_upload[0..4].try_into().unwrap()),
+        0.25
+    );
+    assert_eq!(
+        f32::from_ne_bytes(opacity_upload[4..8].try_into().unwrap()),
+        0.0,
+        "unpremultiplied RGB must remain unchanged while alpha is scaled",
+    );
+}
+
+#[test]
+fn opacity_direct_source_is_traversed_for_media_prediction() {
+    let media = NodeId::new(1);
+    let opacity = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        media,
+        NodeKind::MediaIn(MediaIn {
+            id: media,
+            params: MediaInParamsDelegate {
+                kind: Deferred::value(0),
+                source: Deferred::value("plate".to_string()),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        opacity,
+        NodeKind::Opacity(Opacity {
+            id: opacity,
+            source: PortRef::new(media, "output".to_string()),
+            ..Opacity::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(opacity, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let requirements =
+        collect_frame_requirements(&composition, &TestMediaStore::image("plate", 8, 4), 0).unwrap();
+
+    assert_eq!(requirements.images, vec!["plate"]);
+    assert!(requirements.videos.is_empty());
+}
+
+#[test]
 fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
     let solid_id = NodeId::new(1);
     let transform = NodeId::new(2);
@@ -1189,6 +1498,148 @@ fn compiles_vector_path_through_shared_renderer() {
 
     assert!(compiled.compiled_nodes.contains_key(&path));
     assert_eq!(bound.frame_update().uploads().len(), 2);
+}
+
+#[test]
+fn path_fill_pixels_are_independent_of_stroke_trim_range() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = filled_path_composition();
+    let media = EmptyMediaStore;
+
+    let full_pixels = render_rgba8(&mut renderer, &composition, 0, &media);
+    let empty_pixels = render_rgba8(&mut renderer, &composition, 1, &media);
+
+    assert_eq!(
+        full_pixels, empty_pixels,
+        "stroke trim parameters must not change fill coverage or antialiasing"
+    );
+    assert!(
+        full_pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel[3] > 0 && pixel[3] < 255),
+        "subpixel path should exercise antialiased fill coverage"
+    );
+}
+
+fn filled_path_composition() -> Composition {
+    let path = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        path,
+        NodeKind::Path(Path {
+            id: path,
+            params: PathParamsDelegate {
+                data: Deferred::value(
+                    "M 1.25 0.75 L 6.75 0.75 L 6.75 3.25 L 1.25 3.25 Z".to_string(),
+                ),
+                fill_paint: Paint::solid([255, 255, 255, 255]).into(),
+                stroke_enabled: Deferred::value(false),
+                trim_start: Deferred::Expr(Expression::parse("frame * 0.5").unwrap()),
+                trim_end: Deferred::Expr(Expression::parse("1 - frame * 0.5").unwrap()),
+                edge_antialias: Deferred::value(true),
+                ..Default::default()
+            },
+            ..Path::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(path, "output".to_string()),
+        }),
+    );
+    test_composition(graph)
+}
+
+#[derive(Debug)]
+struct EmptyMediaStore;
+
+impl MediaStore for EmptyMediaStore {
+    fn get_image_resolver(&self, _source: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+}
+
+fn gpu_composition_renderer() -> Option<lumen_engine::gpu::GpuCompositionRenderer> {
+    match pollster::block_on(lumen_engine::gpu::GpuCompositionRenderer::new()) {
+        Ok(renderer) => Some(renderer),
+        Err(error) => {
+            eprintln!("skipping GPU-backed lumen-engine test: {error:#}");
+            None
+        }
+    }
+}
+
+fn render_rgba8(
+    renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+    composition: &Composition,
+    frame: u32,
+    media: &EmptyMediaStore,
+) -> Vec<u8> {
+    let raster = renderer.render_frame(composition, frame, media).unwrap();
+    let gpu = renderer.gpu_renderer();
+    let size = raster.domain.storage_size;
+    let bytes_per_pixel = 4;
+    let unpadded_bytes_per_row = size.width * bytes_per_pixel;
+    let padded_bytes_per_row = unpadded_bytes_per_row
+        .div_ceil(lumen_gpu::wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        * lumen_gpu::wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let output = gpu
+        .device
+        .create_buffer(&lumen_gpu::wgpu::BufferDescriptor {
+            label: Some("lumen-engine path fill test readback"),
+            size: u64::from(padded_bytes_per_row) * u64::from(size.height),
+            usage: lumen_gpu::wgpu::BufferUsages::COPY_DST
+                | lumen_gpu::wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+    let mut encoder =
+        gpu.device
+            .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
+                label: Some("lumen-engine path fill test readback encoder"),
+            });
+    encoder.copy_texture_to_buffer(
+        gpu.texture(raster.texture).unwrap().as_image_copy(),
+        lumen_gpu::wgpu::TexelCopyBufferInfo {
+            buffer: &output,
+            layout: lumen_gpu::wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(size.height),
+            },
+        },
+        size.as_extent(),
+    );
+    gpu.queue.submit([encoder.finish()]);
+
+    let slice = output.slice(..);
+    let (tx, rx) = mpsc::channel();
+    slice.map_async(lumen_gpu::wgpu::MapMode::Read, move |result| {
+        tx.send(result).unwrap();
+    });
+    gpu.device
+        .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let mapped = slice.get_mapped_range().unwrap();
+    let mut pixels = vec![0; unpadded_bytes_per_row as usize * size.height as usize];
+    for row in 0..size.height as usize {
+        let source = row * padded_bytes_per_row as usize;
+        let destination = row * unpadded_bytes_per_row as usize;
+        pixels[destination..destination + unpadded_bytes_per_row as usize]
+            .copy_from_slice(&mapped[source..source + unpadded_bytes_per_row as usize]);
+    }
+    drop(mapped);
+    output.unmap();
+    pixels
 }
 
 fn solid(id: NodeId, color: [u8; 4]) -> NodeKind {

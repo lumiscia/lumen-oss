@@ -192,6 +192,12 @@ pub(crate) struct TransformParams {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct OpacityParams {
+    pub(crate) values: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct CropParams {
     pub(crate) origin: [i32; 2],
     pub(crate) size: [u32; 2],

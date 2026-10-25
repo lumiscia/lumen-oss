@@ -119,10 +119,12 @@ impl CudaDriver {
         }
         Ok(CudaDeviceAllocation {
             _driver: self,
-            device_ptr: unsafe { device_ptr.assume_init() },
-            width,
-            height,
-            pitch: unsafe { pitch.assume_init() },
+            memory: Arc::new(CudaDeviceMemory {
+                device_ptr: unsafe { device_ptr.assume_init() },
+                width,
+                height,
+                pitch: unsafe { pitch.assume_init() },
+            }),
         })
     }
 
@@ -133,10 +135,10 @@ impl CudaDriver {
     ) -> Result<(), String> {
         interop::copy_image_to_rgba_frame(
             source,
-            destination.device_ptr,
-            destination.pitch,
-            destination.width,
-            destination.height,
+            destination.memory.device_ptr,
+            destination.memory.pitch,
+            destination.memory.width,
+            destination.memory.height,
         )
     }
 
@@ -146,11 +148,11 @@ impl CudaDriver {
         destination: &ImportedCudaExternalImage,
     ) -> Result<(), String> {
         interop::copy_rgba_frame_to_image(
-            source.device_ptr,
-            source.pitch,
+            source.memory.device_ptr,
+            source.memory.pitch,
             destination,
-            source.width,
-            source.height,
+            source.memory.width,
+            source.memory.height,
         )
     }
 
@@ -192,6 +194,10 @@ impl CudaContext<'_> {
 
 pub struct CudaDeviceAllocation<'a> {
     _driver: &'a CudaDriver,
+    memory: Arc<CudaDeviceMemory>,
+}
+
+struct CudaDeviceMemory {
     device_ptr: sys::CUdeviceptr,
     width: u32,
     height: u32,
@@ -200,33 +206,36 @@ pub struct CudaDeviceAllocation<'a> {
 
 impl CudaDeviceAllocation<'_> {
     pub fn as_video_frame(&self, pts: Option<i64>) -> CudaVideoFrame {
-        CudaVideoFrame::from_device_ptr(
-            self.device_ptr,
-            self.width,
-            self.height,
-            self.pitch as u64,
+        CudaVideoFrame::from_retained_device_ptr(
+            self.memory.device_ptr,
+            self.memory.width,
+            self.memory.height,
+            self.memory.pitch as u64,
             pts,
+            self.memory.clone(),
         )
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
+        (self.memory.width, self.memory.height)
     }
 
     pub fn device_ptr(&self) -> sys::CUdeviceptr {
-        self.device_ptr
+        self.memory.device_ptr
     }
 
     pub fn pitch(&self) -> usize {
-        self.pitch
+        self.memory.pitch
     }
 
     pub fn clear(&self, value: u8) -> Result<(), String> {
         unsafe {
             sys::cuMemsetD8_v2(
-                self.device_ptr,
+                self.memory.device_ptr,
                 value,
-                self.pitch.saturating_mul(self.height as usize),
+                self.memory
+                    .pitch
+                    .saturating_mul(self.memory.height as usize),
             )
             .result()
             .map_err(|error| error.to_string())
@@ -234,7 +243,7 @@ impl CudaDeviceAllocation<'_> {
     }
 }
 
-impl Drop for CudaDeviceAllocation<'_> {
+impl Drop for CudaDeviceMemory {
     fn drop(&mut self) {
         let _ = unsafe { sys::cuMemFree_v2(self.device_ptr).result() };
     }

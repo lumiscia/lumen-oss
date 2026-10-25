@@ -104,6 +104,7 @@ impl GpuCompileNode for Levels {
             "levels",
             SHADER,
             std::mem::size_of::<compiler::LevelsParams>() as u64,
+            None,
         )?;
         ctx.register_compiled_node(CompiledLevels {
             node_id: self.id,

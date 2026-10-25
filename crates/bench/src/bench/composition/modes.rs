@@ -18,7 +18,7 @@ use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use lumen_ffmpeg::{CudaDriver, EncodeMode, GpuBackend, import_owned_vulkan_opaque_fd_image};
 
-use crate::bench::{media::EmptyMediaStore, timing::micros_per_frame};
+use crate::bench::{media::BenchmarkMediaStore, timing::micros_per_frame};
 
 use super::{
     profile::print_plan_profile,
@@ -148,18 +148,22 @@ pub fn output_path(
 
 pub async fn run_mode(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     frames: u32,
     mode: Mode,
     output: Option<&Path>,
 ) -> anyhow::Result<Duration> {
     match mode {
-        Mode::RenderOnly => benchmark_render_only(composition, frames).await,
-        Mode::RenderProfile => benchmark_render_profile(composition, frames).await,
-        Mode::Readback => benchmark_render_readback(composition, frames).await,
-        Mode::ReadbackProfile => benchmark_render_readback_profile(composition, frames).await,
+        Mode::RenderOnly => benchmark_render_only(composition, media, frames).await,
+        Mode::RenderProfile => benchmark_render_profile(composition, media, frames).await,
+        Mode::Readback => benchmark_render_readback(composition, media, frames).await,
+        Mode::ReadbackProfile => {
+            benchmark_render_readback_profile(composition, media, frames).await
+        }
         Mode::CpuEncode => {
             benchmark_render_cpu_encode(
                 composition,
+                media,
                 frames,
                 output.ok_or_else(|| anyhow!("cpu encode mode needs an output path"))?,
             )
@@ -168,6 +172,7 @@ pub async fn run_mode(
         Mode::CpuEncodeProfile => {
             benchmark_render_cpu_encode_profile(
                 composition,
+                media,
                 frames,
                 output.ok_or_else(|| anyhow!("cpu encode profile mode needs an output path"))?,
             )
@@ -176,6 +181,7 @@ pub async fn run_mode(
         Mode::MetalVideotoolbox => {
             benchmark_render_metal_videotoolbox(
                 composition,
+                media,
                 frames,
                 output.ok_or_else(|| anyhow!("Metal VideoToolbox mode needs an output path"))?,
                 false,
@@ -185,6 +191,7 @@ pub async fn run_mode(
         Mode::MetalVideotoolboxProfile => {
             benchmark_render_metal_videotoolbox(
                 composition,
+                media,
                 frames,
                 output.ok_or_else(|| {
                     anyhow!("Metal VideoToolbox profile mode needs an output path")
@@ -193,10 +200,11 @@ pub async fn run_mode(
             )
             .await
         }
-        Mode::VkCudaExport => benchmark_render_vk_cuda_export(composition, frames).await,
+        Mode::VkCudaExport => benchmark_render_vk_cuda_export(composition, media, frames).await,
         Mode::VkCudaNvenc => {
             benchmark_render_vk_cuda_nvenc(
                 composition,
+                media,
                 frames,
                 output.ok_or_else(|| anyhow!("NVENC mode needs an output path"))?,
             )
@@ -207,13 +215,13 @@ pub async fn run_mode(
 
 async fn benchmark_render_only(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     frames: u32,
 ) -> anyhow::Result<Duration> {
-    let media = EmptyMediaStore;
-    let mut renderer = renderer(composition).await?;
+    let mut renderer = renderer(composition, media).await?;
     let started = Instant::now();
     for frame in 0..frames {
-        renderer.render_frame_submitted(composition, frame, &media)?;
+        renderer.render_frame_submitted(composition, frame, media)?;
         renderer
             .gpu_renderer()
             .device
@@ -224,10 +232,10 @@ async fn benchmark_render_only(
 
 async fn benchmark_render_profile(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     frames: u32,
 ) -> anyhow::Result<Duration> {
-    let media = EmptyMediaStore;
-    let mut renderer = renderer(composition).await?;
+    let mut renderer = renderer(composition, media).await?;
     print_plan_profile(renderer.compiled());
     let mut bind = Duration::ZERO;
     let mut upload = Duration::ZERO;
@@ -236,7 +244,7 @@ async fn benchmark_render_profile(
     let started = Instant::now();
     for frame in 0..frames {
         let step = Instant::now();
-        let bound = renderer.bind_frame(composition, frame, &media)?;
+        let bound = renderer.bind_frame(composition, frame, media)?;
         bind += step.elapsed();
 
         let step = Instant::now();
@@ -272,13 +280,13 @@ async fn benchmark_render_profile(
 
 async fn benchmark_render_readback(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     frames: u32,
 ) -> anyhow::Result<Duration> {
-    let media = EmptyMediaStore;
-    let mut renderer = renderer(composition).await?;
+    let mut renderer = renderer(composition, media).await?;
     let started = Instant::now();
     for frame in 0..frames {
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, &media)?;
+        let (raster, _) = renderer.render_frame_submitted(composition, frame, media)?;
         let _pixels = read_texture_rgba8(
             renderer.gpu_renderer(),
             raster.texture,
@@ -290,10 +298,10 @@ async fn benchmark_render_readback(
 
 async fn benchmark_render_readback_profile(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     frames: u32,
 ) -> anyhow::Result<Duration> {
-    let media = EmptyMediaStore;
-    let mut renderer = renderer(composition).await?;
+    let mut renderer = renderer(composition, media).await?;
     print_plan_profile(renderer.compiled());
     let mut render = Duration::ZERO;
     let mut create_buffer = Duration::ZERO;
@@ -303,7 +311,7 @@ async fn benchmark_render_readback_profile(
     let started = Instant::now();
     for frame in 0..frames {
         let step = Instant::now();
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, &media)?;
+        let (raster, _) = renderer.render_frame_submitted(composition, frame, media)?;
         render += step.elapsed();
         let timings = read_texture_rgba8_profile(
             renderer.gpu_renderer(),
@@ -335,11 +343,11 @@ async fn benchmark_render_readback_profile(
 
 async fn benchmark_render_cpu_encode(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     frames: u32,
     output: &Path,
 ) -> anyhow::Result<Duration> {
-    let media = EmptyMediaStore;
-    let mut renderer = renderer(composition).await?;
+    let mut renderer = renderer(composition, media).await?;
     let width = composition.render_settings.width;
     let height = composition.render_settings.height;
     let mut encoder = MuxedEncoder::create(
@@ -348,7 +356,7 @@ async fn benchmark_render_cpu_encode(
     )?;
     let started = Instant::now();
     for frame in 0..frames {
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, &media)?;
+        let (raster, _) = renderer.render_frame_submitted(composition, frame, media)?;
         let pixels = read_texture_rgba8(
             renderer.gpu_renderer(),
             raster.texture,
@@ -369,11 +377,11 @@ async fn benchmark_render_cpu_encode(
 
 async fn benchmark_render_cpu_encode_profile(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     frames: u32,
     output: &Path,
 ) -> anyhow::Result<Duration> {
-    let media = EmptyMediaStore;
-    let mut renderer = renderer(composition).await?;
+    let mut renderer = renderer(composition, media).await?;
     print_plan_profile(renderer.compiled());
     let width = composition.render_settings.width;
     let height = composition.render_settings.height;
@@ -388,7 +396,7 @@ async fn benchmark_render_cpu_encode_profile(
     let started = Instant::now();
     for frame in 0..frames {
         let step = Instant::now();
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, &media)?;
+        let (raster, _) = renderer.render_frame_submitted(composition, frame, media)?;
         render += step.elapsed();
 
         let step = Instant::now();
@@ -431,13 +439,17 @@ async fn benchmark_render_cpu_encode_profile(
 #[cfg(all(target_os = "macos", feature = "metal"))]
 async fn benchmark_render_metal_videotoolbox(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     frames: u32,
     output: &Path,
     profile: bool,
 ) -> anyhow::Result<Duration> {
-    let media = EmptyMediaStore;
-    let mut renderer =
-        renderer_with_format(composition, lumen_gpu::wgpu::TextureFormat::Bgra8Unorm).await?;
+    let mut renderer = renderer_with_format(
+        composition,
+        media,
+        lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
+    )
+    .await?;
     if profile {
         print_plan_profile(renderer.compiled());
     }
@@ -460,7 +472,7 @@ async fn benchmark_render_metal_videotoolbox(
         let submitted = renderer.render_frame_into_external(
             composition,
             frame,
-            &media,
+            media,
             target.external_texture(),
         )?;
         render += step.elapsed();
@@ -512,6 +524,7 @@ async fn benchmark_render_metal_videotoolbox(
 #[cfg(not(all(target_os = "macos", feature = "metal")))]
 async fn benchmark_render_metal_videotoolbox(
     _composition: &lumen_engine::composition::Composition,
+    _media: &BenchmarkMediaStore,
     _frames: u32,
     _output: &Path,
     _profile: bool,
@@ -556,10 +569,10 @@ fn encode_ready_metal_frame(
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 async fn benchmark_render_vk_cuda_export(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     frames: u32,
 ) -> anyhow::Result<Duration> {
-    let media = EmptyMediaStore;
-    let mut renderer = renderer(composition).await?;
+    let mut renderer = renderer(composition, media).await?;
     let output_size = composition_size(composition);
     let exportable = create_exportable_texture(renderer.gpu_renderer(), output_size)?;
     let driver = CudaDriver::load().map_err(|error| anyhow!(error))?;
@@ -578,7 +591,7 @@ async fn benchmark_render_vk_cuda_export(
 
     let started = Instant::now();
     for frame in 0..frames {
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, &media)?;
+        let (raster, _) = renderer.render_frame_submitted(composition, frame, media)?;
         renderer
             .gpu_renderer()
             .copy_texture_to_external(raster.texture, exportable.texture())?;
@@ -593,6 +606,7 @@ async fn benchmark_render_vk_cuda_export(
 #[cfg(not(all(target_os = "linux", feature = "cuda", feature = "vulkan")))]
 async fn benchmark_render_vk_cuda_export(
     _composition: &lumen_engine::composition::Composition,
+    _media: &BenchmarkMediaStore,
     _frames: u32,
 ) -> anyhow::Result<Duration> {
     Err(anyhow!(
@@ -603,11 +617,11 @@ async fn benchmark_render_vk_cuda_export(
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 async fn benchmark_render_vk_cuda_nvenc(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     frames: u32,
     output: &Path,
 ) -> anyhow::Result<Duration> {
-    let media = EmptyMediaStore;
-    let mut renderer = renderer(composition).await?;
+    let mut renderer = renderer(composition, media).await?;
     let output_size = composition_size(composition);
     let target_pool = CudaNvencTargetPool::rgba8(renderer.gpu_renderer(), output_size)?;
     let target = target_pool.acquire(renderer.gpu_renderer())?;
@@ -620,7 +634,7 @@ async fn benchmark_render_vk_cuda_nvenc(
         let submitted = renderer.render_frame_into_external(
             composition,
             frame,
-            &media,
+            media,
             target.external_texture(),
         )?;
         submitted.wait(&renderer.gpu_renderer().device)?;
@@ -635,6 +649,7 @@ async fn benchmark_render_vk_cuda_nvenc(
 #[cfg(not(all(target_os = "linux", feature = "cuda", feature = "vulkan")))]
 async fn benchmark_render_vk_cuda_nvenc(
     _composition: &lumen_engine::composition::Composition,
+    _media: &BenchmarkMediaStore,
     _frames: u32,
     _output: &Path,
 ) -> anyhow::Result<Duration> {
@@ -645,17 +660,23 @@ async fn benchmark_render_vk_cuda_nvenc(
 
 pub(crate) async fn renderer(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
 ) -> anyhow::Result<lumen_engine::gpu::GpuCompositionRenderer> {
-    renderer_with_format(composition, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm).await
+    renderer_with_format(
+        composition,
+        media,
+        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+    )
+    .await
 }
 
 pub(crate) async fn renderer_with_format(
     composition: &lumen_engine::composition::Composition,
+    media: &BenchmarkMediaStore,
     format: lumen_gpu::wgpu::TextureFormat,
 ) -> anyhow::Result<lumen_engine::gpu::GpuCompositionRenderer> {
-    let media = EmptyMediaStore;
     let mut renderer = lumen_engine::gpu::GpuCompositionRenderer::new().await?;
-    renderer.compile_with_media(composition, &media, format)?;
+    renderer.compile_with_media(composition, media, format)?;
     Ok(renderer)
 }
 

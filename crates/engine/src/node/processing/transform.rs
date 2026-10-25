@@ -18,7 +18,7 @@ pub enum TransformSampling {
     Linear = 1,
 }
 
-/// Transforms a raster inside its existing static bounds.
+/// Transforms a raster into the composition canvas bounds.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TransformParams {
     /// Horizontal scale multiplier.
@@ -62,7 +62,7 @@ impl Default for TransformParams {
     }
 }
 
-/// Transforms a raster inside its existing static bounds.
+/// Transforms a raster into the composition canvas bounds.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "transform", name = "Transform", category = "processing")]
 pub struct Transform {
@@ -97,6 +97,10 @@ impl GpuCompileNode for Transform {
             "transform",
             SHADER,
             std::mem::size_of::<compiler::TransformParams>() as u64,
+            Some(lumen_gpu::Size::new(
+                ctx.composition().render_settings.width.max(1),
+                ctx.composition().render_settings.height.max(1),
+            )),
         )?;
         ctx.register_compiled_node(CompiledTransform {
             node_id: self.id,
@@ -105,7 +109,10 @@ impl GpuCompileNode for Transform {
         });
         Ok(CompiledOutput::Raster(RasterHandle {
             texture,
-            domain: source.domain,
+            domain: lumen_gpu::TextureDomain::full_frame(lumen_gpu::Size::new(
+                ctx.composition().render_settings.width.max(1),
+                ctx.composition().render_settings.height.max(1),
+            )),
             metadata: source.metadata,
         }))
     }

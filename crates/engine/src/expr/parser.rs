@@ -665,6 +665,24 @@ fn builtin_for_name(name: &str) -> Option<BuiltinFn> {
         "text_width" => Some(BuiltinFn::TextWidth),
         "uppercase" => Some(BuiltinFn::Uppercase),
         "lowercase" => Some(BuiltinFn::Lowercase),
+        "vec2" => Some(BuiltinFn::Vec2),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::expr::{BuiltinFn, ExprNode, Expression, ExpressionValue};
+
+    #[test]
+    fn recognizes_vec2_builtin_and_preserves_components() {
+        let expression = Expression::parse("vec2(10, frame + 2)").unwrap();
+
+        let ExprNode::Builtin(BuiltinFn::Vec2, args) = expression.ast else {
+            panic!("expected vec2 builtin");
+        };
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], ExprNode::Literal(ExpressionValue::Number(10.0)));
+        assert!(matches!(args[1], ExprNode::Binary(..)));
     }
 }

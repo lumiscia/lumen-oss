@@ -8,6 +8,9 @@ use crate::{FfmpegError, Result};
 
 pub(crate) use ffmpeg_sys_next as sys;
 
+// libswscale's `SWS_BILINEAR` flag; bindings expose it as a constant or an enum depending on the FFmpeg version.
+pub(crate) const SWS_BILINEAR: std::ffi::c_int = 1 << 1;
+
 static INIT: Once = Once::new();
 
 pub(crate) fn init() {

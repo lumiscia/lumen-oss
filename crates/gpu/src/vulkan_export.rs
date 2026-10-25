@@ -184,7 +184,11 @@ impl Renderer {
         };
         let texture = unsafe {
             self.device
-                .create_texture_from_hal::<wgpu_hal::api::Vulkan>(hal_texture, &wgpu_desc)
+                .create_texture_from_hal::<wgpu_hal::api::Vulkan>(
+                    hal_texture,
+                    &wgpu_desc,
+                    wgpu::TextureUses::UNINITIALIZED,
+                )
         };
 
         Ok(ExportableVulkanTexture {

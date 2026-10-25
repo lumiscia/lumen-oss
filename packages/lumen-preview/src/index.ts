@@ -249,6 +249,16 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       this.bridge.clearVideoSource(streamId);
     }
 
+    removeImageSource(imageId: string): void {
+      super.removeImageSource(imageId);
+      this.bridge.removeImageSource(imageId, false);
+    }
+
+    removeVideoSource(streamId: string): void {
+      super.removeVideoSource(streamId);
+      this.bridge.removeVideoSource(streamId, false);
+    }
+
     registerFontFamily(fontFamily: string, bytes: BufferSource): void {
       super.setFont(fontFamily, toUint8Array(bytes));
     }

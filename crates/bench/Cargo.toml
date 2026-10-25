@@ -17,7 +17,7 @@ metal = ["lumen-engine/metal", "lumen-ffmpeg/metal", "lumen-gpu/metal"]
 
 [dependencies]
 anyhow = "1.0.101"
-cosmic-text = { version = "0.18.2", default-features = false, features = ["std", "swash"] }
+cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
 fdsm = "0.8.0"
 fdsm-skrifa = "0.2.0"
 image = { version = "0.25.6", default-features = false }

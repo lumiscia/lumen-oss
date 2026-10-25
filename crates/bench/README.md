@@ -30,9 +30,27 @@ Linux-only benchmark modes such as `vk-cuda-export` and `vk-cuda-nvenc` require 
 - `lumen-bench-composition`: benchmark composition render and encode modes.
 - `lumen-bench-json-parse`: benchmark JSON composition parse and validate (uses demo JSON fixtures).
 - `lumen-bench-decode`: benchmark media decode paths.
-- `lumen-bench-text`: benchmark text layout, raster atlas, GPU hybrid atlas, color emoji, and raw glyph generation paths.
+- `lumen-bench-text`: benchmark text layout, raster atlas, GPU hybrid atlas, color emoji, raw glyph generation, and expression-driven text measurement paths.
 
-Composition names: `simple_pipeline`, `vector_showcase`, `animated_showcase`, `antialiasing_stress_aa`, `antialiasing_stress_noaa`.
+Text measurement cases compare repeated `text_width` and `text_height` evaluation for literal arguments (`measure-literal`), expression-backed text-node properties (`measure-expression`), and nonrecursive nested measurement with property references (`measure-nested-reference`).
+
+Composition names: `simple_pipeline`, `small_media_transform`, `small_media_transform_exposure`, `vector_showcase`, `animated_showcase`, `antialiasing_stress_aa`, `antialiasing_stress_noaa`.
+
+The small-media fixtures use the same deterministic in-memory 320×180 checkerboard and 1920×1080 composition canvas, so they have no file or decoder dependency:
+
+- `small_media_transform` measures `Media → Transform → Output`.
+- `small_media_transform_exposure` measures `Media → Transform → Exposure → Output`, exposing the cost of a downstream unary filter after the transform expands to canvas bounds.
+
+To compare transform canvas-bound changes, run both workloads with the same command and frame count on the base and candidate revisions:
+
+```bash
+for composition in small_media_transform small_media_transform_exposure; do
+  cargo run --release -p lumen-bench --bin lumen-bench-composition -- \
+    --composition "$composition" --mode render-only --frames 1200
+done
+```
+
+Use `--mode render-profile` for the bind/upload/submit/poll breakdown. Compare the reported `elapsed_ms` and `fps` on the same machine after a warm-up run.
 
 ## Development
 
@@ -42,6 +60,9 @@ cargo check -p lumen-bench --features vulkan,cuda
 cargo run -p lumen-bench --bin lumen-bench-composition -- --list
 cargo run -p lumen-bench --bin lumen-bench-json-parse -- --list
 cargo run -p lumen-bench --bin lumen-bench-text -- --iterations 20
+cargo run -p lumen-bench --bin lumen-bench-text -- --case measure-literal --iterations 100
+cargo run -p lumen-bench --bin lumen-bench-text -- --case measure-expression --iterations 100
+cargo run -p lumen-bench --bin lumen-bench-text -- --case measure-nested-reference --iterations 100
 ```
 
 Bench output includes per-phase timings (`phase=... ms=... us=...`) for setup, mode execution, and JSON parse loops.
