@@ -187,7 +187,7 @@ fn shape_uniforms(params: &ShapeParams) -> ShapeUniforms {
         stroke_paint: params.stroke_paint.to_gpu([0, 0, 0, 255]),
         position: [x as f32, y as f32],
         size: [params.width.max(1) as f32, params.height.max(1) as f32],
-        border_radius: params.border_radius as f32,
+        border_radius: params.border_radius.max(0.0) as f32,
         stroke_width: params.stroke_width as f32,
         geometry_kind: params.geometry_kind as u32,
         flags: shape_flags(params),
@@ -230,6 +230,15 @@ fn parse_polygon_points(text: &str, max_points: usize) -> Option<Vec<[f32; 2]>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negative_border_radius_binds_as_zero() {
+        let params = ShapeParams {
+            border_radius: -12.0,
+            ..ShapeParams::default()
+        };
+        assert_eq!(shape_uniforms(&params).border_radius, 0.0);
+    }
 
     #[test]
     fn parses_semicolon_and_newline_separated_points() {
