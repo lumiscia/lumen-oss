@@ -15,8 +15,13 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let pixel = vec2<i32>(id.xy);
-    let local = pixel - params.origin;
-    if (local.x < 0 || local.y < 0 || local.x >= i32(params.size.x) || local.y >= i32(params.size.y)) {
+    if (any(pixel < params.origin)) {
+        textureStore(output_tex, pixel, vec4<f32>(0.0));
+        return;
+    }
+    // Both operands are known to satisfy pixel >= origin, so the wrapped u32 difference is exact.
+    let local = bitcast<vec2<u32>>(pixel) - bitcast<vec2<u32>>(params.origin);
+    if (any(local >= params.size)) {
         textureStore(output_tex, pixel, vec4<f32>(0.0));
         return;
     }

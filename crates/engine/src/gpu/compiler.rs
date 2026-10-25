@@ -62,6 +62,7 @@ pub struct CompileContext<'a> {
     compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
     text_atlas_texture: Option<lumen_gpu::TextureId>,
+    raster_bounds: HashMap<lumen_gpu::TextureId, lumen_gpu::BufferId>,
 }
 
 impl<'a> CompileContext<'a> {
@@ -118,6 +119,7 @@ impl<'a> CompileContext<'a> {
             compiled_nodes: HashMap::new(),
             output_format,
             text_atlas_texture: None,
+            raster_bounds: HashMap::new(),
         }
     }
 
@@ -167,6 +169,27 @@ impl<'a> CompileContext<'a> {
                 ),
             )
         })
+    }
+
+    /// Records the uniform holding a raster's logical bounds (`origin: vec2<i32>`,
+    /// `size: vec2<u32>`), written every frame, within its storage texture.
+    ///
+    /// Bounds are looked up by texture, so only a consumer wired directly to the publishing node
+    /// sees them. Nodes between the two produce new textures and do not forward them.
+    pub(crate) fn publish_raster_bounds(
+        &mut self,
+        texture: lumen_gpu::TextureId,
+        bounds: lumen_gpu::BufferId,
+    ) {
+        self.raster_bounds.insert(texture, bounds);
+    }
+
+    /// The logical bounds of a raster, or `None` when it fills its whole storage texture.
+    pub(crate) fn raster_bounds(
+        &self,
+        texture: lumen_gpu::TextureId,
+    ) -> Option<lumen_gpu::BufferId> {
+        self.raster_bounds.get(&texture).copied()
     }
 
     pub(crate) fn builder_mut(&mut self) -> &mut lumen_gpu::RenderPlanBuilder {

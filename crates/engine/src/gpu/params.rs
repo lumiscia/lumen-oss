@@ -215,6 +215,37 @@ pub(crate) struct ResizeParams {
     pub(crate) _pad: [u32; 2],
 }
 
+/// Converts a signed pixel coordinate property to the `i32` the shaders use.
+pub(crate) fn pixel_origin(node_id: NodeId, property_path: &str, value: i64) -> crate::Result<i32> {
+    i32::try_from(value).map_err(|_| {
+        crate::error::PropertyError::InvalidType {
+            node_id,
+            property_path: property_path.to_string(),
+            expected: "an integer between -2147483648 and 2147483647",
+            actual: "out-of-range integer",
+        }
+        .into()
+    })
+}
+
+/// Converts a pixel extent property to the `u32` the shaders use; values below `min` clamp to it.
+pub(crate) fn pixel_extent(
+    node_id: NodeId,
+    property_path: &str,
+    value: i64,
+    min: u32,
+) -> crate::Result<u32> {
+    u32::try_from(value.max(i64::from(min))).map_err(|_| {
+        crate::error::PropertyError::InvalidType {
+            node_id,
+            property_path: property_path.to_string(),
+            expected: "an integer between 0 and 4294967295",
+            actual: "out-of-range integer",
+        }
+        .into()
+    })
+}
+
 pub(crate) fn dispatch_for(size: lumen_gpu::Size) -> lumen_gpu::Dispatch {
     lumen_gpu::Dispatch {
         x: size.width.div_ceil(8),
