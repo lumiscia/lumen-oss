@@ -1907,6 +1907,47 @@ fn text_test_composition(params: TextParamsDelegate) -> Composition {
 }
 
 #[test]
+fn text_standalone_compile_bind_execute_requires_injected_atlas() {
+    use lumen_engine::node::source::text::TextRenderMode;
+
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let mut gpu = match pollster::block_on(lumen_gpu::Renderer::new()) {
+        Ok(renderer) => renderer,
+        Err(error) => {
+            eprintln!("skipping GPU-backed lumen-engine test: {error:#}");
+            return;
+        }
+    };
+    for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
+        let validation = gpu
+            .device
+            .push_error_scope(lumen_gpu::wgpu::ErrorFilter::Validation);
+        let composition = text_test_composition(TextParamsDelegate {
+            content: Deferred::value("Standalone text".to_string()),
+            font_size: Deferred::value(72.0),
+            render_mode: mode.into(),
+            ..Default::default()
+        });
+        let compiled = CompileContext::new(&composition).compile().unwrap();
+        gpu.prepare_plan(&compiled.plan).unwrap();
+        let bound = FrameBindContext::new(&composition, 0)
+            .bind(&compiled)
+            .unwrap();
+        let error = gpu
+            .execute(&compiled.plan, &bound.frame_update())
+            .unwrap_err();
+        assert!(error.to_string().contains("replace placeholder textures"));
+
+        compiled.prepare_text_atlas(&mut gpu).unwrap();
+        gpu.execute(&compiled.plan, &bound.frame_update()).unwrap();
+        bound.mark_uploaded().unwrap();
+        let pixels = read_rgba8(&gpu, compiled.output);
+        assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 0), "{mode:?}");
+        assert!(pollster::block_on(validation.pop()).is_none());
+    }
+}
+
+#[test]
 fn text_nodes_share_one_fixed_atlas_with_large_second_node() {
     let _guard = TEXT_TEST_LOCK.lock().unwrap();
     let Some(mut renderer) = gpu_composition_renderer() else {
@@ -2033,6 +2074,17 @@ fn text_nodes_share_one_fixed_atlas_with_large_second_node() {
     assert_eq!(
         enlarged,
         render_rgba8(&mut reference, &composition, 0, &EmptyMediaStore)
+    );
+    renderer.release_text_atlas();
+    assert!(renderer.compiled().is_none());
+    let rebound = renderer
+        .bind_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    assert!(rebound.texture_upload_count() > 0);
+    renderer.upload_bound_frame(&rebound).unwrap();
+    assert_eq!(
+        enlarged,
+        render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore)
     );
 }
 
@@ -2890,7 +2942,10 @@ fn render_rgba8(
     media: &impl MediaStore,
 ) -> Vec<u8> {
     let raster = renderer.render_frame(composition, frame, media).unwrap();
-    let gpu = renderer.gpu_renderer();
+    read_rgba8(renderer.gpu_renderer(), raster)
+}
+
+fn read_rgba8(gpu: &lumen_gpu::Renderer, raster: lumen_engine::gpu::RasterHandle) -> Vec<u8> {
     let size = raster.domain.storage_size;
     let bytes_per_pixel = 4;
     let unpadded_bytes_per_row = size.width * bytes_per_pixel;

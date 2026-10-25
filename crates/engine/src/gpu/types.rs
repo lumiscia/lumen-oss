@@ -95,6 +95,53 @@ pub struct CompiledComposition {
     pub compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
 }
 
+impl CompiledComposition {
+    /// Installs the 4096² RGBA8 text atlas (64 MiB) after `Renderer::prepare_plan`.
+    /// Standalone callers must call this before uploading text; repeated calls retain the atlas.
+    /// `GpuCompositionRenderer` installs its shared atlas automatically.
+    pub fn prepare_text_atlas(&self, renderer: &mut lumen_gpu::Renderer) -> crate::Result<()> {
+        let Some(id) = self.text_atlas_texture else {
+            return Ok(());
+        };
+        let desc = text_atlas_desc();
+        if renderer.texture_desc(id) == Some(desc) {
+            return Ok(());
+        }
+        renderer
+            .replace_texture(id, create_text_atlas_texture(&renderer.device), desc)
+            .map_err(|error| crate::error::RenderError::Gpu {
+                details: error.to_string(),
+            })?
+            .destroy();
+        Ok(())
+    }
+}
+
+pub(super) const TEXT_ATLAS_SIZE: u32 = 4096;
+
+pub(super) fn text_atlas_desc() -> lumen_gpu::TextureDesc {
+    lumen_gpu::TextureDesc::sampled(
+        lumen_gpu::Size::new(TEXT_ATLAS_SIZE, TEXT_ATLAS_SIZE),
+        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+    )
+}
+
+pub(super) fn create_text_atlas_texture(
+    device: &lumen_gpu::wgpu::Device,
+) -> lumen_gpu::wgpu::Texture {
+    let desc = text_atlas_desc();
+    device.create_texture(&lumen_gpu::wgpu::TextureDescriptor {
+        label: Some("lumen shared glyph atlas"),
+        size: desc.domain.storage_size.as_extent(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: lumen_gpu::wgpu::TextureDimension::D2,
+        format: desc.format,
+        usage: desc.usage,
+        view_formats: &[],
+    })
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct BoundFrame {
     pub(crate) renderer_binding: Option<(u64, super::renderer::CompiledPlanKey)>,

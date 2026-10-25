@@ -657,6 +657,17 @@ impl Renderer {
                         "upload rgba8 texture region"
                     );
                     let texture = self.runtime_texture(*id)?;
+                    let installed_size = texture.texture.size();
+                    if u64::from(origin[0]) + u64::from(size.width)
+                        > u64::from(installed_size.width)
+                        || u64::from(origin[1]) + u64::from(size.height)
+                            > u64::from(installed_size.height)
+                        || origin[2] >= installed_size.depth_or_array_layers
+                    {
+                        bail!(
+                            "texture region upload for {id:?} exceeds installed texture size; replace placeholder textures with a correctly sized texture before uploading"
+                        );
+                    }
                     self.queue.write_texture(
                         wgpu::TexelCopyTextureInfo {
                             texture: &texture.texture,

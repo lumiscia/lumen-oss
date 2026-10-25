@@ -52,7 +52,9 @@ impl GpuCompositionRenderer {
             compiled_plans: HashMap::new(),
             active_key: None,
             bind_sequence: 0,
-            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(4096))),
+            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
+                super::types::TEXT_ATLAS_SIZE,
+            ))),
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             media_texture_cache: HashMap::new(),
@@ -67,7 +69,9 @@ impl GpuCompositionRenderer {
             compiled_plans: HashMap::new(),
             active_key: None,
             bind_sequence: 0,
-            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(4096))),
+            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
+                super::types::TEXT_ATLAS_SIZE,
+            ))),
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             media_texture_cache: HashMap::new(),
@@ -103,7 +107,7 @@ impl GpuCompositionRenderer {
 
     /// Drops every compiled plan and cached media texture, destroying the GPU textures and
     /// buffers this renderer exclusively owns instead of waiting for them to be garbage collected.
-    /// The next render recompiles on the same device.
+    /// Retains the shared text atlas (64 MiB once allocated) and cached glyphs across recompilation.
     pub fn release_resources(&mut self) {
         self.bind_sequence += 1;
         for texture in self.media_texture_cache.values() {
@@ -126,6 +130,17 @@ impl GpuCompositionRenderer {
         self.media_texture_cache.clear();
         self.compiled_plans.clear();
         self.active_key = None;
+    }
+
+    /// Drops compiled plans, cached media, and the text atlas, reclaiming GPU memory and cached glyphs.
+    pub fn release_text_atlas(&mut self) {
+        self.release_resources();
+        if let Some(texture) = self.text_atlas_texture.take() {
+            texture.destroy();
+        }
+        self.text_atlas = Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
+            super::types::TEXT_ATLAS_SIZE,
+        )));
     }
 
     fn reset_compiled(&mut self, output_format: lumen_gpu::wgpu::TextureFormat) {
@@ -174,7 +189,7 @@ impl GpuCompositionRenderer {
                 .replace_texture_arc(
                     id,
                     Arc::clone(self.text_atlas_texture.as_ref().expect("atlas texture")),
-                    self.text_atlas_desc()?,
+                    super::types::text_atlas_desc(),
                 )
                 .map_err(|error| RenderError::Gpu {
                     details: error.to_string(),
@@ -334,38 +349,13 @@ impl GpuCompositionRenderer {
         Ok(())
     }
 
-    fn text_atlas_desc(&self) -> crate::Result<lumen_gpu::TextureDesc> {
-        let size = self
-            .text_atlas
-            .lock()
-            .map_err(|_| RenderError::Gpu {
-                details: "text atlas lock was poisoned".to_string(),
-            })?
-            .size();
-        Ok(lumen_gpu::TextureDesc::sampled(
-            lumen_gpu::Size::new(size, size),
-            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-        ))
-    }
-
     fn ensure_text_atlas_texture(&mut self) -> crate::Result<()> {
-        let desc = self.text_atlas_desc()?;
         if self.text_atlas_texture.is_some() {
             return Ok(());
         }
-        let size = desc.domain.storage_size;
-        let texture = Arc::new(self.renderer.device.create_texture(
-            &lumen_gpu::wgpu::TextureDescriptor {
-                label: Some("lumen shared glyph atlas"),
-                size: size.as_extent(),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: lumen_gpu::wgpu::TextureDimension::D2,
-                format: desc.format,
-                usage: lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
-                    | lumen_gpu::wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            },
+        let desc = super::types::text_atlas_desc();
+        let texture = Arc::new(super::types::create_text_atlas_texture(
+            &self.renderer.device,
         ));
         for prepared in self.compiled_plans.values_mut() {
             if let Some(id) = prepared.compiled.text_atlas_texture {

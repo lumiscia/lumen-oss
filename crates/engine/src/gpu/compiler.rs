@@ -121,6 +121,7 @@ impl<'a> CompileContext<'a> {
         }
     }
 
+    /// Compiles a plan whose text atlas must be injected with `CompiledComposition::prepare_text_atlas`.
     pub fn compile(mut self) -> crate::Result<CompiledComposition> {
         if let Err(mut errors) = self.composition.validate_structure() {
             // Structural validation can report several independent problems. The public compiler
@@ -139,7 +140,7 @@ impl<'a> CompileContext<'a> {
             compiled_nodes: self.compiled_nodes,
             text_atlas_texture: self.text_atlas_texture,
             text_atlas: std::sync::Arc::new(std::sync::Mutex::new(lumen_text::GlyphAtlas::new(
-                4096,
+                super::types::TEXT_ATLAS_SIZE,
             ))),
         })
     }
