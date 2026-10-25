@@ -30,9 +30,15 @@ pub enum ResizeSampling {
     Linear = 1,
 }
 
-/// Resamples a raster into static output bounds.
+/// Resamples a raster into a rectangle placed on the composition canvas.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ResizeParams {
+    /// Left edge of the output rectangle in pixels.
+    #[meta(step = 1)]
+    pub x: i64,
+    /// Top edge of the output rectangle in pixels.
+    #[meta(step = 1)]
+    pub y: i64,
     /// Output width in pixels.
     #[meta(min = 1, step = 1)]
     pub width: i64,
@@ -50,6 +56,8 @@ pub struct ResizeParams {
 impl Default for ResizeParams {
     fn default() -> Self {
         Self {
+            x: 0,
+            y: 0,
             width: 1,
             height: 1,
             mode: ResizeMode::Stretch,
@@ -58,7 +66,7 @@ impl Default for ResizeParams {
     }
 }
 
-/// Resamples a raster into static output bounds.
+/// Resamples a raster into a rectangle placed on the composition canvas.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "resize", name = "Resize", category = "processing")]
 pub struct Resize {
@@ -94,8 +102,8 @@ impl GpuCompileNode for Resize {
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
         let size = lumen_gpu::Size::new(
-            ctx.static_dimension(&self.params.width, self.id, "width")?,
-            ctx.static_dimension(&self.params.height, self.id, "height")?,
+            ctx.composition().render_settings.width.max(1),
+            ctx.composition().render_settings.height.max(1),
         );
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
@@ -154,12 +162,14 @@ impl GpuCompiledNode for CompiledResize {
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
         let params = compiler::ResizeParams {
+            origin: [evaluated.x as i32, evaluated.y as i32],
             size: [
                 evaluated.width.max(1) as u32,
                 evaluated.height.max(1) as u32,
             ],
             mode: evaluated.mode as u32,
             sampling: evaluated.sampling as u32,
+            _pad: [0; 2],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())

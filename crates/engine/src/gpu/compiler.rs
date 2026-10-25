@@ -9,7 +9,7 @@ use crate::{
         RasterHandle, RasterMetadata, TimeRemapPath,
     },
     media::MediaStore,
-    node::{Deferred, NodeId, NodeKind, PortRef},
+    node::{NodeId, NodeKind, PortRef},
 };
 
 pub(crate) use super::params::*;
@@ -388,29 +388,6 @@ impl<'a> CompileContext<'a> {
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: RasterMetadata::default(),
         })
-    }
-
-    pub(crate) fn static_dimension(
-        &self,
-        property: &Deferred<i64>,
-        node_id: NodeId,
-        property_path: &str,
-    ) -> crate::Result<u32> {
-        let value = property.resolve_int(
-            node_id,
-            property_path,
-            &self.expr_context(node_id, property_path),
-        )?;
-        let value = if value <= 0 {
-            match property_path {
-                "width" => i64::from(self.composition.render_settings.width),
-                "height" => i64::from(self.composition.render_settings.height),
-                _ => value,
-            }
-        } else {
-            value
-        };
-        Ok(value.clamp(1, i64::from(u32::MAX)) as u32)
     }
 
     pub(crate) fn static_dimension_value(&self, value: i64, property_path: &str) -> u32 {

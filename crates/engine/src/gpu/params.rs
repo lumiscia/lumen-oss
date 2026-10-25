@@ -208,9 +208,11 @@ pub(crate) struct CropParams {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ResizeParams {
+    pub(crate) origin: [i32; 2],
     pub(crate) size: [u32; 2],
     pub(crate) mode: u32,
     pub(crate) sampling: u32,
+    pub(crate) _pad: [u32; 2],
 }
 
 pub(crate) fn dispatch_for(size: lumen_gpu::Size) -> lumen_gpu::Dispatch {

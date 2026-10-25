@@ -1,7 +1,9 @@
 struct ResizeParams {
+    origin: vec2<i32>,
     size: vec2<u32>,
     mode: u32,
     sampling: u32,
+    _pad: vec2<u32>,
 }
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
@@ -36,7 +38,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= output_size.x || id.y >= output_size.y) {
         return;
     }
-    if (id.x >= params.size.x || id.y >= params.size.y) {
+    let pixel = vec2<i32>(id.xy) - params.origin;
+    if (pixel.x < 0 || pixel.y < 0 || pixel.x >= i32(params.size.x) || pixel.y >= i32(params.size.y)) {
         textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(0.0));
         return;
     }
@@ -44,21 +47,21 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let input_size_u = textureDimensions(input_tex);
     let input_size = vec2<f32>(input_size_u);
     let dest_size = vec2<f32>(max(params.size, vec2<u32>(1u)));
-    var source_coord = (vec2<f32>(id.xy) + vec2<f32>(0.5)) * input_size / dest_size;
+    var source_coord = (vec2<f32>(pixel) + vec2<f32>(0.5)) * input_size / dest_size;
     var transparent = false;
 
     if (params.mode == 1u) {
         let scale = min(dest_size.x / input_size.x, dest_size.y / input_size.y);
         let scaled = input_size * scale;
         let offset = (dest_size - scaled) * 0.5;
-        let local = vec2<f32>(id.xy) + vec2<f32>(0.5) - offset;
+        let local = vec2<f32>(pixel) + vec2<f32>(0.5) - offset;
         transparent = local.x < 0.0 || local.y < 0.0 || local.x >= scaled.x || local.y >= scaled.y;
         source_coord = local / scale;
     } else if (params.mode == 2u) {
         let scale = max(dest_size.x / input_size.x, dest_size.y / input_size.y);
         let crop_size = dest_size / scale;
         let crop_origin = (input_size - crop_size) * 0.5;
-        source_coord = crop_origin + ((vec2<f32>(id.xy) + vec2<f32>(0.5)) / scale);
+        source_coord = crop_origin + ((vec2<f32>(pixel) + vec2<f32>(0.5)) / scale);
     }
 
     if (transparent) {

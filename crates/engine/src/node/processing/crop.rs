@@ -7,7 +7,7 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("crop.wgsl");
 
-/// Extracts a fixed raster region into static output bounds.
+/// Keeps a raster region in place and clears everything outside it.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct CropParams {
     /// Left edge of the crop region in pixels.
@@ -35,7 +35,7 @@ impl Default for CropParams {
     }
 }
 
-/// Extracts a fixed raster region into static output bounds.
+/// Keeps a raster region in place and clears everything outside it.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "crop", name = "Crop", category = "processing")]
 pub struct Crop {
@@ -70,10 +70,7 @@ impl GpuCompileNode for Crop {
         let source = ctx
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
-        let size = lumen_gpu::Size::new(
-            ctx.static_dimension(&self.params.width, self.id, "width")?,
-            ctx.static_dimension(&self.params.height, self.id, "height")?,
-        );
+        let size = source.domain.storage_size;
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("crop:{}:output", self.id.0)),
