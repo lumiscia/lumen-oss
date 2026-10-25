@@ -701,10 +701,8 @@ impl DeferredJsonValue for f32 {
 #[cfg(feature = "json")]
 impl DeferredJsonValue for i64 {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        value
-            .as_i64()
-            .or_else(|| value.as_f64().map(|value| value as i64))
-            .ok_or_else(|| "expected int".to_string())
+        crate::json::integral_i64(value)
+            .ok_or_else(|| "expected an integer within the i64 range".to_string())
     }
 }
 
@@ -747,7 +745,7 @@ impl DeferredJsonValue for String {
 #[cfg(feature = "json")]
 impl DeferredJsonValue for [u8; 4] {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        crate::json::parse_color(value).ok_or_else(|| "expected color".to_string())
+        crate::json::try_parse_color(value).map_err(|error| format!("expected color: {error}"))
     }
 }
 

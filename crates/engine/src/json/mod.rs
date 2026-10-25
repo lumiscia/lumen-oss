@@ -22,8 +22,8 @@ use crate::{
     node::NodeId,
 };
 
-pub use property::parse_color;
-pub(crate) use property::{StringParam, classify_string, parse_property};
+pub(crate) use property::{StringParam, classify_string, integral_i64, parse_property};
+pub use property::{parse_color, try_parse_color};
 
 const DEFAULT_FPS: f32 = 30.0;
 
@@ -158,7 +158,9 @@ fn parse_render_settings(val: &Value) -> Result<RenderSettings> {
         background_color: obj
             .get("background_color")
             .map(|value| {
-                parse_color(value).context("`render_settings.background_color` expected a color")
+                try_parse_color(value).map_err(|error| {
+                    anyhow::anyhow!("`render_settings.background_color` expected a color: {error}")
+                })
             })
             .transpose()?
             .unwrap_or([0, 0, 0, 255]),
@@ -212,7 +214,7 @@ fn parse_audio_track(val: &Value) -> Result<AudioTrack> {
             .to_string(),
         muted: obj.get("muted").and_then(Value::as_bool).unwrap_or(false),
         solo: obj.get("solo").and_then(Value::as_bool).unwrap_or(false),
-        volume: obj.get("volume").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+        volume: audio_volume(obj, "audio track")?,
     })
 }
 
@@ -244,8 +246,21 @@ fn parse_audio_clip(val: &Value, fps: f32) -> Result<AudioClip> {
                     .map(|seconds| (seconds.max(0.0) * 1_000.0).round() as u64)
             })
             .unwrap_or(0),
-        volume: obj.get("volume").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+        volume: audio_volume(obj, "audio clip")?,
     })
+}
+
+/// Reads an optional `volume` gain, which defaults to 1.
+fn audio_volume(obj: &Map<String, Value>, owner: &str) -> Result<f32> {
+    let Some(value) = obj.get("volume") else {
+        return Ok(1.0);
+    };
+    value
+        .as_f64()
+        .filter(|volume| *volume >= 0.0)
+        .map(|volume| volume as f32)
+        .filter(|volume| volume.is_finite())
+        .with_context(|| format!("{owner} `volume` must be a finite number of at least 0"))
 }
 
 fn audio_time_ms(obj: &Map<String, Value>, ms_key: &str, frame_key: &str, fps: f32) -> Result<u64> {
@@ -337,6 +352,59 @@ mod tests {
         assert_eq!(audio.clips[0].source_id, "voice");
         assert_eq!(audio.clips[0].start_ms, 100);
         assert_eq!(audio.clips[0].source_start_ms, 50);
+    }
+
+    #[test]
+    fn audio_volume_must_be_a_finite_non_negative_number() {
+        let parse_audio = |track_volume: Value, clip_volume: Value| {
+            parse_value(&serde_json::json!({
+                "timeline": { "fps": 30, "duration_frames": 90 },
+                "render_settings": { "width": 16, "height": 16 },
+                "audio": {
+                    "tracks": [{ "id": "track-1", "volume": track_volume }],
+                    "clips": [{
+                        "id": "clip-1",
+                        "source_id": "voice",
+                        "track_id": "track-1",
+                        "start_ms": 0,
+                        "duration_ms": 100,
+                        "volume": clip_volume
+                    }]
+                },
+                "nodes": [
+                    { "id": 1, "type": "background", "params": { "width": 16, "height": 16 } },
+                    { "id": 2, "type": "media_output" }
+                ],
+                "connections": [
+                    { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
+                ]
+            }))
+        };
+
+        let audio = parse_audio(serde_json::json!(0), serde_json::json!(2.5))
+            .unwrap()
+            .audio
+            .unwrap();
+        assert_eq!(audio.tracks[0].volume, 0.0);
+        assert_eq!(audio.clips[0].volume, 2.5);
+
+        for invalid in [
+            serde_json::json!(-0.5),
+            serde_json::json!(-1e-50),
+            serde_json::json!(1e300),
+            serde_json::json!("loud"),
+        ] {
+            let track_error = parse_audio(invalid.clone(), serde_json::json!(1)).unwrap_err();
+            assert!(
+                track_error.to_string().contains("audio track `volume`"),
+                "{invalid}: {track_error}"
+            );
+            let clip_error = parse_audio(serde_json::json!(1), invalid.clone()).unwrap_err();
+            assert!(
+                clip_error.to_string().contains("audio clip `volume`"),
+                "{invalid}: {clip_error}"
+            );
+        }
     }
 
     #[test]

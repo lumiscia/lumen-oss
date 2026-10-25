@@ -366,10 +366,9 @@ fn collect_flattened_path(
                 if points
                     .last()
                     .is_none_or(|last| last.position != [to.x, to.y])
+                    && !push_path_point(&mut points, to, contour_start, max_points)
                 {
-                    if !push_path_point(&mut points, to, contour_start, max_points) {
-                        return truncated(points, truncate);
-                    }
+                    return truncated(points, truncate);
                 }
             }
             PathEvent::End { close, .. } => {

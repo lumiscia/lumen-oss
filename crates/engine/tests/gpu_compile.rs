@@ -48,6 +48,64 @@ use std::sync::{Arc, mpsc};
 
 static TEXT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// Vulkan devices from separate wgpu instances can still crash inside the loader when used from
+// several threads at once, even with HAL labels discarded, so GPU tests run one at a time. The
+// lock is reentrant per thread for tests that hold two renderers, and is released only when the
+// last holder on that thread drops.
+static GPU_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    static GPU_LOCK_HELD: std::cell::RefCell<(usize, Option<std::sync::MutexGuard<'static, ()>>)> =
+        const { std::cell::RefCell::new((0, None)) };
+}
+
+/// Not `Send`: the count and guard it releases belong to the thread that acquired it.
+struct GpuTestLock(std::marker::PhantomData<std::rc::Rc<()>>);
+
+impl GpuTestLock {
+    fn acquire() -> Self {
+        GPU_LOCK_HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            if held.0 == 0 {
+                held.1 = Some(GPU_LOCK.lock().unwrap_or_else(|error| error.into_inner()));
+            }
+            held.0 += 1;
+        });
+        Self(std::marker::PhantomData)
+    }
+}
+
+impl Drop for GpuTestLock {
+    fn drop(&mut self) {
+        GPU_LOCK_HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            held.0 -= 1;
+            if held.0 == 0 {
+                held.1 = None;
+            }
+        });
+    }
+}
+
+struct TestRenderer {
+    renderer: lumen_engine::gpu::GpuCompositionRenderer,
+    _lock: GpuTestLock,
+}
+
+impl std::ops::Deref for TestRenderer {
+    type Target = lumen_engine::gpu::GpuCompositionRenderer;
+
+    fn deref(&self) -> &Self::Target {
+        &self.renderer
+    }
+}
+
+impl std::ops::DerefMut for TestRenderer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.renderer
+    }
+}
+
 #[test]
 fn compiler_rejects_cycle_before_recursive_port_traversal() {
     let first = NodeId::new(1);
@@ -1894,6 +1952,7 @@ fn text_standalone_compile_bind_execute_requires_injected_atlas() {
     use lumen_engine::node::source::text::TextRenderMode;
 
     let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let _gpu_lock = GpuTestLock::acquire();
     let mut gpu = match pollster::block_on(lumen_gpu::Renderer::new()) {
         Ok(renderer) => renderer,
         Err(error) => {
@@ -2545,6 +2604,84 @@ fn polygon_shape_renders_its_points_instead_of_a_rectangle() {
     }
 }
 
+fn render_shape_rgba8(params: ShapeParamsDelegate, width: u32, height: u32) -> Option<Vec<u8>> {
+    let mut renderer = gpu_composition_renderer()?;
+    let shape = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(shape, NodeKind::Shape(Shape { id: shape, params }));
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(shape, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = width;
+    composition.render_settings.height = height;
+    Some(render_rgba8(
+        &mut renderer,
+        &composition,
+        0,
+        &EmptyMediaStore,
+    ))
+}
+
+#[test]
+fn rounded_rectangle_shape_clears_corners_and_fills_centre() {
+    let Some(pixels) = render_shape_rgba8(
+        ShapeParamsDelegate {
+            width: Deferred::value(16),
+            height: Deferred::value(16),
+            border_radius: Deferred::value(8.0),
+            position: Deferred::value((2.0, 2.0)),
+            fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+            ..Default::default()
+        },
+        20,
+        20,
+    ) else {
+        return;
+    };
+    let pixel = |x: usize, y: usize| &pixels[(y * 20 + x) * 4..][..4];
+
+    for (x, y) in [(10, 10), (10, 3), (3, 10), (16, 10), (10, 16)] {
+        assert_eq!(pixel(x, y), [255, 0, 0, 255], "({x}, {y}) is inside");
+    }
+    for (x, y) in [(2, 2), (17, 2), (2, 17), (17, 17), (0, 0), (19, 19)] {
+        assert_eq!(pixel(x, y), [0, 0, 0, 0], "({x}, {y}) is outside");
+    }
+}
+
+#[test]
+fn ellipse_shape_fills_its_inscribed_ellipse() {
+    let Some(pixels) = render_shape_rgba8(
+        ShapeParamsDelegate {
+            geometry_kind: ShapeGeometryKind::Ellipse.into(),
+            width: Deferred::value(20),
+            height: Deferred::value(10),
+            position: Deferred::value((2.0, 4.0)),
+            fill_paint: Paint::solid([0, 255, 0, 255]).into(),
+            ..Default::default()
+        },
+        24,
+        18,
+    ) else {
+        return;
+    };
+    let pixel = |x: usize, y: usize| &pixels[(y * 24 + x) * 4..][..4];
+
+    for (x, y) in [(12, 9), (4, 9), (19, 9), (12, 5), (12, 12)] {
+        assert_eq!(pixel(x, y), [0, 255, 0, 255], "({x}, {y}) is inside");
+    }
+    for (x, y) in [(2, 4), (21, 4), (2, 13), (21, 13), (12, 2), (12, 15)] {
+        assert_eq!(pixel(x, y), [0, 0, 0, 0], "({x}, {y}) is outside");
+    }
+}
+
 #[test]
 fn polygon_shape_with_invalid_points_draws_nothing_without_stale_geometry() {
     let Some(mut renderer) = gpu_composition_renderer() else {
@@ -3035,9 +3172,13 @@ impl MediaStore for EmptyMediaStore {
     }
 }
 
-fn gpu_composition_renderer() -> Option<lumen_engine::gpu::GpuCompositionRenderer> {
+fn gpu_composition_renderer() -> Option<TestRenderer> {
+    let lock = GpuTestLock::acquire();
     match pollster::block_on(lumen_engine::gpu::GpuCompositionRenderer::new()) {
-        Ok(renderer) => Some(renderer),
+        Ok(renderer) => Some(TestRenderer {
+            renderer,
+            _lock: lock,
+        }),
         Err(error) => {
             eprintln!("skipping GPU-backed lumen-engine test: {error:#}");
             None

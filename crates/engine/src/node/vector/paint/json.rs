@@ -194,7 +194,7 @@ fn parse_stop(value: &Value) -> Result<GradientStop, String> {
     };
     Ok(GradientStop {
         offset: offset.as_f64().ok_or("offset must be a number")? as f32,
-        color: crate::json::parse_color(color).ok_or("color must be a color")?,
+        color: crate::json::try_parse_color(color).map_err(|error| format!("color: {error}"))?,
     })
 }
 
