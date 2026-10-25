@@ -7,14 +7,14 @@ use serde_json::Value;
 use super::types::{GradientPaint, GradientStop, Paint};
 
 #[cfg(feature = "json")]
-pub fn from_json_value(value: &Value) -> Option<Paint> {
+pub fn from_json_value(value: &Value) -> Result<Paint, String> {
     if let Some(color) = crate::json::parse_color(value) {
-        return Some(Paint::solid(color));
+        return Ok(Paint::solid(color));
     }
-    serde_json::from_value::<GradientPaintJsonOwned>(value.clone())
-        .ok()
+    serde_path_to_error::deserialize::<_, GradientPaintJsonOwned>(value)
         .map(GradientPaint::from)
         .map(Paint::Gradient)
+        .map_err(|error| format!("expected paint: {error}"))
 }
 
 #[cfg(feature = "json")]
@@ -64,7 +64,7 @@ struct GradientPaintJsonOwned {
     end: [f32; 2],
     #[serde(default = "default_center")]
     center: [f32; 2],
-    #[serde(default = "default_radius")]
+    #[serde(default = "default_radius", deserialize_with = "deserialize_radius")]
     radius: [f32; 2],
     #[serde(default)]
     angle: f32,
@@ -123,6 +123,25 @@ fn default_center() -> [f32; 2] {
 #[cfg(feature = "json")]
 fn default_radius() -> [f32; 2] {
     [0.5, 0.5]
+}
+
+#[cfg(feature = "json")]
+fn deserialize_radius<'de, D>(deserializer: D) -> Result<[f32; 2], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Radius {
+        Uniform(f32),
+        Axes([f32; 2]),
+    }
+
+    match Radius::deserialize(deserializer) {
+        Ok(Radius::Uniform(radius)) => Ok([radius, radius]),
+        Ok(Radius::Axes(radius)) => Ok(radius),
+        Err(_) => Err(serde::de::Error::custom("expected a number or [x, y]")),
+    }
 }
 
 #[cfg(feature = "json")]

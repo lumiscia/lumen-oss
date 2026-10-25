@@ -1,6 +1,6 @@
 //! JSON property conversion with type coercion and expression parsing.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 
 use crate::{
@@ -78,7 +78,7 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
             .with_context(|| format!("`{name}` expected color"))
             .map(PropertyValue::Color),
         PropertyKind::Paint => crate::node::vector::paint::Paint::from_json_value(val)
-            .with_context(|| format!("`{name}` expected paint"))
+            .map_err(|error| anyhow!("`{name}`: {error}"))
             .map(PropertyValue::Paint),
         PropertyKind::Vec2 => {
             let arr = val

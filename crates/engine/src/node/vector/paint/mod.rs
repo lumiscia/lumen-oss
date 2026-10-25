@@ -15,7 +15,7 @@ impl Paint {
     }
 
     #[cfg(feature = "json")]
-    pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
+    pub fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         json::from_json_value(value)
     }
 
@@ -181,6 +181,28 @@ mod tests {
         let json = serde_json::json!([100, 150, 200, 255]);
         let paint = Paint::from_json_value(&json).unwrap();
         assert_eq!(paint, Paint::solid([100, 150, 200, 255]));
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn paint_parses_scalar_gradient_radius() {
+        let json = serde_json::json!({
+            "type": "radial_gradient",
+            "radius": 0.25,
+            "stops": [[0.0, [255, 0, 0, 255]], [1.0, [0, 0, 255, 255]]]
+        });
+        let Paint::Gradient(gradient) = Paint::from_json_value(&json).unwrap() else {
+            panic!("expected Gradient");
+        };
+        assert_eq!(gradient.radius, [0.25, 0.25]);
+
+        let json = serde_json::json!({
+            "type": "radial_gradient",
+            "radius": "big",
+            "stops": []
+        });
+        let error = Paint::from_json_value(&json).unwrap_err();
+        assert!(error.contains("radius"), "{error}");
     }
 
     #[cfg(feature = "json")]
