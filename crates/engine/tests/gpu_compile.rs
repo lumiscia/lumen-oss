@@ -59,7 +59,8 @@ thread_local! {
         const { std::cell::RefCell::new((0, None)) };
 }
 
-struct GpuTestLock;
+/// Not `Send`: the count and guard it releases belong to the thread that acquired it.
+struct GpuTestLock(std::marker::PhantomData<std::rc::Rc<()>>);
 
 impl GpuTestLock {
     fn acquire() -> Self {
@@ -70,7 +71,7 @@ impl GpuTestLock {
             }
             held.0 += 1;
         });
-        Self
+        Self(std::marker::PhantomData)
     }
 }
 

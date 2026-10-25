@@ -137,12 +137,16 @@ impl From<wgpu::AdapterInfo> for GpuAdapterInfo {
     }
 }
 
-/// Builds the instance options from the build config and environment, always discarding HAL
-/// labels: concurrent devices from separate instances crash inside the Vulkan loader in
-/// `vkSetDebugUtilsObjectNameEXT` otherwise (https://github.com/gfx-rs/wgpu/issues/5270).
+/// Builds the instance options from the build config and environment. HAL labels are discarded
+/// unless `WGPU_DISCARD_HAL_LABELS` says otherwise: concurrent devices from separate instances
+/// crash inside the Vulkan loader in `vkSetDebugUtilsObjectNameEXT` more often with them
+/// (https://github.com/gfx-rs/wgpu/issues/5270). Set `WGPU_DISCARD_HAL_LABELS=0` to keep
+/// resource names in GPU captures.
 fn instance_descriptor() -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-    descriptor.flags |= wgpu::InstanceFlags::DISCARD_HAL_LABELS;
+    if std::env::var_os("WGPU_DISCARD_HAL_LABELS").is_none() {
+        descriptor.flags |= wgpu::InstanceFlags::DISCARD_HAL_LABELS;
+    }
     descriptor
 }
 
