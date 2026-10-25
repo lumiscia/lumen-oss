@@ -1,11 +1,14 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("levels.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("levels.wgsl")
+);
 
 /// Remaps raster black, white, gamma, and output range.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -65,6 +68,7 @@ impl Default for Levels {
 struct CompiledLevels {
     node_id: NodeId,
     params: LevelsParamsDelegate,
+    alpha_mode: AlphaMode,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -84,7 +88,8 @@ impl GpuCompiledNode for CompiledLevels {
             gamma: params.gamma as f32,
             output_black: params.output_black as f32,
             output_white: params.output_white as f32,
-            _pad: [0.0; 3],
+            premultiplied: u32::from(self.alpha_mode == AlphaMode::Premultiplied),
+            _pad: [0.0; 2],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
@@ -109,6 +114,7 @@ impl GpuCompileNode for Levels {
         ctx.register_compiled_node(CompiledLevels {
             node_id: self.id,
             params: self.params.clone(),
+            alpha_mode: source.metadata.alpha_mode,
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {

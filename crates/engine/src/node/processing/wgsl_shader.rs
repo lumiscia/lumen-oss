@@ -4,11 +4,20 @@ use crate::{
 };
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("wgsl_shader.wgsl");
+const PREMULTIPLIED_SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    "const INPUT_PREMULTIPLIED: bool = true;\n",
+    include_str!("wgsl_shader.wgsl")
+);
+const STRAIGHT_SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    "const INPUT_PREMULTIPLIED: bool = false;\n",
+    include_str!("wgsl_shader.wgsl")
+);
 
 // TODO: replace the stringly shader/bindings surface with typed shader
 // parameters once custom-node authoring settles.
@@ -65,7 +74,13 @@ impl GpuCompileNode for WgslShader {
             expr: &ctx.expr_context(self.id, "params"),
         })?;
         let shader = if params.shader.trim().is_empty() {
-            SHADER
+            let source = ctx
+                .compile_port(&self.source)?
+                .into_raster(self.source.id, &self.source.port)?;
+            match source.metadata.alpha_mode {
+                AlphaMode::Premultiplied => PREMULTIPLIED_SHADER,
+                AlphaMode::Unpremultiplied => STRAIGHT_SHADER,
+            }
         } else {
             params.shader.as_str()
         };

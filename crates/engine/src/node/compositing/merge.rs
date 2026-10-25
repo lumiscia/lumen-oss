@@ -1,11 +1,15 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, compositing::BlendMode};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, RasterMetadata, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("merge.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("blend.wgsl"),
+    include_str!("merge.wgsl")
+);
 
 /// Composites an overlay raster over a base raster.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -60,6 +64,7 @@ struct CompiledMerge {
     node_id: NodeId,
     params: MergeParamsDelegate,
     has_mask: bool,
+    straight_inputs: u32,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -77,7 +82,7 @@ impl GpuCompiledNode for CompiledMerge {
             opacity: evaluated.opacity as f32,
             blend_mode: evaluated.blend_mode as u32,
             has_mask: u32::from(self.has_mask),
-            _pad: 0,
+            straight_inputs: self.straight_inputs,
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
@@ -180,13 +185,18 @@ impl GpuCompileNode for Merge {
             node_id: self.id,
             params: self.params.clone(),
             has_mask: !self.mask.is_empty(),
+            straight_inputs: u32::from(base.metadata.alpha_mode == AlphaMode::Unpremultiplied)
+                | (u32::from(overlay.metadata.alpha_mode == AlphaMode::Unpremultiplied) << 1),
             buffer: params,
         });
 
         Ok(CompiledOutput::Raster(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: base.metadata,
+            metadata: RasterMetadata {
+                alpha_mode: AlphaMode::Premultiplied,
+                ..base.metadata
+            },
         }))
     }
 }

@@ -12,8 +12,16 @@ use super::{
     shape::{CompiledShape, Shape},
 };
 
-pub(crate) const SHAPE_SHADER: &str = include_str!("shape_renderer.wgsl");
-pub(crate) const PATH_SHADER: &str = include_str!("path_renderer.wgsl");
+pub(crate) const SHAPE_SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("paint/paint.wgsl"),
+    include_str!("shape_renderer.wgsl")
+);
+pub(crate) const PATH_SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("paint/paint.wgsl"),
+    include_str!("path_renderer.wgsl")
+);
 pub(crate) const TEXT_ATLAS_SIZE: lumen_gpu::Size = lumen_gpu::Size {
     width: 2048,
     height: 2048,

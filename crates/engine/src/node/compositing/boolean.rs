@@ -1,11 +1,14 @@
 use crate::node::{NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, RasterMetadata, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("boolean.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("boolean.wgsl")
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
@@ -76,6 +79,7 @@ impl Default for Boolean {
 struct CompiledBoolean {
     node_id: NodeId,
     params: BooleanParamsDelegate,
+    straight_inputs: [f32; 2],
     buffer: lumen_gpu::BufferId,
 }
 
@@ -93,8 +97,8 @@ impl GpuCompiledNode for CompiledBoolean {
             values: [
                 BooleanOperation::from_int(params.operation) as u32 as f32,
                 params.threshold as f32,
-                0.0,
-                0.0,
+                self.straight_inputs[0],
+                self.straight_inputs[1],
             ],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
@@ -179,13 +183,25 @@ impl GpuCompileNode for Boolean {
         ctx.register_compiled_node(CompiledBoolean {
             node_id: self.id,
             params: self.params.clone(),
+            straight_inputs: [straight_flag(a.metadata), straight_flag(b.metadata)],
             buffer: params,
         });
 
         Ok(CompiledOutput::Raster(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: a.metadata,
+            metadata: RasterMetadata {
+                alpha_mode: AlphaMode::Premultiplied,
+                ..a.metadata
+            },
         }))
+    }
+}
+
+fn straight_flag(metadata: RasterMetadata) -> f32 {
+    if metadata.alpha_mode == AlphaMode::Unpremultiplied {
+        1.0
+    } else {
+        0.0
     }
 }

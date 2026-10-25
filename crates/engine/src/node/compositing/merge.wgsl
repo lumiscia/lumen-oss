@@ -2,7 +2,8 @@ struct MergeParams {
     opacity: f32,
     blend_mode: u32,
     has_mask: u32,
-    _pad: u32,
+    // Bit 0: base is straight alpha. Bit 1: overlay is straight alpha.
+    straight_inputs: u32,
 }
 
 @group(0) @binding(0) var base_tex: texture_2d<f32>;
@@ -19,27 +20,6 @@ fn sample_or_transparent(tex: texture_2d<f32>, pixel: vec2<u32>) -> vec4<f32> {
     return textureLoad(tex, vec2<i32>(pixel), 0);
 }
 
-fn blend_rgb(base: vec3<f32>, overlay: vec3<f32>, mode: u32) -> vec3<f32> {
-    if (mode == 1u) {
-        return base * overlay;
-    }
-    if (mode == 2u) {
-        return vec3<f32>(1.0) - ((vec3<f32>(1.0) - base) * (vec3<f32>(1.0) - overlay));
-    }
-    if (mode == 3u) {
-        let low = 2.0 * base * overlay;
-        let high = vec3<f32>(1.0) - (2.0 * (vec3<f32>(1.0) - base) * (vec3<f32>(1.0) - overlay));
-        return select(high, low, base <= vec3<f32>(0.5));
-    }
-    if (mode == 4u) {
-        return min(base, overlay);
-    }
-    if (mode == 5u) {
-        return max(base, overlay);
-    }
-    return overlay;
-}
-
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(output_tex);
@@ -48,12 +28,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let pixel = id.xy;
-    let base = sample_or_transparent(base_tex, pixel);
-    let overlay = sample_or_transparent(overlay_tex, pixel);
+    let base = to_premultiplied_alpha(sample_or_transparent(base_tex, pixel), (params.straight_inputs & 1u) != 0u);
+    let overlay = to_premultiplied_alpha(sample_or_transparent(overlay_tex, pixel), (params.straight_inputs & 2u) != 0u);
     let mask = select(1.0, sample_or_transparent(mask_tex, pixel).a, params.has_mask == 1u);
     let opacity = clamp(params.opacity, 0.0, 1.0) * mask;
-    let blended = blend_rgb(base.rgb, overlay.rgb, params.blend_mode);
-    let out_alpha = overlay.a * opacity + base.a * (1.0 - overlay.a * opacity);
-    let out_rgb = mix(base.rgb, blended, overlay.a * opacity);
-    textureStore(output_tex, vec2<i32>(pixel), vec4<f32>(clamp(out_rgb, vec3<f32>(0.0), vec3<f32>(1.0)), clamp(out_alpha, 0.0, 1.0)));
+    textureStore(output_tex, vec2<i32>(pixel), composite(base, overlay * opacity, params.blend_mode));
 }

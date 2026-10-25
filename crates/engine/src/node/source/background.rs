@@ -5,7 +5,11 @@ use crate::gpu::{
     RasterMetadata, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("background.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("../vector/paint/paint.wgsl"),
+    include_str!("background.wgsl")
+);
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct BackgroundParams {

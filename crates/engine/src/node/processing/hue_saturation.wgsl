@@ -2,7 +2,7 @@ struct HueSaturationParams {
     hue_offset: f32,
     saturation: f32,
     lightness: f32,
-    _pad: f32,
+    premultiplied: u32,
 }
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
@@ -72,10 +72,12 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let color = textureLoad(input_tex, vec2<i32>(id.xy), 0);
+    let premultiplied = params.premultiplied != 0u;
+    let color = to_straight_alpha(textureLoad(input_tex, vec2<i32>(id.xy), 0), premultiplied);
     var hsl = rgb_to_hsl(color.rgb);
     hsl.x = fract(hsl.x + params.hue_offset);
     hsl.y = clamp(hsl.y * params.saturation, 0.0, 1.0);
     hsl.z = clamp(hsl.z + params.lightness, 0.0, 1.0);
-    textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(hsl_to_rgb(hsl), color.a));
+    let rgb = clamp(hsl_to_rgb(hsl), vec3<f32>(0.0), vec3<f32>(1.0));
+    textureStore(output_tex, vec2<i32>(id.xy), from_straight_alpha(vec4<f32>(rgb, color.a), premultiplied));
 }
