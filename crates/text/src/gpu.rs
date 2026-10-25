@@ -96,7 +96,7 @@ pub fn msdf_glyph_instance_for(
 ) -> GpuGlyphInstance {
     // Raster pen positions are whole pixels; outlines are shared across subpixel bins.
     let x = glyph.x + glyph.key.0.x_bin.as_float() + placement.left;
-    let y = glyph.y + glyph.key.0.y_bin.as_float() - placement.top;
+    let y = glyph.y - glyph.key.0.y_bin.as_float() - placement.top;
     GpuGlyphInstance {
         rect: [x, y, placement.width as f32, placement.height as f32],
         uv_rect: [

@@ -523,13 +523,14 @@ impl ShapedText {
             .iter()
             .map(|shaped| {
                 let glyph = &shaped.glyph;
+                // Swash offsets outlines with Y pointing up; layout positions point down.
                 let (cache_key, x, y) = CacheKey::new(
                     glyph.font_id,
                     glyph.glyph_id,
                     glyph.font_size,
                     (
                         glyph.x + glyph.font_size * glyph.x_offset + origin[0],
-                        glyph.y - glyph.font_size * glyph.y_offset + (origin[1] + shaped.line_y),
+                        -(glyph.y - glyph.font_size * glyph.y_offset + (origin[1] + shaped.line_y)),
                     ),
                     glyph.font_weight,
                     glyph.cache_key_flags,
@@ -537,7 +538,7 @@ impl ShapedText {
                 TextGlyph {
                     key: GlyphKey(cache_key),
                     x: x as f32,
-                    y: y as f32,
+                    y: -y as f32,
                     width: glyph.w,
                     height: shaped.line_height,
                     x_offset: glyph.x_offset,
@@ -1133,6 +1134,40 @@ mod tests {
         let first = system.render_alpha_atlas(&first, AtlasConfig::default(), 128);
         let second = system.render_alpha_atlas(&second, AtlasConfig::default(), 128);
         assert_ne!(first.pixels, second.pixels);
+    }
+
+    #[test]
+    fn raster_ink_follows_fractional_y() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("H");
+        request.font_size = 24.0;
+        let shaped = system.shape(&request);
+        let config = AtlasConfig::default();
+        let ink_center = |system: &mut TextSystem, y: f32| {
+            let render = system.render_alpha_atlas(&shaped.place([4.0, y], [1.0; 4]), config, 8);
+            let instance = render.instances[0];
+            let left = (instance.uv_rect[0] * config.width as f32).round() as usize;
+            let top = (instance.uv_rect[1] * config.height as f32).round() as usize;
+            let (mut weight, mut sum) = (0.0, 0.0);
+            for row in 0..instance.rect[3] as usize {
+                for col in 0..instance.rect[2] as usize {
+                    let index = ((top + row) * config.width as usize + left + col) * 4 + 3;
+                    let alpha = f32::from(render.pixels[index]);
+                    weight += alpha;
+                    sum += alpha * (instance.rect[1] + row as f32 + 0.5);
+                }
+            }
+            sum / weight
+        };
+
+        let base = ink_center(&mut system, 20.0);
+        for step in [0.25, 0.5, 0.75, 1.0, -0.25, -0.75] {
+            let moved = ink_center(&mut system, 20.0 + step) - base;
+            assert!(
+                (moved - step).abs() < 0.15,
+                "origin moved {step}px, ink moved {moved}px"
+            );
+        }
     }
 
     #[test]
