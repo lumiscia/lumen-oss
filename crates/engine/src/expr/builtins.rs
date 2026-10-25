@@ -35,6 +35,13 @@ pub fn evaluate_builtin(
             .as_f64()
             .ok_or_else(|| error(format!("{} expects numeric arguments", spec.name)))
     };
+    let mismatch = |name: &str| {
+        error(format!(
+            "`{name}` expects `from` and `to` of the same type: numbers or vec2 values, got {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        ))
+    };
     let unary = |f: fn(f64) -> f64| Ok(ExpressionValue::Number(f(number(0)?)));
 
     match builtin {
@@ -63,8 +70,9 @@ pub fn evaluate_builtin(
             }
             Ok(ExpressionValue::Number(value.clamp(min, max)))
         }
-        BuiltinFn::Lerp | BuiltinFn::Linear => interpolate(&args[0], &args[1], number(2)?)
-            .ok_or_else(|| error(format!("{} expects numeric arguments", spec.name))),
+        BuiltinFn::Lerp | BuiltinFn::Linear => {
+            interpolate(&args[0], &args[1], number(2)?).ok_or_else(|| mismatch(spec.name))
+        }
         BuiltinFn::Pow => Ok(ExpressionValue::Number(number(0)?.powf(number(1)?))),
         BuiltinFn::Mod => {
             let (lhs, rhs) = (number(0)?, number(1)?);
@@ -105,8 +113,7 @@ pub fn evaluate_builtin(
             };
             let start = number(2)?;
             let t = ease.apply(progress(ctx, start, start + number(3)?));
-            interpolate(&args[0], &args[1], t)
-                .ok_or_else(|| error("tween expects numeric from and to values".to_string()))
+            interpolate(&args[0], &args[1], t).ok_or_else(|| mismatch(spec.name))
         }
         BuiltinFn::InQuad
         | BuiltinFn::OutQuad
@@ -165,8 +172,14 @@ fn progress(ctx: &ExpressionContext<'_>, start: f64, end: f64) -> f64 {
 }
 
 fn interpolate(from: &ExpressionValue, to: &ExpressionValue, t: f64) -> Option<ExpressionValue> {
-    let (from, to) = (from.as_f64()?, to.as_f64()?);
-    Some(ExpressionValue::Number(from + (to - from) * t))
+    let mix = |from: f64, to: f64| from + (to - from) * t;
+    match (from, to) {
+        (ExpressionValue::Vec2(from), ExpressionValue::Vec2(to)) => Some(ExpressionValue::Vec2((
+            mix(from.0, to.0),
+            mix(from.1, to.1),
+        ))),
+        _ => Some(ExpressionValue::Number(mix(from.as_f64()?, to.as_f64()?))),
+    }
 }
 
 fn eval_error(ctx: &ExpressionContext<'_>, details: String) -> LumenError {

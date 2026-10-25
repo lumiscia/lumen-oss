@@ -40,7 +40,10 @@ pub(crate) fn evaluate_expr(
         ExprNode::Unary(op, value) => {
             let evaluated = evaluate_expr(value, ctx)?;
             match op {
-                UnaryOp::Neg => Ok(ExpressionValue::Number(-to_number(&evaluated, ctx)?)),
+                UnaryOp::Neg => match evaluated {
+                    ExpressionValue::Vec2((x, y)) => Ok(ExpressionValue::Vec2((-x, -y))),
+                    other => Ok(ExpressionValue::Number(-to_number(&other, ctx)?)),
+                },
                 UnaryOp::Not => Ok(ExpressionValue::Boolean(!to_boolean(&evaluated))),
             }
         }
@@ -69,46 +72,19 @@ pub(crate) fn evaluate_expr(
                     let rhs = evaluate_expr(right, ctx)?;
                     Ok(ExpressionValue::Boolean(lhs != rhs))
                 }
-                BinaryOp::Add
-                | BinaryOp::Sub
-                | BinaryOp::Mul
-                | BinaryOp::Div
-                | BinaryOp::Mod
-                | BinaryOp::Gt
-                | BinaryOp::Lt
-                | BinaryOp::Gte
-                | BinaryOp::Lte => {
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
                     let rhs = evaluate_expr(right, ctx)?;
-                    let lhs_num = to_number(&lhs, ctx)?;
-                    let rhs_num = to_number(&rhs, ctx)?;
-                    match op {
-                        BinaryOp::Add => Ok(ExpressionValue::Number(lhs_num + rhs_num)),
-                        BinaryOp::Sub => Ok(ExpressionValue::Number(lhs_num - rhs_num)),
-                        BinaryOp::Mul => Ok(ExpressionValue::Number(lhs_num * rhs_num)),
-                        BinaryOp::Div => {
-                            if rhs_num.abs() <= f64::EPSILON {
-                                return Err(LumenError::Expression(ExpressionError::Evaluate {
-                                    path: ctx.path.clone(),
-                                    details: "division by zero".to_string(),
-                                }));
-                            }
-                            Ok(ExpressionValue::Number(lhs_num / rhs_num))
-                        }
-                        BinaryOp::Mod => {
-                            if rhs_num.abs() <= f64::EPSILON {
-                                return Err(LumenError::Expression(ExpressionError::Evaluate {
-                                    path: ctx.path.clone(),
-                                    details: "modulo by zero".to_string(),
-                                }));
-                            }
-                            Ok(ExpressionValue::Number(lhs_num % rhs_num))
-                        }
-                        BinaryOp::Gt => Ok(ExpressionValue::Boolean(lhs_num > rhs_num)),
-                        BinaryOp::Lt => Ok(ExpressionValue::Boolean(lhs_num < rhs_num)),
-                        BinaryOp::Gte => Ok(ExpressionValue::Boolean(lhs_num >= rhs_num)),
-                        BinaryOp::Lte => Ok(ExpressionValue::Boolean(lhs_num <= rhs_num)),
-                        _ => unreachable!(),
-                    }
+                    arithmetic(*op, &lhs, &rhs, ctx)
+                }
+                BinaryOp::Gt | BinaryOp::Lt | BinaryOp::Gte | BinaryOp::Lte => {
+                    let rhs = evaluate_expr(right, ctx)?;
+                    let (lhs, rhs) = (to_number(&lhs, ctx)?, to_number(&rhs, ctx)?);
+                    Ok(ExpressionValue::Boolean(match op {
+                        BinaryOp::Gt => lhs > rhs,
+                        BinaryOp::Lt => lhs < rhs,
+                        BinaryOp::Gte => lhs >= rhs,
+                        _ => lhs <= rhs,
+                    }))
                 }
             }
         }
@@ -202,6 +178,74 @@ pub(crate) fn evaluate_expr(
                 evaluate_expr(when_false, ctx)
             }
         }
+    }
+}
+
+/// Numbers combine as usual. Two vec2 values combine componentwise, and a vec2 can be
+/// multiplied or divided by a number on either side.
+fn arithmetic(
+    op: BinaryOp,
+    lhs: &ExpressionValue,
+    rhs: &ExpressionValue,
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<ExpressionValue> {
+    let error = |details: String| {
+        LumenError::Expression(ExpressionError::Evaluate {
+            path: ctx.path.clone(),
+            details,
+        })
+    };
+    let apply = |a: f64, b: f64| match op {
+        BinaryOp::Add => Ok(a + b),
+        BinaryOp::Sub => Ok(a - b),
+        BinaryOp::Mul => Ok(a * b),
+        BinaryOp::Div if b.abs() <= f64::EPSILON => Err(error("division by zero".to_string())),
+        BinaryOp::Div => Ok(a / b),
+        BinaryOp::Mod if b.abs() <= f64::EPSILON => Err(error("modulo by zero".to_string())),
+        _ => Ok(a % b),
+    };
+    let scales = matches!(op, BinaryOp::Mul | BinaryOp::Div);
+    let (a, b) = match (lhs, rhs) {
+        (ExpressionValue::Vec2(a), ExpressionValue::Vec2(b)) if op != BinaryOp::Mod => (*a, *b),
+        (ExpressionValue::Vec2(a), other) if scales => {
+            let scalar = to_number(other, ctx)?;
+            (*a, (scalar, scalar))
+        }
+        (other, ExpressionValue::Vec2(b)) if scales => {
+            let scalar = to_number(other, ctx)?;
+            ((scalar, scalar), *b)
+        }
+        (ExpressionValue::Vec2(_), _) | (_, ExpressionValue::Vec2(_)) => {
+            return Err(error(format!(
+                "cannot apply `{}` to {} and {}",
+                operator_symbol(op),
+                lhs.type_name(),
+                rhs.type_name()
+            )));
+        }
+        _ => {
+            let value = apply(to_number(lhs, ctx)?, to_number(rhs, ctx)?)?;
+            return Ok(ExpressionValue::Number(value));
+        }
+    };
+    Ok(ExpressionValue::Vec2((apply(a.0, b.0)?, apply(a.1, b.1)?)))
+}
+
+fn operator_symbol(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Mul => "*",
+        BinaryOp::Div => "/",
+        BinaryOp::Mod => "%",
+        BinaryOp::Gt => ">",
+        BinaryOp::Lt => "<",
+        BinaryOp::Gte => ">=",
+        BinaryOp::Lte => "<=",
+        BinaryOp::Eq => "==",
+        BinaryOp::Neq => "!=",
+        BinaryOp::And => "&&",
+        BinaryOp::Or => "||",
     }
 }
 
@@ -517,20 +561,84 @@ mod tests {
         }
     }
 
-    #[test]
-    fn vec2_rejects_scalar_arithmetic_and_unary_negation() {
-        for source in ["vec2(1, 2) + 3", "3 * vec2(1, 2)", "-vec2(1, 2)"] {
-            let error = Expression::parse(source)
-                .unwrap()
-                .evaluate(&test_context())
-                .expect_err("vec2 scalar misuse must fail");
+    fn evaluate(source: &str, frame: u32) -> crate::Result<ExpressionValue> {
+        let ctx = ExpressionContext {
+            frame,
+            ..test_context()
+        };
+        Expression::parse(source).unwrap().evaluate(&ctx)
+    }
 
-            let LumenError::Expression(ExpressionError::Evaluate { path, details }) = error else {
+    #[test]
+    fn vec2_arithmetic_is_componentwise() {
+        for (source, expected) in [
+            ("vec2(1, 2) + vec2(10, 20)", (11.0, 22.0)),
+            ("vec2(1, 2) - vec2(10, 20)", (-9.0, -18.0)),
+            ("-vec2(1, -2)", (-1.0, 2.0)),
+            ("vec2(1, 2) * 3", (3.0, 6.0)),
+            ("3 * vec2(1, 2)", (3.0, 6.0)),
+            ("vec2(4, 8) / 2", (2.0, 4.0)),
+            ("8 / vec2(4, 2)", (2.0, 4.0)),
+            ("vec2(2, 3) * vec2(4, 5)", (8.0, 15.0)),
+            ("vec2(8, 15) / vec2(4, 5)", (2.0, 3.0)),
+            ("lerp(vec2(0, 10), vec2(10, 30), 0.25)", (2.5, 15.0)),
+        ] {
+            assert_eq!(
+                evaluate(source, 0).unwrap(),
+                ExpressionValue::Vec2(expected),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn vec2_rejects_mismatched_arithmetic() {
+        for (source, expected) in [
+            ("vec2(1, 2) + 3", "cannot apply `+` to vec2 and number"),
+            ("3 - vec2(1, 2)", "cannot apply `-` to number and vec2"),
+            ("vec2(1, 2) % 2", "cannot apply `%` to vec2 and number"),
+            (
+                "vec2(1, 2) % vec2(1, 2)",
+                "cannot apply `%` to vec2 and vec2",
+            ),
+            ("vec2(1, 2) / 0", "division by zero"),
+            ("vec2(1, 2) > 1", "cannot convert vec2 into f64"),
+            (
+                "lerp(vec2(1, 2), 3, 0.5)",
+                "`lerp` expects `from` and `to` of the same type",
+            ),
+        ] {
+            let LumenError::Expression(ExpressionError::Evaluate { path, details }) =
+                evaluate(source, 0).unwrap_err()
+            else {
                 panic!("expected expression evaluation error");
             };
             assert_eq!(path.as_deref(), Some("node.opacity"));
-            assert_eq!(details, "cannot convert vec2 into f64");
+            assert!(details.starts_with(expected), "{source}: {details}");
         }
+    }
+
+    #[test]
+    fn evaluates_issue_vec2_tween_sum() {
+        let source = "vec2(960, 1200) \
+            + tween(vec2(0, 0), vec2(0, -660), 0, 18, 'out_expo') \
+            + tween(vec2(0, 0), vec2(-1360, 0), 90, 14, 'in_back')";
+        for (frame, expected) in [
+            (0, (960.0, 1200.0)),
+            (18, (960.0, 540.0)),
+            (90, (960.0, 540.0)),
+            (104, (-400.0, 540.0)),
+        ] {
+            assert_eq!(
+                evaluate(source, frame).unwrap(),
+                ExpressionValue::Vec2(expected),
+                "frame {frame}"
+            );
+        }
+        let ExpressionValue::Vec2((x, _)) = evaluate(source, 93).unwrap() else {
+            panic!("expected vec2");
+        };
+        assert!(x > 960.0, "in_back pulls back before leaving: {x}");
     }
 
     #[test]
