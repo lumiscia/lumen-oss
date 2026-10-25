@@ -33,7 +33,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (operation == 1u) {
         alpha = min(aa, ba);
     } else if (operation == 2u) {
-        alpha = aa * (1.0 - ba);
+        // Subtracting a mask from itself must leave nothing, which a product would not for
+        // partially covered pixels.
+        alpha = max(aa - ba, 0.0);
     } else if (operation == 3u) {
         alpha = abs(aa - ba);
     }

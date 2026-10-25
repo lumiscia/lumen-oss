@@ -1,4 +1,6 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, compositing::BlendMode};
+use crate::node::{
+    NodeId, NodeParamEvalContext, NodeParams, PortRef, compositing::BlendMode, processing::gaussian,
+};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -26,9 +28,6 @@ pub enum MaskMode {
     Luma = 1,
 }
 
-/// Largest feather radius in pixels; larger values are clamped.
-const MAX_FEATHER: f64 = 32.0;
-
 /// Composites an overlay raster over a base raster.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct MergeParams {
@@ -44,8 +43,8 @@ pub struct MergeParams {
     /// Swaps the masked and unmasked areas.
     #[meta()]
     pub invert: bool,
-    /// Softens the mask edge by averaging it over a disc of this radius in pixels (up to 32).
-    #[meta(min = 0, max = 32, step = 0.5)]
+    /// Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`.
+    #[meta(min = 0, step = 0.5)]
     pub feather: f64,
 }
 
@@ -94,9 +93,17 @@ struct CompiledMerge {
     node_id: NodeId,
     params: MergeParamsDelegate,
     has_mask: bool,
-    /// Bit 0: base, bit 1: overlay, bit 2: mask is straight alpha.
+    /// Bit 0: base, bit 1: overlay.
     straight_inputs: u32,
+    /// Feathered mask passes, present when the node has a `mask` input.
+    feather: Option<CompiledFeather>,
     buffer: lumen_gpu::BufferId,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledFeather {
+    passes: gaussian::GaussianPasses,
+    straight_mask: bool,
 }
 
 impl GpuCompiledNode for CompiledMerge {
@@ -116,9 +123,18 @@ impl GpuCompiledNode for CompiledMerge {
             straight_inputs: self.straight_inputs,
             mask_mode: evaluated.mask_mode as u32,
             invert: u32::from(evaluated.invert),
-            feather: evaluated.feather.clamp(0.0, MAX_FEATHER) as f32,
-            _pad: 0,
         };
+        if let Some(feather) = &self.feather {
+            feather.passes.write(
+                bound,
+                &gaussian::GaussianSettings {
+                    radius: evaluated.feather.max(0.0),
+                    straight_source: feather.straight_mask,
+                    transparent_edge: true,
+                    offset: [0.0, 0.0],
+                },
+            );
+        }
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
     }
@@ -150,6 +166,10 @@ impl GpuCompileNode for Merge {
         };
 
         let size = base.domain.storage_size;
+        let feather = mask.map(|mask| CompiledFeather {
+            passes: gaussian::compile_passes(ctx, self.id, "merge-feather", mask.texture, size),
+            straight_mask: mask.metadata.alpha_mode == AlphaMode::Unpremultiplied,
+        });
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("merge:{}:output", self.id.0)),
@@ -202,7 +222,9 @@ impl GpuCompileNode for Merge {
                 lumen_gpu::Binding::sampled_texture(
                     0,
                     2,
-                    mask.map(|mask| mask.texture).unwrap_or(base.texture),
+                    feather
+                        .as_ref()
+                        .map_or(base.texture, |feather| feather.passes.output),
                 ),
                 lumen_gpu::Binding::uniform(0, 3, params),
                 lumen_gpu::Binding::storage_texture(0, 4, texture),
@@ -212,7 +234,7 @@ impl GpuCompileNode for Merge {
         ctx.builder_mut().param(
             lumen_gpu::ParamKey {
                 owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 0,
+                slot: 1,
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
@@ -221,10 +243,8 @@ impl GpuCompileNode for Merge {
             params: self.params.clone(),
             has_mask: !self.mask.is_empty(),
             straight_inputs: u32::from(base.metadata.alpha_mode == AlphaMode::Unpremultiplied)
-                | (u32::from(overlay.metadata.alpha_mode == AlphaMode::Unpremultiplied) << 1)
-                | (u32::from(
-                    mask.is_some_and(|mask| mask.metadata.alpha_mode == AlphaMode::Unpremultiplied),
-                ) << 2),
+                | (u32::from(overlay.metadata.alpha_mode == AlphaMode::Unpremultiplied) << 1),
+            feather,
             buffer: params,
         });
 

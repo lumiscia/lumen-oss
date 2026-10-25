@@ -1668,7 +1668,6 @@
                   "feather": {
                     "anyOf": [
                       {
-                        "maximum": 32.0,
                         "minimum": 0.0,
                         "type": "number"
                       },
@@ -1677,10 +1676,9 @@
                       }
                     ],
                     "default": 0.0,
-                    "description": "Softens the mask edge by averaging it over a disc of this radius in pixels (up to 32).",
+                    "description": "Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`.",
                     "title": "Feather",
                     "x-lumen-constraints": {
-                      "max": 32.0,
                       "min": 0.0,
                       "step": 0.5
                     },
