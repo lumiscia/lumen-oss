@@ -39,9 +39,9 @@ type WithExpressionParams<TNode extends { readonly params?: object }> = Omit<TNo
   };
 };
 
-type ParamInput<TParam> = ExpressionString extends TParam
-  ? TParam | ParamExpr<Exclude<TParam, ExpressionString | undefined>>
-  : TParam;
+type ParamInput<TParam> = [Extract<TParam, ExpressionString>] extends [never]
+  ? TParam
+  : TParam | ParamExpr<Exclude<TParam, ExpressionString | undefined>>;
 
 type ParamExpr<T> = [T] extends [boolean]
   ? never

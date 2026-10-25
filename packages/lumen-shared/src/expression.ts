@@ -206,8 +206,16 @@ type KindValue<K> = K extends "number"
         ? string
         : Value;
 
+/** Skipped arguments must be `undefined` through to the end, so an interior hole is a type error. */
+type SkippedArgs<A> = A extends readonly [SpecArg, ...infer Tail]
+  ? [] | [undefined, ...SkippedArgs<Tail>]
+  : [];
+
 type OptionalArgs<A> = A extends readonly [infer Head extends SpecArg, ...infer Tail]
-  ? [KindArg<Head["kind"]>?, ...OptionalArgs<Tail>]
+  ?
+      | [(KindArg<Head["kind"]> | undefined)?]
+      | [KindArg<Head["kind"]>, ...OptionalArgs<Tail>]
+      | [undefined, ...SkippedArgs<Tail>]
   : [];
 
 type FixedArgs<A, Min, Done extends unknown[] = []> = Done["length"] extends Min
@@ -404,6 +412,9 @@ export function fn<A extends readonly AnyArg[], R extends Value>(
   if (reserved !== undefined) {
     throw new TypeError(`\`${reserved}\` is a reserved name.`);
   }
+  if (params.includes(name)) {
+    throw new TypeError(`Parameter \`${name}\` has the same name as its function.`);
+  }
   const repeated = params.find((param, index) => params.indexOf(param) !== index);
   if (repeated !== undefined) {
     throw new TypeError(`Parameter \`${repeated}\` is declared twice.`);
@@ -429,6 +440,18 @@ export interface Move<T extends number | Vec2> {
   readonly ease?: EasingName;
 }
 
+function zeroOf(kind: Kind | undefined): Num | Arg<Vec2> {
+  if (kind === "number") {
+    return 0;
+  }
+  if (kind === "vec2") {
+    return vec2(0, 0);
+  }
+  throw new TypeError(
+    "`moves` cannot tell whether its values are numbers or vec2s; type the base.",
+  );
+}
+
 /** `base` plus one `tween` from zero to `by` per move, so moves can overlap. */
 export function moves(base: Num, steps: readonly Move<number>[]): Expr<number>;
 export function moves(base: Arg<Vec2>, steps: readonly Move<Vec2>[]): Expr<Vec2>;
@@ -441,7 +464,10 @@ export function moves(
     throw new TypeError("`moves` needs a number or vec2 base.");
   }
   const initial = base instanceof Expr ? base : new Expr(lower(base), kind);
-  const zero = kind === "number" ? 0 : kind === "vec2" ? vec2(0, 0) : binary(initial, "-", initial);
+  if (steps.length === 0) {
+    return initial;
+  }
+  const zero = zeroOf(kind ?? steps.map(({ by }) => kindOf(by)).find((kind) => kind !== undefined));
   const untypedTween = tween as (...args: readonly AnyArg[]) => Expr;
   return steps.reduce<Expr>((sum, { by, start, duration, ease }) => {
     const args = [zero, by, start, duration, ...(ease === undefined ? [] : [ease])];

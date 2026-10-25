@@ -215,6 +215,7 @@ describe("expression helpers", () => {
   test("drop trailing undefined arguments", () => {
     expect(String(tween(0, 1, 0, 12, undefined))).toBe("=tween(0, 1, 0, 12)");
     expect(String(spring(0, undefined, undefined))).toBe("=spring(0)");
+    // @ts-expect-error interior holes are rejected at compile time too
     expect(() => spring(0, undefined, 20)).toThrow(
       "`spring` cannot skip an optional argument before a later one.",
     );
@@ -222,9 +223,15 @@ describe("expression helpers", () => {
 
   test("moves accepts expressions of unknown kind", () => {
     const offset = fn("offset(x)", (x: Num) => moves(x, [{ by: 10, start: 0, duration: 10 }]));
-    expect(offset.body).toBe("(x + tween((x - x), 10, 0, 10))");
+    expect(offset.body).toBe("(x + tween(0, 10, 0, 10))");
     expect(String(offset(frame).add(1))).toBe("=(offset(frame) + 1)");
     expect(fn("same(x)", (x: Num) => moves(x, [])).body).toBe("x");
+    expect(fn("at(x)", (x: Num) => moves(x, [{ by: [1, 2], start: 0, duration: 10 }])).body).toBe(
+      "(x + tween(vec2(0, 0), vec2(1, 2), 0, 10))",
+    );
+    expect(() =>
+      fn("blind(x, y)", (x: Num, y: Num) => moves(x, [{ by: y, start: 0, duration: 10 }])),
+    ).toThrow("`moves` cannot tell whether its values are numbers or vec2s; type the base.");
     expect(() => moves(hex("#fff000") as unknown as Num, [])).toThrow(
       "`moves` needs a number or vec2 base.",
     );
@@ -236,6 +243,9 @@ describe("expression helpers", () => {
     expect(() => fn("tween(x)", body)).toThrow("`tween` is a reserved name.");
     expect(() => fn("f(frame)", body)).toThrow("`frame` is a reserved name.");
     expect(() => fn("f(if)", body)).toThrow("`if` is a reserved name.");
+    expect(() => fn("f(f)", (f: Num) => f as Expr<number>)).toThrow(
+      "Parameter `f` has the same name as its function.",
+    );
     expect(() => fn("f(x, x)", (x: Num, _y: Num) => x as Expr<number>)).toThrow(
       "Parameter `x` is declared twice.",
     );
