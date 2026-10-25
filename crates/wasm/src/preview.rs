@@ -109,6 +109,29 @@ impl PreviewState {
         self.render_metrics.reset();
     }
 
+    /// Replaces the loaded composition and parks the playhead on frame 0.
+    fn install_composition(&mut self, composition: Composition, media: &WasmMediaStore) {
+        self.width = composition.render_settings.width as usize;
+        self.height = composition.render_settings.height as usize;
+        self.duration_frames = composition.timeline.duration_frames;
+        self.fps = f64::from(composition.timeline.fps.max(1.0));
+        self.composition = Some(composition);
+        self.playing = false;
+        self.render_metrics.reset();
+        self.composition_sync_ms = 0.0;
+        self.invalidate_renderer();
+        self.move_playhead(0, media);
+    }
+
+    /// Jumps the playhead to `frame` (clamped) and pins that frame's media needs so the frames
+    /// pinned for the previous position become evictable.
+    fn move_playhead(&mut self, frame: u32, media: &WasmMediaStore) {
+        self.current_frame = self.clamp_frame(frame);
+        self.last_tick_ms = None;
+        self.frame_accumulator_ms = 0.0;
+        pin_frame(self, media, self.current_frame);
+    }
+
     fn ready(&self) -> bool {
         self.composition.is_some()
     }
@@ -174,18 +197,7 @@ impl LumenPreviewController {
             composition_json_to_composition(composition_json).map_err(|e| JsValue::from_str(&e))?;
 
         let mut state = self.state_mut()?;
-        state.width = composition.render_settings.width as usize;
-        state.height = composition.render_settings.height as usize;
-        state.duration_frames = composition.timeline.duration_frames;
-        state.fps = f64::from(composition.timeline.fps.max(1.0));
-        state.current_frame = 0;
-        state.playing = false;
-        state.last_tick_ms = None;
-        state.frame_accumulator_ms = 0.0;
-        state.render_metrics.reset();
-        state.invalidate_renderer();
-        state.composition = Some(composition);
-        state.composition_sync_ms = 0.0;
+        state.install_composition(composition, &self.media);
         tracing::debug!(
             target: "lumen_wasm",
             width = state.width,
@@ -246,11 +258,8 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "setFrame")]
     pub fn set_frame(&self, frame: u32) -> Result<(), JsValue> {
         let mut state = self.state_mut()?;
-        state.current_frame = state.clamp_frame(frame);
+        state.move_playhead(frame, &self.media);
         state.dirty = state.ready();
-        state.last_tick_ms = None;
-        state.frame_accumulator_ms = 0.0;
-        pin_frame(&state, &self.media, state.current_frame);
         Ok(())
     }
 
@@ -718,4 +727,70 @@ fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Resu
         "checked frame readiness"
     );
     Ok(ready)
+}
+
+#[cfg(test)]
+mod tests {
+    use lumen_engine::media::VideoMetadata;
+
+    use super::*;
+
+    const COMPOSITION_JSON: &str = r#"{
+        "timeline": { "fps": 30, "duration_frames": 200 },
+        "render_settings": { "width": 8, "height": 4 },
+        "nodes": [
+            { "id": 1, "type": "media_in", "params": { "kind": "video", "source": "a" } },
+            { "id": 2, "type": "media_in", "params": { "kind": "video", "source": "b" } },
+            { "id": 3, "type": "merge", "params": {} },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "base" },
+            { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "overlay" },
+            { "from_node": 3, "from_port": "output", "to_node": 4, "to_port": "source" }
+        ]
+    }"#;
+
+    fn upload(media: &WasmMediaStore, frame: u32) {
+        for stream_id in ["a", "b"] {
+            let image = image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
+            media
+                .set_video_frame(stream_id.to_string(), frame, image)
+                .expect("set frame");
+        }
+    }
+
+    #[test]
+    fn reloading_with_an_occupied_cache_pins_frame_zero() {
+        let media = WasmMediaStore::default();
+        for stream_id in ["a", "b"] {
+            media
+                .set_video_metadata(
+                    stream_id.to_string(),
+                    VideoMetadata {
+                        width: 1,
+                        height: 1,
+                        frame_count: 200,
+                        fps: 30.0,
+                    },
+                )
+                .expect("set metadata");
+        }
+        // Room for two frames: one per stream.
+        media.set_video_frame_cache_bytes(8).expect("set budget");
+
+        let load = || composition_json_to_composition(COMPOSITION_JSON).expect("composition");
+        let mut state = PreviewState::default();
+        state.install_composition(load(), &media);
+        state.move_playhead(100, &media);
+        upload(&media, 100);
+
+        state.install_composition(load(), &media);
+        assert_eq!(state.current_frame, 0);
+        upload(&media, 0);
+
+        assert!(frame_ready(&state, &media, 0).expect("frame readiness"));
+        assert!(!media.has_video_frame("a", 100));
+        assert!(!media.has_video_frame("b", 100));
+    }
 }
