@@ -252,6 +252,10 @@ impl<'a> CompileContext<'a> {
         result
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every filter node passes the same flat set of compile inputs"
+    )]
     pub(crate) fn compile_unary_filter(
         &mut self,
         node_id: NodeId,

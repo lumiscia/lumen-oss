@@ -160,7 +160,6 @@ pub struct NodeSpec {
 #[serde(rename_all = "camelCase")]
 pub struct MetaManifest {
     pub schema_version: u32,
-    pub node_kinds: Vec<String>,
     pub node_specs: BTreeMap<String, NodeSpec>,
 }
 
@@ -242,14 +241,12 @@ pub fn meta_manifest() -> Result<MetaManifest> {
         .into_iter()
         .map(spec_from_schema)
         .collect::<Result<Vec<_>>>()?;
-    let node_kinds = specs.iter().map(|spec| spec.kind.clone()).collect();
     let node_specs = specs
         .into_iter()
         .map(|spec| (spec.kind.clone(), spec))
         .collect();
     Ok(MetaManifest {
         schema_version: META_SCHEMA_VERSION,
-        node_kinds,
         node_specs,
     })
 }
@@ -265,7 +262,6 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
         serde_json::to_string_pretty(&json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "x-lumen-schemaVersion": manifest.schema_version,
-            "x-lumen-nodeKinds": manifest.node_kinds,
             "type": "object",
             "required": ["timeline", "render_settings", "nodes", "connections"],
             "additionalProperties": true,

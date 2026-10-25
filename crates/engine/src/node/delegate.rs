@@ -68,19 +68,11 @@ pub trait NodeParams: Clone + Default {
 
     #[cfg(feature = "json")]
     fn from_json(
-        _node_id: NodeId,
+        node_id: NodeId,
         params: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> anyhow::Result<Self>
     where
-        Self: Sized,
-        Self: serde::de::DeserializeOwned,
-    {
-        let value = params
-            .cloned()
-            .map(serde_json::Value::Object)
-            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-        serde_path_to_error::deserialize(value).map_err(|error| anyhow::anyhow!(error.to_string()))
-    }
+        Self: Sized;
 }
 
 #[derive(Debug, Clone, Default)]

@@ -193,7 +193,6 @@ pub(crate) fn expand_struct_delegate(
             ) -> ::anyhow::Result<Self>
             where
                 Self: Sized,
-                Self: ::serde::de::DeserializeOwned,
             {
                 let mut metas = <Self as ::core::default::Default>::default();
                 #(#json_sets)*

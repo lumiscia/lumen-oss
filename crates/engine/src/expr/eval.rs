@@ -463,7 +463,6 @@ mod tests {
                     max_width: crate::node::Deferred::value(300.0),
                     ..Default::default()
                 },
-                ..Text::default()
             }),
         );
         let ctx = ExpressionContext {
@@ -505,7 +504,6 @@ mod tests {
                     max_width: crate::node::Deferred::Expr(Expression::parse("300").unwrap()),
                     ..Default::default()
                 },
-                ..Text::default()
             }),
         );
         let ctx = ExpressionContext {
@@ -535,7 +533,6 @@ mod tests {
                     ),
                     ..Default::default()
                 },
-                ..Text::default()
             }),
         );
         let ctx = ExpressionContext {
