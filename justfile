@@ -19,7 +19,16 @@ generate-types: generate-definitions
 ci-typescript-artifacts: generate-types wasm-bindings-debug
 
 verify-typescript-artifacts: ci-typescript-artifacts
-    git diff --exit-code -- {{ definitions_out }}/composition.schema.json {{ generated_types_out }} {{ wasm_bindings_out }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    paths=({{ definitions_out }}/composition.schema.json {{ generated_types_out }} {{ wasm_bindings_out }})
+    # `generated/` is gitignored, so new type files only show up with --ignored.
+    changes="$(git status --porcelain -- "${paths[@]}")$(git status --porcelain --ignored -- {{ generated_types_out }})"
+    if [ -n "$changes" ]; then
+        echo "$changes"
+        git diff -- "${paths[@]}"
+        exit 1
+    fi
 
 generate-definitions:
     cargo run -p lumen-generators -- definitions --out-dir {{ definitions_out }}
