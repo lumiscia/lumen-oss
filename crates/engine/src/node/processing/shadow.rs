@@ -80,7 +80,17 @@ impl GpuCompileNode for Shadow {
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
         let size = source.domain.storage_size;
-        let blurred = gaussian::compile_passes(ctx, self.id, "shadow", source.texture, size);
+        let blurred = gaussian::compile_passes_with(
+            ctx,
+            self.id,
+            "shadow",
+            source.texture,
+            size,
+            gaussian::GaussianOptions {
+                param_slot: 1,
+                shifted: true,
+            },
+        );
         let owner = lumen_gpu::NodeKey(self.id.0);
         let builder = ctx.builder_mut();
         let output = builder.texture_for(
@@ -126,7 +136,7 @@ impl GpuCompileNode for Shadow {
             dispatch: compiler::dispatch_for(size).into(),
         });
         builder.param(
-            lumen_gpu::ParamKey { owner, slot: 1 },
+            lumen_gpu::ParamKey { owner, slot: 0 },
             lumen_gpu::ParamTarget::Buffer(params),
         );
         ctx.register_compiled_node(CompiledShadow {

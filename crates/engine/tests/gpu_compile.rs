@@ -3894,15 +3894,27 @@ fn text_msdf_corners_stay_within_a_pixel_of_raster_at_1000px() {
     assert!(outliers <= 16, "{outliers} pixels off the raster outline");
 }
 
-/// Renders a white square on a transparent canvas through `blur` or `shadow`
-/// (black, opacity 1, no offset) and returns the RGBA pixels.
-fn blur_square(
+/// A white rectangle on a transparent canvas, in pixels.
+#[derive(Clone, Copy)]
+struct WhiteRect {
+    x: f64,
+    y: f64,
+    width: i64,
+    height: i64,
+}
+
+/// What a test renders the rectangle through. `shadow_offset` selects `shadow`
+/// (black, opacity 1) with that offset instead of `blur`.
+#[derive(Clone, Copy)]
+struct BlurCase {
     canvas: u32,
-    square: (i64, f64),
+    rect: WhiteRect,
     radius: f64,
-    use_shadow: bool,
+    shadow_offset: Option<(f64, f64)>,
     straight_alpha: bool,
-) -> Vec<u8> {
+}
+
+fn render_blur_case(case: BlurCase) -> Vec<u8> {
     let (shape, convert, effect, output) = (
         NodeId::new(1),
         NodeId::new(2),
@@ -3915,15 +3927,15 @@ fn blur_square(
         NodeKind::Shape(Shape {
             id: shape,
             params: ShapeParamsDelegate {
-                width: Deferred::value(square.0),
-                height: Deferred::value(square.0),
-                position: Deferred::value((square.1, square.1)),
+                width: Deferred::value(case.rect.width),
+                height: Deferred::value(case.rect.height),
+                position: Deferred::value((case.rect.x, case.rect.y)),
                 ..Default::default()
             },
         }),
     );
     let mut source = shape;
-    if straight_alpha {
+    if case.straight_alpha {
         graph.nodes.insert(
             convert,
             NodeKind::AlphaPremultiply(AlphaPremultiply {
@@ -3939,13 +3951,13 @@ fn blur_square(
     let source = PortRef::new(source, "output".to_string());
     graph.nodes.insert(
         effect,
-        if use_shadow {
+        if let Some((offset_x, offset_y)) = case.shadow_offset {
             NodeKind::Shadow(Shadow {
                 id: effect,
                 params: ShadowParamsDelegate {
-                    offset_x: Deferred::value(0.0),
-                    offset_y: Deferred::value(0.0),
-                    radius: Deferred::value(radius),
+                    offset_x: Deferred::value(offset_x),
+                    offset_y: Deferred::value(offset_y),
+                    radius: Deferred::value(case.radius),
                     color: Paint::solid([0, 0, 0, 255]).into(),
                     opacity: Deferred::value(1.0),
                 },
@@ -3955,7 +3967,7 @@ fn blur_square(
             NodeKind::Blur(Blur {
                 id: effect,
                 params: BlurParamsDelegate {
-                    radius: Deferred::value(radius),
+                    radius: Deferred::value(case.radius),
                 },
                 source,
             })
@@ -3969,12 +3981,35 @@ fn blur_square(
         }),
     );
     let mut composition = test_composition(graph);
-    composition.render_settings.width = canvas;
-    composition.render_settings.height = canvas;
+    composition.render_settings.width = case.canvas;
+    composition.render_settings.height = case.canvas;
     let Some(mut renderer) = gpu_composition_renderer() else {
         return Vec::new();
     };
     render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore)
+}
+
+/// Renders a white square on a transparent canvas through `blur` or `shadow`
+/// (black, opacity 1, no offset) and returns the RGBA pixels.
+fn blur_square(
+    canvas: u32,
+    square: (i64, f64),
+    radius: f64,
+    use_shadow: bool,
+    straight_alpha: bool,
+) -> Vec<u8> {
+    render_blur_case(BlurCase {
+        canvas,
+        rect: WhiteRect {
+            x: square.1,
+            y: square.1,
+            width: square.0,
+            height: square.0,
+        },
+        radius,
+        shadow_offset: use_shadow.then_some((0.0, 0.0)),
+        straight_alpha,
+    })
 }
 
 fn alpha_at(pixels: &[u8], canvas: u32, x: u32, y: u32) -> f32 {
@@ -4108,7 +4143,8 @@ fn blur_small_radii_match_the_box_blur_they_replaced() {
 
 #[test]
 fn blur_has_no_pop_where_the_reduced_levels_take_over() {
-    // The blur switches to a reduced copy at sigma 20 (radius ~34.15) and sigma 80 (radius ~138.0).
+    // The reduced levels fade in over sigma 18-22 (radius ~30.7-37.6) and 72-88
+    // (radius ~124-152), and are fully in charge past them.
     for (below, above) in [(34.0, 34.3), (137.5, 138.5)] {
         let canvas = 512;
         let a = blur_square(canvas, (128, 192.0), below, false, false);
@@ -4120,6 +4156,105 @@ fn blur_has_no_pop_where_the_reduced_levels_take_over() {
         assert!(
             worst <= 3,
             "radius {below} -> {above} must not visibly change the output, got a difference of {worst}"
+        );
+    }
+}
+
+#[test]
+fn blur_keeps_canvas_edge_features_across_level_switches() {
+    // A stripe touching the canvas edge is extended outward by the clamped edge.
+    // Reduced levels must keep that extension instead of clamping to the first
+    // block average, so the stripe's alpha does not jump when a level takes over.
+    let canvas = 512;
+    for (width, radii) in [
+        (1, [34.14, 34.15]),
+        (4, [138.06, 138.07]),
+        (1, [123.5, 152.5]),
+    ] {
+        for x in [0.0, f64::from(canvas) - width as f64] {
+            let alphas: Vec<_> = radii
+                .iter()
+                .map(|&radius| {
+                    let rect = WhiteRect {
+                        x,
+                        y: 0.0,
+                        width,
+                        height: i64::from(canvas),
+                    };
+                    let pixels = render_blur_case(BlurCase {
+                        canvas,
+                        rect,
+                        radius,
+                        shadow_offset: None,
+                        straight_alpha: false,
+                    });
+                    (!pixels.is_empty()).then(|| alpha_at(&pixels, canvas, x as u32, 256))
+                })
+                .collect();
+            let [Some(a), Some(b)] = alphas[..] else {
+                return;
+            };
+            assert!(
+                a > 60.0 && (a - b).abs() <= 6.0,
+                "{width} px stripe at x={x}: radius {} -> {} must keep its edge value, got {a} -> {b}",
+                radii[0],
+                radii[1]
+            );
+        }
+    }
+}
+
+#[test]
+fn shadow_keeps_content_shifted_outside_the_canvas_across_level_switches() {
+    // The shadow of a rectangle shifted fully off the canvas still bleeds back in
+    // through the blur, at every level and across the switches between them.
+    let canvas = 512;
+    let alpha = |rect: WhiteRect, offset: (f64, f64), radius: f64, at: (u32, u32)| {
+        let pixels = render_blur_case(BlurCase {
+            canvas,
+            rect,
+            radius,
+            shadow_offset: Some(offset),
+            straight_alpha: false,
+        });
+        (!pixels.is_empty()).then(|| alpha_at(&pixels, canvas, at.0, at.1))
+    };
+    let across_x = WhiteRect {
+        x: 100.0,
+        y: 200.0,
+        width: 128,
+        height: 128,
+    };
+    let across_y = WhiteRect {
+        x: 200.0,
+        y: 100.0,
+        width: 128,
+        height: 128,
+    };
+    // Both rectangles land at -130..-2 along the shifted axis. Each entry is a
+    // radius followed by the one just past a level switch, if any.
+    let edge_alphas = |radius: f64| {
+        Some((
+            alpha(across_x, (-230.0, 0.0), radius, (0, 264))?,
+            alpha(across_y, (0.0, -230.0), radius, (264, 0))?,
+        ))
+    };
+    for radius in [10.0, 80.0, 200.0, 34.14, 34.15, 138.06, 138.07] {
+        let Some((horizontal, vertical)) = edge_alphas(radius) else {
+            return;
+        };
+        assert!(
+            horizontal > 10.0 && vertical > 10.0,
+            "radius {radius}: shadow shifted off the canvas must still reach it, got x {horizontal}, y {vertical}"
+        );
+    }
+    for (below, above) in [(34.14, 34.15), (138.06, 138.07)] {
+        let (Some(before), Some(after)) = (edge_alphas(below), edge_alphas(above)) else {
+            return;
+        };
+        assert!(
+            (before.0 - after.0).abs() <= 6.0 && (before.1 - after.1).abs() <= 6.0,
+            "radius {below} -> {above} must not pop: {before:?} -> {after:?}"
         );
     }
 }

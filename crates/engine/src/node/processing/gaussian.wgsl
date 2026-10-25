@@ -3,12 +3,23 @@
 // bilinear fetch, halving the texture reads.
 //
 // The kernel is truncated at three sigma, so a pass costs about `3 * sigma`
-// taps. To keep that bounded, sigma above 20 is blurred on a copy reduced 4x
-// per axis and sigma above 80 on one reduced 16x, then sampled back bilinearly.
-// Every entry point is always dispatched; the ones the current sigma does not
-// need return immediately.
+// taps. To keep that bounded, larger sigmas are blurred on a copy reduced 4x
+// per axis (quarter) or 16x (sixteenth), then sampled back bilinearly. Around
+// each switch both levels are evaluated and crossfaded, so the output is
+// continuous in sigma. Every entry point is always dispatched; the ones the
+// current sigma does not need return immediately.
 //
-// Positions are in texel units where texel `i` has its center at `i + 0.5`.
+// Reduced copies and the full-resolution horizontal result are padded past the
+// canvas on every side. Padding is reduced from the same shifted, edge-extended
+// source as the canvas, so content outside the canvas keeps contributing.
+//
+// The constants below come from a header `gaussian.rs` prepends: the sigma bands
+// (`GAUSSIAN_QUARTER_FROM`, `GAUSSIAN_QUARTER_FULL`, `GAUSSIAN_SIXTEENTH_FROM`,
+// `GAUSSIAN_SIXTEENTH_FULL`) and the padding in texels of each level
+// (`GAUSSIAN_FULL_PAD`, `GAUSSIAN_QUARTER_PAD`, `GAUSSIAN_SIXTEENTH_PAD`).
+//
+// Positions are in texel units where texel `i` has its center at `i + 0.5`. A
+// reduced texel `i` covers canvas pixels `(i - pad) * factor ..`.
 
 // `values`: x sigma, y straight-alpha source, z transparent edges.
 // `offset.xy`: whole-pixel shift of the source.
@@ -28,8 +39,6 @@ struct GaussianParams {
 const GAUSSIAN_MIN_SIGMA: f32 = 0.001;
 const GAUSSIAN_EXTENT_SIGMAS: f32 = 3.0;
 const GAUSSIAN_MIN_PAIR_WEIGHT: f32 = 1e-30;
-const GAUSSIAN_QUARTER_FROM_SIGMA: f32 = 20.0;
-const GAUSSIAN_SIXTEENTH_FROM_SIGMA: f32 = 80.0;
 // Variance per axis that box reduction and bilinear sampling add, as a fraction
 // of the square of the reduction factor.
 const GAUSSIAN_RESAMPLE_VARIANCE: f32 = 0.25;
@@ -126,106 +135,119 @@ fn gaussian_blur_1d(
     return acc / total;
 }
 
-// 0 blurs at full resolution, 1 at quarter and 2 at sixteenth.
-fn gaussian_level(sigma: f32) -> u32 {
-    if (sigma <= GAUSSIAN_QUARTER_FROM_SIGMA) {
-        return 0u;
-    }
-    if (sigma <= GAUSSIAN_SIXTEENTH_FROM_SIGMA) {
-        return 1u;
-    }
-    return 2u;
-}
-
 // Sigma to blur a reduced copy with so the full-resolution result has `sigma`,
 // after subtracting the blur the resampling itself adds.
-fn gaussian_level_sigma(sigma: f32, level: u32) -> f32 {
-    let factor = select(16.0, 4.0, level == 1u);
+fn gaussian_level_sigma(sigma: f32, factor: f32) -> f32 {
     let remaining = sigma * sigma - GAUSSIAN_RESAMPLE_VARIANCE * factor * factor;
     return sqrt(max(remaining, 0.0)) / factor;
+}
+
+fn gaussian_uses_full(sigma: f32) -> bool {
+    return sigma < GAUSSIAN_QUARTER_FULL;
+}
+
+fn gaussian_uses_quarter(sigma: f32) -> bool {
+    return sigma > GAUSSIAN_QUARTER_FROM && sigma < GAUSSIAN_SIXTEENTH_FULL;
+}
+
+fn gaussian_uses_sixteenth(sigma: f32) -> bool {
+    return sigma > GAUSSIAN_SIXTEENTH_FROM;
 }
 
 fn gaussian_edge() -> bool {
     return params.values.z >= 0.5;
 }
 
+// Blurs the source along x for every padded row of the horizontal texture.
 @compute @workgroup_size(8, 8, 1)
 fn horizontal_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(out_float);
     let sigma = params.values.x;
-    if (id.x >= size.x || id.y >= size.y || gaussian_level(sigma) != 0u) {
+    if (id.x >= size.x || id.y >= size.y || !gaussian_uses_full(sigma)) {
         return;
     }
 
-    let center = vec2<f32>(id.xy) + vec2<f32>(0.5) - params.offset.xy;
-    let color = gaussian_blur_1d(tex_a, linear_sampler, center, vec2<f32>(1.0, 0.0), sigma, params.values.y >= 0.5, gaussian_edge());
+    let canvas = vec2<f32>(f32(id.x) + 0.5, f32(id.y) + 0.5 - GAUSSIAN_FULL_PAD);
+    let color = gaussian_blur_1d(tex_a, linear_sampler, canvas - params.offset.xy, vec2<f32>(1.0, 0.0), sigma, params.values.y >= 0.5, gaussian_edge());
     textureStore(out_float, vec2<i32>(id.xy), color);
 }
 
-// Averages the 4x4 block under each output texel with four bilinear taps.
-fn gaussian_reduce(id: vec3<u32>, tex: texture_2d<f32>, shift: vec2<f32>, straight: bool) {
+// Averages the `factor` x `factor` canvas block under each padded output texel
+// of the shifted source with bilinear taps that each cover 2x2 texels.
+fn gaussian_reduce(id: vec3<u32>, factor: f32, pad: f32) {
     let size = textureDimensions(out_float);
     if (id.x >= size.x || id.y >= size.y) {
         return;
     }
 
-    let center = (vec2<f32>(id.xy) + vec2<f32>(0.5)) * 4.0 - shift;
+    let center = (vec2<f32>(id.xy) + vec2<f32>(0.5 - pad)) * factor - params.offset.xy;
+    let straight = params.values.y >= 0.5;
     let edge = gaussian_edge();
-    var color = gaussian_tap(tex, linear_sampler, center + vec2<f32>(-1.0, -1.0), straight, edge);
-    color = color + gaussian_tap(tex, linear_sampler, center + vec2<f32>(1.0, -1.0), straight, edge);
-    color = color + gaussian_tap(tex, linear_sampler, center + vec2<f32>(-1.0, 1.0), straight, edge);
-    color = color + gaussian_tap(tex, linear_sampler, center + vec2<f32>(1.0, 1.0), straight, edge);
-    textureStore(out_float, vec2<i32>(id.xy), color * 0.25);
+    let taps = i32(factor) / 2;
+    var color = vec4<f32>(0.0);
+    for (var y = 0; y < taps; y = y + 1) {
+        for (var x = 0; x < taps; x = x + 1) {
+            let delta = vec2<f32>(f32(2 * x - (taps - 1)), f32(2 * y - (taps - 1)));
+            color = color + gaussian_tap(tex_a, linear_sampler, center + delta, straight, edge);
+        }
+    }
+    textureStore(out_float, vec2<i32>(id.xy), color / f32(taps * taps));
 }
 
-fn gaussian_reduced_blur(id: vec3<u32>, tex: texture_2d<f32>, axis: vec2<f32>, level: u32) {
+fn gaussian_reduced_blur(id: vec3<u32>, axis: vec2<f32>, factor: f32, used: bool) {
     let size = textureDimensions(out_float);
-    let sigma = params.values.x;
-    if (id.x >= size.x || id.y >= size.y || gaussian_level(sigma) != level) {
+    if (id.x >= size.x || id.y >= size.y || !used) {
         return;
     }
 
     let center = vec2<f32>(id.xy) + vec2<f32>(0.5);
-    let color = gaussian_blur_1d(tex, linear_sampler, center, axis, gaussian_level_sigma(sigma, level), false, gaussian_edge());
+    let color = gaussian_blur_1d(tex_a, linear_sampler, center, axis, gaussian_level_sigma(params.values.x, factor), false, gaussian_edge());
     textureStore(out_float, vec2<i32>(id.xy), color);
 }
 
 @compute @workgroup_size(8, 8, 1)
 fn quarter_down_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (gaussian_level(params.values.x) >= 1u) {
-        gaussian_reduce(id, tex_a, params.offset.xy, params.values.y >= 0.5);
+    if (gaussian_uses_quarter(params.values.x)) {
+        gaussian_reduce(id, 4.0, GAUSSIAN_QUARTER_PAD);
     }
 }
 
 @compute @workgroup_size(8, 8, 1)
 fn quarter_horizontal_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    gaussian_reduced_blur(id, tex_a, vec2<f32>(1.0, 0.0), 1u);
+    gaussian_reduced_blur(id, vec2<f32>(1.0, 0.0), 4.0, gaussian_uses_quarter(params.values.x));
 }
 
 @compute @workgroup_size(8, 8, 1)
 fn quarter_vertical_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    gaussian_reduced_blur(id, tex_a, vec2<f32>(0.0, 1.0), 1u);
+    gaussian_reduced_blur(id, vec2<f32>(0.0, 1.0), 4.0, gaussian_uses_quarter(params.values.x));
 }
 
 @compute @workgroup_size(8, 8, 1)
 fn sixteenth_down_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (gaussian_level(params.values.x) == 2u) {
-        gaussian_reduce(id, tex_a, vec2<f32>(0.0), false);
+    if (gaussian_uses_sixteenth(params.values.x)) {
+        gaussian_reduce(id, 16.0, GAUSSIAN_SIXTEENTH_PAD);
     }
 }
 
 @compute @workgroup_size(8, 8, 1)
 fn sixteenth_horizontal_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    gaussian_reduced_blur(id, tex_a, vec2<f32>(1.0, 0.0), 2u);
+    gaussian_reduced_blur(id, vec2<f32>(1.0, 0.0), 16.0, gaussian_uses_sixteenth(params.values.x));
 }
 
 @compute @workgroup_size(8, 8, 1)
 fn sixteenth_vertical_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    gaussian_reduced_blur(id, tex_a, vec2<f32>(0.0, 1.0), 2u);
+    gaussian_reduced_blur(id, vec2<f32>(0.0, 1.0), 16.0, gaussian_uses_sixteenth(params.values.x));
 }
 
-// Final full-resolution pass: the vertical blur of `tex_a` at level 0, or a
-// bilinear upsample of the reduced result in `tex_b` / `tex_c` otherwise.
+// Samples a padded reduced result at canvas position `canvas`.
+fn gaussian_sample_reduced(tex: texture_2d<f32>, canvas: vec2<f32>, factor: f32, pad: f32) -> vec4<f32> {
+    let texel = canvas / factor + vec2<f32>(pad);
+    return textureSampleLevel(tex, linear_sampler, texel / vec2<f32>(textureDimensions(tex)), 0.0);
+}
+
+// Final full-resolution pass: crossfades the vertical blur of the horizontal
+// result in `tex_a` with the upsampled quarter (`tex_b`) and sixteenth
+// (`tex_c`) results, weighted by how far sigma is into each band.
 @compute @workgroup_size(8, 8, 1)
 fn resolve_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(out_unorm);
@@ -234,15 +256,19 @@ fn resolve_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let sigma = params.values.x;
-    let level = gaussian_level(sigma);
-    let center = vec2<f32>(id.xy) + vec2<f32>(0.5);
-    var color: vec4<f32>;
-    if (level == 0u) {
-        color = gaussian_blur_1d(tex_a, linear_sampler, center, vec2<f32>(0.0, 1.0), sigma, false, gaussian_edge());
-    } else if (level == 1u) {
-        color = textureSampleLevel(tex_b, linear_sampler, center / (4.0 * vec2<f32>(textureDimensions(tex_b))), 0.0);
-    } else {
-        color = textureSampleLevel(tex_c, linear_sampler, center / (16.0 * vec2<f32>(textureDimensions(tex_c))), 0.0);
+    let canvas = vec2<f32>(id.xy) + vec2<f32>(0.5);
+    let reduced = smoothstep(GAUSSIAN_QUARTER_FROM, GAUSSIAN_QUARTER_FULL, sigma);
+    let sixteenth = smoothstep(GAUSSIAN_SIXTEENTH_FROM, GAUSSIAN_SIXTEENTH_FULL, sigma);
+    var color = vec4<f32>(0.0);
+    if (gaussian_uses_full(sigma)) {
+        let center = canvas + vec2<f32>(0.0, GAUSSIAN_FULL_PAD);
+        color = (1.0 - reduced) * gaussian_blur_1d(tex_a, linear_sampler, center, vec2<f32>(0.0, 1.0), sigma, false, gaussian_edge());
+    }
+    if (gaussian_uses_quarter(sigma)) {
+        color = color + reduced * (1.0 - sixteenth) * gaussian_sample_reduced(tex_b, canvas, 4.0, GAUSSIAN_QUARTER_PAD);
+    }
+    if (gaussian_uses_sixteenth(sigma)) {
+        color = color + reduced * sixteenth * gaussian_sample_reduced(tex_c, canvas, 16.0, GAUSSIAN_SIXTEENTH_PAD);
     }
     textureStore(out_unorm, vec2<i32>(id.xy), color);
 }
