@@ -12,6 +12,7 @@ use cosmic_text::{
     Shaping, Style, SwashCache, SwashContent, SwashImage, Weight, Wrap,
 };
 use etagere::{AllocId, size2};
+use swash::scale::Source;
 
 mod gpu;
 #[cfg(feature = "msdf")]
@@ -365,7 +366,7 @@ impl TextSystem {
                     .get_image_uncached(&mut self.font_system, key)
                     .filter(|image| image.placement.width > 0 && image.placement.height > 0)
                     .map_or(RenderedGlyph::Empty, |image| {
-                        RenderedGlyph::Pixels(raster_pixels(&image))
+                        RenderedGlyph::Pixels(raster_pixels(&image, key))
                     })
             }
             #[cfg(feature = "msdf")]
@@ -798,10 +799,10 @@ struct GlyphPixels {
     pixels: Vec<u8>,
 }
 
-fn raster_pixels(image: &SwashImage) -> GlyphPixels {
+fn raster_pixels(image: &SwashImage, key: CacheKey) -> GlyphPixels {
     // Swash composites colour outlines premultiplied but decodes colour
     // bitmaps with straight alpha.
-    let straight_color = matches!(image.source, swash::scale::Source::ColorBitmap(_));
+    let straight_color = matches!(image.source, Source::ColorBitmap(_));
     let texels = image.placement.width as usize * image.placement.height as usize;
     let pixels = (0..texels)
         .flat_map(|index| match image.content {
@@ -822,10 +823,17 @@ fn raster_pixels(image: &SwashImage) -> GlyphPixels {
             }
         })
         .collect();
+    // Swash draws bitmaps without the key's subpixel bins, so they are
+    // shifted to the nearest whole pixel instead.
+    let [snap_x, snap_y] = if matches!(image.source, Source::Bitmap(_) | Source::ColorBitmap(_)) {
+        [key.x_bin, key.y_bin].map(|bin| bin.as_float().round())
+    } else {
+        [0.0; 2]
+    };
     GlyphPixels {
         size: [image.placement.width, image.placement.height],
-        left: image.placement.left as f32,
-        top: image.placement.top as f32,
+        left: image.placement.left as f32 + snap_x,
+        top: image.placement.top as f32 + snap_y,
         mode: if image.content == SwashContent::Color {
             GLYPH_MODE_RASTER_COLOR
         } else {
@@ -929,15 +937,64 @@ mod tests {
         image.placement.width = 2;
         image.placement.height = 1;
         image.data = vec![255, 0, 0, 128, 0, 100, 200, 255];
+        let key = TextSystem::new()
+            .layout(&TextLayoutRequest::new("A"))
+            .glyphs[0]
+            .key
+            .0;
 
-        image.source = swash::scale::Source::ColorBitmap(swash::scale::StrikeWith::BestFit);
-        let bitmap = raster_pixels(&image);
-        image.source = swash::scale::Source::ColorOutline(0);
-        let outline = raster_pixels(&image);
+        image.source = Source::ColorBitmap(swash::scale::StrikeWith::BestFit);
+        let bitmap = raster_pixels(&image, key);
+        image.source = Source::ColorOutline(0);
+        let outline = raster_pixels(&image, key);
 
         assert_eq!(bitmap.pixels, [128, 0, 0, 128, 0, 100, 200, 255]);
         assert_eq!(outline.pixels, image.data);
         assert_eq!(bitmap.mode, GLYPH_MODE_RASTER_COLOR);
+    }
+
+    #[test]
+    fn bitmap_glyphs_snap_to_the_nearest_pixel() {
+        let mut system = TextSystem::new();
+        let shaped = system.shape(&TextLayoutRequest::new("A"));
+        let mut image = SwashImage::new();
+        image.source = Source::ColorBitmap(swash::scale::StrikeWith::BestFit);
+        image.content = SwashContent::Color;
+        image.placement = swash::zeno::Placement {
+            left: 1,
+            top: 8,
+            width: 2,
+            height: 2,
+        };
+        image.data = vec![0; 2 * 2 * 4];
+        let mut atlas = GlyphAtlas::new(64);
+        let (slot, origin) = atlas.allocate([2, 2], &mut None).unwrap();
+        for start in [20.0, -21.0] {
+            let mut previous = f32::NEG_INFINITY;
+            for step in 0..=8 {
+                let y = start + step as f32 * 0.125;
+                let layout = shaped.place([3.3, y], [1.0; 4]);
+                let glyph = &layout.glyphs[0];
+                let pixels = raster_pixels(&image, glyph.key.0);
+                let placed = PlacedGlyph {
+                    slot,
+                    origin,
+                    size: pixels.size,
+                    left: pixels.left,
+                    top: pixels.top,
+                    mode: pixels.mode,
+                };
+                let rendered_y = placed.instance(glyph).rect[1] + 8.0;
+                let pen_y = glyph.position[1];
+                // Half a pixel of snapping plus cosmic-text's quarter-pixel bins.
+                assert!(
+                    (rendered_y - pen_y).abs() <= 0.625,
+                    "pen y {pen_y}, drawn at {rendered_y}"
+                );
+                assert!(rendered_y >= previous, "pen y {pen_y} moved backwards");
+                previous = rendered_y;
+            }
+        }
     }
 
     #[test]
