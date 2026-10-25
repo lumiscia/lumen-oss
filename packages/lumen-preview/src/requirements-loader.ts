@@ -52,7 +52,12 @@ export class FrameRequirementLoader {
     const normalizedFrame = this.#normalizeFrame(frame);
     const existing = this.#pending.get(normalizedFrame);
     if (existing) {
+      const generation = this.#generation;
       await existing;
+      // The joined load may have finished with frames evicted since it uploaded them.
+      if (generation === this.#generation) {
+        await this.#source.load(this.#source.requirements(normalizedFrame));
+      }
       return;
     }
 
