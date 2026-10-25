@@ -41,6 +41,8 @@ export interface LumenComposition {
     readonly [key: string]: unknown;
   };
   readonly connections: readonly Connection[];
+  /** Expression functions keyed by signature, such as `rise(start)`. */
+  readonly functions?: Readonly<Record<`${string}(${string})`, string>>;
   readonly lumenSchemaVersion?: string;
   readonly metadata?: {
     readonly name?: string;

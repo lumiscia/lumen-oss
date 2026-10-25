@@ -9,6 +9,7 @@ use crate::{
         },
         builtins::range_error,
         easing::Easing,
+        functions,
         spec::{BuiltinSpec, ValueKind, builtin_for_name},
     },
     node::NodeId,
@@ -326,6 +327,56 @@ pub fn parse_expression(source: &str) -> Result<Expression, ExpressionError> {
     parser.parse()
 }
 
+fn tokenize(source: &str) -> Result<Vec<TokenKind>, ExpressionError> {
+    let mut lexer = Lexer::new(source);
+    let mut tokens = Vec::new();
+    loop {
+        match lexer.next_token()?.kind {
+            TokenKind::Eof => return Ok(tokens),
+            kind => tokens.push(kind),
+        }
+    }
+}
+
+/// Splits a function signature such as `rise(start, distance)` into its name and parameters.
+pub(crate) fn parse_signature(signature: &str) -> Result<(String, Vec<String>), ExpressionError> {
+    let invalid = || ExpressionError::Parse {
+        path: None,
+        details: format!("invalid function signature `{signature}`; expected `name(a, b)`"),
+    };
+    let tokens = tokenize(signature).map_err(|_| invalid())?;
+    let [
+        TokenKind::Identifier(name),
+        TokenKind::LParen,
+        rest @ ..,
+        TokenKind::RParen,
+    ] = &tokens[..]
+    else {
+        return Err(invalid());
+    };
+    let mut params = Vec::new();
+    for (index, token) in rest.iter().enumerate() {
+        match token {
+            TokenKind::Identifier(param) if index % 2 == 0 => params.push(param.clone()),
+            TokenKind::Comma if index % 2 == 1 && index + 1 < rest.len() => {}
+            _ => return Err(invalid()),
+        }
+    }
+    Ok((name.clone(), params))
+}
+
+/// Names called anywhere in `source`, such as `rise` in `rise(4) + 1`.
+pub(crate) fn called_names(source: &str) -> Result<Vec<String>, ExpressionError> {
+    let tokens = tokenize(source)?;
+    Ok(tokens
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [TokenKind::Identifier(name), TokenKind::LParen] => Some(name.clone()),
+            _ => None,
+        })
+        .collect())
+}
+
 struct Parser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
@@ -586,12 +637,17 @@ impl<'a> Parser<'a> {
                 return self.parse_node_reference(args);
             }
 
-            let spec = builtin_for_name(&identifier).ok_or(ExpressionError::Parse {
-                path: None,
-                details: format!("unknown function `{identifier}`"),
-            })?;
-            validate_builtin_call(spec, &args)?;
-            return Ok(ExprNode::Builtin(spec.builtin, args));
+            if let Some(spec) = builtin_for_name(&identifier) {
+                validate_builtin_call(spec, &args)?;
+                return Ok(ExprNode::Builtin(spec.builtin, args));
+            }
+            let expansion =
+                functions::expand(&identifier, &args)?.ok_or(ExpressionError::Parse {
+                    path: None,
+                    details: format!("unknown function `{identifier}`"),
+                })?;
+            self.references.extend(expansion.references);
+            return Ok(expansion.node);
         }
 
         Ok(ExprNode::Global(match identifier.as_str() {

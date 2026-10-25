@@ -253,6 +253,16 @@
       },
       "type": "array"
     },
+    "functions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used.",
+      "propertyNames": {
+        "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
+      },
+      "type": "object"
+    },
     "nodes": {
       "items": {
         "oneOf": [

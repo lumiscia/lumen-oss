@@ -4,6 +4,7 @@ pub mod ast;
 pub mod builtins;
 pub mod easing;
 pub mod eval;
+pub mod functions;
 pub mod parser;
 pub mod spec;
 
@@ -15,6 +16,7 @@ pub use ast::{
 };
 pub use easing::Easing;
 pub use eval::property_value_to_expression_value;
+pub use functions::FunctionScope;
 pub use spec::{BUILTINS, BuiltinArg, BuiltinSpec, GLOBALS, GlobalSpec, ValueKind};
 
 impl Expression {

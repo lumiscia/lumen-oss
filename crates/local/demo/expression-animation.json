@@ -10,7 +10,10 @@
   },
   "metadata": {
     "title": "Expression Animation",
-    "description": "Animates colours, vec2 positions and sizes with tween, easings, springs and s/ms units."
+    "description": "Animates colours, vec2 positions and sizes with tween, easings, springs, s/ms units and a composition function."
+  },
+  "functions": {
+    "pop(start)": "spring((frame - start) / fps, 170, 12)"
   },
   "nodes": [
     {
@@ -41,9 +44,9 @@
       "type": "shape",
       "params": {
         "geometry_kind": "ellipse",
-        "width": "=1 + round(180 * spring((frame - 24) / fps, 170, 12))",
-        "height": "=1 + round(180 * spring((frame - 24) / fps, 170, 12))",
-        "position": "=vec2(1000, 360) - vec2(1, 1) * 90 * spring((frame - 24) / fps, 170, 12)",
+        "width": "=1 + round(180 * pop(24))",
+        "height": "=1 + round(180 * pop(24))",
+        "position": "=vec2(1000, 360) - vec2(1, 1) * 90 * pop(24)",
         "fill_enabled": true,
         "fill_paint": "=tween(rgba(250, 204, 21, 0), rgba(250, 204, 21, 255), 24, 300ms)",
         "stroke_enabled": false

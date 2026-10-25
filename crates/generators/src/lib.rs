@@ -305,6 +305,14 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                     },
                     "additionalProperties": true
                 },
+                "functions": {
+                    "description": "Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used.",
+                    "type": "object",
+                    "propertyNames": {
+                        "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
+                    },
+                    "additionalProperties": { "type": "string" }
+                },
                 "nodes": {
                     "type": "array",
                     "items": { "oneOf": node_variants }
@@ -868,6 +876,20 @@ mod tests {
             "text",
             json!({ "color": gradient_with_expression_stop })
         )));
+        for (signature, valid) in [
+            ("rise(start)", true),
+            ("pop( )", true),
+            ("rise(start", false),
+        ] {
+            let mut value = node("shape", json!({ "position": "=vec2(0, 0)" }));
+            value["functions"] = json!({ signature: "vec2(0, 0)" });
+            assert_eq!(validator.is_valid(&value), valid, "{signature}");
+            assert_eq!(
+                lumen_engine::json::parse_value(&value).is_ok(),
+                valid,
+                "{signature}"
+            );
+        }
         assert!(!validator.is_valid(&composition(
             json!({ "id": 1, "type": "background" }),
             vec![json!({ "from_node": 1, "to_node": OUTPUT_ID, "to_port": "source" })],
