@@ -1598,6 +1598,89 @@ fn identity_transform_with_linear_sampling_reproduces_input() {
     assert_eq!(transformed, input);
 }
 
+#[test]
+fn linear_resize_keeps_source_edges_opaque_and_identity_reproduces_input() {
+    let background = NodeId::new(1);
+    let resize = NodeId::new(2);
+    let output = NodeId::new(3);
+    let render = |(source_width, source_height): (u32, u32), use_resize: bool| {
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            background,
+            NodeKind::Background(Background {
+                id: background,
+                params: BackgroundParamsDelegate {
+                    paint: Paint::Gradient(GradientPaint {
+                        kind: PaintKind::LinearGradient,
+                        stops: vec![
+                            GradientStop {
+                                offset: 0.0,
+                                color: [255, 0, 0, 255],
+                            },
+                            GradientStop {
+                                offset: 1.0,
+                                color: [0, 0, 255, 255],
+                            },
+                        ],
+                        ..Default::default()
+                    })
+                    .into(),
+                    width: Deferred::value(source_width),
+                    height: Deferred::value(source_height),
+                    paint_supersample: Deferred::value(false),
+                },
+            }),
+        );
+        if use_resize {
+            graph.nodes.insert(
+                resize,
+                NodeKind::Resize(Resize {
+                    id: resize,
+                    params: ResizeParamsDelegate {
+                        width: Deferred::value(8),
+                        height: Deferred::value(4),
+                        mode: ResizeMode::Stretch.into(),
+                        sampling: ResizeSampling::Linear.into(),
+                    },
+                    source: PortRef::new(background, "output".to_string()),
+                }),
+            );
+        }
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(
+                    if use_resize { resize } else { background },
+                    "output".to_string(),
+                ),
+            }),
+        );
+        let mut renderer = gpu_composition_renderer()?;
+        Some(render_rgba8(
+            &mut renderer,
+            &test_composition(graph),
+            0,
+            &EmptyMediaStore,
+        ))
+    };
+
+    let Some(input) = render((8, 4), false) else {
+        return;
+    };
+    let Some(identity) = render((8, 4), true) else {
+        return;
+    };
+    assert_eq!(identity, input);
+
+    // The 4x2 source maps the bottom-right output centre to (3.75, 1.75).
+    let Some(upscaled) = render((4, 2), true) else {
+        return;
+    };
+    assert_eq!(upscaled.len(), 8 * 4 * 4);
+    assert!(upscaled.chunks_exact(4).all(|pixel| pixel[3] == 255));
+}
+
 fn filled_path_composition() -> Composition {
     let path = NodeId::new(1);
     let output = NodeId::new(2);

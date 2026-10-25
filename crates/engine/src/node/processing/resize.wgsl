@@ -8,12 +8,10 @@ struct ResizeParams {
 @group(0) @binding(1) var<uniform> params: ResizeParams;
 @group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
 
+// Taps outside the source clamp to the nearest edge texel.
 fn read_pixel(coord: vec2<i32>) -> vec4<f32> {
-    let size = textureDimensions(input_tex);
-    if (coord.x < 0 || coord.y < 0 || coord.x >= i32(size.x) || coord.y >= i32(size.y)) {
-        return vec4<f32>(0.0);
-    }
-    return textureLoad(input_tex, coord, 0);
+    let size = vec2<i32>(textureDimensions(input_tex));
+    return textureLoad(input_tex, clamp(coord, vec2<i32>(0), size - vec2<i32>(1)), 0);
 }
 
 // Sample coordinates are continuous, with pixel centres at integer + 0.5.
