@@ -19,7 +19,7 @@ Browser/WASM preview paths are separate and use WebGPU/WebGL-facing code.
 
 - `ffmpeg`: enable FFmpeg-backed media handling through `ffmpeg-next` and `lumen-engine-ffmpeg`.
 - `image`: enable image decoding helpers.
-- `json`: enable JSON composition parsing and serialization helpers.
+- `json`: enable JSON composition parsing and serialization helpers. In JSON params, a string starting with `=` is an expression (`"=frame * 2"`); a leading `==` escapes a literal string starting with `=` (`"==wow"` is the text `=wow`).
 - `webgl`: enable WebGL-related code paths.
 - `metal`: enable Metal support through `lumen-engine-gpu` and optional FFmpeg interop.
 - `vulkan`: enable Vulkan support through `lumen-engine-gpu` and optional FFmpeg interop.
