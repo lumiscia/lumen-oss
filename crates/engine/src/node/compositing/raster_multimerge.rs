@@ -1,11 +1,15 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, RasterMetadata, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("raster_multimerge.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("blend.wgsl"),
+    include_str!("raster_multimerge.wgsl")
+);
 
 /// Composites a variadic stack of raster layers in order.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -57,7 +61,15 @@ impl Default for RasterMultiMerge {
 struct RasterMultiCompiledMerge {
     node_id: NodeId,
     params: RasterMultiMergeParamsDelegate,
+    layers: Vec<CompiledLayer>,
+}
+
+/// Per-pass uniform buffer, carrying the alpha representation of that pass's inputs.
+#[derive(Debug, Clone)]
+struct CompiledLayer {
     buffer: lumen_gpu::BufferId,
+    base_straight: bool,
+    overlay_straight: bool,
 }
 
 impl GpuCompiledNode for RasterMultiCompiledMerge {
@@ -70,15 +82,17 @@ impl GpuCompiledNode for RasterMultiCompiledMerge {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
-        let params = compiler::RasterMultiMergeParams {
-            values: [
-                evaluated.opacity as f32,
-                evaluated.blend_mode as f32,
-                0.0,
-                0.0,
-            ],
-        };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        for layer in &self.layers {
+            let params = compiler::RasterMultiMergeParams {
+                values: [
+                    evaluated.opacity as f32,
+                    evaluated.blend_mode as f32,
+                    f32::from(u8::from(layer.base_straight)),
+                    f32::from(u8::from(layer.overlay_straight)),
+                ],
+            };
+            bound.write_buffer(layer.buffer, 0, bytemuck::bytes_of(&params));
+        }
         Ok(())
     }
 }
@@ -108,13 +122,6 @@ impl GpuCompileNode for RasterMultiMerge {
         };
 
         let size = first.domain.storage_size;
-        let params = ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(self.id.0),
-            Some(format!("raster-multimerge:{}:params", self.id.0)),
-            lumen_gpu::BufferDesc::uniform(
-                std::mem::size_of::<compiler::RasterMultiMergeParams>() as u64
-            ),
-        );
         let program = ctx.builder_mut().program_for(
             lumen_gpu::NodeKey(self.id.0),
             lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
@@ -145,7 +152,27 @@ impl GpuCompileNode for RasterMultiMerge {
         );
 
         let mut current = first;
+        let mut compiled_layers = Vec::new();
         for (index, overlay) in layers.enumerate() {
+            let params = ctx.builder_mut().buffer_for(
+                lumen_gpu::NodeKey(self.id.0),
+                Some(format!("raster-multimerge:{}:params-{index}", self.id.0)),
+                lumen_gpu::BufferDesc::uniform(
+                    std::mem::size_of::<compiler::RasterMultiMergeParams>() as u64,
+                ),
+            );
+            ctx.builder_mut().param(
+                lumen_gpu::ParamKey {
+                    owner: lumen_gpu::NodeKey(self.id.0),
+                    slot: index as u32,
+                },
+                lumen_gpu::ParamTarget::Buffer(params),
+            );
+            compiled_layers.push(CompiledLayer {
+                buffer: params,
+                base_straight: current.metadata.alpha_mode == AlphaMode::Unpremultiplied,
+                overlay_straight: overlay.metadata.alpha_mode == AlphaMode::Unpremultiplied,
+            });
             let texture = ctx.builder_mut().texture_for(
                 lumen_gpu::NodeKey(self.id.0),
                 Some(format!("raster-multimerge:{}:layer-{index}", self.id.0)),
@@ -166,20 +193,16 @@ impl GpuCompileNode for RasterMultiMerge {
             current = RasterHandle {
                 texture,
                 domain: lumen_gpu::TextureDomain::full_frame(size),
-                metadata: current.metadata,
+                metadata: RasterMetadata {
+                    alpha_mode: AlphaMode::Premultiplied,
+                    ..current.metadata
+                },
             };
         }
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
         ctx.register_compiled_node(RasterMultiCompiledMerge {
             node_id: self.id,
             params: self.params.clone(),
-            buffer: params,
+            layers: compiled_layers,
         });
 
         Ok(CompiledOutput::Raster(current))

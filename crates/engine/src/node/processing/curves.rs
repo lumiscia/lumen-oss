@@ -1,11 +1,14 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("curves.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("curves.wgsl")
+);
 
 /// Applies a 1D RGB curve table to a raster.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -136,6 +139,7 @@ impl GpuCompileNode for Curves {
         ctx.register_compiled_node(CompiledCurves {
             node_id: self.id,
             params: self.params.clone(),
+            alpha_mode: source.metadata.alpha_mode,
             params_buffer: params,
             curve_buffer: curve,
         });
@@ -152,6 +156,7 @@ impl GpuCompileNode for Curves {
 struct CompiledCurves {
     node_id: NodeId,
     params: CurvesParamsDelegate,
+    alpha_mode: AlphaMode,
     params_buffer: lumen_gpu::BufferId,
     curve_buffer: lumen_gpu::BufferId,
 }
@@ -167,7 +172,16 @@ impl GpuCompiledNode for CompiledCurves {
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
         let gpu_params = compiler::CurvesParams {
-            values: [evaluated.strength as f32, 0.0, 0.0, 0.0],
+            values: [
+                evaluated.strength as f32,
+                if self.alpha_mode == AlphaMode::Premultiplied {
+                    1.0
+                } else {
+                    0.0
+                },
+                0.0,
+                0.0,
+            ],
         };
         let curve =
             compiler::CurvesTable::parse(self.node_id, ctx.frame(), &evaluated.curve_source)?;

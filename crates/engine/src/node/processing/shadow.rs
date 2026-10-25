@@ -1,11 +1,14 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, RasterMetadata, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("shadow.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("shadow.wgsl")
+);
 
 /// Composites a blurred alpha shadow behind a raster.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -154,11 +157,15 @@ impl GpuCompileNode for Shadow {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,
+            straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
             texture,
             domain: source.domain,
-            metadata: source.metadata,
+            metadata: RasterMetadata {
+                alpha_mode: AlphaMode::Premultiplied,
+                ..source.metadata
+            },
         }))
     }
 }
@@ -168,6 +175,7 @@ struct CompiledShadow {
     node_id: NodeId,
     params: ShadowParamsDelegate,
     buffer: lumen_gpu::BufferId,
+    straight_source: bool,
 }
 
 impl GpuCompiledNode for CompiledShadow {
@@ -181,13 +189,21 @@ impl GpuCompiledNode for CompiledShadow {
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
         let color = evaluated.color.to_gpu([0, 0, 0, 255]).colors[0];
+        // The color alpha is folded into the opacity so `color.w` can carry the
+        // source's straight-alpha flag.
+        let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * color[3];
         let gpu_params = compiler::ShadowParams {
-            color,
+            color: [
+                color[0],
+                color[1],
+                color[2],
+                if self.straight_source { 1.0 } else { 0.0 },
+            ],
             values: [
                 evaluated.offset_x as f32,
                 evaluated.offset_y as f32,
                 evaluated.radius.round().clamp(0.0, 32.0) as f32,
-                evaluated.opacity as f32,
+                opacity,
             ],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
