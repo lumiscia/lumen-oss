@@ -273,7 +273,7 @@ fn render_msdf_scenario(scenario: MsdfScenario<'_>) -> Option<MsdfRenderResult> 
         ]),
         targets: vec![Some(wgpu::ColorTargetState {
             format: wgpu::TextureFormat::Rgba8Unorm,
-            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
             write_mask: wgpu::ColorWrites::ALL,
         })],
         vertex_buffers: Vec::new(),
@@ -319,6 +319,12 @@ fn render_msdf_scenario(scenario: MsdfScenario<'_>) -> Option<MsdfRenderResult> 
         ],
         px_range: scenario.px_range as f32,
         glyph_count: atlas.glyph_count as u32,
+        paint_bounds: [
+            0.0,
+            0.0,
+            scenario.target_size.width as f32,
+            scenario.target_size.height as f32,
+        ],
     };
     let atlas_pixels = lumen_text::rgba8_to_rgba16_float(&atlas.pixels);
     update.write_texture_rgba16_float(

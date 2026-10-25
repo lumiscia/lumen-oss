@@ -1,9 +1,8 @@
 use bytemuck::{Pod, Zeroable};
-use cosmic_text::{SwashContent, SwashImage};
 
 #[cfg(feature = "experimental-msdf")]
 use crate::MsdfGlyphPlacement;
-use crate::{AtlasEntry, TextGlyph};
+use crate::{AtlasEntry, GlyphPlacement, TextGlyph};
 
 const GLYPH_MODE_RASTER_MASK: u32 = 0;
 const GLYPH_MODE_RASTER_COLOR: u32 = 1;
@@ -16,6 +15,8 @@ pub struct GpuTextGlobals {
     pub target_size: [f32; 2],
     pub px_range: f32,
     pub glyph_count: u32,
+    /// Box that relative paint coordinates map to `0..1`, as `[x, y, width, height]`.
+    pub paint_bounds: [f32; 4],
 }
 
 #[repr(C)]
@@ -65,17 +66,12 @@ pub struct GpuMsdfSegment {
 pub fn glyph_instance_for(
     glyph: &TextGlyph,
     atlas_entry: AtlasEntry,
-    image: &SwashImage,
+    placement: GlyphPlacement,
 ) -> GpuGlyphInstance {
-    let x = glyph.x + image.placement.left as f32;
-    let y = glyph.y - image.placement.top as f32;
+    let x = glyph.x + placement.left as f32;
+    let y = glyph.y - placement.top as f32;
     GpuGlyphInstance {
-        rect: [
-            x,
-            y,
-            image.placement.width as f32,
-            image.placement.height as f32,
-        ],
+        rect: [x, y, placement.width as f32, placement.height as f32],
         uv_rect: [
             atlas_entry.uv_min[0],
             atlas_entry.uv_min[1],
@@ -83,7 +79,7 @@ pub fn glyph_instance_for(
             atlas_entry.uv_max[1],
         ],
         color: glyph.color,
-        mode: if image.content == SwashContent::Color {
+        mode: if placement.color {
             GLYPH_MODE_RASTER_COLOR
         } else {
             GLYPH_MODE_RASTER_MASK
@@ -98,8 +94,9 @@ pub fn msdf_glyph_instance_for(
     atlas_entry: AtlasEntry,
     placement: &MsdfGlyphPlacement,
 ) -> GpuGlyphInstance {
-    let x = glyph.x + placement.left;
-    let y = glyph.y - placement.top;
+    // Raster pen positions are whole pixels; outlines are shared across subpixel bins.
+    let x = glyph.x + glyph.key.0.x_bin.as_float() + placement.left;
+    let y = glyph.y - glyph.key.0.y_bin.as_float() - placement.top;
     GpuGlyphInstance {
         rect: [x, y, placement.width as f32, placement.height as f32],
         uv_rect: [

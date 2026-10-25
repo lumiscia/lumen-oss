@@ -518,6 +518,7 @@ impl<'a> CompileContext<'a> {
             duration_frames: self.composition.timeline.duration_frames,
             path: Some(format!("{node_id}.{property_path}")),
             graph: Some(&self.composition.graph),
+            media: self.media,
         }
     }
 

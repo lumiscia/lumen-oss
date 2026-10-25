@@ -5,7 +5,7 @@ use crate::{
     node::{NodeId, PortRef},
 };
 
-use crate::node::source::text::{CompiledText, Text};
+use crate::node::source::text::{CompiledText, Text, TextState};
 
 use super::{
     path::{CompiledPath, Path},
@@ -26,6 +26,14 @@ pub(crate) const TEXT_ATLAS_SIZE: lumen_gpu::Size = lumen_gpu::Size {
     width: 2048,
     height: 2048,
 };
+fn text_shader() -> String {
+    [
+        include_str!("../../gpu/shaders/alpha.wgsl"),
+        include_str!("paint/paint.wgsl"),
+        lumen_text::ALPHA_TEXT_SHADER,
+    ]
+    .concat()
+}
 pub(crate) const MAX_TEXT_GLYPHS: usize = 2048;
 pub(crate) const MAX_PATH_POINTS: usize = 128;
 
@@ -161,7 +169,6 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         if port.port != "output" {
             return Err(self.ctx.missing_output(text.id, &port.port));
         }
-        crate::node::source::text::clear_text_cache_for(text.id);
 
         let size = lumen_gpu::Size::new(
             self.ctx.composition().render_settings.width.max(1),
@@ -209,8 +216,9 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 address_mode_u: lumen_gpu::wgpu::AddressMode::ClampToEdge,
                 address_mode_v: lumen_gpu::wgpu::AddressMode::ClampToEdge,
                 address_mode_w: lumen_gpu::wgpu::AddressMode::ClampToEdge,
-                mag_filter: lumen_gpu::wgpu::FilterMode::Linear,
-                min_filter: lumen_gpu::wgpu::FilterMode::Linear,
+                // Glyph quads map 1:1 onto atlas texels.
+                mag_filter: lumen_gpu::wgpu::FilterMode::Nearest,
+                min_filter: lumen_gpu::wgpu::FilterMode::Nearest,
                 mipmap_filter: lumen_gpu::wgpu::MipmapFilterMode::Nearest,
                 ..Default::default()
             },
@@ -219,7 +227,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             lumen_gpu::NodeKey(text.id.0),
             lumen_gpu::ProgramDesc::Render(lumen_gpu::RenderProgramDesc {
                 label: Some("text".to_string()),
-                shader: lumen_text::ALPHA_TEXT_SHADER.to_string(),
+                shader: text_shader(),
                 vertex_entry: "vs_main".to_string(),
                 fragment_entry: "fs_main".to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
@@ -247,7 +255,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 ]),
                 targets: vec![Some(lumen_gpu::wgpu::ColorTargetState {
                     format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(lumen_gpu::wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(lumen_gpu::wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: lumen_gpu::wgpu::ColorWrites::ALL,
                 })],
                 vertex_buffers: Vec::new(),
@@ -287,9 +295,15 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             globals_buffer,
             instances_buffer,
             paint_buffer,
-            atlas_size: TEXT_ATLAS_SIZE,
             max_glyphs: MAX_TEXT_GLYPHS,
             size,
+            state: std::sync::Arc::new(std::sync::Mutex::new(TextState::new(
+                lumen_text::AtlasConfig {
+                    width: TEXT_ATLAS_SIZE.width,
+                    height: TEXT_ATLAS_SIZE.height,
+                    px_range: 1,
+                },
+            ))),
         });
 
         Ok(CompiledOutput::Raster(RasterHandle {

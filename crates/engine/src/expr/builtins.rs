@@ -1,7 +1,4 @@
-use std::{
-    cell::RefCell,
-    sync::{Mutex, OnceLock},
-};
+use std::cell::RefCell;
 
 use crate::{
     error::{ExpressionError, LumenError},
@@ -10,7 +7,10 @@ use crate::{
         ast::{BuiltinFn, ExprNode, ExpressionValue},
         eval::evaluate_expr,
     },
-    node::{NodeId, NodeKind},
+    node::{
+        DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
+        source::text::{TextAlignmentHorizontal, TextFontStyle, layout_request},
+    },
 };
 
 pub fn evaluate_builtin(
@@ -324,7 +324,18 @@ pub fn evaluate_text_measure_builtin(
         })
         .transpose()?
         .unwrap_or_else(|| "sans-serif".to_string());
-    let measurement = measure_text_value(&text, &font_family, font_size as f32, max_width as f32)?;
+    let measurement = measure_text_value(
+        ctx,
+        layout_request(
+            text,
+            font_family,
+            font_size as f32,
+            400,
+            TextFontStyle::Normal,
+            max_width as f32,
+            TextAlignmentHorizontal::Left,
+        ),
+    )?;
     Ok(ExpressionValue::Number(match builtin {
         BuiltinFn::TextHeight => f64::from(measurement.height),
         BuiltinFn::TextWidth => f64::from(measurement.width),
@@ -357,8 +368,33 @@ fn measure_text_node(
     let content = text.params.content.eval(node_id, "content", ctx)?;
     let font_family = text.params.font_family.eval(node_id, "font_family", ctx)?;
     let font_size = text.params.font_size.eval(node_id, "font_size", ctx)? as f32;
+    let font_weight = text.params.font_weight.eval(node_id, "font_weight", ctx)?;
+    let font_style = text.params.font_style.eval(&DelegateEvalContext {
+        node_id,
+        property_path: "font_style",
+        expr: ctx,
+    })?;
     let max_width = text.params.max_width.eval(node_id, "max_width", ctx)? as f32;
-    measure_text_value(&content, &font_family, font_size, max_width)
+    let alignment_horizontal = text
+        .params
+        .alignment_horizontal
+        .eval(&DelegateEvalContext {
+            node_id,
+            property_path: "alignment_horizontal",
+            expr: ctx,
+        })?;
+    measure_text_value(
+        ctx,
+        layout_request(
+            content,
+            font_family,
+            font_size,
+            font_weight,
+            font_style,
+            max_width,
+            alignment_horizontal,
+        ),
+    )
 }
 
 thread_local! {
@@ -393,25 +429,11 @@ impl Drop for TextMeasurementGuard {
 }
 
 fn measure_text_value(
-    content: &str,
-    font_family: &str,
-    font_size: f32,
-    max_width: f32,
+    ctx: &ExpressionContext<'_>,
+    request: lumen_text::TextLayoutRequest,
 ) -> crate::Result<lumen_text::TextMeasurement> {
-    static TEXT_SYSTEM: OnceLock<Mutex<lumen_text::TextSystem>> = OnceLock::new();
-    let mut text_system = TEXT_SYSTEM
-        .get_or_init(|| Mutex::new(lumen_text::TextSystem::new()))
-        .lock()
-        .map_err(|_| {
-            LumenError::Expression(ExpressionError::Evaluate {
-                path: None,
-                details: "text system lock was poisoned".to_string(),
-            })
-        })?;
-    let mut request = lumen_text::TextLayoutRequest::new(content);
-    request.font_family = font_family.to_string();
-    request.font_size = font_size;
-    request.max_width = (max_width > 0.0).then_some(max_width);
+    let mut text_system = crate::node::source::text::text_system()?;
+    crate::node::source::text::load_font_family(&mut text_system, ctx.media, &request.font_family)?;
     Ok(text_system.measure(&request))
 }
 

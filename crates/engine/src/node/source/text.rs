@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use crate::error::{LumenError, RenderError};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::media::MediaStore;
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint};
 
 #[derive(
@@ -132,7 +133,7 @@ impl GpuCompileNode for Text {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct CompiledText {
     pub(crate) node_id: NodeId,
     pub(crate) params: TextParamsDelegate,
@@ -140,9 +141,9 @@ pub(crate) struct CompiledText {
     pub(crate) globals_buffer: lumen_gpu::BufferId,
     pub(crate) instances_buffer: lumen_gpu::BufferId,
     pub(crate) paint_buffer: lumen_gpu::BufferId,
-    pub(crate) atlas_size: lumen_gpu::Size,
     pub(crate) max_glyphs: usize,
     pub(crate) size: lumen_gpu::Size,
+    pub(crate) state: Arc<Mutex<TextState>>,
 }
 
 impl GpuCompiledNode for CompiledText {
@@ -156,145 +157,146 @@ impl GpuCompiledNode for CompiledText {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
-        let content = evaluated.content;
-        let font_family = evaluated.font_family;
         let mut paint = evaluated.color.to_gpu([255, 255, 255, 255]);
         paint.paint_supersample = u32::from(evaluated.paint_supersample);
         let (position_x, position_y) = evaluated.position;
-        let font_size = evaluated.font_size as f32;
-        let max_width = evaluated.max_width as f32;
-        let alignment_horizontal = evaluated.alignment_horizontal;
-        let alignment_vertical = evaluated.alignment_vertical;
-        let font_weight = evaluated.font_weight;
-        let font_style = evaluated.font_style;
-
-        let mut request = lumen_text::TextLayoutRequest::new(content.clone());
-        request.font_family = font_family.clone();
-        request.font_size = font_size;
-        request.font_weight = font_weight.clamp(1, 1000) as u16;
-        request.font_style = match font_style {
-            TextFontStyle::Italic => lumen_text::TextFontStyle::Italic,
-            TextFontStyle::Oblique => lumen_text::TextFontStyle::Oblique,
-            TextFontStyle::Normal => lumen_text::TextFontStyle::Normal,
-        };
-        request.max_width = (max_width > 0.0).then_some(max_width);
-        request.origin = [0.0, 0.0];
-        let color_f32 = [1.0; 4];
-        request.color = [1.0; 4];
-        request.align = match alignment_horizontal {
-            TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
-            TextAlignmentHorizontal::Right => lumen_text::TextAlign::Right,
-            TextAlignmentHorizontal::Justify => lumen_text::TextAlign::Justified,
-            TextAlignmentHorizontal::Left => lumen_text::TextAlign::Left,
-        };
+        let request = layout_request(
+            evaluated.content,
+            evaluated.font_family,
+            evaluated.font_size as f32,
+            evaluated.font_weight,
+            evaluated.font_style,
+            evaluated.max_width as f32,
+            evaluated.alignment_horizontal,
+        );
 
         let mut text_system = text_system()?;
-        load_font_family(&mut text_system, ctx, &font_family)?;
+        load_font_family(&mut text_system, ctx.media(), &request.font_family)?;
+        let mut state = self.state.lock().map_err(|_| {
+            LumenError::Render(RenderError::Gpu {
+                details: format!("text node {} state lock was poisoned", self.node_id.0),
+            })
+        })?;
+        let state = &mut *state;
 
-        let atlas_key = TextAtlasCacheKey {
-            content: content.clone(),
-            font_family: font_family.clone(),
-            font_size_bits: font_size.to_bits(),
+        let shape_key = TextShapeKey {
+            content: request.content.clone(),
+            font_family: request.font_family.clone(),
+            font_size_bits: request.font_size.to_bits(),
             font_weight: request.font_weight,
-            font_style,
-            max_width_bits: max_width.to_bits(),
-            alignment_horizontal,
-            atlas_width: self.atlas_size.width,
-            atlas_height: self.atlas_size.height,
-            max_glyphs: self.max_glyphs,
+            font_style: evaluated.font_style,
+            max_width_bits: request.max_width.unwrap_or(0.0).to_bits(),
+            alignment_horizontal: evaluated.alignment_horizontal,
+            font_generation: text_system.font_generation(),
         };
-        let frame_key = TextFrameCacheKey {
-            atlas_key: atlas_key.clone(),
-            position_x_bits: (position_x as f32).to_bits(),
-            position_y_bits: (position_y as f32).to_bits(),
-            paint: evaluated.color.clone(),
-            paint_supersample: evaluated.paint_supersample,
-            alignment_vertical,
-            output_width: self.size.width,
-            output_height: self.size.height,
-        };
-        if text_cache()?
-            .get(&self.node_id.0)
-            .is_some_and(|cached| cached.frame_key.as_ref() == Some(&frame_key))
-        {
-            return Ok(());
-        }
-
-        let atlas_config = lumen_text::AtlasConfig {
-            width: self.atlas_size.width,
-            height: self.atlas_size.height,
-            px_range: 1,
-        };
-        let mut cache = text_cache()?;
-        let cached = cache.entry(self.node_id.0).or_default();
-        let atlas_changed = cached.atlas_key.as_ref() != Some(&atlas_key);
         let mut layout_ms = 0.0;
-        let mut atlas_ms = 0.0;
-        let mut upload_ms = 0.0;
-        if atlas_changed {
+        if state
+            .shaped
+            .as_ref()
+            .is_none_or(|(key, _)| *key != shape_key)
+        {
             let layout_started = trace_started.map(|_| trace_now_ms());
-            let layout = text_system.layout(&request);
+            state.shaped = Some((shape_key.clone(), text_system.shape(&request)));
             if let Some(started) = layout_started {
                 layout_ms = trace_now_ms() - started;
             }
-            let atlas_started = trace_started.map(|_| trace_now_ms());
-            let atlas = text_system.render_alpha_atlas(&layout, atlas_config, self.max_glyphs);
-            if let Some(started) = atlas_started {
-                atlas_ms = trace_now_ms() - started;
+        }
+        let Some((_, shaped)) = &state.shaped else {
+            unreachable!("text was shaped above");
+        };
+
+        let height = shaped.measurement.height;
+        let origin = [
+            position_x as f32,
+            match evaluated.alignment_vertical {
+                TextAlignmentVertical::Top => position_y as f32,
+                TextAlignmentVertical::Middle => position_y as f32 - height * 0.5,
+                TextAlignmentVertical::Bottom => position_y as f32 - height,
+            },
+        ];
+        let frame_key = TextFrameKey {
+            shape: shape_key,
+            origin_bits: origin.map(f32::to_bits),
+            paint: evaluated.color,
+            paint_supersample: evaluated.paint_supersample,
+            output_width: self.size.width,
+            output_height: self.size.height,
+        };
+        if !state.pending && state.committed.as_ref() == Some(&frame_key) {
+            return Ok(());
+        }
+
+        let layout = shaped.place(origin, [1.0; 4]);
+        let atlas_started = trace_started.map(|_| trace_now_ms());
+        let prepared = text_system.prepare_raster_atlas(&mut state.atlas, &layout, self.max_glyphs);
+        drop(text_system);
+        let atlas_ms = atlas_started.map_or(0.0, |started| trace_now_ms() - started);
+
+        let dropping = prepared.dropped_glyphs > 0;
+        if dropping != state.dropping_glyphs {
+            let atlas = state.atlas.config();
+            if dropping {
+                tracing::warn!(
+                    target: "lumen_text",
+                    node_id = self.node_id.0,
+                    dropped_glyphs = prepared.dropped_glyphs,
+                    max_glyphs = self.max_glyphs,
+                    atlas_width = atlas.width,
+                    atlas_height = atlas.height,
+                    "text glyphs dropped: too many glyphs or glyph atlas full"
+                );
+            } else {
+                tracing::info!(
+                    target: "lumen_text",
+                    node_id = self.node_id.0,
+                    "text glyphs no longer dropped"
+                );
             }
-            cached.atlas_key = Some(atlas_key.clone());
-            cached.base_instances = atlas.instances;
-            cached.glyph_count = atlas.glyph_count;
-            cached.measurement_height = layout.measurement.height;
-            let used_size = atlas.atlas.used_size();
-            let upload_height = used_size[1].max(1);
-            let upload_len = self.atlas_size.width as usize * upload_height as usize * 4;
-            let upload_pixels = atlas.pixels[..upload_len.min(atlas.pixels.len())].to_vec();
-            let upload_started = trace_started.map(|_| trace_now_ms());
+            state.dropping_glyphs = dropping;
+        }
+
+        let upload_count = prepared.uploads.len();
+        for upload in prepared.uploads {
+            let [width, height] = upload.size;
             bound.write_texture_rgba8_region(
                 self.atlas_texture,
-                upload_pixels,
-                [0, 0, 0],
-                lumen_gpu::Size::new(self.atlas_size.width, upload_height),
-                self.atlas_size.width * 4,
-                upload_height,
+                upload.pixels,
+                [upload.origin[0], upload.origin[1], 0],
+                lumen_gpu::Size::new(width, height),
+                width * 4,
+                height,
             );
-            if let Some(started) = upload_started {
-                upload_ms = trace_now_ms() - started;
-            }
         }
-
-        let y_offset = match alignment_vertical {
-            TextAlignmentVertical::Top => position_y as f32,
-            TextAlignmentVertical::Middle => position_y as f32 - cached.measurement_height * 0.5,
-            TextAlignmentVertical::Bottom => position_y as f32 - cached.measurement_height,
-        };
-        let instances = positioned_text_instances(
-            &cached.base_instances,
-            position_x as f32,
-            y_offset,
-            color_f32,
-        );
         let globals = lumen_text::GpuTextGlobals {
             target_size: [self.size.width as f32, self.size.height as f32],
-            px_range: atlas_config.px_range as f32,
-            glyph_count: cached.glyph_count as u32,
+            px_range: state.atlas.config().px_range as f32,
+            glyph_count: prepared.instances.len() as u32,
+            paint_bounds: layout.bounds,
         };
-
         bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
         bound.write_buffer(self.paint_buffer, 0, bytemuck::bytes_of(&paint));
-        if !instances.is_empty() {
-            bound.write_buffer(self.instances_buffer, 0, bytemuck::cast_slice(&instances));
+        if !prepared.instances.is_empty() {
+            bound.write_buffer(
+                self.instances_buffer,
+                0,
+                bytemuck::cast_slice(&prepared.instances),
+            );
         }
-        cached.frame_key = Some(frame_key);
+
+        state.pending = true;
+        bound.bind_text(TextBinding {
+            state: Arc::clone(&self.state),
+            atlas_frame: prepared.frame,
+            frame_key,
+        });
+
         if let Some(started) = trace_started {
             trace_text_bind(
                 self.node_id,
-                atlas_changed,
-                cached.glyph_count,
+                upload_count,
+                prepared.instances.len(),
                 layout_ms,
                 atlas_ms,
-                upload_ms,
                 trace_now_ms() - started,
             );
         }
@@ -302,17 +304,50 @@ impl GpuCompiledNode for CompiledText {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct CachedText {
-    atlas_key: Option<TextAtlasCacheKey>,
-    frame_key: Option<TextFrameCacheKey>,
-    base_instances: Vec<lumen_text::GpuGlyphInstance>,
-    glyph_count: usize,
-    measurement_height: f32,
+/// Text state owned by one compiled node. Atlas residency and the skipped-frame
+/// key only advance once the frame's uploads are applied.
+#[derive(Debug)]
+pub(crate) struct TextState {
+    atlas: lumen_text::RasterAtlas,
+    shaped: Option<(TextShapeKey, lumen_text::ShapedText)>,
+    pending: bool,
+    committed: Option<TextFrameKey>,
+    dropping_glyphs: bool,
+}
+
+impl TextState {
+    pub(crate) fn new(atlas: lumen_text::AtlasConfig) -> Self {
+        Self {
+            atlas: lumen_text::RasterAtlas::new(atlas),
+            shaped: None,
+            pending: false,
+            committed: None,
+            dropping_glyphs: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TextBinding {
+    state: Arc<Mutex<TextState>>,
+    atlas_frame: u64,
+    frame_key: TextFrameKey,
+}
+
+impl TextBinding {
+    pub(crate) fn commit(&self) -> crate::Result<()> {
+        let mut state = self.state.lock().map_err(|_| RenderError::Gpu {
+            details: "text state lock was poisoned".to_string(),
+        })?;
+        state.atlas.commit(self.atlas_frame);
+        state.committed = Some(self.frame_key.clone());
+        state.pending = false;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TextAtlasCacheKey {
+struct TextShapeKey {
     content: String,
     font_family: String,
     font_size_bits: u32,
@@ -320,42 +355,51 @@ struct TextAtlasCacheKey {
     font_style: TextFontStyle,
     max_width_bits: u32,
     alignment_horizontal: TextAlignmentHorizontal,
-    atlas_width: u32,
-    atlas_height: u32,
-    max_glyphs: usize,
+    font_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct TextFrameCacheKey {
-    atlas_key: TextAtlasCacheKey,
-    position_x_bits: u32,
-    position_y_bits: u32,
+struct TextFrameKey {
+    shape: TextShapeKey,
+    origin_bits: [u32; 2],
     paint: Paint,
     paint_supersample: bool,
-    alignment_vertical: TextAlignmentVertical,
     output_width: u32,
     output_height: u32,
 }
 
-fn positioned_text_instances(
-    base_instances: &[lumen_text::GpuGlyphInstance],
-    x_offset: f32,
-    y_offset: f32,
-    color: [f32; 4],
-) -> Vec<lumen_text::GpuGlyphInstance> {
-    base_instances
-        .iter()
-        .map(|instance| {
-            let mut instance = *instance;
-            instance.rect[0] += x_offset;
-            instance.rect[1] += y_offset;
-            instance.color = color;
-            instance
-        })
-        .collect()
+pub(crate) fn layout_request(
+    content: String,
+    font_family: String,
+    font_size: f32,
+    font_weight: i64,
+    font_style: TextFontStyle,
+    max_width: f32,
+    alignment_horizontal: TextAlignmentHorizontal,
+) -> lumen_text::TextLayoutRequest {
+    let mut request = lumen_text::TextLayoutRequest::new(content);
+    request.font_family = font_family;
+    request.font_size = font_size;
+    request.font_weight = font_weight.clamp(1, 1000) as u16;
+    request.font_style = match font_style {
+        TextFontStyle::Italic => lumen_text::TextFontStyle::Italic,
+        TextFontStyle::Oblique => lumen_text::TextFontStyle::Oblique,
+        TextFontStyle::Normal => lumen_text::TextFontStyle::Normal,
+    };
+    request.max_width = (max_width > 0.0).then_some(max_width);
+    request.align = match alignment_horizontal {
+        TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
+        TextAlignmentHorizontal::Right => lumen_text::TextAlign::Right,
+        TextAlignmentHorizontal::Justify => lumen_text::TextAlign::Justified,
+        TextAlignmentHorizontal::Left => lumen_text::TextAlign::Left,
+    };
+    request
 }
 
-fn text_system() -> crate::Result<std::sync::MutexGuard<'static, lumen_text::TextSystem>> {
+/// Shared by rendering and text measurement so both see the same loaded fonts.
+/// Do not hold the guard while evaluating expressions, which may measure text.
+pub(crate) fn text_system() -> crate::Result<std::sync::MutexGuard<'static, lumen_text::TextSystem>>
+{
     static TEXT_SYSTEM: OnceLock<Mutex<lumen_text::TextSystem>> = OnceLock::new();
     TEXT_SYSTEM
         .get_or_init(|| Mutex::new(lumen_text::TextSystem::new()))
@@ -367,33 +411,35 @@ fn text_system() -> crate::Result<std::sync::MutexGuard<'static, lumen_text::Tex
         })
 }
 
-fn load_font_family(
+pub(crate) fn load_font_family(
     text_system: &mut lumen_text::TextSystem,
-    ctx: &FrameBindContext<'_>,
+    media: Option<&dyn MediaStore>,
     font_family: &str,
 ) -> crate::Result<()> {
     if font_family.is_empty() {
         return Ok(());
     }
-    let Some(store) = ctx.media() else {
+    let Some(store) = media else {
         return Ok(());
     };
 
+    let mut loaded = loaded_fonts()?;
+    if let Some(resolver_id) = store.font_resolver_id(font_family)
+        && loaded.get(font_family) == Some(&resolver_id)
+    {
+        return Ok(());
+    }
     let Some(resolver) = store.get_font_resolver(font_family) else {
         return Ok(());
     };
     let resolver_id = resolver.id().to_string();
-    if loaded_fonts()?
-        .get(font_family)
-        .is_some_and(|loaded_id| loaded_id == &resolver_id)
-    {
+    if loaded.get(font_family) == Some(&resolver_id) {
         return Ok(());
     }
     for data in resolver.data().map_err(LumenError::Media)? {
         text_system.load_font_data(data);
     }
-    loaded_fonts()?.insert(font_family.to_string(), resolver_id);
-    text_cache()?.clear();
+    loaded.insert(font_family.to_string(), resolver_id);
     Ok(())
 }
 
@@ -409,62 +455,27 @@ fn loaded_fonts() -> crate::Result<std::sync::MutexGuard<'static, HashMap<String
         })
 }
 
-fn text_cache() -> crate::Result<std::sync::MutexGuard<'static, HashMap<u64, CachedText>>> {
-    static TEXT_CACHE: OnceLock<Mutex<HashMap<u64, CachedText>>> = OnceLock::new();
-    TEXT_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .map_err(|_| {
-            LumenError::Render(RenderError::Gpu {
-                details: "text cache lock was poisoned".to_string(),
-            })
-        })
-}
-
-pub(crate) fn clear_text_cache_for(node_id: NodeId) {
-    if let Ok(mut cache) = text_cache() {
-        cache.remove(&node_id.0);
-    }
-    if crate::log_level_enabled(tracing::Level::TRACE) {
-        tracing::trace!(
-            target: "lumen_text",
-            node_id = node_id.0,
-            "text cache clear"
-        );
-    }
-}
-
 fn trace_text_bind(
     node_id: NodeId,
-    atlas_changed: bool,
+    uploads: usize,
     glyph_count: usize,
     layout_ms: f64,
     atlas_ms: f64,
-    upload_ms: f64,
     total_ms: f64,
 ) {
-    let should_log = atlas_changed || total_ms >= 1.0;
-    if !should_log {
+    if uploads == 0 && total_ms < 1.0 {
         return;
     }
     static BIND_COUNT: AtomicU64 = AtomicU64::new(0);
-    static ATLAS_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
     let bind_count = BIND_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    let atlas_miss_count = if atlas_changed {
-        ATLAS_MISS_COUNT.fetch_add(1, Ordering::Relaxed) + 1
-    } else {
-        ATLAS_MISS_COUNT.load(Ordering::Relaxed)
-    };
     tracing::trace!(
         target: "lumen_text",
         bind = bind_count,
-        atlas_misses = atlas_miss_count,
         node_id = node_id.0,
-        atlas_miss = atlas_changed,
+        atlas_uploads = uploads,
         glyphs = glyph_count,
         layout_ms,
         atlas_ms,
-        atlas_upload_ms = upload_ms,
         bind_ms = total_ms,
         "text bind"
     );

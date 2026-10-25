@@ -2,23 +2,7 @@ struct TextGlobals {
     target_size: vec2<f32>,
     px_range: f32,
     glyph_count: u32,
-}
-
-struct Paint {
-    colors: array<vec4<f32>, 8>,
-    offsets: array<vec4<f32>, 8>,
-    start: vec2<f32>,
-    end: vec2<f32>,
-    center: vec2<f32>,
-    radius: vec2<f32>,
-    angle: f32,
-    kind: u32,
-    units: u32,
-    spread: u32,
-    interpolation: u32,
-    stop_count: u32,
-    paint_supersample: u32,
-    _pad: u32,
+    paint_bounds: vec4<f32>,
 }
 
 struct GlyphInstance {
@@ -42,59 +26,24 @@ struct VertexOut {
 @group(0) @binding(1) var atlas_texture: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
 @group(0) @binding(3) var<storage, read> glyphs: array<GlyphInstance>;
-@group(0) @binding(4) var<uniform> paint: Paint;
+@group(0) @binding(4) var<uniform> fill: Paint;
 
-fn spread_t(value: f32) -> f32 {
-    if (paint.spread == 1u) {
-        return fract(value);
-    }
-    if (paint.spread == 2u) {
-        let repeated = fract(value * 0.5) * 2.0;
-        return select(repeated, 2.0 - repeated, repeated > 1.0);
-    }
-    return clamp(value, 0.0, 1.0);
+// Requires the engine's alpha and paint chunks prepended.
+fn text_paint_at(pixel: vec2<f32>) -> vec4<f32> {
+    let local01 = clamp(
+        (pixel - globals.paint_bounds.xy) / max(globals.paint_bounds.zw, vec2<f32>(1.0)),
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+    );
+    return sample_paint(fill, pixel, local01);
 }
 
-fn interpolate_color(t_raw: f32) -> vec4<f32> {
-    let t = spread_t(t_raw);
-    let count = max(paint.stop_count, 1u);
-    var color = paint.colors[0];
-    for (var i = 1u; i < 8u; i = i + 1u) {
-        if (i < count) {
-            let left = paint.offsets[i - 1u].x;
-            let right = paint.offsets[i].x;
-            let span = max(right - left, 0.00001);
-            let amount = clamp((t - left) / span, 0.0, 1.0);
-            color = select(color, mix(paint.colors[i - 1u], paint.colors[i], amount), t >= left);
-        }
-    }
-    return color;
-}
-
-fn sample_paint(pixel: vec2<f32>) -> vec4<f32> {
-    let local01 = pixel / max(globals.target_size, vec2<f32>(1.0));
-    let p = select(local01, pixel, paint.units == 1u);
-    if (paint.kind == 1u) {
-        let axis = paint.end - paint.start;
-        return interpolate_color(dot(p - paint.start, axis) / max(dot(axis, axis), 0.00001));
-    }
-    if (paint.kind == 2u) {
-        let delta = (p - paint.center) / max(paint.radius, vec2<f32>(0.00001));
-        return interpolate_color(length(delta));
-    }
-    if (paint.kind == 3u) {
-        let angle = atan2(p.y - paint.center.y, p.x - paint.center.x) / 6.28318530718 + 0.5;
-        return interpolate_color(fract(angle - paint.angle / 360.0));
-    }
-    return paint.colors[0];
-}
-
-fn sample_paint_aa(pixel: vec2<f32>) -> vec4<f32> {
+fn text_paint_aa(pixel: vec2<f32>) -> vec4<f32> {
     var color = vec4<f32>(0.0);
     for (var y = 0u; y < 4u; y = y + 1u) {
         for (var x = 0u; x < 4u; x = x + 1u) {
             let offset = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) * 0.25 - vec2<f32>(0.5);
-            color += sample_paint(pixel + offset);
+            color += text_paint_at(pixel + offset);
         }
     }
     return color * 0.0625;
@@ -140,12 +89,13 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let sample = textureSample(atlas_texture, atlas_sampler, in.uv);
-    var text_paint = sample_paint(in.position.xy);
-    if (paint.paint_supersample != 0u) {
-        text_paint = sample_paint_aa(in.position.xy);
+    var text_paint = text_paint_at(in.position.xy);
+    if (fill.paint_supersample != 0u) {
+        text_paint = text_paint_aa(in.position.xy);
     }
+    // The atlas, the paint and the output are premultiplied.
     if (in.mode == 1u) {
-        return vec4<f32>(sample.rgb, sample.a * in.color.a * text_paint.a);
+        return sample * (in.color.a * text_paint.a);
     }
-    return vec4<f32>(text_paint.rgb, sample.a * in.color.a * text_paint.a);
+    return text_paint * (sample.a * in.color.a);
 }

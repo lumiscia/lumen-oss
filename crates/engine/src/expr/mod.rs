@@ -28,6 +28,7 @@ pub struct ExpressionContext<'a> {
     pub duration_frames: u32,
     pub path: Option<String>,
     pub graph: Option<&'a Graph>,
+    pub media: Option<&'a dyn crate::media::MediaStore>,
 }
 
 impl Default for ExpressionContext<'_> {
@@ -40,6 +41,7 @@ impl Default for ExpressionContext<'_> {
             duration_frames: 0,
             path: None,
             graph: None,
+            media: None,
         }
     }
 }

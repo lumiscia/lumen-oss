@@ -412,6 +412,12 @@ impl MediaStore for WasmMediaStore {
         }))
     }
 
+    fn font_resolver_id(&self, font_family: &str) -> Option<String> {
+        let fonts = self.inner.fonts.read().ok()?;
+        let font = fonts.get(font_family)?;
+        Some(format!("wasm-font:{font_family}:{}", font.version))
+    }
+
     fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
         let fonts = self.inner.fonts.read().ok()?;
         let font = fonts.get(font_family)?;
@@ -819,6 +825,7 @@ mod tests {
             .get_font_resolver("Inter")
             .expect("font resolver should exist");
         assert_eq!(first.data().expect("font data"), vec![vec![1, 2, 3]]);
+        assert_eq!(store.font_resolver_id("Inter").as_deref(), Some(first.id()));
 
         store
             .set_font("Inter".to_string(), vec![4, 5, 6])
@@ -827,6 +834,10 @@ mod tests {
             .get_font_resolver("Inter")
             .expect("font resolver should still exist");
         assert_ne!(first.id(), second.id());
+        assert_eq!(
+            store.font_resolver_id("Inter").as_deref(),
+            Some(second.id())
+        );
         assert_eq!(second.data().expect("font data"), vec![vec![4, 5, 6]]);
     }
 

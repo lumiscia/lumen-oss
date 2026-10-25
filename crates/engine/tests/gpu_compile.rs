@@ -35,7 +35,7 @@ use lumen_engine::{
         source::{
             background::{Background, BackgroundParamsDelegate},
             media_in::{MediaIn, MediaInParamsDelegate},
-            text::{Text, TextParamsDelegate},
+            text::{Text, TextAlignmentHorizontal, TextAlignmentVertical, TextParamsDelegate},
         },
         vector::{
             paint::{GradientPaint, GradientStop, Paint, PaintKind},
@@ -45,6 +45,8 @@ use lumen_engine::{
     },
 };
 use std::sync::{Arc, mpsc};
+
+static TEXT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn compiler_rejects_cycle_before_recursive_port_traversal() {
@@ -1482,6 +1484,7 @@ fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
 
 #[test]
 fn compiles_source_text_and_vector_shape_through_shared_renderer() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
     let shape = NodeId::new(1);
     let text = NodeId::new(2);
     let merge = NodeId::new(3);
@@ -1556,12 +1559,446 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
     assert_eq!(compiled.plan.programs().len(), 3);
     assert!(compiled.compiled_nodes.contains_key(&shape));
     assert!(compiled.compiled_nodes.contains_key(&text));
-    assert_eq!(bound.frame_update().uploads().len(), 6);
+    let first_uploads = bound.frame_update().uploads().len();
+
+    let rebound = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap();
+    assert_eq!(
+        rebound.frame_update().uploads().len(),
+        first_uploads,
+        "text uploads that were never applied must be repeated"
+    );
+    rebound.mark_uploaded().unwrap();
 
     let unchanged = FrameBindContext::new(&composition, 0)
         .bind(&compiled)
         .unwrap();
     assert_eq!(unchanged.frame_update().uploads().len(), 2);
+}
+
+#[test]
+fn text_bind_ahead_restores_committed_frame_after_pending_frame() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let text = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::value("Bind ahead".to_string()),
+                position: Deferred::Expr(Expression::parse("vec2(frame * 10, 0)").unwrap()),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(text, "output".to_string()),
+        }),
+    );
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let bind = |frame| {
+        FrameBindContext::new(&composition, frame)
+            .bind(&compiled)
+            .unwrap()
+    };
+    let first = bind(0);
+    first.mark_uploaded().unwrap();
+    bind(1);
+    let restored = bind(0);
+    assert!(restored.buffer_upload_count() > 0);
+
+    restored.mark_uploaded().unwrap();
+    assert_eq!(bind(0).buffer_upload_count(), 0);
+    assert!(bind(1).buffer_upload_count() > 0);
+}
+
+#[test]
+fn text_rejects_stale_upload_after_atlas_slot_reuse() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let text = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::Expr(Expression::parse("if(frame == 0, \"W\", \"M\")").unwrap()),
+                font_size: Deferred::value(2000.0),
+                position: Deferred::value((0.0, -400.0)),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(text, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 512;
+    composition.render_settings.height = 512;
+    let older = renderer
+        .bind_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    let current = renderer
+        .bind_frame(&composition, 1, &EmptyMediaStore)
+        .unwrap();
+    assert!(older.texture_upload_count() > 0);
+    assert!(current.texture_upload_count() > 0);
+    renderer.upload_bound_frame(&current).unwrap();
+    let expected = render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
+    assert!(expected.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    let error = renderer.upload_bound_frame(&older).unwrap_err();
+    assert!(error.to_string().contains("stale bound text frame"));
+    let rebound = renderer
+        .bind_frame(&composition, 1, &EmptyMediaStore)
+        .unwrap();
+    assert_eq!(rebound.texture_upload_count(), 0);
+    renderer.submit_bound_frame(&rebound).unwrap();
+    assert_eq!(
+        render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore),
+        expected
+    );
+}
+
+#[test]
+fn text_rejects_stale_upload_from_another_compiled_plan() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let text = NodeId::new(1);
+    let first = NodeId::new(2);
+    let second = NodeId::new(3);
+    let switch = NodeId::new(4);
+    let merge = NodeId::new(5);
+    let output = NodeId::new(6);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::Expr(Expression::parse("if(frame == 0, \"W\", \"M\")").unwrap()),
+                font_size: Deferred::value(32.0),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(first, solid(first, [0; 4]));
+    graph.nodes.insert(second, solid(second, [0; 4]));
+    graph.nodes.insert(
+        switch,
+        NodeKind::Switch(Switch {
+            id: switch,
+            params: SwitchParamsDelegate {
+                selected_layer: Deferred::Expr(Expression::parse("frame").unwrap()),
+            },
+            layers: vec![
+                PortRef::new(first, "output".to_string()),
+                PortRef::new(second, "output".to_string()),
+            ],
+        }),
+    );
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            base: PortRef::new(text, "output".to_string()),
+            overlay: PortRef::new(switch, "output".to_string()),
+            ..Default::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+    for (from_node, to_port) in [(text, "base"), (switch, "overlay")] {
+        graph
+            .connect(Connection {
+                from_node,
+                from_port: "output".to_string(),
+                to_node: merge,
+                to_port: to_port.to_string(),
+            })
+            .unwrap();
+    }
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 64;
+    composition.render_settings.height = 64;
+    let older = renderer
+        .bind_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    let current = renderer
+        .bind_frame(&composition, 1, &EmptyMediaStore)
+        .unwrap();
+    renderer.upload_bound_frame(&current).unwrap();
+    let error = renderer.upload_bound_frame(&older).unwrap_err();
+    assert!(error.to_string().contains("stale bound text frame"));
+    let rebound = renderer
+        .bind_frame(&composition, 1, &EmptyMediaStore)
+        .unwrap();
+    assert_eq!(rebound.texture_upload_count(), 0);
+    assert_eq!(rebound.buffer_upload_count(), 2);
+    let pixels = render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
+    assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    let mut reference = gpu_composition_renderer().unwrap();
+    assert_eq!(
+        pixels,
+        render_rgba8(&mut reference, &composition, 1, &EmptyMediaStore)
+    );
+}
+
+#[test]
+fn text_measurement_loads_time_remapped_family_on_first_bind() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    #[derive(Debug, Clone)]
+    struct FontStore {
+        data: Vec<u8>,
+        id: &'static str,
+        resolver_calls: Arc<AtomicUsize>,
+    }
+
+    impl lumen_engine::media::FontResolver for FontStore {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+            Ok(vec![self.data.clone()])
+        }
+    }
+
+    impl MediaStore for FontStore {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+            None
+        }
+
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            None
+        }
+
+        fn font_resolver_id(&self, family: &str) -> Option<String> {
+            (family == "RemapX").then(|| self.id.to_string())
+        }
+
+        fn get_font_resolver(
+            &self,
+            family: &str,
+        ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+            (family == "RemapX").then(|| {
+                self.resolver_calls.fetch_add(1, Ordering::Relaxed);
+                Box::new(self.clone()) as _
+            })
+        }
+    }
+
+    // Give the fixture a unique family and half-size metrics to distinguish fallback.
+    let mut font = lumen_text::ROBOTO_REGULAR_BYTES.to_vec();
+    for (old, new) in [
+        (b"Roboto".as_slice(), b"RemapX".as_slice()),
+        (
+            b"\0R\0o\0b\0o\0t\0o".as_slice(),
+            b"\0R\0e\0m\0a\0p\0X".as_slice(),
+        ),
+    ] {
+        for offset in 0..=font.len() - old.len() {
+            if &font[offset..offset + old.len()] == old {
+                font[offset..offset + old.len()].copy_from_slice(new);
+            }
+        }
+    }
+    let table_count = u16::from_be_bytes(font[4..6].try_into().unwrap()) as usize;
+    let head = font[12..12 + table_count * 16]
+        .chunks_exact(16)
+        .find(|table| &table[..4] == b"head")
+        .unwrap();
+    let units_offset = u32::from_be_bytes(head[8..12].try_into().unwrap()) as usize + 18;
+    let units = u16::from_be_bytes(font[units_offset..units_offset + 2].try_into().unwrap());
+    font[units_offset..units_offset + 2].copy_from_slice(&(units * 2).to_be_bytes());
+    let mut store = FontStore {
+        data: font.clone(),
+        id: "remapped-text-test:1",
+        resolver_calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let mut request = lumen_text::TextLayoutRequest::new("WWW");
+    request.font_family = "RemapX".to_string();
+    request.font_size = 32.0;
+    let mut reference = lumen_text::TextSystem::new();
+    let fallback_width = reference.measure(&request).width;
+    reference.load_font_data(font);
+    let expected_width = reference.measure(&request).width;
+    assert!(expected_width < fallback_width * 0.75);
+
+    let text = NodeId::new(1);
+    let remap = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::value("WWW".to_string()),
+                font_family: Deferred::Expr(
+                    Expression::parse("if(frame == 1, \"RemapX\", \"Roboto\")").unwrap(),
+                ),
+                font_size: Deferred::value(32.0),
+                position: Deferred::Expr(
+                    Expression::parse("vec2(text_width(node(1)), text_height(node(1)))").unwrap(),
+                ),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        remap,
+        NodeKind::TimeRemap(TimeRemap {
+            id: remap,
+            source: PortRef::new(text, "output".to_string()),
+            params: TimeRemapParamsDelegate {
+                frame: Deferred::value(1.0),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(remap, "output".to_string()),
+        }),
+    );
+    let composition = test_composition(graph);
+    let compiled = CompileContext::with_media(
+        &composition,
+        &store,
+        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+    )
+    .compile()
+    .unwrap();
+    let bind = || {
+        FrameBindContext::with_media(&composition, 0, &store)
+            .bind(&compiled)
+            .unwrap()
+    };
+    let first = bind();
+    let second = bind();
+    let instance_buffer = compiled
+        .plan
+        .buffers()
+        .iter()
+        .find(|buffer| buffer.label.as_deref() == Some("text:1:instances"))
+        .unwrap()
+        .id;
+    let first_rect = |bound: &lumen_engine::gpu::BoundFrame| -> [f32; 4] {
+        bound
+            .frame_update()
+            .uploads()
+            .iter()
+            .find_map(|upload| match upload {
+                lumen_gpu::Upload::Buffer { id, data, .. } if *id == instance_buffer => {
+                    Some(bytemuck::pod_read_unaligned(&data[..16]))
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(first_rect(&first), first_rect(&second));
+    assert!((first_rect(&first)[0] - expected_width).abs() < 3.0);
+    assert_eq!(store.resolver_calls.load(Ordering::Relaxed), 1);
+
+    store.id = "remapped-text-test:2";
+    let replaced = FrameBindContext::with_media(&composition, 0, &store)
+        .bind(&compiled)
+        .unwrap();
+    assert_eq!(first_rect(&first), first_rect(&replaced));
+    assert_eq!(store.resolver_calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let text = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::value("Sharp text\nwraps across lines".to_string()),
+                font_size: Deferred::value(17.0),
+                max_width: Deferred::value(90.0),
+                position: Deferred::value((10.3, 20.6)),
+                alignment_horizontal: TextAlignmentHorizontal::Center.into(),
+                alignment_vertical: TextAlignmentVertical::Middle.into(),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(text, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 160;
+    composition.render_settings.height = 80;
+
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let bound = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap();
+    let instances_label = format!("text:{}:instances", text.0);
+    let instances_buffer = compiled
+        .plan
+        .buffers()
+        .iter()
+        .find(|buffer| buffer.label.as_deref() == Some(instances_label.as_str()))
+        .unwrap()
+        .id;
+    let update = bound.frame_update();
+    let instances = update
+        .uploads()
+        .iter()
+        .find_map(|upload| match upload {
+            lumen_gpu::Upload::Buffer { id, data, .. } if *id == instances_buffer => Some(*data),
+            _ => None,
+        })
+        .unwrap();
+    let rects: Vec<[f32; 4]> = instances
+        .chunks_exact(std::mem::size_of::<lumen_text::GpuGlyphInstance>())
+        .map(|instance| bytemuck::pod_read_unaligned(&instance[..16]))
+        .collect();
+
+    assert!(rects.len() > 10);
+    assert!(
+        rects
+            .iter()
+            .all(|rect| rect[0].fract() == 0.0 && rect[1].fract() == 0.0),
+        "glyph quads must start on whole pixels: {rects:?}"
+    );
 }
 
 #[test]

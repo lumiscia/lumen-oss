@@ -95,9 +95,11 @@ pub struct CompiledComposition {
 
 #[derive(Debug, Clone, Default)]
 pub struct BoundFrame {
+    pub(crate) renderer_binding: Option<(u64, super::renderer::CompiledPlanKey)>,
     buffer_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
     texture_uploads: Vec<TextureUpload>,
     media_textures: Vec<MediaTextureUpload>,
+    text_bindings: Vec<crate::node::source::text::TextBinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +213,19 @@ impl BoundFrame {
             frame,
             size,
         });
+    }
+
+    pub(crate) fn bind_text(&mut self, binding: crate::node::source::text::TextBinding) {
+        self.text_bindings.push(binding);
+    }
+
+    /// Notifies nodes that this frame's uploads were applied.
+    /// Call only after uploading the latest bind to its compiled plan.
+    pub fn mark_uploaded(&self) -> crate::Result<()> {
+        for binding in &self.text_bindings {
+            binding.commit()?;
+        }
+        Ok(())
     }
 
     pub fn media_textures(&self) -> &[MediaTextureUpload] {
