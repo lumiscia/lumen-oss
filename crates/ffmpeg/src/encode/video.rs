@@ -127,7 +127,8 @@ impl VideoEncoder {
                 "failed to allocate output stream",
             ));
         }
-        let context = unsafe { sys::avcodec_alloc_context3(codec) };
+        let mut context_guard = CodecContextGuard(unsafe { sys::avcodec_alloc_context3(codec) });
+        let context = context_guard.0;
         if context.is_null() {
             return Err(FfmpegError::new(
                 "avcodec_alloc_context3",
@@ -251,7 +252,7 @@ impl VideoEncoder {
             height: config.height,
             stream_index: unsafe { (*stream).index as usize },
             stream_time_base: time_base,
-            context,
+            context: context_guard.release(),
             frame,
             scaler,
             hw_device: hw_contexts
@@ -445,6 +446,21 @@ fn validate_cpu_frame(
     }
 
     Ok(ValidatedCpuFrameLayout { stride, height })
+}
+
+/// Frees the codec context on early returns until ownership moves into the encoder.
+struct CodecContextGuard(*mut sys::AVCodecContext);
+
+impl CodecContextGuard {
+    fn release(&mut self) -> *mut sys::AVCodecContext {
+        std::mem::replace(&mut self.0, ptr::null_mut())
+    }
+}
+
+impl Drop for CodecContextGuard {
+    fn drop(&mut self) {
+        unsafe { sys::avcodec_free_context(&mut self.0) };
+    }
 }
 
 impl Drop for VideoEncoder {
