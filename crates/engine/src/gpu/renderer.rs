@@ -286,6 +286,7 @@ impl GpuCompositionRenderer {
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
+        bound.mark_uploaded();
         Ok(())
     }
 

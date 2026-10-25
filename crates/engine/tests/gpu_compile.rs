@@ -35,7 +35,7 @@ use lumen_engine::{
         source::{
             background::{Background, BackgroundParamsDelegate},
             media_in::{MediaIn, MediaInParamsDelegate},
-            text::{Text, TextParamsDelegate},
+            text::{Text, TextAlignmentHorizontal, TextAlignmentVertical, TextParamsDelegate},
         },
         vector::{
             paint::{GradientPaint, GradientStop, Paint, PaintKind},
@@ -1556,12 +1556,88 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
     assert_eq!(compiled.plan.programs().len(), 3);
     assert!(compiled.compiled_nodes.contains_key(&shape));
     assert!(compiled.compiled_nodes.contains_key(&text));
-    assert_eq!(bound.frame_update().uploads().len(), 6);
+    let first_uploads = bound.frame_update().uploads().len();
+
+    let rebound = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap();
+    assert_eq!(
+        rebound.frame_update().uploads().len(),
+        first_uploads,
+        "text uploads that were never applied must be repeated"
+    );
+    rebound.mark_uploaded();
 
     let unchanged = FrameBindContext::new(&composition, 0)
         .bind(&compiled)
         .unwrap();
     assert_eq!(unchanged.frame_update().uploads().len(), 2);
+}
+
+#[test]
+fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
+    let text = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::value("Sharp text\nwraps across lines".to_string()),
+                font_size: Deferred::value(17.0),
+                max_width: Deferred::value(90.0),
+                position: Deferred::value((10.3, 20.6)),
+                alignment_horizontal: TextAlignmentHorizontal::Center.into(),
+                alignment_vertical: TextAlignmentVertical::Middle.into(),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(text, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 160;
+    composition.render_settings.height = 80;
+
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let bound = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap();
+    let instances_label = format!("text:{}:instances", text.0);
+    let instances_buffer = compiled
+        .plan
+        .buffers()
+        .iter()
+        .find(|buffer| buffer.label.as_deref() == Some(instances_label.as_str()))
+        .unwrap()
+        .id;
+    let update = bound.frame_update();
+    let instances = update
+        .uploads()
+        .iter()
+        .find_map(|upload| match upload {
+            lumen_gpu::Upload::Buffer { id, data, .. } if *id == instances_buffer => Some(*data),
+            _ => None,
+        })
+        .unwrap();
+    let rects: Vec<[f32; 4]> = instances
+        .chunks_exact(std::mem::size_of::<lumen_text::GpuGlyphInstance>())
+        .map(|instance| bytemuck::pod_read_unaligned(&instance[..16]))
+        .collect();
+
+    assert!(rects.len() > 10);
+    assert!(
+        rects
+            .iter()
+            .all(|rect| rect[0].fract() == 0.0 && rect[1].fract() == 0.0),
+        "glyph quads must start on whole pixels: {rects:?}"
+    );
 }
 
 #[test]

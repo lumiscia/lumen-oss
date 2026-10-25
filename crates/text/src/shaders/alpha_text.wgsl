@@ -2,6 +2,7 @@ struct TextGlobals {
     target_size: vec2<f32>,
     px_range: f32,
     glyph_count: u32,
+    paint_bounds: vec4<f32>,
 }
 
 struct Paint {
@@ -72,7 +73,11 @@ fn interpolate_color(t_raw: f32) -> vec4<f32> {
 }
 
 fn sample_paint(pixel: vec2<f32>) -> vec4<f32> {
-    let local01 = pixel / max(globals.target_size, vec2<f32>(1.0));
+    let local01 = clamp(
+        (pixel - globals.paint_bounds.xy) / max(globals.paint_bounds.zw, vec2<f32>(1.0)),
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+    );
     let p = select(local01, pixel, paint.units == 1u);
     if (paint.kind == 1u) {
         let axis = paint.end - paint.start;
@@ -144,8 +149,10 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if (paint.paint_supersample != 0u) {
         text_paint = sample_paint_aa(in.position.xy);
     }
+    // The atlas and the output are premultiplied.
     if (in.mode == 1u) {
-        return vec4<f32>(sample.rgb, sample.a * in.color.a * text_paint.a);
+        return sample * (in.color.a * text_paint.a);
     }
-    return vec4<f32>(text_paint.rgb, sample.a * in.color.a * text_paint.a);
+    let coverage = sample.a * in.color.a * text_paint.a;
+    return vec4<f32>(text_paint.rgb * coverage, coverage);
 }

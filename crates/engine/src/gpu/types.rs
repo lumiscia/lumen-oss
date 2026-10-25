@@ -98,6 +98,16 @@ pub struct BoundFrame {
     buffer_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
     texture_uploads: Vec<TextureUpload>,
     media_textures: Vec<MediaTextureUpload>,
+    upload_callbacks: Vec<UploadCallback>,
+}
+
+#[derive(Clone)]
+struct UploadCallback(std::sync::Arc<dyn Fn() + Send + Sync>);
+
+impl std::fmt::Debug for UploadCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UploadCallback")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +221,20 @@ impl BoundFrame {
             frame,
             size,
         });
+    }
+
+    /// Runs `callback` after this frame's uploads have been applied, so nodes can
+    /// commit state that depends on them.
+    pub fn on_upload(&mut self, callback: impl Fn() + Send + Sync + 'static) {
+        self.upload_callbacks
+            .push(UploadCallback(std::sync::Arc::new(callback)));
+    }
+
+    /// Notifies nodes that this frame's uploads were applied.
+    pub fn mark_uploaded(&self) {
+        for callback in &self.upload_callbacks {
+            (callback.0)();
+        }
     }
 
     pub fn media_textures(&self) -> &[MediaTextureUpload] {

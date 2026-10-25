@@ -1708,6 +1708,7 @@ dependencies = [
  "nalgebra",
  "pollster",
  "skrifa 0.40.0",
+ "swash",
 ]
 
 [[package]]
