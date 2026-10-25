@@ -151,7 +151,11 @@ where
 {
     use serde::de::Error;
 
-    Vec::<Value>::deserialize(deserializer)?
+    let stops = Vec::<Value>::deserialize(deserializer)?;
+    if stops.is_empty() {
+        return Err(D::Error::custom("`stops` must contain at least one stop"));
+    }
+    stops
         .iter()
         .enumerate()
         .map(|(index, value)| {
@@ -226,5 +230,12 @@ mod tests {
                 .unwrap_err();
             assert!(error.contains("stop 0"), "{stop}: {error}");
         }
+    }
+
+    #[test]
+    fn rejects_empty_stop_list() {
+        let error =
+            from_json_value(&serde_json::json!({ "type": "linear", "stops": [] })).unwrap_err();
+        assert!(error.contains("at least one stop"), "{error}");
     }
 }

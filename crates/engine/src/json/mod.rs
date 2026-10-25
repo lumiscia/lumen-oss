@@ -138,9 +138,8 @@ fn parse_timeline(val: &Value) -> Result<TimelineSettings> {
     };
     let duration_frames = obj
         .get("duration_frames")
-        .context("missing `timeline.duration_frames`")?
-        .as_u64()
-        .and_then(|frames| u32::try_from(frames).ok())
+        .context("missing `timeline.duration_frames`")?;
+    let duration_frames = integral_u32(duration_frames)
         .filter(|frames| *frames >= 1)
         .context("`timeline.duration_frames` must be an integer of at least 1")?;
     Ok(TimelineSettings {
@@ -154,14 +153,8 @@ fn parse_render_settings(val: &Value) -> Result<RenderSettings> {
         .as_object()
         .context("`render_settings` must be an object")?;
     Ok(RenderSettings {
-        width: obj
-            .get("width")
-            .and_then(|v| v.as_u64())
-            .context("render_settings.width")? as u32,
-        height: obj
-            .get("height")
-            .and_then(|v| v.as_u64())
-            .context("render_settings.height")? as u32,
+        width: render_dimension(obj, "width")?,
+        height: render_dimension(obj, "height")?,
         background_color: obj
             .get("background_color")
             .map(|value| {
@@ -170,6 +163,22 @@ fn parse_render_settings(val: &Value) -> Result<RenderSettings> {
             .transpose()?
             .unwrap_or([0, 0, 0, 255]),
     })
+}
+
+fn render_dimension(obj: &Map<String, Value>, key: &str) -> Result<u32> {
+    obj.get(key)
+        .and_then(integral_u32)
+        .filter(|size| *size >= 1)
+        .with_context(|| format!("`render_settings.{key}` must be an integer of at least 1"))
+}
+
+/// Reads a JSON number as a `u32`, accepting integral floats such as `1.0` like JSON Schema does.
+fn integral_u32(value: &Value) -> Option<u32> {
+    if let Some(integer) = value.as_u64() {
+        return u32::try_from(integer).ok();
+    }
+    let float = value.as_f64()?;
+    (float.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&float)).then_some(float as u32)
 }
 
 fn parse_audio_timeline(val: &Value, fps: f32) -> Result<AudioTimeline> {
@@ -639,5 +648,32 @@ mod tests {
                 "{color}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn dimensions_and_frames_reject_wrapping_or_zero_and_accept_integral_floats() {
+        let timeline = r#"{ "fps": 30, "duration_frames": 10 }"#;
+        for (settings, field) in [
+            (r#"{ "width": 4294967297, "height": 100 }"#, "width"),
+            (r#"{ "width": 100, "height": 4294967296 }"#, "height"),
+            (r#"{ "width": 0, "height": 100 }"#, "width"),
+            (r#"{ "width": 100, "height": 1.5 }"#, "height"),
+        ] {
+            let err = parse(&composition_json(timeline, settings))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(&format!("render_settings.{field}")), "{err}");
+        }
+
+        let comp = parse(&composition_json(
+            r#"{ "fps": 30, "duration_frames": 10.0 }"#,
+            r#"{ "width": 100.0, "height": 50.0 }"#,
+        ))
+        .unwrap();
+        assert_eq!(comp.timeline.duration_frames, 10);
+        assert_eq!(
+            (comp.render_settings.width, comp.render_settings.height),
+            (100, 50)
+        );
     }
 }

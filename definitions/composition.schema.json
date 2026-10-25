@@ -3198,10 +3198,12 @@
           "$ref": "#/$defs/color"
         },
         "height": {
+          "maximum": 4294967295,
           "minimum": 1,
           "type": "integer"
         },
         "width": {
+          "maximum": 4294967295,
           "minimum": 1,
           "type": "integer"
         }
@@ -3213,14 +3215,17 @@
       "additionalProperties": true,
       "properties": {
         "duration_frames": {
+          "maximum": 4294967295,
           "minimum": 1,
           "type": "integer"
         },
         "fps": {
+          "default": 30,
+          "exclusiveMinimum": 0,
           "type": "number"
         }
       },
-      "required": ["fps", "duration_frames"],
+      "required": ["duration_frames"],
       "type": "object"
     }
   },

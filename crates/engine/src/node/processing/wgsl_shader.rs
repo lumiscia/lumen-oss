@@ -195,25 +195,30 @@ fn parse_binding_values(
         return Ok(vec![value as f32]);
     }
 
-    let delimiter: &[_] = if raw_value.contains(',') {
-        &[',']
+    let parts: Vec<&str> = if raw_value.contains(',') {
+        raw_value.split(',').map(str::trim).collect()
     } else {
-        &[' ', '\t']
+        // An empty value yields one empty part so it is rejected rather than binding nothing.
+        raw_value
+            .split_whitespace()
+            .chain(raw_value.is_empty().then_some(""))
+            .collect()
     };
-    raw_value
-        .split(delimiter)
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
+    parts
+        .into_iter()
         .map(|part| {
-            part.parse::<f32>().map_err(|_| {
-                crate::error::PropertyError::InvalidType {
-                    node_id,
-                    property_path: format!("bindings.{name}"),
-                    expected: "Float",
-                    actual: "String",
-                }
-                .into()
-            })
+            part.parse::<f32>()
+                .ok()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| {
+                    crate::error::PropertyError::InvalidType {
+                        node_id,
+                        property_path: format!("bindings.{name}"),
+                        expected: "Float",
+                        actual: "String",
+                    }
+                    .into()
+                })
         })
         .collect()
 }
@@ -315,7 +320,13 @@ mod tests {
             parse_binding_values(node_id, "tint", "1, 0.5 ,0", &ctx).unwrap(),
             vec![1.0, 0.5, 0.0]
         );
-        for raw in ["1, abc", "0.5 oops"] {
+        assert_eq!(
+            parse_binding_values(node_id, "tint", "1\t0.5  0", &ctx).unwrap(),
+            vec![1.0, 0.5, 0.0]
+        );
+        for raw in [
+            "1, abc", "0.5 oops", "1,,0.5,1", ",,,", "1,", "", "NaN", "inf", "1e999,0",
+        ] {
             let error = parse_binding_values(node_id, "tint", raw, &ctx).unwrap_err();
             assert!(
                 error.to_string().contains("bindings.tint"),
