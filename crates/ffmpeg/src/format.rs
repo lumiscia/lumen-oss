@@ -26,7 +26,8 @@ impl Rational {
     /// any other rate is rounded to the nearest 1/1000 and reduced.
     pub fn from_fps(fps: f64) -> Result<Self> {
         const OPERATION: &str = "Rational::from_fps";
-        const TOLERANCE: f64 = 1e-3;
+        const WHOLE_TOLERANCE: f64 = 1e-6;
+        const NTSC_TOLERANCE: f64 = 1e-3;
         if !fps.is_finite() || fps <= 0.0 || fps > 1_000_000.0 {
             return Err(crate::FfmpegError::new(
                 OPERATION,
@@ -34,14 +35,20 @@ impl Rational {
             ));
         }
         let whole = fps.round();
-        if (fps - whole).abs() < TOLERANCE {
-            return Ok(Self::new(whole.max(1.0) as i32, 1));
+        if whole >= 1.0 && (fps - whole).abs() < WHOLE_TOLERANCE {
+            return Ok(Self::new(whole as i32, 1));
         }
         let ntsc = (fps * 1.001).round();
-        if (fps * 1.001 - ntsc).abs() < TOLERANCE {
+        if ntsc >= 1.0 && (fps * 1.001 - ntsc).abs() < NTSC_TOLERANCE {
             return Ok(Self::new(ntsc as i32 * 1000, 1001));
         }
         let millis = (fps * 1000.0).round() as i64;
+        if millis == 0 {
+            return Err(crate::FfmpegError::new(
+                OPERATION,
+                format!("frame rate {fps} rounds to zero at millisecond precision"),
+            ));
+        }
         let divisor = gcd(millis, 1000);
         Ok(Self::new(
             (millis / divisor) as i32,
@@ -365,11 +372,16 @@ mod tests {
             Rational::new(60_000, 1001)
         );
         assert_eq!(Rational::from_fps(12.5).unwrap(), Rational::new(25, 2));
+        assert_eq!(
+            Rational::from_fps(24.0009).unwrap(),
+            Rational::new(24_001, 1000)
+        );
+        assert_eq!(Rational::from_fps(0.0009).unwrap(), Rational::new(1, 1000));
     }
 
     #[test]
     fn rejects_invalid_frame_rates() {
-        for fps in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        for fps in [0.0, 0.0004, -1.0, f64::NAN, f64::INFINITY] {
             assert!(Rational::from_fps(fps).is_err());
         }
     }
