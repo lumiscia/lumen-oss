@@ -186,13 +186,15 @@ fn parse_binding_values(
             .map_err(crate::error::LumenError::from)?
             .evaluate(ctx)?
             .as_f64()
+            .map(|value| value as f32)
+            .filter(|value| value.is_finite())
             .ok_or_else(|| crate::error::PropertyError::InvalidType {
                 node_id,
                 property_path: format!("bindings.{name}"),
                 expected: "Float",
                 actual: "Expression",
             })?;
-        return Ok(vec![value as f32]);
+        return Ok(vec![value]);
     }
 
     let parts: Vec<&str> = if raw_value.contains(',') {
@@ -325,7 +327,17 @@ mod tests {
             vec![1.0, 0.5, 0.0]
         );
         for raw in [
-            "1, abc", "0.5 oops", "1,,0.5,1", ",,,", "1,", "", "NaN", "inf", "1e999,0",
+            "1, abc",
+            "0.5 oops",
+            "1,,0.5,1",
+            ",,,",
+            "1,",
+            "",
+            "NaN",
+            "inf",
+            "1e999,0",
+            "=pow(10, 40)",
+            "=pow(-1, 0.5)",
         ] {
             let error = parse_binding_values(node_id, "tint", raw, &ctx).unwrap_err();
             assert!(
