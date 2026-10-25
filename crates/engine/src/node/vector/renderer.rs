@@ -15,11 +15,13 @@ use super::{
 pub(crate) const SHAPE_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("paint/paint.wgsl"),
+    include_str!("vector_common.wgsl"),
     include_str!("shape_renderer.wgsl")
 );
 pub(crate) const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("paint/paint.wgsl"),
+    include_str!("vector_common.wgsl"),
     include_str!("path_renderer.wgsl")
 );
 fn text_shader() -> String {
@@ -32,6 +34,25 @@ fn text_shader() -> String {
 }
 pub(crate) const MAX_TEXT_GLYPHS: usize = 2048;
 pub(crate) const MAX_PATH_POINTS: usize = 128;
+
+// Bits of the `flags` field in both uniform structs; keep in sync with `vector_common.wgsl`.
+const STYLE_FILL_ENABLED: u32 = 1;
+const STYLE_STROKE_ENABLED: u32 = 2;
+const STYLE_EDGE_ANTIALIAS: u32 = 4;
+
+pub(super) fn style_flags(fill: bool, stroke: bool, edge_antialias: bool) -> u32 {
+    let mut flags = 0;
+    if fill {
+        flags |= STYLE_FILL_ENABLED;
+    }
+    if stroke {
+        flags |= STYLE_STROKE_ENABLED;
+    }
+    if edge_antialias {
+        flags |= STYLE_EDGE_ANTIALIAS;
+    }
+    flags
+}
 
 pub(crate) struct VectorRenderer<'a, 'b> {
     ctx: &'a mut crate::gpu::CompileContext<'b>,
@@ -47,24 +68,13 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         shape: &Shape,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        let (texture, params, size) = self.compile_vector_source(
-            shape.id,
-            port,
-            "shape",
-            SHAPE_SHADER,
-            std::mem::size_of::<ShapeParams>() as u64,
-        )?;
+        let source = self.compile_vector_source(shape.id, port, "shape", SHAPE_SHADER, None)?;
         self.ctx.register_compiled_node(CompiledShape {
             node_id: shape.id,
             params: shape.params.clone(),
-            buffer: params,
+            buffer: source.params,
         });
-
-        Ok(CompiledOutput::Raster(RasterHandle {
-            texture,
-            domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: RasterMetadata::default(),
-        }))
+        Ok(source.output)
     }
 
     pub(crate) fn compile_path(
@@ -79,7 +89,6 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             params: path.params.clone(),
             params_buffer,
             points_buffer,
-            max_points: MAX_PATH_POINTS,
         });
         Ok(output)
     }
@@ -97,7 +106,6 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             params: shape.params.clone(),
             params_buffer,
             points_buffer,
-            max_points: MAX_PATH_POINTS,
         });
         Ok(output)
     }
@@ -108,83 +116,13 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         port: &PortRef,
         label: &str,
     ) -> crate::Result<(CompiledOutput, lumen_gpu::BufferId, lumen_gpu::BufferId)> {
-        if port.port != "output" {
-            return Err(self.ctx.missing_output(node_id, &port.port));
-        }
-
-        let size = lumen_gpu::Size::new(
-            self.ctx.composition().render_settings.width.max(1),
-            self.ctx.composition().render_settings.height.max(1),
-        );
-        let texture = self.ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(node_id.0),
-            Some(format!("{label}:{}:output", node_id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
-        );
-        let params = self.ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(node_id.0),
-            Some(format!("{label}:{}:params", node_id.0)),
-            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<PathParams>() as u64),
-        );
-        let points = self.ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(node_id.0),
-            Some(format!("{label}:{}:points", node_id.0)),
-            lumen_gpu::BufferDesc::storage(
-                (MAX_PATH_POINTS * std::mem::size_of::<PathPoint>()) as u64,
-            ),
-        );
-        let program = self.ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(node_id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
-                label: Some(label.to_string()),
-                shader: PATH_SHADER.to_string(),
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage(
-                        1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        true,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        2,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                ]),
-            }),
-        );
-        self.ctx
-            .builder_mut()
-            .compute_pass(lumen_gpu::ComputePassDesc {
-                label: Some(format!("{label}:{}:rasterize", node_id.0)),
-                owner: Some(lumen_gpu::NodeKey(node_id.0)),
-                program,
-                bindings: vec![
-                    lumen_gpu::Binding::uniform(0, 0, params),
-                    lumen_gpu::Binding::storage_buffer(0, 1, points),
-                    lumen_gpu::Binding::storage_texture(0, 2, texture),
-                ],
-                dispatch: compiler::dispatch_for(size).into(),
-            });
-        self.ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(node_id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
-
-        let output = CompiledOutput::Raster(RasterHandle {
-            texture,
-            domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: RasterMetadata::default(),
-        });
-        Ok((output, params, points))
+        let points_size = (MAX_PATH_POINTS * std::mem::size_of::<PathPoint>()) as u64;
+        let source =
+            self.compile_vector_source(node_id, port, label, PATH_SHADER, Some(points_size))?;
+        let points = source
+            .points
+            .expect("a source compiled with a points size has a points buffer");
+        Ok((source.output, source.params, points))
     }
 
     pub(crate) fn compile_text(
@@ -325,14 +263,16 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         }))
     }
 
+    /// Compiles the compute pass shared by all vector rasterizers. Sources with a
+    /// `points_size` also bind a read-only storage buffer of that size.
     fn compile_vector_source(
         &mut self,
         node_id: NodeId,
         port: &PortRef,
         label: &str,
         shader: &str,
-        params_size: u64,
-    ) -> crate::Result<(lumen_gpu::TextureId, lumen_gpu::BufferId, lumen_gpu::Size)> {
+        points_size: Option<u64>,
+    ) -> crate::Result<VectorSource> {
         if port.port != "output" {
             return Err(self.ctx.missing_output(node_id, &port.port));
         }
@@ -341,62 +281,97 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             self.ctx.composition().render_settings.width.max(1),
             self.ctx.composition().render_settings.height.max(1),
         );
+        let key = lumen_gpu::NodeKey(node_id.0);
         let texture = self.ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(node_id.0),
+            key,
             Some(format!("{label}:{}:output", node_id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
+        let uniforms_size = if points_size.is_some() {
+            std::mem::size_of::<PathUniforms>()
+        } else {
+            std::mem::size_of::<ShapeUniforms>()
+        };
         let params = self.ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(node_id.0),
+            key,
             Some(format!("{label}:{}:params", node_id.0)),
-            lumen_gpu::BufferDesc::uniform(params_size),
+            lumen_gpu::BufferDesc::uniform(uniforms_size as u64),
         );
+        let points = points_size.map(|points_size| {
+            self.ctx.builder_mut().buffer_for(
+                key,
+                Some(format!("{label}:{}:points", node_id.0)),
+                lumen_gpu::BufferDesc::storage(points_size),
+            )
+        });
+
+        let stages = lumen_gpu::wgpu::ShaderStages::COMPUTE;
+        let mut layout = vec![lumen_gpu::BindingLayoutEntry::uniform(0, stages)];
+        let mut bindings = vec![lumen_gpu::Binding::uniform(0, 0, params)];
+        if let Some(points) = points {
+            layout.push(lumen_gpu::BindingLayoutEntry::storage(1, stages, true));
+            bindings.push(lumen_gpu::Binding::storage_buffer(0, 1, points));
+        }
+        let texture_binding = layout.len() as u32;
+        layout.push(lumen_gpu::BindingLayoutEntry::storage_texture(
+            texture_binding,
+            stages,
+            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+        ));
+        bindings.push(lumen_gpu::Binding::storage_texture(
+            0,
+            texture_binding,
+            texture,
+        ));
+
         let program = self.ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(node_id.0),
+            key,
             lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
                 label: Some(label.to_string()),
                 shader: shader.to_string(),
                 entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                ]),
+                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
             }),
         );
         self.ctx
             .builder_mut()
             .compute_pass(lumen_gpu::ComputePassDesc {
                 label: Some(format!("{label}:{}:rasterize", node_id.0)),
-                owner: Some(lumen_gpu::NodeKey(node_id.0)),
+                owner: Some(key),
                 program,
-                bindings: vec![
-                    lumen_gpu::Binding::uniform(0, 0, params),
-                    lumen_gpu::Binding::storage_texture(0, 1, texture),
-                ],
+                bindings,
                 dispatch: compiler::dispatch_for(size).into(),
             });
         self.ctx.builder_mut().param(
             lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(node_id.0),
+                owner: key,
                 slot: 0,
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        Ok((texture, params, size))
+
+        Ok(VectorSource {
+            output: CompiledOutput::Raster(RasterHandle {
+                texture,
+                domain: lumen_gpu::TextureDomain::full_frame(size),
+                metadata: RasterMetadata::default(),
+            }),
+            params,
+            points,
+        })
     }
+}
+
+struct VectorSource {
+    output: CompiledOutput,
+    params: lumen_gpu::BufferId,
+    points: Option<lumen_gpu::BufferId>,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct ShapeParams {
+pub(crate) struct ShapeUniforms {
     pub(crate) fill_paint: super::paint::GpuPaint,
     pub(crate) stroke_paint: super::paint::GpuPaint,
     pub(crate) position: [f32; 2],
@@ -409,7 +384,7 @@ pub(crate) struct ShapeParams {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct PathParams {
+pub(crate) struct PathUniforms {
     pub(crate) fill_paint: super::paint::GpuPaint,
     pub(crate) stroke_paint: super::paint::GpuPaint,
     pub(crate) position: [f32; 2],

@@ -1,5 +1,5 @@
 use super::paint::Paint;
-use super::renderer::VectorRenderer;
+use super::renderer::{MAX_PATH_POINTS, PathUniforms, ShapeUniforms, VectorRenderer, style_flags};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
@@ -130,20 +130,7 @@ impl GpuCompiledNode for CompiledShape {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
-        let (x, y) = evaluated.position;
-        let params = super::renderer::ShapeParams {
-            fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
-            stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
-            position: [x as f32, y as f32],
-            size: [
-                evaluated.width.max(1) as f32,
-                evaluated.height.max(1) as f32,
-            ],
-            border_radius: evaluated.border_radius as f32,
-            stroke_width: evaluated.stroke_width as f32,
-            geometry_kind: evaluated.geometry_kind as u32,
-            flags: shape_flags(&evaluated),
-        };
+        let params = shape_uniforms(&evaluated);
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
     }
@@ -155,7 +142,6 @@ pub(crate) struct CompiledPolygonShape {
     pub(crate) params: ShapeParamsDelegate,
     pub(crate) params_buffer: lumen_gpu::BufferId,
     pub(crate) points_buffer: lumen_gpu::BufferId,
-    pub(crate) max_points: usize,
 }
 
 impl GpuCompiledNode for CompiledPolygonShape {
@@ -170,10 +156,10 @@ impl GpuCompiledNode for CompiledPolygonShape {
         })?;
         // Invalid or incomplete point lists draw nothing, so editing the field never fails the frame.
         let vertices =
-            parse_polygon_points(&evaluated.polygon_points, self.max_points).unwrap_or_default();
+            parse_polygon_points(&evaluated.polygon_points, MAX_PATH_POINTS).unwrap_or_default();
         let points = super::path::closed_contour(&vertices);
         let (x, y) = evaluated.position;
-        let params = super::renderer::PathParams {
+        let params = PathUniforms {
             fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
             stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
             position: [x as f32, y as f32],
@@ -194,18 +180,26 @@ impl GpuCompiledNode for CompiledPolygonShape {
     }
 }
 
+fn shape_uniforms(params: &ShapeParams) -> ShapeUniforms {
+    let (x, y) = params.position;
+    ShapeUniforms {
+        fill_paint: params.fill_paint.to_gpu([255, 255, 255, 255]),
+        stroke_paint: params.stroke_paint.to_gpu([0, 0, 0, 255]),
+        position: [x as f32, y as f32],
+        size: [params.width.max(1) as f32, params.height.max(1) as f32],
+        border_radius: params.border_radius.max(0.0) as f32,
+        stroke_width: params.stroke_width as f32,
+        geometry_kind: params.geometry_kind as u32,
+        flags: shape_flags(params),
+    }
+}
+
 fn shape_flags(params: &ShapeParams) -> u32 {
-    let mut flags = 0;
-    if params.fill_enabled {
-        flags |= 1;
-    }
-    if params.stroke_enabled {
-        flags |= 2;
-    }
-    if params.edge_antialias {
-        flags |= 4;
-    }
-    flags
+    style_flags(
+        params.fill_enabled,
+        params.stroke_enabled,
+        params.edge_antialias,
+    )
 }
 
 /// Parses `x,y` pairs separated by `;` into polygon vertices. Newlines are accepted as
@@ -236,6 +230,15 @@ fn parse_polygon_points(text: &str, max_points: usize) -> Option<Vec<[f32; 2]>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negative_border_radius_binds_as_zero() {
+        let params = ShapeParams {
+            border_radius: -12.0,
+            ..ShapeParams::default()
+        };
+        assert_eq!(shape_uniforms(&params).border_radius, 0.0);
+    }
 
     #[test]
     fn parses_semicolon_and_newline_separated_points() {

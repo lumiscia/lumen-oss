@@ -1,4 +1,5 @@
 use super::paint::Paint;
+use super::renderer::{MAX_PATH_POINTS, PathUniforms, style_flags};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
@@ -93,7 +94,6 @@ pub(crate) struct CompiledPath {
     pub(crate) params: PathParamsDelegate,
     pub(crate) params_buffer: lumen_gpu::BufferId,
     pub(crate) points_buffer: lumen_gpu::BufferId,
-    pub(crate) max_points: usize,
 }
 
 impl GpuCompiledNode for CompiledPath {
@@ -106,30 +106,24 @@ impl GpuCompiledNode for CompiledPath {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
-        let mut points = parse_path_points(&evaluated.data, self.max_points);
+        let mut points = parse_path_points(&evaluated.data, MAX_PATH_POINTS);
         normalize_contour_offsets(&mut points);
         let (x, y) = evaluated.position;
         let (trim_start, trim_end) =
             normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
-        let mut flags = 0;
-        if evaluated.fill_enabled {
-            flags |= 1;
-        }
-        if evaluated.stroke_enabled {
-            flags |= 2;
-        }
-        if evaluated.edge_antialias {
-            flags |= 4;
-        }
 
-        let params = super::renderer::PathParams {
+        let params = PathUniforms {
             fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
             stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
             position: [x as f32, y as f32],
             bounds_min: bounds_min(&points),
             bounds_size: bounds_size(&points),
             stroke_width: evaluated.stroke_width as f32,
-            flags,
+            flags: style_flags(
+                evaluated.fill_enabled,
+                evaluated.stroke_enabled,
+                evaluated.edge_antialias,
+            ),
             point_count: points.len() as u32,
             trim_start,
             trim_end,
@@ -145,8 +139,9 @@ impl GpuCompiledNode for CompiledPath {
 
 const PATH_FLATTENING_TOLERANCE: f32 = 0.25;
 const PATH_MAX_FLATTENING_ATTEMPTS: usize = 12;
-const PATH_END: u32 = 1;
-const PATH_CLOSED: u32 = 2;
+// Bits of `PathPoint::flags`; keep in sync with `path_renderer.wgsl`.
+const POINT_END: u32 = 1;
+const POINT_CLOSED: u32 = 2;
 
 fn parse_path_points(data: &str, max_points: usize) -> Vec<super::renderer::PathPoint> {
     let Some(path) = build_lyon_path(data) else {
@@ -180,7 +175,7 @@ pub(super) fn closed_contour(vertices: &[[f32; 2]]) -> Vec<super::renderer::Path
         })
         .collect();
     if let Some(last) = points.last_mut() {
-        last.flags = PATH_END | PATH_CLOSED;
+        last.flags = POINT_END | POINT_CLOSED;
     }
     normalize_contour_offsets(&mut points);
     points
@@ -381,9 +376,9 @@ fn collect_flattened_path(
                 if let Some(last) = points.last_mut()
                     && last.contour_start == contour_start
                 {
-                    last.flags |= PATH_END;
+                    last.flags |= POINT_END;
                     if close {
-                        last.flags |= PATH_CLOSED;
+                        last.flags |= POINT_CLOSED;
                     }
                 }
             }
@@ -420,8 +415,8 @@ fn truncated(
         return None;
     }
     if let Some(last) = points.last_mut() {
-        last.flags |= PATH_END;
-        last.flags &= !PATH_CLOSED;
+        last.flags |= POINT_END;
+        last.flags &= !POINT_CLOSED;
     }
     Some(points)
 }
@@ -448,9 +443,9 @@ fn normalize_contour_offsets(points: &mut [super::renderer::PathPoint]) {
     while start < points.len() {
         let end = points[start..]
             .iter()
-            .position(|point| point.flags & PATH_END != 0)
+            .position(|point| point.flags & POINT_END != 0)
             .map_or(points.len() - 1, |offset| start + offset);
-        let closed = points[end].flags & PATH_CLOSED != 0;
+        let closed = points[end].flags & POINT_CLOSED != 0;
         let closing_length = if closed && end > start {
             point_distance(points[end].position, points[start].position)
         } else {
@@ -501,7 +496,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![[10.0, 20.0], [20.0, 20.0], [20.0, 30.0], [15.0, 35.0]]
         );
-        assert_eq!(points.last().unwrap().flags, PATH_END | PATH_CLOSED);
+        assert_eq!(points.last().unwrap().flags, POINT_END | POINT_CLOSED);
     }
 
     #[test]
@@ -541,11 +536,11 @@ mod tests {
     fn preserves_subpath_boundaries_and_closure() {
         let points = parse_path_points("M 0 0 L 10 0 M 100 0 L 110 0 Z", 128);
         assert_eq!(points.len(), 4);
-        assert_eq!(points[1].flags, PATH_END);
+        assert_eq!(points[1].flags, POINT_END);
         assert_eq!(points[1].contour_start, 0);
         assert_eq!(points[2].contour_start, 2);
         assert_eq!(points[3].contour_start, 2);
-        assert_eq!(points[3].flags, PATH_END | PATH_CLOSED);
+        assert_eq!(points[3].flags, POINT_END | POINT_CLOSED);
     }
 
     #[test]
@@ -590,7 +585,7 @@ mod tests {
         assert!(points.len() <= 5);
         assert_eq!(points.first().unwrap().position, [0.0, 0.0]);
         assert_eq!(points.last().unwrap().position, [1000.0, 0.0]);
-        assert_ne!(points.last().unwrap().flags & PATH_END, 0);
+        assert_ne!(points.last().unwrap().flags & POINT_END, 0);
     }
 
     #[test]
