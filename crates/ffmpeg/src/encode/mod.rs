@@ -5,6 +5,7 @@ mod hardware;
 mod hw;
 mod muxed;
 mod output;
+mod quality;
 mod telemetry;
 #[cfg(test)]
 mod tests;
@@ -15,6 +16,7 @@ pub use audio::{AudioEncoder, AudioEncoderConfig};
 pub use hardware::{GpuTextureEncodeSupport, gpu_texture_encode_support};
 pub use muxed::MuxedEncoder;
 pub use output::OutputContext;
+pub use quality::RateControl;
 pub use telemetry::{
     GpuEncodeEvent, GpuEncodeOutcome, GpuEncodeStage, GpuEncodeTelemetry, GpuUploadDescriptor,
 };

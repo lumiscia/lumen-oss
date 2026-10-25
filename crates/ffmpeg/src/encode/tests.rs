@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -12,6 +12,7 @@ use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec};
 
 use super::{
     muxed::MuxedEncoder,
+    quality::RateControl,
     telemetry::{GpuEncodeTelemetry, GpuUploadDescriptor},
     video::VideoEncoderConfig,
 };
@@ -172,6 +173,109 @@ fn vulkan_encoder_uploads_cpu_frames() {
     assert_eq!(stream.codec, VideoCodec::Av1);
     assert_eq!((stream.width, stream.height), (width, height));
 
+    let _ = fs::remove_file(path);
+}
+
+fn noisy_frame(width: u32, height: u32, seed: u32) -> CpuVideoFrame {
+    let stride = width as usize * 4;
+    let data = (0..stride * height as usize)
+        .map(|index| {
+            (index as u32)
+                .wrapping_mul(2_654_435_761)
+                .wrapping_add(seed) as u8
+                >> 3
+        })
+        .collect();
+    CpuVideoFrame {
+        width,
+        height,
+        stride,
+        pixel_format: PixelFormat::Rgba8,
+        pts: None,
+        data,
+    }
+}
+
+fn encode_noise(path: &Path, config: VideoEncoderConfig) -> Result<(), FfmpegError> {
+    let (width, height) = (config.width, config.height);
+    let mut encoder = MuxedEncoder::create(path.to_string_lossy().to_string(), config)?;
+    for index in 0..10 {
+        encoder.write_video_frame(&noisy_frame(width, height, index))?;
+    }
+    encoder.finish()
+}
+
+#[test]
+fn libx264_encodes_with_crf_and_preset() {
+    let mut sizes = Vec::new();
+    for crf in [18, 40] {
+        let path = temp_path("x264_crf", "mp4");
+        let mut config = VideoEncoderConfig::cpu_rgba(128, 72, 30, VideoCodec::H264);
+        config.encoder_name = Some("libx264".to_string());
+        config.rate_control = Some(RateControl::Crf(crf));
+        config.preset = Some("ultrafast".to_string());
+        match encode_noise(&path, config) {
+            Ok(()) => {}
+            Err(error) if error.operation == "avcodec_find_encoder_by_name" => {
+                eprintln!("libx264 unavailable ({error}); skipping CRF test");
+                return;
+            }
+            Err(error) => panic!("libx264 CRF encode failed: {error}"),
+        }
+        let info = InputContext::open(path.to_string_lossy().to_string())
+            .expect("open encoded file")
+            .media_info();
+        assert_eq!(info.video_streams[0].codec, VideoCodec::H264);
+        sizes.push(fs::metadata(&path).expect("encoded file").len());
+        let _ = fs::remove_file(path);
+    }
+    assert!(sizes[0] > sizes[1], "lower CRF should be larger: {sizes:?}");
+}
+
+#[test]
+fn unsupported_rate_control_errors_at_create() {
+    let path = temp_path("unsupported_crf", "mp4");
+    let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, VideoCodec::H264);
+    config.encoder_name = Some("libx264".to_string());
+    config.rate_control = Some(RateControl::Crf(23));
+    config.preset = Some("p4".to_string());
+
+    let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+        Ok(_) => panic!("an NVENC preset should be rejected for libx264"),
+        Err(error) => error,
+    };
+    if error.operation == "avcodec_find_encoder_by_name" {
+        return;
+    }
+    assert!(error.message.contains("invalid preset"), "{error}");
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn vulkan_encoder_supports_qp_and_rejects_crf() {
+    let path = temp_path("vulkan_qp", "mkv");
+    let mut config = VideoEncoderConfig::cpu_rgba(256, 144, 30, VideoCodec::Av1);
+    config.encoder_name = Some("av1_vulkan".to_string());
+    config.rate_control = Some(RateControl::Crf(23));
+    let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config.clone()) {
+        Ok(_) => panic!("av1_vulkan has no CRF mode"),
+        Err(error) => error,
+    };
+    if vulkan_encode_unavailable(&error) {
+        eprintln!("av1_vulkan unavailable ({error}); skipping Vulkan QP test");
+        return;
+    }
+    assert!(error.message.contains("CRF"), "{error}");
+
+    config.rate_control = Some(RateControl::Qp(100));
+    match encode_noise(&path, config) {
+        Ok(()) => {}
+        Err(error) if vulkan_encode_unavailable(&error) => {
+            eprintln!("av1_vulkan unavailable ({error}); skipping Vulkan QP test");
+            return;
+        }
+        Err(error) => panic!("av1_vulkan QP encode failed: {error}"),
+    }
     let _ = fs::remove_file(path);
 }
 
