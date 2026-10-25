@@ -162,8 +162,14 @@ pub fn map_to_source_frame(
     } else {
         comp_fps
     };
-    let relative =
-        (((frame / comp_fps as f64) * media_fps as f64) * speed.abs() as f64).floor() as u32;
+    // Matching rates skip the divide-then-multiply, which can round a frame just below an
+    // integer (e.g. a looped `time_remap` target) up onto the next one.
+    let media_frame = if media_fps == comp_fps {
+        frame
+    } else {
+        (frame / comp_fps as f64) * media_fps as f64
+    };
+    let relative = (media_frame * speed.abs() as f64).floor() as u32;
     let forward = speed >= 0.0;
     let mapped = match loop_mode {
         LoopMode::Clamp => {
@@ -455,5 +461,22 @@ mod tests {
                 Some(2)
             ]
         );
+    }
+
+    #[test]
+    fn looped_remap_target_keeps_its_source_frame() {
+        use crate::node::processing::time_remap::{TimeRemapSettings, remap_frame};
+        let target = remap_frame(TimeRemapSettings {
+            frame: 1.0 / 49.0 * 49.0,
+            loop_enabled: true,
+            loop_start: 1,
+            loop_end: 2,
+        });
+        for fps in [24.0, 30.0, 60.0] {
+            assert_eq!(
+                map_to_source_frame(target, fps, fps, 10, None, 1.0, LoopMode::Clamp),
+                Some(1)
+            );
+        }
     }
 }

@@ -56,12 +56,17 @@ impl Default for TimeRemap {
 pub fn remap_frame(settings: TimeRemapSettings) -> f64 {
     let frame = settings.frame.max(0.0);
     let mut whole = frame.floor() as i64;
-    let fraction = frame - frame.floor();
+    let fraction = if frame.is_finite() {
+        frame - frame.floor()
+    } else {
+        0.0
+    };
     if settings.loop_enabled && settings.loop_end > settings.loop_start {
         let span = settings.loop_end - settings.loop_start;
         whole = settings.loop_start + (whole - settings.loop_start).rem_euclid(span);
     }
-    let whole = whole.clamp(0, i64::from(u32::MAX)) as f64;
+    // Matches the integer-frame behaviour, including its wrapping cast.
+    let whole = f64::from(whole.max(0) as u32);
     (whole + fraction).min((whole + 1.0).next_down())
 }
 
@@ -167,5 +172,17 @@ mod tests {
             loop_end: 10,
         });
         assert_eq!(frame, 6.0);
+    }
+
+    #[test]
+    fn non_finite_and_huge_targets_match_integer_frames() {
+        let settings = |frame, loop_enabled| TimeRemapSettings {
+            frame,
+            loop_enabled,
+            loop_start: 0,
+            loop_end: 10,
+        };
+        assert_eq!(remap_frame(settings(f64::INFINITY, true)), 7.0);
+        assert_eq!(remap_frame(settings(4_294_967_296.0, false)), 0.0);
     }
 }
