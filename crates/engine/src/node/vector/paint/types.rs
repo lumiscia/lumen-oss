@@ -81,7 +81,7 @@ pub struct GradientPaint {
 
 #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-#[delegate(kind = "paint")]
+#[delegate(kind = "paint", expressions)]
 pub enum Paint {
     SolidColor(u8, u8, u8, u8),
     Gradient(GradientPaint),

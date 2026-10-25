@@ -149,7 +149,7 @@ export const expressionBuiltins = [
         "name": "t"
       }
     ],
-    "doc": "Interpolates from `from` to `to` by `t`.",
+    "doc": "Interpolates two numbers, vec2 values or colours by `t`. Colours mix premultiplied.",
     "maxArgs": 3,
     "minArgs": 3,
     "name": "lerp",
@@ -357,6 +357,52 @@ export const expressionBuiltins = [
     "minArgs": 2,
     "name": "vec2",
     "returns": "vec2"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "r"
+      },
+      {
+        "kind": "number",
+        "name": "g"
+      },
+      {
+        "kind": "number",
+        "name": "b"
+      }
+    ],
+    "doc": "Opaque colour from components in `0..=255`.",
+    "maxArgs": 3,
+    "minArgs": 3,
+    "name": "rgb",
+    "returns": "color"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "r"
+      },
+      {
+        "kind": "number",
+        "name": "g"
+      },
+      {
+        "kind": "number",
+        "name": "b"
+      },
+      {
+        "kind": "number",
+        "name": "a"
+      }
+    ],
+    "doc": "Colour from components in `0..=255`, alpha included.",
+    "maxArgs": 4,
+    "minArgs": 4,
+    "name": "rgba",
+    "returns": "color"
   },
   {
     "args": [
@@ -783,7 +829,7 @@ export interface AlphaPremultiplyNode extends CompositionNodeBase<"alpha_premult
 export interface BackgroundNode extends CompositionNodeBase<"background"> {
   readonly params?: {
     readonly "height"?: ExpressionValue<number>;
-    readonly "paint"?: Paint;
+    readonly "paint"?: ExpressionValue<Paint>;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
     readonly "width"?: ExpressionValue<number>;
   };
@@ -901,10 +947,10 @@ export interface PathNode extends CompositionNodeBase<"path"> {
     readonly "data"?: ExpressionValue<string>;
     readonly "edge_antialias"?: ExpressionValue<boolean>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
-    readonly "fill_paint"?: Paint;
+    readonly "fill_paint"?: ExpressionValue<Paint>;
     readonly "position"?: ExpressionValue<Vec2>;
     readonly "stroke_enabled"?: ExpressionValue<boolean>;
-    readonly "stroke_paint"?: Paint;
+    readonly "stroke_paint"?: ExpressionValue<Paint>;
     readonly "stroke_width"?: ExpressionValue<number>;
     readonly "trim_end"?: ExpressionValue<number>;
     readonly "trim_start"?: ExpressionValue<number>;
@@ -931,7 +977,7 @@ export interface ResizeNode extends CompositionNodeBase<"resize"> {
 
 export interface ShadowNode extends CompositionNodeBase<"shadow"> {
   readonly params?: {
-    readonly "color"?: Paint;
+    readonly "color"?: ExpressionValue<Paint>;
     readonly "offset_x"?: ExpressionValue<number>;
     readonly "offset_y"?: ExpressionValue<number>;
     readonly "opacity"?: ExpressionValue<number>;
@@ -944,13 +990,13 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
     readonly "border_radius"?: ExpressionValue<number>;
     readonly "edge_antialias"?: ExpressionValue<boolean>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
-    readonly "fill_paint"?: Paint;
+    readonly "fill_paint"?: ExpressionValue<Paint>;
     readonly "geometry_kind"?: ShapeGeometryKind;
     readonly "height"?: ExpressionValue<number>;
     readonly "polygon_points"?: ExpressionValue<string>;
     readonly "position"?: ExpressionValue<Vec2>;
     readonly "stroke_enabled"?: ExpressionValue<boolean>;
-    readonly "stroke_paint"?: Paint;
+    readonly "stroke_paint"?: ExpressionValue<Paint>;
     readonly "stroke_width"?: ExpressionValue<number>;
     readonly "width"?: ExpressionValue<number>;
   };
@@ -966,7 +1012,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
   readonly params?: {
     readonly "alignment_horizontal"?: TextAlignmentHorizontal;
     readonly "alignment_vertical"?: TextAlignmentVertical;
-    readonly "color"?: Paint;
+    readonly "color"?: ExpressionValue<Paint>;
     readonly "content"?: ExpressionValue<string>;
     readonly "font_family"?: ExpressionValue<string>;
     readonly "font_size"?: ExpressionValue<number>;

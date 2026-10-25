@@ -335,7 +335,14 @@
                     "x-lumen-kind": "int"
                   },
                   "paint": {
-                    "$ref": "#/$defs/paint",
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": [0, 0, 0, 255],
                     "description": "Background paint.",
                     "title": "Paint",
@@ -1822,7 +1829,14 @@
                     "x-lumen-kind": "bool"
                   },
                   "fill_paint": {
-                    "$ref": "#/$defs/paint",
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": [255, 255, 255, 255],
                     "description": "Fill paint. Accepts a solid color or gradient.",
                     "title": "Fill Paint",
@@ -1857,7 +1871,14 @@
                     "x-lumen-kind": "bool"
                   },
                   "stroke_paint": {
-                    "$ref": "#/$defs/paint",
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": [0, 0, 0, 255],
                     "description": "Stroke paint. Accepts a solid color or gradient.",
                     "title": "Stroke Paint",
@@ -2211,7 +2232,14 @@
                 "additionalProperties": false,
                 "properties": {
                   "color": {
-                    "$ref": "#/$defs/paint",
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": [0, 0, 0, 255],
                     "description": "Shadow color.",
                     "title": "Color",
@@ -2378,7 +2406,14 @@
                     "x-lumen-kind": "bool"
                   },
                   "fill_paint": {
-                    "$ref": "#/$defs/paint",
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": [255, 255, 255, 255],
                     "description": "Fill paint. Accepts a solid color or gradient.",
                     "title": "Fill Paint",
@@ -2476,7 +2511,14 @@
                     "x-lumen-kind": "bool"
                   },
                   "stroke_paint": {
-                    "$ref": "#/$defs/paint",
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": [0, 0, 0, 255],
                     "description": "Stroke paint. Accepts a solid color or gradient.",
                     "title": "Stroke Paint",
@@ -2660,7 +2702,14 @@
                     "x-lumen-kind": "enum"
                   },
                   "color": {
-                    "$ref": "#/$defs/paint",
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": [255, 255, 255, 255],
                     "description": "Text color.",
                     "title": "Color",
@@ -3451,7 +3500,7 @@
             "name": "t"
           }
         ],
-        "doc": "Interpolates from `from` to `to` by `t`.",
+        "doc": "Interpolates two numbers, vec2 values or colours by `t`. Colours mix premultiplied.",
         "maxArgs": 3,
         "minArgs": 3,
         "name": "lerp",
@@ -3659,6 +3708,52 @@
         "minArgs": 2,
         "name": "vec2",
         "returns": "vec2"
+      },
+      {
+        "args": [
+          {
+            "kind": "number",
+            "name": "r"
+          },
+          {
+            "kind": "number",
+            "name": "g"
+          },
+          {
+            "kind": "number",
+            "name": "b"
+          }
+        ],
+        "doc": "Opaque colour from components in `0..=255`.",
+        "maxArgs": 3,
+        "minArgs": 3,
+        "name": "rgb",
+        "returns": "color"
+      },
+      {
+        "args": [
+          {
+            "kind": "number",
+            "name": "r"
+          },
+          {
+            "kind": "number",
+            "name": "g"
+          },
+          {
+            "kind": "number",
+            "name": "b"
+          },
+          {
+            "kind": "number",
+            "name": "a"
+          }
+        ],
+        "doc": "Colour from components in `0..=255`, alpha included.",
+        "maxArgs": 4,
+        "minArgs": 4,
+        "name": "rgba",
+        "returns": "color"
       },
       {
         "args": [

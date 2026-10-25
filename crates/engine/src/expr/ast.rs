@@ -29,15 +29,22 @@ pub enum ExpressionValue {
     Boolean(bool),
     String(String),
     Vec2((f64, f64)),
+    /// Straight-alpha RGBA with components in `0..=1`.
+    Color([f64; 4]),
 }
 
 impl ExpressionValue {
+    pub fn color_from_u8(color: [u8; 4]) -> Self {
+        Self::Color(color.map(|component| f64::from(component) / 255.0))
+    }
+
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::Number(_) => "number",
             Self::Boolean(_) => "boolean",
             Self::String(_) => "string",
             Self::Vec2(_) => "vec2",
+            Self::Color(_) => "color",
         }
     }
 
@@ -46,7 +53,7 @@ impl ExpressionValue {
             Self::Number(n) => Some(*n),
             Self::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
             Self::String(s) => s.parse().ok(),
-            Self::Vec2(_) => None,
+            Self::Vec2(_) | Self::Color(_) => None,
         }
     }
 
@@ -56,6 +63,7 @@ impl ExpressionValue {
             Self::Number(n) => n.abs() > f64::EPSILON,
             Self::String(s) => !s.is_empty(),
             Self::Vec2((x, y)) => x.abs() > f64::EPSILON || y.abs() > f64::EPSILON,
+            Self::Color(color) => color.iter().any(|component| component.abs() > f64::EPSILON),
         }
     }
 
@@ -65,12 +73,26 @@ impl ExpressionValue {
             Self::Number(n) => n.to_string(),
             Self::Boolean(b) => b.to_string(),
             Self::Vec2((x, y)) => format!("[{x}, {y}]"),
+            Self::Color(_) => {
+                let [r, g, b, a] = self.as_color_u8().expect("colour value");
+                format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+            }
         }
     }
 
     pub fn as_vec2(&self) -> Option<(f64, f64)> {
         match self {
             Self::Vec2(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The colour as 8-bit RGBA, clamping each component to `0..=1` first.
+    pub fn as_color_u8(&self) -> Option<[u8; 4]> {
+        match self {
+            Self::Color(color) => {
+                Some(color.map(|component| (component.clamp(0.0, 1.0) * 255.0).round() as u8))
+            }
             _ => None,
         }
     }
@@ -163,6 +185,20 @@ mod tests {
         assert!(value.as_bool());
         assert!(!ExpressionValue::Vec2((0.0, 0.0)).as_bool());
         assert!(!ExpressionValue::Vec2((f64::EPSILON, 0.0)).as_bool());
+    }
+
+    #[test]
+    fn color_values_convert_to_u8_and_hex() {
+        let value = ExpressionValue::Color([1.0, 0.5, -0.2, 1.4]);
+
+        assert_eq!(value.type_name(), "color");
+        assert_eq!(value.as_f64(), None);
+        assert_eq!(value.as_color_u8(), Some([255, 128, 0, 255]));
+        assert_eq!(value.as_string(), "#ff8000ff");
+        assert_eq!(
+            ExpressionValue::color_from_u8([255, 0, 51, 0]),
+            ExpressionValue::Color([1.0, 0.0, 0.2, 0.0])
+        );
     }
 
     #[test]

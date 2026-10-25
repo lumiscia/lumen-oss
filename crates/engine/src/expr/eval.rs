@@ -21,6 +21,7 @@ pub fn property_value_to_expression_value(value: &PropertyValue) -> crate::Resul
         PropertyValue::Bool(boolean) => Ok(ExpressionValue::Boolean(*boolean)),
         PropertyValue::String(text) => Ok(ExpressionValue::String(text.clone())),
         PropertyValue::Vec2(value) => Ok(ExpressionValue::Vec2(*value)),
+        PropertyValue::Color(value) => Ok(ExpressionValue::color_from_u8(*value)),
         unsupported => Err(LumenError::Expression(ExpressionError::Evaluate {
             path: None,
             details: format!(
@@ -44,25 +45,25 @@ pub(crate) fn evaluate_expr(
                     ExpressionValue::Vec2((x, y)) => Ok(ExpressionValue::Vec2((-x, -y))),
                     other => Ok(ExpressionValue::Number(-to_number(&other, ctx)?)),
                 },
-                UnaryOp::Not => Ok(ExpressionValue::Boolean(!to_boolean(&evaluated))),
+                UnaryOp::Not => Ok(ExpressionValue::Boolean(!evaluated.as_bool())),
             }
         }
         ExprNode::Binary(left, op, right) => {
             let lhs = evaluate_expr(left, ctx)?;
             match op {
                 BinaryOp::And => {
-                    if !to_boolean(&lhs) {
+                    if !lhs.as_bool() {
                         return Ok(ExpressionValue::Boolean(false));
                     }
                     let rhs = evaluate_expr(right, ctx)?;
-                    Ok(ExpressionValue::Boolean(to_boolean(&rhs)))
+                    Ok(ExpressionValue::Boolean(rhs.as_bool()))
                 }
                 BinaryOp::Or => {
-                    if to_boolean(&lhs) {
+                    if lhs.as_bool() {
                         return Ok(ExpressionValue::Boolean(true));
                     }
                     let rhs = evaluate_expr(right, ctx)?;
-                    Ok(ExpressionValue::Boolean(to_boolean(&rhs)))
+                    Ok(ExpressionValue::Boolean(rhs.as_bool()))
                 }
                 BinaryOp::Eq => {
                     let rhs = evaluate_expr(right, ctx)?;
@@ -172,7 +173,7 @@ pub(crate) fn evaluate_expr(
         })),
         ExprNode::Conditional(condition, when_true, when_false) => {
             let condition = evaluate_expr(condition, ctx)?;
-            if to_boolean(&condition) {
+            if condition.as_bool() {
                 evaluate_expr(when_true, ctx)
             } else {
                 evaluate_expr(when_false, ctx)
@@ -182,7 +183,7 @@ pub(crate) fn evaluate_expr(
 }
 
 /// Numbers combine as usual. Two vec2 values combine componentwise, and a vec2 can be
-/// multiplied or divided by a number on either side.
+/// multiplied or divided by a number on either side. Colours have no arithmetic.
 fn arithmetic(
     op: BinaryOp,
     lhs: &ExpressionValue,
@@ -215,7 +216,8 @@ fn arithmetic(
             let scalar = to_number(other, ctx)?;
             ((scalar, scalar), *b)
         }
-        (ExpressionValue::Vec2(_), _) | (_, ExpressionValue::Vec2(_)) => {
+        (ExpressionValue::Vec2(_) | ExpressionValue::Color(_), _)
+        | (_, ExpressionValue::Vec2(_) | ExpressionValue::Color(_)) => {
             return Err(error(format!(
                 "cannot apply `{}` to {} and {}",
                 operator_symbol(op),
@@ -259,19 +261,12 @@ fn to_number(value: &ExpressionValue, ctx: &ExpressionContext<'_>) -> crate::Res
                 details: format!("cannot convert `{text}` into f64"),
             })
         }),
-        ExpressionValue::Vec2(_) => Err(LumenError::Expression(ExpressionError::Evaluate {
-            path: ctx.path.clone(),
-            details: "cannot convert vec2 into f64".to_string(),
-        })),
-    }
-}
-
-fn to_boolean(value: &ExpressionValue) -> bool {
-    match value {
-        ExpressionValue::Boolean(boolean) => *boolean,
-        ExpressionValue::Number(number) => number.abs() > f64::EPSILON,
-        ExpressionValue::String(text) => !text.is_empty(),
-        ExpressionValue::Vec2((x, y)) => x.abs() > f64::EPSILON || y.abs() > f64::EPSILON,
+        ExpressionValue::Vec2(_) | ExpressionValue::Color(_) => {
+            Err(LumenError::Expression(ExpressionError::Evaluate {
+                path: ctx.path.clone(),
+                details: format!("cannot convert {} into f64", value.type_name()),
+            }))
+        }
     }
 }
 
@@ -373,15 +368,19 @@ mod tests {
             property_value_to_expression_value(&PropertyValue::Vec2((10.0, 20.0))).unwrap(),
             ExpressionValue::Vec2((10.0, 20.0))
         );
+        assert_eq!(
+            property_value_to_expression_value(&PropertyValue::Color([255, 0, 0, 255])).unwrap(),
+            ExpressionValue::Color([1.0, 0.0, 0.0, 1.0])
+        );
     }
 
     #[test]
     fn rejects_non_scalar_node_properties() {
-        let error = property_value_to_expression_value(&PropertyValue::Color([0, 0, 0, 255]))
+        let error = property_value_to_expression_value(&PropertyValue::FloatVec(vec![1.0]))
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("cannot convert node property `color`"));
+        assert!(error.contains("cannot convert node property `float[]`"));
     }
 
     #[test]
@@ -639,6 +638,60 @@ mod tests {
             panic!("expected vec2");
         };
         assert!(x > 960.0, "in_back pulls back before leaving: {x}");
+    }
+
+    #[test]
+    fn colour_literals_constructors_and_tweens() {
+        for (source, expected) in [
+            ("#ff8000", [1.0, 128.0 / 255.0, 0.0, 1.0]),
+            ("#FF800080", [1.0, 128.0 / 255.0, 0.0, 128.0 / 255.0]),
+            ("rgb(255, 0, 51)", [1.0, 0.0, 0.2, 1.0]),
+            ("rgba(0, 0, 0, 0)", [0.0; 4]),
+            ("lerp(#000000, #ffffff, 0.5)", [0.5, 0.5, 0.5, 1.0]),
+            ("tween(#ff0000, #0000ff, 40, 16)", [0.5, 0.0, 0.5, 1.0]),
+            ("if(frame > 10, #00ff00, #ff0000)", [0.0, 1.0, 0.0, 1.0]),
+        ] {
+            assert_eq!(
+                evaluate(source, 48).unwrap(),
+                ExpressionValue::Color(expected),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn colour_errors() {
+        for (source, expected) in [
+            ("#ff00", "invalid colour `#ff00`"),
+            ("#gg0000", "invalid colour `#gg0000`"),
+            (
+                "rgb(256, 0, 0)",
+                "colour components must be between 0 and 255",
+            ),
+            ("rgb(1, 2)", "expects 3 arguments"),
+        ] {
+            let ExpressionError::Parse { details, .. } = Expression::parse(source).unwrap_err()
+            else {
+                panic!("{source}: expected parse error");
+            };
+            assert!(details.contains(expected), "{source}: {details}");
+        }
+        for (source, expected) in [
+            ("#ff0000 + #00ff00", "cannot apply `+` to color and color"),
+            ("#ff0000 * 2", "cannot apply `*` to color and number"),
+            ("-#ff0000", "cannot convert color into f64"),
+            (
+                "rgb(frame * 10, 0, 0)",
+                "colour components must be between 0 and 255",
+            ),
+            (
+                "lerp(#ff0000, vec2(0, 0), 0.5)",
+                "expects `from` and `to` of the same type",
+            ),
+        ] {
+            let error = evaluate(source, 48).unwrap_err().to_string();
+            assert!(error.contains(expected), "{source}: {error}");
+        }
     }
 
     #[test]

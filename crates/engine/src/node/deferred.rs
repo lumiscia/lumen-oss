@@ -532,65 +532,62 @@ impl DeferredValue for String {
     }
 }
 
-macro_rules! impl_deferred_literal {
-    ($ty:ty, $kind:literal, $variant:ident, $expr_err:literal) => {
-        impl DeferredValue for $ty {
-            const ACCEPTS_EXPRESSIONS: bool = false;
-
-            fn eval_deferred(
-                deferred: &Deferred<Self>,
-                node_id: NodeId,
-                property_path: &str,
-                _ctx: &crate::expr::ExpressionContext<'_>,
-            ) -> crate::Result<Self> {
-                match deferred {
-                    Deferred::Value(value) => Ok(*value),
-                    Deferred::Expr(_) => Err(PropertyValue::invalid_type(
-                        node_id,
-                        property_path,
-                        $expr_err,
-                        "expression",
-                    )),
-                }
-            }
-
-            fn to_property_value(value: &Self) -> PropertyValue {
-                PropertyValue::$variant(*value)
-            }
-
-            fn from_property_value(value: PropertyValue) -> Option<Self> {
-                match value {
-                    PropertyValue::$variant(value) => Some(value),
-                    _ => None,
-                }
-            }
-
-            fn property_kind_name() -> &'static str {
-                $kind
-            }
-        }
-    };
+fn eval_color(
+    expr: &Expression,
+    node_id: NodeId,
+    property_path: &str,
+    expected: &'static str,
+    ctx: &crate::expr::ExpressionContext<'_>,
+) -> crate::Result<[u8; 4]> {
+    expr.evaluate(ctx)?
+        .as_color_u8()
+        .ok_or_else(|| PropertyValue::invalid_type(node_id, property_path, expected, "expression"))
 }
 
-impl_deferred_literal!([u8; 4], "Color", Color, "Color");
-
-impl DeferredValue for vector::paint::Paint {
-    const ACCEPTS_EXPRESSIONS: bool = false;
+impl DeferredValue for [u8; 4] {
+    const ACCEPTS_EXPRESSIONS: bool = true;
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,
         property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
+        ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(*value),
+            Deferred::Expr(expr) => eval_color(expr, node_id, property_path, "Color", ctx),
+        }
+    }
+
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Color(*value)
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::Color(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Color"
+    }
+}
+
+impl DeferredValue for vector::paint::Paint {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(value.clone()),
-            Deferred::Expr(_) => Err(PropertyValue::invalid_type(
-                node_id,
-                property_path,
-                "Paint",
-                "expression",
-            )),
+            Deferred::Expr(expr) => eval_color(expr, node_id, property_path, "Paint", ctx)
+                .map(vector::paint::Paint::solid),
         }
     }
 
@@ -791,7 +788,7 @@ mod tests {
     use crate::{
         error::{LumenError, PropertyError},
         expr::{Expression, ExpressionContext},
-        node::{Deferred, NodeId, PropertyExpression},
+        node::{Deferred, NodeId, vector::paint::Paint},
     };
 
     fn context() -> ExpressionContext<'static> {
@@ -873,25 +870,68 @@ mod tests {
     }
 
     #[test]
-    fn color_rejects_expressions_when_parsed() {
-        let error = Deferred::<[u8; 4]>::from_property_expression(
-            PropertyExpression::Expr(Expression::parse("frame").unwrap()),
-            NodeId::new(3),
-            "color",
-        )
-        .unwrap_err();
+    fn color_and_paint_evaluate_colour_expressions() {
+        let expression = Expression::parse("tween(#ff000000, #0000ff, 0, 24)").unwrap();
         assert_eq!(
-            error.to_string(),
-            "property resolution error: property `color` on node 3 has invalid type: \
-             expected Color, got expression"
+            Deferred::<[u8; 4]>::Expr(expression.clone())
+                .eval(NodeId::new(3), "color", &context())
+                .unwrap(),
+            [0, 0, 255, 128]
+        );
+        assert_eq!(
+            Deferred::<Paint>::Expr(expression)
+                .eval(NodeId::new(3), "fill_paint", &context())
+                .unwrap(),
+            Paint::solid([0, 0, 255, 128])
+        );
+
+        let error = Deferred::<Paint>::Expr(Expression::parse("frame").unwrap())
+            .eval(NodeId::new(3), "fill_paint", &context())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("expected Paint, got expression"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn paint_delegate_evaluates_colour_expressions() {
+        use crate::node::{
+            DelegateEvalContext, DelegateEvaluable, DelegateValue, PropertyExpression,
+            vector::paint::PaintDelegate,
+        };
+
+        let expression = Expression::parse("tween(#ff0000, #0000ff, 0, 24)").unwrap();
+        let delegate = PaintDelegate::from_property_expression(
+            PropertyExpression::Expr(expression),
+            NodeId::new(3),
+            "fill_paint",
+        )
+        .unwrap();
+        assert!(matches!(
+            delegate.to_property_expression(),
+            PropertyExpression::Expr(_)
+        ));
+        let ctx = DelegateEvalContext {
+            node_id: NodeId::new(3),
+            property_path: "fill_paint",
+            expr: &context(),
+        };
+        assert_eq!(
+            delegate.eval(&ctx).unwrap(),
+            Paint::solid([128, 0, 128, 255])
         );
     }
 
     #[cfg(feature = "json")]
     #[test]
-    fn color_rejects_expressions_when_deserialized() {
-        let error = serde_json::from_value::<Deferred<[u8; 4]>>("=frame".into()).unwrap_err();
-        assert_eq!(error.to_string(), "Color does not support expressions");
+    fn color_and_paint_accept_expressions_when_deserialized() {
+        let color = serde_json::from_value::<Deferred<[u8; 4]>>("=rgb(255, 0, 0)".into()).unwrap();
+        assert!(matches!(color, Deferred::Expr(_)));
+        let paint = serde_json::from_value::<Deferred<Paint>>("=#ff0000".into()).unwrap();
+        assert!(matches!(paint, Deferred::Expr(_)));
+        let literal = serde_json::from_value::<Deferred<Paint>>("#ff0000".into()).unwrap();
+        assert!(matches!(literal, Deferred::Value(_)));
     }
 
     #[cfg(feature = "json")]

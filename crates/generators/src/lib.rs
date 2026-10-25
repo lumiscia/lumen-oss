@@ -843,7 +843,8 @@ mod tests {
         assert!(validator.is_valid(&node("media_in", json!({ "kind": "=1" }))));
 
         assert!(!validator.is_valid(&node("exposure", json!({ "exposure": "frame" }))));
-        assert!(!validator.is_valid(&node("text", json!({ "color": "=frame" }))));
+        assert!(validator.is_valid(&node("text", json!({ "color": "=rgb(255, 0, 0)" }))));
+        assert!(validator.is_valid(&node("shape", json!({ "fill_paint": "=#ff0000" }))));
         assert!(!validator.is_valid(&node("text", json!({ "position": ["=frame", 0] }))));
         assert!(!validator.is_valid(&node("transform", json!({ "sampling": "=1" }))));
         // `alpha_premultiply.mode` decides output metadata, so it is literal-only.

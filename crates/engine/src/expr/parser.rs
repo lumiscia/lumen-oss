@@ -7,8 +7,9 @@ use crate::{
             BinaryOp, ExprNode, Expression, ExpressionId, ExpressionReference, ExpressionValue,
             GlobalVar, PropertyPath, UnaryOp,
         },
+        builtins::range_error,
         easing::Easing,
-        spec::{BuiltinFn, BuiltinSpec, ValueKind, builtin_for_name},
+        spec::{BuiltinSpec, ValueKind, builtin_for_name},
     },
     node::NodeId,
 };
@@ -19,6 +20,7 @@ enum TokenKind {
     Number(f64),
     /// A number with an `s` or `ms` suffix, in seconds.
     Seconds(f64),
+    Color([u8; 4]),
     String(String),
     LParen,
     RParen,
@@ -170,6 +172,7 @@ impl<'a> Lexer<'a> {
                     });
                 }
             }
+            '#' => TokenKind::Color(self.read_color()?),
             '\'' | '"' => TokenKind::String(self.read_string(ch)?),
             c if c.is_ascii_digit() => self.read_number_or_duration()?,
             c if is_ident_start(c) => TokenKind::Identifier(self.read_identifier()),
@@ -267,6 +270,27 @@ impl<'a> Lexer<'a> {
                 ),
             }),
         }
+    }
+
+    fn read_color(&mut self) -> Result<[u8; 4], ExpressionError> {
+        let start = self.position;
+        self.bump_char();
+        while matches!(self.peek_char(), Some(ch) if ch.is_ascii_alphanumeric()) {
+            self.bump_char();
+        }
+        let literal = &self.source[start..self.position];
+        let hex = &literal[1..];
+        if !(matches!(hex.len(), 6 | 8) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+            return Err(ExpressionError::Parse {
+                path: None,
+                details: format!("invalid colour `{literal}`; use #rrggbb or #rrggbbaa"),
+            });
+        }
+        let mut color = [255; 4];
+        for (index, channel) in color.iter_mut().take(hex.len() / 2).enumerate() {
+            *channel = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).expect("hex digits");
+        }
+        Ok(color)
     }
 
     fn read_identifier(&mut self) -> String {
@@ -475,6 +499,10 @@ impl<'a> Parser<'a> {
             TokenKind::String(value) => {
                 self.position += 1;
                 Ok(ExprNode::Literal(ExpressionValue::String(value)))
+            }
+            TokenKind::Color(value) => {
+                self.position += 1;
+                Ok(ExprNode::Literal(ExpressionValue::color_from_u8(value)))
             }
             TokenKind::Identifier(identifier) => {
                 self.position += 1;
@@ -706,16 +734,11 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
             )));
         }
     }
-    if spec.builtin == BuiltinFn::Spring {
-        let literal = |index: usize| match args.get(index) {
-            Some(ExprNode::Literal(ExpressionValue::Number(value))) => Some(*value),
-            _ => None,
-        };
-        if literal(1).is_some_and(|stiffness| stiffness <= 0.0) {
-            return Err(error("stiffness must be greater than 0".to_string()));
-        }
-        if literal(2).is_some_and(|damping| damping < 0.0) {
-            return Err(error("damping must not be negative".to_string()));
+    for (index, arg) in args.iter().enumerate() {
+        if let ExprNode::Literal(ExpressionValue::Number(value)) = arg
+            && let Some(details) = range_error(spec.builtin, index, *value)
+        {
+            return Err(error(details.to_string()));
         }
     }
     Ok(())

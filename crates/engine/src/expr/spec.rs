@@ -93,7 +93,7 @@ builtins! {
     Clamp "clamp" (3, Some(3)) [value: Number, min: Number, max: Number] -> Number,
         "Limits a value to `min..=max`.";
     Lerp "lerp" (3, Some(3)) [from: Any, to: Any, t: Number] -> Any,
-        "Interpolates from `from` to `to` by `t`.";
+        "Interpolates two numbers, vec2 values or colours by `t`. Colours mix premultiplied.";
     Pow "pow" (2, Some(2)) [base: Number, exponent: Number] -> Number, "Raises `base` to `exponent`.";
     Mod "mod" (2, Some(2)) [value: Number, divisor: Number] -> Number,
         "Remainder of `value / divisor`, keeping the sign of `value`.";
@@ -113,6 +113,10 @@ builtins! {
     Uppercase "uppercase" (1, Some(1)) [text: String] -> String, "Uppercases a string.";
     Lowercase "lowercase" (1, Some(1)) [text: String] -> String, "Lowercases a string.";
     Vec2 "vec2" (2, Some(2)) [x: Number, y: Number] -> Vec2, "Builds a 2D vector.";
+    Rgb "rgb" (3, Some(3)) [r: Number, g: Number, b: Number] -> Color,
+        "Opaque colour from components in `0..=255`.";
+    Rgba "rgba" (4, Some(4)) [r: Number, g: Number, b: Number, a: Number] -> Color,
+        "Colour from components in `0..=255`, alpha included.";
     Progress "progress" (2, Some(2)) [start: Number, end: Number] -> Number,
         "0 before frame `start`, 1 after frame `end`, linear in between.";
     Tween "tween" (4, Some(5))

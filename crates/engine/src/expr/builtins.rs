@@ -35,9 +35,13 @@ pub fn evaluate_builtin(
             .as_f64()
             .ok_or_else(|| error(format!("{} expects numeric arguments", spec.name)))
     };
+    let checked = |index: usize, value: f64| match range_error(builtin, index, value) {
+        Some(details) => Err(error(format!("`{}`: {details}", spec.name))),
+        None => Ok(value),
+    };
     let mismatch = |name: &str| {
         error(format!(
-            "`{name}` expects `from` and `to` of the same type: numbers or vec2 values, got {} and {}",
+            "`{name}` expects `from` and `to` of the same type: numbers, vec2 values or colours, got {} and {}",
             args[0].type_name(),
             args[1].type_name()
         ))
@@ -100,6 +104,13 @@ pub fn evaluate_builtin(
         BuiltinFn::Uppercase => Ok(ExpressionValue::String(args[0].as_string().to_uppercase())),
         BuiltinFn::Lowercase => Ok(ExpressionValue::String(args[0].as_string().to_lowercase())),
         BuiltinFn::Vec2 => Ok(ExpressionValue::Vec2((number(0)?, number(1)?))),
+        BuiltinFn::Rgb | BuiltinFn::Rgba => {
+            let mut color = [1.0; 4];
+            for (index, component) in color.iter_mut().take(args.len()).enumerate() {
+                *component = checked(index, number(index)?)? / 255.0;
+            }
+            Ok(ExpressionValue::Color(color))
+        }
         BuiltinFn::Progress => Ok(ExpressionValue::Number(progress(
             ctx,
             number(0)?,
@@ -145,20 +156,30 @@ pub fn evaluate_builtin(
                     Ok(default)
                 }
             };
-            let stiffness = optional(1, SPRING_STIFFNESS)?;
-            let damping = optional(2, SPRING_DAMPING)?;
-            if !stiffness.is_finite() || stiffness <= 0.0 {
-                return Err(error("spring stiffness must be greater than 0".to_string()));
-            }
-            if !damping.is_finite() || damping < 0.0 {
-                return Err(error("spring damping must not be negative".to_string()));
-            }
+            let stiffness = checked(1, optional(1, SPRING_STIFFNESS)?)?;
+            let damping = checked(2, optional(2, SPRING_DAMPING)?)?;
             Ok(ExpressionValue::Number(spring(
                 number(0)?,
                 stiffness,
                 damping,
             )))
         }
+    }
+}
+
+/// Why `value` is out of range as argument `index` of `builtin`, if it is.
+pub(crate) fn range_error(builtin: BuiltinFn, index: usize, value: f64) -> Option<&'static str> {
+    match (builtin, index) {
+        (BuiltinFn::Spring, 1) if value <= 0.0 || !value.is_finite() => {
+            Some("stiffness must be greater than 0")
+        }
+        (BuiltinFn::Spring, 2) if value < 0.0 || !value.is_finite() => {
+            Some("damping must not be negative")
+        }
+        (BuiltinFn::Rgb | BuiltinFn::Rgba, _) if !(0.0..=255.0).contains(&value) => {
+            Some("colour components must be between 0 and 255")
+        }
+        _ => None,
     }
 }
 
@@ -178,6 +199,17 @@ fn interpolate(from: &ExpressionValue, to: &ExpressionValue, t: f64) -> Option<E
             mix(from.0, to.0),
             mix(from.1, to.1),
         ))),
+        // Premultiplied, like CSS, so a fade to transparent doesn't darken.
+        (ExpressionValue::Color(from), ExpressionValue::Color(to)) => {
+            let premultiply = |[r, g, b, a]: [f64; 4]| [r * a, g * a, b * a, a];
+            let (from, to) = (premultiply(*from), premultiply(*to));
+            let [r, g, b, a] = std::array::from_fn(|index| mix(from[index], to[index]));
+            Some(ExpressionValue::Color(if a.abs() > f64::EPSILON {
+                [r / a, g / a, b / a, a]
+            } else {
+                [0.0; 4]
+            }))
+        }
         _ => Some(ExpressionValue::Number(mix(from.as_f64()?, to.as_f64()?))),
     }
 }
