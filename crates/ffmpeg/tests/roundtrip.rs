@@ -459,7 +459,7 @@ fn decodes_and_resamples_audio_with_cli_fixture() {
 
 #[test]
 fn decodes_rgba_frames_across_resolution_change() {
-    let clips = [("64x48", 64usize, 48usize), ("32x24", 32, 24)];
+    let clips = [("32x24", 32usize, 24usize), ("64x48", 64, 48)];
     let mut stream = Vec::new();
     for (size, _, _) in clips {
         let path = temp_path("resolution_clip", "h264");
@@ -498,6 +498,7 @@ fn decodes_rgba_frames_across_resolution_change() {
         while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
             assert_eq!(frame.stride, frame.width as usize * 4);
             assert_eq!(frame.data.len(), frame.stride * frame.height as usize);
+            assert!(frame.data.chunks_exact(4).all(|pixel| pixel[3] == 255));
             sizes.push((frame.width as usize, frame.height as usize));
         }
     };
