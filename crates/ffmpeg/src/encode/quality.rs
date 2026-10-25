@@ -100,9 +100,10 @@ pub(crate) fn quality_options(
             0
         }
         (RateControl::Crf(0), EncoderFamily::Nvenc) => {
+            let max = if encoder.starts_with("av1_") { 63 } else { 51 };
             return Err(FfmpegError::new(
                 "VideoEncoder::create",
-                format!("encoder `{encoder}` treats CRF 0 as automatic; use 1-51"),
+                format!("encoder `{encoder}` treats CRF 0 as automatic; use 1-{max}"),
             ));
         }
         (RateControl::Crf(cq), EncoderFamily::Nvenc) => {
@@ -134,6 +135,12 @@ pub(crate) fn quality_options(
         (RateControl::Qp(qp), EncoderFamily::Vaapi)
             if encoder.starts_with("av1_") || encoder.starts_with("vp9_") =>
         {
+            if qp == 0 {
+                return Err(FfmpegError::new(
+                    "VideoEncoder::create",
+                    format!("encoder `{encoder}` treats QP 0 as unset; use 1-255"),
+                ));
+            }
             options.push(("rc_mode", "CQP".to_string()));
             global_quality = Some(i32::from(qp));
             0
@@ -238,7 +245,12 @@ mod tests {
     #[test]
     fn zero_quality_that_means_automatic_errors() {
         assert!(options("h264_nvenc", RateControl::Crf(0), None).is_err());
-        assert!(options("h264_vaapi", RateControl::Qp(0), None).is_err());
+        for encoder in ["h264_vaapi", "av1_vaapi", "vp9_vaapi"] {
+            assert!(
+                options(encoder, RateControl::Qp(0), None).is_err(),
+                "{encoder}"
+            );
+        }
         assert!(options("libx264", RateControl::Crf(0), None).is_ok());
     }
 
