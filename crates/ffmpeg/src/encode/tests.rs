@@ -4,8 +4,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::FfmpegError;
+use crate::ffi::sys;
+use crate::format::InputContext;
 use crate::gpu::{GpuBackend, GpuVideoInput};
-use crate::video::{EncodeMode, VideoCodec};
+use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec};
 
 use super::{
     muxed::MuxedEncoder,
@@ -131,4 +134,50 @@ fn unavailable_hardware_texture_encoder_errors_at_create() {
     assert_eq!(error.backend, Some(GpuBackend::Vulkan));
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn vulkan_encoder_uploads_cpu_frames() {
+    let (width, height) = (256, 144);
+    let path = temp_path("vulkan_upload", "mkv");
+    let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::Av1);
+    config.encoder_name = Some("av1_vulkan".to_string());
+    let mut encoder = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+        Ok(encoder) => encoder,
+        Err(error) if vulkan_encode_unavailable(&error) => {
+            eprintln!("av1_vulkan unavailable ({error}); skipping Vulkan upload test");
+            return;
+        }
+        Err(error) => panic!("av1_vulkan is available but failed to initialise: {error}"),
+    };
+    for index in 0..10u8 {
+        let stride = width as usize * 4;
+        encoder
+            .write_video_frame(&CpuVideoFrame {
+                width,
+                height,
+                stride,
+                pixel_format: PixelFormat::Rgba8,
+                pts: None,
+                data: vec![index.wrapping_mul(25); stride * height as usize],
+            })
+            .expect("upload and encode frame");
+    }
+    encoder.finish().expect("finish encode");
+
+    let info = InputContext::open(path.to_string_lossy().to_string())
+        .expect("open encoded file")
+        .media_info();
+    let stream = &info.video_streams[0];
+    assert_eq!(stream.codec, VideoCodec::Av1);
+    assert_eq!((stream.width, stream.height), (width, height));
+
+    let _ = fs::remove_file(path);
+}
+
+/// Missing encoder, no Vulkan device, or a device without video encode support.
+fn vulkan_encode_unavailable(error: &FfmpegError) -> bool {
+    error.operation == "avcodec_find_encoder_by_name"
+        || error.operation == "av_hwdevice_ctx_create"
+        || error.code == Some(sys::AVERROR(libc::ENOSYS))
 }
