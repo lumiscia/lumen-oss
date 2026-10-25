@@ -113,6 +113,29 @@ builtins! {
     Uppercase "uppercase" (1, Some(1)) [text: String] -> String, "Uppercases a string.";
     Lowercase "lowercase" (1, Some(1)) [text: String] -> String, "Lowercases a string.";
     Vec2 "vec2" (2, Some(2)) [x: Number, y: Number] -> Vec2, "Builds a 2D vector.";
+    Progress "progress" (2, Some(2)) [start: Number, end: Number] -> Number,
+        "0 before frame `start`, 1 after frame `end`, linear in between.";
+    Tween "tween" (4, Some(5))
+        [from: Any, to: Any, start: Number, duration: Number, ease: Easing] -> Any,
+        "Eases from `from` to `to` over `duration` frames from frame `start`. `ease` defaults to `'linear'`.";
+    InQuad "in_quad" (1, Some(1)) [t: Number] -> Number, "Quadratic ease-in.";
+    OutQuad "out_quad" (1, Some(1)) [t: Number] -> Number, "Quadratic ease-out.";
+    InOutQuad "in_out_quad" (1, Some(1)) [t: Number] -> Number, "Quadratic ease-in-out.";
+    InCubic "in_cubic" (1, Some(1)) [t: Number] -> Number, "Cubic ease-in.";
+    OutCubic "out_cubic" (1, Some(1)) [t: Number] -> Number, "Cubic ease-out.";
+    InOutCubic "in_out_cubic" (1, Some(1)) [t: Number] -> Number, "Cubic ease-in-out.";
+    InExpo "in_expo" (1, Some(1)) [t: Number] -> Number, "Exponential ease-in.";
+    OutExpo "out_expo" (1, Some(1)) [t: Number] -> Number, "Exponential ease-out.";
+    InOutExpo "in_out_expo" (1, Some(1)) [t: Number] -> Number, "Exponential ease-in-out.";
+    InBack "in_back" (1, Some(1)) [t: Number] -> Number, "Ease-in that pulls back first.";
+    OutBack "out_back" (1, Some(1)) [t: Number] -> Number, "Ease-out that overshoots.";
+    InOutBack "in_out_back" (1, Some(1)) [t: Number] -> Number,
+        "Ease-in-out that pulls back and overshoots.";
+    CubicBezier "cubic_bezier" (5, Some(5))
+        [x1: Number, y1: Number, x2: Number, y2: Number, t: Number] -> Number,
+        "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.";
+    Spring "spring" (1, Some(3)) [t: Number, stiffness: Number, damping: Number] -> Number,
+        "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.";
 }
 
 pub fn builtin_for_name(name: &str) -> Option<&'static BuiltinSpec> {

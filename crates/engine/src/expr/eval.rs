@@ -393,16 +393,94 @@ mod tests {
     #[test]
     fn vec2_requires_exactly_two_components() {
         for source in ["vec2()", "vec2(1)", "vec2(1, 2, 3)"] {
-            let error = Expression::parse(source)
-                .unwrap()
-                .evaluate(&test_context())
-                .expect_err("invalid arity must fail");
-
-            let LumenError::Expression(ExpressionError::Evaluate { path, details }) = error else {
-                panic!("expected expression evaluation error");
+            let ExpressionError::Parse { details, .. } = Expression::parse(source).unwrap_err()
+            else {
+                panic!("expected parse error");
             };
-            assert_eq!(path.as_deref(), Some("node.opacity"));
-            assert!(details.contains("builtin expects 2 arguments"), "{details}");
+            assert!(details.contains("`vec2`: expects 2 arguments"), "{details}");
+        }
+    }
+
+    fn number_at(source: &str, frame: u32) -> f64 {
+        let ctx = ExpressionContext {
+            frame,
+            fps: 30.0,
+            ..test_context()
+        };
+        match Expression::parse(source).unwrap().evaluate(&ctx).unwrap() {
+            ExpressionValue::Number(value) => value,
+            other => panic!("expected a number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluates_issue_easing_examples() {
+        let lerp = "lerp(1200, 540, out_expo(progress(0, 18)))";
+        let tween = "tween(1200, 540, 0, 18, 'out_expo')";
+        assert_eq!(number_at(lerp, 0), 1200.0);
+        assert_eq!(number_at(lerp, 18), 540.0);
+        assert_eq!(number_at(lerp, 40), 540.0);
+        assert_eq!(number_at(lerp, 9), 1200.0 - 660.0 * (1.0 - 2f64.powi(-5)));
+        for frame in [0, 3, 9, 17, 18, 30] {
+            assert_eq!(number_at(lerp, frame), number_at(tween, frame));
+        }
+        assert_eq!(number_at("tween(0, 10, 4, 10)", 9), 5.0);
+    }
+
+    #[test]
+    fn unit_suffixes_convert_seconds_to_frames() {
+        let source = "tween(0, 1, 1.5s, 300ms, 'out_expo')";
+        assert_eq!(number_at(source, 45), 0.0);
+        assert_eq!(number_at(source, 54), 1.0);
+        assert_eq!(number_at(source, 48), 1.0 - 2f64.powf(-10.0 / 3.0));
+        assert_eq!(number_at("2s + 500ms", 0), 75.0);
+
+        let ExpressionError::Parse { details, .. } = Expression::parse("1.5px").unwrap_err() else {
+            panic!("expected parse error");
+        };
+        assert!(details.contains("unknown unit `px`"), "{details}");
+    }
+
+    #[test]
+    fn progress_steps_when_the_range_is_empty() {
+        assert_eq!(number_at("progress(10, 10)", 9), 0.0);
+        assert_eq!(number_at("progress(10, 10)", 10), 1.0);
+        assert_eq!(number_at("progress(10, 5)", 12), 1.0);
+        assert_eq!(number_at("progress(10, 20)", 15), 0.5);
+    }
+
+    #[test]
+    fn spring_and_cubic_bezier_evaluate() {
+        assert_eq!(number_at("spring((frame - 12) / fps)", 6), 0.0);
+        assert!((number_at("spring((frame - 12) / fps, 170, 26)", 60) - 1.0).abs() < 1e-3);
+        assert!((number_at("cubic_bezier(0, 0, 1, 1, 0.25)", 0) - 0.25).abs() < 1e-6);
+        let error = Expression::parse("spring(1, 0 - 1)")
+            .unwrap()
+            .evaluate(&test_context())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("stiffness must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn rejects_bad_easing_arguments_at_parse_time() {
+        for (source, expected) in [
+            ("tween(0, 1, 0, 10, 'bounce')", "unknown easing `bounce`"),
+            ("tween(0, 1, 0, 10, frame)", "must be a quoted easing name"),
+            ("tween(0, 1, 0)", "expects 4 to 5 arguments, got 3"),
+            ("spring(1, 0)", "stiffness must be greater than 0"),
+            ("spring(1, 170, -0.5 * 2)", ""),
+        ] {
+            match Expression::parse(source) {
+                Err(ExpressionError::Parse { details, .. }) if !expected.is_empty() => {
+                    assert!(details.contains(expected), "{source}: {details}")
+                }
+                Ok(_) if expected.is_empty() => {}
+                other => panic!("{source}: {other:?}"),
+            }
         }
     }
 

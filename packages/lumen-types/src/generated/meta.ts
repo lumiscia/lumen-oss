@@ -357,9 +357,279 @@ export const expressionBuiltins = [
     "minArgs": 2,
     "name": "vec2",
     "returns": "vec2"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "start"
+      },
+      {
+        "kind": "number",
+        "name": "end"
+      }
+    ],
+    "doc": "0 before frame `start`, 1 after frame `end`, linear in between.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "progress",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "any",
+        "name": "from"
+      },
+      {
+        "kind": "any",
+        "name": "to"
+      },
+      {
+        "kind": "number",
+        "name": "start"
+      },
+      {
+        "kind": "number",
+        "name": "duration"
+      },
+      {
+        "kind": "easing",
+        "name": "ease"
+      }
+    ],
+    "doc": "Eases from `from` to `to` over `duration` frames from frame `start`. `ease` defaults to `'linear'`.",
+    "maxArgs": 5,
+    "minArgs": 4,
+    "name": "tween",
+    "returns": "any"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quadratic ease-in.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_quad",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quadratic ease-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_quad",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quadratic ease-in-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_quad",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Cubic ease-in.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_cubic",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Cubic ease-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_cubic",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Cubic ease-in-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_cubic",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Exponential ease-in.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_expo",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Exponential ease-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_expo",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Exponential ease-in-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_expo",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-in that pulls back first.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_back",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-out that overshoots.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_back",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-in-out that pulls back and overshoots.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_back",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "x1"
+      },
+      {
+        "kind": "number",
+        "name": "y1"
+      },
+      {
+        "kind": "number",
+        "name": "x2"
+      },
+      {
+        "kind": "number",
+        "name": "y2"
+      },
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.",
+    "maxArgs": 5,
+    "minArgs": 5,
+    "name": "cubic_bezier",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      },
+      {
+        "kind": "number",
+        "name": "stiffness"
+      },
+      {
+        "kind": "number",
+        "name": "damping"
+      }
+    ],
+    "doc": "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.",
+    "maxArgs": 3,
+    "minArgs": 1,
+    "name": "spring",
+    "returns": "number"
   }
 ] as const;
 export type ExpressionBuiltinName = (typeof expressionBuiltins)[number]["name"];
+
+export const easingNames = [
+  "linear",
+  "in_quad",
+  "out_quad",
+  "in_out_quad",
+  "in_cubic",
+  "out_cubic",
+  "in_out_cubic",
+  "in_expo",
+  "out_expo",
+  "in_out_expo",
+  "in_back",
+  "out_back",
+  "in_out_back"
+] as const;
+/** Easing names accepted by `tween`. `'linear'` here is unrelated to the `linear(a, b, t)` builtin. */
+export type EasingName = (typeof easingNames)[number];
 
 export const expressionGlobals = [
   {

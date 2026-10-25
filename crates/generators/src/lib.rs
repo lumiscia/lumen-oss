@@ -452,7 +452,7 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
 }
 
 fn expressions_json() -> Value {
-    use lumen_engine::expr::{BUILTINS, GLOBALS};
+    use lumen_engine::expr::{BUILTINS, Easing, GLOBALS};
     let builtins = BUILTINS
         .iter()
         .map(|spec| {
@@ -475,7 +475,8 @@ fn expressions_json() -> Value {
         .iter()
         .map(|global| json!({ "name": global.name, "doc": global.doc }))
         .collect::<Vec<_>>();
-    json!({ "builtins": builtins, "globals": globals })
+    let easings = Easing::ALL.map(Easing::name);
+    json!({ "builtins": builtins, "easings": easings, "globals": globals })
 }
 
 fn node_schema_json(spec: &NodeSpec) -> Value {

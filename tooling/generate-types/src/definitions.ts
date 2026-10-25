@@ -9,6 +9,7 @@ export interface MetaManifest {
 
 export interface ExpressionsSpec {
   readonly builtins: readonly unknown[];
+  readonly easings: readonly string[];
   readonly globals: readonly unknown[];
 }
 
@@ -81,6 +82,7 @@ function manifestFromCompositionSchema(schema: JsonSchema): MetaManifest {
     schemaVersion,
     expressions: {
       builtins: arrayValue(expressions.builtins),
+      easings: arrayValue(expressions.easings).filter((value) => typeof value === "string"),
       globals: arrayValue(expressions.globals),
     },
     nodeKinds: Object.keys(nodeSpecs),

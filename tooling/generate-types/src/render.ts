@@ -86,6 +86,10 @@ const renderExpressionTables = ({ expressions }: MetaManifest): string => `${ren
 )}
 export type ExpressionBuiltinName = (typeof expressionBuiltins)[number]["name"];
 
+${renderConst("easingNames", expressions.easings)}
+/** Easing names accepted by \`tween\`. \`'linear'\` here is unrelated to the \`linear(a, b, t)\` builtin. */
+export type EasingName = (typeof easingNames)[number];
+
 ${renderConst("expressionGlobals", expressions.globals)}
 export type ExpressionGlobalName = (typeof expressionGlobals)[number]["name"];`;
 

@@ -5,6 +5,7 @@ use crate::{
     expr::{
         ExpressionContext,
         ast::{BuiltinFn, ExprNode, ExpressionValue},
+        easing::{Easing, SPRING_DAMPING, SPRING_STIFFNESS, cubic_bezier, spring},
         eval::evaluate_expr,
     },
     node::{
@@ -62,10 +63,8 @@ pub fn evaluate_builtin(
             }
             Ok(ExpressionValue::Number(value.clamp(min, max)))
         }
-        BuiltinFn::Lerp | BuiltinFn::Linear => {
-            let (start, end, t) = (number(0)?, number(1)?, number(2)?);
-            Ok(ExpressionValue::Number(start + (end - start) * t))
-        }
+        BuiltinFn::Lerp | BuiltinFn::Linear => interpolate(&args[0], &args[1], number(2)?)
+            .ok_or_else(|| error(format!("{} expects numeric arguments", spec.name))),
         BuiltinFn::Pow => Ok(ExpressionValue::Number(number(0)?.powf(number(1)?))),
         BuiltinFn::Mod => {
             let (lhs, rhs) = (number(0)?, number(1)?);
@@ -93,7 +92,81 @@ pub fn evaluate_builtin(
         BuiltinFn::Uppercase => Ok(ExpressionValue::String(args[0].as_string().to_uppercase())),
         BuiltinFn::Lowercase => Ok(ExpressionValue::String(args[0].as_string().to_lowercase())),
         BuiltinFn::Vec2 => Ok(ExpressionValue::Vec2((number(0)?, number(1)?))),
+        BuiltinFn::Progress => Ok(ExpressionValue::Number(progress(
+            ctx,
+            number(0)?,
+            number(1)?,
+        ))),
+        BuiltinFn::Tween => {
+            let ease = match args.get(4) {
+                None => Easing::Linear,
+                Some(ease) => Easing::from_name(&ease.as_string())
+                    .ok_or_else(|| error(format!("unknown easing `{}`", ease.as_string())))?,
+            };
+            let start = number(2)?;
+            let t = ease.apply(progress(ctx, start, start + number(3)?));
+            interpolate(&args[0], &args[1], t)
+                .ok_or_else(|| error("tween expects numeric from and to values".to_string()))
+        }
+        BuiltinFn::InQuad
+        | BuiltinFn::OutQuad
+        | BuiltinFn::InOutQuad
+        | BuiltinFn::InCubic
+        | BuiltinFn::OutCubic
+        | BuiltinFn::InOutCubic
+        | BuiltinFn::InExpo
+        | BuiltinFn::OutExpo
+        | BuiltinFn::InOutExpo
+        | BuiltinFn::InBack
+        | BuiltinFn::OutBack
+        | BuiltinFn::InOutBack => {
+            let easing = Easing::for_builtin(builtin).expect("easing builtin");
+            Ok(ExpressionValue::Number(easing.apply(number(0)?)))
+        }
+        BuiltinFn::CubicBezier => Ok(ExpressionValue::Number(cubic_bezier(
+            number(0)?,
+            number(1)?,
+            number(2)?,
+            number(3)?,
+            number(4)?,
+        ))),
+        BuiltinFn::Spring => {
+            let optional = |index: usize, default: f64| {
+                if index < args.len() {
+                    number(index)
+                } else {
+                    Ok(default)
+                }
+            };
+            let stiffness = optional(1, SPRING_STIFFNESS)?;
+            let damping = optional(2, SPRING_DAMPING)?;
+            if !stiffness.is_finite() || stiffness <= 0.0 {
+                return Err(error("spring stiffness must be greater than 0".to_string()));
+            }
+            if !damping.is_finite() || damping < 0.0 {
+                return Err(error("spring damping must not be negative".to_string()));
+            }
+            Ok(ExpressionValue::Number(spring(
+                number(0)?,
+                stiffness,
+                damping,
+            )))
+        }
     }
+}
+
+/// Clamped progress through frames `start..end`; a step at `start` when `end <= start`.
+fn progress(ctx: &ExpressionContext<'_>, start: f64, end: f64) -> f64 {
+    let frame = f64::from(ctx.frame);
+    if end <= start {
+        return if frame >= start { 1.0 } else { 0.0 };
+    }
+    ((frame - start) / (end - start)).clamp(0.0, 1.0)
+}
+
+fn interpolate(from: &ExpressionValue, to: &ExpressionValue, t: f64) -> Option<ExpressionValue> {
+    let (from, to) = (from.as_f64()?, to.as_f64()?);
+    Some(ExpressionValue::Number(from + (to - from) * t))
 }
 
 fn eval_error(ctx: &ExpressionContext<'_>, details: String) -> LumenError {

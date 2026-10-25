@@ -7,7 +7,8 @@ use crate::{
             BinaryOp, ExprNode, Expression, ExpressionId, ExpressionReference, ExpressionValue,
             GlobalVar, PropertyPath, UnaryOp,
         },
-        spec::builtin_for_name,
+        easing::Easing,
+        spec::{BuiltinFn, BuiltinSpec, ValueKind, builtin_for_name},
     },
     node::NodeId,
 };
@@ -16,6 +17,8 @@ use crate::{
 enum TokenKind {
     Identifier(String),
     Number(f64),
+    /// A number with an `s` or `ms` suffix, in seconds.
+    Seconds(f64),
     String(String),
     LParen,
     RParen,
@@ -168,7 +171,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             '\'' | '"' => TokenKind::String(self.read_string(ch)?),
-            c if c.is_ascii_digit() => TokenKind::Number(self.read_number()?),
+            c if c.is_ascii_digit() => self.read_number_or_duration()?,
             c if is_ident_start(c) => TokenKind::Identifier(self.read_identifier()),
             other => {
                 return Err(ExpressionError::Parse {
@@ -246,6 +249,24 @@ impl<'a> Lexer<'a> {
                 path: None,
                 details: format!("invalid number at byte {start}: {error}"),
             })
+    }
+
+    fn read_number_or_duration(&mut self) -> Result<TokenKind, ExpressionError> {
+        let start = self.position;
+        let value = self.read_number()?;
+        if !matches!(self.peek_char(), Some(ch) if is_ident_start(ch)) {
+            return Ok(TokenKind::Number(value));
+        }
+        match self.read_identifier().as_str() {
+            "s" => Ok(TokenKind::Seconds(value)),
+            "ms" => Ok(TokenKind::Seconds(value / 1000.0)),
+            unit => Err(ExpressionError::Parse {
+                path: None,
+                details: format!(
+                    "unknown unit `{unit}` after the number at byte {start}; use `s` or `ms`"
+                ),
+            }),
+        }
     }
 
     fn read_identifier(&mut self) -> String {
@@ -443,6 +464,14 @@ impl<'a> Parser<'a> {
                 self.position += 1;
                 Ok(ExprNode::Literal(ExpressionValue::Number(value)))
             }
+            TokenKind::Seconds(value) => {
+                self.position += 1;
+                Ok(ExprNode::Binary(
+                    Box::new(ExprNode::Literal(ExpressionValue::Number(value))),
+                    BinaryOp::Mul,
+                    Box::new(ExprNode::Global(GlobalVar::Fps)),
+                ))
+            }
             TokenKind::String(value) => {
                 self.position += 1;
                 Ok(ExprNode::Literal(ExpressionValue::String(value)))
@@ -533,6 +562,7 @@ impl<'a> Parser<'a> {
                 path: None,
                 details: format!("unknown function `{identifier}`"),
             })?;
+            validate_builtin_call(spec, &args)?;
             return Ok(ExprNode::Builtin(spec.builtin, args));
         }
 
@@ -644,6 +674,51 @@ impl TokenExpectation {
             Self::Eof => "end of input",
         }
     }
+}
+
+/// Checks what can be known before evaluation: arity, easing names and literal spring ranges.
+fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), ExpressionError> {
+    let error = |details: String| ExpressionError::Parse {
+        path: None,
+        details: format!("`{}`: {details}", spec.name),
+    };
+    if !spec.accepts_arity(args.len()) {
+        return Err(error(format!(
+            "expects {} arguments, got {}",
+            spec.arity_description(),
+            args.len()
+        )));
+    }
+    for (arg, param) in args.iter().zip(spec.args) {
+        if param.kind != ValueKind::Easing {
+            continue;
+        }
+        let ExprNode::Literal(ExpressionValue::String(name)) = arg else {
+            return Err(error(format!(
+                "`{}` must be a quoted easing name such as 'out_expo'",
+                param.name
+            )));
+        };
+        if Easing::from_name(name).is_none() {
+            let names = Easing::ALL.map(Easing::name).join(", ");
+            return Err(error(format!(
+                "unknown easing `{name}`; expected one of {names}"
+            )));
+        }
+    }
+    if spec.builtin == BuiltinFn::Spring {
+        let literal = |index: usize| match args.get(index) {
+            Some(ExprNode::Literal(ExpressionValue::Number(value))) => Some(*value),
+            _ => None,
+        };
+        if literal(1).is_some_and(|stiffness| stiffness <= 0.0) {
+            return Err(error("stiffness must be greater than 0".to_string()));
+        }
+        if literal(2).is_some_and(|damping| damping < 0.0) {
+            return Err(error("damping must not be negative".to_string()));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
