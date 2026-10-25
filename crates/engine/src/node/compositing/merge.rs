@@ -11,6 +11,24 @@ pub(crate) const SHADER: &str = concat!(
     include_str!("merge.wgsl")
 );
 
+/// How the `mask` raster is turned into a per-pixel overlay weight.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(u8)]
+#[non_exhaustive]
+#[delegate(kind = "enum")]
+pub enum MaskMode {
+    /// Uses the mask's alpha channel.
+    #[default]
+    Alpha = 0,
+    /// Uses the mask's Rec. 709 luma over black, so transparent areas are fully masked out.
+    Luma = 1,
+}
+
+/// Largest feather radius in pixels; larger values are clamped.
+const MAX_FEATHER: f64 = 32.0;
+
 /// Composites an overlay raster over a base raster.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct MergeParams {
@@ -20,6 +38,15 @@ pub struct MergeParams {
     /// Blend mode used when combining the overlay with the base raster.
     #[meta()]
     pub blend_mode: BlendMode,
+    /// Channel of the `mask` input that controls overlay visibility.
+    #[meta()]
+    pub mask_mode: MaskMode,
+    /// Swaps the masked and unmasked areas.
+    #[meta()]
+    pub invert: bool,
+    /// Softens the mask edge by averaging it over a disc of this radius in pixels (up to 32).
+    #[meta(min = 0, max = 32, step = 0.5)]
+    pub feather: f64,
 }
 
 impl Default for MergeParams {
@@ -27,6 +54,9 @@ impl Default for MergeParams {
         Self {
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
+            mask_mode: MaskMode::Alpha,
+            invert: false,
+            feather: 0.0,
         }
     }
 }
@@ -64,6 +94,7 @@ struct CompiledMerge {
     node_id: NodeId,
     params: MergeParamsDelegate,
     has_mask: bool,
+    /// Bit 0: base, bit 1: overlay, bit 2: mask is straight alpha.
     straight_inputs: u32,
     buffer: lumen_gpu::BufferId,
 }
@@ -83,6 +114,10 @@ impl GpuCompiledNode for CompiledMerge {
             blend_mode: evaluated.blend_mode as u32,
             has_mask: u32::from(self.has_mask),
             straight_inputs: self.straight_inputs,
+            mask_mode: evaluated.mask_mode as u32,
+            invert: u32::from(evaluated.invert),
+            feather: evaluated.feather.clamp(0.0, MAX_FEATHER) as f32,
+            _pad: 0,
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
@@ -186,7 +221,10 @@ impl GpuCompileNode for Merge {
             params: self.params.clone(),
             has_mask: !self.mask.is_empty(),
             straight_inputs: u32::from(base.metadata.alpha_mode == AlphaMode::Unpremultiplied)
-                | (u32::from(overlay.metadata.alpha_mode == AlphaMode::Unpremultiplied) << 1),
+                | (u32::from(overlay.metadata.alpha_mode == AlphaMode::Unpremultiplied) << 1)
+                | (u32::from(
+                    mask.is_some_and(|mask| mask.metadata.alpha_mode == AlphaMode::Unpremultiplied),
+                ) << 2),
             buffer: params,
         });
 

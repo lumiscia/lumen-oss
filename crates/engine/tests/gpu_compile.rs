@@ -11,7 +11,8 @@ use lumen_engine::{
     node::{
         Deferred, NodeId, NodeKind, PortRef,
         compositing::{
-            merge::{Merge, MergeParamsDelegate},
+            boolean::{Boolean, BooleanOperation, BooleanParamsDelegate},
+            merge::{MaskMode, Merge, MergeParamsDelegate},
             raster_multimerge::{RasterMultiMerge, RasterMultiMergeParamsDelegate},
             switch::{Switch, SwitchParamsDelegate},
         },
@@ -3477,6 +3478,396 @@ fn filled_path_composition() -> Composition {
         }),
     );
     test_composition(graph)
+}
+
+const MASK_CANVAS_WIDTH: usize = 24;
+
+fn wide_solid(id: NodeId, color: [u8; 4]) -> NodeKind {
+    NodeKind::Background(Background {
+        id,
+        params: BackgroundParamsDelegate {
+            paint: Paint::solid(color).into(),
+            width: Deferred::value(MASK_CANVAS_WIDTH as u32),
+            height: Deferred::value(4),
+            paint_supersample: Deferred::value(true),
+        },
+    })
+}
+
+/// A white-filled rectangle spanning the canvas height with half-covered pixels on both sides.
+fn edged_rectangle(id: NodeId, x: f64, width: i64, color: [u8; 4]) -> NodeKind {
+    NodeKind::Shape(Shape {
+        id,
+        params: ShapeParamsDelegate {
+            width: Deferred::value(width),
+            height: Deferred::value(4),
+            position: Deferred::value((x, 0.0)),
+            fill_paint: Paint::solid(color).into(),
+            ..Default::default()
+        },
+    })
+}
+
+/// Renders the red channel of white merged over black through `mask`, so the result is the matte.
+fn render_matte(
+    mask_nodes: impl FnOnce(&mut Graph) -> NodeId,
+    params: MergeParamsDelegate,
+) -> Vec<u8> {
+    let (base, overlay, merge, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(3),
+        NodeId::new(4),
+    );
+    let mut graph = Graph::new();
+    graph.nodes.insert(base, wide_solid(base, [0, 0, 0, 255]));
+    graph
+        .nodes
+        .insert(overlay, wide_solid(overlay, [255, 255, 255, 255]));
+    let mask = mask_nodes(&mut graph);
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            params,
+            base: PortRef::new(base, "output".to_string()),
+            overlay: PortRef::new(overlay, "output".to_string()),
+            mask: PortRef::new(mask, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = MASK_CANVAS_WIDTH as u32;
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return Vec::new();
+    };
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    // Row 1 of the red channel.
+    (0..MASK_CANVAS_WIDTH)
+        .map(|x| pixels[(MASK_CANVAS_WIDTH + x) * 4])
+        .collect()
+}
+
+fn assert_matte(actual: &[u8], expected: &[(usize, u8)]) {
+    if actual.is_empty() {
+        return;
+    }
+    for &(x, value) in expected {
+        assert!(
+            actual[x].abs_diff(value) <= 2,
+            "column {x}: expected {value}, got {} in {actual:?}",
+            actual[x]
+        );
+    }
+}
+
+#[test]
+fn merge_alpha_mask_keeps_antialiased_edges() {
+    // Covers columns 8 (half), 9..=15 (full) and 16 (half).
+    let matte = render_matte(
+        |graph| {
+            let mask = NodeId::new(5);
+            graph
+                .nodes
+                .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 255, 255, 255]));
+            mask
+        },
+        MergeParamsDelegate::default(),
+    );
+    assert_matte(
+        &matte,
+        &[
+            (0, 0),
+            (7, 0),
+            (8, 128),
+            (9, 255),
+            (15, 255),
+            (16, 128),
+            (17, 0),
+        ],
+    );
+}
+
+#[test]
+fn merge_luma_mask_uses_rec709_over_black() {
+    let luma = || MergeParamsDelegate {
+        mask_mode: MaskMode::Luma.into(),
+        ..Default::default()
+    };
+
+    // An opaque red edge-antialiased mask: alpha mode would give 255 and 128 here.
+    let matte = render_matte(
+        |graph| {
+            let mask = NodeId::new(5);
+            graph
+                .nodes
+                .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 0, 0, 255]));
+            mask
+        },
+        luma(),
+    );
+    assert_matte(
+        &matte,
+        &[(7, 0), (8, 27), (9, 54), (15, 54), (16, 27), (17, 0)],
+    );
+
+    let matte = render_matte(
+        |graph| {
+            let mask = NodeId::new(5);
+            graph.nodes.insert(mask, wide_solid(mask, [0, 255, 0, 255]));
+            mask
+        },
+        luma(),
+    );
+    assert_matte(&matte, &[(0, 182), (12, 182)]);
+
+    // A straight-alpha mask is premultiplied before taking luma: white at 50% alpha is 50%.
+    let matte = render_matte(
+        |graph| {
+            let (solid_id, mask) = (NodeId::new(5), NodeId::new(6));
+            graph
+                .nodes
+                .insert(solid_id, wide_solid(solid_id, [255, 255, 255, 128]));
+            graph.nodes.insert(
+                mask,
+                NodeKind::AlphaPremultiply(AlphaPremultiply {
+                    id: mask,
+                    params: AlphaPremultiplyParamsDelegate {
+                        mode: Deferred::value("unpremultiply".to_string()),
+                    },
+                    source: PortRef::new(solid_id, "output".to_string()),
+                }),
+            );
+            mask
+        },
+        luma(),
+    );
+    assert_matte(&matte, &[(0, 128), (12, 128)]);
+}
+
+#[test]
+fn merge_invert_flips_alpha_and_luma_masks() {
+    let rectangle = |graph: &mut Graph| {
+        let mask = NodeId::new(5);
+        graph
+            .nodes
+            .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 255, 255, 255]));
+        mask
+    };
+    for mask_mode in [MaskMode::Alpha, MaskMode::Luma] {
+        let matte = render_matte(
+            rectangle,
+            MergeParamsDelegate {
+                mask_mode: mask_mode.into(),
+                invert: Deferred::value(true),
+                ..Default::default()
+            },
+        );
+        assert_matte(
+            &matte,
+            &[
+                (0, 255),
+                (7, 255),
+                (8, 127),
+                (9, 0),
+                (15, 0),
+                (16, 127),
+                (17, 255),
+            ],
+        );
+    }
+}
+
+#[test]
+fn merge_feather_softens_mask_edges_and_preserves_coverage() {
+    let rectangle = |graph: &mut Graph| {
+        let mask = NodeId::new(5);
+        graph
+            .nodes
+            .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 255, 255, 255]));
+        mask
+    };
+    let sharp = render_matte(rectangle, MergeParamsDelegate::default());
+    let soft = render_matte(
+        rectangle,
+        MergeParamsDelegate {
+            feather: Deferred::value(2.0),
+            ..Default::default()
+        },
+    );
+    if soft.is_empty() {
+        return;
+    }
+
+    assert_matte(&soft, &[(0, 0), (5, 0), (12, 255)]);
+    // The sharp edge ramps up over several pixels instead of one.
+    assert!(
+        soft[7] > 0 && soft[8] > 0,
+        "feather spreads the matte outside the shape: {soft:?}"
+    );
+    assert!(
+        soft[9] < 255,
+        "feather spreads the matte inside the shape: {soft:?}"
+    );
+    assert!(
+        soft[6..=11].windows(2).all(|pair| pair[0] <= pair[1]),
+        "the feathered edge rises monotonically: {soft:?}"
+    );
+    // Averaging redistributes coverage without adding or removing any.
+    let total = |matte: &[u8]| matte.iter().map(|&value| i32::from(value)).sum::<i32>();
+    let (sharp_total, soft_total) = (total(&sharp), total(&soft));
+    assert!(
+        (sharp_total - soft_total).abs() * 20 <= sharp_total,
+        "total coverage changed from {sharp_total} to {soft_total}"
+    );
+
+    // Negative values behave like no feather, and huge values stay bounded and still render.
+    let negative = render_matte(
+        rectangle,
+        MergeParamsDelegate {
+            feather: Deferred::value(-3.0),
+            ..Default::default()
+        },
+    );
+    assert_eq!(negative, sharp);
+    let huge = render_matte(
+        rectangle,
+        MergeParamsDelegate {
+            feather: Deferred::value(1.0e9),
+            ..Default::default()
+        },
+    );
+    assert_eq!(huge.len(), MASK_CANVAS_WIDTH);
+}
+
+fn render_boolean_alpha(a: (f64, i64), b: (f64, i64), params: BooleanParamsDelegate) -> Vec<u8> {
+    let (a_id, b_id, boolean, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(3),
+        NodeId::new(4),
+    );
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(a_id, edged_rectangle(a_id, a.0, a.1, [255, 255, 255, 255]));
+    graph
+        .nodes
+        .insert(b_id, edged_rectangle(b_id, b.0, b.1, [255, 255, 255, 255]));
+    graph.nodes.insert(
+        boolean,
+        NodeKind::Boolean(Boolean {
+            id: boolean,
+            params,
+            a: PortRef::new(a_id, "output".to_string()),
+            b: PortRef::new(b_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(boolean, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = MASK_CANVAS_WIDTH as u32;
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return Vec::new();
+    };
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    (0..MASK_CANVAS_WIDTH)
+        .map(|x| pixels[(MASK_CANVAS_WIDTH + x) * 4 + 3])
+        .collect()
+}
+
+#[test]
+fn boolean_preserves_antialiased_edges_by_default() {
+    // A covers columns 1 (half), 2..=3 and 4 (half); B covers 3 (half), 4..=7 and 8 (half).
+    let (a, b) = ((1.5, 3), (3.5, 5));
+    let union = render_boolean_alpha(a, b, BooleanParamsDelegate::default());
+    let intersect = render_boolean_alpha(
+        a,
+        b,
+        BooleanParamsDelegate {
+            operation: Deferred::value(BooleanOperation::Intersect as i64),
+            ..Default::default()
+        },
+    );
+    if union.is_empty() {
+        return;
+    }
+    assert_matte(
+        &[union.clone(), intersect.clone()].concat(),
+        &[
+            (0, 0),
+            (1, 128),
+            (2, 255),
+            (3, 255),
+            (4, 255),
+            (8, 128),
+            (9, 0),
+            (MASK_CANVAS_WIDTH + 3, 128),
+            (MASK_CANVAS_WIDTH + 4, 128),
+            (MASK_CANVAS_WIDTH + 2, 0),
+            (MASK_CANVAS_WIDTH + 5, 0),
+        ],
+    );
+
+    // An explicit threshold still binarizes the pixels above it.
+    let thresholded = render_boolean_alpha(
+        a,
+        b,
+        BooleanParamsDelegate {
+            threshold: Deferred::value(0.25),
+            ..Default::default()
+        },
+    );
+    assert_matte(&thresholded, &[(1, 255), (4, 255), (8, 255), (9, 0)]);
+}
+
+#[test]
+fn zero_size_shape_draws_nothing() {
+    for (width, height) in [(0, 4), (8, 0), (0, 0)] {
+        let shape = NodeId::new(1);
+        let output = NodeId::new(2);
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            shape,
+            NodeKind::Shape(Shape {
+                id: shape,
+                params: ShapeParamsDelegate {
+                    width: Deferred::value(width),
+                    height: Deferred::value(height),
+                    stroke_enabled: Deferred::value(true),
+                    stroke_paint: Paint::solid([0, 255, 0, 255]).into(),
+                    fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+                    ..Default::default()
+                },
+            }),
+        );
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(shape, "output".to_string()),
+            }),
+        );
+        let Some(mut renderer) = gpu_composition_renderer() else {
+            return;
+        };
+        let pixels = render_rgba8(&mut renderer, &test_composition(graph), 0, &EmptyMediaStore);
+        assert!(
+            pixels.iter().all(|&channel| channel == 0),
+            "{width}x{height} shape drew something: {pixels:?}"
+        );
+    }
 }
 
 #[derive(Debug)]

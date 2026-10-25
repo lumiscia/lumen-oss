@@ -21,11 +21,11 @@ pub struct ShapeParams {
     /// Geometry primitive to rasterize.
     #[meta(kind = "enum", enum_type = ShapeGeometryKind)]
     pub geometry_kind: ShapeGeometryKind,
-    /// Shape width in pixels. Ignored for polygon geometry.
-    #[meta(min = 1, step = 1)]
+    /// Shape width in pixels; 0 draws nothing. Ignored for polygon geometry.
+    #[meta(min = 0, step = 1)]
     pub width: i64,
-    /// Shape height in pixels. Ignored for polygon geometry.
-    #[meta(min = 1, step = 1)]
+    /// Shape height in pixels; 0 draws nothing. Ignored for polygon geometry.
+    #[meta(min = 0, step = 1)]
     pub height: i64,
     /// Corner radius for rectangle geometry.
     #[meta(min = 0, step = 1)]
@@ -182,15 +182,17 @@ impl GpuCompiledNode for CompiledPolygonShape {
 
 fn shape_uniforms(params: &ShapeParams) -> ShapeUniforms {
     let (x, y) = params.position;
+    let empty = params.width <= 0 || params.height <= 0;
     ShapeUniforms {
         fill_paint: params.fill_paint.to_gpu([255, 255, 255, 255]),
         stroke_paint: params.stroke_paint.to_gpu([0, 0, 0, 255]),
         position: [x as f32, y as f32],
-        size: [params.width.max(1) as f32, params.height.max(1) as f32],
+        size: [params.width.max(0) as f32, params.height.max(0) as f32],
         border_radius: params.border_radius.max(0.0) as f32,
         stroke_width: params.stroke_width as f32,
         geometry_kind: params.geometry_kind as u32,
-        flags: shape_flags(params),
+        // Empty shapes disable fill and stroke instead of clamping to the shader's 1px minimum.
+        flags: if empty { 0 } else { shape_flags(params) },
     }
 }
 
