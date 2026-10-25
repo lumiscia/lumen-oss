@@ -52,7 +52,7 @@ impl GpuCompositionRenderer {
             compiled_plans: HashMap::new(),
             active_key: None,
             bind_sequence: 0,
-            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(1024, 4096))),
+            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(4096))),
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             media_texture_cache: HashMap::new(),
@@ -67,7 +67,7 @@ impl GpuCompositionRenderer {
             compiled_plans: HashMap::new(),
             active_key: None,
             bind_sequence: 0,
-            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(1024, 4096))),
+            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(4096))),
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             media_texture_cache: HashMap::new(),
@@ -350,14 +350,10 @@ impl GpuCompositionRenderer {
 
     fn ensure_text_atlas_texture(&mut self) -> crate::Result<()> {
         let desc = self.text_atlas_desc()?;
-        let size = desc.domain.storage_size;
-        if self
-            .text_atlas_texture
-            .as_ref()
-            .is_some_and(|t| t.width() == size.width)
-        {
+        if self.text_atlas_texture.is_some() {
             return Ok(());
         }
+        let size = desc.domain.storage_size;
         let texture = Arc::new(self.renderer.device.create_texture(
             &lumen_gpu::wgpu::TextureDescriptor {
                 label: Some("lumen shared glyph atlas"),
@@ -367,23 +363,10 @@ impl GpuCompositionRenderer {
                 dimension: lumen_gpu::wgpu::TextureDimension::D2,
                 format: desc.format,
                 usage: lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
-                    | lumen_gpu::wgpu::TextureUsages::COPY_SRC
                     | lumen_gpu::wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             },
         ));
-        if let Some(old) = &self.text_atlas_texture {
-            let mut encoder = self
-                .renderer
-                .device
-                .create_command_encoder(&Default::default());
-            encoder.copy_texture_to_texture(
-                old.as_image_copy(),
-                texture.as_image_copy(),
-                old.size(),
-            );
-            self.renderer.queue.submit([encoder.finish()]);
-        }
         for prepared in self.compiled_plans.values_mut() {
             if let Some(id) = prepared.compiled.text_atlas_texture {
                 prepared

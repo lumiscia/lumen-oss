@@ -1907,7 +1907,7 @@ fn text_test_composition(params: TextParamsDelegate) -> Composition {
 }
 
 #[test]
-fn text_nodes_share_one_atlas_across_growth_and_recompiles() {
+fn text_nodes_share_one_fixed_atlas_with_large_second_node() {
     let _guard = TEXT_TEST_LOCK.lock().unwrap();
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
@@ -1986,7 +1986,8 @@ fn text_nodes_share_one_atlas_across_growth_and_recompiles() {
     let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(3)).unwrap() else {
         unreachable!()
     };
-    text.params.font_size = Deferred::value(1800.0);
+    text.params.content = Deferred::value("W".to_string());
+    text.params.font_size = Deferred::value(3800.0);
     renderer.release_resources();
     let bound = renderer
         .bind_frame(&composition, 0, &EmptyMediaStore)
@@ -2001,14 +2002,142 @@ fn text_nodes_share_one_atlas_across_growth_and_recompiles() {
         .find(|t| t.label.as_deref() == Some("text:shared-atlas"))
         .unwrap()
         .id;
-    assert!(renderer.gpu_renderer().texture(atlas_id).unwrap().width() > atlas.width());
-    let grown = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
-    assert!(grown.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    assert!(Arc::ptr_eq(
+        &atlas,
+        &renderer.gpu_renderer().texture_arc(atlas_id).unwrap()
+    ));
+    let instances_id = renderer
+        .compiled()
+        .unwrap()
+        .plan
+        .buffers()
+        .iter()
+        .find(|buffer| buffer.label.as_deref() == Some("text:3:instances"))
+        .unwrap()
+        .id;
+    assert!(bound.frame_update().uploads().iter().any(|upload| {
+        let lumen_gpu::Upload::Buffer { id, data, .. } = upload else {
+            return false;
+        };
+        *id == instances_id
+            && data
+                .chunks_exact(std::mem::size_of::<lumen_text::GpuGlyphInstance>())
+                .any(|bytes| {
+                    let glyph = bytemuck::pod_read_unaligned::<lumen_text::GpuGlyphInstance>(bytes);
+                    glyph.rect[2] > 2500.0 && glyph.rect[3] > 2500.0
+                })
+    }));
+    let enlarged = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    assert!(enlarged.chunks_exact(4).any(|pixel| pixel[3] > 0));
     let mut reference = gpu_composition_renderer().unwrap();
     assert_eq!(
-        grown,
+        enlarged,
         render_rgba8(&mut reference, &composition, 0, &EmptyMediaStore)
     );
+}
+
+#[test]
+fn text_atlas_overflow_does_not_thrash_on_repeated_binds() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    const CONTENT: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut composition = text_test_composition(TextParamsDelegate {
+        content: Deferred::value(CONTENT.to_string()),
+        font_size: Deferred::value(1800.0),
+        ..Default::default()
+    });
+    let first = renderer
+        .bind_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    assert!(first.texture_upload_count() > 0);
+    assert!(
+        first.texture_upload_count() < CONTENT.chars().count(),
+        "the layout must overflow"
+    );
+    renderer.upload_bound_frame(&first).unwrap();
+    for frame in 1..4 {
+        let repeated = renderer
+            .bind_frame(&composition, frame, &EmptyMediaStore)
+            .unwrap();
+        assert_eq!(repeated.texture_upload_count(), 0);
+        renderer.upload_bound_frame(&repeated).unwrap();
+    }
+    let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(1)).unwrap() else {
+        unreachable!()
+    };
+    text.params.content = Deferred::value("W".to_string());
+    text.params.font_size = Deferred::value(20000.0);
+    renderer.release_resources();
+    for frame in 4..7 {
+        let oversized = renderer
+            .bind_frame(&composition, frame, &EmptyMediaStore)
+            .unwrap();
+        assert_eq!(oversized.texture_upload_count(), 0);
+        renderer.upload_bound_frame(&oversized).unwrap();
+    }
+    let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(1)).unwrap() else {
+        unreachable!()
+    };
+    text.params.font_size = Deferred::value(72.0);
+    renderer.release_resources();
+    let recovered = renderer
+        .bind_frame(&composition, 7, &EmptyMediaStore)
+        .unwrap();
+    assert!(recovered.texture_upload_count() > 0);
+}
+
+#[test]
+fn text_transparent_gradient_midpoint_is_premultiplied() {
+    use lumen_engine::node::{
+        source::text::TextRenderMode,
+        vector::paint::{GradientPaint, GradientStop, GradientUnits},
+    };
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
+        for supersample in [false, true] {
+            let composition = text_test_composition(TextParamsDelegate {
+                content: Deferred::value("M".to_string()),
+                font_size: Deferred::value(180.0),
+                render_mode: mode.into(),
+                paint_supersample: Deferred::value(supersample),
+                color: Paint::Gradient(GradientPaint {
+                    units: GradientUnits::UserSpace,
+                    start: [-1000000.0, 0.0],
+                    end: [1000000.0, 0.0],
+                    stops: vec![
+                        GradientStop {
+                            offset: 0.0,
+                            color: [255, 0, 0, 0],
+                        },
+                        GradientStop {
+                            offset: 1.0,
+                            color: [0, 0, 255, 255],
+                        },
+                    ],
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            });
+            renderer.release_resources();
+            let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+            assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] >= 126));
+            for pixel in pixels.chunks_exact(4).filter(|pixel| pixel[3] >= 126) {
+                assert!(
+                    pixel[0] <= 1
+                        && pixel[1] <= 1
+                        && pixel[2].abs_diff(128) <= 2
+                        && pixel[3].abs_diff(128) <= 2,
+                    "{mode:?}, supersample={supersample}: {pixel:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

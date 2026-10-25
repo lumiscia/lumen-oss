@@ -152,7 +152,7 @@ impl TextSystem {
         size: u32,
         max_glyphs: usize,
     ) -> AtlasRender {
-        let mut atlas = GlyphAtlas::new(size, size);
+        let mut atlas = GlyphAtlas::new(size);
         atlas.begin_frame();
         let prepared = self.prepare_glyphs(&mut atlas, layout, mode, max_glyphs, &mut None);
         let mut pixels = vec![0_u8; size as usize * size as usize * 4];
@@ -176,13 +176,11 @@ impl TextSystem {
     /// are not resident yet one at a time.
     ///
     /// When the atlas is full, the least recently used glyphs that no layout
-    /// used this frame are evicted, then the atlas grows up to its maximum
-    /// size. If there is still no room and only this layout uses the atlas this
-    /// frame, the atlas is cleared and this layout packed again. Glyphs that
-    /// still do not fit, and glyphs past `max_glyphs`, are dropped and counted.
-    /// `overfull` keeps the working set that last did not fit, so new glyphs of
-    /// an unchanged set are not retried. The returned uploads only become
-    /// resident once [`GlyphAtlas::commit`] is called for the frame.
+    /// used this frame are evicted. If there is still no room and only this
+    /// layout uses the atlas this frame, the atlas is cleared and repacked.
+    /// Glyphs that still do not fit, and glyphs past `max_glyphs`, are dropped.
+    /// `overfull` suppresses retries until the working set or reclaimable space
+    /// changes. Uploads become resident after [`GlyphAtlas::commit`].
     pub fn prepare_glyphs(
         &mut self,
         atlas: &mut GlyphAtlas,
@@ -200,7 +198,12 @@ impl TextSystem {
             (keys, mode).hash(&mut hasher);
             hasher.finish()
         };
-        let retry_new = *overfull != Some(working_set);
+        let overflow_key = |availability| {
+            let mut hasher = DefaultHasher::new();
+            (working_set, availability).hash(&mut hasher);
+            hasher.finish()
+        };
+        let retry_new = *overfull != Some(overflow_key(atlas.availability));
         let mut uploads = Vec::new();
         let compacted = !self.place_glyphs(atlas, visible, mode, retry_new, &mut uploads)
             && atlas.layouts_this_frame == 0;
@@ -225,7 +228,7 @@ impl TextSystem {
                 _ => capacity_dropped += 1,
             }
         }
-        *overfull = (capacity_dropped > 0).then_some(working_set);
+        *overfull = (capacity_dropped > 0).then(|| overflow_key(atlas.availability));
 
         atlas.layouts_this_frame += 1;
         PreparedGlyphs {
@@ -283,10 +286,14 @@ impl TextSystem {
                 AtlasImage::Placed(placed) => Some(placed),
                 _ => None,
             });
-            let pixels = match self.render_glyph(key) {
+            let pixels = match self.render_glyph(key, atlas.size) {
                 RenderedGlyph::Pixels(pixels) => pixels,
                 RenderedGlyph::Empty => {
                     atlas.insert(key, AtlasImage::Empty);
+                    continue;
+                }
+                RenderedGlyph::Oversized => {
+                    atlas.insert(key, AtlasImage::Oversized);
                     continue;
                 }
                 RenderedGlyph::RasterOnly => {
@@ -294,7 +301,8 @@ impl TextSystem {
                     continue;
                 }
             };
-            if pixels.size.iter().any(|side| *side > atlas.max_size) {
+            if pixels.size.iter().any(|side| *side > atlas.size) {
+                atlas.insert(key, AtlasImage::Oversized);
                 continue;
             }
             let placed = match cached {
@@ -323,15 +331,43 @@ impl TextSystem {
         true
     }
 
-    fn render_glyph(&mut self, key: AtlasKey) -> RenderedGlyph {
+    fn render_glyph(&mut self, key: AtlasKey, max_size: u32) -> RenderedGlyph {
         match key {
-            AtlasKey::Raster(key) => self
-                .swash_cache
-                .get_image_uncached(&mut self.font_system, key)
-                .filter(|image| image.placement.width > 0 && image.placement.height > 0)
-                .map_or(RenderedGlyph::Empty, |image| {
-                    RenderedGlyph::Pixels(raster_pixels(&image))
-                }),
+            AtlasKey::Raster(key) => {
+                let plain_outline = self
+                    .font_system
+                    .get_font(key.font_id, key.font_weight)
+                    .is_some_and(|font| {
+                        ![b"COLR", b"CBDT", b"sbix", b"EBDT"]
+                            .iter()
+                            .any(|tag| font.as_swash().table(u32::from_be_bytes(**tag)).is_some())
+                    });
+                if plain_outline
+                    && let Some(commands) = self
+                        .swash_cache
+                        .get_outline_commands_uncached(&mut self.font_system, key)
+                {
+                    let mut oversized = false;
+                    swash::zeno::Mask::new(&commands[..])
+                        .origin(swash::zeno::Origin::BottomLeft)
+                        .offset(swash::zeno::Vector::new(
+                            key.x_bin.as_float(),
+                            key.y_bin.as_float(),
+                        ))
+                        .inspect(|_, width, height| {
+                            oversized = width > max_size || height > max_size
+                        });
+                    if oversized {
+                        return RenderedGlyph::Oversized;
+                    }
+                }
+                self.swash_cache
+                    .get_image_uncached(&mut self.font_system, key)
+                    .filter(|image| image.placement.width > 0 && image.placement.height > 0)
+                    .map_or(RenderedGlyph::Empty, |image| {
+                        RenderedGlyph::Pixels(raster_pixels(&image))
+                    })
+            }
             #[cfg(feature = "msdf")]
             AtlasKey::Msdf(key) => {
                 msdf::render_msdf_glyph(&mut self.font_system, &mut self.swash_cache, key)
@@ -496,13 +532,11 @@ pub struct GlyphKey(pub CacheKey);
 ///
 /// Raster glyphs and distance fields share one RGBA8 texture. Only placement
 /// is kept on the CPU; glyph pixels exist solely in the uploads returned for
-/// a frame. The atlas starts at its initial size and grows by doubling,
-/// keeping existing glyphs in place, up to its maximum size.
-#[derive(Debug)]
+/// a frame. A fixed size keeps every free rectangle available to large glyphs.
 pub struct GlyphAtlas {
-    pages: Vec<AtlasPage>,
+    allocator: etagere::AtlasAllocator,
     size: u32,
-    max_size: u32,
+    availability: u64,
     glyphs: HashMap<AtlasKey, AtlasGlyph>,
     frame: u64,
     layouts_this_frame: usize,
@@ -531,12 +565,13 @@ enum AtlasImage {
     Empty,
     /// A distance-field key whose glyph is drawn as raster instead.
     RasterOnly,
+    Oversized,
     Placed(PlacedGlyph),
 }
 
 #[derive(Debug, Clone, Copy)]
 struct PlacedGlyph {
-    slot: AtlasSlot,
+    slot: AllocId,
     origin: [u32; 2],
     size: [u32; 2],
     /// Image offset from the pen, y up; in pixels for raster glyphs and
@@ -546,46 +581,22 @@ struct PlacedGlyph {
     mode: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct AtlasSlot {
-    page: usize,
-    alloc: AllocId,
-}
-
-/// One rectangle of the atlas with its own allocator; growing adds pages
-/// around the existing ones.
-struct AtlasPage {
-    allocator: etagere::AtlasAllocator,
-    origin: [u32; 2],
-}
-
-impl std::fmt::Debug for AtlasPage {
+impl std::fmt::Debug for GlyphAtlas {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AtlasPage")
-            .field("origin", &self.origin)
-            .field("size", &self.allocator.size())
-            .field("allocated_space", &self.allocator.allocated_space())
-            .finish()
-    }
-}
-
-impl AtlasPage {
-    fn new(origin: [u32; 2], size: [u32; 2]) -> Self {
-        Self {
-            allocator: etagere::AtlasAllocator::new(size2(size[0] as i32, size[1] as i32)),
-            origin,
-        }
+        f.debug_struct("GlyphAtlas")
+            .field("size", &self.size)
+            .field("glyphs", &self.glyphs)
+            .finish_non_exhaustive()
     }
 }
 
 impl GlyphAtlas {
-    pub fn new(size: u32, max_size: u32) -> Self {
-        let max_size = max_size.clamp(1, u16::MAX.into());
-        let size = size.clamp(1, max_size);
+    pub fn new(size: u32) -> Self {
+        let size = size.clamp(1, u16::MAX.into());
         Self {
-            pages: vec![AtlasPage::new([0, 0], [size, size])],
+            allocator: etagere::AtlasAllocator::new(size2(size as i32, size as i32)),
             size,
-            max_size,
+            availability: 0,
             glyphs: HashMap::new(),
             frame: 0,
             layouts_this_frame: 0,
@@ -601,9 +612,21 @@ impl GlyphAtlas {
     /// not evicted for each other.
     pub fn begin_frame(&mut self) -> u64 {
         let previous = self.frame;
+        // Retry suppressed layouts when another layout stops pinning glyphs.
+        if self.glyphs.values().any(|glyph| {
+            matches!(glyph.image, AtlasImage::Placed(_)) && glyph.last_used + 1 == previous
+        }) {
+            self.availability += 1;
+        }
         self.glyphs.retain(|key, glyph| {
             glyph.last_used == previous
-                || !matches!((key, glyph.image), (AtlasKey::Raster(_), AtlasImage::Empty))
+                || !matches!(
+                    (key, glyph.image),
+                    (
+                        AtlasKey::Raster(_),
+                        AtlasImage::Empty | AtlasImage::Oversized
+                    )
+                )
         });
         self.layouts_this_frame = 0;
         self.frame += 1;
@@ -665,7 +688,8 @@ impl GlyphAtlas {
 
     fn clear(&mut self) {
         self.glyphs.clear();
-        self.pages = vec![AtlasPage::new([0, 0], [self.size, self.size])];
+        self.allocator.clear();
+        self.availability += 1;
     }
 
     fn insert(&mut self, key: AtlasKey, image: AtlasImage) {
@@ -681,28 +705,17 @@ impl GlyphAtlas {
     }
 
     /// Allocates a slot, evicting the least recently used glyphs not used this
-    /// frame and then growing until it fits. `stale` caches the eviction order.
+    /// frame. `stale` caches the eviction order.
     fn allocate(
         &mut self,
         size: [u32; 2],
         stale: &mut Option<Vec<AtlasKey>>,
-    ) -> Option<(AtlasSlot, [u32; 2])> {
+    ) -> Option<(AllocId, [u32; 2])> {
         let request = size2(size[0].max(1) as i32, size[1].max(1) as i32);
         loop {
-            for (page, entry) in self.pages.iter_mut().enumerate() {
-                if let Some(allocation) = entry.allocator.allocate(request) {
-                    let min = allocation.rectangle.min;
-                    return Some((
-                        AtlasSlot {
-                            page,
-                            alloc: allocation.id,
-                        },
-                        [
-                            entry.origin[0] + min.x as u32,
-                            entry.origin[1] + min.y as u32,
-                        ],
-                    ));
-                }
+            if let Some(allocation) = self.allocator.allocate(request) {
+                let min = allocation.rectangle.min;
+                return Some((allocation.id, [min.x as u32, min.y as u32]));
             }
             let stale = stale.get_or_insert_with(|| self.stale_by_age());
             if let Some(key) = stale.pop() {
@@ -711,28 +724,13 @@ impl GlyphAtlas {
                     ..
                 }) = self.glyphs.remove(&key)
                 {
-                    self.pages[placed.slot.page]
-                        .allocator
-                        .deallocate(placed.slot.alloc);
+                    self.allocator.deallocate(placed.slot);
+                    self.availability += 1;
                 }
-            } else if !self.grow() {
+            } else {
                 return None;
             }
         }
-    }
-
-    /// Doubles the atlas, adding pages to the right of and below the current
-    /// area so placed glyphs keep their positions.
-    fn grow(&mut self) -> bool {
-        let old = self.size;
-        let new = old.saturating_mul(2).min(self.max_size);
-        if new <= old {
-            return false;
-        }
-        self.pages.push(AtlasPage::new([old, 0], [new - old, old]));
-        self.pages.push(AtlasPage::new([0, old], [new, new - old]));
-        self.size = new;
-        true
     }
 
     /// Placed glyphs unused this frame, most recently used first.
@@ -786,6 +784,7 @@ impl PlacedGlyph {
 enum RenderedGlyph {
     Pixels(GlyphPixels),
     Empty,
+    Oversized,
     #[cfg_attr(not(feature = "msdf"), allow(dead_code))]
     RasterOnly,
 }
@@ -1021,7 +1020,7 @@ mod tests {
     #[test]
     fn overflowed_glyph_recovers_when_working_set_shrinks() {
         let mut system = TextSystem::new();
-        let mut atlas = GlyphAtlas::new(64, 64);
+        let mut atlas = GlyphAtlas::new(64);
         let mut overfull = None;
         let mut request = TextLayoutRequest::new("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
         request.font_size = 40.0;
@@ -1058,12 +1057,56 @@ mod tests {
     }
 
     #[test]
+    fn overflowed_layout_recovers_when_other_layout_becomes_stale() {
+        let mut system = TextSystem::new();
+        let mut atlas = GlyphAtlas::new(64);
+        let mut first = TextLayoutRequest::new("W");
+        first.font_size = 64.0;
+        let first = system.layout(&first);
+        let mut second = TextLayoutRequest::new("A");
+        second.font_size = 40.0;
+        let second = system.layout(&second);
+        let mut overfull = None;
+        atlas.begin_frame();
+        let placed = prepare(&mut system, &mut atlas, &first, TextRenderMode::Raster);
+        assert!(!placed.instances.is_empty());
+        let blocked = system.prepare_glyphs(
+            &mut atlas,
+            &second,
+            TextRenderMode::Raster,
+            128,
+            &mut overfull,
+        );
+        assert!(blocked.dropped_glyphs > 0);
+        atlas.commit(blocked.frame);
+        atlas.begin_frame();
+        let suppressed = system.prepare_glyphs(
+            &mut atlas,
+            &second,
+            TextRenderMode::Raster,
+            128,
+            &mut overfull,
+        );
+        assert!(suppressed.uploads.is_empty());
+        atlas.begin_frame();
+        let recovered = system.prepare_glyphs(
+            &mut atlas,
+            &second,
+            TextRenderMode::Raster,
+            128,
+            &mut overfull,
+        );
+        assert_eq!(recovered.dropped_glyphs, 0);
+        assert!(!recovered.uploads.is_empty());
+    }
+
+    #[test]
     fn replacing_one_glyph_in_full_atlas_evicts_only_stale_glyph() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("ABCDE");
         request.font_size = 24.0;
         let mut layout = system.layout(&request);
-        let mut atlas = GlyphAtlas::new(64, 64);
+        let mut atlas = GlyphAtlas::new(64);
         atlas.begin_frame();
         let mut origins = Vec::new();
         for glyph in &layout.glyphs[..4] {
@@ -1101,7 +1144,7 @@ mod tests {
     #[test]
     fn font_size_sweep_keeps_raster_memory_bounded() {
         let mut system = TextSystem::new();
-        let mut atlas = GlyphAtlas::new(1024, 2048);
+        let mut atlas = GlyphAtlas::new(2048);
         let mut seen = HashSet::new();
         for frame in 0..60 {
             let mut request = TextLayoutRequest::new("Lumen text");
@@ -1119,48 +1162,9 @@ mod tests {
     }
 
     #[test]
-    fn atlas_overflow_drops_glyphs_without_thrashing() {
-        let mut system = TextSystem::new();
-        let mut atlas = GlyphAtlas::new(128, 256);
-        let mut overfull = None;
-        let mut request = TextLayoutRequest::new("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-        request.font_size = 120.0;
-        let layout = system.layout(&request);
-        let mut prepare = |atlas: &mut GlyphAtlas, max_glyphs| {
-            atlas.begin_frame();
-            system.prepare_glyphs(
-                atlas,
-                &layout,
-                TextRenderMode::Raster,
-                max_glyphs,
-                &mut overfull,
-            )
-        };
-
-        let first = prepare(&mut atlas, 128);
-        atlas.commit(first.frame);
-        let second = prepare(&mut atlas, 128);
-
-        assert_eq!(atlas.size(), 256);
-        assert!(!first.instances.is_empty());
-        assert!(first.dropped_glyphs > 0);
-        assert_eq!(
-            first.instances.len() + first.dropped_glyphs,
-            layout.glyphs.len()
-        );
-        assert!(second.uploads.is_empty());
-        assert!(!second.compacted);
-        assert_eq!(second.dropped_glyphs, first.dropped_glyphs);
-        assert_eq!(second.instances.len(), first.instances.len());
-
-        let capped = prepare(&mut atlas, 4);
-        assert_eq!(capped.dropped_glyphs, layout.glyphs.len() - 4);
-    }
-
-    #[test]
     fn uncommitted_uploads_are_repeated() {
         let mut system = TextSystem::new();
-        let mut atlas = GlyphAtlas::new(256, 256);
+        let mut atlas = GlyphAtlas::new(256);
         let layout = system.layout(&TextLayoutRequest::new("Retry"));
 
         atlas.begin_frame();
@@ -1180,7 +1184,7 @@ mod tests {
     #[test]
     fn layouts_share_the_atlas_within_a_frame() {
         let mut system = TextSystem::new();
-        let mut atlas = GlyphAtlas::new(256, 1024);
+        let mut atlas = GlyphAtlas::new(1024);
         let unique: String = ('!'..='~')
             .chain('¡'..='ſ')
             .chain('Α'..='Ω')
@@ -1239,7 +1243,7 @@ mod tests {
         #[test]
         fn font_size_sweep_generates_each_field_once() {
             let mut system = TextSystem::new();
-            let mut atlas = GlyphAtlas::new(1024, 4096);
+            let mut atlas = GlyphAtlas::new(4096);
             let mut uploads = 0;
             let mut fields = HashSet::new();
             for frame in 0..40 {
@@ -1267,7 +1271,7 @@ mod tests {
             }
 
             assert!(uploads <= fields.len());
-            assert_eq!(atlas.size(), 1024);
+            assert_eq!(atlas.size(), 4096);
         }
 
         #[test]
@@ -1280,7 +1284,7 @@ mod tests {
             let colour = system.layout(&colour);
 
             let mut overlapping = system.layout(&TextLayoutRequest::new("O"));
-            let mut atlas = GlyphAtlas::new(512, 512);
+            let mut atlas = GlyphAtlas::new(512);
             atlas.begin_frame();
             let colour = prepare(&mut system, &mut atlas, &colour, TextRenderMode::Msdf);
             assert_eq!(colour.instances.len(), 1);

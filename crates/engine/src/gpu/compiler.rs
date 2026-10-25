@@ -139,7 +139,7 @@ impl<'a> CompileContext<'a> {
             compiled_nodes: self.compiled_nodes,
             text_atlas_texture: self.text_atlas_texture,
             text_atlas: std::sync::Arc::new(std::sync::Mutex::new(lumen_text::GlyphAtlas::new(
-                1024, 4096,
+                4096,
             ))),
         })
     }

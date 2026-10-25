@@ -156,7 +156,7 @@ pub(crate) fn contours(commands: &[Command], map: impl Fn(Vector) -> Point) -> V
 }
 
 /// Whether any edge lies inside the filled area, where the field would show a
-/// seam. Samples the nonzero winding along rows one unit apart: every
+/// seam. Samples the nonzero winding along rows half a unit apart: every
 /// crossing of a true outline edge has zero winding on one side.
 pub(crate) fn contours_overlap(contours: &[Contour]) -> bool {
     let segments: Vec<_> = contours
@@ -219,7 +219,7 @@ pub(crate) fn contours_overlap(contours: &[Contour]) -> bool {
             }
             winding = next;
         }
-        y += 1.0;
+        y += 0.5;
     }
     false
 }

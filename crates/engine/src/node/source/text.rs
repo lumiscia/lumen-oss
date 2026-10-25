@@ -249,8 +249,13 @@ impl GpuCompiledNode for CompiledText {
             .map_err(|_| RenderError::Gpu {
                 details: "text atlas lock was poisoned".to_string(),
             })?;
-        let prepared =
-            text_system.prepare_glyphs(&mut atlas, &layout, mode, self.max_glyphs, &mut None);
+        let prepared = text_system.prepare_glyphs(
+            &mut atlas,
+            &layout,
+            mode,
+            self.max_glyphs,
+            &mut state.overfull,
+        );
         let atlas_size = atlas.size();
         drop(atlas);
         drop(text_system);
@@ -327,6 +332,7 @@ impl GpuCompiledNode for CompiledText {
 pub(crate) struct TextState {
     shaped: Option<(TextShapeKey, lumen_text::ShapedText)>,
     dropping_glyphs: bool,
+    overfull: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
