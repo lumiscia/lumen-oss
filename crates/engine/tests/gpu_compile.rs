@@ -1767,17 +1767,23 @@ fn text_rejects_stale_upload_from_another_compiled_plan() {
 
 #[test]
 fn text_measurement_loads_time_remapped_family_on_first_bind() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     let _guard = TEXT_TEST_LOCK.lock().unwrap();
     #[derive(Debug, Clone)]
-    struct FontStore(Vec<u8>);
+    struct FontStore {
+        data: Vec<u8>,
+        id: &'static str,
+        resolver_calls: Arc<AtomicUsize>,
+    }
 
     impl lumen_engine::media::FontResolver for FontStore {
         fn id(&self) -> &str {
-            "remapped-text-test"
+            self.id
         }
 
         fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
-            Ok(vec![self.0.clone()])
+            Ok(vec![self.data.clone()])
         }
     }
 
@@ -1790,11 +1796,18 @@ fn text_measurement_loads_time_remapped_family_on_first_bind() {
             None
         }
 
+        fn font_resolver_id(&self, family: &str) -> Option<String> {
+            (family == "RemapX").then(|| self.id.to_string())
+        }
+
         fn get_font_resolver(
             &self,
             family: &str,
         ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
-            (family == "RemapX").then(|| Box::new(self.clone()) as _)
+            (family == "RemapX").then(|| {
+                self.resolver_calls.fetch_add(1, Ordering::Relaxed);
+                Box::new(self.clone()) as _
+            })
         }
     }
 
@@ -1821,7 +1834,11 @@ fn text_measurement_loads_time_remapped_family_on_first_bind() {
     let units_offset = u32::from_be_bytes(head[8..12].try_into().unwrap()) as usize + 18;
     let units = u16::from_be_bytes(font[units_offset..units_offset + 2].try_into().unwrap());
     font[units_offset..units_offset + 2].copy_from_slice(&(units * 2).to_be_bytes());
-    let store = FontStore(font.clone());
+    let mut store = FontStore {
+        data: font.clone(),
+        id: "remapped-text-test:1",
+        resolver_calls: Arc::new(AtomicUsize::new(0)),
+    };
     let mut request = lumen_text::TextLayoutRequest::new("WWW");
     request.font_family = "RemapX".to_string();
     request.font_size = 32.0;
@@ -1907,6 +1924,14 @@ fn text_measurement_loads_time_remapped_family_on_first_bind() {
     };
     assert_eq!(first_rect(&first), first_rect(&second));
     assert!((first_rect(&first)[0] - expected_width).abs() < 3.0);
+    assert_eq!(store.resolver_calls.load(Ordering::Relaxed), 1);
+
+    store.id = "remapped-text-test:2";
+    let replaced = FrameBindContext::with_media(&composition, 0, &store)
+        .bind(&compiled)
+        .unwrap();
+    assert_eq!(first_rect(&first), first_rect(&replaced));
+    assert_eq!(store.resolver_calls.load(Ordering::Relaxed), 2);
 }
 
 #[test]

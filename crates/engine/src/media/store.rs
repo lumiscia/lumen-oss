@@ -13,6 +13,12 @@ pub trait MediaStore: Send + Sync + Debug {
         None
     }
 
+    /// Returns the current font resolver ID without loading font data.
+    /// Must match the resolver's ID and change whenever its font data changes.
+    fn font_resolver_id(&self, _source: &str) -> Option<String> {
+        None
+    }
+
     fn get_font_resolver(&self, _source: &str) -> Option<Box<dyn FontResolver>> {
         None
     }

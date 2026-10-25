@@ -302,6 +302,10 @@ impl MediaStore for LocalMediaStore {
         Some(Box::new(SharedAudioResolver(resolver)))
     }
 
+    fn font_resolver_id(&self, font_family: &str) -> Option<String> {
+        Some(font_family.to_string())
+    }
+
     fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
         let paths = self.resolve_font_family(font_family)?;
         tracing::info!(

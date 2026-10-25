@@ -423,20 +423,23 @@ pub(crate) fn load_font_family(
         return Ok(());
     };
 
+    let mut loaded = loaded_fonts()?;
+    if let Some(resolver_id) = store.font_resolver_id(font_family)
+        && loaded.get(font_family) == Some(&resolver_id)
+    {
+        return Ok(());
+    }
     let Some(resolver) = store.get_font_resolver(font_family) else {
         return Ok(());
     };
     let resolver_id = resolver.id().to_string();
-    if loaded_fonts()?
-        .get(font_family)
-        .is_some_and(|loaded_id| loaded_id == &resolver_id)
-    {
+    if loaded.get(font_family) == Some(&resolver_id) {
         return Ok(());
     }
     for data in resolver.data().map_err(LumenError::Media)? {
         text_system.load_font_data(data);
     }
-    loaded_fonts()?.insert(font_family.to_string(), resolver_id);
+    loaded.insert(font_family.to_string(), resolver_id);
     Ok(())
 }
 

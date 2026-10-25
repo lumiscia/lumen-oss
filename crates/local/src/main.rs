@@ -217,6 +217,24 @@ impl MediaStore for LocalMediaStore {
         )))
     }
 
+    fn font_resolver_id(&self, font_family: &str) -> Option<String> {
+        self.font_catalogs
+            .iter()
+            .find(|catalog| {
+                catalog.database.faces().any(|face| {
+                    face.families
+                        .iter()
+                        .any(|(family, _)| family.eq_ignore_ascii_case(font_family))
+                })
+            })
+            .map(|catalog| {
+                format!(
+                    "local-font:{}:{font_family}:{}",
+                    catalog.name, catalog.source
+                )
+            })
+    }
+
     fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
         self.font_catalogs
             .iter()
