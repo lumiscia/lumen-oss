@@ -50,11 +50,12 @@ const X264_PRESETS: [&str; 10] = [
 ];
 const NVENC_PRESETS: [&str; 7] = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
-/// Settings an encoder needs for a [`RateControl`] and preset: the context bitrate plus
+/// Settings an encoder needs for a [`RateControl`] and preset: context fields plus
 /// encoder-private AVOptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QualityOptions {
     pub bit_rate: i64,
+    pub global_quality: Option<i32>,
     pub options: Vec<(&'static str, String)>,
 }
 
@@ -72,6 +73,7 @@ pub(crate) fn quality_options(
     };
 
     let mut options = Vec::new();
+    let mut global_quality = None;
     if let Some(preset) = preset {
         let presets: &[&str] = match family {
             EncoderFamily::X264 => &X264_PRESETS,
@@ -96,6 +98,12 @@ pub(crate) fn quality_options(
         (RateControl::Crf(crf), EncoderFamily::X264) => {
             options.push(("crf", crf.to_string()));
             0
+        }
+        (RateControl::Crf(0), EncoderFamily::Nvenc) => {
+            return Err(FfmpegError::new(
+                "VideoEncoder::create",
+                format!("encoder `{encoder}` treats CRF 0 as automatic; use 1-51"),
+            ));
         }
         (RateControl::Crf(cq), EncoderFamily::Nvenc) => {
             options.push(("rc", "vbr".to_string()));
@@ -122,6 +130,20 @@ pub(crate) fn quality_options(
             options.push(("qp", qp.to_string()));
             0
         }
+        // AV1 and VP9 VAAPI encoders take the quantizer from the context's global quality.
+        (RateControl::Qp(qp), EncoderFamily::Vaapi)
+            if encoder.starts_with("av1_") || encoder.starts_with("vp9_") =>
+        {
+            options.push(("rc_mode", "CQP".to_string()));
+            global_quality = Some(i32::from(qp));
+            0
+        }
+        (RateControl::Qp(0), EncoderFamily::Vaapi) => {
+            return Err(FfmpegError::new(
+                "VideoEncoder::create",
+                format!("encoder `{encoder}` treats QP 0 as unset; use 1-52"),
+            ));
+        }
         (RateControl::Qp(qp), EncoderFamily::Vaapi) => {
             options.push(("rc_mode", "CQP".to_string()));
             options.push(("qp", qp.to_string()));
@@ -135,7 +157,11 @@ pub(crate) fn quality_options(
         }
     };
 
-    Ok(QualityOptions { bit_rate, options })
+    Ok(QualityOptions {
+        bit_rate,
+        global_quality,
+        options,
+    })
 }
 
 #[cfg(test)]
@@ -198,6 +224,22 @@ mod tests {
 
         let quality = options("h264_vaapi", RateControl::Qp(24), None).unwrap();
         assert_eq!(pairs(&quality), [("rc_mode", "CQP"), ("qp", "24")]);
+    }
+
+    #[test]
+    fn vaapi_av1_and_vp9_use_global_quality() {
+        for encoder in ["av1_vaapi", "vp9_vaapi"] {
+            let quality = options(encoder, RateControl::Qp(30), None).unwrap();
+            assert_eq!(quality.global_quality, Some(30));
+            assert_eq!(pairs(&quality), [("rc_mode", "CQP")]);
+        }
+    }
+
+    #[test]
+    fn zero_quality_that_means_automatic_errors() {
+        assert!(options("h264_nvenc", RateControl::Crf(0), None).is_err());
+        assert!(options("h264_vaapi", RateControl::Qp(0), None).is_err());
+        assert!(options("libx264", RateControl::Crf(0), None).is_ok());
     }
 
     #[test]

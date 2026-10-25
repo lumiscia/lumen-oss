@@ -182,6 +182,9 @@ impl VideoEncoder {
             (*context).colorspace = AVCOL_SPC_BT709;
             (*context).color_range = AVCOL_RANGE_MPEG;
             (*context).bit_rate = quality.bit_rate;
+            if let Some(global_quality) = quality.global_quality {
+                (*context).global_quality = global_quality;
+            }
             (*context).gop_size = gop_size;
             if let Some(contexts) = &hw_contexts {
                 (*context).sw_pix_fmt = contexts.sw_format;
