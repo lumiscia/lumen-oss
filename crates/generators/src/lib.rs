@@ -262,6 +262,7 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
         serde_json::to_string_pretty(&json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "x-lumen-schemaVersion": manifest.schema_version,
+            "x-lumen-expressions": expressions_json(),
             "type": "object",
             "required": ["timeline", "render_settings", "nodes", "connections"],
             "additionalProperties": true,
@@ -448,6 +449,33 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
             }
         }))?
     ))
+}
+
+fn expressions_json() -> Value {
+    use lumen_engine::expr::{BUILTINS, GLOBALS};
+    let builtins = BUILTINS
+        .iter()
+        .map(|spec| {
+            let args = spec
+                .args
+                .iter()
+                .map(|arg| json!({ "name": arg.name, "kind": arg.kind.name() }))
+                .collect::<Vec<_>>();
+            json!({
+                "name": spec.name,
+                "minArgs": spec.min_args,
+                "maxArgs": spec.max_args,
+                "args": args,
+                "returns": spec.returns.name(),
+                "doc": spec.doc,
+            })
+        })
+        .collect::<Vec<_>>();
+    let globals = GLOBALS
+        .iter()
+        .map(|global| json!({ "name": global.name, "doc": global.doc }))
+        .collect::<Vec<_>>();
+    json!({ "builtins": builtins, "globals": globals })
 }
 
 fn node_schema_json(spec: &NodeSpec) -> Value {

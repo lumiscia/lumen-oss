@@ -20,229 +20,87 @@ pub fn evaluate_builtin(
     args: &[ExpressionValue],
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
-    let error = |details: String| {
-        LumenError::Expression(ExpressionError::Evaluate {
-            path: ctx.path.clone(),
-            details,
-        })
+    let spec = builtin.spec();
+    let error = |details: String| eval_error(ctx, details);
+    if !spec.accepts_arity(args.len()) {
+        return Err(error(format!(
+            "builtin expects {} arguments, got {}",
+            spec.arity_description(),
+            args.len()
+        )));
+    }
+    let number = |index: usize| {
+        args[index]
+            .as_f64()
+            .ok_or_else(|| error(format!("{} expects numeric arguments", spec.name)))
     };
-    let expect_len = |expected: usize| {
-        if args.len() == expected {
-            Ok(())
-        } else {
-            Err(error(format!(
-                "builtin expects {expected} arguments, got {}",
-                args.len()
-            )))
-        }
-    };
-    let expect_min_len = |minimum: usize| {
-        if args.len() >= minimum {
-            Ok(())
-        } else {
-            Err(error(format!(
-                "builtin expects at least {minimum} arguments, got {}",
-                args.len()
-            )))
-        }
-    };
+    let unary = |f: fn(f64) -> f64| Ok(ExpressionValue::Number(f(number(0)?)));
 
     match builtin {
-        BuiltinFn::Min => {
-            expect_min_len(2)?;
-            let mut value =
-                to_number(&args[0], error("min expects numeric arguments".to_string()))?;
-            for arg in &args[1..] {
-                value = value.min(to_number(
-                    arg,
-                    error("min expects numeric arguments".to_string()),
-                )?);
+        BuiltinFn::Min | BuiltinFn::Max => {
+            let mut value = number(0)?;
+            for index in 1..args.len() {
+                value = if builtin == BuiltinFn::Min {
+                    value.min(number(index)?)
+                } else {
+                    value.max(number(index)?)
+                };
             }
             Ok(ExpressionValue::Number(value))
         }
-        BuiltinFn::Max => {
-            expect_min_len(2)?;
-            let mut value =
-                to_number(&args[0], error("max expects numeric arguments".to_string()))?;
-            for arg in &args[1..] {
-                value = value.max(to_number(
-                    arg,
-                    error("max expects numeric arguments".to_string()),
-                )?);
-            }
-            Ok(ExpressionValue::Number(value))
-        }
-        BuiltinFn::Abs => unary_numeric(args, &expect_len, |value| value.abs()),
-        BuiltinFn::Floor => unary_numeric(args, &expect_len, |value| value.floor()),
-        BuiltinFn::Ceil => unary_numeric(args, &expect_len, |value| value.ceil()),
-        BuiltinFn::Round => unary_numeric(args, &expect_len, |value| value.round()),
-        BuiltinFn::Sin => unary_numeric(args, &expect_len, |value| value.sin()),
-        BuiltinFn::Cos => unary_numeric(args, &expect_len, |value| value.cos()),
-        BuiltinFn::Fract => unary_numeric(args, &expect_len, |value| value.fract()),
+        BuiltinFn::Abs => unary(f64::abs),
+        BuiltinFn::Floor => unary(f64::floor),
+        BuiltinFn::Ceil => unary(f64::ceil),
+        BuiltinFn::Round => unary(f64::round),
+        BuiltinFn::Sin => unary(f64::sin),
+        BuiltinFn::Cos => unary(f64::cos),
+        BuiltinFn::Fract => unary(f64::fract),
         BuiltinFn::Clamp => {
-            expect_len(3)?;
-            let value = to_number(
-                &args[0],
-                error("clamp expects numeric arguments".to_string()),
-            )?;
-            let min = to_number(
-                &args[1],
-                error("clamp expects numeric arguments".to_string()),
-            )?;
-            let max = to_number(
-                &args[2],
-                error("clamp expects numeric arguments".to_string()),
-            )?;
+            let (value, min, max) = (number(0)?, number(1)?, number(2)?);
             if min > max {
                 return Err(error("clamp requires min <= max".to_string()));
             }
             Ok(ExpressionValue::Number(value.clamp(min, max)))
         }
-        BuiltinFn::Lerp => interpolate_linear(args, &expect_len, &error, "lerp"),
-        BuiltinFn::Pow => {
-            expect_len(2)?;
-            let lhs = to_number(&args[0], error("pow expects numeric arguments".to_string()))?;
-            let rhs = to_number(&args[1], error("pow expects numeric arguments".to_string()))?;
-            Ok(ExpressionValue::Number(lhs.powf(rhs)))
+        BuiltinFn::Lerp | BuiltinFn::Linear => {
+            let (start, end, t) = (number(0)?, number(1)?, number(2)?);
+            Ok(ExpressionValue::Number(start + (end - start) * t))
         }
+        BuiltinFn::Pow => Ok(ExpressionValue::Number(number(0)?.powf(number(1)?))),
         BuiltinFn::Mod => {
-            expect_len(2)?;
-            let lhs = to_number(&args[0], error("mod expects numeric arguments".to_string()))?;
-            let rhs = to_number(&args[1], error("mod expects numeric arguments".to_string()))?;
+            let (lhs, rhs) = (number(0)?, number(1)?);
             if rhs.abs() <= f64::EPSILON {
                 return Err(error("mod divisor must be non-zero".to_string()));
             }
             Ok(ExpressionValue::Number(lhs % rhs))
         }
         BuiltinFn::Smoothstep => {
-            expect_len(3)?;
-            let edge0 = to_number(
-                &args[0],
-                error("smoothstep expects numeric arguments".to_string()),
-            )?;
-            let edge1 = to_number(
-                &args[1],
-                error("smoothstep expects numeric arguments".to_string()),
-            )?;
-            let x = to_number(
-                &args[2],
-                error("smoothstep expects numeric arguments".to_string()),
-            )?;
+            let (edge0, edge1, x) = (number(0)?, number(1)?, number(2)?);
             if (edge1 - edge0).abs() <= f64::EPSILON {
                 return Ok(ExpressionValue::Number(0.0));
             }
             let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
             Ok(ExpressionValue::Number(t * t * (3.0 - 2.0 * t)))
         }
-        BuiltinFn::Linear => interpolate_linear(args, &expect_len, &error, "linear"),
         BuiltinFn::Step => {
-            expect_len(3)?;
-            let start = to_number(
-                &args[0],
-                error("step expects numeric arguments".to_string()),
-            )?;
-            let end = to_number(
-                &args[1],
-                error("step expects numeric arguments".to_string()),
-            )?;
-            let t = to_number(
-                &args[2],
-                error("step expects numeric arguments".to_string()),
-            )?;
+            let (start, end, t) = (number(0)?, number(1)?, number(2)?);
             Ok(ExpressionValue::Number(if t >= 1.0 { end } else { start }))
         }
-        BuiltinFn::TextHeight => Err(error(
-            "text_height node references should be evaluated before calling this helper"
-                .to_string(),
-        )),
-        BuiltinFn::TextWidth => Err(error(
-            "text_width node references should be evaluated before calling this helper".to_string(),
-        )),
-        BuiltinFn::Uppercase => {
-            expect_len(1)?;
-            let input = to_string(
-                &args[0],
-                error("uppercase expects a string argument".to_string()),
-            )?;
-            Ok(ExpressionValue::String(input.to_uppercase()))
-        }
-        BuiltinFn::Lowercase => {
-            expect_len(1)?;
-            let input = to_string(
-                &args[0],
-                error("lowercase expects a string argument".to_string()),
-            )?;
-            Ok(ExpressionValue::String(input.to_lowercase()))
-        }
-        BuiltinFn::Vec2 => {
-            expect_len(2)?;
-            let x = to_number(
-                &args[0],
-                error("vec2 expects numeric arguments".to_string()),
-            )?;
-            let y = to_number(
-                &args[1],
-                error("vec2 expects numeric arguments".to_string()),
-            )?;
-            Ok(ExpressionValue::Vec2((x, y)))
-        }
+        BuiltinFn::TextHeight | BuiltinFn::TextWidth => Err(error(format!(
+            "{} node references should be evaluated before calling this helper",
+            spec.name
+        ))),
+        BuiltinFn::Uppercase => Ok(ExpressionValue::String(args[0].as_string().to_uppercase())),
+        BuiltinFn::Lowercase => Ok(ExpressionValue::String(args[0].as_string().to_lowercase())),
+        BuiltinFn::Vec2 => Ok(ExpressionValue::Vec2((number(0)?, number(1)?))),
     }
 }
 
-fn interpolate_linear(
-    args: &[ExpressionValue],
-    expect_len: &dyn Fn(usize) -> crate::Result<()>,
-    error: &dyn Fn(String) -> LumenError,
-    builtin_name: &'static str,
-) -> crate::Result<ExpressionValue> {
-    expect_len(3)?;
-    let start = to_number(
-        &args[0],
-        error(format!("{builtin_name} expects numeric arguments")),
-    )?;
-    let end = to_number(
-        &args[1],
-        error(format!("{builtin_name} expects numeric arguments")),
-    )?;
-    let t = to_number(
-        &args[2],
-        error(format!("{builtin_name} expects numeric arguments")),
-    )?;
-    Ok(ExpressionValue::Number(start + (end - start) * t))
-}
-
-fn unary_numeric(
-    args: &[ExpressionValue],
-    expect_len: &dyn Fn(usize) -> crate::Result<()>,
-    f: impl Fn(f64) -> f64,
-) -> crate::Result<ExpressionValue> {
-    expect_len(1)?;
-    let value = to_number(
-        &args[0],
-        LumenError::Expression(ExpressionError::Evaluate {
-            path: None,
-            details: "builtin expects numeric argument".to_string(),
-        }),
-    )?;
-    Ok(ExpressionValue::Number(f(value)))
-}
-
-fn to_number(value: &ExpressionValue, error: LumenError) -> crate::Result<f64> {
-    match value {
-        ExpressionValue::Number(number) => Ok(*number),
-        ExpressionValue::Boolean(boolean) => Ok(if *boolean { 1.0 } else { 0.0 }),
-        ExpressionValue::String(text) => text.parse::<f64>().map_err(|_| error),
-        ExpressionValue::Vec2(_) => Err(error),
-    }
-}
-
-fn to_string(value: &ExpressionValue, _error: LumenError) -> crate::Result<String> {
-    match value {
-        ExpressionValue::String(text) => Ok(text.clone()),
-        ExpressionValue::Number(number) => Ok(number.to_string()),
-        ExpressionValue::Boolean(boolean) => Ok(boolean.to_string()),
-        ExpressionValue::Vec2((x, y)) => Ok(format!("[{x}, {y}]")),
-    }
+fn eval_error(ctx: &ExpressionContext<'_>, details: String) -> LumenError {
+    LumenError::Expression(ExpressionError::Evaluate {
+        path: ctx.path.clone(),
+        details,
+    })
 }
 
 pub fn evaluate_text_measure_builtin(
@@ -250,13 +108,9 @@ pub fn evaluate_text_measure_builtin(
     args: &[ExprNode],
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
-    let builtin_name = match builtin {
-        BuiltinFn::TextHeight => "text_height",
-        BuiltinFn::TextWidth => "text_width",
-        _ => unreachable!(),
-    };
-    if args.is_empty() || args.len() > 4 {
-        return Err(text_measure_error(
+    let builtin_name = builtin.name();
+    if !builtin.spec().accepts_arity(args.len()) {
+        return Err(eval_error(
             ctx,
             format!("{builtin_name} expects 1 to 4 arguments"),
         ));
@@ -264,7 +118,7 @@ pub fn evaluate_text_measure_builtin(
 
     if let Some(ExprNode::Node(node_id)) = args.first() {
         if args.len() != 1 {
-            return Err(text_measure_error(
+            return Err(eval_error(
                 ctx,
                 format!("{builtin_name}(node(id)) does not accept override arguments"),
             ));
@@ -277,54 +131,27 @@ pub fn evaluate_text_measure_builtin(
         }));
     }
 
-    let text = args
-        .first()
-        .map(|arg| {
-            to_string(
-                &evaluate_expr(arg, ctx)?,
-                text_measure_error(ctx, format!("{builtin_name} expects a string argument")),
-            )
-        })
-        .transpose()?
+    let evaluate = |index: usize| {
+        args.get(index)
+            .map(|arg| evaluate_expr(arg, ctx))
+            .transpose()
+    };
+    let number = |index: usize, details: &str| {
+        evaluate(index)?
+            .map(|value| {
+                value
+                    .as_f64()
+                    .ok_or_else(|| eval_error(ctx, format!("{builtin_name} {details}")))
+            })
+            .transpose()
+    };
+    let text = evaluate(0)?
+        .map(|value| value.as_string())
         .unwrap_or_default();
-    let font_size = args
-        .get(1)
-        .map(|arg| {
-            to_number(
-                &evaluate_expr(arg, ctx)?,
-                text_measure_error(
-                    ctx,
-                    format!("{builtin_name} optional second arg must be numeric font size"),
-                ),
-            )
-        })
-        .transpose()?
-        .unwrap_or(16.0);
-    let max_width = args
-        .get(2)
-        .map(|arg| {
-            to_number(
-                &evaluate_expr(arg, ctx)?,
-                text_measure_error(
-                    ctx,
-                    format!("{builtin_name} optional third arg must be numeric max width"),
-                ),
-            )
-        })
-        .transpose()?
-        .unwrap_or(0.0);
-    let font_family = args
-        .get(3)
-        .map(|arg| {
-            to_string(
-                &evaluate_expr(arg, ctx)?,
-                text_measure_error(
-                    ctx,
-                    format!("{builtin_name} optional fourth arg must be a font family string"),
-                ),
-            )
-        })
-        .transpose()?
+    let font_size = number(1, "optional second arg must be numeric font size")?.unwrap_or(16.0);
+    let max_width = number(2, "optional third arg must be numeric max width")?.unwrap_or(0.0);
+    let font_family = evaluate(3)?
+        .map(|value| value.as_string())
         .unwrap_or_else(|| "sans-serif".to_string());
     let measurement = measure_text_value(
         ctx,
@@ -351,7 +178,7 @@ fn measure_text_node(
 ) -> crate::Result<lumen_text::TextMeasurement> {
     let _measurement_guard = TextMeasurementGuard::enter(node_id, ctx)?;
     let graph = ctx.graph.ok_or_else(|| {
-        text_measure_error(
+        eval_error(
             ctx,
             format!("no graph available to resolve text node `{}`", node_id.0),
         )
@@ -359,9 +186,9 @@ fn measure_text_node(
     let node = graph
         .nodes
         .get(&node_id)
-        .ok_or_else(|| text_measure_error(ctx, format!("text node `{}` not found", node_id.0)))?;
+        .ok_or_else(|| eval_error(ctx, format!("text node `{}` not found", node_id.0)))?;
     let NodeKind::Text(text) = node else {
-        return Err(text_measure_error(
+        return Err(eval_error(
             ctx,
             format!("node `{}` is not a text node", node_id.0),
         ));
@@ -414,7 +241,7 @@ impl TextMeasurementGuard {
         TEXT_MEASUREMENT_STACK.with(|stack| {
             let mut stack = stack.borrow_mut();
             if stack.contains(&node_id) {
-                return Err(text_measure_error(
+                return Err(eval_error(
                     ctx,
                     format!("recursive text measurement for node `{}`", node_id.0),
                 ));
@@ -441,11 +268,4 @@ fn measure_text_value(
     let mut text_system = crate::node::source::text::text_system()?;
     crate::node::source::text::load_font_family(&mut text_system, ctx.media, &request.font_family)?;
     Ok(text_system.measure(&request))
-}
-
-fn text_measure_error(ctx: &ExpressionContext<'_>, details: String) -> LumenError {
-    LumenError::Expression(ExpressionError::Evaluate {
-        path: ctx.path.clone(),
-        details,
-    })
 }

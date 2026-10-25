@@ -4,6 +4,7 @@ pub mod ast;
 pub mod builtins;
 pub mod eval;
 pub mod parser;
+pub mod spec;
 
 use crate::{error::ExpressionError, graph::Graph};
 
@@ -12,6 +13,7 @@ pub use ast::{
     GlobalVar, PropertyPath, UnaryOp, VirtualPropertyId,
 };
 pub use eval::property_value_to_expression_value;
+pub use spec::{BUILTINS, BuiltinArg, BuiltinSpec, GLOBALS, GlobalSpec, ValueKind};
 
 impl Expression {
     pub fn parse(source: &str) -> Result<Self, ExpressionError> {

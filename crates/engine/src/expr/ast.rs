@@ -1,5 +1,7 @@
 use crate::node::NodeId;
 
+pub use super::spec::BuiltinFn;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExpressionId(pub u64);
 
@@ -105,31 +107,6 @@ pub enum GlobalVar {
     Width,
     Height,
     Custom(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuiltinFn {
-    Min,
-    Max,
-    Abs,
-    Floor,
-    Ceil,
-    Round,
-    Sin,
-    Cos,
-    Clamp,
-    Lerp,
-    Pow,
-    Mod,
-    Fract,
-    Smoothstep,
-    Linear,
-    Step,
-    TextHeight,
-    TextWidth,
-    Uppercase,
-    Lowercase,
-    Vec2,
 }
 
 #[derive(Debug, Clone, PartialEq)]

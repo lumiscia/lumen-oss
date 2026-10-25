@@ -2,9 +2,12 @@ use std::ops::Range;
 
 use crate::{
     error::ExpressionError,
-    expr::ast::{
-        BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionId, ExpressionReference,
-        ExpressionValue, GlobalVar, PropertyPath, UnaryOp,
+    expr::{
+        ast::{
+            BinaryOp, ExprNode, Expression, ExpressionId, ExpressionReference, ExpressionValue,
+            GlobalVar, PropertyPath, UnaryOp,
+        },
+        spec::builtin_for_name,
     },
     node::NodeId,
 };
@@ -526,11 +529,11 @@ impl<'a> Parser<'a> {
                 return self.parse_node_reference(args);
             }
 
-            let builtin = builtin_for_name(&identifier).ok_or(ExpressionError::Parse {
+            let spec = builtin_for_name(&identifier).ok_or(ExpressionError::Parse {
                 path: None,
                 details: format!("unknown function `{identifier}`"),
             })?;
-            return Ok(ExprNode::Builtin(builtin, args));
+            return Ok(ExprNode::Builtin(spec.builtin, args));
         }
 
         Ok(ExprNode::Global(match identifier.as_str() {
@@ -640,33 +643,6 @@ impl TokenExpectation {
             Self::RParen => "`)`",
             Self::Eof => "end of input",
         }
-    }
-}
-
-fn builtin_for_name(name: &str) -> Option<BuiltinFn> {
-    match name {
-        "min" => Some(BuiltinFn::Min),
-        "max" => Some(BuiltinFn::Max),
-        "abs" => Some(BuiltinFn::Abs),
-        "floor" => Some(BuiltinFn::Floor),
-        "ceil" => Some(BuiltinFn::Ceil),
-        "round" => Some(BuiltinFn::Round),
-        "sin" => Some(BuiltinFn::Sin),
-        "cos" => Some(BuiltinFn::Cos),
-        "clamp" => Some(BuiltinFn::Clamp),
-        "lerp" => Some(BuiltinFn::Lerp),
-        "pow" => Some(BuiltinFn::Pow),
-        "mod" => Some(BuiltinFn::Mod),
-        "fract" => Some(BuiltinFn::Fract),
-        "smoothstep" => Some(BuiltinFn::Smoothstep),
-        "linear" => Some(BuiltinFn::Linear),
-        "step" => Some(BuiltinFn::Step),
-        "text_height" => Some(BuiltinFn::TextHeight),
-        "text_width" => Some(BuiltinFn::TextWidth),
-        "uppercase" => Some(BuiltinFn::Uppercase),
-        "lowercase" => Some(BuiltinFn::Lowercase),
-        "vec2" => Some(BuiltinFn::Vec2),
-        _ => None,
     }
 }
 
