@@ -9,7 +9,7 @@ use crate::node::source::text::{CompiledText, Text, TextState};
 
 use super::{
     path::{CompiledPath, Path},
-    shape::{CompiledShape, Shape},
+    shape::{CompiledPolygonShape, CompiledShape, Shape},
 };
 
 pub(crate) const SHAPE_SHADER: &str = concat!(
@@ -72,8 +72,44 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         path: &Path,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
+        let (output, params_buffer, points_buffer) =
+            self.compile_path_source(path.id, port, "path")?;
+        self.ctx.register_compiled_node(CompiledPath {
+            node_id: path.id,
+            params: path.params.clone(),
+            params_buffer,
+            points_buffer,
+            max_points: MAX_PATH_POINTS,
+        });
+        Ok(output)
+    }
+
+    /// Rasterizes a polygon shape with the path shader, as one closed contour.
+    pub(crate) fn compile_polygon_shape(
+        &mut self,
+        shape: &Shape,
+        port: &PortRef,
+    ) -> crate::Result<CompiledOutput> {
+        let (output, params_buffer, points_buffer) =
+            self.compile_path_source(shape.id, port, "shape")?;
+        self.ctx.register_compiled_node(CompiledPolygonShape {
+            node_id: shape.id,
+            params: shape.params.clone(),
+            params_buffer,
+            points_buffer,
+            max_points: MAX_PATH_POINTS,
+        });
+        Ok(output)
+    }
+
+    fn compile_path_source(
+        &mut self,
+        node_id: NodeId,
+        port: &PortRef,
+        label: &str,
+    ) -> crate::Result<(CompiledOutput, lumen_gpu::BufferId, lumen_gpu::BufferId)> {
         if port.port != "output" {
-            return Err(self.ctx.missing_output(path.id, &port.port));
+            return Err(self.ctx.missing_output(node_id, &port.port));
         }
 
         let size = lumen_gpu::Size::new(
@@ -81,26 +117,26 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             self.ctx.composition().render_settings.height.max(1),
         );
         let texture = self.ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(path.id.0),
-            Some(format!("path:{}:output", path.id.0)),
+            lumen_gpu::NodeKey(node_id.0),
+            Some(format!("{label}:{}:output", node_id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
         let params = self.ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(path.id.0),
-            Some(format!("path:{}:params", path.id.0)),
+            lumen_gpu::NodeKey(node_id.0),
+            Some(format!("{label}:{}:params", node_id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<PathParams>() as u64),
         );
         let points = self.ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(path.id.0),
-            Some(format!("path:{}:points", path.id.0)),
+            lumen_gpu::NodeKey(node_id.0),
+            Some(format!("{label}:{}:points", node_id.0)),
             lumen_gpu::BufferDesc::storage(
                 (MAX_PATH_POINTS * std::mem::size_of::<PathPoint>()) as u64,
             ),
         );
         let program = self.ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(path.id.0),
+            lumen_gpu::NodeKey(node_id.0),
             lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
-                label: Some("path".to_string()),
+                label: Some(label.to_string()),
                 shader: PATH_SHADER.to_string(),
                 entry: "cs_main".to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
@@ -125,8 +161,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         self.ctx
             .builder_mut()
             .compute_pass(lumen_gpu::ComputePassDesc {
-                label: Some(format!("path:{}:rasterize", path.id.0)),
-                owner: Some(lumen_gpu::NodeKey(path.id.0)),
+                label: Some(format!("{label}:{}:rasterize", node_id.0)),
+                owner: Some(lumen_gpu::NodeKey(node_id.0)),
                 program,
                 bindings: vec![
                     lumen_gpu::Binding::uniform(0, 0, params),
@@ -137,24 +173,18 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             });
         self.ctx.builder_mut().param(
             lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(path.id.0),
+                owner: lumen_gpu::NodeKey(node_id.0),
                 slot: 0,
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        self.ctx.register_compiled_node(CompiledPath {
-            node_id: path.id,
-            params: path.params.clone(),
-            params_buffer: params,
-            points_buffer: points,
-            max_points: MAX_PATH_POINTS,
-        });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        let output = CompiledOutput::Raster(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: RasterMetadata::default(),
-        }))
+        });
+        Ok((output, params, points))
     }
 
     pub(crate) fn compile_text(
