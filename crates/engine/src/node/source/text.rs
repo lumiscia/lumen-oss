@@ -222,14 +222,7 @@ impl GpuCompiledNode for CompiledText {
             output_width: self.size.width,
             output_height: self.size.height,
         };
-        state.bind_generation += 1;
-        let mut binding = TextBinding {
-            state: Arc::clone(&self.state),
-            generation: state.bind_generation,
-            update: None,
-        };
         if !state.pending && state.committed.as_ref() == Some(&frame_key) {
-            bound.bind_text(binding);
             return Ok(());
         }
 
@@ -291,8 +284,11 @@ impl GpuCompiledNode for CompiledText {
         }
 
         state.pending = true;
-        binding.update = Some((prepared.frame, frame_key));
-        bound.bind_text(binding);
+        bound.bind_text(TextBinding {
+            state: Arc::clone(&self.state),
+            atlas_frame: prepared.frame,
+            frame_key,
+        });
 
         if let Some(started) = trace_started {
             trace_text_bind(
@@ -314,7 +310,6 @@ impl GpuCompiledNode for CompiledText {
 pub(crate) struct TextState {
     atlas: lumen_text::RasterAtlas,
     shaped: Option<(TextShapeKey, lumen_text::ShapedText)>,
-    bind_generation: u64,
     pending: bool,
     committed: Option<TextFrameKey>,
     dropping_glyphs: bool,
@@ -325,7 +320,6 @@ impl TextState {
         Self {
             atlas: lumen_text::RasterAtlas::new(atlas),
             shaped: None,
-            bind_generation: 0,
             pending: false,
             committed: None,
             dropping_glyphs: false,
@@ -336,33 +330,18 @@ impl TextState {
 #[derive(Debug, Clone)]
 pub(crate) struct TextBinding {
     state: Arc<Mutex<TextState>>,
-    generation: u64,
-    update: Option<(u64, TextFrameKey)>,
+    atlas_frame: u64,
+    frame_key: TextFrameKey,
 }
 
 impl TextBinding {
-    pub(crate) fn validate(&self) -> crate::Result<()> {
-        let state = self.state.lock().map_err(|_| RenderError::Gpu {
+    pub(crate) fn commit(&self) -> crate::Result<()> {
+        let mut state = self.state.lock().map_err(|_| RenderError::Gpu {
             details: "text state lock was poisoned".to_string(),
         })?;
-        if state.bind_generation != self.generation {
-            return Err(RenderError::Gpu {
-                details: "stale bound text frame; rebind before uploading".to_string(),
-            }
-            .into());
-        }
-        Ok(())
-    }
-
-    pub(crate) fn commit(&self) -> crate::Result<()> {
-        if let Some((atlas_frame, frame_key)) = &self.update {
-            let mut state = self.state.lock().map_err(|_| RenderError::Gpu {
-                details: "text state lock was poisoned".to_string(),
-            })?;
-            state.atlas.commit(*atlas_frame);
-            state.committed = Some(frame_key.clone());
-            state.pending = false;
-        }
+        state.atlas.commit(self.atlas_frame);
+        state.committed = Some(self.frame_key.clone());
+        state.pending = false;
         Ok(())
     }
 }

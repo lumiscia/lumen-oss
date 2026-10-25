@@ -95,6 +95,7 @@ pub struct CompiledComposition {
 
 #[derive(Debug, Clone, Default)]
 pub struct BoundFrame {
+    pub(crate) renderer_binding: Option<(u64, super::renderer::CompiledPlanKey)>,
     buffer_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
     texture_uploads: Vec<TextureUpload>,
     media_textures: Vec<MediaTextureUpload>,
@@ -218,17 +219,9 @@ impl BoundFrame {
         self.text_bindings.push(binding);
     }
 
-    /// Rejects frames superseded by a newer bind of any of their text nodes.
-    pub fn validate_uploads(&self) -> crate::Result<()> {
-        for binding in &self.text_bindings {
-            binding.validate()?;
-        }
-        Ok(())
-    }
-
     /// Notifies nodes that this frame's uploads were applied.
+    /// Call only after uploading the latest bind to its compiled plan.
     pub fn mark_uploaded(&self) -> crate::Result<()> {
-        self.validate_uploads()?;
         for binding in &self.text_bindings {
             binding.commit()?;
         }

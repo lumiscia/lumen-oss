@@ -27,6 +27,7 @@ pub struct GpuCompositionRenderer {
     renderer: lumen_gpu::Renderer,
     compiled_plans: HashMap<CompiledPlanKey, PreparedComposition>,
     active_key: Option<CompiledPlanKey>,
+    bind_sequence: u64,
     output_format: lumen_gpu::wgpu::TextureFormat,
     media_texture_cache: HashMap<MediaTextureKey, Arc<lumen_gpu::wgpu::Texture>>,
     #[cfg(feature = "ffmpeg")]
@@ -45,6 +46,7 @@ impl GpuCompositionRenderer {
             renderer,
             compiled_plans: HashMap::new(),
             active_key: None,
+            bind_sequence: 0,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             media_texture_cache: HashMap::new(),
             #[cfg(feature = "ffmpeg")]
@@ -57,6 +59,7 @@ impl GpuCompositionRenderer {
             renderer: lumen_gpu::Renderer::from_device(device, queue),
             compiled_plans: HashMap::new(),
             active_key: None,
+            bind_sequence: 0,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             media_texture_cache: HashMap::new(),
             #[cfg(feature = "ffmpeg")]
@@ -93,6 +96,7 @@ impl GpuCompositionRenderer {
     /// buffers this renderer exclusively owns instead of waiting for them to be garbage collected.
     /// The next render recompiles on the same device.
     pub fn release_resources(&mut self) {
+        self.bind_sequence += 1;
         for texture in self.media_texture_cache.values() {
             texture.destroy();
         }
@@ -123,6 +127,7 @@ impl GpuCompositionRenderer {
             media_textures = self.media_texture_cache.len(),
             "reset compiled composition"
         );
+        self.bind_sequence += 1;
         self.output_format = output_format;
         self.compiled_plans.clear();
         self.active_key = None;
@@ -254,9 +259,12 @@ impl GpuCompositionRenderer {
         frame: u32,
         media: &M,
     ) -> crate::Result<BoundFrame> {
+        self.bind_sequence += 1;
         self.ensure_compiled_for_frame(composition, frame, Some(media))?;
         let compiled = self.active_compiled()?;
-        FrameBindContext::with_media(composition, frame, media).bind(compiled)
+        let mut bound = FrameBindContext::with_media(composition, frame, media).bind(compiled)?;
+        bound.renderer_binding = self.active_key.clone().map(|key| (self.bind_sequence, key));
+        Ok(bound)
     }
 
     pub fn submit_bound_frame(
@@ -275,7 +283,18 @@ impl GpuCompositionRenderer {
             media_textures = bound.media_textures().len(),
             "upload bound frame"
         );
-        bound.validate_uploads()?;
+        if bound
+            .renderer_binding
+            .as_ref()
+            .is_none_or(|(sequence, key)| {
+                *sequence != self.bind_sequence || Some(key) != self.active_key.as_ref()
+            })
+        {
+            return Err(RenderError::Gpu {
+                details: "stale bound text frame; rebind before uploading".to_string(),
+            }
+            .into());
+        }
         self.upload_media_textures(bound)?;
         let update = bound.frame_update();
         let prepared = self.active_prepared_mut()?;

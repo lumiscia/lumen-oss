@@ -46,6 +46,8 @@ use lumen_engine::{
 };
 use std::sync::{Arc, mpsc};
 
+static TEXT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn compiler_rejects_cycle_before_recursive_port_traversal() {
     let first = NodeId::new(1);
@@ -1482,6 +1484,7 @@ fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
 
 #[test]
 fn compiles_source_text_and_vector_shape_through_shared_renderer() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
     let shape = NodeId::new(1);
     let text = NodeId::new(2);
     let merge = NodeId::new(3);
@@ -1576,6 +1579,7 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
 
 #[test]
 fn text_bind_ahead_restores_committed_frame_after_pending_frame() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
     let text = NodeId::new(1);
     let output = NodeId::new(2);
     let mut graph = Graph::new();
@@ -1606,11 +1610,10 @@ fn text_bind_ahead_restores_committed_frame_after_pending_frame() {
     };
     let first = bind(0);
     first.mark_uploaded().unwrap();
-    let ahead = bind(1);
+    bind(1);
     let restored = bind(0);
     assert!(restored.buffer_upload_count() > 0);
 
-    assert!(ahead.mark_uploaded().is_err());
     restored.mark_uploaded().unwrap();
     assert_eq!(bind(0).buffer_upload_count(), 0);
     assert!(bind(1).buffer_upload_count() > 0);
@@ -1618,6 +1621,7 @@ fn text_bind_ahead_restores_committed_frame_after_pending_frame() {
 
 #[test]
 fn text_rejects_stale_upload_after_atlas_slot_reuse() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
     };
@@ -1671,7 +1675,99 @@ fn text_rejects_stale_upload_after_atlas_slot_reuse() {
 }
 
 #[test]
+fn text_rejects_stale_upload_from_another_compiled_plan() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let text = NodeId::new(1);
+    let first = NodeId::new(2);
+    let second = NodeId::new(3);
+    let switch = NodeId::new(4);
+    let merge = NodeId::new(5);
+    let output = NodeId::new(6);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::Expr(Expression::parse("if(frame == 0, \"W\", \"M\")").unwrap()),
+                font_size: Deferred::value(32.0),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(first, solid(first, [0; 4]));
+    graph.nodes.insert(second, solid(second, [0; 4]));
+    graph.nodes.insert(
+        switch,
+        NodeKind::Switch(Switch {
+            id: switch,
+            params: SwitchParamsDelegate {
+                selected_layer: Deferred::Expr(Expression::parse("frame").unwrap()),
+            },
+            layers: vec![
+                PortRef::new(first, "output".to_string()),
+                PortRef::new(second, "output".to_string()),
+            ],
+        }),
+    );
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            base: PortRef::new(text, "output".to_string()),
+            overlay: PortRef::new(switch, "output".to_string()),
+            ..Default::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+    for (from_node, to_port) in [(text, "base"), (switch, "overlay")] {
+        graph
+            .connect(Connection {
+                from_node,
+                from_port: "output".to_string(),
+                to_node: merge,
+                to_port: to_port.to_string(),
+            })
+            .unwrap();
+    }
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 64;
+    composition.render_settings.height = 64;
+    let older = renderer
+        .bind_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    let current = renderer
+        .bind_frame(&composition, 1, &EmptyMediaStore)
+        .unwrap();
+    renderer.upload_bound_frame(&current).unwrap();
+    let error = renderer.upload_bound_frame(&older).unwrap_err();
+    assert!(error.to_string().contains("stale bound text frame"));
+    let rebound = renderer
+        .bind_frame(&composition, 1, &EmptyMediaStore)
+        .unwrap();
+    assert_eq!(rebound.texture_upload_count(), 0);
+    assert_eq!(rebound.buffer_upload_count(), 2);
+    let pixels = render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
+    assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    let mut reference = gpu_composition_renderer().unwrap();
+    assert_eq!(
+        pixels,
+        render_rgba8(&mut reference, &composition, 1, &EmptyMediaStore)
+    );
+}
+
+#[test]
 fn text_measurement_loads_time_remapped_family_on_first_bind() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
     #[derive(Debug, Clone)]
     struct FontStore(Vec<u8>);
 
@@ -1815,6 +1911,7 @@ fn text_measurement_loads_time_remapped_family_on_first_bind() {
 
 #[test]
 fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
     let text = NodeId::new(1);
     let output = NodeId::new(2);
     let mut graph = Graph::new();
