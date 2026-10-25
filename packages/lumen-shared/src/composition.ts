@@ -26,7 +26,7 @@ const defaultRenderSettings = {
 
 const defaultTimeline = {
   duration_frames: 1,
-  fps: 24,
+  fps: 30,
 } satisfies LumenComposition["timeline"];
 
 export class Composition {

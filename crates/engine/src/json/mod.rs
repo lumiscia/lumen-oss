@@ -105,7 +105,10 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
 
     let mut comp = Composition::new(graph, timeline, render_settings);
     comp.metadata = metadata;
-    comp.audio = root.get("audio").map(parse_audio_timeline).transpose()?;
+    comp.audio = root
+        .get("audio")
+        .map(|audio| parse_audio_timeline(audio, comp.timeline.fps))
+        .transpose()?;
     if let Err(errors) = comp.validate_structure() {
         let details = errors
             .iter()
@@ -150,7 +153,7 @@ fn parse_render_settings(val: &Value) -> Result<RenderSettings> {
     })
 }
 
-fn parse_audio_timeline(val: &Value) -> Result<AudioTimeline> {
+fn parse_audio_timeline(val: &Value, fps: f32) -> Result<AudioTimeline> {
     let obj = val.as_object().context("`audio` must be an object")?;
     let tracks = obj
         .get("tracks")
@@ -164,7 +167,7 @@ fn parse_audio_timeline(val: &Value) -> Result<AudioTimeline> {
         .and_then(Value::as_array)
         .context("audio.clips must be an array")?
         .iter()
-        .map(parse_audio_clip)
+        .map(|clip| parse_audio_clip(clip, fps))
         .collect::<Result<Vec<_>>>()?;
 
     Ok(AudioTimeline { tracks, clips })
@@ -185,10 +188,10 @@ fn parse_audio_track(val: &Value) -> Result<AudioTrack> {
     })
 }
 
-fn parse_audio_clip(val: &Value) -> Result<AudioClip> {
+fn parse_audio_clip(val: &Value, fps: f32) -> Result<AudioClip> {
     let obj = val.as_object().context("audio clip must be an object")?;
-    let start_ms = audio_time_ms(obj, "start_ms", "start_frame")?;
-    let duration_ms = audio_time_ms(obj, "duration_ms", "duration_frames")?;
+    let start_ms = audio_time_ms(obj, "start_ms", "start_frame", fps)?;
+    let duration_ms = audio_time_ms(obj, "duration_ms", "duration_frames", fps)?;
     if duration_ms == 0 {
         anyhow::bail!("audio clip duration_ms must be greater than zero");
     }
@@ -217,13 +220,13 @@ fn parse_audio_clip(val: &Value) -> Result<AudioClip> {
     })
 }
 
-fn audio_time_ms(obj: &Map<String, Value>, ms_key: &str, frame_key: &str) -> Result<u64> {
+fn audio_time_ms(obj: &Map<String, Value>, ms_key: &str, frame_key: &str, fps: f32) -> Result<u64> {
     if let Some(ms) = obj.get(ms_key).and_then(Value::as_u64) {
         return Ok(ms);
     }
     if let Some(frames) = obj.get(frame_key).and_then(Value::as_u64) {
         // Frame compatibility for current editor payloads. Canonical output should emit *_ms.
-        return Ok(((frames as f64 / 30.0) * 1_000.0).round() as u64);
+        return Ok(((frames as f64 / f64::from(fps)) * 1_000.0).round() as u64);
     }
     anyhow::bail!("audio clip missing `{ms_key}`")
 }
@@ -306,6 +309,38 @@ mod tests {
         assert_eq!(audio.clips[0].source_id, "voice");
         assert_eq!(audio.clips[0].start_ms, 100);
         assert_eq!(audio.clips[0].source_start_ms, 50);
+    }
+
+    #[test]
+    fn audio_frame_fields_convert_at_the_timeline_fps() {
+        let json = r#"{
+            "timeline": { "fps": 60, "duration_frames": 120 },
+            "render_settings": { "width": 1920, "height": 1080 },
+            "audio": {
+                "tracks": [{ "id": "track-1" }],
+                "clips": [
+                    {
+                        "id": "clip-1",
+                        "source_id": "voice",
+                        "track_id": "track-1",
+                        "start_frame": 60,
+                        "duration_frames": 30
+                    }
+                ]
+            },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 1920, "height": 1080 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
+            ]
+        }"#;
+
+        let comp = parse(json).expect("should parse");
+        let clip = &comp.audio.expect("audio timeline").clips[0];
+        assert_eq!(clip.start_ms, 1_000);
+        assert_eq!(clip.duration_ms, 500);
     }
 
     #[test]
