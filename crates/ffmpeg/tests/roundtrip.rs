@@ -7,8 +7,8 @@ use std::{
 
 use lumen_ffmpeg::{
     AudioDecoder, AudioEncoderConfig, AudioFrame, AudioResampler, AudioResamplerConfig,
-    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, SampleFormat, VideoCodec,
-    VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
+    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, Rational, SampleFormat,
+    VideoCodec, VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
 };
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {
@@ -64,7 +64,7 @@ fn make_video(path: &Path) -> bool {
     let config = VideoEncoderConfig {
         width: 32,
         height: 24,
-        fps: 24,
+        fps: Rational::from(24),
         codec: VideoCodec::H264,
         ..VideoEncoderConfig::cpu_rgba(32, 24, 24, VideoCodec::H264)
     };
@@ -230,6 +230,28 @@ fn make_cuda_video_with_nvenc_and_audio(path: &PathBuf, width: u32, height: u32)
     true
 }
 
+fn assert_bt709_tags(path: &Path) {
+    let Ok(output) = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
+        .arg("stream=color_space,color_transfer,color_primaries,color_range")
+        .args(["-of", "default=noprint_wrappers=1"])
+        .arg(path)
+        .output()
+    else {
+        eprintln!("ffprobe unavailable; skipping colour tag assertions");
+        return;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "color_space=bt709",
+        "color_transfer=bt709",
+        "color_primaries=bt709",
+        "color_range=tv",
+    ] {
+        assert!(text.contains(expected), "missing {expected} in {text}");
+    }
+}
+
 #[test]
 fn reports_missing_input_as_structured_error() {
     let error = InputContext::open("/definitely/not/a/media/file.mp4").expect_err("missing file");
@@ -284,6 +306,7 @@ fn encodes_opens_and_decodes_cpu_video() {
     assert_eq!(decoded.stride, 32 * 4);
     assert_eq!(decoded.data.len(), 32 * 24 * 4);
 
+    assert_bt709_tags(&path);
     let _ = fs::remove_file(path);
 }
 
@@ -430,6 +453,86 @@ fn decodes_and_resamples_audio_with_cli_fixture() {
     assert_eq!(converted.sample_rate, 48_000);
     assert_eq!(converted.channels, 2);
     assert!(!converted.interleaved_f32.is_empty());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn decodes_rgba_frames_across_resolution_change() {
+    let clips = [("32x24", 32usize, 24usize), ("64x48", 64, 48)];
+    let mut stream = Vec::new();
+    for (size, _, _) in clips {
+        let path = temp_path("resolution_clip", "h264");
+        let status = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", &format!("testsrc=size={size}:rate=10:duration=0.5")])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "h264"])
+            .arg(&path)
+            .status();
+        if !matches!(status, Ok(status) if status.success()) {
+            eprintln!("ffmpeg CLI with libx264 unavailable; skipping resolution change test");
+            return;
+        }
+        stream.extend(fs::read(&path).expect("read clip"));
+        let _ = fs::remove_file(path);
+    }
+    let path = temp_path("resolution_change", "h264");
+    fs::write(&path, stream).expect("write stream");
+
+    let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open stream");
+    let stream_index = input
+        .best_video_stream()
+        .expect("video stream")
+        .stream_index;
+    let mut decoder = VideoDecoder::open(
+        &input,
+        VideoDecoderConfig {
+            stream_index,
+            mode: DecodeMode::Cpu,
+        },
+    )
+    .expect("decoder");
+
+    let mut sizes = Vec::new();
+    let mut drain = |decoder: &mut VideoDecoder| {
+        while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
+            assert_eq!(frame.stride, frame.width as usize * 4);
+            assert_eq!(frame.data.len(), frame.stride * frame.height as usize);
+            assert!(frame.data.chunks_exact(4).all(|pixel| pixel[3] == 255));
+            sizes.push((frame.width as usize, frame.height as usize));
+        }
+    };
+    while let Some(packet) = input.read_packet().expect("read packet") {
+        decoder.send_packet(&packet).expect("send packet");
+        drain(&mut decoder);
+    }
+    decoder.send_eof().expect("send eof");
+    drain(&mut decoder);
+
+    assert!(sizes.contains(&(clips[0].1, clips[0].2)));
+    assert!(sizes.contains(&(clips[1].1, clips[1].2)));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn encodes_fractional_frame_rate_exactly() {
+    let path = temp_path("ntsc_roundtrip", "mp4");
+    let config =
+        VideoEncoderConfig::cpu_rgba(32, 24, Rational::new(30_000, 1001), VideoCodec::H264);
+    let Ok(mut encoder) = MuxedEncoder::create(path.to_string_lossy().to_string(), config) else {
+        eprintln!("H.264 encoder unavailable; skipping fractional frame rate test");
+        return;
+    };
+    for pts in 0..30 {
+        encoder
+            .write_video_frame(&frame(32, 24, pts))
+            .expect("write frame");
+    }
+    encoder.finish().expect("finish encode");
+
+    let input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
+    let rate = input.media_info().video_streams[0].avg_frame_rate;
+    assert_eq!(rate.numerator * 1001, rate.denominator * 30_000);
 
     let _ = fs::remove_file(path);
 }

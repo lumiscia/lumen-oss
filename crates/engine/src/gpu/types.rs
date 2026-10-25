@@ -69,6 +69,12 @@ impl FramePortRef {
     }
 }
 
+/// TimeRemap nodes traversed from the media output to reach a compiled node instance.
+///
+/// A node reached through different remap paths is compiled once per path, so the path (not the
+/// absolute frame) identifies its resources across every frame bound to the same plan.
+pub type TimeRemapPath = Vec<NodeId>;
+
 pub trait GpuCompiledNode: std::fmt::Debug + Send + Sync {
     fn node_id(&self) -> NodeId;
 
@@ -84,7 +90,7 @@ pub struct CompiledComposition {
     pub plan: lumen_gpu::RenderPlan,
     pub output: RasterHandle,
     pub node_outputs: HashMap<PortRef, CompiledOutput>,
-    pub compiled_nodes: HashMap<NodeId, Box<dyn GpuCompiledNode>>,
+    pub compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
 }
 
 #[derive(Debug, Clone, Default)]

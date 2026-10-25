@@ -42,6 +42,9 @@ pub struct TransformParams {
     /// Vertical pivot point in pixels.
     #[meta(name = "Pivot Y", step = 1)]
     pub pivot_y: f64,
+    /// Uses the pivot as given; when off, a (0, 0) pivot means the source centre.
+    #[meta(name = "Custom pivot")]
+    pub custom_pivot: bool,
     /// Sampling filter used when transforming.
     #[meta(kind = "enum", enum_type = TransformSampling)]
     pub sampling: TransformSampling,
@@ -57,6 +60,7 @@ impl Default for TransformParams {
             rotate: 0.0,
             pivot_x: 0.0,
             pivot_y: 0.0,
+            custom_pivot: false,
             sampling: TransformSampling::Linear,
         }
     }
@@ -105,6 +109,7 @@ impl GpuCompileNode for Transform {
         ctx.register_compiled_node(CompiledTransform {
             node_id: self.id,
             params: self.params.clone(),
+            source_size: source.domain.storage_size,
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -122,6 +127,7 @@ impl GpuCompileNode for Transform {
 struct CompiledTransform {
     node_id: NodeId,
     params: TransformParamsDelegate,
+    source_size: lumen_gpu::Size,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -135,15 +141,51 @@ impl GpuCompiledNode for CompiledTransform {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
+        let pivot = resolve_pivot(
+            evaluated.custom_pivot,
+            [evaluated.pivot_x as f32, evaluated.pivot_y as f32],
+            self.source_size,
+        );
         let params = compiler::TransformParams {
             scale: [evaluated.scale_x as f32, evaluated.scale_y as f32],
             translate: [evaluated.translate_x as f32, evaluated.translate_y as f32],
-            pivot: [evaluated.pivot_x as f32, evaluated.pivot_y as f32],
+            pivot,
             rotate_radians: (evaluated.rotate as f32).to_radians(),
             sampling: evaluated.sampling as u32,
             _pad: [0; 4],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
+    }
+}
+
+/// Without a custom pivot, a pivot of (0, 0) within 1e-6 selects the source centre.
+fn resolve_pivot(custom_pivot: bool, pivot: [f32; 2], source_size: lumen_gpu::Size) -> [f32; 2] {
+    if custom_pivot || pivot.iter().any(|component| component.abs() > 0.000001) {
+        pivot
+    } else {
+        [
+            source_size.width as f32 * 0.5,
+            source_size.height as f32 * 0.5,
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_pivot;
+
+    #[test]
+    fn legacy_pivot_fallback_tolerates_near_zero() {
+        let size = lumen_gpu::Size {
+            width: 8,
+            height: 4,
+        };
+        assert_eq!(resolve_pivot(false, [0.0000001, 0.0], size), [4.0, 2.0]);
+        assert_eq!(resolve_pivot(false, [0.0, 0.0001], size), [0.0, 0.0001]);
+        assert_eq!(
+            resolve_pivot(true, [0.0000001, 0.0], size),
+            [0.0000001, 0.0]
+        );
     }
 }

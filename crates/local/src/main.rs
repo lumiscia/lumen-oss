@@ -27,8 +27,8 @@ use lumen_engine::{
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_ffmpeg::EncodeMode;
 use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, SampleFormat,
-    VideoCodec, VideoEncoderConfig,
+    AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, Rational,
+    SampleFormat, VideoCodec, VideoEncoderConfig,
 };
 use lumen_ffmpeg::{GpuBackend, gpu_texture_encode_support};
 
@@ -378,7 +378,7 @@ impl LumenFfmpegEncoder {
             _ => VideoCodec::H264,
         };
         let mut config =
-            VideoEncoderConfig::cpu_rgba(width, height, fps.round().max(1.0) as u32, codec);
+            VideoEncoderConfig::cpu_rgba(width, height, Rational::from_fps(f64::from(fps))?, codec);
         config.encoder_name = Some(encoder.to_string());
         config.bit_rate = 14_000_000;
         let audio = include_audio
@@ -821,7 +821,7 @@ fn render_video_gpu_videotoolbox(
     let mut config = VideoEncoderConfig::cpu_rgba(
         width,
         height,
-        composition.timeline.fps.round().max(1.0) as u32,
+        Rational::from_fps(f64::from(composition.timeline.fps))?,
         if encoder.starts_with("hevc") {
             VideoCodec::Hevc
         } else {

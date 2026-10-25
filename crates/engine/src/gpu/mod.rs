@@ -35,5 +35,5 @@ pub use target::{CudaNvencTarget, CudaNvencTargetPool};
 pub use target::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 pub use types::{
     AlphaMode, BoundFrame, CompiledComposition, CompiledOutput, FramePortRef, GpuCompiledNode,
-    MediaTextureKey, RasterHandle, RasterMetadata,
+    MediaTextureKey, RasterHandle, RasterMetadata, TimeRemapPath,
 };

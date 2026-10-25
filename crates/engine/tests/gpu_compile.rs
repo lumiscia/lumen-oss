@@ -28,7 +28,7 @@ use lumen_engine::{
             opacity::{Opacity, OpacityParamsDelegate},
             resize::{Resize, ResizeMode, ResizeParamsDelegate, ResizeSampling},
             time_remap::{TimeRemap, TimeRemapParamsDelegate},
-            transform::{Transform, TransformParamsDelegate},
+            transform::{Transform, TransformParamsDelegate, TransformSampling},
         },
         source::{
             background::{Background, BackgroundParamsDelegate},
@@ -961,6 +961,105 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
 }
 
 #[test]
+fn time_remap_binds_shared_source_once_per_frame_branch() {
+    let solid_id = NodeId::new(1);
+    let exposure = NodeId::new(2);
+    let time_remap = NodeId::new(3);
+    let merge = NodeId::new(4);
+    let output = NodeId::new(5);
+    let exposure_ref = PortRef::new(exposure, "output".to_string());
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(solid_id, solid(solid_id, [64, 128, 255, 255]));
+    graph.nodes.insert(
+        exposure,
+        NodeKind::Exposure(Exposure {
+            id: exposure,
+            params: ExposureParamsDelegate {
+                exposure: Deferred::Expr(lumen_engine::expr::Expression::parse("frame").unwrap()),
+                contrast: Deferred::value(1.0),
+                offset: Deferred::value(0.0),
+            },
+            source: PortRef::new(solid_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        time_remap,
+        NodeKind::TimeRemap(TimeRemap {
+            id: time_remap,
+            params: TimeRemapParamsDelegate {
+                frame: Deferred::value(8.0),
+                loop_enabled: Deferred::value(false),
+                loop_start: Deferred::value(0),
+                loop_end: Deferred::value(0),
+                ..Default::default()
+            },
+            source: exposure_ref.clone(),
+        }),
+    );
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            base: exposure_ref,
+            overlay: PortRef::new(time_remap, "output".to_string()),
+            ..Merge::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let compiled =
+        CompileContext::with_frame(&composition, 2, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+            .compile()
+            .unwrap();
+    let exposure_buffers = compiled
+        .plan
+        .params()
+        .iter()
+        .filter_map(|param| match param.target {
+            lumen_gpu::ParamTarget::Buffer(buffer)
+                if param.key.owner == lumen_gpu::NodeKey(exposure.0) =>
+            {
+                Some(buffer)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(exposure_buffers.len(), 2);
+
+    // Bind at a different frame than the compile frame, as cached plans are reused across frames.
+    let bound = FrameBindContext::new(&composition, 3)
+        .bind(&compiled)
+        .unwrap();
+    let update = bound.frame_update();
+    let mut exposure_values = exposure_buffers
+        .iter()
+        .map(|buffer| {
+            let data = update
+                .uploads()
+                .iter()
+                .find_map(|upload| match upload {
+                    lumen_gpu::Upload::Buffer { id, data, .. } if id == buffer => Some(*data),
+                    _ => None,
+                })
+                .expect("every exposure instance must be bound");
+            f32::from_ne_bytes(data[0..4].try_into().unwrap())
+        })
+        .collect::<Vec<_>>();
+    exposure_values.sort_by(f32::total_cmp);
+
+    assert_eq!(exposure_values, [3.0, 8.0]);
+}
+
+#[test]
 fn opacity_compiles_and_binds_animated_multiplier() {
     let solid_id = NodeId::new(1);
     let opacity = NodeId::new(2);
@@ -1521,6 +1620,164 @@ fn path_fill_pixels_are_independent_of_stroke_trim_range() {
             .any(|pixel| pixel[3] > 0 && pixel[3] < 255),
         "subpixel path should exercise antialiased fill coverage"
     );
+}
+
+#[test]
+fn identity_transform_with_linear_sampling_reproduces_input() {
+    let gradient = NodeId::new(1);
+    let transform = NodeId::new(2);
+    let output = NodeId::new(3);
+    let source = || {
+        NodeKind::Background(Background {
+            id: gradient,
+            params: BackgroundParamsDelegate {
+                paint: Paint::Gradient(GradientPaint {
+                    kind: PaintKind::LinearGradient,
+                    stops: vec![
+                        GradientStop {
+                            offset: 0.0,
+                            color: [255, 0, 0, 255],
+                        },
+                        GradientStop {
+                            offset: 1.0,
+                            color: [0, 0, 255, 255],
+                        },
+                    ],
+                    ..Default::default()
+                })
+                .into(),
+                width: Deferred::value(8),
+                height: Deferred::value(4),
+                paint_supersample: Deferred::value(false),
+            },
+        })
+    };
+    let render = |with_transform: bool| {
+        let mut graph = Graph::new();
+        graph.nodes.insert(gradient, source());
+        if with_transform {
+            graph.nodes.insert(
+                transform,
+                NodeKind::Transform(Transform {
+                    id: transform,
+                    params: TransformParamsDelegate {
+                        sampling: TransformSampling::Linear.into(),
+                        ..Default::default()
+                    },
+                    source: PortRef::new(gradient, "output".to_string()),
+                }),
+            );
+        }
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(
+                    if with_transform { transform } else { gradient },
+                    "output".to_string(),
+                ),
+            }),
+        );
+        // The renderer caches compiled plans, so each composition gets its own.
+        let mut renderer = gpu_composition_renderer()?;
+        Some(render_rgba8(
+            &mut renderer,
+            &test_composition(graph),
+            0,
+            &EmptyMediaStore,
+        ))
+    };
+    let Some(input) = render(false) else {
+        return;
+    };
+    let Some(transformed) = render(true) else {
+        return;
+    };
+
+    assert_eq!(transformed, input);
+}
+
+#[test]
+fn linear_resize_keeps_source_edges_opaque_and_identity_reproduces_input() {
+    let background = NodeId::new(1);
+    let resize = NodeId::new(2);
+    let output = NodeId::new(3);
+    let render = |(source_width, source_height): (u32, u32), use_resize: bool| {
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            background,
+            NodeKind::Background(Background {
+                id: background,
+                params: BackgroundParamsDelegate {
+                    paint: Paint::Gradient(GradientPaint {
+                        kind: PaintKind::LinearGradient,
+                        stops: vec![
+                            GradientStop {
+                                offset: 0.0,
+                                color: [255, 0, 0, 255],
+                            },
+                            GradientStop {
+                                offset: 1.0,
+                                color: [0, 0, 255, 255],
+                            },
+                        ],
+                        ..Default::default()
+                    })
+                    .into(),
+                    width: Deferred::value(source_width),
+                    height: Deferred::value(source_height),
+                    paint_supersample: Deferred::value(false),
+                },
+            }),
+        );
+        if use_resize {
+            graph.nodes.insert(
+                resize,
+                NodeKind::Resize(Resize {
+                    id: resize,
+                    params: ResizeParamsDelegate {
+                        width: Deferred::value(8),
+                        height: Deferred::value(4),
+                        mode: ResizeMode::Stretch.into(),
+                        sampling: ResizeSampling::Linear.into(),
+                    },
+                    source: PortRef::new(background, "output".to_string()),
+                }),
+            );
+        }
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(
+                    if use_resize { resize } else { background },
+                    "output".to_string(),
+                ),
+            }),
+        );
+        let mut renderer = gpu_composition_renderer()?;
+        Some(render_rgba8(
+            &mut renderer,
+            &test_composition(graph),
+            0,
+            &EmptyMediaStore,
+        ))
+    };
+
+    let Some(input) = render((8, 4), false) else {
+        return;
+    };
+    let Some(identity) = render((8, 4), true) else {
+        return;
+    };
+    assert_eq!(identity, input);
+
+    // The 4x2 source maps the bottom-right output centre to (3.75, 1.75).
+    let Some(upscaled) = render((4, 2), true) else {
+        return;
+    };
+    assert_eq!(upscaled.len(), 8 * 4 * 4);
+    assert!(upscaled.chunks_exact(4).all(|pixel| pixel[3] == 255));
 }
 
 fn filled_path_composition() -> Composition {
