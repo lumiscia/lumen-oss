@@ -23,7 +23,7 @@ use crate::{
 };
 
 pub use property::parse_color;
-pub(crate) use property::parse_property;
+pub(crate) use property::{StringParam, classify_string, parse_property};
 
 /// Parse a JSON string into a [`Composition`].
 pub fn parse(json: &str) -> Result<Composition> {

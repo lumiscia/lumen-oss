@@ -8,18 +8,44 @@ use crate::{
     node::{PropertyDef, PropertyExpression, PropertyKind, PropertyValue},
 };
 
+/// How a JSON string parameter starting with `=` is interpreted.
+pub(crate) enum StringParam<'a> {
+    /// `=source`: an expression.
+    Expression(&'a str),
+    /// `==text`: the literal string `=text`.
+    EscapedLiteral(&'a str),
+}
+
+/// Classifies strings with a leading `=`; other strings return `None`.
+pub(crate) fn classify_string(text: &str) -> Option<StringParam<'_>> {
+    let rest = text.strip_prefix('=')?;
+    Some(if rest.starts_with('=') {
+        StringParam::EscapedLiteral(rest)
+    } else {
+        StringParam::Expression(rest)
+    })
+}
+
+/// Converts a JSON param to a property. A string starting with `=` is an
+/// expression, and a leading `==` escapes a literal string starting with `=`.
 pub fn parse_property(
     val: &Value,
     def: Option<&PropertyDef>,
     name: &str,
 ) -> Result<PropertyExpression> {
-    if let Some(s) = val.as_str()
-        && let Some(expr_src) = s.strip_prefix('=')
-    {
-        let expr = Expression::parse(expr_src)
-            .map_err(|e| anyhow::anyhow!("expression parse error for `{name}`: {e}"))?;
-        return Ok(PropertyExpression::Expr(expr));
-    }
+    let escaped;
+    let val = match val.as_str().and_then(classify_string) {
+        Some(StringParam::Expression(source)) => {
+            let expr = Expression::parse(source)
+                .map_err(|e| anyhow::anyhow!("expression parse error for `{name}`: {e}"))?;
+            return Ok(PropertyExpression::Expr(expr));
+        }
+        Some(StringParam::EscapedLiteral(text)) => {
+            escaped = Value::String(text.to_string());
+            &escaped
+        }
+        None => val,
+    };
 
     let value = if let Some(def) = def {
         parse_typed(val, def, name)?
@@ -194,5 +220,16 @@ mod tests {
         let v = serde_json::json!("=frame * 2");
         let p = parse_property(&v, None, "test").unwrap();
         assert!(matches!(p, PropertyExpression::Expr(_)));
+    }
+
+    #[test]
+    fn leading_double_equals_is_a_literal_string() {
+        for (input, expected) in [("==wow", "=wow"), ("===", "=="), ("==", "=")] {
+            let p = parse_property(&serde_json::json!(input), None, "test").unwrap();
+            assert!(
+                matches!(&p, PropertyExpression::Value(PropertyValue::String(s)) if s == expected),
+                "{input}"
+            );
+        }
     }
 }

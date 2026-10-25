@@ -176,13 +176,17 @@ where
     where
         D: serde::Deserializer<'de>,
     {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        if let Some(text) = value.as_str()
-            && let Some(source) = text.strip_prefix('=')
-        {
-            return Expression::parse(source)
-                .map(Self::Expr)
-                .map_err(serde::de::Error::custom);
+        use crate::json::{StringParam, classify_string};
+
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        match value.as_str().and_then(classify_string) {
+            Some(StringParam::Expression(source)) => {
+                return Expression::parse(source)
+                    .map(Self::Expr)
+                    .map_err(serde::de::Error::custom);
+            }
+            Some(StringParam::EscapedLiteral(text)) => value = serde_json::Value::from(text),
+            None => {}
         }
         T::from_json_value(&value)
             .map(Self::Value)
@@ -819,5 +823,16 @@ mod tests {
         };
         assert_eq!(path.as_deref(), Some("4.position"));
         assert_eq!(details, "vec2 expects numeric arguments");
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn deserializes_leading_equals_as_expression_or_escaped_literal() {
+        for (input, expected) in [("==wow", "=wow"), ("===", "==")] {
+            let deferred: Deferred<String> = serde_json::from_value(input.into()).unwrap();
+            assert!(matches!(deferred, Deferred::Value(ref s) if s == expected));
+        }
+        let deferred: Deferred<String> = serde_json::from_value("=frame".into()).unwrap();
+        assert!(matches!(deferred, Deferred::Expr(_)));
     }
 }
