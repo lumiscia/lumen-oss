@@ -115,6 +115,7 @@ export interface LumenMediaTarget {
   hasVideoFrame(streamId: string, frame: number): boolean;
   setFont?(fontFamily: string, bytes: Uint8Array): void;
   setImage(imageId: string, width: number, height: number, rgba: Uint8Array): void;
+  setVideoFrameCacheBytes?(bytes: number): void;
   setVideoMetadata(
     streamId: string,
     width: number,
@@ -143,6 +144,7 @@ export interface NativeVideoFrameTarget extends LumenMediaTarget {
 
 export interface LumenMediaBridgeOptions {
   blobCacheBytes?: number;
+  /** Byte budget shared by all decoded video frames cached in the wasm media store. */
   frameCacheCapacity?: number;
   formats?: InputFormat[];
   urlCacheBytes?: number;
