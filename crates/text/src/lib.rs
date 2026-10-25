@@ -621,40 +621,59 @@ impl Default for AtlasConfig {
     }
 }
 
+/// etagere indexes its items with `u16` and wraps silently past that. Each
+/// allocation uses at most two items plus one per shelf, so this keeps any
+/// atlas up to 4096 pixels tall well within range.
+const MAX_ATLAS_GLYPHS: usize = 16 * 1024;
+
 #[derive(Clone)]
-struct AtlasAllocator(etagere::AtlasAllocator);
+struct AtlasAllocator {
+    allocator: etagere::AtlasAllocator,
+    allocations: usize,
+}
 
 impl std::fmt::Debug for AtlasAllocator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AtlasAllocator")
-            .field("size", &self.0.size())
-            .field("allocated_space", &self.0.allocated_space())
+            .field("size", &self.allocator.size())
+            .field("allocated_space", &self.allocator.allocated_space())
+            .field("allocations", &self.allocations)
             .finish()
     }
 }
 
 impl AtlasAllocator {
     fn new(config: AtlasConfig) -> Self {
-        Self(etagere::AtlasAllocator::new(size2(
-            config.width.clamp(1, u16::MAX.into()) as i32,
-            config.height.clamp(1, u16::MAX.into()) as i32,
-        )))
+        Self {
+            allocator: etagere::AtlasAllocator::new(size2(
+                config.width.clamp(1, 4096) as i32,
+                config.height.clamp(1, 4096) as i32,
+            )),
+            allocations: 0,
+        }
     }
 
+    /// Returns `None` when the atlas is out of space or at [`MAX_ATLAS_GLYPHS`].
     fn allocate(&mut self, size: [u32; 2]) -> Option<(AllocId, [u32; 2])> {
+        if self.allocations >= MAX_ATLAS_GLYPHS {
+            return None;
+        }
         let width = i32::try_from(size[0].max(1)).ok()?;
         let height = i32::try_from(size[1].max(1)).ok()?;
-        let allocation = self.0.allocate(size2(width, height))?;
+        let allocation = self.allocator.allocate(size2(width, height))?;
+        self.allocations += 1;
         let min = allocation.rectangle.min;
         Some((allocation.id, [min.x as u32, min.y as u32]))
     }
 
     fn deallocate(&mut self, id: AllocId) {
-        self.0.deallocate(id);
+        self.allocator.deallocate(id);
+        self.allocations -= 1;
     }
 
     fn clear(&mut self) {
-        self.0.clear();
+        self.allocator.clear();
+        self.allocations = 0;
     }
 }
 
@@ -1210,6 +1229,42 @@ mod tests {
                 previous = rendered_y;
             }
         }
+    }
+
+    #[test]
+    fn atlas_evicts_before_running_out_of_allocator_ids() {
+        let mut system = TextSystem::new();
+        let template = system.layout(&TextLayoutRequest::new("A")).glyphs[0].key.0;
+        let mut atlas = RasterAtlas::new(AtlasConfig {
+            width: 512,
+            height: 512,
+            px_range: 1,
+        });
+        let mut stale = None;
+        for index in 0..70_000_u32 {
+            if index % 1000 == 0 {
+                atlas.frame += 1;
+                stale = None;
+            }
+            let key = GlyphKey(CacheKey {
+                font_size_bits: index,
+                ..template
+            });
+            let (alloc, slot) = atlas.allocate([1, 1], &mut stale).unwrap();
+            let placed = PlacedGlyph {
+                alloc,
+                entry: AtlasEntry::new(atlas.config, slot, 0, [1, 1]),
+                placement: GlyphPlacement {
+                    left: 0,
+                    top: 0,
+                    width: 1,
+                    height: 1,
+                    color: false,
+                },
+            };
+            atlas.insert(key, Some(placed));
+        }
+        assert_eq!(atlas.len(), MAX_ATLAS_GLYPHS);
     }
 
     #[test]
