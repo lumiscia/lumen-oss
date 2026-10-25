@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell, RefMut};
 
 use lumen_engine::{
     composition::Composition,
@@ -8,12 +8,9 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    debug_error, install_panic_hook,
+    install_panic_hook,
     media::WasmMediaStore,
-    renderer::{
-        RenderCanvas, SurfaceCompositionRenderer, collect_requirement_window,
-        create_surface_composition_renderer,
-    },
+    renderer::{SurfaceCompositionRenderer, collect_requirement_window},
     types::FrameRequirementsPayload,
     utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
 };
@@ -44,16 +41,23 @@ impl RenderMetrics {
     }
 }
 
+/// The GPU device is created once per controller and kept across composition and media changes.
+enum GpuSlot {
+    Empty,
+    Pending,
+    Ready(Box<SurfaceCompositionRenderer>),
+}
+
 struct PreviewState {
     composition: Option<Composition>,
-    renderer: Option<SurfaceCompositionRenderer>,
+    gpu: GpuSlot,
+    gpu_generation: u64,
     width: usize,
     height: usize,
     duration_frames: u32,
     fps: f64,
     current_frame: u32,
     lookahead_count: u32,
-    render_generation: u64,
     playing: bool,
     dirty: bool,
     last_tick_ms: Option<f64>,
@@ -66,14 +70,14 @@ impl Default for PreviewState {
     fn default() -> Self {
         Self {
             composition: None,
-            renderer: None,
+            gpu: GpuSlot::Empty,
+            gpu_generation: 0,
             width: 0,
             height: 0,
             duration_frames: 0,
             fps: 30.0,
             current_frame: 0,
             lookahead_count: 8,
-            render_generation: 0,
             playing: false,
             dirty: false,
             last_tick_ms: None,
@@ -85,10 +89,11 @@ impl Default for PreviewState {
 }
 
 impl PreviewState {
+    /// Unloads everything and destroys the GPU device; an in-flight device request is discarded.
     fn clear(&mut self) {
         self.composition = None;
-        self.renderer = None;
-        self.render_generation = self.render_generation.wrapping_add(1);
+        self.gpu = GpuSlot::Empty;
+        self.gpu_generation = self.gpu_generation.wrapping_add(1);
         self.width = 0;
         self.height = 0;
         self.duration_frames = 0;
@@ -103,6 +108,13 @@ impl PreviewState {
 
     fn ready(&self) -> bool {
         self.composition.is_some()
+    }
+
+    fn invalidate_renderer(&mut self) {
+        if let GpuSlot::Ready(renderer) = &mut self.gpu {
+            renderer.invalidate();
+        }
+        self.dirty = true;
     }
 
     fn target_frame_duration_ms(&self) -> f64 {
@@ -158,22 +170,17 @@ impl LumenPreviewController {
         let composition =
             composition_json_to_composition(composition_json).map_err(|e| JsValue::from_str(&e))?;
 
-        let mut state = self
-            .state
-            .try_borrow_mut()
-            .map_err(|_| JsValue::from_str("preview controller is busy"))?;
+        let mut state = self.state_mut()?;
         state.width = composition.render_settings.width as usize;
         state.height = composition.render_settings.height as usize;
         state.duration_frames = composition.timeline.duration_frames;
         state.fps = f64::from(composition.timeline.fps.max(1.0));
         state.current_frame = 0;
         state.playing = false;
-        state.dirty = true;
         state.last_tick_ms = None;
         state.frame_accumulator_ms = 0.0;
         state.render_metrics.reset();
-        state.renderer = None;
-        state.render_generation = state.render_generation.wrapping_add(1);
+        state.invalidate_renderer();
         state.composition = Some(composition);
         state.composition_sync_ms = 0.0;
         tracing::debug!(
@@ -188,10 +195,9 @@ impl LumenPreviewController {
     }
 
     #[wasm_bindgen(js_name = "setLookaheadCount")]
-    pub fn set_lookahead_count(&self, lookahead_count: u32) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.lookahead_count = lookahead_count;
-        }
+    pub fn set_lookahead_count(&self, lookahead_count: u32) -> Result<(), JsValue> {
+        self.state_mut()?.lookahead_count = lookahead_count;
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = "setLogLevel")]
@@ -201,117 +207,89 @@ impl LumenPreviewController {
         Ok(())
     }
 
-    pub fn clear(&self) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.clear();
-        }
-        let _ = self.media.clear();
+    /// Unloads the composition and media and destroys the GPU device.
+    pub fn clear(&self) -> Result<(), JsValue> {
+        self.state_mut()?.clear();
+        self.media.clear().map_err(JsValue::from_str)
     }
 
-    pub fn play(&self) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.playing = true;
-            state.last_tick_ms = None;
-        }
+    pub fn play(&self) -> Result<(), JsValue> {
+        let mut state = self.state_mut()?;
+        state.playing = true;
+        state.last_tick_ms = None;
+        Ok(())
     }
 
-    pub fn pause(&self) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.playing = false;
-            state.last_tick_ms = None;
-        }
+    pub fn pause(&self) -> Result<(), JsValue> {
+        let mut state = self.state_mut()?;
+        state.playing = false;
+        state.last_tick_ms = None;
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = "togglePlay")]
-    pub fn toggle_play(&self) -> bool {
-        let Ok(mut state) = self.state.try_borrow_mut() else {
-            return false;
-        };
+    pub fn toggle_play(&self) -> Result<bool, JsValue> {
+        let mut state = self.state_mut()?;
         state.playing = !state.playing;
         state.last_tick_ms = None;
-        state.playing
+        Ok(state.playing)
     }
 
     #[wasm_bindgen(js_name = "isPlaying")]
-    pub fn is_playing(&self) -> bool {
-        self.state
-            .try_borrow()
-            .map(|state| state.playing)
-            .unwrap_or(false)
+    pub fn is_playing(&self) -> Result<bool, JsValue> {
+        Ok(self.state()?.playing)
     }
 
     #[wasm_bindgen(js_name = "setFrame")]
-    pub fn set_frame(&self, frame: u32) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.current_frame = state.clamp_frame(frame);
-            state.dirty = state.ready();
-            state.last_tick_ms = None;
-            state.frame_accumulator_ms = 0.0;
-        }
+    pub fn set_frame(&self, frame: u32) -> Result<(), JsValue> {
+        let mut state = self.state_mut()?;
+        state.current_frame = state.clamp_frame(frame);
+        state.dirty = state.ready();
+        state.last_tick_ms = None;
+        state.frame_accumulator_ms = 0.0;
+        pin_frame(&state, &self.media, state.current_frame);
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = "currentFrame")]
-    pub fn current_frame(&self) -> u32 {
-        self.state
-            .try_borrow()
-            .map(|state| state.current_frame)
-            .unwrap_or(0)
+    pub fn current_frame(&self) -> Result<u32, JsValue> {
+        Ok(self.state()?.current_frame)
     }
 
     #[wasm_bindgen(js_name = "targetFrameForTimeMs")]
-    pub fn target_frame_for_time_ms(&self, time_ms: f64) -> u32 {
-        let Ok(state) = self.state.try_borrow() else {
-            return 0;
-        };
+    pub fn target_frame_for_time_ms(&self, time_ms: f64) -> Result<u32, JsValue> {
+        let state = self.state()?;
         if state.duration_frames == 0 {
-            return 0;
+            return Ok(0);
         }
         let frame = ((time_ms.max(0.0) / 1_000.0) * state.fps.max(1.0)).floor() as u32;
-        frame.min(state.duration_frames - 1)
+        Ok(frame.min(state.duration_frames - 1))
     }
 
-    pub fn width(&self) -> u32 {
-        self.state
-            .try_borrow()
-            .map(|state| state.width as u32)
-            .unwrap_or(0)
+    pub fn width(&self) -> Result<u32, JsValue> {
+        Ok(self.state()?.width as u32)
     }
 
-    pub fn height(&self) -> u32 {
-        self.state
-            .try_borrow()
-            .map(|state| state.height as u32)
-            .unwrap_or(0)
+    pub fn height(&self) -> Result<u32, JsValue> {
+        Ok(self.state()?.height as u32)
     }
 
     #[wasm_bindgen(js_name = "durationFrames")]
-    pub fn duration_frames(&self) -> u32 {
-        self.state
-            .try_borrow()
-            .map(|state| state.duration_frames)
-            .unwrap_or(0)
+    pub fn duration_frames(&self) -> Result<u32, JsValue> {
+        Ok(self.state()?.duration_frames)
     }
 
-    pub fn fps(&self) -> f64 {
-        self.state
-            .try_borrow()
-            .map(|state| state.fps)
-            .unwrap_or(0.0)
+    pub fn fps(&self) -> Result<f64, JsValue> {
+        Ok(self.state()?.fps)
     }
 
     #[wasm_bindgen(js_name = "targetFrameDurationMs")]
-    pub fn target_frame_duration_ms(&self) -> f64 {
-        self.state
-            .try_borrow()
-            .map(|state| state.target_frame_duration_ms())
-            .unwrap_or(0.0)
+    pub fn target_frame_duration_ms(&self) -> Result<f64, JsValue> {
+        Ok(self.state()?.target_frame_duration_ms())
     }
 
     pub fn snapshot(&self) -> Result<String, JsValue> {
-        let state = self
-            .state
-            .try_borrow()
-            .map_err(|_| JsValue::from_str("preview controller is busy"))?;
+        let state = self.state()?;
         let snapshot = PreviewSnapshot {
             width: state.width as u32,
             height: state.height as u32,
@@ -330,12 +308,11 @@ impl LumenPreviewController {
         serde_json::to_string(&snapshot).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Advances playback and renders when the current frame changed. Returns whether a frame was
+    /// presented; it is `false` while another call is still creating the GPU device.
     pub async fn tick(&self, now_ms: f64, canvas: JsValue) -> Result<bool, JsValue> {
-        let should_render = {
-            let mut state = self
-                .state
-                .try_borrow_mut()
-                .map_err(|_| JsValue::from_str("preview controller is busy"))?;
+        {
+            let mut state = self.state_mut()?;
             if !state.ready() {
                 state.last_tick_ms = Some(now_ms);
                 return Ok(false);
@@ -379,51 +356,38 @@ impl LumenPreviewController {
             if !state.dirty || !frame_ready(&state, &self.media, state.current_frame)? {
                 return Ok(false);
             }
-            true
-        };
-
-        if should_render {
-            render_preview_frame(&self.state, &self.media, canvas).await?;
-            return Ok(true);
         }
-        Ok(false)
+
+        self.render_current_frame(&canvas).await
     }
 
     #[wasm_bindgen(js_name = "renderNow")]
     pub async fn render_now(&self, canvas: JsValue) -> Result<(), JsValue> {
         {
-            let mut state = self
-                .state
-                .try_borrow_mut()
-                .map_err(|_| JsValue::from_str("preview controller is busy"))?;
+            let mut state = self.state_mut()?;
             if !state.ready() {
                 return Err(JsValue::from_str("composition not loaded"));
             }
             state.dirty = true;
         }
-        render_preview_frame(&self.state, &self.media, canvas).await
+        self.render_current_frame(&canvas).await.map(|_| ())
     }
 
     #[wasm_bindgen(js_name = "setCompositionSyncMs")]
-    pub fn set_composition_sync_ms(&self, elapsed_ms: f64) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.composition_sync_ms = elapsed_ms.max(0.0);
-        }
+    pub fn set_composition_sync_ms(&self, elapsed_ms: f64) -> Result<(), JsValue> {
+        self.state_mut()?.composition_sync_ms = elapsed_ms.max(0.0);
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = "recordRenderTiming")]
-    pub fn record_render_timing(&self, elapsed_ms: f64) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.render_metrics.update(elapsed_ms.max(0.0));
-        }
+    pub fn record_render_timing(&self, elapsed_ms: f64) -> Result<(), JsValue> {
+        self.state_mut()?.render_metrics.update(elapsed_ms.max(0.0));
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = "frameRequirements")]
     pub fn frame_requirements(&self, frame: u32) -> Result<String, JsValue> {
-        let state = self
-            .state
-            .try_borrow()
-            .map_err(|_| JsValue::from_str("preview controller is busy"))?;
+        let state = self.state()?;
         validate_frame(&state, frame)?;
         let composition = state
             .composition
@@ -437,10 +401,7 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "frameRequirementsWindow")]
     pub fn frame_requirements_window(&self, frame: u32) -> Result<String, JsValue> {
-        let state = self
-            .state
-            .try_borrow()
-            .map_err(|_| JsValue::from_str("preview controller is busy"))?;
+        let state = self.state()?;
         validate_frame(&state, frame)?;
         let composition = state
             .composition
@@ -454,15 +415,13 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "clearMedia")]
     pub fn clear_media(&self) -> Result<(), JsValue> {
         self.media.clear().map_err(JsValue::from_str)?;
-        self.reset_renderer();
-        Ok(())
+        self.reset_renderer()
     }
 
     #[wasm_bindgen(js_name = "clearVideos")]
     pub fn clear_videos(&self) -> Result<(), JsValue> {
         self.media.clear_video_frames().map_err(JsValue::from_str)?;
-        self.mark_dirty();
-        Ok(())
+        self.mark_dirty()
     }
 
     #[wasm_bindgen(js_name = "clearVideoSource")]
@@ -470,8 +429,7 @@ impl LumenPreviewController {
         self.media
             .clear_video_frames_for_stream(stream_id)
             .map_err(JsValue::from_str)?;
-        self.mark_dirty();
-        Ok(())
+        self.mark_dirty()
     }
 
     #[wasm_bindgen(js_name = "removeImageSource")]
@@ -479,8 +437,7 @@ impl LumenPreviewController {
         self.media
             .remove_image(image_id)
             .map_err(JsValue::from_str)?;
-        self.reset_renderer();
-        Ok(())
+        self.reset_renderer()
     }
 
     #[wasm_bindgen(js_name = "removeVideoSource")]
@@ -488,8 +445,7 @@ impl LumenPreviewController {
         self.media
             .remove_video(stream_id)
             .map_err(JsValue::from_str)?;
-        self.reset_renderer();
-        Ok(())
+        self.reset_renderer()
     }
 
     #[wasm_bindgen(js_name = "removeFontFamily")]
@@ -497,8 +453,7 @@ impl LumenPreviewController {
         self.media
             .remove_font(font_family)
             .map_err(JsValue::from_str)?;
-        self.reset_renderer();
-        Ok(())
+        self.reset_renderer()
     }
 
     #[wasm_bindgen(js_name = "hasImage")]
@@ -516,13 +471,22 @@ impl LumenPreviewController {
         self.media.has_font(font_family)
     }
 
+    /// Sets the byte budget shared by all cached video frames; frames needed at the playhead are
+    /// kept even when they exceed it.
+    #[wasm_bindgen(js_name = "setVideoFrameCacheBytes")]
+    pub fn set_video_frame_cache_bytes(&self, bytes: u32) -> Result<(), JsValue> {
+        self.media
+            .set_video_frame_cache_bytes(bytes as usize)
+            .map_err(JsValue::from_str)
+    }
+
     #[wasm_bindgen(js_name = "setImage")]
     pub fn set_image(
         &self,
         image_id: &str,
         width: u32,
         height: u32,
-        rgba: &[u8],
+        rgba: Vec<u8>,
     ) -> Result<(), JsValue> {
         if width == 0 || height == 0 {
             return Err(JsValue::from_str("image dimensions must be > 0"));
@@ -530,22 +494,20 @@ impl LumenPreviewController {
         if !validate_rgba_len(width, height, rgba.len()) {
             return Err(JsValue::from_str("invalid image rgba buffer length"));
         }
-        let frame = image_frame_from_rgba(width, height, rgba.to_vec())
-            .map_err(|e| JsValue::from_str(&e))?;
+        let frame =
+            image_frame_from_rgba(width, height, rgba).map_err(|e| JsValue::from_str(&e))?;
         self.media
             .set_image(image_id.to_string(), frame)
             .map_err(JsValue::from_str)?;
-        self.reset_renderer();
-        Ok(())
+        self.reset_renderer()
     }
 
     #[wasm_bindgen(js_name = "setFont")]
-    pub fn set_font(&self, font_family: &str, data: &[u8]) -> Result<(), JsValue> {
+    pub fn set_font(&self, font_family: &str, data: Vec<u8>) -> Result<(), JsValue> {
         self.media
-            .set_font(font_family.to_string(), data.to_vec())
+            .set_font(font_family.to_string(), data)
             .map_err(JsValue::from_str)?;
-        self.reset_renderer();
-        Ok(())
+        self.reset_renderer()
     }
 
     #[wasm_bindgen(js_name = "setVideoFrame")]
@@ -555,7 +517,7 @@ impl LumenPreviewController {
         frame: u32,
         width: u32,
         height: u32,
-        rgba: &[u8],
+        rgba: Vec<u8>,
     ) -> Result<(), JsValue> {
         if width == 0 || height == 0 {
             return Err(JsValue::from_str("video frame dimensions must be > 0"));
@@ -563,13 +525,12 @@ impl LumenPreviewController {
         if !validate_rgba_len(width, height, rgba.len()) {
             return Err(JsValue::from_str("invalid video rgba buffer length"));
         }
-        let image = image_frame_from_rgba(width, height, rgba.to_vec())
-            .map_err(|e| JsValue::from_str(&e))?;
+        let image =
+            image_frame_from_rgba(width, height, rgba).map_err(|e| JsValue::from_str(&e))?;
         self.media
             .set_video_frame(stream_id.to_string(), frame, image)
             .map_err(JsValue::from_str)?;
-        self.mark_dirty();
-        Ok(())
+        self.mark_dirty()
     }
 
     #[wasm_bindgen(js_name = "setVideoMetadata")]
@@ -598,24 +559,95 @@ impl LumenPreviewController {
                 },
             )
             .map_err(JsValue::from_str)?;
-        self.reset_renderer();
-        Ok(())
+        self.reset_renderer()
     }
 }
 
+// State borrows are never held across an `.await`, so commands always apply, even while a
+// render is creating the GPU device.
 impl LumenPreviewController {
-    fn mark_dirty(&self) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.dirty = true;
-        }
+    fn state(&self) -> Result<Ref<'_, PreviewState>, JsValue> {
+        self.state
+            .try_borrow()
+            .map_err(|_| JsValue::from_str("preview controller is busy"))
     }
 
-    fn reset_renderer(&self) {
-        if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.renderer = None;
-            state.render_generation = state.render_generation.wrapping_add(1);
-            state.dirty = true;
+    fn state_mut(&self) -> Result<RefMut<'_, PreviewState>, JsValue> {
+        self.state
+            .try_borrow_mut()
+            .map_err(|_| JsValue::from_str("preview controller is busy"))
+    }
+
+    fn mark_dirty(&self) -> Result<(), JsValue> {
+        self.state_mut()?.dirty = true;
+        Ok(())
+    }
+
+    fn reset_renderer(&self) -> Result<(), JsValue> {
+        self.state_mut()?.invalidate_renderer();
+        Ok(())
+    }
+
+    /// Renders the latest state. The GPU device is requested without holding the state borrow;
+    /// if `clear` ran meanwhile the new device is destroyed and nothing is rendered.
+    async fn render_current_frame(&self, canvas: &JsValue) -> Result<bool, JsValue> {
+        let pending_generation = {
+            let mut state = self.state_mut()?;
+            match state.gpu {
+                GpuSlot::Ready(_) => None,
+                GpuSlot::Pending => return Ok(false),
+                GpuSlot::Empty => {
+                    state.gpu = GpuSlot::Pending;
+                    Some(state.gpu_generation)
+                }
+            }
+        };
+        if let Some(generation) = pending_generation {
+            tracing::debug!(target: "lumen_wasm", "create preview GPU device");
+            let created = SurfaceCompositionRenderer::new(canvas).await;
+            let mut state = self.state_mut()?;
+            if state.gpu_generation != generation {
+                return Ok(false);
+            }
+            state.gpu = match created {
+                Ok(renderer) => GpuSlot::Ready(Box::new(renderer)),
+                Err(error) => {
+                    state.gpu = GpuSlot::Empty;
+                    return Err(error);
+                }
+            };
         }
+
+        let mut guard = self.state_mut()?;
+        let frame = guard.current_frame;
+        pin_frame(&guard, &self.media, frame);
+        let state = &mut *guard;
+        let GpuSlot::Ready(renderer) = &mut state.gpu else {
+            return Ok(false);
+        };
+        let composition = state
+            .composition
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
+        tracing::trace!(target: "lumen_wasm", frame, "render preview frame");
+        let size = renderer.render_frame(
+            canvas,
+            composition,
+            frame,
+            state.lookahead_count,
+            &self.media,
+        )?;
+        state.width = size.width as usize;
+        state.height = size.height as usize;
+        state.dirty = false;
+        tracing::trace!(
+            target: "lumen_wasm",
+            frame,
+            width = state.width,
+            height = state.height,
+            "rendered preview frame"
+        );
+        Ok(true)
     }
 }
 
@@ -633,6 +665,16 @@ fn validate_frame(state: &PreviewState, frame: u32) -> Result<(), JsValue> {
         return Err(JsValue::from_str("frame index out of range"));
     }
     Ok(())
+}
+
+/// Keeps the video frames needed at `frame` out of cache eviction.
+fn pin_frame(state: &PreviewState, media: &WasmMediaStore, frame: u32) {
+    let Some(composition) = state.composition.as_ref() else {
+        return;
+    };
+    if let Ok(requirements) = collect_frame_requirements(composition, media, frame) {
+        let _ = media.pin_video_frames(&requirements.videos);
+    }
 }
 
 fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Result<bool, JsValue> {
@@ -664,100 +706,4 @@ fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Resu
         "checked frame readiness"
     );
     Ok(ready)
-}
-
-// The renderer is created from a read-only composition borrow. The wasm preview controller is
-// single-threaded and rejects re-entrant mutable access while that render is in flight.
-#[allow(clippy::await_holding_refcell_ref)]
-async fn render_preview_frame(
-    state_cell: &RefCell<PreviewState>,
-    media: &WasmMediaStore,
-    canvas: JsValue,
-) -> Result<(), JsValue> {
-    let canvas = RenderCanvas::from_js_value(&canvas)?;
-    let (mut renderer, frame, generation) = {
-        let mut state = state_cell
-            .try_borrow_mut()
-            .map_err(|_| JsValue::from_str("preview controller is busy"))?;
-        let frame = state.current_frame;
-        let generation = state.render_generation;
-        let renderer = state.renderer.take();
-        (renderer, frame, generation)
-    };
-    tracing::trace!(target: "lumen_wasm", frame, generation, "render preview frame");
-
-    let mut renderer = match renderer.take() {
-        Some(renderer) => {
-            tracing::trace!(target: "lumen_wasm", frame, "reuse preview surface renderer");
-            renderer
-        }
-        None => {
-            let state = state_cell
-                .try_borrow()
-                .map_err(|_| JsValue::from_str("preview controller is busy"))?;
-            if state.render_generation != generation {
-                return Ok(());
-            }
-            let composition = state
-                .composition
-                .as_ref()
-                .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
-            tracing::debug!(target: "lumen_wasm", frame, "create preview surface renderer");
-            create_surface_composition_renderer(
-                canvas,
-                composition,
-                media,
-                state.width as u32,
-                state.height as u32,
-            )
-            .await?
-        }
-    };
-
-    let size = {
-        let state = state_cell
-            .try_borrow()
-            .map_err(|_| JsValue::from_str("preview controller is busy"))?;
-        if state.render_generation != generation {
-            return Ok(());
-        }
-        let composition = state
-            .composition
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
-        let size = renderer
-            .render_frame(composition, frame, media)
-            .map_err(|e| {
-                debug_error(&format!(
-                    "[lumen-wasm preview] GPU render frame={frame} error: {e}",
-                ));
-                JsValue::from_str(&e.to_string())
-            })?;
-        let _ = renderer.precompile_frame_window(
-            composition,
-            frame.saturating_add(1),
-            state.lookahead_count,
-            media,
-        );
-        size
-    };
-
-    let mut state = state_cell
-        .try_borrow_mut()
-        .map_err(|_| JsValue::from_str("preview controller is busy"))?;
-    if state.render_generation != generation {
-        return Ok(());
-    }
-    state.renderer = Some(renderer);
-    state.width = size.width as usize;
-    state.height = size.height as usize;
-    state.dirty = false;
-    tracing::trace!(
-        target: "lumen_wasm",
-        frame,
-        width = state.width,
-        height = state.height,
-        "rendered preview frame"
-    );
-    Ok(())
 }

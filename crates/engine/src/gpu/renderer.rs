@@ -89,6 +89,32 @@ impl GpuCompositionRenderer {
         self.ensure_compiled_for_frame(composition, 0, Some(media))
     }
 
+    /// Drops every compiled plan and cached media texture, destroying the GPU textures and
+    /// buffers this renderer exclusively owns instead of waiting for them to be garbage collected.
+    /// The next render recompiles on the same device.
+    pub fn release_resources(&mut self) {
+        for texture in self.media_texture_cache.values() {
+            texture.destroy();
+        }
+        for prepared in self.compiled_plans.values() {
+            for resource in prepared.compiled.plan.textures() {
+                if let Some(texture) = prepared.renderer.texture_arc(resource.id)
+                    && Arc::strong_count(&texture) == 2
+                {
+                    texture.destroy();
+                }
+            }
+            for resource in prepared.compiled.plan.buffers() {
+                if let Some(buffer) = prepared.renderer.buffer(resource.id) {
+                    buffer.destroy();
+                }
+            }
+        }
+        self.media_texture_cache.clear();
+        self.compiled_plans.clear();
+        self.active_key = None;
+    }
+
     fn reset_compiled(&mut self, output_format: lumen_gpu::wgpu::TextureFormat) {
         tracing::debug!(
             target: "lumen_render",

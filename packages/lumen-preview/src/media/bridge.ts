@@ -54,6 +54,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     options: LumenMediaBridgeOptions = {},
   ) {
     this.options = normalizeBridgeOptions(options);
+    target.setVideoFrameCacheBytes?.(this.options.frameCacheCapacity);
   }
 
   clear(): void {

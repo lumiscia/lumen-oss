@@ -19,7 +19,8 @@ import type {
   VideoSourceRegistration,
 } from "./types.js";
 
-export const DEFAULT_VIDEO_FRAME_CACHE_CAPACITY = 96;
+/** Default byte budget for decoded video frames cached in the wasm media store. */
+export const DEFAULT_VIDEO_FRAME_CACHE_CAPACITY = 512 * 1024 * 1024;
 const MIN_SEQUENTIAL_FRAME_GAP = 24;
 const SEQUENTIAL_FRAME_GAP_SECONDS = 2;
 const VIDEO_SAMPLE_TIMESTAMP_EPSILON_SECONDS = 1e-10;

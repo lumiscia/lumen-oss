@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
 };
 
@@ -7,43 +7,36 @@ use lumen_engine::{
     error::MediaError,
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
-        VideoFrameResolver, VideoMetadata,
+        VideoFrameRequirement, VideoFrameResolver, VideoMetadata,
     },
 };
 use wasm_bindgen::prelude::*;
 
 use crate::utils::{image_frame_from_rgba, validate_rgba_len};
 
-const DEFAULT_VIDEO_FRAME_CACHE_CAPACITY: usize = 96;
+/// Total bytes of decoded video frames kept across all streams of one media store.
+pub(crate) const DEFAULT_VIDEO_FRAME_CACHE_BYTES: usize = 512 * 1024 * 1024;
 
 // ── VideoFrameCache ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+struct CachedFrame {
+    image: Arc<CpuMediaFrame>,
+    inserted: u64,
+}
+
+#[derive(Debug, Clone, Default)]
 pub(crate) struct VideoFrameCache {
-    capacity: usize,
-    entries: HashMap<u32, Arc<CpuMediaFrame>>,
-    order: VecDeque<u32>,
+    entries: HashMap<u32, CachedFrame>,
     pinned: HashSet<u32>,
+    bytes: usize,
 }
 
 impl VideoFrameCache {
-    pub fn new() -> Self {
-        Self::with_capacity(DEFAULT_VIDEO_FRAME_CACHE_CAPACITY)
-    }
-
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            capacity: capacity.max(1),
-            entries: HashMap::new(),
-            order: VecDeque::new(),
-            pinned: HashSet::new(),
-        }
-    }
-
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.order.clear();
         self.pinned.clear();
+        self.bytes = 0;
     }
 
     pub fn contains(&self, frame: u32) -> bool {
@@ -51,47 +44,107 @@ impl VideoFrameCache {
     }
 
     pub fn get(&self, frame: u32) -> Option<Arc<CpuMediaFrame>> {
-        self.entries.get(&frame).cloned()
+        self.entries
+            .get(&frame)
+            .map(|entry| Arc::clone(&entry.image))
     }
 
-    pub fn insert(&mut self, frame: u32, image: Arc<CpuMediaFrame>) {
-        self.entries.insert(frame, image);
-        self.touch(frame);
-        self.evict_over_capacity();
-    }
-
-    pub fn retain(&mut self, frames: &[u32]) {
-        self.pinned = frames.iter().copied().collect();
-        self.evict_over_capacity();
-    }
-
-    fn touch(&mut self, frame: u32) {
-        if let Some(index) = self.order.iter().position(|existing| *existing == frame) {
-            self.order.remove(index);
+    fn insert(&mut self, frame: u32, image: Arc<CpuMediaFrame>, inserted: u64) {
+        self.bytes += image.rgba.len();
+        if let Some(previous) = self.entries.insert(frame, CachedFrame { image, inserted }) {
+            self.bytes -= previous.image.rgba.len();
         }
-        self.order.push_back(frame);
     }
 
-    fn evict_over_capacity(&mut self) {
-        let target_capacity = self.capacity.max(self.pinned.len());
-        let mut attempts_remaining = self.order.len().saturating_add(self.entries.len());
+    fn remove(&mut self, frame: u32) {
+        if let Some(previous) = self.entries.remove(&frame) {
+            self.bytes -= previous.image.rgba.len();
+        }
+    }
 
-        while self.entries.len() > target_capacity && attempts_remaining > 0 {
-            attempts_remaining -= 1;
-            let Some(candidate) = self.order.pop_front() else {
+    fn pin(&mut self, frames: &[u32]) {
+        self.pinned = frames.iter().copied().collect();
+    }
+
+    /// The unpinned frame to evict first: frames behind the playhead (the earliest pinned frame)
+    /// go before frames ahead of it, farthest first. Without a playhead the oldest insert goes.
+    fn eviction_candidate(&self, keep: Option<u32>) -> Option<(EvictionRank, u32)> {
+        let playhead = self.pinned.iter().min().copied();
+        self.entries
+            .iter()
+            .filter(|(frame, _)| Some(**frame) != keep && !self.pinned.contains(frame))
+            .map(|(frame, entry)| {
+                let rank = match playhead {
+                    None => (2, u64::MAX - entry.inserted),
+                    Some(playhead) if *frame < playhead => (1, u64::from(playhead - frame)),
+                    Some(playhead) => (0, u64::from(frame - playhead)),
+                };
+                (rank, *frame)
+            })
+            .max()
+    }
+}
+
+type EvictionRank = (u8, u64);
+
+#[derive(Debug)]
+struct VideoStore {
+    streams: HashMap<String, StoredVideo>,
+    budget_bytes: usize,
+    insert_clock: u64,
+}
+
+impl Default for VideoStore {
+    fn default() -> Self {
+        Self {
+            streams: HashMap::new(),
+            budget_bytes: DEFAULT_VIDEO_FRAME_CACHE_BYTES,
+            insert_clock: 0,
+        }
+    }
+}
+
+impl VideoStore {
+    fn insert_frame(&mut self, stream_id: String, frame: u32, image: CpuMediaFrame) {
+        self.insert_clock += 1;
+        let entry = self.streams.entry(stream_id.clone()).or_default();
+        entry.metadata.width = image.width;
+        entry.metadata.height = image.height;
+        entry.metadata.frame_count = entry.metadata.frame_count.max(frame.saturating_add(1));
+        entry
+            .frames
+            .insert(frame, Arc::new(image), self.insert_clock);
+        self.evict_to_budget(Some((&stream_id, frame)));
+    }
+
+    /// Evicts unpinned frames until the cache fits its byte budget. Pinned frames and the
+    /// `keep` frame are never evicted, so the budget can be exceeded by frames in use.
+    fn evict_to_budget(&mut self, keep: Option<(&str, u32)>) {
+        let mut total: usize = self.streams.values().map(|video| video.frames.bytes).sum();
+        while total > self.budget_bytes {
+            let victim = self
+                .streams
+                .iter()
+                .filter_map(|(stream_id, video)| {
+                    let keep = keep
+                        .filter(|(keep_id, _)| keep_id == stream_id)
+                        .map(|(_, frame)| frame);
+                    video
+                        .frames
+                        .eviction_candidate(keep)
+                        .map(|(rank, frame)| (rank, stream_id, frame))
+                })
+                .max()
+                .map(|(_, stream_id, frame)| (stream_id.clone(), frame));
+            let Some((stream_id, frame)) = victim else {
                 break;
             };
-
-            if !self.entries.contains_key(&candidate) {
-                continue;
-            }
-
-            if self.pinned.contains(&candidate) {
-                self.order.push_back(candidate);
-                continue;
-            }
-
-            self.entries.remove(&candidate);
+            let Some(video) = self.streams.get_mut(&stream_id) else {
+                break;
+            };
+            let before = video.frames.bytes;
+            video.frames.remove(frame);
+            total -= before - video.frames.bytes;
         }
     }
 }
@@ -104,7 +157,7 @@ struct StoredImage {
     frame: Arc<CpuMediaFrame>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct StoredVideo {
     metadata: VideoMetadata,
     frames: VideoFrameCache,
@@ -114,15 +167,6 @@ struct StoredVideo {
 struct StoredFont {
     data: Arc<Vec<u8>>,
     version: u64,
-}
-
-impl Default for StoredVideo {
-    fn default() -> Self {
-        Self {
-            metadata: VideoMetadata::default(),
-            frames: VideoFrameCache::new(),
-        }
-    }
 }
 
 // ── WasmMediaStore ────────────────────────────────────────────────────────────
@@ -136,7 +180,7 @@ pub(crate) struct WasmMediaStore {
 struct WasmMediaStoreInner {
     fonts: RwLock<HashMap<String, StoredFont>>,
     images: RwLock<HashMap<String, StoredImage>>,
-    videos: RwLock<HashMap<String, StoredVideo>>,
+    videos: RwLock<VideoStore>,
 }
 
 impl WasmMediaStore {
@@ -155,6 +199,7 @@ impl WasmMediaStore {
             .videos
             .write()
             .map_err(|_| "media store lock poisoned")?
+            .streams
             .clear();
         Ok(())
     }
@@ -165,7 +210,7 @@ impl WasmMediaStore {
             .videos
             .write()
             .map_err(|_| "media store lock poisoned")?;
-        for video in videos.values_mut() {
+        for video in videos.streams.values_mut() {
             video.frames.clear();
         }
         Ok(())
@@ -177,7 +222,7 @@ impl WasmMediaStore {
             .videos
             .write()
             .map_err(|_| "media store lock poisoned")?;
-        if let Some(video) = videos.get_mut(stream_id) {
+        if let Some(video) = videos.streams.get_mut(stream_id) {
             video.frames.clear();
         }
         Ok(())
@@ -197,6 +242,7 @@ impl WasmMediaStore {
             .videos
             .write()
             .map_err(|_| "media store lock poisoned")?
+            .streams
             .remove(stream_id);
         Ok(())
     }
@@ -231,8 +277,41 @@ impl WasmMediaStore {
             return false;
         };
         videos
+            .streams
             .get(stream_id)
             .is_some_and(|video| video.frames.contains(frame))
+    }
+
+    pub fn set_video_frame_cache_bytes(&self, bytes: usize) -> Result<(), &'static str> {
+        let mut videos = self
+            .inner
+            .videos
+            .write()
+            .map_err(|_| "media store lock poisoned")?;
+        videos.budget_bytes = bytes;
+        videos.evict_to_budget(None);
+        Ok(())
+    }
+
+    /// Protects the frames each stream needs at the playhead from eviction.
+    pub fn pin_video_frames(
+        &self,
+        requirements: &[VideoFrameRequirement],
+    ) -> Result<(), &'static str> {
+        let mut videos = self
+            .inner
+            .videos
+            .write()
+            .map_err(|_| "media store lock poisoned")?;
+        for (stream_id, video) in &mut videos.streams {
+            let frames = requirements
+                .iter()
+                .find(|requirement| requirement.stream_id == *stream_id)
+                .map_or(&[][..], |requirement| requirement.frames.as_slice());
+            video.frames.pin(frames);
+        }
+        videos.evict_to_budget(None);
+        Ok(())
     }
 
     pub fn set_image(&self, source: String, frame: CpuMediaFrame) -> Result<(), &'static str> {
@@ -292,7 +371,7 @@ impl WasmMediaStore {
             .videos
             .write()
             .map_err(|_| "media store lock poisoned")?;
-        let entry = videos.entry(stream_id).or_default();
+        let entry = videos.streams.entry(stream_id).or_default();
         entry.metadata = metadata;
         Ok(())
     }
@@ -303,16 +382,11 @@ impl WasmMediaStore {
         frame: u32,
         image: CpuMediaFrame,
     ) -> Result<(), &'static str> {
-        let mut videos = self
-            .inner
+        self.inner
             .videos
             .write()
-            .map_err(|_| "media store lock poisoned")?;
-        let entry = videos.entry(stream_id).or_default();
-        entry.metadata.width = image.width;
-        entry.metadata.height = image.height;
-        entry.metadata.frame_count = entry.metadata.frame_count.max(frame.saturating_add(1));
-        entry.frames.insert(frame, Arc::new(image));
+            .map_err(|_| "media store lock poisoned")?
+            .insert_frame(stream_id, frame, image);
         Ok(())
     }
 }
@@ -396,7 +470,7 @@ impl VideoFrameResolver for WasmVideoResolver {
             .videos
             .read()
             .ok()
-            .and_then(|videos| videos.get(&self.id).map(|entry| entry.metadata))
+            .and_then(|videos| videos.streams.get(&self.id).map(|entry| entry.metadata))
             .unwrap_or_default()
     }
 
@@ -413,6 +487,7 @@ impl VideoFrameResolver for WasmVideoResolver {
                 media_source: self.id.clone(),
             })?;
         let entry = videos
+            .streams
             .get(&self.id)
             .ok_or_else(|| MediaError::SourceNotFound {
                 media_source: self.id.clone(),
@@ -432,9 +507,10 @@ impl VideoFrameResolver for WasmVideoResolver {
         let Ok(mut videos) = self.store.videos.write() else {
             return;
         };
-        if let Some(entry) = videos.get_mut(&self.id) {
-            entry.frames.retain(frames);
+        if let Some(entry) = videos.streams.get_mut(&self.id) {
+            entry.frames.pin(frames);
         }
+        videos.evict_to_budget(None);
     }
 }
 
@@ -510,6 +586,15 @@ impl LumenMediaStore {
         self.store.has_image(image_id)
     }
 
+    /// Sets the byte budget shared by all cached video frames; frames needed at the playhead are
+    /// kept even when they exceed it.
+    #[wasm_bindgen(js_name = "setVideoFrameCacheBytes")]
+    pub fn set_video_frame_cache_bytes(&self, bytes: u32) -> Result<(), JsValue> {
+        self.store
+            .set_video_frame_cache_bytes(bytes as usize)
+            .map_err(JsValue::from_str)
+    }
+
     #[wasm_bindgen(js_name = "hasVideoFrame")]
     pub fn has_video_frame(&self, stream_id: &str, frame: u32) -> bool {
         self.store.has_video_frame(stream_id, frame)
@@ -526,7 +611,7 @@ impl LumenMediaStore {
         image_id: &str,
         width: u32,
         height: u32,
-        rgba: &[u8],
+        rgba: Vec<u8>,
     ) -> Result<(), JsValue> {
         if width == 0 || height == 0 {
             return Err(JsValue::from_str("image dimensions must be > 0"));
@@ -534,7 +619,7 @@ impl LumenMediaStore {
         if !validate_rgba_len(width, height, rgba.len()) {
             return Err(JsValue::from_str("invalid image rgba buffer length"));
         }
-        let frame = image_frame_from_rgba(width, height, rgba.to_vec())
+        let frame = image_frame_from_rgba(width, height, rgba)
             .map_err(|error| JsValue::from_str(&error))?;
         self.store
             .set_image(image_id.to_string(), frame)
@@ -542,9 +627,9 @@ impl LumenMediaStore {
     }
 
     #[wasm_bindgen(js_name = "setFont")]
-    pub fn set_font(&self, font_family: &str, data: &[u8]) -> Result<(), JsValue> {
+    pub fn set_font(&self, font_family: &str, data: Vec<u8>) -> Result<(), JsValue> {
         self.store
-            .set_font(font_family.to_string(), data.to_vec())
+            .set_font(font_family.to_string(), data)
             .map_err(JsValue::from_str)
     }
 
@@ -555,7 +640,7 @@ impl LumenMediaStore {
         frame: u32,
         width: u32,
         height: u32,
-        rgba: &[u8],
+        rgba: Vec<u8>,
     ) -> Result<(), JsValue> {
         if width == 0 || height == 0 {
             return Err(JsValue::from_str("video frame dimensions must be > 0"));
@@ -563,7 +648,7 @@ impl LumenMediaStore {
         if !validate_rgba_len(width, height, rgba.len()) {
             return Err(JsValue::from_str("invalid video rgba buffer length"));
         }
-        let image = image_frame_from_rgba(width, height, rgba.to_vec())
+        let image = image_frame_from_rgba(width, height, rgba)
             .map_err(|error| JsValue::from_str(&error))?;
         self.store
             .set_video_frame(stream_id.to_string(), frame, image)
@@ -616,35 +701,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn video_frame_cache_keeps_pinned_frames_and_recent_entries() {
-        let mut cache = VideoFrameCache::with_capacity(3);
-        for frame in 0..3 {
-            cache.insert(frame, Arc::new(test_frame()));
-        }
+    fn video_cache_evicts_oldest_frames_across_streams_by_bytes() {
+        let store = WasmMediaStore::default();
+        store
+            .set_video_frame_cache_bytes(3 * FRAME_BYTES)
+            .expect("set budget");
+        insert_frames(&store, "a", 0..2);
+        insert_frames(&store, "b", 0..2);
 
-        cache.retain(&[0]);
-        cache.insert(3, Arc::new(test_frame()));
-        cache.insert(4, Arc::new(test_frame()));
-
-        assert!(cache.contains(0), "pinned frame should remain cached");
-        assert!(cache.contains(3), "recent frame should remain cached");
-        assert!(cache.contains(4), "most recent frame should remain cached");
-        assert_eq!(cache.entries.len(), 3);
+        assert!(!store.has_video_frame("a", 0), "oldest frame is evicted");
+        assert!(store.has_video_frame("a", 1));
+        assert!(store.has_video_frame("b", 0));
+        assert!(store.has_video_frame("b", 1));
     }
 
     #[test]
-    fn video_frame_cache_evicts_old_unpinned_frames() {
-        let mut cache = VideoFrameCache::with_capacity(3);
-        for frame in 0..5 {
-            cache.insert(frame, Arc::new(test_frame()));
-        }
+    fn video_cache_evicts_farthest_from_pinned_playhead_first() {
+        let store = WasmMediaStore::default();
+        insert_frames(&store, "a", 0..6);
+        store
+            .pin_video_frames(&[VideoFrameRequirement {
+                stream_id: "a".to_string(),
+                frames: vec![2],
+            }])
+            .expect("pin frames");
+        store
+            .set_video_frame_cache_bytes(3 * FRAME_BYTES)
+            .expect("set budget");
 
-        assert!(!cache.contains(0));
-        assert!(!cache.contains(1));
-        assert!(cache.contains(2));
-        assert!(cache.contains(3));
-        assert!(cache.contains(4));
-        assert_eq!(cache.entries.len(), 3);
+        assert!(
+            !store.has_video_frame("a", 0),
+            "frames behind the playhead go first"
+        );
+        assert!(!store.has_video_frame("a", 1));
+        assert!(
+            !store.has_video_frame("a", 5),
+            "then the farthest frame ahead"
+        );
+        assert!(store.has_video_frame("a", 2), "pinned frame is kept");
+        assert!(store.has_video_frame("a", 3));
+        assert!(store.has_video_frame("a", 4));
     }
 
     #[test]
@@ -700,7 +796,15 @@ mod tests {
         assert_eq!(second.data().expect("font data"), vec![vec![4, 5, 6]]);
     }
 
-    fn test_frame() -> CpuMediaFrame {
-        crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame")
+    const FRAME_BYTES: usize = 4;
+
+    fn insert_frames(store: &WasmMediaStore, stream_id: &str, frames: std::ops::Range<u32>) {
+        for frame in frames {
+            let image =
+                crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
+            store
+                .set_video_frame(stream_id.to_string(), frame, image)
+                .expect("set frame");
+        }
     }
 }
