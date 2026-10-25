@@ -12,6 +12,7 @@ use cosmic_text::{
     Shaping, Style, SwashCache, SwashContent, SwashImage, Weight, Wrap,
 };
 use etagere::{AllocId, size2};
+use swash::scale::Source;
 
 mod gpu;
 #[cfg(feature = "experimental-msdf")]
@@ -280,7 +281,7 @@ impl TextSystem {
                     PlacedGlyph {
                         alloc,
                         entry: AtlasEntry::new(config, slot, padding, size),
-                        placement: GlyphPlacement::from_swash(&image),
+                        placement: GlyphPlacement::for_key(&image, key.0),
                     }
                 }
             };
@@ -408,6 +409,7 @@ impl TextSystem {
             .get_image_uncached(&mut self.font_system, glyph.key.0)?;
         let glyph_size = [image.placement.width, image.placement.height];
         let entry = atlas.ensure_glyph(glyph.key, glyph_size)?;
+        let placement = GlyphPlacement::for_key(&image, glyph.key.0);
         let image = RasterImage::from_swash(&image, config.padding());
         copy_into_atlas(
             pixels,
@@ -416,7 +418,7 @@ impl TextSystem {
             image.padded_size(),
             &image.pixels,
         );
-        Some(glyph_instance_for(glyph, entry, image.placement))
+        Some(glyph_instance_for(glyph, entry, placement))
     }
 }
 
@@ -841,6 +843,17 @@ impl GlyphPlacement {
             color: image.content == SwashContent::Color,
         }
     }
+
+    /// Swash draws bitmaps without the key's subpixel bins, so they are
+    /// shifted to the nearest whole pixel instead.
+    fn for_key(image: &SwashImage, key: CacheKey) -> Self {
+        let mut placement = Self::from_swash(image);
+        if matches!(image.source, Source::Bitmap(_) | Source::ColorBitmap(_)) {
+            placement.left += key.x_bin.as_float().round() as i32;
+            placement.top += key.y_bin.as_float().round() as i32;
+        }
+        placement
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1167,6 +1180,35 @@ mod tests {
                 (moved - step).abs() < 0.15,
                 "origin moved {step}px, ink moved {moved}px"
             );
+        }
+    }
+
+    #[test]
+    fn bitmap_glyphs_snap_to_the_nearest_pixel() {
+        let mut system = TextSystem::new();
+        let shaped = system.shape(&TextLayoutRequest::new("A"));
+        let entry = AtlasEntry::new(AtlasConfig::default(), [0, 0], 0, [10, 10]);
+        let mut image = SwashImage::new();
+        image.source = Source::ColorBitmap(swash::scale::StrikeWith::BestFit);
+        image.placement.left = 1;
+        image.placement.top = 8;
+        for start in [20.0, -21.0] {
+            let mut previous = f32::NEG_INFINITY;
+            for step in 0..=8 {
+                let y = start + step as f32 * 0.125;
+                let layout = shaped.place([3.3, y], [1.0; 4]);
+                let glyph = &layout.glyphs[0];
+                let pen_y = y + shaped.glyphs[0].line_y + shaped.glyphs[0].glyph.y;
+                let placement = GlyphPlacement::for_key(&image, glyph.key.0);
+                let rendered_y = glyph_instance_for(glyph, entry, placement).rect[1] + 8.0;
+                // Half a pixel of snapping plus cosmic-text's quarter-pixel bins.
+                assert!(
+                    (rendered_y - pen_y).abs() <= 0.625,
+                    "pen y {pen_y}, drawn at {rendered_y}"
+                );
+                assert!(rendered_y >= previous, "pen y {pen_y} moved backwards");
+                previous = rendered_y;
+            }
         }
     }
 
