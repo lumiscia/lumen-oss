@@ -275,7 +275,6 @@ impl TextSystem {
         retry_new: bool,
         uploads: &mut Vec<GlyphUpload>,
     ) -> bool {
-        let mut stale = None;
         for &key in keys {
             let cached = atlas.glyphs.get(&key);
             if cached.is_some_and(|glyph| glyph.resident || glyph.upload_frame == atlas.frame)
@@ -309,7 +308,7 @@ impl TextSystem {
             let placed = match cached {
                 Some(placed) => placed,
                 None => {
-                    let Some((slot, origin)) = atlas.allocate(pixels.size, &mut stale) else {
+                    let Some((slot, origin)) = atlas.allocate(pixels.size) else {
                         return false;
                     };
                     PlacedGlyph {
@@ -547,6 +546,8 @@ pub struct GlyphAtlas {
     glyphs: HashMap<AtlasKey, AtlasGlyph>,
     frame: u64,
     layouts_this_frame: usize,
+    /// Eviction candidates for this frame, most recently used first.
+    stale: Option<Vec<AtlasKey>>,
 }
 
 /// Raster glyphs are keyed by size and subpixel bin; distance fields only by
@@ -608,6 +609,7 @@ impl GlyphAtlas {
             glyphs: HashMap::new(),
             frame: 0,
             layouts_this_frame: 0,
+            stale: None,
         }
     }
 
@@ -637,6 +639,7 @@ impl GlyphAtlas {
                 )
         });
         self.layouts_this_frame = 0;
+        self.stale = None;
         self.frame += 1;
         self.frame
     }
@@ -699,6 +702,7 @@ impl GlyphAtlas {
         self.allocator.clear();
         self.allocations = 0;
         self.availability += 1;
+        self.stale = None;
     }
 
     fn insert(&mut self, key: AtlasKey, image: AtlasImage) {
@@ -714,12 +718,8 @@ impl GlyphAtlas {
     }
 
     /// Allocates a slot, evicting the least recently used glyphs not used this
-    /// frame. `stale` caches the eviction order.
-    fn allocate(
-        &mut self,
-        size: [u32; 2],
-        stale: &mut Option<Vec<AtlasKey>>,
-    ) -> Option<(AllocId, [u32; 2])> {
+    /// frame.
+    fn allocate(&mut self, size: [u32; 2]) -> Option<(AllocId, [u32; 2])> {
         let request = size2(size[0].max(1) as i32, size[1].max(1) as i32);
         loop {
             if self.allocations < MAX_ATLAS_GLYPHS
@@ -729,19 +729,22 @@ impl GlyphAtlas {
                 let min = allocation.rectangle.min;
                 return Some((allocation.id, [min.x as u32, min.y as u32]));
             }
-            let stale = stale.get_or_insert_with(|| self.stale_by_age());
-            if let Some(key) = stale.pop() {
-                if let Some(AtlasGlyph {
-                    image: AtlasImage::Placed(placed),
-                    ..
-                }) = self.glyphs.remove(&key)
-                {
-                    self.allocator.deallocate(placed.slot);
-                    self.allocations -= 1;
-                    self.availability += 1;
-                }
-            } else {
-                return None;
+            if self.stale.is_none() {
+                self.stale = Some(self.stale_by_age());
+            }
+            let key = self.stale.as_mut()?.pop()?;
+            // Layouts prepared since the candidates were collected may use it.
+            if let Some(AtlasGlyph {
+                image: AtlasImage::Placed(placed),
+                last_used,
+                ..
+            }) = self.glyphs.get(&key)
+                && *last_used != self.frame
+            {
+                self.allocator.deallocate(placed.slot);
+                self.glyphs.remove(&key);
+                self.allocations -= 1;
+                self.availability += 1;
             }
         }
     }
@@ -980,7 +983,7 @@ mod tests {
         };
         image.data = vec![0; 2 * 2 * 4];
         let mut atlas = GlyphAtlas::new(64);
-        let (slot, origin) = atlas.allocate([2, 2], &mut None).unwrap();
+        let (slot, origin) = atlas.allocate([2, 2]).unwrap();
         for start in [20.0, -21.0] {
             let mut previous = f32::NEG_INFINITY;
             for step in 0..=8 {
@@ -1014,13 +1017,11 @@ mod tests {
         let mut system = TextSystem::new();
         let template = system.layout(&TextLayoutRequest::new("A")).glyphs[0].key.0;
         let mut atlas = GlyphAtlas::new(512);
-        let mut stale = None;
         for index in 0..70_000_u32 {
             if index % 1000 == 0 {
                 atlas.begin_frame();
-                stale = None;
             }
-            let (slot, origin) = atlas.allocate([1, 1], &mut stale).unwrap();
+            let (slot, origin) = atlas.allocate([1, 1]).unwrap();
             let key = CacheKey {
                 font_size_bits: index,
                 ..template
@@ -1210,7 +1211,7 @@ mod tests {
         atlas.begin_frame();
         let mut origins = Vec::new();
         for glyph in &layout.glyphs[..4] {
-            let (slot, origin) = atlas.allocate([32, 32], &mut None).unwrap();
+            let (slot, origin) = atlas.allocate([32, 32]).unwrap();
             let placed = PlacedGlyph {
                 slot,
                 origin,
@@ -1223,7 +1224,7 @@ mod tests {
             origins.push(origin);
         }
         atlas.commit(atlas.frame);
-        assert!(atlas.allocate([1, 1], &mut Some(Vec::new())).is_none());
+        assert!(atlas.allocate([1, 1]).is_none());
         let replaced_key = AtlasKey::Raster(layout.glyphs.remove(3).key.0);
 
         atlas.begin_frame();
