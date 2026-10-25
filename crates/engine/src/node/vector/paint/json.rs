@@ -8,7 +8,7 @@ use super::types::{GradientPaint, GradientStop, Paint};
 
 #[cfg(feature = "json")]
 pub fn from_json_value(value: &Value) -> Result<Paint, String> {
-    if let Some(color) = crate::json::parse_color(value) {
+    if let Ok(color) = crate::json::parse_color(value) {
         return Ok(Paint::solid(color));
     }
     serde_path_to_error::deserialize::<_, GradientPaintJsonOwned>(value)
@@ -194,7 +194,7 @@ fn parse_stop(value: &Value) -> Result<GradientStop, String> {
     };
     Ok(GradientStop {
         offset: offset.as_f64().ok_or("offset must be a number")? as f32,
-        color: crate::json::parse_color(color).ok_or("color must be a color")?,
+        color: crate::json::parse_color(color).map_err(|error| format!("color: {error}"))?,
     })
 }
 

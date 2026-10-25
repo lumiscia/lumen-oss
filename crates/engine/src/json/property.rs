@@ -81,10 +81,8 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
             Ok(PropertyValue::Float(f))
         }
         PropertyKind::Int => {
-            let i = val
-                .as_i64()
-                .or_else(|| val.as_f64().map(|f| f as i64))
-                .with_context(|| format!("`{name}` expected int"))?;
+            let i = integral_i64(val)
+                .with_context(|| format!("`{name}` expected an integer within the i64 range"))?;
             Ok(PropertyValue::Int(i))
         }
         PropertyKind::Bool => {
@@ -101,7 +99,7 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
             Ok(PropertyValue::String(s.to_string()))
         }
         PropertyKind::Color => parse_color(val)
-            .with_context(|| format!("`{name}` expected color"))
+            .map_err(|error| anyhow!("`{name}` expected color: {error}"))
             .map(PropertyValue::Color),
         PropertyKind::Paint => crate::node::vector::paint::Paint::from_json_value(val)
             .map_err(|error| anyhow!("`{name}`: {error}"))
@@ -141,23 +139,56 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
     }
 }
 
+/// Reads a JSON number as an `i64`, accepting integral floats such as `3.0`.
+pub(crate) fn integral_i64(value: &Value) -> Option<i64> {
+    if let Some(integer) = value.as_i64() {
+        return Some(integer);
+    }
+    // `i64::MAX as f64` rounds up to 2^63, which is not representable as an `i64`.
+    let float = value.as_f64()?;
+    (float.fract() == 0.0 && (i64::MIN as f64..i64::MAX as f64).contains(&float))
+        .then_some(float as i64)
+}
+
 /// Parses `[r, g, b]`, `[r, g, b, a]` with integer components in 0–255, or a
-/// `#RRGGBB` / `#RRGGBBAA` string. Anything else returns `None`.
-pub fn parse_color(val: &Value) -> Option<[u8; 4]> {
+/// `#RRGGBB` / `#RRGGBBAA` string.
+pub fn parse_color(val: &Value) -> Result<[u8; 4], String> {
     if let Some(arr) = val.as_array() {
-        let channel = |value: &Value| u8::try_from(value.as_u64()?).ok();
-        return match arr.as_slice() {
-            [r, g, b] => Some([channel(r)?, channel(g)?, channel(b)?, 255]),
-            [r, g, b, a] => Some([channel(r)?, channel(g)?, channel(b)?, channel(a)?]),
-            _ => None,
+        let channel = |index: usize| {
+            arr[index]
+                .as_u64()
+                .and_then(|value| u8::try_from(value).ok())
+                .ok_or_else(|| {
+                    format!(
+                        "component {index} must be an integer from 0 to 255, got {}",
+                        arr[index]
+                    )
+                })
+        };
+        return match arr.len() {
+            3 => Ok([channel(0)?, channel(1)?, channel(2)?, 255]),
+            4 => Ok([channel(0)?, channel(1)?, channel(2)?, channel(3)?]),
+            length => Err(format!(
+                "color array must have 3 or 4 components, got {length}"
+            )),
         };
     }
-    let hex = val.as_str()?.strip_prefix('#')?;
-    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
+    let text = val
+        .as_str()
+        .ok_or_else(|| format!("color must be an array or a #RRGGBB string, got {val}"))?;
+    let hex = text
+        .strip_prefix('#')
+        .ok_or_else(|| format!("color string `{text}` must start with `#`"))?;
+    if !matches!(hex.len(), 6 | 8) {
+        return Err(format!("hex color `{text}` must be #RRGGBB or #RRGGBBAA"));
     }
-    let byte = |index: usize| u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok();
-    Some([
+    if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("hex color `{text}` contains a non-hex digit"));
+    }
+    let byte = |index: usize| {
+        u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).map_err(|error| error.to_string())
+    };
+    Ok([
         byte(0)?,
         byte(1)?,
         byte(2)?,
@@ -173,7 +204,7 @@ fn parse_color_or_vec(arr: &[Value], name: &str) -> Result<PropertyValue> {
     }
     if arr.len() >= 3
         && arr.len() <= 4
-        && let Some(c) = parse_color(&Value::Array(arr.to_vec()))
+        && let Ok(c) = parse_color(&Value::Array(arr.to_vec()))
     {
         return Ok(PropertyValue::Color(c));
     }
@@ -215,7 +246,37 @@ mod tests {
             serde_json::json!("#+f+f+f"),
             serde_json::json!("#ééé"),
         ] {
-            assert_eq!(parse_color(&value), None, "{value}");
+            assert!(parse_color(&value).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn color_errors_name_the_offending_part() {
+        let error = parse_color(&serde_json::json!([0, 256, 0])).unwrap_err();
+        assert!(
+            error.contains("component 1") && error.contains("256"),
+            "{error}"
+        );
+
+        let error = parse_color(&serde_json::json!([0, 0])).unwrap_err();
+        assert!(error.contains("3 or 4 components"), "{error}");
+
+        let error = parse_color(&serde_json::json!("#12345")).unwrap_err();
+        assert!(error.contains("#RRGGBB"), "{error}");
+    }
+
+    #[test]
+    fn int_rejects_fractional_and_out_of_range_numbers() {
+        assert_eq!(integral_i64(&serde_json::json!(3.0)), Some(3));
+        assert_eq!(integral_i64(&serde_json::json!(-7)), Some(-7));
+        for value in [
+            serde_json::json!(1.5),
+            serde_json::json!(1e30),
+            serde_json::json!(-1e30),
+            serde_json::json!(u64::MAX),
+            serde_json::json!("3"),
+        ] {
+            assert_eq!(integral_i64(&value), None, "{value}");
         }
     }
 

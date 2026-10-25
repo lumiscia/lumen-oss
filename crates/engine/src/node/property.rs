@@ -97,7 +97,7 @@ impl PropertyValue {
                 if matches!(self, Self::String(_)) {
                     "String"
                 } else {
-                    "unsupported"
+                    "incompatible value"
                 },
             )
         })
@@ -117,7 +117,7 @@ impl PropertyValue {
                 if matches!(self, Self::String(_)) {
                     "String"
                 } else {
-                    "unsupported"
+                    "incompatible value"
                 },
             )
         })
@@ -130,7 +130,7 @@ impl PropertyValue {
         _ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<bool> {
         self.coerce_bool()
-            .ok_or_else(|| Self::invalid_type(node_id, property_path, "Bool", "unsupported"))
+            .ok_or_else(|| Self::invalid_type(node_id, property_path, "Bool", "incompatible value"))
     }
 
     pub fn resolve_string(
@@ -139,8 +139,9 @@ impl PropertyValue {
         property_path: &str,
         _ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<String> {
-        self.coerce_string()
-            .ok_or_else(|| Self::invalid_type(node_id, property_path, "String", "unsupported"))
+        self.coerce_string().ok_or_else(|| {
+            Self::invalid_type(node_id, property_path, "String", "incompatible value")
+        })
     }
 
     pub fn resolve_color(
@@ -155,7 +156,7 @@ impl PropertyValue {
                 node_id,
                 property_path,
                 "Color",
-                "unsupported",
+                "incompatible value",
             )),
         }
     }
@@ -173,7 +174,7 @@ impl PropertyValue {
                 node_id,
                 property_path,
                 "Paint",
-                "unsupported",
+                "incompatible value",
             )),
         }
     }
@@ -190,7 +191,7 @@ impl PropertyValue {
                 node_id,
                 property_path,
                 "Vec2",
-                "unsupported",
+                "incompatible value",
             )),
         }
     }
