@@ -1,7 +1,12 @@
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, Data, DeriveInput, Fields, Ident, LitBool, LitFloat, LitInt, LitStr, Path, Result,
-    Token, Type, Variant, punctuated::Punctuated, spanned::Spanned,
+    Attribute, Data, DeriveInput, Fields, Ident, LitStr, Path, Result, Token, Type, Variant,
+    punctuated::Punctuated, spanned::Spanned,
+};
+
+use crate::common::{
+    PropertyConstraintsAttr, PropertyDefTokens, doc_lines, ident_value, optional_attr,
+    optional_bool, property_kind_tokens, title_from_ident,
 };
 
 pub(crate) fn expand_delegate(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
@@ -32,17 +37,6 @@ struct PropertyAttr {
     constraints: PropertyConstraintsAttr,
     constant: bool,
     docs: Vec<String>,
-}
-
-#[derive(Default)]
-struct PropertyConstraintsAttr {
-    min: Option<f64>,
-    max: Option<f64>,
-    step: Option<f64>,
-    format: Option<LitStr>,
-    multiline: bool,
-    recommended_rows: Option<u32>,
-    role: Option<LitStr>,
 }
 
 struct DelegateAttr {
@@ -92,21 +86,7 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
             enum_type = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("constant") {
             constant = optional_bool(&meta)?;
-        } else if meta.path.is_ident("min") {
-            constraints.min = Some(float_value(&meta)?);
-        } else if meta.path.is_ident("max") {
-            constraints.max = Some(float_value(&meta)?);
-        } else if meta.path.is_ident("step") {
-            constraints.step = Some(float_value(&meta)?);
-        } else if meta.path.is_ident("format") {
-            constraints.format = Some(meta.value()?.parse()?);
-        } else if meta.path.is_ident("multiline") {
-            constraints.multiline = optional_bool(&meta)?;
-        } else if meta.path.is_ident("recommended_rows") {
-            constraints.recommended_rows = Some(meta.value()?.parse::<LitInt>()?.base10_parse()?);
-        } else if meta.path.is_ident("role") {
-            constraints.role = Some(meta.value()?.parse()?);
-        } else {
+        } else if !constraints.parse_key(&meta)? {
             return Err(meta.error("unknown meta attribute key"));
         }
         Ok(())
@@ -125,8 +105,6 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
 }
 
 fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::TokenStream {
-    let id = &property.id;
-    let name = &property.name;
     let kind = match &property.kind {
         Some(kind) => property_kind_tokens(kind),
         None => quote!(<#ty as ::lumen_engine::node::NodeParamType>::property_kind()),
@@ -135,8 +113,6 @@ fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::Token
         Some(enum_type) => quote!(Some(<#enum_type as ::lumen_engine::node::NodeEnum>::enum_def())),
         None => quote!(<#ty as ::lumen_engine::node::NodeParamType>::enum_def()),
     };
-    let description = doc_string(&property.docs);
-    let constraints = property_constraints_tokens(&property.constraints);
     // `Vec` fields are deserialized whole by serde, so an expression string never parses.
     // Constant fields reject expressions at parse time.
     let accepts_expressions = if property.constant || structure::is_vec_type(ty) {
@@ -144,46 +120,16 @@ fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::Token
     } else {
         quote!(<<#ty as ::lumen_engine::node::Delegated>::Delegate as ::lumen_engine::node::DelegateValue>::ACCEPTS_EXPRESSIONS)
     };
-    quote! {
-        ::lumen_engine::node::PropertyDef {
-            id: #id,
-            expected: #kind,
-            #[cfg(any(feature = "json", feature = "metadata"))]
-            enum_def: #enum_def,
-            #[cfg(feature = "metadata")]
-            name: #name,
-            #[cfg(feature = "metadata")]
-            description: #description,
-            #[cfg(feature = "metadata")]
-            constraints: #constraints,
-            #[cfg(feature = "metadata")]
-            accepts_expressions: #accepts_expressions,
-        }
+    PropertyDefTokens {
+        id: &property.id,
+        name: &property.name,
+        kind,
+        enum_def,
+        docs: &property.docs,
+        constraints: &property.constraints,
+        accepts_expressions,
     }
-}
-
-fn property_constraints_tokens(constraints: &PropertyConstraintsAttr) -> proc_macro2::TokenStream {
-    let min = option_f64_tokens(constraints.min);
-    let max = option_f64_tokens(constraints.max);
-    let step = option_f64_tokens(constraints.step);
-    let format = option_lit_str_tokens(&constraints.format);
-    let multiline = constraints.multiline;
-    let recommended_rows = match constraints.recommended_rows {
-        Some(value) => quote!(Some(#value)),
-        None => quote!(None),
-    };
-    let role = option_lit_str_tokens(&constraints.role);
-    quote! {
-        ::lumen_engine::node::PropertyConstraints {
-            min: #min,
-            max: #max,
-            step: #step,
-            format: #format,
-            multiline: #multiline,
-            recommended_rows: #recommended_rows,
-            role: #role,
-        }
-    }
+    .tokens()
 }
 
 fn named_fields(fields: &Fields) -> Result<&Punctuated<syn::Field, Token![,]>> {
@@ -194,120 +140,4 @@ fn named_fields(fields: &Fields) -> Result<&Punctuated<syn::Field, Token![,]>> {
             "Delegate derive requires named struct fields",
         )),
     }
-}
-
-fn doc_lines(attrs: &[Attribute]) -> Vec<String> {
-    attrs
-        .iter()
-        .filter(|attr| attr.path().is_ident("doc"))
-        .filter_map(|attr| match &attr.meta {
-            syn::Meta::NameValue(name_value) => match &name_value.value {
-                syn::Expr::Lit(expr_lit) => match &expr_lit.lit {
-                    syn::Lit::Str(lit) => Some(lit.value().trim().to_string()),
-                    _ => None,
-                },
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect()
-}
-
-fn doc_string(lines: &[String]) -> String {
-    lines.join("\n")
-}
-
-fn optional_attr<'a>(attrs: &'a [Attribute], name: &str) -> Option<&'a Attribute> {
-    attrs.iter().find(|attr| attr.path().is_ident(name))
-}
-
-fn ident_value(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<Ident> {
-    let value = meta.value()?;
-    if value.peek(LitStr) {
-        let lit: LitStr = value.parse()?;
-        Ok(Ident::new(&lit.value(), lit.span()))
-    } else {
-        value.parse()
-    }
-}
-
-fn optional_bool(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<bool> {
-    if meta.input.peek(Token![=]) {
-        Ok(meta.value()?.parse::<LitBool>()?.value)
-    } else {
-        Ok(true)
-    }
-}
-
-fn float_value(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<f64> {
-    let value = meta.value()?;
-    if value.peek(LitFloat) {
-        value.parse::<LitFloat>()?.base10_parse()
-    } else {
-        value
-            .parse::<LitInt>()?
-            .base10_parse::<i64>()
-            .map(|value| value as f64)
-    }
-}
-
-fn option_f64_tokens(value: Option<f64>) -> proc_macro2::TokenStream {
-    match value {
-        Some(value) => quote!(Some(#value)),
-        None => quote!(None),
-    }
-}
-
-fn option_lit_str_tokens(value: &Option<LitStr>) -> proc_macro2::TokenStream {
-    match value {
-        Some(value) => quote!(Some(#value)),
-        None => quote!(None),
-    }
-}
-
-fn property_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
-    match kind.to_string().as_str() {
-        "float" | "Float" => quote!(::lumen_engine::node::PropertyKind::Float),
-        "int" | "Int" => quote!(::lumen_engine::node::PropertyKind::Int),
-        "bool" | "Bool" => quote!(::lumen_engine::node::PropertyKind::Bool),
-        "string" | "String" => quote!(::lumen_engine::node::PropertyKind::String),
-        "color" | "Color" => quote!(::lumen_engine::node::PropertyKind::Color),
-        "vec2" | "Vec2" => quote!(::lumen_engine::node::PropertyKind::Vec2),
-        "enum" | "Enum" => quote!(::lumen_engine::node::PropertyKind::Enum),
-        "paint" | "Paint" => quote!(::lumen_engine::node::PropertyKind::Paint),
-        _ => {
-            let span = kind.span();
-            quote::quote_spanned!(span=> compile_error!("unknown param kind"))
-        }
-    }
-}
-
-fn to_snake_case(value: &str) -> String {
-    let mut out = String::new();
-    for (index, ch) in value.chars().enumerate() {
-        if ch.is_uppercase() {
-            if index > 0 {
-                out.push('_');
-            }
-            out.extend(ch.to_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-fn title_from_ident(value: &str) -> String {
-    let mut out = String::new();
-    for (index, part) in to_snake_case(value).split('_').enumerate() {
-        if index > 0 {
-            out.push(' ');
-        }
-        let mut chars = part.chars();
-        if let Some(first) = chars.next() {
-            out.extend(first.to_uppercase());
-            out.push_str(chars.as_str());
-        }
-    }
-    out
 }
