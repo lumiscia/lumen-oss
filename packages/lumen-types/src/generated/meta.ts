@@ -327,7 +327,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "max_width"?: ExpressionValue<number>;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
     readonly "position"?: ExpressionValue<Vec2>;
-    readonly "render_mode"?: ExpressionValue<TextRenderMode>;
+    readonly "render_mode"?: TextRenderMode;
   };
 }
 
