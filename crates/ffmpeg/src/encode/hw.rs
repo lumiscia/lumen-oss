@@ -4,18 +4,23 @@ use crate::ffi::{self, sys};
 use crate::gpu::GpuBackend;
 use crate::video::EncodeMode;
 use crate::{FfmpegError, Result};
-use sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA;
-use sys::AVPixelFormat::{AV_PIX_FMT_CUDA, AV_PIX_FMT_RGBA};
+use sys::AVHWDeviceType::{AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_VULKAN};
+use sys::AVPixelFormat::{AV_PIX_FMT_CUDA, AV_PIX_FMT_NV12, AV_PIX_FMT_RGBA, AV_PIX_FMT_VULKAN};
 
 use super::video::VideoEncoderConfig;
 
 pub(crate) struct EncoderHwContexts {
+    pub backend: GpuBackend,
     pub device: AvBufferRef,
     pub frames: Option<AvBufferRef>,
+    pub hw_format: sys::AVPixelFormat,
+    /// Software format the encoder reads from its hardware frames.
+    pub sw_format: sys::AVPixelFormat,
 }
 
 pub(crate) fn create_encoder_hw_contexts(
     config: &VideoEncoderConfig,
+    codec: *const sys::AVCodec,
 ) -> Result<Option<EncoderHwContexts>> {
     match config.mode {
         EncodeMode::GpuTexture(GpuBackend::Cuda) => {
@@ -29,11 +34,50 @@ pub(crate) fn create_encoder_hw_contexts(
                 config.height,
             )?;
             Ok(Some(EncoderHwContexts {
+                backend: GpuBackend::Cuda,
                 device,
                 frames: Some(frames),
+                hw_format: AV_PIX_FMT_CUDA,
+                sw_format: AV_PIX_FMT_RGBA,
+            }))
+        }
+        // Vulkan Video encoders only accept Vulkan frames, so CPU frames are uploaded as NV12.
+        EncodeMode::CpuUpload if takes_hw_frames(codec, AV_PIX_FMT_VULKAN) => {
+            let device = AvBufferRef::new_hw_device(AV_HWDEVICE_TYPE_VULKAN, GpuBackend::Vulkan)?;
+            let frames = AvBufferRef::new_hw_frames(
+                &device,
+                GpuBackend::Vulkan,
+                AV_PIX_FMT_VULKAN,
+                AV_PIX_FMT_NV12,
+                config.width,
+                config.height,
+            )?;
+            Ok(Some(EncoderHwContexts {
+                backend: GpuBackend::Vulkan,
+                device,
+                frames: Some(frames),
+                hw_format: AV_PIX_FMT_VULKAN,
+                sw_format: AV_PIX_FMT_NV12,
             }))
         }
         _ => Ok(None),
+    }
+}
+
+fn takes_hw_frames(codec: *const sys::AVCodec, pixel_format: sys::AVPixelFormat) -> bool {
+    let mut index = 0;
+    loop {
+        let config = unsafe { sys::avcodec_get_hw_config(codec, index) };
+        if config.is_null() {
+            return false;
+        }
+        let uses_frames = unsafe {
+            ((*config).methods & sys::AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX as i32) != 0
+        };
+        if uses_frames && unsafe { (*config).pix_fmt } == pixel_format {
+            return true;
+        }
+        index += 1;
     }
 }
 

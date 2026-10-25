@@ -392,7 +392,8 @@ impl LumenFfmpegEncoder {
         include_audio: bool,
     ) -> Result<Self> {
         let codec = match encoder {
-            "hevc" | "hevc_videotoolbox" | "libx265" => VideoCodec::Hevc,
+            "hevc" | "hevc_videotoolbox" | "hevc_vulkan" | "libx265" => VideoCodec::Hevc,
+            "av1_vulkan" | "libsvtav1" | "libaom-av1" => VideoCodec::Av1,
             _ => VideoCodec::H264,
         };
         let mut config =

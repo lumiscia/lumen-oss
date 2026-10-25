@@ -4,8 +4,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::format::InputContext;
 use crate::gpu::{GpuBackend, GpuVideoInput};
-use crate::video::{EncodeMode, VideoCodec};
+use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec};
 
 use super::{
     muxed::MuxedEncoder,
@@ -129,6 +130,44 @@ fn unavailable_hardware_texture_encoder_errors_at_create() {
     };
     assert_eq!(error.operation, "VideoEncoder::create");
     assert_eq!(error.backend, Some(GpuBackend::Vulkan));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn vulkan_encoder_uploads_cpu_frames() {
+    let (width, height) = (256, 144);
+    let path = temp_path("vulkan_upload", "mkv");
+    let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::Av1);
+    config.encoder_name = Some("av1_vulkan".to_string());
+    let mut encoder = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            eprintln!("av1_vulkan unavailable ({error}); skipping Vulkan upload test");
+            return;
+        }
+    };
+    for index in 0..10u8 {
+        let stride = width as usize * 4;
+        encoder
+            .write_video_frame(&CpuVideoFrame {
+                width,
+                height,
+                stride,
+                pixel_format: PixelFormat::Rgba8,
+                pts: None,
+                data: vec![index.wrapping_mul(25); stride * height as usize],
+            })
+            .expect("upload and encode frame");
+    }
+    encoder.finish().expect("finish encode");
+
+    let info = InputContext::open(path.to_string_lossy().to_string())
+        .expect("open encoded file")
+        .media_info();
+    let stream = &info.video_streams[0];
+    assert_eq!(stream.codec, VideoCodec::Av1);
+    assert_eq!((stream.width, stream.height), (width, height));
 
     let _ = fs::remove_file(path);
 }

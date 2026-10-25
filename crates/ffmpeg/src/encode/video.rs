@@ -11,7 +11,7 @@ use sys::{
     AVColorSpace::AVCOL_SPC_BT709,
     AVColorTransferCharacteristic::AVCOL_TRC_BT709,
     AVMediaType::AVMEDIA_TYPE_VIDEO,
-    AVPixelFormat::{AV_PIX_FMT_CUDA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
+    AVPixelFormat::{AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
 };
 
 use super::codec::find_encoder;
@@ -140,7 +140,12 @@ impl VideoEncoder {
             num: framerate.den,
             den: framerate.num,
         };
-        let hw_contexts = create_encoder_hw_contexts(&config)?;
+        let hw_contexts = create_encoder_hw_contexts(&config, codec)?;
+        // CPU frames are converted to this format, then uploaded when the encoder takes hardware frames.
+        let cpu_format = match &hw_contexts {
+            Some(contexts) if config.mode == EncodeMode::CpuUpload => contexts.sw_format,
+            _ => AV_PIX_FMT_YUV420P,
+        };
 
         unsafe {
             (*context).codec_id = config.codec.to_av_codec_id();
@@ -149,12 +154,10 @@ impl VideoEncoder {
             (*context).height = height;
             (*context).time_base = time_base;
             (*context).framerate = framerate;
-            (*context).pix_fmt = match config.mode {
-                EncodeMode::GpuTexture(GpuBackend::Cuda) => AV_PIX_FMT_CUDA,
-                EncodeMode::GpuTexture(GpuBackend::Metal) => AV_PIX_FMT_VIDEOTOOLBOX,
-                EncodeMode::GpuTexture(GpuBackend::Vulkan) | EncodeMode::CpuUpload => {
-                    AV_PIX_FMT_YUV420P
-                }
+            (*context).pix_fmt = match (&hw_contexts, config.mode) {
+                (Some(contexts), _) => contexts.hw_format,
+                (None, EncodeMode::GpuTexture(GpuBackend::Metal)) => AV_PIX_FMT_VIDEOTOOLBOX,
+                (None, _) => AV_PIX_FMT_YUV420P,
             };
             (*context).color_primaries = AVCOL_PRI_BT709;
             (*context).color_trc = AVCOL_TRC_BT709;
@@ -162,17 +165,17 @@ impl VideoEncoder {
             (*context).color_range = AVCOL_RANGE_MPEG;
             (*context).bit_rate = config.bit_rate;
             (*context).gop_size = gop_size;
-            if let Some(frames) = hw_contexts
-                .as_ref()
-                .and_then(|contexts| contexts.frames.as_ref())
-            {
-                (*context).hw_frames_ctx = sys::av_buffer_ref(frames.ptr);
-                if (*context).hw_frames_ctx.is_null() {
-                    return Err(FfmpegError::new(
-                        "av_buffer_ref",
-                        "failed to reference encoder hardware frames context",
-                    )
-                    .with_backend(GpuBackend::Cuda));
+            if let Some(contexts) = &hw_contexts {
+                (*context).sw_pix_fmt = contexts.sw_format;
+                if let Some(frames) = &contexts.frames {
+                    (*context).hw_frames_ctx = sys::av_buffer_ref(frames.ptr);
+                    if (*context).hw_frames_ctx.is_null() {
+                        return Err(FfmpegError::new(
+                            "av_buffer_ref",
+                            "failed to reference encoder hardware frames context",
+                        )
+                        .with_backend(contexts.backend));
+                    }
                 }
             }
             if ((*(*output.ptr).oformat).flags & sys::AVFMT_GLOBALHEADER) != 0 {
@@ -192,7 +195,7 @@ impl VideoEncoder {
         let mut frame = AvFrame::new()?;
         let scaler = if config.mode == EncodeMode::CpuUpload {
             unsafe {
-                (*frame.as_mut_ptr()).format = AV_PIX_FMT_YUV420P as i32;
+                (*frame.as_mut_ptr()).format = cpu_format as i32;
                 (*frame.as_mut_ptr()).width = width;
                 (*frame.as_mut_ptr()).height = height;
                 ffi::check(
@@ -208,7 +211,7 @@ impl VideoEncoder {
                     PixelFormat::Rgba8.to_av_pixel_format(),
                     width,
                     height,
-                    AV_PIX_FMT_YUV420P,
+                    cpu_format,
                     SWS_BILINEAR,
                     ptr::null_mut(),
                     ptr::null_mut(),
@@ -318,7 +321,22 @@ impl VideoEncoder {
             (*self.frame.as_mut_ptr()).pts = frame.pts.unwrap_or(self.next_pts);
         }
         self.next_pts = self.next_pts.saturating_add(1);
-        self.send_frame(output, self.frame.as_ptr())
+        let Some(hw_frames) = self.hw_frames.as_ref() else {
+            return self.send_frame(output, self.frame.as_ptr());
+        };
+        let mut hw_frame = AvFrame::new()?;
+        unsafe {
+            ffi::check(
+                sys::av_hwframe_get_buffer(hw_frames.ptr, hw_frame.as_mut_ptr(), 0),
+                "av_hwframe_get_buffer",
+            )?;
+            ffi::check(
+                sys::av_hwframe_transfer_data(hw_frame.as_mut_ptr(), self.frame.as_ptr(), 0),
+                "av_hwframe_transfer_data",
+            )?;
+            (*hw_frame.as_mut_ptr()).pts = (*self.frame.as_ptr()).pts;
+        }
+        self.send_frame(output, hw_frame.as_ptr())
     }
 
     pub(in crate::encode) fn flush(&mut self, output: &mut OutputContext) -> Result<()> {
