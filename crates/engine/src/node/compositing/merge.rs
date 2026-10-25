@@ -1,5 +1,6 @@
 use crate::node::{
-    NodeId, NodeParamEvalContext, NodeParams, PortRef, compositing::BlendMode, processing::gaussian,
+    Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef, compositing::BlendMode,
+    processing::gaussian,
 };
 
 use crate::gpu::{
@@ -93,9 +94,10 @@ struct CompiledMerge {
     node_id: NodeId,
     params: MergeParamsDelegate,
     has_mask: bool,
-    /// Bit 0: base, bit 1: overlay.
+    /// Bit 0: base, bit 1: overlay, bit 2: a mask that is read without feathering.
     straight_inputs: u32,
-    /// Feathered mask passes, present when the node has a `mask` input.
+    /// Feathered mask passes, present when the node has a `mask` input and a feather that
+    /// is not a literal zero.
     feather: Option<CompiledFeather>,
     buffer: lumen_gpu::BufferId,
 }
@@ -166,10 +168,31 @@ impl GpuCompileNode for Merge {
         };
 
         let size = base.domain.storage_size;
-        let feather = mask.map(|mask| CompiledFeather {
-            passes: gaussian::compile_passes(ctx, self.id, "merge-feather", mask.texture, size),
-            straight_mask: mask.metadata.alpha_mode == AlphaMode::Unpremultiplied,
+        let straight =
+            |raster: &RasterHandle| raster.metadata.alpha_mode == AlphaMode::Unpremultiplied;
+        // A literal feather of zero or less never blurs, so its passes are left out.
+        let feathered =
+            !matches!(&self.params.feather, Deferred::Value(radius) if !(*radius > 0.0));
+        // The blur spans the mask and the base, so a mask that extends past the base still
+        // feathers the base's edge and a smaller one still feathers into the base.
+        let feather = mask.filter(|_| feathered).map(|mask| {
+            let mask_size = mask.domain.storage_size;
+            let union = lumen_gpu::Size::new(
+                size.width.max(mask_size.width),
+                size.height.max(mask_size.height),
+            );
+            CompiledFeather {
+                passes: gaussian::compile_passes(
+                    ctx,
+                    self.id,
+                    "merge-feather",
+                    mask.texture,
+                    union,
+                ),
+                straight_mask: straight(&mask),
+            }
         });
+        let bare_mask = mask.filter(|_| !feathered);
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("merge:{}:output", self.id.0)),
@@ -222,9 +245,11 @@ impl GpuCompileNode for Merge {
                 lumen_gpu::Binding::sampled_texture(
                     0,
                     2,
-                    feather
-                        .as_ref()
-                        .map_or(base.texture, |feather| feather.passes.output),
+                    match (&feather, &bare_mask) {
+                        (Some(feather), _) => feather.passes.output,
+                        (None, Some(mask)) => mask.texture,
+                        (None, None) => base.texture,
+                    },
                 ),
                 lumen_gpu::Binding::uniform(0, 3, params),
                 lumen_gpu::Binding::storage_texture(0, 4, texture),
@@ -242,8 +267,9 @@ impl GpuCompileNode for Merge {
             node_id: self.id,
             params: self.params.clone(),
             has_mask: !self.mask.is_empty(),
-            straight_inputs: u32::from(base.metadata.alpha_mode == AlphaMode::Unpremultiplied)
-                | (u32::from(overlay.metadata.alpha_mode == AlphaMode::Unpremultiplied) << 1),
+            straight_inputs: u32::from(straight(&base))
+                | (u32::from(straight(&overlay)) << 1)
+                | (u32::from(bare_mask.as_ref().is_some_and(straight)) << 2),
             feather,
             buffer: params,
         });

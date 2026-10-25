@@ -3486,12 +3486,16 @@ const MASK_CANVAS_HEIGHT: usize = 64;
 const MASK_ROW: usize = MASK_CANVAS_HEIGHT / 2;
 
 fn sized_solid(id: NodeId, color: [u8; 4], width: usize) -> NodeKind {
+    sized_solid_rect(id, color, width, MASK_CANVAS_HEIGHT)
+}
+
+fn sized_solid_rect(id: NodeId, color: [u8; 4], width: usize, height: usize) -> NodeKind {
     NodeKind::Background(Background {
         id,
         params: BackgroundParamsDelegate {
             paint: Paint::solid(color).into(),
             width: Deferred::value(width as u32),
-            height: Deferred::value(MASK_CANVAS_HEIGHT as u32),
+            height: Deferred::value(height as u32),
             paint_supersample: Deferred::value(true),
         },
     })
@@ -3797,6 +3801,142 @@ fn merge_feather_spreads_outside_a_smaller_mask() {
         soft[6..=16].windows(2).all(|pair| pair[0] >= pair[1]),
         "the feathered edge falls monotonically: {soft:?}"
     );
+}
+
+/// Compiles a merge of two canvas-sized solids through a solid mask of the given size.
+fn compile_feathered_merge(
+    mask_size: (usize, usize),
+    feather: Deferred<f64>,
+) -> lumen_engine::gpu::CompiledComposition {
+    let (base, overlay, mask, merge, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(5),
+        NodeId::new(3),
+        NodeId::new(4),
+    );
+    let mut graph = Graph::new();
+    graph.nodes.insert(base, wide_solid(base, [0, 0, 0, 255]));
+    graph
+        .nodes
+        .insert(overlay, wide_solid(overlay, [255, 255, 255, 255]));
+    graph.nodes.insert(
+        mask,
+        sized_solid_rect(mask, [255, 255, 255, 255], mask_size.0, mask_size.1),
+    );
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            params: MergeParamsDelegate {
+                feather,
+                ..Default::default()
+            },
+            base: PortRef::new(base, "output".to_string()),
+            overlay: PortRef::new(overlay, "output".to_string()),
+            mask: PortRef::new(mask, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+    CompileContext::new(&test_composition(graph))
+        .compile()
+        .unwrap()
+}
+
+fn feather_passes(compiled: &lumen_engine::gpu::CompiledComposition) -> usize {
+    compiled
+        .plan
+        .passes()
+        .iter()
+        .filter(|pass| {
+            matches!(
+                &pass.desc,
+                lumen_gpu::PassDesc::Compute(desc)
+                    if desc.label.as_deref().is_some_and(|label| label.starts_with("merge-feather:"))
+            )
+        })
+        .count()
+}
+
+#[test]
+fn merge_without_a_feather_skips_the_gaussian_passes() {
+    let size = (MASK_CANVAS_WIDTH, MASK_CANVAS_HEIGHT);
+    let sharp = compile_feathered_merge(size, Deferred::value(0.0));
+    let negative = compile_feathered_merge(size, Deferred::value(-2.0));
+    let expression = compile_feathered_merge(
+        size,
+        Deferred::Expr(lumen_engine::expr::Expression::parse("0").unwrap()),
+    );
+
+    assert_eq!(feather_passes(&sharp), 0);
+    assert_eq!(feather_passes(&negative), 0);
+    assert!(feather_passes(&expression) > 0);
+    let extra_textures = expression.plan.textures().len() - sharp.plan.textures().len();
+    assert!(
+        extra_textures > 0 && negative.plan.textures().len() == sharp.plan.textures().len(),
+        "the expression feather allocates the blur's textures"
+    );
+
+    // Skipping the blur does not change the matte, including for a smaller mask.
+    let rectangle = |graph: &mut Graph| {
+        let mask = NodeId::new(5);
+        graph
+            .nodes
+            .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 255, 255, 255]));
+        mask
+    };
+    for mask_mode in [MaskMode::Alpha, MaskMode::Luma] {
+        let render = |feather: Deferred<f64>| {
+            render_matte(
+                rectangle,
+                MergeParamsDelegate {
+                    mask_mode: mask_mode.into(),
+                    feather,
+                    ..Default::default()
+                },
+            )
+        };
+        let skipped = render(Deferred::value(0.0));
+        let blurred = render(Deferred::Expr(
+            lumen_engine::expr::Expression::parse("0").unwrap(),
+        ));
+        assert_eq!(skipped, blurred, "{mask_mode:?}");
+    }
+}
+
+#[test]
+fn merge_feather_blurs_the_union_of_the_mask_and_the_base() {
+    let feather = || Deferred::value(2.0);
+    let output_size = |compiled: &lumen_engine::gpu::CompiledComposition| {
+        compiled
+            .plan
+            .textures()
+            .iter()
+            .find(|texture| texture.label.as_deref() == Some("merge-feather:3:output"))
+            .map(|texture| texture.desc.domain.storage_size)
+            .unwrap()
+    };
+    let base = lumen_gpu::Size::new(MASK_CANVAS_WIDTH as u32, MASK_CANVAS_HEIGHT as u32);
+
+    let larger =
+        compile_feathered_merge((MASK_CANVAS_WIDTH + 40, MASK_CANVAS_HEIGHT + 30), feather());
+    assert_eq!(
+        output_size(&larger),
+        lumen_gpu::Size::new(base.width + 40, base.height + 30)
+    );
+    let wider = compile_feathered_merge((MASK_CANVAS_WIDTH + 8, MASK_CANVAS_HEIGHT / 2), feather());
+    assert_eq!(
+        output_size(&wider),
+        lumen_gpu::Size::new(base.width + 8, base.height)
+    );
+    let smaller = compile_feathered_merge((12, 12), feather());
+    assert_eq!(output_size(&smaller), base);
 }
 
 #[test]

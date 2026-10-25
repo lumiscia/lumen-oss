@@ -2,7 +2,7 @@ struct MergeParams {
     opacity: f32,
     blend_mode: u32,
     has_mask: u32,
-    // Bit 0: base, bit 1: overlay.
+    // Bit 0: base, bit 1: overlay, bit 2: mask (only when it is not feathered).
     straight_inputs: u32,
     mask_mode: u32,
     invert: u32,
@@ -48,7 +48,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let overlay = to_premultiplied_alpha(sample_or_transparent(overlay_tex, pixel), (params.straight_inputs & 2u) != 0u);
     var mask = 1.0;
     if (params.has_mask == 1u) {
-        mask = clamp(matte_of(textureLoad(mask_tex, vec2<i32>(pixel), 0)), 0.0, 1.0);
+        let texel = to_premultiplied_alpha(sample_or_transparent(mask_tex, pixel), (params.straight_inputs & 4u) != 0u);
+        mask = clamp(matte_of(texel), 0.0, 1.0);
         if (params.invert != 0u) {
             mask = 1.0 - mask;
         }
