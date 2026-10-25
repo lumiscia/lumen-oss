@@ -1901,7 +1901,11 @@ fn text_standalone_compile_bind_execute_requires_injected_atlas() {
             return;
         }
     };
-    for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
+    for mode in [
+        TextRenderMode::Raster,
+        TextRenderMode::Msdf,
+        TextRenderMode::Auto,
+    ] {
         let validation = gpu
             .device
             .push_error_scope(lumen_gpu::wgpu::ErrorFilter::Validation);
@@ -2114,7 +2118,9 @@ fn text_atlas_overflow_does_not_thrash_on_repeated_binds() {
         let oversized = renderer
             .bind_frame(&composition, frame, &EmptyMediaStore)
             .unwrap();
-        assert_eq!(oversized.texture_upload_count(), 0);
+        // The raster glyph is too big for the atlas, so one field is drawn instead
+        // and reused.
+        assert_eq!(oversized.texture_upload_count(), usize::from(frame == 4));
         renderer.upload_bound_frame(&oversized).unwrap();
     }
     let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(1)).unwrap() else {
@@ -3347,4 +3353,86 @@ fn text_spacing_and_variable_weight_change_output_smoothly() {
         previous = ink;
     }
     assert_eq!(render(animated.clone(), 5), w450);
+}
+
+#[test]
+fn text_glyphs_larger_than_the_atlas_still_draw() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // At 6000 px the stem of an "I" is taller than the 4096 px atlas.
+    let mut composition = text_test_composition(TextParamsDelegate {
+        content: Deferred::value("I".to_string()),
+        font_size: Deferred::value(6000.0),
+        position: Deferred::value((-700.0, -2000.0)),
+        ..Default::default()
+    });
+    composition.render_settings.width = 256;
+    composition.render_settings.height = 256;
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let inked = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel[3] == 255)
+        .count();
+    assert!(inked > 256 * 256 / 2, "only {inked} pixels inked");
+}
+
+#[test]
+fn text_msdf_corners_stay_within_a_pixel_of_raster_at_1000px() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = (1500_usize, 1100_usize);
+    let mut render = |mode: TextRenderMode| {
+        let mut composition = text_test_composition(TextParamsDelegate {
+            content: Deferred::value("Ra".to_string()),
+            font_size: Deferred::value(1000.0),
+            position: Deferred::value((20.0, -180.0)),
+            render_mode: mode.into(),
+            ..Default::default()
+        });
+        composition.render_settings.width = width as u32;
+        composition.render_settings.height = height as u32;
+        renderer
+            .compile_with_media(
+                &composition,
+                &EmptyMediaStore,
+                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .unwrap();
+        let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[3])
+            .collect::<Vec<_>>()
+    };
+    let raster = render(TextRenderMode::Raster);
+    let msdf = render(TextRenderMode::Msdf);
+    assert!(raster.iter().filter(|alpha| **alpha == 255).count() > 50_000);
+
+    // Fields with too few texels per em cut facets of several pixels into
+    // sharp corners, so the field must stay inside the raster outline dilated
+    // and eroded by one pixel.
+    let mut outliers = 0;
+    for y in 1..height - 1 {
+        for x in 1..width - 1 {
+            let (mut low, mut high) = (255_u8, 0_u8);
+            for ny in y - 1..=y + 1 {
+                for nx in x - 1..=x + 1 {
+                    low = low.min(raster[ny * width + nx]);
+                    high = high.max(raster[ny * width + nx]);
+                }
+            }
+            let value = msdf[y * width + x];
+            outliers += usize::from(low.saturating_sub(value).max(value.saturating_sub(high)) > 26);
+        }
+    }
+    assert!(outliers <= 16, "{outliers} pixels off the raster outline");
 }

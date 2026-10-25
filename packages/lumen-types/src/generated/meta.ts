@@ -119,7 +119,7 @@ export type ShapeGeometryKind = "rectangle" | "ellipse" | "polygon";
 export type TextAlignmentHorizontal = "left" | "center" | "right" | "justify";
 export type TextAlignmentVertical = "top" | "middle" | "bottom";
 export type TextFontStyle = "normal" | "italic" | "oblique";
-export type TextRenderMode = "raster" | "msdf";
+export type TextRenderMode = "raster" | "msdf" | "auto";
 export type TransformSampling = "nearest" | "linear";
 
 export interface CompositionNodeBase<TKind extends NodeKind> {

@@ -58,6 +58,7 @@ pub enum TextRenderMode {
     #[default]
     Raster = 0,
     Msdf = 1,
+    Auto = 2,
 }
 
 /// Produces a text source.
@@ -78,7 +79,7 @@ pub struct TextParams {
     /// Font style.
     #[meta(kind = "enum", enum_type = TextFontStyle)]
     pub font_style: TextFontStyle,
-    /// Glyph rendering mode. MSDF reuses outline distance fields at every size.
+    /// Glyph rendering mode. MSDF reuses outline distance fields across sizes; Auto is MSDF from 512 px.
     #[meta(kind = "enum", enum_type = TextRenderMode)]
     pub render_mode: TextRenderMode,
     /// Maximum line width in pixels. Use 0 for automatic width.
@@ -254,6 +255,7 @@ impl GpuCompiledNode for CompiledText {
                 }
                 lumen_text::TextRenderMode::Msdf
             }
+            TextRenderMode::Auto => lumen_text::TextRenderMode::Auto,
         };
         let atlas_started = trace_now_ms();
         let mut atlas = bound
@@ -275,7 +277,7 @@ impl GpuCompiledNode for CompiledText {
         drop(atlas);
         drop(text_system);
         let atlas_ms = trace_now_ms() - atlas_started;
-        if mode == lumen_text::TextRenderMode::Msdf {
+        if mode != lumen_text::TextRenderMode::Raster {
             bound.text_generation_count += prepared.uploads.len();
             bound.text_generation_ms += atlas_ms;
         }

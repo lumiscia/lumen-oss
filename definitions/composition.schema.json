@@ -2815,8 +2815,8 @@
                   },
                   "render_mode": {
                     "default": "raster",
-                    "description": "Glyph rendering mode. MSDF reuses outline distance fields at every size.",
-                    "enum": ["raster", "msdf"],
+                    "description": "Glyph rendering mode. MSDF reuses outline distance fields across sizes; Auto is MSDF from 512 px.",
+                    "enum": ["raster", "msdf", "auto"],
                     "title": "Render Mode",
                     "type": "string",
                     "x-lumen-enumOptions": [
@@ -2829,6 +2829,11 @@
                         "label": "Msdf",
                         "name": "msdf",
                         "value": 1
+                      },
+                      {
+                        "label": "Auto",
+                        "name": "auto",
+                        "value": 2
                       }
                     ],
                     "x-lumen-kind": "enum"

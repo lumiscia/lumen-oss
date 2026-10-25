@@ -25,8 +25,15 @@ pub const DEFAULT_FONT_FAMILY: &str = "Roboto";
 pub const ROBOTO_REGULAR_BYTES: &[u8] = include_bytes!("../assets/roboto/Roboto-Regular.ttf");
 /// Whether [`TextRenderMode::Msdf`] is compiled in.
 pub const MSDF_SUPPORTED: bool = cfg!(feature = "msdf");
-/// Em size, in atlas texels, that every MSDF glyph is generated at.
+/// Em size, in atlas texels, of the coarsest distance fields.
 pub const MSDF_EM_SIZE: f32 = 48.0;
+/// Em size, in atlas texels, of the finest distance fields.
+pub const MSDF_MAX_EM_SIZE: f32 = 384.0;
+/// Drawn size at which a distance field with [`MSDF_EM_SIZE`] texels per em is
+/// outgrown. Past it, fine corners such as serifs show as facets.
+const MSDF_MAX_MAGNIFICATION: f32 = 4.0;
+/// Font size from which [`TextRenderMode::Auto`] draws distance fields.
+pub const MSDF_AUTO_MIN_SIZE: f32 = 512.0;
 /// Width of the MSDF distance range in atlas texels, centred on the outline.
 pub const MSDF_PX_RANGE: f32 = 6.0;
 
@@ -36,10 +43,23 @@ pub enum TextRenderMode {
     /// Glyphs are rasterized for their size and subpixel position.
     #[default]
     Raster,
-    /// Outline glyphs share one distance field across every size. Colour,
-    /// bitmap and overlapping-contour glyphs, and every glyph in builds without
-    /// the `msdf` feature, are rasterized.
+    /// Outline glyphs share distance fields across sizes, regenerated at a
+    /// finer resolution for each doubling of size past [`MSDF_EM_SIZE`] × 6.
+    /// Colour, bitmap and overlapping-contour glyphs, and every glyph in builds
+    /// without the `msdf` feature, are rasterized.
     Msdf,
+    /// [`Self::Raster`] below [`MSDF_AUTO_MIN_SIZE`] and [`Self::Msdf`] from it.
+    Auto,
+}
+
+/// Texels per em of the distance field drawn at `font_size`: the coarsest
+/// that is not magnified more than [`MSDF_MAX_MAGNIFICATION`] times.
+pub fn msdf_em_size(font_size: f32) -> f32 {
+    let mut em = MSDF_EM_SIZE;
+    while em < MSDF_MAX_EM_SIZE && font_size > em * MSDF_MAX_MAGNIFICATION {
+        em *= 2.0;
+    }
+    em
 }
 
 #[derive(Debug)]
@@ -598,8 +618,8 @@ struct PlacedGlyph {
     slot: AllocId,
     origin: [u32; 2],
     size: [u32; 2],
-    /// Image offset from the pen, y up; in pixels for raster glyphs and
-    /// [`MSDF_EM_SIZE`] units for distance fields.
+    /// Image offset from the pen, y up; in pixels for raster glyphs and field
+    /// texels for distance fields.
     left: f32,
     top: f32,
     mode: u32,
@@ -678,21 +698,26 @@ impl GlyphAtlas {
         self.glyphs.is_empty()
     }
 
+    /// Distance fields are used where requested, and for raster glyphs too
+    /// large for the atlas, unless the glyph can only be rasterized.
     fn key_for(&self, key: GlyphKey, mode: TextRenderMode) -> AtlasKey {
+        let raster = AtlasKey::Raster(key.0);
         #[cfg(feature = "msdf")]
-        if mode == TextRenderMode::Msdf {
+        {
             let msdf = AtlasKey::Msdf(msdf::msdf_key(key.0));
-            if !self
-                .glyphs
-                .get(&msdf)
-                .is_some_and(|glyph| matches!(glyph.image, AtlasImage::RasterOnly))
-            {
+            let image = |key| self.glyphs.get(key).map(|glyph| glyph.image);
+            let wanted = match mode {
+                TextRenderMode::Raster => false,
+                TextRenderMode::Msdf => true,
+                TextRenderMode::Auto => f32::from_bits(key.0.font_size_bits) >= MSDF_AUTO_MIN_SIZE,
+            } || matches!(image(&raster), Some(AtlasImage::Oversized));
+            if wanted && !matches!(image(&msdf), Some(AtlasImage::RasterOnly)) {
                 return msdf;
             }
         }
         #[cfg(not(feature = "msdf"))]
         let _ = mode;
-        AtlasKey::Raster(key.0)
+        raster
     }
 
     /// Unique atlas keys of `glyphs`, in order.
@@ -787,7 +812,8 @@ impl PlacedGlyph {
         let (rect, uv_rect) = if self.mode == GLYPH_MODE_MSDF {
             // Fields are scaled to the glyph's size at its exact position, and
             // inset by half a texel so filtering stays inside the slot.
-            let scale = f32::from_bits(glyph.key.0.font_size_bits) / MSDF_EM_SIZE;
+            let font_size = f32::from_bits(glyph.key.0.font_size_bits);
+            let scale = font_size / msdf_em_size(font_size);
             (
                 [
                     glyph.position[0] + (self.left + 0.5) * scale,
@@ -1503,7 +1529,9 @@ mod tests {
                 });
                 for ((glyph, placed), instance) in visible.zip(&prepared.instances) {
                     let baseline = if instance.mode == GLYPH_MODE_MSDF {
-                        instance.rect[1] + (placed.top - 0.5) * request.font_size / MSDF_EM_SIZE
+                        instance.rect[1]
+                            + (placed.top - 0.5) * request.font_size
+                                / msdf_em_size(request.font_size)
                     } else {
                         // Swash's raster offset is in outline coordinates, where Y points up.
                         instance.rect[1] + placed.top - glyph.key.0.y_bin.as_float()
@@ -1550,6 +1578,160 @@ mod tests {
 
             assert!(uploads <= fields.len());
             assert_eq!(atlas.size(), 4096);
+        }
+
+        #[test]
+        fn field_resolution_grows_with_font_size() {
+            assert_eq!(msdf_em_size(14.0), MSDF_EM_SIZE);
+            assert_eq!(msdf_em_size(4.0 * MSDF_EM_SIZE), MSDF_EM_SIZE);
+            assert_eq!(msdf_em_size(4.0 * MSDF_EM_SIZE + 1.0), 2.0 * MSDF_EM_SIZE);
+            assert_eq!(msdf_em_size(1000.0), MSDF_MAX_EM_SIZE);
+            assert_eq!(msdf_em_size(100_000.0), MSDF_MAX_EM_SIZE);
+        }
+
+        #[test]
+        fn oversized_raster_glyphs_fall_back_to_distance_fields() {
+            let mut system = TextSystem::new();
+            let mut request = TextLayoutRequest::new("H");
+            request.font_size = 1500.0;
+            let layout = system.layout(&request);
+            let mut atlas = GlyphAtlas::new(512);
+            atlas.begin_frame();
+            let raster = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster);
+            assert_eq!(raster.dropped_glyphs, 0);
+            assert_eq!(msdf_instances(&raster), 1);
+            atlas.commit(raster.frame);
+
+            // The oversized raster key is remembered, so the next frame does not
+            // rasterize it again.
+            atlas.begin_frame();
+            let again = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster);
+            assert_eq!(msdf_instances(&again), 1);
+            assert!(again.uploads.is_empty());
+
+            // Colour glyphs have no outline to scale, so they are still dropped.
+            system.load_font_data(COLR_FONT.to_vec());
+            let mut colour = TextLayoutRequest::new("A");
+            colour.font_family = "Roboto COLR Test".to_string();
+            colour.font_size = 1500.0;
+            let colour = system.layout(&colour);
+            atlas.begin_frame();
+            let colour = prepare(&mut system, &mut atlas, &colour, TextRenderMode::Raster);
+            assert_eq!(colour.instances.len(), 0);
+            assert_eq!(colour.dropped_glyphs, 1);
+        }
+
+        #[test]
+        fn auto_mode_uses_fields_from_the_size_threshold() {
+            let mut system = TextSystem::new();
+            let mut atlas = GlyphAtlas::new(2048);
+            for (size, fields) in [
+                (MSDF_AUTO_MIN_SIZE - 1.0, 0),
+                (MSDF_AUTO_MIN_SIZE, 1),
+                (MSDF_AUTO_MIN_SIZE + 100.0, 1),
+            ] {
+                let mut request = TextLayoutRequest::new("H");
+                request.font_size = size;
+                let layout = system.layout(&request);
+                atlas.begin_frame();
+                let prepared = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Auto);
+                assert_eq!(prepared.dropped_glyphs, 0);
+                assert_eq!(msdf_instances(&prepared), fields, "size {size}");
+                assert_eq!(prepared.instances.len(), 1);
+            }
+        }
+
+        /// Pixels of `window` (`[x, y, width, height]`) covered by one glyph, as the
+        /// text shader computes them: raster glyphs read 1:1, fields are
+        /// bilinearly filtered and sharpened.
+        fn glyph_coverage(
+            system: &mut TextSystem,
+            layout: &TextLayout,
+            mode: TextRenderMode,
+            window: [i32; 4],
+        ) -> Vec<f32> {
+            const ATLAS: u32 = 4096;
+            let render = system.render_atlas(layout, mode, ATLAS, 1);
+            let [instance] = render.instances[..] else {
+                panic!("expected one glyph");
+            };
+            let [x, y, width, height] = instance.rect;
+            let [origin_x, origin_y, window_width, window_height] = window;
+            let texel = |x: i32, y: i32| -> [f32; 4] {
+                let at = (y as usize * ATLAS as usize + x as usize) * 4;
+                std::array::from_fn(|i| f32::from(render.pixels[at + i]) / 255.0)
+            };
+            let [u0, v0, u1, _] = instance.uv_rect;
+            let texels_per_pixel = (u1 - u0) / width;
+            let screen_px_range = (0.5 * MSDF_PX_RANGE / texels_per_pixel).max(1.0);
+            let mut coverage = Vec::new();
+            for py in 0..window_height {
+                for px in 0..window_width {
+                    let (fx, fy) = (
+                        (origin_x + px) as f32 + 0.5 - x,
+                        (origin_y + py) as f32 + 0.5 - y,
+                    );
+                    let (inside_x, inside_y) =
+                        ((0.0..width).contains(&fx), (0.0..height).contains(&fy));
+                    coverage.push(if !(inside_x && inside_y) {
+                        0.0
+                    } else if instance.mode == GLYPH_MODE_MSDF {
+                        let (u, v) = (
+                            u0 + fx * texels_per_pixel - 0.5,
+                            v0 + fy * texels_per_pixel - 0.5,
+                        );
+                        let (tx, ty) = (u.floor(), v.floor());
+                        let (wx, wy) = (u - tx, v - ty);
+                        let mut median = [0.0; 3];
+                        for (channel, value) in median.iter_mut().enumerate() {
+                            let at =
+                                |dx: i32, dy: i32| texel(tx as i32 + dx, ty as i32 + dy)[channel];
+                            *value = (at(0, 0) * (1.0 - wx) + at(1, 0) * wx) * (1.0 - wy)
+                                + (at(0, 1) * (1.0 - wx) + at(1, 1) * wx) * wy;
+                        }
+                        let [r, g, b] = median;
+                        let median = r.min(g).max(r.max(g).min(b));
+                        (screen_px_range * (median - 0.5) + 0.5).clamp(0.0, 1.0)
+                    } else {
+                        texel((u0 + fx) as i32, (v0 + fy) as i32)[3]
+                    });
+                }
+            }
+            coverage
+        }
+
+        /// Fields drawn at 1000 px must stay within a pixel of the raster outline.
+        /// A field with 48 texels per em cuts facets of more than a pixel into the
+        /// sharp corners and curves of these glyphs.
+        #[test]
+        fn large_fields_keep_corners_sharp() {
+            let mut system = TextSystem::new();
+            for text in ["R", "W", "a", "4"] {
+                let mut request = TextLayoutRequest::new(text);
+                request.font_size = 1000.0;
+                request.disable_hinting = true;
+                let layout = system.layout(&request);
+                let [x, y] = layout.glyphs[0].position.map(|axis| axis.floor() as i32);
+                let window = [x - 50, y - 800, 800, 1100];
+                let raster = glyph_coverage(&mut system, &layout, TextRenderMode::Raster, window);
+                let msdf = glyph_coverage(&mut system, &layout, TextRenderMode::Msdf, window);
+                let (width, height) = (window[2] as usize, window[3] as usize);
+                let mut outliers = 0;
+                for py in 1..height - 1 {
+                    for px in 1..width - 1 {
+                        let (mut low, mut high) = (1.0_f32, 0.0_f32);
+                        for ny in py - 1..=py + 1 {
+                            for nx in px - 1..=px + 1 {
+                                low = low.min(raster[ny * width + nx]);
+                                high = high.max(raster[ny * width + nx]);
+                            }
+                        }
+                        let value = msdf[py * width + px];
+                        outliers += usize::from((low - value).max(value - high) > 0.1);
+                    }
+                }
+                assert!(outliers <= 16, "{text}: {outliers} pixels off the outline");
+            }
         }
 
         #[test]
