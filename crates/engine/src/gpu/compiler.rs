@@ -61,6 +61,7 @@ pub struct CompileContext<'a> {
     public_outputs: HashMap<PortRef, CompiledOutput>,
     compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
+    text_atlas_texture: Option<lumen_gpu::TextureId>,
 }
 
 impl<'a> CompileContext<'a> {
@@ -116,9 +117,11 @@ impl<'a> CompileContext<'a> {
             public_outputs: HashMap::new(),
             compiled_nodes: HashMap::new(),
             output_format,
+            text_atlas_texture: None,
         }
     }
 
+    /// Compiles a plan whose text atlas must be injected with `CompiledComposition::prepare_text_atlas`.
     pub fn compile(mut self) -> crate::Result<CompiledComposition> {
         if let Err(mut errors) = self.composition.validate_structure() {
             // Structural validation can report several independent problems. The public compiler
@@ -135,6 +138,10 @@ impl<'a> CompileContext<'a> {
             output,
             node_outputs: self.public_outputs,
             compiled_nodes: self.compiled_nodes,
+            text_atlas_texture: self.text_atlas_texture,
+            text_atlas: std::sync::Arc::new(std::sync::Mutex::new(lumen_text::GlyphAtlas::new(
+                super::types::TEXT_ATLAS_SIZE,
+            ))),
         })
     }
 
@@ -148,6 +155,18 @@ impl<'a> CompileContext<'a> {
 
     pub(crate) fn output_format(&self) -> lumen_gpu::wgpu::TextureFormat {
         self.output_format
+    }
+
+    pub(crate) fn text_atlas_texture(&mut self) -> lumen_gpu::TextureId {
+        *self.text_atlas_texture.get_or_insert_with(|| {
+            self.builder.texture(
+                Some("text:shared-atlas".to_string()),
+                lumen_gpu::TextureDesc::sampled(
+                    lumen_gpu::Size::new(1, 1),
+                    lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                ),
+            )
+        })
     }
 
     pub(crate) fn builder_mut(&mut self) -> &mut lumen_gpu::RenderPlanBuilder {

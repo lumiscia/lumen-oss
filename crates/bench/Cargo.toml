@@ -11,24 +11,18 @@ path = "src/lib.rs"
 [features]
 default = []
 cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
-experimental-msdf = ["lumen-engine/experimental-msdf", "lumen-text/experimental-msdf"]
 vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
 metal = ["lumen-engine/metal", "lumen-ffmpeg/metal", "lumen-gpu/metal"]
 
 [dependencies]
 anyhow = "1.0.101"
-cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
-fdsm = "0.8.0"
-fdsm-skrifa = "0.2.0"
-image = { version = "0.25.6", default-features = false }
 libc = "0.2"
-nalgebra = "0.34.1"
-skrifa = "0.40.0"
+pollster = "1.0.1"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 lumen-engine = { path = "../engine", features = ["ffmpeg", "image", "json"] }
 lumen-gpu = { package = "lumen-engine-gpu", path = "../gpu" }
 lumen-ffmpeg = { package = "lumen-engine-ffmpeg", path = "../ffmpeg" }
-lumen-text = { package = "lumen-engine-text", path = "../text" }
+lumen-text = { package = "lumen-engine-text", path = "../text", features = ["msdf"] }
 
 [[bin]]
 name = "lumen-bench-composition"

@@ -2,6 +2,7 @@ struct TextGlobals {
     target_size: vec2<f32>,
     px_range: f32,
     glyph_count: u32,
+    paint_bounds: vec4<f32>,
 }
 
 struct GlyphInstance {
@@ -16,7 +17,7 @@ struct GlyphInstance {
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
+    @location(0) texel: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) mode: u32,
 }
@@ -25,6 +26,28 @@ struct VertexOut {
 @group(0) @binding(1) var atlas_texture: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
 @group(0) @binding(3) var<storage, read> glyphs: array<GlyphInstance>;
+@group(0) @binding(4) var<uniform> fill: Paint;
+
+// Requires the engine's alpha and paint chunks prepended.
+fn text_paint_at(pixel: vec2<f32>) -> vec4<f32> {
+    let local01 = clamp(
+        (pixel - globals.paint_bounds.xy) / max(globals.paint_bounds.zw, vec2<f32>(1.0)),
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+    );
+    return sample_paint(fill, pixel, local01);
+}
+
+fn text_paint_aa(pixel: vec2<f32>) -> vec4<f32> {
+    var color = vec4<f32>(0.0);
+    for (var y = 0u; y < 4u; y = y + 1u) {
+        for (var x = 0u; x < 4u; x = x + 1u) {
+            let offset = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) * 0.25 - vec2<f32>(0.5);
+            color += text_paint_at(pixel + offset);
+        }
+    }
+    return color * 0.0625;
+}
 
 @vertex
 fn vs_main(
@@ -34,7 +57,7 @@ fn vs_main(
     if (instance_index >= globals.glyph_count) {
         var out: VertexOut;
         out.position = vec4<f32>(2.0, 2.0, 0.0, 1.0);
-        out.uv = vec2<f32>(0.0);
+        out.texel = vec2<f32>(0.0);
         out.color = vec4<f32>(0.0);
         out.mode = 0u;
         return out;
@@ -57,7 +80,7 @@ fn vs_main(
 
     var out: VertexOut;
     out.position = vec4<f32>(clip, 0.0, 1.0);
-    out.uv = mix(glyph.uv_rect.xy, glyph.uv_rect.zw, corner);
+    out.texel = mix(glyph.uv_rect.xy, glyph.uv_rect.zw, corner);
     out.color = glyph.color;
     out.mode = glyph.mode;
     return out;
@@ -69,25 +92,26 @@ fn median3(value: vec3<f32>) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    let sample = textureSample(atlas_texture, atlas_sampler, in.uv);
-    let uv_width = fwidth(in.uv);
-
+    // Raster glyphs map 1:1 onto atlas texels. Distance fields are filtered,
+    // and sampled outside the branch because derivatives need uniform flow.
+    let raster = textureLoad(atlas_texture, vec2<i32>(floor(in.texel)), 0);
+    let field = textureSample(
+        atlas_texture,
+        atlas_sampler,
+        in.texel / vec2<f32>(textureDimensions(atlas_texture)),
+    );
+    let screen_px_range = max(0.5 * dot(vec2<f32>(globals.px_range), 1.0 / fwidth(in.texel)), 1.0);
+    var text_paint = text_paint_at(in.position.xy);
+    if (fill.paint_supersample != 0u) {
+        text_paint = text_paint_aa(in.position.xy);
+    }
+    // The atlas, the paint and the output are premultiplied.
     if (in.mode == 1u) {
-        return sample * in.color.a;
+        return raster * (in.color.a * text_paint.a);
     }
-
-    if (in.mode == 0u) {
-        let alpha = sample.a * in.color.a;
-        return vec4<f32>(in.color.rgb * alpha, alpha);
+    var coverage = raster.a;
+    if (in.mode == 2u) {
+        coverage = clamp(screen_px_range * (median3(field.rgb) - 0.5) + 0.5, 0.0, 1.0);
     }
-
-    let signed_distance = median3(sample.rgb) - 0.5;
-    let atlas_size = vec2<f32>(textureDimensions(atlas_texture, 0));
-    let unit_range = vec2<f32>(globals.px_range) / atlas_size;
-    let screen_tex_size = vec2<f32>(1.0) / uv_width;
-    let screen_px_range = max(0.5 * dot(unit_range, screen_tex_size), 1.0);
-    let edge_width = max(0.5 / screen_px_range, 0.001);
-    let coverage = smoothstep(-edge_width, edge_width, signed_distance);
-    let alpha = smoothstep(0.45, 0.95, coverage) * in.color.a;
-    return vec4<f32>(in.color.rgb * alpha, alpha);
+    return text_paint * (coverage * in.color.a);
 }

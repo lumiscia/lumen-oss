@@ -49,7 +49,18 @@ pub enum TextAlignmentVertical {
     Bottom = 2,
 }
 
-/// Produces a text raster source.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum")]
+pub enum TextRenderMode {
+    #[default]
+    Raster = 0,
+    Msdf = 1,
+}
+
+/// Produces a text source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TextParams {
     /// Text content to render.
@@ -67,6 +78,9 @@ pub struct TextParams {
     /// Font style.
     #[meta(kind = "enum", enum_type = TextFontStyle)]
     pub font_style: TextFontStyle,
+    /// Glyph rendering mode. MSDF reuses outline distance fields at every size.
+    #[meta(kind = "enum", enum_type = TextRenderMode)]
+    pub render_mode: TextRenderMode,
     /// Maximum line width in pixels. Use 0 for automatic width.
     #[meta(min = 0, step = 1)]
     pub max_width: f64,
@@ -95,6 +109,7 @@ impl Default for TextParams {
             font_size: 16.0,
             font_weight: 400,
             font_style: TextFontStyle::Normal,
+            render_mode: TextRenderMode::Raster,
             max_width: 0.0,
             position: (0.0, 0.0),
             color: Paint::solid([255, 255, 255, 255]),
@@ -105,7 +120,7 @@ impl Default for TextParams {
     }
 }
 
-/// Produces a text raster source.
+/// Produces a text source.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "text", name = "Text", category = "source")]
 pub struct Text {
@@ -196,7 +211,7 @@ impl GpuCompiledNode for CompiledText {
             .is_none_or(|(key, _)| *key != shape_key)
         {
             let layout_started = trace_started.map(|_| trace_now_ms());
-            state.shaped = Some((shape_key.clone(), text_system.shape(&request)));
+            state.shaped = Some((shape_key, text_system.shape(&request)));
             if let Some(started) = layout_started {
                 layout_ms = trace_now_ms() - started;
             }
@@ -214,35 +229,51 @@ impl GpuCompiledNode for CompiledText {
                 TextAlignmentVertical::Bottom => position_y as f32 - height,
             },
         ];
-        let frame_key = TextFrameKey {
-            shape: shape_key,
-            origin_bits: origin.map(f32::to_bits),
-            paint: evaluated.color,
-            paint_supersample: evaluated.paint_supersample,
-            output_width: self.size.width,
-            output_height: self.size.height,
-        };
-        if !state.pending && state.committed.as_ref() == Some(&frame_key) {
-            return Ok(());
-        }
-
         let layout = shaped.place(origin, [1.0; 4]);
-        let atlas_started = trace_started.map(|_| trace_now_ms());
-        let prepared = text_system.prepare_raster_atlas(&mut state.atlas, &layout, self.max_glyphs);
+        let mode = match evaluated.render_mode {
+            TextRenderMode::Raster => lumen_text::TextRenderMode::Raster,
+            TextRenderMode::Msdf => {
+                if !lumen_text::MSDF_SUPPORTED {
+                    static WARN: std::sync::Once = std::sync::Once::new();
+                    WARN.call_once(|| tracing::warn!(target: "lumen_text", "MSDF support is disabled; using raster text"));
+                }
+                lumen_text::TextRenderMode::Msdf
+            }
+        };
+        let atlas_started = trace_now_ms();
+        let mut atlas = bound
+            .text_atlas
+            .as_ref()
+            .expect("frame atlas")
+            .lock()
+            .map_err(|_| RenderError::Gpu {
+                details: "text atlas lock was poisoned".to_string(),
+            })?;
+        let prepared = text_system.prepare_glyphs(
+            &mut atlas,
+            &layout,
+            mode,
+            self.max_glyphs,
+            &mut state.overfull,
+        );
+        let atlas_size = atlas.size();
+        drop(atlas);
         drop(text_system);
-        let atlas_ms = atlas_started.map_or(0.0, |started| trace_now_ms() - started);
+        let atlas_ms = trace_now_ms() - atlas_started;
+        if mode == lumen_text::TextRenderMode::Msdf {
+            bound.text_generation_count += prepared.uploads.len();
+            bound.text_generation_ms += atlas_ms;
+        }
 
         let dropping = prepared.dropped_glyphs > 0;
         if dropping != state.dropping_glyphs {
-            let atlas = state.atlas.config();
             if dropping {
                 tracing::warn!(
                     target: "lumen_text",
                     node_id = self.node_id.0,
                     dropped_glyphs = prepared.dropped_glyphs,
                     max_glyphs = self.max_glyphs,
-                    atlas_width = atlas.width,
-                    atlas_height = atlas.height,
+                    atlas_size,
                     "text glyphs dropped: too many glyphs or glyph atlas full"
                 );
             } else {
@@ -269,7 +300,7 @@ impl GpuCompiledNode for CompiledText {
         }
         let globals = lumen_text::GpuTextGlobals {
             target_size: [self.size.width as f32, self.size.height as f32],
-            px_range: state.atlas.config().px_range as f32,
+            px_range: lumen_text::MSDF_PX_RANGE,
             glyph_count: prepared.instances.len() as u32,
             paint_bounds: layout.bounds,
         };
@@ -282,13 +313,6 @@ impl GpuCompiledNode for CompiledText {
                 bytemuck::cast_slice(&prepared.instances),
             );
         }
-
-        state.pending = true;
-        bound.bind_text(TextBinding {
-            state: Arc::clone(&self.state),
-            atlas_frame: prepared.frame,
-            frame_key,
-        });
 
         if let Some(started) = trace_started {
             trace_text_bind(
@@ -304,46 +328,11 @@ impl GpuCompiledNode for CompiledText {
     }
 }
 
-/// Text state owned by one compiled node. Atlas residency and the skipped-frame
-/// key only advance once the frame's uploads are applied.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct TextState {
-    atlas: lumen_text::RasterAtlas,
     shaped: Option<(TextShapeKey, lumen_text::ShapedText)>,
-    pending: bool,
-    committed: Option<TextFrameKey>,
     dropping_glyphs: bool,
-}
-
-impl TextState {
-    pub(crate) fn new(atlas: lumen_text::AtlasConfig) -> Self {
-        Self {
-            atlas: lumen_text::RasterAtlas::new(atlas),
-            shaped: None,
-            pending: false,
-            committed: None,
-            dropping_glyphs: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct TextBinding {
-    state: Arc<Mutex<TextState>>,
-    atlas_frame: u64,
-    frame_key: TextFrameKey,
-}
-
-impl TextBinding {
-    pub(crate) fn commit(&self) -> crate::Result<()> {
-        let mut state = self.state.lock().map_err(|_| RenderError::Gpu {
-            details: "text state lock was poisoned".to_string(),
-        })?;
-        state.atlas.commit(self.atlas_frame);
-        state.committed = Some(self.frame_key.clone());
-        state.pending = false;
-        Ok(())
-    }
+    overfull: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,16 +345,6 @@ struct TextShapeKey {
     max_width_bits: u32,
     alignment_horizontal: TextAlignmentHorizontal,
     font_generation: u64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct TextFrameKey {
-    shape: TextShapeKey,
-    origin_bits: [u32; 2],
-    paint: Paint,
-    paint_supersample: bool,
-    output_width: u32,
-    output_height: u32,
 }
 
 pub(crate) fn layout_request(

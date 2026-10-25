@@ -88,9 +88,58 @@ pub trait GpuCompiledNode: std::fmt::Debug + Send + Sync {
 #[derive(Debug)]
 pub struct CompiledComposition {
     pub plan: lumen_gpu::RenderPlan,
+    pub(crate) text_atlas_texture: Option<lumen_gpu::TextureId>,
+    pub(crate) text_atlas: std::sync::Arc<std::sync::Mutex<lumen_text::GlyphAtlas>>,
     pub output: RasterHandle,
     pub node_outputs: HashMap<PortRef, CompiledOutput>,
     pub compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
+}
+
+impl CompiledComposition {
+    /// Installs the 4096² RGBA8 text atlas (64 MiB) after `Renderer::prepare_plan`.
+    /// Standalone callers must call this before uploading text; repeated calls retain the atlas.
+    /// `GpuCompositionRenderer` installs its shared atlas automatically.
+    pub fn prepare_text_atlas(&self, renderer: &mut lumen_gpu::Renderer) -> crate::Result<()> {
+        let Some(id) = self.text_atlas_texture else {
+            return Ok(());
+        };
+        let desc = text_atlas_desc();
+        if renderer.texture_desc(id) == Some(desc) {
+            return Ok(());
+        }
+        renderer
+            .replace_texture(id, create_text_atlas_texture(&renderer.device), desc)
+            .map_err(|error| crate::error::RenderError::Gpu {
+                details: error.to_string(),
+            })?
+            .destroy();
+        Ok(())
+    }
+}
+
+pub(super) const TEXT_ATLAS_SIZE: u32 = 4096;
+
+pub(super) fn text_atlas_desc() -> lumen_gpu::TextureDesc {
+    lumen_gpu::TextureDesc::sampled(
+        lumen_gpu::Size::new(TEXT_ATLAS_SIZE, TEXT_ATLAS_SIZE),
+        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+    )
+}
+
+pub(super) fn create_text_atlas_texture(
+    device: &lumen_gpu::wgpu::Device,
+) -> lumen_gpu::wgpu::Texture {
+    let desc = text_atlas_desc();
+    device.create_texture(&lumen_gpu::wgpu::TextureDescriptor {
+        label: Some("lumen shared glyph atlas"),
+        size: desc.domain.storage_size.as_extent(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: lumen_gpu::wgpu::TextureDimension::D2,
+        format: desc.format,
+        usage: desc.usage,
+        view_formats: &[],
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -99,7 +148,10 @@ pub struct BoundFrame {
     buffer_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
     texture_uploads: Vec<TextureUpload>,
     media_textures: Vec<MediaTextureUpload>,
-    text_bindings: Vec<crate::node::source::text::TextBinding>,
+    pub(crate) text_atlas: Option<std::sync::Arc<std::sync::Mutex<lumen_text::GlyphAtlas>>>,
+    pub(crate) text_atlas_frame: u64,
+    pub(crate) text_generation_count: usize,
+    pub(crate) text_generation_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -215,15 +267,15 @@ impl BoundFrame {
         });
     }
 
-    pub(crate) fn bind_text(&mut self, binding: crate::node::source::text::TextBinding) {
-        self.text_bindings.push(binding);
-    }
-
-    /// Notifies nodes that this frame's uploads were applied.
     /// Call only after uploading the latest bind to its compiled plan.
     pub fn mark_uploaded(&self) -> crate::Result<()> {
-        for binding in &self.text_bindings {
-            binding.commit()?;
+        if let Some(atlas) = &self.text_atlas {
+            atlas
+                .lock()
+                .map_err(|_| crate::error::RenderError::Gpu {
+                    details: "text atlas lock was poisoned".to_string(),
+                })?
+                .commit(self.text_atlas_frame);
         }
         Ok(())
     }

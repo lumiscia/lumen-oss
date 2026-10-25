@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     composition::Composition,
@@ -28,6 +31,8 @@ pub struct GpuCompositionRenderer {
     compiled_plans: HashMap<CompiledPlanKey, PreparedComposition>,
     active_key: Option<CompiledPlanKey>,
     bind_sequence: u64,
+    text_atlas: Arc<Mutex<lumen_text::GlyphAtlas>>,
+    text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
     media_texture_cache: HashMap<MediaTextureKey, Arc<lumen_gpu::wgpu::Texture>>,
     #[cfg(feature = "ffmpeg")]
@@ -47,6 +52,10 @@ impl GpuCompositionRenderer {
             compiled_plans: HashMap::new(),
             active_key: None,
             bind_sequence: 0,
+            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
+                super::types::TEXT_ATLAS_SIZE,
+            ))),
+            text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             media_texture_cache: HashMap::new(),
             #[cfg(feature = "ffmpeg")]
@@ -60,6 +69,10 @@ impl GpuCompositionRenderer {
             compiled_plans: HashMap::new(),
             active_key: None,
             bind_sequence: 0,
+            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
+                super::types::TEXT_ATLAS_SIZE,
+            ))),
+            text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             media_texture_cache: HashMap::new(),
             #[cfg(feature = "ffmpeg")]
@@ -94,7 +107,7 @@ impl GpuCompositionRenderer {
 
     /// Drops every compiled plan and cached media texture, destroying the GPU textures and
     /// buffers this renderer exclusively owns instead of waiting for them to be garbage collected.
-    /// The next render recompiles on the same device.
+    /// Retains the shared text atlas (64 MiB once allocated) and cached glyphs across recompilation.
     pub fn release_resources(&mut self) {
         self.bind_sequence += 1;
         for texture in self.media_texture_cache.values() {
@@ -119,6 +132,17 @@ impl GpuCompositionRenderer {
         self.active_key = None;
     }
 
+    /// Drops compiled plans, cached media, and the text atlas, reclaiming GPU memory and cached glyphs.
+    pub fn release_text_atlas(&mut self) {
+        self.release_resources();
+        if let Some(texture) = self.text_atlas_texture.take() {
+            texture.destroy();
+        }
+        self.text_atlas = Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
+            super::types::TEXT_ATLAS_SIZE,
+        )));
+    }
+
     fn reset_compiled(&mut self, output_format: lumen_gpu::wgpu::TextureFormat) {
         tracing::debug!(
             target: "lumen_render",
@@ -136,7 +160,7 @@ impl GpuCompositionRenderer {
     fn prepare_compiled(
         &mut self,
         key: CompiledPlanKey,
-        compiled: CompiledComposition,
+        mut compiled: CompiledComposition,
     ) -> crate::Result<()> {
         tracing::debug!(
             target: "lumen_render",
@@ -158,6 +182,20 @@ impl GpuCompositionRenderer {
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
+        compiled.text_atlas = Arc::clone(&self.text_atlas);
+        if let Some(id) = compiled.text_atlas_texture {
+            self.ensure_text_atlas_texture()?;
+            renderer
+                .replace_texture_arc(
+                    id,
+                    Arc::clone(self.text_atlas_texture.as_ref().expect("atlas texture")),
+                    super::types::text_atlas_desc(),
+                )
+                .map_err(|error| RenderError::Gpu {
+                    details: error.to_string(),
+                })?
+                .destroy();
+        }
         self.compiled_plans.insert(
             key.clone(),
             PreparedComposition {
@@ -295,6 +333,9 @@ impl GpuCompositionRenderer {
             }
             .into());
         }
+        if bound.text_atlas.is_some() {
+            self.ensure_text_atlas_texture()?;
+        }
         self.upload_media_textures(bound)?;
         let update = bound.frame_update();
         let prepared = self.active_prepared_mut()?;
@@ -305,6 +346,28 @@ impl GpuCompositionRenderer {
                 details: error.to_string(),
             })?;
         bound.mark_uploaded()?;
+        Ok(())
+    }
+
+    fn ensure_text_atlas_texture(&mut self) -> crate::Result<()> {
+        if self.text_atlas_texture.is_some() {
+            return Ok(());
+        }
+        let desc = super::types::text_atlas_desc();
+        let texture = Arc::new(super::types::create_text_atlas_texture(
+            &self.renderer.device,
+        ));
+        for prepared in self.compiled_plans.values_mut() {
+            if let Some(id) = prepared.compiled.text_atlas_texture {
+                prepared
+                    .renderer
+                    .replace_texture_arc(id, Arc::clone(&texture), desc)
+                    .map_err(|error| RenderError::Gpu {
+                        details: error.to_string(),
+                    })?;
+            }
+        }
+        self.text_atlas_texture = Some(texture);
         Ok(())
     }
 

@@ -22,15 +22,11 @@ pub(crate) const PATH_SHADER: &str = concat!(
     include_str!("paint/paint.wgsl"),
     include_str!("path_renderer.wgsl")
 );
-pub(crate) const TEXT_ATLAS_SIZE: lumen_gpu::Size = lumen_gpu::Size {
-    width: 2048,
-    height: 2048,
-};
 fn text_shader() -> String {
     [
         include_str!("../../gpu/shaders/alpha.wgsl"),
         include_str!("paint/paint.wgsl"),
-        lumen_text::ALPHA_TEXT_SHADER,
+        lumen_text::TEXT_SHADER,
     ]
     .concat()
 }
@@ -179,14 +175,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             Some(format!("text:{}:output", text.id.0)),
             lumen_gpu::TextureDesc::render_target(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let atlas_texture = self.ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(text.id.0),
-            Some(format!("text:{}:atlas", text.id.0)),
-            lumen_gpu::TextureDesc::sampled(
-                TEXT_ATLAS_SIZE,
-                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-            ),
-        );
+        let atlas_texture = self.ctx.text_atlas_texture();
         let globals_buffer =
             self.ctx.builder_mut().buffer_for(
                 lumen_gpu::NodeKey(text.id.0),
@@ -216,9 +205,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 address_mode_u: lumen_gpu::wgpu::AddressMode::ClampToEdge,
                 address_mode_v: lumen_gpu::wgpu::AddressMode::ClampToEdge,
                 address_mode_w: lumen_gpu::wgpu::AddressMode::ClampToEdge,
-                // Glyph quads map 1:1 onto atlas texels.
-                mag_filter: lumen_gpu::wgpu::FilterMode::Nearest,
-                min_filter: lumen_gpu::wgpu::FilterMode::Nearest,
+                mag_filter: lumen_gpu::wgpu::FilterMode::Linear,
+                min_filter: lumen_gpu::wgpu::FilterMode::Linear,
                 mipmap_filter: lumen_gpu::wgpu::MipmapFilterMode::Nearest,
                 ..Default::default()
             },
@@ -297,13 +285,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             paint_buffer,
             max_glyphs: MAX_TEXT_GLYPHS,
             size,
-            state: std::sync::Arc::new(std::sync::Mutex::new(TextState::new(
-                lumen_text::AtlasConfig {
-                    width: TEXT_ATLAS_SIZE.width,
-                    height: TEXT_ATLAS_SIZE.height,
-                    px_range: 1,
-                },
-            ))),
+            state: std::sync::Arc::new(std::sync::Mutex::new(TextState::default())),
         });
 
         Ok(CompiledOutput::Raster(RasterHandle {

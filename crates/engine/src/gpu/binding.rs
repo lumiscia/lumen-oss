@@ -46,6 +46,16 @@ impl<'a> FrameBindContext<'a> {
             "bind compiled frame"
         );
         let mut bound = BoundFrame::new();
+        if compiled.text_atlas_texture.is_some() {
+            bound.text_atlas_frame = compiled
+                .text_atlas
+                .lock()
+                .map_err(|_| RenderError::Gpu {
+                    details: "text atlas lock was poisoned".to_string(),
+                })?
+                .begin_frame();
+            bound.text_atlas = Some(std::sync::Arc::clone(&compiled.text_atlas));
+        }
         let output = media_output_port(self.composition)?;
         let mut visited = HashSet::new();
         let mut time_remaps = TimeRemapPath::new();
@@ -57,6 +67,9 @@ impl<'a> FrameBindContext<'a> {
             &mut visited,
             &mut bound,
         )?;
+        if bound.text_generation_count > 0 && bound.text_generation_ms > 3.0 {
+            tracing::debug!(target: "lumen_text", glyphs = bound.text_generation_count, generation_ms = bound.text_generation_ms, "cold text glyph generation");
+        }
         Ok(bound)
     }
 
