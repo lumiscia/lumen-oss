@@ -71,6 +71,8 @@ impl NodeParamType for [f32; 2] {
     }
 }
 
+// Only nested delegates may hold `Vec` fields: `#[derive(Node)]` rejects params with
+// `NodeParams::HAS_VEC_FIELDS` because the schema has no array kind.
 impl<T> NodeParamType for Vec<T> {
     fn property_kind() -> PropertyKind {
         PropertyKind::String

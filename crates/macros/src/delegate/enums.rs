@@ -206,7 +206,7 @@ pub(crate) fn expand_enum_delegate(
                                     node_id,
                                     property_path,
                                     "Enum",
-                                    "range",
+                                    "out-of-range value",
                                 )
                             })
                         }
@@ -258,34 +258,36 @@ pub(crate) fn expand_enum_delegate(
 
             fn from_property_expression(
                 value: ::lumen_engine::node::PropertyExpression,
+                node_id: ::lumen_engine::node::NodeId,
+                property_path: &str,
             ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
+                let expected = <#ident as ::lumen_engine::node::DeferredValue>::property_kind_name();
                 match value {
                     ::lumen_engine::node::PropertyExpression::Value(value) => {
                         <#ident as ::lumen_engine::node::DeferredValue>::from_property_value(value)
                             .map(::core::convert::Into::into)
-                            .ok_or_else(|| ::lumen_engine::error::LumenError::Property(
-                                ::lumen_engine::error::PropertyError::InvalidType {
-                                    node_id: ::lumen_engine::node::NodeId::new(0),
-                                    property_path: ::std::string::String::new(),
-                                    expected: <#ident as ::lumen_engine::node::DeferredValue>::property_kind_name(),
-                                    actual: "property",
-                                }
-                            ))
+                            .ok_or_else(|| {
+                                ::lumen_engine::node::PropertyValue::invalid_type(
+                                    node_id,
+                                    property_path,
+                                    expected,
+                                    "incompatible value",
+                                )
+                            })
                     }
                     ::lumen_engine::node::PropertyExpression::Expr(_) => {
-                        Err(::lumen_engine::error::LumenError::Property(
-                            ::lumen_engine::error::PropertyError::InvalidType {
-                                node_id: ::lumen_engine::node::NodeId::new(0),
-                                property_path: ::std::string::String::new(),
-                                expected: <#ident as ::lumen_engine::node::DeferredValue>::property_kind_name(),
-                                actual: "expression",
-                            }
+                        Err(::lumen_engine::node::PropertyValue::invalid_type(
+                            node_id,
+                            property_path,
+                            expected,
+                            "expression",
                         ))
                     }
                 }
             }
         }
     } else {
+        // Without a `kind` there is no property value mapping, so properties cannot set it.
         quote! {
             fn to_property_value(&self) -> ::lumen_engine::node::PropertyValue {
                 ::lumen_engine::node::PropertyValue::String(::std::string::String::new())
@@ -293,8 +295,15 @@ pub(crate) fn expand_enum_delegate(
 
             fn from_property_expression(
                 _value: ::lumen_engine::node::PropertyExpression,
+                node_id: ::lumen_engine::node::NodeId,
+                property_path: &str,
             ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
-                Ok(<Self as ::core::default::Default>::default())
+                Err(::lumen_engine::node::PropertyValue::invalid_type(
+                    node_id,
+                    property_path,
+                    ::core::stringify!(#ident),
+                    "property value",
+                ))
             }
         }
     };

@@ -98,7 +98,9 @@ pub(crate) fn expand_struct_delegate(
         if is_vec_type(ty) {
             quote! {
                 if let Some(value) = params.and_then(|params| params.get(#name)) {
-                    metas.#ident = ::serde_json::from_value(value.clone())?;
+                    metas.#ident = ::serde_json::from_value(value.clone()).map_err(|error| {
+                        ::anyhow::anyhow!("`{}` on node {node_id}: {error}", #name)
+                    })?;
                 }
             }
         } else {
@@ -106,7 +108,10 @@ pub(crate) fn expand_struct_delegate(
             let reject_expression = meta.property.constant.then(|| {
                 quote! {
                     if matches!(parsed, ::lumen_engine::node::PropertyExpression::Expr(_)) {
-                        ::anyhow::bail!("`{}` does not support expressions", #name);
+                        ::anyhow::bail!(
+                            "`{}` on node {node_id} does not support expressions",
+                            #name
+                        );
                     }
                 }
             });
@@ -115,12 +120,14 @@ pub(crate) fn expand_struct_delegate(
                     let def = #property_def;
                     let parsed = ::lumen_engine::json::parse_property(value, Some(&def), #name)?;
                     #reject_expression
-                    metas.#ident =
-                        ::lumen_engine::node::DelegateValue::from_property_expression(parsed)?;
+                    metas.#ident = ::lumen_engine::node::DelegateValue::from_property_expression(
+                        parsed, node_id, #name,
+                    )?;
                 }
             }
         }
     });
+    let has_vec_fields = metas.iter().any(|meta| is_vec_type(&meta.ty));
     let assert_field_types = metas
         .iter()
         .map(|meta| {
@@ -147,6 +154,8 @@ pub(crate) fn expand_struct_delegate(
 
         impl ::lumen_engine::node::NodeParams for #delegate_ident {
             type Evaluated = #ident;
+
+            const HAS_VEC_FIELDS: bool = #has_vec_fields;
 
             fn property_defs() -> ::std::vec::Vec<::lumen_engine::node::PropertyDef> {
                 vec![#(#property_defs),*]
@@ -178,6 +187,7 @@ pub(crate) fn expand_struct_delegate(
 
             #[cfg(feature = "json")]
             fn from_json(
+                node_id: ::lumen_engine::node::NodeId,
                 params: ::core::option::Option<&::serde_json::Map<::std::string::String, ::serde_json::Value>>,
             ) -> ::anyhow::Result<Self>
             where
