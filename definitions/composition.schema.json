@@ -107,7 +107,7 @@
     },
     "expression": {
       "description": "An expression evaluated per frame in place of a literal value.",
-      "pattern": "^=",
+      "pattern": "^=([^=]|$)",
       "type": "string"
     },
     "nodeKinds": [
@@ -294,7 +294,7 @@
                     "default": "premultiply",
                     "description": "Alpha conversion mode.",
                     "not": {
-                      "pattern": "^="
+                      "pattern": "^=([^=]|$)"
                     },
                     "title": "Mode",
                     "type": "string",
@@ -2410,7 +2410,7 @@
                       }
                     ],
                     "default": 1,
-                    "description": "Shape height in pixels.",
+                    "description": "Shape height in pixels. Ignored for polygon geometry.",
                     "title": "Height",
                     "x-lumen-constraints": {
                       "min": 1.0,
@@ -2428,7 +2428,7 @@
                       }
                     ],
                     "default": "",
-                    "description": "Polygon point list formatted as `x,y; x,y`.",
+                    "description": "Polygon vertices in pixels relative to `position`, as `x,y; x,y` (3 to 128 points).",
                     "title": "Polygon points",
                     "x-lumen-constraints": {
                       "format": "point_list",
@@ -2502,7 +2502,7 @@
                       }
                     ],
                     "default": 1,
-                    "description": "Shape width in pixels.",
+                    "description": "Shape width in pixels. Ignored for polygon geometry.",
                     "title": "Width",
                     "x-lumen-constraints": {
                       "min": 1.0,

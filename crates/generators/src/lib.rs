@@ -312,7 +312,7 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                 "expression": {
                     "description": "An expression evaluated per frame in place of a literal value.",
                     "type": "string",
-                    "pattern": "^="
+                    "pattern": "^=([^=]|$)"
                 },
                 "color": {
                     "oneOf": [
@@ -476,9 +476,9 @@ fn property_schema_json(property: &NodeParamSpec) -> Value {
         NodeParamKind::Float => numeric_property_schema_json("number", property),
         NodeParamKind::Int => numeric_property_schema_json("integer", property),
         NodeParamKind::Bool => json!({ "type": "boolean" }),
-        // A leading `=` always parses as an expression, so literal-only strings exclude it.
+        // A single leading `=` parses as an expression; `==` escapes a literal `=`.
         NodeParamKind::String if !property.accepts_expressions => {
-            json!({ "type": "string", "not": { "pattern": "^=" } })
+            json!({ "type": "string", "not": { "pattern": "^=([^=]|$)" } })
         }
         NodeParamKind::String => json!({ "type": "string" }),
         NodeParamKind::Color => json!({ "$ref": "#/$defs/color" }),
@@ -790,6 +790,9 @@ mod tests {
         let expression_mode = node("alpha_premultiply", json!({ "mode": "='premultiply'" }));
         assert!(!validator.is_valid(&expression_mode));
         assert!(lumen_engine::json::parse_value(&expression_mode).is_err());
+        let escaped_mode = node("alpha_premultiply", json!({ "mode": "==premultiply" }));
+        assert!(validator.is_valid(&escaped_mode));
+        assert!(lumen_engine::json::parse_value(&escaped_mode).is_ok());
         let gradient_with_expression_stop = json!({
             "type": "linear",
             "stops": [{ "offset": 0, "color": "=frame" }]
