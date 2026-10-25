@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{collections::HashSet, ops::Range};
 
 use crate::{
     error::ExpressionError,
@@ -327,6 +327,30 @@ pub fn parse_expression(source: &str) -> Result<Expression, ExpressionError> {
     parser.parse()
 }
 
+/// The distinct nodes and properties `ast` reads, in the order they first appear.
+fn references(ast: &ExprNode) -> Vec<ExpressionReference> {
+    let mut seen = HashSet::new();
+    let mut references = Vec::new();
+    functions::visit(ast, &mut |node| {
+        let reference = match node {
+            ExprNode::SymbolicPath(segments) => ExpressionReference::SymbolicPath {
+                segments: segments.clone(),
+            },
+            ExprNode::Node(node_id) => ExpressionReference::Node { node_id: *node_id },
+            ExprNode::PropertyValue(node_id, property_path) => ExpressionReference::PropertyValue {
+                node_id: *node_id,
+                property_path: property_path.clone(),
+            },
+            ExprNode::VirtualProperty(id) => ExpressionReference::VirtualProperty { id: *id },
+            _ => return,
+        };
+        if seen.insert(reference.clone()) {
+            references.push(reference);
+        }
+    });
+    references
+}
+
 fn tokenize(source: &str) -> Result<Vec<TokenKind>, ExpressionError> {
     let mut lexer = Lexer::new(source);
     let mut tokens = Vec::new();
@@ -381,7 +405,7 @@ struct Parser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
     position: usize,
-    references: Vec<ExpressionReference>,
+    budget: functions::Budget,
 }
 
 impl<'a> Parser<'a> {
@@ -390,7 +414,7 @@ impl<'a> Parser<'a> {
             source,
             tokens: Vec::new(),
             position: 0,
-            references: Vec::new(),
+            budget: functions::Budget::default(),
         }
     }
 
@@ -400,10 +424,20 @@ impl<'a> Parser<'a> {
         self.expect(TokenExpectation::Eof)?;
         Ok(Expression {
             id: ExpressionId(0),
+            references: references(&ast),
             ast,
-            references: self.references.clone(),
             source: self.source.to_string(),
         })
+    }
+
+    fn binary(
+        &mut self,
+        lhs: ExprNode,
+        op: BinaryOp,
+        rhs: ExprNode,
+    ) -> Result<ExprNode, ExpressionError> {
+        self.budget
+            .push(ExprNode::Binary(Box::new(lhs), op, Box::new(rhs)))
     }
 
     fn tokenize(&mut self) -> Result<(), ExpressionError> {
@@ -423,7 +457,7 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_and()?;
         while self.match_token(|kind| matches!(kind, TokenKind::OrOr)) {
             let rhs = self.parse_and()?;
-            node = ExprNode::Binary(Box::new(node), BinaryOp::Or, Box::new(rhs));
+            node = self.binary(node, BinaryOp::Or, rhs)?;
         }
         Ok(node)
     }
@@ -432,7 +466,7 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_equality()?;
         while self.match_token(|kind| matches!(kind, TokenKind::AndAnd)) {
             let rhs = self.parse_equality()?;
-            node = ExprNode::Binary(Box::new(node), BinaryOp::And, Box::new(rhs));
+            node = self.binary(node, BinaryOp::And, rhs)?;
         }
         Ok(node)
     }
@@ -451,7 +485,7 @@ impl<'a> Parser<'a> {
                 break;
             };
             let rhs = self.parse_comparison()?;
-            node = ExprNode::Binary(Box::new(node), op, Box::new(rhs));
+            node = self.binary(node, op, rhs)?;
         }
         Ok(node)
     }
@@ -474,7 +508,7 @@ impl<'a> Parser<'a> {
                 break;
             };
             let rhs = self.parse_term()?;
-            node = ExprNode::Binary(Box::new(node), op, Box::new(rhs));
+            node = self.binary(node, op, rhs)?;
         }
         Ok(node)
     }
@@ -493,7 +527,7 @@ impl<'a> Parser<'a> {
                 break;
             };
             let rhs = self.parse_factor()?;
-            node = ExprNode::Binary(Box::new(node), op, Box::new(rhs));
+            node = self.binary(node, op, rhs)?;
         }
         Ok(node)
     }
@@ -514,17 +548,23 @@ impl<'a> Parser<'a> {
                 break;
             };
             let rhs = self.parse_unary()?;
-            node = ExprNode::Binary(Box::new(node), op, Box::new(rhs));
+            node = self.binary(node, op, rhs)?;
         }
         Ok(node)
     }
 
     fn parse_unary(&mut self) -> Result<ExprNode, ExpressionError> {
         if self.match_token(|kind| matches!(kind, TokenKind::Bang)) {
-            return Ok(ExprNode::Unary(UnaryOp::Not, Box::new(self.parse_unary()?)));
+            let value = self.parse_unary()?;
+            return self
+                .budget
+                .push(ExprNode::Unary(UnaryOp::Not, Box::new(value)));
         }
         if self.match_token(|kind| matches!(kind, TokenKind::Minus)) {
-            return Ok(ExprNode::Unary(UnaryOp::Neg, Box::new(self.parse_unary()?)));
+            let value = self.parse_unary()?;
+            return self
+                .budget
+                .push(ExprNode::Unary(UnaryOp::Neg, Box::new(value)));
         }
         self.parse_primary()
     }
@@ -537,23 +577,26 @@ impl<'a> Parser<'a> {
         match token.kind {
             TokenKind::Number(value) => {
                 self.position += 1;
-                Ok(ExprNode::Literal(ExpressionValue::Number(value)))
+                self.budget
+                    .push(ExprNode::Literal(ExpressionValue::Number(value)))
             }
             TokenKind::Seconds(value) => {
                 self.position += 1;
-                Ok(ExprNode::Binary(
-                    Box::new(ExprNode::Literal(ExpressionValue::Number(value))),
-                    BinaryOp::Mul,
-                    Box::new(ExprNode::Global(GlobalVar::Fps)),
-                ))
+                let seconds = self
+                    .budget
+                    .push(ExprNode::Literal(ExpressionValue::Number(value)))?;
+                let fps = self.budget.push(ExprNode::Global(GlobalVar::Fps))?;
+                self.binary(seconds, BinaryOp::Mul, fps)
             }
             TokenKind::String(value) => {
                 self.position += 1;
-                Ok(ExprNode::Literal(ExpressionValue::String(value)))
+                self.budget
+                    .push(ExprNode::Literal(ExpressionValue::String(value)))
             }
             TokenKind::Color(value) => {
                 self.position += 1;
-                Ok(ExprNode::Literal(ExpressionValue::color_from_u8(value)))
+                self.budget
+                    .push(ExprNode::Literal(ExpressionValue::color_from_u8(value)))
             }
             TokenKind::Identifier(identifier) => {
                 self.position += 1;
@@ -593,17 +636,18 @@ impl<'a> Parser<'a> {
             }
         }
         if dotted_segments.len() > 1 {
-            self.references.push(ExpressionReference::SymbolicPath {
-                segments: dotted_segments.clone(),
-            });
-            return Ok(ExprNode::SymbolicPath(dotted_segments));
+            return self.budget.push(ExprNode::SymbolicPath(dotted_segments));
         }
 
         if identifier == "true" {
-            return Ok(ExprNode::Literal(ExpressionValue::Boolean(true)));
+            return self
+                .budget
+                .push(ExprNode::Literal(ExpressionValue::Boolean(true)));
         }
         if identifier == "false" {
-            return Ok(ExprNode::Literal(ExpressionValue::Boolean(false)));
+            return self
+                .budget
+                .push(ExprNode::Literal(ExpressionValue::Boolean(false)));
         }
 
         if self.match_token(|kind| matches!(kind, TokenKind::LParen)) {
@@ -626,11 +670,15 @@ impl<'a> Parser<'a> {
                         details: "if(cond, then, else) requires exactly 3 arguments".to_string(),
                     });
                 }
-                return Ok(ExprNode::Conditional(
-                    Box::new(args[0].clone()),
-                    Box::new(args[1].clone()),
-                    Box::new(args[2].clone()),
-                ));
+                let mut args = args.into_iter();
+                let (condition, when_true, when_false) = (
+                    Box::new(args.next().expect("3 args")),
+                    Box::new(args.next().expect("3 args")),
+                    Box::new(args.next().expect("3 args")),
+                );
+                return self
+                    .budget
+                    .push(ExprNode::Conditional(condition, when_true, when_false));
             }
 
             if identifier == "node" {
@@ -639,25 +687,25 @@ impl<'a> Parser<'a> {
 
             if let Some(spec) = builtin_for_name(&identifier) {
                 validate_builtin_call(spec, &args)?;
-                return Ok(ExprNode::Builtin(spec.builtin, args));
+                return self.budget.push(ExprNode::Builtin(spec.builtin, args));
             }
-            let expansion =
-                functions::expand(&identifier, &args)?.ok_or(ExpressionError::Parse {
+            return functions::expand(&identifier, &args, &mut self.budget)?.ok_or(
+                ExpressionError::Parse {
                     path: None,
                     details: format!("unknown function `{identifier}`"),
-                })?;
-            self.references.extend(expansion.references);
-            return Ok(expansion.node);
+                },
+            );
         }
 
-        Ok(ExprNode::Global(match identifier.as_str() {
-            "frame" => GlobalVar::Frame,
-            "time" => GlobalVar::Time,
-            "fps" => GlobalVar::Fps,
-            "width" => GlobalVar::Width,
-            "height" => GlobalVar::Height,
-            _ => GlobalVar::Custom(identifier),
-        }))
+        self.budget
+            .push(ExprNode::Global(match identifier.as_str() {
+                "frame" => GlobalVar::Frame,
+                "time" => GlobalVar::Time,
+                "fps" => GlobalVar::Fps,
+                "width" => GlobalVar::Width,
+                "height" => GlobalVar::Height,
+                _ => GlobalVar::Custom(identifier),
+            }))
     }
 
     fn parse_node_reference(&mut self, args: Vec<ExprNode>) -> Result<ExprNode, ExpressionError> {
@@ -688,8 +736,7 @@ impl<'a> Parser<'a> {
         };
 
         if args.len() == 1 {
-            self.references.push(ExpressionReference::Node { node_id });
-            return Ok(ExprNode::Node(node_id));
+            return self.budget.push(ExprNode::Node(node_id));
         }
 
         let property_path = match &args[1] {
@@ -702,12 +749,8 @@ impl<'a> Parser<'a> {
             }
         };
 
-        self.references.push(ExpressionReference::PropertyValue {
-            node_id,
-            property_path: property_path.clone(),
-        });
-
-        Ok(ExprNode::PropertyValue(node_id, property_path))
+        self.budget
+            .push(ExprNode::PropertyValue(node_id, property_path))
     }
 
     fn match_token(&mut self, predicate: impl Fn(&TokenKind) -> bool) -> bool {

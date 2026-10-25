@@ -313,6 +313,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_the_expression_animation_demo() {
+        parse(include_str!(
+            "../../../local/demo/expression-animation.json"
+        ))
+        .expect("should parse");
+    }
+
+    #[test]
     fn parse_minimal_composition() {
         let json = r#"{
             "lumenSchemaVersion": "0.1.0",

@@ -8,7 +8,7 @@ use std::{
 use crate::{
     error::ExpressionError,
     expr::{
-        ExprNode, ExpressionReference, GlobalVar,
+        ExprNode, GlobalVar,
         parser::{called_names, parse_expression, parse_signature},
         spec::{GLOBALS, builtin_for_name},
     },
@@ -23,7 +23,6 @@ struct Function {
     params: Vec<String>,
     body: ExprNode,
     shape: Shape,
-    references: Vec<ExpressionReference>,
 }
 
 /// The size of a tree, with each use of a parameter left as a hole to be filled by an argument.
@@ -97,23 +96,34 @@ impl Shape {
     }
 }
 
-fn limit_error(subject: &str, (nodes, depth): (usize, usize)) -> Option<ExpressionError> {
-    if nodes > MAX_EXPANDED_NODES {
-        Some(parse_error(format!(
-            "{subject} expands to more than {MAX_EXPANDED_NODES} nodes"
-        )))
-    } else if depth > MAX_EXPANDED_DEPTH {
-        Some(parse_error(format!(
-            "{subject} expands to more than {MAX_EXPANDED_DEPTH} levels of nesting"
-        )))
-    } else {
-        None
-    }
+/// The nodes a single top-level expression parse may build, counting call expansions.
+#[derive(Default)]
+pub(crate) struct Budget {
+    nodes: usize,
 }
 
-pub(crate) struct Expansion {
-    pub node: ExprNode,
-    pub references: Vec<ExpressionReference>,
+impl Budget {
+    /// Accounts for `nodes` new nodes in a tree that is now `depth` levels deep.
+    fn spend(&mut self, nodes: usize, depth: usize) -> Result<(), ExpressionError> {
+        self.nodes = self.nodes.saturating_add(nodes);
+        if self.nodes > MAX_EXPANDED_NODES {
+            Err(parse_error(format!(
+                "expression expands to more than {MAX_EXPANDED_NODES} nodes"
+            )))
+        } else if depth > MAX_EXPANDED_DEPTH {
+            Err(parse_error(format!(
+                "expression expands deeper than {MAX_EXPANDED_DEPTH} levels"
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Accounts for a node that was just built from already-counted children.
+    pub(crate) fn push(&mut self, node: ExprNode) -> Result<ExprNode, ExpressionError> {
+        self.spend(1, Shape::of(&node, &[]).depth)?;
+        Ok(node)
+    }
 }
 
 thread_local! {
@@ -160,17 +170,10 @@ impl FunctionScope {
                 let details = format!("unknown variable `{variable}`");
                 return Err(function_error(&name, body, details));
             }
-            let shape = Shape::of(&expression.ast, params);
-            let ones = vec![(1, 1); params.len()];
-            if let Some(error) = limit_error(&format!("`functions.{name}`"), shape.expanded(&ones))
-            {
-                return Err(error);
-            }
             let function = Function {
                 params: params.clone(),
+                shape: Shape::of(&expression.ast, params),
                 body: expression.ast,
-                shape,
-                references: expression.references,
             };
             FUNCTIONS.with_borrow_mut(|functions| functions.insert(name, function));
         }
@@ -185,7 +188,11 @@ impl Drop for FunctionScope {
 }
 
 /// Expands a call to a composition function, or returns `None` if `name` isn't one.
-pub(crate) fn expand(name: &str, args: &[ExprNode]) -> Result<Option<Expansion>, ExpressionError> {
+pub(crate) fn expand(
+    name: &str,
+    args: &[ExprNode],
+    budget: &mut Budget,
+) -> Result<Option<ExprNode>, ExpressionError> {
     FUNCTIONS.with_borrow(|functions| {
         let Some(function) = functions.get(name) else {
             return Ok(None);
@@ -204,16 +211,10 @@ pub(crate) fn expand(name: &str, args: &[ExprNode]) -> Result<Option<Expansion>,
                 (shape.nodes, shape.depth)
             })
             .collect();
-        if let Some(error) = limit_error(
-            &format!("call to `{name}`"),
-            function.shape.expanded(&arg_sizes),
-        ) {
-            return Err(error);
-        }
-        Ok(Some(Expansion {
-            node: substitute(&function.body, &function.params, args),
-            references: function.references.clone(),
-        }))
+        let (nodes, depth) = function.shape.expanded(&arg_sizes);
+        let arg_nodes: usize = arg_sizes.iter().map(|&(nodes, _)| nodes).sum();
+        budget.spend(nodes.saturating_sub(arg_nodes), depth)?;
+        Ok(Some(substitute(&function.body, &function.params, args)))
     })
 }
 
@@ -313,7 +314,7 @@ fn substitute(node: &ExprNode, params: &[String], args: &[ExprNode]) -> ExprNode
     }
 }
 
-fn visit(node: &ExprNode, f: &mut impl FnMut(&ExprNode)) {
+pub(crate) fn visit(node: &ExprNode, f: &mut impl FnMut(&ExprNode)) {
     f(node);
     match node {
         ExprNode::Binary(lhs, _, rhs) => {
@@ -483,7 +484,7 @@ mod tests {
         }
         let error = Expression::parse(&source).unwrap_err().to_string();
         assert!(
-            error.contains("call to `f` expands to more than 10000 nodes"),
+            error.contains("expression expands to more than 10000 nodes"),
             "{error}"
         );
     }
@@ -495,9 +496,73 @@ mod tests {
         assert!(Expression::parse(&nested(60)).is_ok());
         let error = Expression::parse(&nested(70)).unwrap_err().to_string();
         assert!(
-            error.contains("call to `next` expands to more than 64 levels"),
+            error.contains("expression expands deeper than 64 levels"),
             "{error}"
         );
+    }
+
+    fn big_calls() -> FunctionScope {
+        FunctionScope::enter(&definitions(&[
+            ("f(x)", "x + x + x + x + x + x + x + x"),
+            ("h(x)", "f(f(f(f(x))))"),
+        ]))
+        .unwrap()
+    }
+
+    #[test]
+    fn sibling_calls_share_one_node_budget() {
+        let _scope = big_calls();
+        assert!(Expression::parse("h(1)").is_ok());
+        let siblings = vec!["h(1)"; 64].join(", ");
+        let error = Expression::parse(&format!("min({siblings})"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("expression expands to more than 10000 nodes"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn wrapped_calls_share_one_depth_budget() {
+        let _scope = big_calls();
+        let wrapped = |count: usize| format!("{}h(1){}", "abs(".repeat(count), ")".repeat(count));
+        assert!(Expression::parse(&wrapped(30)).is_ok());
+        let error = Expression::parse(&wrapped(40)).unwrap_err().to_string();
+        assert!(
+            error.contains("expression expands deeper than 64 levels"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn references_come_from_the_expanded_ast() {
+        let mut entries = vec![
+            ("discard(x)".to_string(), "0".to_string()),
+            ("twice(x)".to_string(), "x + x".to_string()),
+            (
+                "g0()".to_string(),
+                "discard(node(1, 'opacity'))".to_string(),
+            ),
+        ];
+        for n in 1..=16 {
+            entries.push((
+                format!("g{n}()"),
+                format!("discard(g{}() + g{}())", n - 1, n - 1),
+            ));
+        }
+        let definitions: BTreeMap<_, _> = entries.into_iter().collect();
+        let _scope = FunctionScope::enter(&definitions).unwrap();
+
+        let discarded = Expression::parse("g16()").unwrap();
+        assert!(
+            discarded.references.is_empty(),
+            "{:?}",
+            discarded.references
+        );
+
+        let repeated = Expression::parse("twice(node(1, 'opacity')) + node(2)").unwrap();
+        assert_eq!(repeated.references.len(), 2, "{:?}", repeated.references);
     }
 
     #[test]
