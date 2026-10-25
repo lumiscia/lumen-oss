@@ -1,11 +1,15 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, RasterMetadata, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("raster_multimerge.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("blend.wgsl"),
+    include_str!("raster_multimerge.wgsl")
+);
 
 /// Composites a variadic stack of raster layers in order.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -166,7 +170,10 @@ impl GpuCompileNode for RasterMultiMerge {
             current = RasterHandle {
                 texture,
                 domain: lumen_gpu::TextureDomain::full_frame(size),
-                metadata: current.metadata,
+                metadata: RasterMetadata {
+                    alpha_mode: AlphaMode::Premultiplied,
+                    ..current.metadata
+                },
             };
         }
         ctx.builder_mut().param(

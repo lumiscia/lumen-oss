@@ -5,7 +5,10 @@ use crate::gpu::{
     RasterHandle, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("alpha_premultiply.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("alpha_premultiply.wgsl")
+);
 
 /// Converts raster alpha between premultiplied and unpremultiplied representations.
 #[derive(Debug, Clone, lumen_macros::Delegate)]

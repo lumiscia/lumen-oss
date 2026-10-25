@@ -1,11 +1,14 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("exposure.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("exposure.wgsl")
+);
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ExposureParams {
@@ -55,6 +58,7 @@ impl Default for Exposure {
 struct CompiledExposure {
     node_id: NodeId,
     params: ExposureParamsDelegate,
+    alpha_mode: AlphaMode,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -72,7 +76,7 @@ impl GpuCompiledNode for CompiledExposure {
             exposure: params.exposure as f32,
             contrast: params.contrast as f32,
             offset: params.offset as f32,
-            _pad: 0.0,
+            premultiplied: u32::from(self.alpha_mode == AlphaMode::Premultiplied),
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
@@ -97,6 +101,7 @@ impl GpuCompileNode for Exposure {
         ctx.register_compiled_node(CompiledExposure {
             node_id: self.id,
             params: self.params.clone(),
+            alpha_mode: source.metadata.alpha_mode,
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {

@@ -1780,6 +1780,84 @@ fn linear_resize_keeps_source_edges_opaque_and_identity_reproduces_input() {
     assert!(upscaled.chunks_exact(4).all(|pixel| pixel[3] == 255));
 }
 
+#[test]
+fn merge_and_adjustments_treat_rasters_as_premultiplied() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let media = EmptyMediaStore;
+
+    let base = NodeId::new(1);
+    let overlay = NodeId::new(2);
+    let merge = NodeId::new(3);
+    let output = NodeId::new(4);
+    let mut graph = Graph::new();
+    graph.nodes.insert(base, solid(base, [0, 0, 0, 255]));
+    graph
+        .nodes
+        .insert(overlay, solid(overlay, [255, 255, 255, 128]));
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            params: MergeParamsDelegate::default(),
+            base: PortRef::new(base, "output".to_string()),
+            overlay: PortRef::new(overlay, "output".to_string()),
+            mask: PortRef::empty(),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+    let pixels = render_rgba8(&mut renderer, &test_composition(graph), 0, &media);
+    for pixel in pixels.chunks_exact(4) {
+        assert!(
+            pixel[..3].iter().all(|channel| channel.abs_diff(128) <= 1) && pixel[3] == 255,
+            "50% white over opaque black should be 50% grey, got {pixel:?}"
+        );
+    }
+
+    // The renderer caches compiled plans, so each composition gets its own.
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let transparent = NodeId::new(1);
+    let exposure = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(transparent, solid(transparent, [0, 0, 0, 0]));
+    graph.nodes.insert(
+        exposure,
+        NodeKind::Exposure(Exposure {
+            id: exposure,
+            params: ExposureParamsDelegate {
+                exposure: Deferred::value(1.0),
+                offset: Deferred::value(0.5),
+                ..Default::default()
+            },
+            source: PortRef::new(transparent, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(exposure, "output".to_string()),
+        }),
+    );
+    let pixels = render_rgba8(&mut renderer, &test_composition(graph), 0, &media);
+    assert!(
+        pixels.iter().all(|channel| *channel == 0),
+        "adjusting a fully transparent pixel must keep it transparent black"
+    );
+}
+
 fn filled_path_composition() -> Composition {
     let path = NodeId::new(1);
     let output = NodeId::new(2);

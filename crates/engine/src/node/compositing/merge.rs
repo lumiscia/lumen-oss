@@ -1,11 +1,15 @@
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, compositing::BlendMode};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, RasterMetadata, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("merge.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("blend.wgsl"),
+    include_str!("merge.wgsl")
+);
 
 /// Composites an overlay raster over a base raster.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -186,7 +190,10 @@ impl GpuCompileNode for Merge {
         Ok(CompiledOutput::Raster(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: base.metadata,
+            metadata: RasterMetadata {
+                alpha_mode: AlphaMode::Premultiplied,
+                ..base.metadata
+            },
         }))
     }
 }

@@ -39,7 +39,8 @@ pub(crate) struct ChannelShuffleParams {
 pub(crate) struct ColorGradeParams {
     pub(crate) strength: f32,
     pub(crate) interpolation: u32,
-    pub(crate) _pad: [u32; 2],
+    pub(crate) premultiplied: u32,
+    pub(crate) _pad: u32,
 }
 
 #[repr(C)]
@@ -75,7 +76,7 @@ pub(crate) struct ExposureParams {
     pub(crate) exposure: f32,
     pub(crate) contrast: f32,
     pub(crate) offset: f32,
-    pub(crate) _pad: f32,
+    pub(crate) premultiplied: u32,
 }
 
 #[repr(C)]
@@ -84,7 +85,7 @@ pub(crate) struct HueSaturationParams {
     pub(crate) hue_offset: f32,
     pub(crate) saturation: f32,
     pub(crate) lightness: f32,
-    pub(crate) _pad: f32,
+    pub(crate) premultiplied: u32,
 }
 
 #[repr(C)]
@@ -95,7 +96,8 @@ pub(crate) struct LevelsParams {
     pub(crate) gamma: f32,
     pub(crate) output_black: f32,
     pub(crate) output_white: f32,
-    pub(crate) _pad: [f32; 3],
+    pub(crate) premultiplied: u32,
+    pub(crate) _pad: [f32; 2],
 }
 
 #[repr(C)]

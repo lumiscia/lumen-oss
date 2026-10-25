@@ -36,6 +36,6 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     } else if (operation == 3u) {
         alpha = abs(aa - ba);
     }
-    let rgb = select(b.rgb, a.rgb, aa >= ba);
+    let rgb = unpremultiply(select(b, a, aa >= ba)).rgb;
     textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(rgb * alpha, alpha));
 }

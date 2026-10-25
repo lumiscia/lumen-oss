@@ -8,7 +8,10 @@ use crate::gpu::{
     compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("wgsl_shader.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("wgsl_shader.wgsl")
+);
 
 // TODO: replace the stringly shader/bindings surface with typed shader
 // parameters once custom-node authoring settles.

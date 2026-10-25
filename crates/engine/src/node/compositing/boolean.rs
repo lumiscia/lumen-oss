@@ -1,11 +1,14 @@
 use crate::node::{NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    RasterHandle, RasterMetadata, compiler,
 };
 
-pub(crate) const SHADER: &str = include_str!("boolean.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("boolean.wgsl")
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
 #[repr(i64)]
@@ -185,7 +188,10 @@ impl GpuCompileNode for Boolean {
         Ok(CompiledOutput::Raster(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: a.metadata,
+            metadata: RasterMetadata {
+                alpha_mode: AlphaMode::Premultiplied,
+                ..a.metadata
+            },
         }))
     }
 }

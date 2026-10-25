@@ -4,7 +4,7 @@ struct LevelsParams {
     gamma: f32,
     output_black: f32,
     output_white: f32,
-    _pad0: f32,
+    premultiplied: u32,
     _pad1: f32,
     _pad2: f32,
 }
@@ -20,7 +20,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let color = textureLoad(input_tex, vec2<i32>(id.xy), 0);
+    let premultiplied = params.premultiplied != 0u;
+    let color = to_straight_alpha(textureLoad(input_tex, vec2<i32>(id.xy), 0), premultiplied);
     let black = clamp(params.black_point, 0.0, 1.0);
     let white = max(clamp(params.white_point, 0.0, 1.0), black + 0.000001);
     let gamma = max(params.gamma, 0.0001);
@@ -28,6 +29,6 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let output_white = clamp(params.output_white, 0.0, 1.0);
     var normalized = clamp((color.rgb - vec3<f32>(black)) / (white - black), vec3<f32>(0.0), vec3<f32>(1.0));
     normalized = pow(normalized, vec3<f32>(1.0 / gamma));
-    let rgb = output_black + normalized * (output_white - output_black);
-    textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(rgb, color.a));
+    let rgb = clamp(output_black + normalized * (output_white - output_black), vec3<f32>(0.0), vec3<f32>(1.0));
+    textureStore(output_tex, vec2<i32>(id.xy), from_straight_alpha(vec4<f32>(rgb, color.a), premultiplied));
 }
