@@ -4,6 +4,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::FfmpegError;
+use crate::ffi::sys;
 use crate::format::InputContext;
 use crate::gpu::{GpuBackend, GpuVideoInput};
 use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec};
@@ -142,10 +144,11 @@ fn vulkan_encoder_uploads_cpu_frames() {
     config.encoder_name = Some("av1_vulkan".to_string());
     let mut encoder = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
         Ok(encoder) => encoder,
-        Err(error) => {
+        Err(error) if vulkan_encode_unavailable(&error) => {
             eprintln!("av1_vulkan unavailable ({error}); skipping Vulkan upload test");
             return;
         }
+        Err(error) => panic!("av1_vulkan is available but failed to initialise: {error}"),
     };
     for index in 0..10u8 {
         let stride = width as usize * 4;
@@ -170,4 +173,11 @@ fn vulkan_encoder_uploads_cpu_frames() {
     assert_eq!((stream.width, stream.height), (width, height));
 
     let _ = fs::remove_file(path);
+}
+
+/// Missing encoder, no Vulkan device, or a device without video encode support.
+fn vulkan_encode_unavailable(error: &FfmpegError) -> bool {
+    error.operation == "avcodec_find_encoder_by_name"
+        || error.operation == "av_hwdevice_ctx_create"
+        || error.code == Some(sys::AVERROR(libc::ENOSYS))
 }
