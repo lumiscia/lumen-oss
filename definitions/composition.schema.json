@@ -2713,8 +2713,8 @@
                   "font_weight": {
                     "anyOf": [
                       {
-                        "maximum": 900.0,
-                        "minimum": 100.0,
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
                         "type": "integer"
                       },
                       {
@@ -2722,14 +2722,49 @@
                       }
                     ],
                     "default": 400,
-                    "description": "Font weight.",
+                    "description": "Font weight. Variable fonts render any value in their weight range.",
                     "title": "Font Weight",
                     "x-lumen-constraints": {
-                      "max": 900.0,
-                      "min": 100.0,
-                      "step": 100.0
+                      "max": 1000.0,
+                      "min": 1.0
                     },
                     "x-lumen-kind": "int"
+                  },
+                  "letter_spacing": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Extra space after every glyph in pixels. Negative values tighten the text.",
+                    "title": "Letter Spacing",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "line_height": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Distance between lines in pixels. Use 0 for 1.2 × the font size.",
+                    "title": "Line Height",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
                   },
                   "max_width": {
                     "anyOf": [

@@ -88,7 +88,7 @@ impl TextSystem {
         } else {
             Wrap::None
         });
-        let attrs = Attrs::new()
+        let mut attrs = Attrs::new()
             .family(Family::Name(&request.font_family))
             .weight(Weight(request.font_weight.clamp(1, 1000)))
             .style(match request.font_style {
@@ -101,6 +101,10 @@ impl TextSystem {
             } else {
                 CacheKeyFlags::empty()
             });
+        if request.letter_spacing != 0.0 {
+            // cosmic-text takes tracking in em and adds it to every glyph advance.
+            attrs = attrs.letter_spacing(request.letter_spacing / metrics.font_size);
+        }
         buffer.set_text(
             &request.content,
             &attrs,
@@ -396,7 +400,10 @@ pub struct TextLayoutRequest {
     pub font_weight: u16,
     pub font_style: TextFontStyle,
     pub max_width: Option<f32>,
+    /// Line pitch in pixels; `None` is 1.2 × `font_size`.
     pub line_height: Option<f32>,
+    /// Extra advance in pixels after every glyph. May be negative.
+    pub letter_spacing: f32,
     pub align: TextAlign,
     pub origin: [f32; 2],
     pub color: [f32; 4],
@@ -413,6 +420,7 @@ impl TextLayoutRequest {
             font_style: TextFontStyle::Normal,
             max_width: None,
             line_height: None,
+            letter_spacing: 0.0,
             align: TextAlign::Left,
             origin: [0.0, 0.0],
             color: [1.0, 1.0, 1.0, 1.0],
@@ -1199,6 +1207,63 @@ mod tests {
         );
         assert_eq!(recovered.dropped_glyphs, 0);
         assert!(!recovered.uploads.is_empty());
+    }
+
+    #[test]
+    fn letter_spacing_widens_advance_and_line_height_spaces_lines() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("Spacing");
+        request.font_size = 40.0;
+        let base = system.layout(&request);
+        let glyph_x = |layout: &TextLayout, index: usize| layout.glyphs[index].position[0];
+
+        request.letter_spacing = 6.0;
+        let tracked = system.layout(&request);
+        let count = base.glyphs.len();
+        assert!(
+            (tracked.measurement.width - base.measurement.width - 6.0 * count as f32).abs() < 0.01
+        );
+        assert!(
+            (glyph_x(&tracked, count - 1) - glyph_x(&base, count - 1) - 6.0 * (count - 1) as f32)
+                .abs()
+                < 0.01
+        );
+
+        request.letter_spacing = -2.0;
+        let tight = system.layout(&request);
+        assert!(tight.measurement.width < base.measurement.width);
+
+        let line_gap = |system: &mut TextSystem, line_height| {
+            let mut request = TextLayoutRequest::new("a\nb");
+            request.font_size = 40.0;
+            request.line_height = line_height;
+            let layout = system.layout(&request);
+            layout.glyphs[1].position[1] - layout.glyphs[0].position[1]
+        };
+        assert!((line_gap(&mut system, None) - 48.0).abs() < 0.01);
+        assert!((line_gap(&mut system, Some(80.0)) - 80.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn variable_weight_is_not_quantised_to_hundreds() {
+        let mut system = TextSystem::new();
+        system.load_font_data(include_bytes!("../assets/inter/InterVariable-Latin.ttf").to_vec());
+        let width = |system: &mut TextSystem, weight| {
+            let mut request = TextLayoutRequest::new("Variable weight");
+            request.font_family = "Inter".to_string();
+            request.font_size = 64.0;
+            request.font_weight = weight;
+            system.measure(&request).width
+        };
+        let (light, between, regular) = (
+            width(&mut system, 400),
+            width(&mut system, 450),
+            width(&mut system, 500),
+        );
+        assert!(
+            light < between && between < regular,
+            "{light} {between} {regular}"
+        );
     }
 
     #[test]

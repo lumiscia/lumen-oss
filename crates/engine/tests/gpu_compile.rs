@@ -3207,3 +3207,144 @@ impl VideoFrameResolver for TestMediaStore {
         Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
     }
 }
+
+#[test]
+fn text_spacing_and_variable_weight_change_output_smoothly() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    #[derive(Debug, Clone)]
+    struct InterFont;
+    impl lumen_engine::media::FontResolver for InterFont {
+        fn id(&self) -> &str {
+            "msdf-inter-coverage"
+        }
+        fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+            Ok(vec![
+                include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf").to_vec(),
+            ])
+        }
+    }
+    impl MediaStore for InterFont {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+            None
+        }
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            None
+        }
+        fn font_resolver_id(&self, family: &str) -> Option<String> {
+            (family == "Inter").then(|| "msdf-inter-coverage".to_string())
+        }
+        fn get_font_resolver(
+            &self,
+            family: &str,
+        ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+            (family == "Inter")
+                .then(|| Box::new(self.clone()) as Box<dyn lumen_engine::media::FontResolver>)
+        }
+    }
+    let base = || TextParamsDelegate {
+        content: Deferred::value("Hi\nHo".to_string()),
+        font_family: Deferred::value("Inter".to_string()),
+        font_size: Deferred::value(40.0),
+        position: Deferred::value((20.0, 10.0)),
+        ..Default::default()
+    };
+    let mut render = |params: TextParamsDelegate, frame: u32| {
+        let composition = text_test_composition(params);
+        renderer
+            .compile_with_media(
+                &composition,
+                &InterFont,
+                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .unwrap();
+        render_rgba8(&mut renderer, &composition, frame, &InterFont)
+    };
+    let width = 1024_usize;
+    // Rightmost and bottommost inked pixel as (x, y), and total ink.
+    let extent = |pixels: &[u8]| {
+        let (mut right, mut bottom, mut ink) = (0, 0, 0_u64);
+        for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
+            if pixel[3] > 0 {
+                right = right.max(index % width);
+                bottom = bottom.max(index / width);
+                ink += u64::from(pixel[3]);
+            }
+        }
+        (right, bottom, ink)
+    };
+
+    for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
+        let with = |letter_spacing, line_height| TextParamsDelegate {
+            render_mode: mode.into(),
+            letter_spacing: Deferred::value(letter_spacing),
+            line_height: Deferred::value(line_height),
+            ..base()
+        };
+        let auto = render(with(0.0, 0.0), 0);
+        let (auto_right, auto_bottom, _) = extent(&auto);
+        assert!(auto_right > 20, "{mode:?}: nothing rendered");
+
+        // An explicit line height equal to the automatic one changes nothing.
+        let explicit = render(with(0.0, f64::from(40.0_f32 * 1.2)), 0);
+        assert!(
+            auto == explicit,
+            "{mode:?}: explicit auto line height differs"
+        );
+
+        let (spaced_right, spaced_bottom, _) = extent(&render(with(20.0, 0.0), 0));
+        assert!(
+            spaced_right >= auto_right + 15,
+            "{mode:?}: letter spacing did not widen ({spaced_right} vs {auto_right})"
+        );
+        assert_eq!(
+            spaced_bottom, auto_bottom,
+            "{mode:?}: letter spacing moved lines"
+        );
+
+        let (_, tall_bottom, _) = extent(&render(with(0.0, 100.0), 0));
+        assert!(
+            tall_bottom >= auto_bottom + 40,
+            "{mode:?}: line height did not apply"
+        );
+
+        let (tight_right, _, _) = extent(&render(with(-4.0, 0.0), 0));
+        assert!(
+            tight_right < auto_right,
+            "{mode:?}: negative spacing did not tighten"
+        );
+    }
+
+    // Weights 400, 450 and 500 are distinct, and an animated weight grows the
+    // glyph ink at every step.
+    let at_weight = |weight| TextParamsDelegate {
+        font_size: Deferred::value(96.0),
+        font_weight: Deferred::value(weight),
+        ..base()
+    };
+    let (w400, w450, w500) = (
+        render(at_weight(400), 0),
+        render(at_weight(450), 0),
+        render(at_weight(500), 0),
+    );
+    assert!(w450 != w400 && w450 != w500 && w400 != w500);
+    let animated = TextParamsDelegate {
+        font_weight: Deferred::Expr(
+            lumen_engine::expr::Expression::parse("400 + frame * 10").unwrap(),
+        ),
+        ..at_weight(400)
+    };
+    let mut previous = 0;
+    for frame in 0..=10 {
+        let (_, _, ink) = extent(&render(animated.clone(), frame));
+        assert!(
+            ink > previous,
+            "frame {frame}: ink {ink} did not grow from {previous}"
+        );
+        previous = ink;
+    }
+    assert_eq!(render(animated.clone(), 5), w450);
+}

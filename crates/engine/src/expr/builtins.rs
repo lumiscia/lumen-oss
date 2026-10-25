@@ -9,7 +9,9 @@ use crate::{
     },
     node::{
         DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
-        source::text::{TextAlignmentHorizontal, TextFontStyle, layout_request},
+        source::text::{
+            TextAlignmentHorizontal, TextFontStyle, apply_line_spacing, layout_request,
+        },
     },
 };
 
@@ -375,6 +377,11 @@ fn measure_text_node(
         expr: ctx,
     })?;
     let max_width = text.params.max_width.eval(node_id, "max_width", ctx)? as f32;
+    let letter_spacing = text
+        .params
+        .letter_spacing
+        .eval(node_id, "letter_spacing", ctx)?;
+    let line_height = text.params.line_height.eval(node_id, "line_height", ctx)?;
     let alignment_horizontal = text
         .params
         .alignment_horizontal
@@ -383,18 +390,17 @@ fn measure_text_node(
             property_path: "alignment_horizontal",
             expr: ctx,
         })?;
-    measure_text_value(
-        ctx,
-        layout_request(
-            content,
-            font_family,
-            font_size,
-            font_weight,
-            font_style,
-            max_width,
-            alignment_horizontal,
-        ),
-    )
+    let mut request = layout_request(
+        content,
+        font_family,
+        font_size,
+        font_weight,
+        font_style,
+        max_width,
+        alignment_horizontal,
+    );
+    apply_line_spacing(&mut request, letter_spacing, line_height);
+    measure_text_value(ctx, request)
 }
 
 thread_local! {
