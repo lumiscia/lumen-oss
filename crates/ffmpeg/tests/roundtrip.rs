@@ -7,8 +7,8 @@ use std::{
 
 use lumen_ffmpeg::{
     AudioDecoder, AudioEncoderConfig, AudioFrame, AudioResampler, AudioResamplerConfig,
-    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, SampleFormat, VideoCodec,
-    VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
+    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, Rational, SampleFormat,
+    VideoCodec, VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
 };
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {
@@ -64,7 +64,7 @@ fn make_video(path: &Path) -> bool {
     let config = VideoEncoderConfig {
         width: 32,
         height: 24,
-        fps: 24,
+        fps: Rational::from(24),
         codec: VideoCodec::H264,
         ..VideoEncoderConfig::cpu_rgba(32, 24, 24, VideoCodec::H264)
     };
@@ -510,5 +510,28 @@ fn decodes_rgba_frames_across_resolution_change() {
 
     assert!(sizes.contains(&(clips[0].1, clips[0].2)));
     assert!(sizes.contains(&(clips[1].1, clips[1].2)));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn encodes_fractional_frame_rate_exactly() {
+    let path = temp_path("ntsc_roundtrip", "mp4");
+    let config =
+        VideoEncoderConfig::cpu_rgba(32, 24, Rational::new(30_000, 1001), VideoCodec::H264);
+    let Ok(mut encoder) = MuxedEncoder::create(path.to_string_lossy().to_string(), config) else {
+        eprintln!("H.264 encoder unavailable; skipping fractional frame rate test");
+        return;
+    };
+    for pts in 0..30 {
+        encoder
+            .write_video_frame(&frame(32, 24, pts))
+            .expect("write frame");
+    }
+    encoder.finish().expect("finish encode");
+
+    let input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
+    let rate = input.media_info().video_streams[0].avg_frame_rate;
+    assert_eq!(rate.numerator * 1001, rate.denominator * 30_000);
+
     let _ = fs::remove_file(path);
 }
