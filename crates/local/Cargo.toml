@@ -17,6 +17,7 @@ vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
 
 [dependencies]
 anyhow = "1.0.101"
+fontdb = "0.23.0"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 tempfile = "3.23.0"
 lumen-engine = { path = "../engine", features = ["ffmpeg", "image", "json"] }
@@ -24,5 +25,5 @@ lumen-gpu = { package = "lumen-engine-gpu", path = "../gpu" }
 lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.2.2", path = "../ffmpeg", features = [
   "vulkan",
 ] }
-pollster = "0.4.0"
+pollster = "1.0.1"
 serde_json = "1.0.145"

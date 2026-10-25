@@ -81,7 +81,9 @@ pub fn read_texture_rgba8_profile(
     let map_wait = map_wait_started.elapsed();
 
     let copy_rows_started = std::time::Instant::now();
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .map_err(|error| anyhow!("GPU readback map range failed: {error}"))?;
     let mut pixels = vec![
         0;
         (size.width as usize)

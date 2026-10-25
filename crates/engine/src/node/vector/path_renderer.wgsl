@@ -26,13 +26,21 @@ struct PathParams {
     stroke_width: f32,
     flags: u32,
     point_count: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    trim_start: f32,
+    trim_end: f32,
+    _pad: u32,
+}
+
+struct PathPoint {
+    position: vec2<f32>,
+    contour_start: u32,
+    flags: u32,
+    offset: f32,
+    _pad: f32,
 }
 
 struct PathPoints {
-    points: array<vec2<f32>>,
+    points: array<PathPoint>,
 }
 
 @group(0) @binding(0) var<uniform> params: PathParams;
@@ -96,22 +104,22 @@ fn distance_to_segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
 fn polygon_contains(p: vec2<f32>) -> bool {
     var inside = false;
     let count = params.point_count;
-    if (count < 3u) {
-        return false;
-    }
-
-    var j = count - 1u;
     for (var i = 0u; i < count; i = i + 1u) {
-        let pi = path_points.points[i] + params.position;
-        let pj = path_points.points[j] + params.position;
-        let denominator = pj.y - pi.y;
+        let current = path_points.points[i];
+        let is_end = (current.flags & 1u) != 0u;
+        let next_index = select(i + 1u, current.contour_start, is_end);
+        if (next_index >= count || next_index == i) {
+            continue;
+        }
+        let a = current.position + params.position;
+        let b = path_points.points[next_index].position + params.position;
+        let denominator = b.y - a.y;
         let safe_denominator = select(denominator, 0.000001, abs(denominator) < 0.000001);
-        let crosses = ((pi.y > p.y) != (pj.y > p.y)) &&
-            (p.x < (pj.x - pi.x) * (p.y - pi.y) / safe_denominator + pi.x);
+        let crosses = ((a.y > p.y) != (b.y > p.y)) &&
+            (p.x < (b.x - a.x) * (p.y - a.y) / safe_denominator + a.x);
         if (crosses) {
             inside = !inside;
         }
-        j = i;
     }
     return inside;
 }
@@ -132,29 +140,66 @@ fn fill_coverage(signed_distance: f32, inside: bool, edge_antialias: bool) -> f3
     );
 }
 
-fn path_edge_distance(p: vec2<f32>) -> f32 {
+struct PathEdgeDistances {
+    full: f32,
+    trimmed: f32,
+}
+
+fn path_edge_distances(p: vec2<f32>) -> PathEdgeDistances {
     let count = params.point_count;
     if (count < 2u) {
-        return 1000000.0;
+        return PathEdgeDistances(1000000.0, 1000000.0);
     }
 
-    var min_distance = 1000000.0;
-    var previous = path_points.points[count - 1u] + params.position;
+    var distances = PathEdgeDistances(1000000.0, 1000000.0);
+    let fill_enabled = (params.flags & 1u) != 0u;
+    let trimmed_stroke_enabled = (params.flags & 2u) != 0u && params.trim_start < params.trim_end;
     for (var i = 0u; i < count; i = i + 1u) {
-        let current = path_points.points[i] + params.position;
-        min_distance = min(min_distance, distance_to_segment(p, previous, current));
-        previous = current;
+        let current = path_points.points[i];
+        let is_end = (current.flags & 1u) != 0u;
+        let is_closed = (current.flags & 2u) != 0u;
+        if (is_end && !is_closed) {
+            continue;
+        }
+        let next_index = select(i + 1u, current.contour_start, is_end);
+        if (next_index >= count || next_index == i) {
+            continue;
+        }
+        let next = path_points.points[next_index];
+        let segment_start_position = current.position + params.position;
+        let segment_end_position = next.position + params.position;
+        if (fill_enabled) {
+            distances.full = min(
+                distances.full,
+                distance_to_segment(p, segment_start_position, segment_end_position),
+            );
+        }
+
+        let segment_end = select(next.offset, 1.0, is_end);
+        if (trimmed_stroke_enabled && segment_end >= params.trim_start && current.offset <= params.trim_end) {
+            let span = max(segment_end - current.offset, 0.000001);
+            let start_t = clamp((params.trim_start - current.offset) / span, 0.0, 1.0);
+            let end_t = clamp((params.trim_end - current.offset) / span, 0.0, 1.0);
+            distances.trimmed = min(
+                distances.trimmed,
+                distance_to_segment(
+                    p,
+                    mix(segment_start_position, segment_end_position, start_t),
+                    mix(segment_start_position, segment_end_position, end_t),
+                ),
+            );
+        }
     }
-    return min_distance;
+    return distances;
 }
 
 fn sample_path(pixel: vec2<f32>) -> vec4<f32> {
     let fill_enabled = (params.flags & 1u) != 0u;
     let stroke_enabled = (params.flags & 2u) != 0u;
     let edge_antialias = (params.flags & 4u) != 0u;
-    let distance = path_edge_distance(pixel);
+    let distances = path_edge_distances(pixel);
     let inside = polygon_contains(pixel);
-    let signed_distance = select(distance, -distance, inside);
+    let signed_distance = select(distances.full, -distances.full, inside);
     let fill_alpha = select(
         0.0,
         fill_coverage(signed_distance, inside, edge_antialias),
@@ -163,7 +208,7 @@ fn sample_path(pixel: vec2<f32>) -> vec4<f32> {
     let stroke_half_width = params.stroke_width * 0.5;
     let stroke_alpha = select(
         0.0,
-        edge_coverage(distance - stroke_half_width, edge_antialias),
+        edge_coverage(distances.trimmed - stroke_half_width, edge_antialias),
         stroke_enabled,
     );
     let bounds_origin = params.position + params.bounds_min;

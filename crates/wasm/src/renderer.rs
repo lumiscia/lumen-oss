@@ -266,7 +266,7 @@ impl SurfaceCompositionRenderer {
             .map_err(|error| lumen_engine::error::RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        surface_texture.present();
+        self.renderer.gpu_renderer().queue.present(surface_texture);
         Ok(raster.domain.storage_size)
     }
 
@@ -367,6 +367,7 @@ async fn create_surface_device(
             power_preference: lumen_gpu::wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         })
         .await
         .map_err(|error| JsValue::from_str(&format!("no compatible GPU adapter: {error}")))?;

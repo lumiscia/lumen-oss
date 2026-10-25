@@ -12,7 +12,7 @@ mod migrations;
 mod node;
 mod property;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 
 use crate::{
@@ -106,6 +106,14 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
     let mut comp = Composition::new(graph, timeline, render_settings);
     comp.metadata = metadata;
     comp.audio = root.get("audio").map(parse_audio_timeline).transpose()?;
+    if let Err(errors) = comp.validate_structure() {
+        let details = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!("composition structure validation failed: {details}");
+    }
     Ok(comp)
 }
 
@@ -325,6 +333,53 @@ mod tests {
     }
 
     #[test]
+    fn parses_and_evaluates_vec2_expression() {
+        let json = r##"{
+            "timeline": { "fps": 24, "duration_frames": 48 },
+            "render_settings": { "width": 800, "height": 600 },
+            "nodes": [
+                { "id": 1, "type": "path", "params": {
+                    "data": "M 0 0 L 100 100",
+                    "position": "=vec2(frame * 2, time + 3)"
+                }},
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
+            ]
+        }"##;
+
+        let composition = parse(json).expect("should parse vec2 expression");
+        let crate::node::NodeKind::Path(path) = composition
+            .graph
+            .nodes
+            .get(&NodeId::new(1))
+            .expect("path node")
+        else {
+            panic!("expected path node");
+        };
+        for (frame, expected) in [(0, (0.0, 3.0)), (24, (48.0, 4.0)), (48, (96.0, 5.0))] {
+            let context = crate::expr::ExpressionContext {
+                frame,
+                fps: 24.0,
+                width: 800,
+                height: 600,
+                duration_frames: 48,
+                path: Some("1.position".to_string()),
+                graph: Some(&composition.graph),
+            };
+
+            assert_eq!(
+                path.params
+                    .position
+                    .eval(path.id, "position", &context)
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn parse_switch_node() {
         let json = r#"{
             "timeline": { "fps": 30, "duration_frames": 60 },
@@ -344,6 +399,34 @@ mod tests {
 
         let comp = parse(json).expect("should parse");
         assert_eq!(comp.graph.nodes.len(), 4);
+    }
+
+    #[test]
+    fn parse_opacity_node() {
+        let json = r#"{
+            "timeline": { "fps": 30, "duration_frames": 60 },
+            "render_settings": { "width": 100, "height": 100 },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0], "width": 100, "height": 100 } },
+                { "id": 2, "type": "opacity", "params": { "opacity": "=frame / 60" } },
+                { "id": 3, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" },
+                { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "source" }
+            ]
+        }"#;
+
+        let comp = parse(json).expect("should parse");
+        let opacity = comp.graph.nodes.get(&NodeId::new(2)).expect("opacity");
+        assert!(matches!(opacity, crate::node::NodeKind::Opacity(_)));
+        assert_eq!(
+            opacity.input_ports(),
+            vec![crate::node::PortRef::new(
+                NodeId::new(1),
+                "output".to_string()
+            )]
+        );
     }
 
     #[test]
@@ -412,5 +495,26 @@ mod tests {
 
         let err = parse(json).unwrap_err().to_string();
         assert!(err.contains("unsupported Lumen schema version `99.0.0`"));
+    }
+
+    #[test]
+    fn parse_rejects_cyclic_composition() {
+        let json = r#"{
+            "timeline": { "fps": 30, "duration_frames": 1 },
+            "render_settings": { "width": 100, "height": 100 },
+            "nodes": [
+                { "id": 1, "type": "exposure" },
+                { "id": 2, "type": "exposure" },
+                { "id": 3, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" },
+                { "from_node": 2, "from_port": "output", "to_node": 1, "to_port": "source" },
+                { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "source" }
+            ]
+        }"#;
+
+        let error = parse(json).expect_err("cyclic graph must be rejected");
+        assert!(error.to_string().contains("graph contains a cycle"));
     }
 }

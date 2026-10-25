@@ -62,7 +62,8 @@ fn telemetry_tracks_upload_and_encode_events() {
 fn cuda_telemetry_tracks_upload_attempts() {
     use crate::gpu::CudaVideoFrame;
 
-    let frame = CudaVideoFrame::from_device_ptr(0xABCD, 1920, 1080, 8192, Some(12));
+    // SAFETY: Telemetry only reads frame metadata and never dereferences the fake device pointer.
+    let frame = unsafe { CudaVideoFrame::from_device_ptr(0xABCD, 1920, 1080, 8192, Some(12)) };
     let input = GpuVideoInput::Cuda(&frame);
     let descriptor = GpuUploadDescriptor::from_frame(&input);
     let mut telemetry = GpuEncodeTelemetry::default();

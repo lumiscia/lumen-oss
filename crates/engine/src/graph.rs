@@ -169,16 +169,27 @@ impl Graph {
         }
 
         for node in self.nodes.values() {
+            let mut direct_inputs = node.input_ports().into_iter();
             for input in node.input_port_defs() {
                 if input.optional {
+                    if !input.variadic {
+                        direct_inputs.next();
+                    }
                     continue;
                 }
 
-                let connected = self
+                let connected_by_edge = self
                     .connections
                     .iter()
                     .any(|edge| edge.to_node == node.id() && edge.to_port == input.name);
-                if !connected {
+                let connected_directly = if input.variadic {
+                    direct_inputs.any(|source| !source.is_empty())
+                } else {
+                    direct_inputs
+                        .next()
+                        .is_some_and(|source| !source.is_empty())
+                };
+                if !connected_by_edge && !connected_directly {
                     errors.push(
                         GraphValidationError::MissingRequiredInput {
                             node_id: node.id(),
@@ -282,6 +293,7 @@ fn wire_input_port(
         NodeKind::HueSaturation(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::Levels(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::Memo(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Opacity(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::TimeRemap(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::Transform(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::Crop(node) => node.set_input_json(to_port, source).map_err(wire)?,

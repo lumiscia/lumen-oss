@@ -92,6 +92,7 @@ impl GpuCompileNode for Exposure {
             "exposure",
             SHADER,
             std::mem::size_of::<compiler::ExposureParams>() as u64,
+            None,
         )?;
         ctx.register_compiled_node(CompiledExposure {
             node_id: self.id,

@@ -5,14 +5,10 @@ use std::ptr::NonNull;
 
 use crate::{
     FfmpegError, Result,
-    ffi::{self, AvFrame, sys},
+    ffi::{self, AvFrame, SWS_BILINEAR, sys},
     format::{InputContext, Packet, Rational},
     gpu::{GpuBackend, GpuVideoFrame},
 };
-#[cfg(target_os = "linux")]
-use sys::SWS_BILINEAR;
-#[cfg(not(target_os = "linux"))]
-use sys::SwsFlags::SWS_BILINEAR;
 use sys::{
     AVCodecID::{
         AV_CODEC_ID_AV1, AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_NONE, AV_CODEC_ID_PRORES,
@@ -350,7 +346,7 @@ impl VideoDecoder {
                     width as i32,
                     height as i32,
                     AV_PIX_FMT_RGBA,
-                    SWS_BILINEAR as i32,
+                    SWS_BILINEAR,
                     ptr::null_mut(),
                     ptr::null_mut(),
                     ptr::null(),

@@ -50,6 +50,7 @@ async fn run_async() -> anyhow::Result<()> {
     for fixture in fixtures {
         let mut setup = PhaseTimer::default();
         let composition = setup.time("build_composition", || fixture.build());
+        let media = setup.time("build_media_store", || fixture.media_store());
         let frames = args
             .frames
             .unwrap_or_else(|| fixture.default_frames(&composition))
@@ -76,7 +77,7 @@ async fn run_async() -> anyhow::Result<()> {
             let mut run = PhaseTimer::default();
             let elapsed = run
                 .time_async("mode_total", async {
-                    run_mode(&composition, frames, mode, output.as_deref()).await
+                    run_mode(&composition, &media, frames, mode, output.as_deref()).await
                 })
                 .await?;
             setup.print(&format!("composition_bench composition={}", fixture.name()));
@@ -183,7 +184,7 @@ fn parse_args() -> anyhow::Result<Args> {
 
 fn print_help() {
     println!(
-        "usage: lumen-bench-composition [--composition all|simple_pipeline|vector_showcase|animated_showcase|antialiasing_stress_aa|antialiasing_stress_noaa] [--mode MODE] [--frames N] [--save PATH]"
+        "usage: lumen-bench-composition [--composition all|simple_pipeline|small_media_transform|small_media_transform_exposure|vector_showcase|animated_showcase|antialiasing_stress_aa|antialiasing_stress_noaa] [--mode MODE] [--frames N] [--save PATH]"
     );
 }
 

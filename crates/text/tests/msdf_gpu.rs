@@ -442,7 +442,7 @@ fn read_texture_bytes(
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     rx.recv().unwrap().unwrap();
-    let padded = slice.get_mapped_range().to_vec();
+    let padded = slice.get_mapped_range().unwrap().to_vec();
     output.unmap();
 
     let mut unpadded = Vec::with_capacity((unpadded_bytes_per_row * size.height) as usize);
