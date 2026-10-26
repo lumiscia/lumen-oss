@@ -113,6 +113,9 @@ pub(crate) fn property_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
         "vec2" | "Vec2" => quote!(::lumen_engine::node::PropertyKind::Vec2),
         "enum" | "Enum" => quote!(::lumen_engine::node::PropertyKind::Enum),
         "paint" | "Paint" => quote!(::lumen_engine::node::PropertyKind::Paint),
+        "shader_uniforms" | "ShaderUniforms" => {
+            quote!(::lumen_engine::node::PropertyKind::ShaderUniforms)
+        }
         _ => {
             let span = kind.span();
             quote::quote_spanned!(span=> compile_error!("unknown param kind"))

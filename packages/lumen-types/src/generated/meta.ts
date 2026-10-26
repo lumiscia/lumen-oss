@@ -3,7 +3,7 @@
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodeParamKind = "bool" | "enum" | "float" | "int" | "paint" | "string" | "vec2";
+export type NodeParamKind = "bool" | "enum" | "float" | "int" | "paint" | "shader_uniforms" | "string" | "vec2";
 export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
@@ -761,6 +761,7 @@ export type NodeLiteralValue =
   | number
   | string
   | GradientPaint
+  | ShaderUniforms
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]
@@ -798,6 +799,21 @@ export type GradientPaint = {
   readonly stops: readonly GradientStop[];
 };
 export type Paint = Color | GradientPaint;
+export type HexColor = `#${string}`;
+export type ShaderUniformComponent = number | ExpressionString;
+export type ShaderUniformValue =
+  | number
+  | ExpressionString
+  | readonly [ShaderUniformComponent, ShaderUniformComponent]
+  | readonly [ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent]
+  | readonly [
+      ShaderUniformComponent,
+      ShaderUniformComponent,
+      ShaderUniformComponent,
+      ShaderUniformComponent,
+    ]
+  | HexColor;
+export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
 
 export type BooleanOperation = "union" | "intersect" | "subtract" | "xor";
 export type ChannelShuffleAlpha = "red" | "green" | "blue" | "alpha" | "zero" | "one";
@@ -1074,8 +1090,8 @@ export interface TransformNode extends CompositionNodeBase<"transform"> {
 
 export interface WgslShaderNode extends CompositionNodeBase<"wgsl_shader"> {
   readonly params?: {
-    readonly "bindings"?: ExpressionValue<string>;
     readonly "shader"?: ExpressionValue<string>;
+    readonly "uniforms"?: ShaderUniforms;
   };
 }
 

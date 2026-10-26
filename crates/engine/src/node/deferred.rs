@@ -4,6 +4,7 @@ use super::{
     delegate::{DelegateEvalContext, DelegateEvaluable, DelegateValue, Delegated},
     ids::NodeId,
     property::{PropertyExpression, PropertyValue},
+    shader_uniforms::ShaderUniforms,
     vector,
 };
 
@@ -293,7 +294,8 @@ impl_delegated_deferred!(
     String,
     [u8; 4],
     (f64, f64),
-    [f32; 2]
+    [f32; 2],
+    ShaderUniforms
 );
 
 macro_rules! impl_deferred_float_expr {
@@ -608,6 +610,42 @@ impl DeferredValue for vector::paint::Paint {
     }
 }
 
+impl DeferredValue for ShaderUniforms {
+    const ACCEPTS_EXPRESSIONS: bool = false;
+
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(value.clone()),
+            Deferred::Expr(_) => Err(PropertyValue::invalid_type(
+                node_id,
+                property_path,
+                "ShaderUniforms",
+                "expression",
+            )),
+        }
+    }
+
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::ShaderUniforms(value.clone())
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::ShaderUniforms(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "ShaderUniforms"
+    }
+}
+
 impl DeferredValue for (f64, f64) {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
@@ -750,6 +788,13 @@ impl DeferredJsonValue for [u8; 4] {
 impl DeferredJsonValue for vector::paint::Paint {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         vector::paint::Paint::from_json_value(value)
+    }
+}
+
+#[cfg(feature = "json")]
+impl DeferredJsonValue for ShaderUniforms {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        ShaderUniforms::from_json_value(value, "uniforms")
     }
 }
 

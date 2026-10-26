@@ -151,12 +151,6 @@ pub(crate) struct ShadowParams {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct WgslShaderParams {
-    pub(crate) values: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct MergeParams {
     pub(crate) opacity: f32,
     pub(crate) blend_mode: u32,

@@ -12,6 +12,7 @@ mod param_type;
 mod ports;
 mod property;
 mod schema;
+mod shader_uniforms;
 
 pub mod compositing;
 pub mod media_output;
@@ -39,6 +40,7 @@ pub use schema::{EnumDef, EnumOptionDef, NodeEnum};
 pub use schema::{NodeCategory, NodeSchemaDef, PropertyDef, PropertyKind};
 #[cfg(feature = "metadata")]
 pub use schema::{NodeSchema, PropertyConstraints};
+pub use shader_uniforms::{ShaderUniformValue, ShaderUniforms};
 
 pub trait Node: Send + Sync {
     fn id(&self) -> NodeId;

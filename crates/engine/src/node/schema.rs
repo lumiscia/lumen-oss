@@ -13,6 +13,7 @@ pub enum PropertyKind {
     Vec2 = 5,
     Enum = 6,
     Paint = 7,
+    ShaderUniforms = 8,
 }
 
 #[cfg(any(feature = "json", feature = "metadata"))]

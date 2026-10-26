@@ -234,6 +234,7 @@ impl Renderer {
             passes = plan.passes.len(),
             "prepare render plan"
         );
+        let scope = ValidationScope::push(&self.device);
         self.textures = plan
             .textures
             .iter()
@@ -256,7 +257,7 @@ impl Renderer {
             .iter()
             .map(|program| self.create_program(program))
             .collect::<Result<Vec<_>>>()?;
-        Ok(())
+        scope.finish()
     }
 
     pub fn texture_view(&self, id: TextureId) -> Option<&wgpu::TextureView> {
@@ -417,6 +418,7 @@ impl Renderer {
             "submit render plan"
         );
 
+        let scope = ValidationScope::push(&self.device);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -431,7 +433,9 @@ impl Renderer {
             }
         }
 
-        Ok(self.queue.submit([encoder.finish()]))
+        let submission = self.queue.submit([encoder.finish()]);
+        scope.finish()?;
+        Ok(submission)
     }
 
     pub fn execute_discard_submission(
@@ -947,6 +951,43 @@ impl Renderer {
         self.programs
             .get(id.0 as usize)
             .ok_or_else(|| anyhow!("unknown program id {id:?}"))
+    }
+}
+
+/// Captures wgpu validation errors raised on this thread, which native wgpu would otherwise panic on.
+///
+/// Browser WebGPU only resolves error scopes asynchronously, so there the scope is not pushed and the
+/// browser reports errors as uncaptured.
+struct ValidationScope {
+    #[cfg(not(target_arch = "wasm32"))]
+    guard: wgpu::ErrorScopeGuard,
+}
+
+impl ValidationScope {
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+    fn push(device: &wgpu::Device) -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            guard: device.push_error_scope(wgpu::ErrorFilter::Validation),
+        }
+    }
+
+    fn finish(self) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::{
+                future::Future,
+                task::{Context, Poll, Waker},
+            };
+            // wgpu-core resolves the pop immediately.
+            let mut pop = std::pin::pin!(self.guard.pop());
+            if let Poll::Ready(Some(error)) =
+                pop.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+            {
+                bail!("GPU validation failed: {error}");
+            }
+        }
+        Ok(())
     }
 }
 

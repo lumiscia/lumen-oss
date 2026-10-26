@@ -147,6 +147,18 @@ pub fn render_project_mp4(
                 message: format!("render failed at frame {frame}: {err}"),
                 retryable: true,
             })?;
+        // Hold this frame's output so a later plan change cannot free it before readback.
+        let output = renderer
+            .gpu_renderer()
+            .texture_arc(raster.texture)
+            .ok_or_else(|| RenderError {
+                code: "render_failed",
+                message: format!(
+                    "render output texture {:?} is unavailable for frame {frame}",
+                    raster.texture
+                ),
+                retryable: true,
+            })?;
         let _ = renderer.precompile_frame_window(
             composition,
             frame.saturating_add(1),
@@ -173,14 +185,13 @@ pub fn render_project_mp4(
                 retryable: true,
             });
         }
-        let pixels =
-            read_texture_rgba8(renderer.gpu_renderer(), raster.texture, size).map_err(|err| {
-                RenderError {
-                    code: "render_failed",
-                    message: format!("failed reading rendered pixels for frame {frame}: {err}"),
-                    retryable: true,
-                }
-            })?;
+        let pixels = read_texture_rgba8(renderer.gpu_renderer(), &output, size).map_err(|err| {
+            RenderError {
+                code: "render_failed",
+                message: format!("failed reading rendered pixels for frame {frame}: {err}"),
+                retryable: true,
+            }
+        })?;
         encoder
             .send(EncoderFrame {
                 frame,
@@ -255,7 +266,7 @@ pub(super) fn prefetch_media_frames(
 
 fn read_texture_rgba8(
     renderer: &lumen_gpu::Renderer,
-    id: lumen_gpu::TextureId,
+    texture: &lumen_gpu::wgpu::Texture,
     size: lumen_gpu::Size,
 ) -> anyhow::Result<Vec<u8>> {
     let bytes_per_pixel = 4;
@@ -280,9 +291,6 @@ fn read_texture_rgba8(
             .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
                 label: Some("lumen-server readback encoder"),
             });
-    let texture = renderer
-        .texture(id)
-        .ok_or_else(|| anyhow::anyhow!("render output texture {id:?} is unavailable"))?;
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
         lumen_gpu::wgpu::TexelCopyBufferInfo {

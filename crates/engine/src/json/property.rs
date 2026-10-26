@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::{
     expr::Expression,
-    node::{PropertyDef, PropertyExpression, PropertyKind, PropertyValue},
+    node::{PropertyDef, PropertyExpression, PropertyKind, PropertyValue, ShaderUniforms},
 };
 
 /// How a JSON string parameter starting with `=` is interpreted.
@@ -122,6 +122,9 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
                 .with_context(|| format!("`{name}[1]` expected number"))?;
             Ok(PropertyValue::Vec2((x, y)))
         }
+        PropertyKind::ShaderUniforms => ShaderUniforms::from_json_value(val, name)
+            .map_err(|error| anyhow!(error))
+            .map(PropertyValue::ShaderUniforms),
         PropertyKind::Enum => {
             let enum_def = def
                 .enum_def

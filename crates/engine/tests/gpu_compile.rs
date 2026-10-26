@@ -9,7 +9,7 @@ use lumen_engine::{
         VideoMetadata, collect_frame_requirements,
     },
     node::{
-        Deferred, NodeId, NodeKind, PortRef,
+        Deferred, NodeId, NodeKind, PortRef, ShaderUniforms,
         compositing::{
             boolean::{Boolean, BooleanOperation, BooleanParamsDelegate},
             merge::{MaskMode, Merge, MergeParamsDelegate},
@@ -32,7 +32,7 @@ use lumen_engine::{
             shadow::{Shadow, ShadowParamsDelegate},
             time_remap::{TimeRemap, TimeRemapParamsDelegate},
             transform::{Transform, TransformParamsDelegate, TransformSampling},
-            wgsl_shader::WgslShader,
+            wgsl_shader::{WgslShader, WgslShaderParamsDelegate},
         },
         source::{
             background::{Background, BackgroundParamsDelegate},
@@ -46,6 +46,7 @@ use lumen_engine::{
         },
     },
 };
+use serde_json::json;
 use std::sync::{Arc, mpsc};
 
 static TEXT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -3303,14 +3304,14 @@ fn merge_and_adjustments_treat_rasters_as_premultiplied() {
         shader,
         NodeKind::WgslShader(WgslShader {
             id: shader,
-            source: PortRef::new(straight, "output".to_string()),
+            sources: vec![PortRef::new(straight, "output".to_string())],
             ..WgslShader::default()
         }),
     );
     assert_pixels(
         with_output(graph, shader),
-        [255, 0, 0, 128],
-        "default WGSL shader with zero tint must preserve straight alpha",
+        [128, 0, 0, 128],
+        "default WGSL shader with zero tint must premultiply a straight input",
     );
 
     let (transparent, exposure) = (NodeId::new(1), NodeId::new(2));
@@ -4209,7 +4210,18 @@ fn render_rgba8(
 }
 
 fn read_rgba8(gpu: &lumen_gpu::Renderer, raster: lumen_engine::gpu::RasterHandle) -> Vec<u8> {
-    let size = raster.domain.storage_size;
+    read_texture_rgba8(
+        gpu,
+        gpu.texture(raster.texture).unwrap(),
+        raster.domain.storage_size,
+    )
+}
+
+fn read_texture_rgba8(
+    gpu: &lumen_gpu::Renderer,
+    texture: &lumen_gpu::wgpu::Texture,
+    size: lumen_gpu::Size,
+) -> Vec<u8> {
     let bytes_per_pixel = 4;
     let unpadded_bytes_per_row = size.width * bytes_per_pixel;
     let padded_bytes_per_row = unpadded_bytes_per_row
@@ -4230,7 +4242,7 @@ fn read_rgba8(gpu: &lumen_gpu::Renderer, raster: lumen_engine::gpu::RasterHandle
                 label: Some("lumen-engine path fill test readback encoder"),
             });
     encoder.copy_texture_to_buffer(
-        gpu.texture(raster.texture).unwrap().as_image_copy(),
+        texture.as_image_copy(),
         lumen_gpu::wgpu::TexelCopyBufferInfo {
             buffer: &output,
             layout: lumen_gpu::wgpu::TexelCopyBufferLayout {
@@ -6929,4 +6941,881 @@ fn blurred_msdf_text_keeps_its_resolution_whichever_way_the_scale_changes() {
         / forward.len() as f64;
     eprintln!("anisotropic scale: mean error {mean_error:.3} from the taps");
     assert!(mean_error < 1.0, "mean error {mean_error}");
+}
+
+fn wgsl_shader_composition(
+    shader: &str,
+    uniforms: serde_json::Value,
+    inputs: &[[u8; 4]],
+) -> Composition {
+    let (node, output) = (NodeId::new(10), NodeId::new(11));
+    let mut graph = Graph::new();
+    let mut sources = Vec::new();
+    for (index, color) in inputs.iter().enumerate() {
+        let id = NodeId::new(index as u64 + 1);
+        graph.nodes.insert(id, solid(id, *color));
+        sources.push(PortRef::new(id, "output".to_string()));
+    }
+    graph.nodes.insert(
+        node,
+        NodeKind::WgslShader(WgslShader {
+            id: node,
+            params: WgslShaderParamsDelegate {
+                shader: Deferred::value(shader.to_string()),
+                uniforms: Deferred::value(
+                    ShaderUniforms::from_json_value(&uniforms, "uniforms").unwrap(),
+                ),
+            },
+            sources,
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(node, "output".to_string()),
+        }),
+    );
+    test_composition(graph)
+}
+
+fn assert_uniform_pixels(pixels: &[u8], expected: [u8; 4], message: &str) {
+    for pixel in pixels.as_chunks::<4>().0 {
+        assert!(
+            pixel
+                .iter()
+                .zip(expected)
+                .all(|(channel, expected)| channel.abs_diff(expected) <= 1),
+            "{message}: expected {expected:?}, got {pixel:?}"
+        );
+    }
+}
+
+const WGSL_GLOBALS_SHADER: &str = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let color = vec4<f32>(lumen.time, lumen.resolution / 255.0, f32(lumen.frame) / 255.0);
+    textureStore(output, vec2<i32>(id.xy), color);
+}
+";
+
+#[test]
+fn wgsl_shader_exposes_time_frame_and_resolution_without_uniforms() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = wgsl_shader_composition(WGSL_GLOBALS_SHADER, json!({}), &[[0, 0, 0, 255]]);
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [0, 8, 4, 0], "frame 0 of an 8x4 output");
+    let pixels = render_rgba8(&mut renderer, &composition, 6, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [64, 8, 4, 6], "frame 6 at 24 fps is 0.25 s");
+}
+
+#[test]
+fn wgsl_shader_binds_typed_uniforms_with_vec3_alignment() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shader = "
+struct Params {
+    amount: f32,
+    tint: vec3<f32>,
+    alpha: f32,
+    count: u32,
+}
+@group(0) @binding(1) var<uniform> params: Params;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let color = vec4<f32>(params.tint.xy, params.amount * f32(params.count), params.alpha);
+    textureStore(output, vec2<i32>(id.xy), color);
+}
+";
+    let uniforms = json!({ "tint": "#ff8000", "amount": 0.125, "count": 2, "alpha": "=time * 2" });
+    let composition = wgsl_shader_composition(shader, uniforms, &[[0, 0, 0, 255]]);
+    let pixels = render_rgba8(&mut renderer, &composition, 6, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [255, 128, 64, 128], "typed uniforms");
+}
+
+#[test]
+fn wgsl_shader_binds_three_inputs_with_shared_sampler() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shader = "
+struct Params {
+    gain: vec3<f32>,
+}
+@group(0) @binding(1) var<uniform> params: Params;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let uv = (vec2<f32>(id.xy) + 0.5) / lumen.resolution;
+    let red = textureLoad(input0, vec2<i32>(id.xy), 0).r;
+    let green = textureSampleLevel(input1, input_sampler, uv, 0.0).g;
+    let blue = textureSampleLevel(input2, input_sampler, uv, 0.0).b;
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(vec3<f32>(red, green, blue) * params.gain, 1.0));
+}
+";
+    let composition = wgsl_shader_composition(
+        shader,
+        json!({ "gain": [1, 2, 4] }),
+        &[[200, 0, 0, 255], [0, 50, 0, 255], [0, 0, 25, 255]],
+    );
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [200, 100, 100, 255], "one channel from each input");
+}
+
+#[test]
+fn wgsl_shader_recompiles_when_source_changes() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shader = |color: &str| {
+        format!(
+            "@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {{
+    textureStore(output, vec2<i32>(id.xy), {color});
+}}"
+        )
+    };
+    let red = wgsl_shader_composition(
+        &shader("vec4<f32>(1.0, 0.0, 0.0, 1.0)"),
+        json!({}),
+        &[[0; 4]],
+    );
+    let pixels = render_rgba8(&mut renderer, &red, 0, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [255, 0, 0, 255], "initial source");
+    let green = wgsl_shader_composition(
+        &shader("vec4<f32>(0.0, 1.0, 0.0, 1.0)"),
+        json!({}),
+        &[[0; 4]],
+    );
+    let pixels = render_rgba8(&mut renderer, &green, 0, &EmptyMediaStore);
+    assert_uniform_pixels(
+        &pixels,
+        [0, 255, 0, 255],
+        "edited source must rebuild the pipeline",
+    );
+}
+
+#[test]
+fn wgsl_shader_keeps_v1_shaders_and_rejects_bad_uniforms() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let v1 = "
+struct ShaderParams {
+    values: vec4<f32>,
+}
+@group(0) @binding(0) var input_tex: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> params: ShaderParams;
+@group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let color = textureLoad(input_tex, vec2<i32>(id.xy), 0);
+    textureStore(output_tex, vec2<i32>(id.xy), color + params.values);
+}
+";
+    let composition =
+        wgsl_shader_composition(v1, json!({ "values": [0.5, 0, 0, 0] }), &[[0, 0, 0, 255]]);
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [128, 0, 0, 255], "v1 shader");
+
+    for (shader, uniforms, expected) in [
+        (
+            v1,
+            json!({ "tint": [1, 0, 0, 0] }),
+            "uniforms.tint: `ShaderParams` has no such field",
+        ),
+        (
+            v1,
+            json!({ "values": [1, 0, 0] }),
+            "uniforms.values: vec4<f32> needs 4 components",
+        ),
+        (
+            "struct P { m: mat4x4<f32> }\n@group(0) @binding(1) var<uniform> p: P;",
+            json!({}),
+            "unsupported type `mat4x4<f32>`",
+        ),
+    ] {
+        let composition = wgsl_shader_composition(shader, uniforms.clone(), &[[0, 0, 0, 255]]);
+        let Some(mut renderer) = gpu_composition_renderer() else {
+            return;
+        };
+        let error = renderer
+            .render_frame(&composition, 0, &EmptyMediaStore)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{uniforms}: {error}");
+    }
+}
+
+fn fill_shader(color: &str) -> String {
+    format!(
+        "@compute @workgroup_size(8, 8, 1) fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) \
+         {{ textureStore(output, vec2<i32>(id.xy), {color}); }}"
+    )
+}
+
+fn wgsl_shader_node(id: NodeId, shader: Deferred<String>, sources: Vec<PortRef>) -> NodeKind {
+    NodeKind::WgslShader(WgslShader {
+        id,
+        params: WgslShaderParamsDelegate {
+            shader,
+            uniforms: Deferred::value(ShaderUniforms::default()),
+        },
+        sources,
+    })
+}
+
+#[test]
+fn wgsl_shader_reports_oversized_uniforms_and_gpu_validation_errors() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let fields: String = (0..4097)
+        .map(|index| format!("f{index}: vec4<f32>,"))
+        .collect();
+    let oversized = format!(
+        "struct Big {{ {fields} }}\n@group(0) @binding(1) var<uniform> big: Big;\n{}",
+        fill_shader("big.f0")
+    );
+    let mismatched_binding = "
+@group(0) @binding(0) var input_tex: texture_storage_2d<rgba8unorm, write>;
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    textureStore(input_tex, vec2<i32>(id.xy), vec4<f32>(1.0));
+}
+"
+    .to_string();
+    for (shader, expected) in [
+        (oversized, "limited to 65536 bytes"),
+        (fill_shader("vec4<f32>(1.0"), "GPU validation failed"),
+        (mismatched_binding, "GPU validation failed"),
+    ] {
+        let composition = wgsl_shader_composition(&shader, json!({}), &[[0, 0, 0, 255]]);
+        let error = renderer
+            .render_frame(&composition, 0, &EmptyMediaStore)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{expected}: {error}");
+    }
+    let valid = wgsl_shader_composition(&fill_shader("vec4<f32>(1.0)"), json!({}), &[[0; 4]]);
+    let pixels = render_rgba8(&mut renderer, &valid, 0, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [255; 4], "the renderer survives failed shaders");
+}
+
+#[test]
+fn wgsl_shader_source_edits_drop_superseded_plans_but_not_held_textures() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut outputs = Vec::new();
+    let mut held = None;
+    for edit in 0..12u8 {
+        let color = format!("vec4<f32>({edit}.0 / 255.0, 0.0, 0.0, 1.0)");
+        let composition = wgsl_shader_composition(&fill_shader(&color), json!({}), &[[0; 4]]);
+        let raster = renderer
+            .render_frame(&composition, 0, &EmptyMediaStore)
+            .unwrap();
+        let output = renderer.gpu_renderer().texture_arc(raster.texture).unwrap();
+        held.get_or_insert_with(|| (output.as_ref().clone(), raster.domain.storage_size));
+        outputs.push(Arc::downgrade(&output));
+    }
+    let resident = outputs
+        .iter()
+        .filter(|output| output.strong_count() > 0)
+        .count();
+    assert_eq!(resident, 1, "superseded plan outputs are still resident");
+
+    let (texture, size) = held.unwrap();
+    let pixels = read_texture_rgba8(renderer.gpu_renderer(), &texture, size);
+    assert_uniform_pixels(&pixels, [0, 0, 0, 255], "texture held from the first edit");
+}
+
+#[test]
+fn lookahead_keeps_every_switch_plan_resident() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    const PLANS: u32 = 9;
+    let composition = switch_composition(PLANS);
+
+    let mut plan_outputs = std::collections::HashMap::new();
+    for frame in 0..4 * PLANS {
+        let raster = renderer
+            .render_frame(&composition, frame, &EmptyMediaStore)
+            .unwrap();
+        let output = renderer.gpu_renderer().texture_arc(raster.texture).unwrap();
+        let first = plan_outputs
+            .entry(frame % PLANS)
+            .or_insert_with(|| Arc::clone(&output));
+        assert!(
+            Arc::ptr_eq(first, &output),
+            "frame {frame} recompiled a plan the lookahead had already built"
+        );
+        renderer
+            .precompile_frame_window(&composition, frame + 1, 30, &EmptyMediaStore)
+            .unwrap();
+        let pixels =
+            read_texture_rgba8(renderer.gpu_renderer(), &output, raster.domain.storage_size);
+        assert_uniform_pixels(
+            &pixels,
+            plan_color(frame % PLANS),
+            &format!("frame {frame} read after lookahead"),
+        );
+    }
+}
+
+fn switch_composition(plans: u32) -> Composition {
+    let (switch, output) = (NodeId::new(100), NodeId::new(101));
+    let mut graph = Graph::new();
+    let mut layers = Vec::new();
+    for index in 0..plans {
+        let id = NodeId::new(u64::from(index) + 1);
+        graph.nodes.insert(id, solid(id, plan_color(index)));
+        layers.push(PortRef::new(id, "output".to_string()));
+    }
+    graph.nodes.insert(
+        switch,
+        NodeKind::Switch(Switch {
+            id: switch,
+            params: SwitchParamsDelegate {
+                selected_layer: Deferred::Expr(
+                    Expression::parse(&format!("frame % {plans}")).unwrap(),
+                ),
+            },
+            layers,
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(switch, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.timeline.duration_frames = 120;
+    composition
+}
+
+#[test]
+fn lookahead_keeps_the_bound_plan_when_the_composition_is_edited() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shader = fill_shader("vec4<f32>(1.0, 0.0, 0.0, 1.0)");
+    let composition = wgsl_shader_composition(&shader, json!({}), &[[0; 4]]);
+    let bound = renderer
+        .bind_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+
+    let edited = wgsl_shader_composition(&format!("// edited\n{shader}"), json!({}), &[[0; 4]]);
+    renderer
+        .precompile_frame_window(&edited, 0, 4, &EmptyMediaStore)
+        .unwrap();
+
+    let (raster, _) = renderer.submit_bound_frame(&bound).unwrap();
+    let pixels = read_rgba8(renderer.gpu_renderer(), raster);
+    assert_uniform_pixels(
+        &pixels,
+        [255, 0, 0, 255],
+        "bound frame after lookahead edit",
+    );
+}
+
+#[test]
+fn lookahead_compiles_a_rejected_plan_once() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = switch_composition(9);
+    renderer
+        .render_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    let plan_bytes = renderer.plan_cache_bytes();
+    renderer.set_plan_cache_budget(plan_bytes);
+
+    let compiles = renderer.plan_compile_count();
+    for _ in 0..6 {
+        renderer
+            .precompile_frame_window(&composition, 1, 30, &EmptyMediaStore)
+            .unwrap();
+    }
+    assert_eq!(renderer.cached_plan_count(), 1);
+    assert_eq!(renderer.plan_compile_count(), compiles + 1);
+}
+
+#[test]
+fn plan_cache_budget_bounds_independently_animated_shaders() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = animated_shader_composition(6);
+
+    renderer.compile(&composition).unwrap();
+    let plan_bytes = renderer.plan_cache_bytes();
+    assert!(plan_bytes > 0);
+    // The second budget cannot fit even one lookahead plan beside the current one.
+    for (budget, max_plans) in [(3 * plan_bytes, 3), (plan_bytes / 2, 2)] {
+        renderer.compile(&composition).unwrap();
+        renderer.set_plan_cache_budget(budget);
+        for frame in 0..72 {
+            let raster = renderer
+                .render_frame(&composition, frame, &EmptyMediaStore)
+                .unwrap();
+            let output = renderer.gpu_renderer().texture_arc(raster.texture).unwrap();
+            renderer
+                .precompile_frame_window(&composition, frame + 1, 30, &EmptyMediaStore)
+                .unwrap();
+            let current = renderer.gpu_renderer().texture_arc(raster.texture).unwrap();
+            assert!(
+                Arc::ptr_eq(&current, &output),
+                "budget {budget}, frame {frame}: lookahead replaced the current plan"
+            );
+            assert!(
+                renderer.cached_plan_count() <= max_plans
+                    && renderer.plan_cache_bytes() <= budget.max(2 * plan_bytes),
+                "budget {budget}, frame {frame}: {} plans hold {} bytes",
+                renderer.cached_plan_count(),
+                renderer.plan_cache_bytes()
+            );
+            let pixels =
+                read_texture_rgba8(renderer.gpu_renderer(), &output, raster.domain.storage_size);
+            assert_uniform_pixels(
+                &pixels,
+                [(frame % 64) as u8, 0, 0, 255],
+                &format!("budget {budget}, frame {frame}"),
+            );
+        }
+    }
+}
+
+/// Shader `bit` adds 2^bit to red on alternating runs of 2^bit frames, so `bits` shaders use
+/// 2^bits distinct plans.
+fn animated_shader_composition(bits: u64) -> Composition {
+    let input = NodeId::new(1);
+    let mut graph = Graph::new();
+    graph.nodes.insert(input, solid(input, [0, 0, 0, 255]));
+    let mut source = PortRef::new(input, "output".to_string());
+    let add_red = |red: u32| {
+        format!(
+            "@compute @workgroup_size(8, 8, 1) fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) \
+             {{ let color = textureLoad(input0, vec2<i32>(id.xy), 0); \
+             textureStore(output, vec2<i32>(id.xy), color + vec4<f32>({red}.0 / 255.0, 0.0, 0.0, 0.0)); }}"
+        )
+    };
+    for bit in 0..bits {
+        let id = NodeId::new(bit + 2);
+        let toggle = format!(
+            "if(floor(frame / {}) % 2 == 0, '{}', '{}')",
+            1 << bit,
+            add_red(0),
+            add_red(1 << bit)
+        );
+        graph.nodes.insert(
+            id,
+            wgsl_shader_node(
+                id,
+                Deferred::Expr(Expression::parse(&toggle).unwrap()),
+                vec![source],
+            ),
+        );
+        source = PortRef::new(id, "output".to_string());
+    }
+    let output = NodeId::new(100);
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput { id: output, source }),
+    );
+    let mut composition = test_composition(graph);
+    composition.timeline.duration_frames = 1 << (bits + 1);
+    composition
+}
+
+fn plan_color(index: u32) -> [u8; 4] {
+    [index as u8 * 25 + 5, 0, 0, 255]
+}
+
+#[test]
+fn rejected_plan_memory_is_bounded_and_released() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = animated_shader_composition(9);
+    renderer
+        .render_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    renderer.set_plan_cache_budget(0);
+    for frame in 1..512 {
+        renderer
+            .precompile_frame(&composition, frame, &EmptyMediaStore)
+            .unwrap();
+    }
+    assert!(renderer.rejected_plan_count() > 0);
+    assert!(renderer.rejected_plan_count() <= 256);
+
+    renderer.release_resources();
+    assert_eq!(renderer.rejected_plan_count(), 0);
+}
+
+#[test]
+fn rendering_precompiled_shader_edits_prunes_superseded_plans() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    for edit in 0..12u8 {
+        let color = format!("vec4<f32>({edit}.0 / 255.0, 0.0, 0.0, 1.0)");
+        let composition = wgsl_shader_composition(&fill_shader(&color), json!({}), &[[0; 4]]);
+        renderer
+            .precompile_frame(&composition, 0, &EmptyMediaStore)
+            .unwrap();
+        renderer
+            .render_frame(&composition, 0, &EmptyMediaStore)
+            .unwrap();
+    }
+    assert_eq!(renderer.cached_plan_count(), 1);
+}
+
+#[test]
+fn shrinking_the_canvas_forgets_rejected_plan_estimates() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut composition = switch_composition(9);
+    composition.render_settings.width = 1024;
+    composition.render_settings.height = 1024;
+    renderer
+        .render_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    let plan_bytes = renderer.plan_cache_bytes();
+    renderer.set_plan_cache_budget(plan_bytes + plan_bytes / 4);
+    renderer
+        .precompile_frame(&composition, 1, &EmptyMediaStore)
+        .unwrap();
+    assert_eq!(renderer.cached_plan_count(), 1);
+
+    composition.render_settings.width = 8;
+    composition.render_settings.height = 4;
+    renderer
+        .precompile_frame(&composition, 1, &EmptyMediaStore)
+        .unwrap();
+    assert_eq!(renderer.cached_plan_count(), 2);
+}
+
+#[test]
+fn resizing_the_canvas_does_not_reuse_the_old_plan() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut composition = switch_composition(9);
+    composition.render_settings.width = 8;
+    composition.render_settings.height = 4;
+    let raster = renderer
+        .render_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    assert_eq!(raster.domain.storage_size, lumen_gpu::Size::new(8, 4));
+
+    composition.render_settings.width = 16;
+    composition.render_settings.height = 8;
+    let raster = renderer
+        .render_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    assert_eq!(raster.domain.storage_size, lumen_gpu::Size::new(16, 8));
+    assert_eq!(renderer.cached_plan_count(), 1);
+}
+
+#[test]
+fn plan_key_reports_time_remap_cycles() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (remap, output) = (NodeId::new(1), NodeId::new(2));
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        remap,
+        NodeKind::TimeRemap(TimeRemap {
+            id: remap,
+            params: TimeRemapParamsDelegate {
+                frame: Deferred::value(0.0),
+                loop_enabled: Deferred::value(false),
+                loop_start: Deferred::value(0),
+                loop_end: Deferred::value(0),
+            },
+            source: PortRef::new(remap, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(remap, "output".to_string()),
+        }),
+    );
+    let error = renderer.compile(&test_composition(graph)).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            LumenError::GraphValidation(GraphValidationError::Cycle { .. })
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn wgsl_shader_source_keys_follow_time_remap_branches() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (input, shader, left, right, combine, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(3),
+        NodeId::new(4),
+        NodeId::new(5),
+        NodeId::new(6),
+    );
+    let mut graph = Graph::new();
+    graph.nodes.insert(input, solid(input, [0, 0, 0, 255]));
+    let source = format!(
+        "if(frame < 5, '{}', '{}')",
+        fill_shader("vec4<f32>(1.0, 0.0, 0.0, 1.0)"),
+        fill_shader("vec4<f32>(0.0, 1.0, 0.0, 1.0)")
+    );
+    graph.nodes.insert(
+        shader,
+        wgsl_shader_node(
+            shader,
+            Deferred::Expr(Expression::parse(&source).unwrap()),
+            vec![PortRef::new(input, "output".to_string())],
+        ),
+    );
+    for (id, remap) in [
+        (left, "if(frame % 2 == 0, 0, 9)"),
+        (right, "if(frame % 2 == 0, 9, 0)"),
+    ] {
+        graph.nodes.insert(
+            id,
+            NodeKind::TimeRemap(TimeRemap {
+                id,
+                params: TimeRemapParamsDelegate {
+                    frame: Deferred::Expr(Expression::parse(remap).unwrap()),
+                    loop_enabled: Deferred::value(false),
+                    loop_start: Deferred::value(0),
+                    loop_end: Deferred::value(0),
+                },
+                source: PortRef::new(shader, "output".to_string()),
+            }),
+        );
+    }
+    let halves = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    var color = textureLoad(input0, vec2<i32>(id.xy), 0);
+    if (id.x >= 4u) {
+        color = textureLoad(input1, vec2<i32>(id.xy), 0);
+    }
+    textureStore(output, vec2<i32>(id.xy), color);
+}
+";
+    graph.nodes.insert(
+        combine,
+        wgsl_shader_node(
+            combine,
+            Deferred::value(halves.to_string()),
+            vec![
+                PortRef::new(left, "output".to_string()),
+                PortRef::new(right, "output".to_string()),
+            ],
+        ),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(combine, "output".to_string()),
+        }),
+    );
+    let composition = test_composition(graph);
+
+    let (red, green) = ([255, 0, 0, 255], [0, 255, 0, 255]);
+    for (frame, expected) in [(0, [red, green]), (1, [green, red]), (2, [red, green])] {
+        let pixels = render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore);
+        for (row, pixels) in pixels.chunks(8 * 4).enumerate() {
+            let (left, right) = pixels.split_at(4 * 4);
+            assert_uniform_pixels(left, expected[0], &format!("frame {frame} row {row} left"));
+            assert_uniform_pixels(
+                right,
+                expected[1],
+                &format!("frame {frame} row {row} right"),
+            );
+        }
+    }
+}
+
+#[test]
+fn wgsl_shader_source_edits_behind_a_filter_rebuild_the_plan() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let through_opacity = |color: &str| {
+        let (input, shader, opacity, output) = (
+            NodeId::new(1),
+            NodeId::new(2),
+            NodeId::new(3),
+            NodeId::new(4),
+        );
+        let mut graph = Graph::new();
+        graph.nodes.insert(input, solid(input, [0, 0, 0, 255]));
+        graph.nodes.insert(
+            shader,
+            wgsl_shader_node(
+                shader,
+                Deferred::value(fill_shader(color)),
+                vec![PortRef::new(input, "output".to_string())],
+            ),
+        );
+        graph.nodes.insert(
+            opacity,
+            NodeKind::Opacity(Opacity {
+                id: opacity,
+                source: PortRef::new(shader, "output".to_string()),
+                ..Opacity::default()
+            }),
+        );
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(opacity, "output".to_string()),
+            }),
+        );
+        test_composition(graph)
+    };
+    let red = through_opacity("vec4<f32>(1.0, 0.0, 0.0, 1.0)");
+    let pixels = render_rgba8(&mut renderer, &red, 0, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [255, 0, 0, 255], "initial source");
+    let green = through_opacity("vec4<f32>(0.0, 1.0, 0.0, 1.0)");
+    let pixels = render_rgba8(&mut renderer, &green, 0, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [0, 255, 0, 255], "edit behind opacity");
+}
+
+#[test]
+fn wgsl_shader_premultiplies_straight_inputs() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (opaque, half_red, straight, shader, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(3),
+        NodeId::new(4),
+        NodeId::new(5),
+    );
+    let mut graph = Graph::new();
+    graph.nodes.insert(opaque, solid(opaque, [0, 0, 255, 255]));
+    graph
+        .nodes
+        .insert(half_red, solid(half_red, [255, 0, 0, 128]));
+    graph.nodes.insert(
+        straight,
+        NodeKind::AlphaPremultiply(AlphaPremultiply {
+            id: straight,
+            params: AlphaPremultiplyParamsDelegate {
+                mode: Deferred::value("unpremultiply".to_string()),
+            },
+            source: PortRef::new(half_red, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        shader,
+        wgsl_shader_node(
+            shader,
+            Deferred::value(fill_shader("textureLoad(input1, vec2<i32>(id.xy), 0)")),
+            vec![
+                PortRef::new(opaque, "output".to_string()),
+                PortRef::new(straight, "output".to_string()),
+            ],
+        ),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(shader, "output".to_string()),
+        }),
+    );
+    let composition = test_composition(graph);
+    let raster = renderer
+        .render_frame(&composition, 0, &EmptyMediaStore)
+        .unwrap();
+    assert_eq!(raster.metadata.alpha_mode, AlphaMode::Premultiplied);
+    let pixels = read_rgba8(renderer.gpu_renderer(), raster);
+    assert_uniform_pixels(&pixels, [128, 0, 0, 128], "straight input1, premultiplied");
+}
+
+#[test]
+fn wgsl_shader_parses_declarations_with_any_whitespace() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shader = format!(
+        "struct  Params{{ tint :vec3 < f32 > ,alpha : f32 }}\n\
+         @ group( 0 ) @binding( 1u ) var< uniform > params : Params ;\n{}",
+        fill_shader("vec4<f32>(params.tint, params.alpha)")
+    );
+    let composition = wgsl_shader_composition(
+        &shader,
+        json!({ "tint": [0.5, 0.25, 1], "alpha": 1 }),
+        &[[0, 0, 0, 255]],
+    );
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [128, 64, 255, 255], "whitespace-tolerant uniforms");
+}
+
+/// The node JSON that `wgslShader(...)` in `@lumiscia/lumen-shared` emits.
+#[cfg(feature = "json")]
+#[test]
+fn wgsl_shader_renders_typed_uniforms_from_json() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shader = "diagnostic(off, derivative_uniformity);
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let red = uniforms.tint.r * uniforms.strength * f32(uniforms.steps);
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(red, uniforms.center / 255.0, uniforms.tint.a));
+}
+
+struct Uniforms {
+    strength: f32,
+    center: vec2<f32>,
+    tint: vec4<f32>,
+    steps: u32,
+}
+@group(0) @binding(1) var<uniform> uniforms: Uniforms;
+";
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 12 },
+        "render_settings": { "width": 8, "height": 4 },
+        "nodes": [
+            { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255], "width": 8, "height": 4 } },
+            { "id": 2, "type": "wgsl_shader", "params": {
+                "shader": shader,
+                "uniforms": { "strength": 0.25, "center": [64, "=frame * 2"], "tint": "#ff0000", "steps": 2 }
+            } },
+            { "id": 3, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 2, "to_port": "source" },
+            { "from_node": 2, "to_node": 3, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 6, &EmptyMediaStore);
+    assert_uniform_pixels(&pixels, [128, 64, 12, 255], "uniforms from JSON");
 }

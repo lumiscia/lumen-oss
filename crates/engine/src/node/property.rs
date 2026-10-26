@@ -3,7 +3,7 @@ use crate::{
     expr::Expression,
 };
 
-use super::{ids::NodeId, vector};
+use super::{ids::NodeId, shader_uniforms::ShaderUniforms, vector};
 
 #[derive(Debug, Clone)]
 pub enum PropertyValue {
@@ -14,6 +14,7 @@ pub enum PropertyValue {
     Color([u8; 4]),
     Paint(vector::paint::Paint),
     Vec2((f64, f64)),
+    ShaderUniforms(ShaderUniforms),
     FloatVec(Vec<f64>),
     IntVec(Vec<i64>),
     StringVec(Vec<String>),

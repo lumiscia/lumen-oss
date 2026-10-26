@@ -59,6 +59,7 @@ pub enum NodeParamKind {
     Paint,
     Vec2,
     Enum,
+    ShaderUniforms,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -71,6 +72,7 @@ pub enum NodeLiteralValue {
     Color([u8; 4]),
     Paint(Value),
     Vec2((f64, f64)),
+    ShaderUniforms(Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -406,6 +408,25 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                         }
                     ]
                 },
+                "shaderUniformValue": {
+                    "description": "A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields.",
+                    "anyOf": [
+                        { "type": "number" },
+                        {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": 4,
+                            "items": {
+                                "anyOf": [{ "type": "number" }, { "$ref": "#/$defs/expression" }]
+                            }
+                        },
+                        { "$ref": "#/$defs/expression" },
+                        {
+                            "type": "string",
+                            "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
+                        }
+                    ]
+                },
                 "vec2": {
                     "type": "array",
                     "prefixItems": [{ "type": "number" }, { "type": "number" }],
@@ -526,6 +547,10 @@ fn property_schema_json(property: &NodeParamSpec) -> Value {
         NodeParamKind::Color => json!({ "$ref": "#/$defs/color" }),
         NodeParamKind::Paint => json!({ "$ref": "#/$defs/paint" }),
         NodeParamKind::Vec2 => json!({ "$ref": "#/$defs/vec2" }),
+        NodeParamKind::ShaderUniforms => json!({
+            "type": "object",
+            "additionalProperties": { "$ref": "#/$defs/shaderUniformValue" }
+        }),
         NodeParamKind::Enum => {
             let values = property
                 .enum_options
@@ -674,6 +699,7 @@ fn property_kind_from_schema(kind: lumen_engine::node::PropertyKind) -> NodePara
         lumen_engine::node::PropertyKind::Paint => NodeParamKind::Paint,
         lumen_engine::node::PropertyKind::Vec2 => NodeParamKind::Vec2,
         lumen_engine::node::PropertyKind::Enum => NodeParamKind::Enum,
+        lumen_engine::node::PropertyKind::ShaderUniforms => NodeParamKind::ShaderUniforms,
     }
 }
 
@@ -719,6 +745,9 @@ fn literal_from_property_value(
             Ok(NodeLiteralValue::Paint(value.to_json_value()))
         }
         lumen_engine::node::PropertyValue::Vec2(value) => Ok(NodeLiteralValue::Vec2(*value)),
+        lumen_engine::node::PropertyValue::ShaderUniforms(value) => {
+            Ok(NodeLiteralValue::ShaderUniforms(value.to_json_value()))
+        }
         other => bail!("unsupported default param literal: {other:?}"),
     }
 }
@@ -804,6 +833,36 @@ mod tests {
                     "{label} schema"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn shader_uniforms_schema_matches_engine_parsing() {
+        let manifest = meta_manifest().unwrap();
+        let validator = schema_validator();
+        for (uniforms, valid) in [
+            (
+                json!({ "a": 1, "b": [1, "=frame"], "c": "=vec2(1, 2)", "d": "#ff000080" }),
+                true,
+            ),
+            (json!({ "a": true }), false),
+            (json!({ "a": [1] }), false),
+            (json!({ "a": [1, 2, 3, 4, 5] }), false),
+            (json!({ "a": [1, "x"] }), false),
+            (json!({ "a": "red" }), false),
+            (json!({ "a": "#ff00" }), false),
+            (json!([1, 2]), false),
+        ] {
+            let composition = composition_with_node(
+                &manifest.node_specs["wgsl_shader"],
+                json!({ "uniforms": uniforms }),
+            );
+            assert_eq!(validator.is_valid(&composition), valid, "{uniforms}");
+            assert_eq!(
+                lumen_engine::json::parse_value(&composition).is_ok(),
+                valid,
+                "{uniforms}"
+            );
         }
     }
 

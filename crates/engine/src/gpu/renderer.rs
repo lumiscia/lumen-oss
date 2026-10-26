@@ -1,35 +1,100 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
 use crate::{
     composition::Composition,
-    error::RenderError,
+    error::{GraphValidationError, RenderError},
     gpu::{
         BoundFrame, CompileContext, CompiledComposition, FrameBindContext, MediaTextureKey,
-        RasterHandle,
+        RasterHandle, TimeRemapPath,
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
-    node::{NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
+    node::{Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
 };
 
 #[cfg(feature = "ffmpeg")]
 use super::media::GpuMediaFrameImporter;
 
+/// Everything a frame can change that alters the compiled plan's structure, plus the canvas size
+/// its textures were allocated for.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CompiledPlanKey(Vec<(NodeId, Option<usize>)>);
+pub struct CompiledPlanKey {
+    size: (u32, u32),
+    entries: Vec<PlanKeyEntry>,
+}
+
+impl CompiledPlanKey {
+    /// Whether the canvas size is unchanged and the nodes this key chose between still exist with
+    /// the same kind and, for literal shader sources, the same source.
+    fn matches(&self, composition: &Composition) -> bool {
+        let settings = &composition.render_settings;
+        if self.size != (settings.width, settings.height) {
+            return false;
+        }
+        let nodes = &composition.graph.nodes;
+        self.entries.iter().all(|entry| {
+            entry
+                .time_remaps
+                .iter()
+                .all(|id| matches!(nodes.get(id), Some(NodeKind::TimeRemap(_))))
+                && match (&entry.choice, nodes.get(&entry.node_id)) {
+                    (PlanChoice::SwitchSelection(_), Some(NodeKind::Switch(_))) => true,
+                    (PlanChoice::ShaderSource(hash), Some(NodeKind::WgslShader(shader))) => {
+                        match &shader.params.shader {
+                            Deferred::Value(source) => source_hash(source) == *hash,
+                            Deferred::Expr(_) => true,
+                        }
+                    }
+                    _ => false,
+                }
+        })
+    }
+}
+
+/// A node instance's structural choice; the compiler builds one instance per time-remap path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct PlanKeyEntry {
+    time_remaps: TimeRemapPath,
+    node_id: NodeId,
+    choice: PlanChoice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum PlanChoice {
+    SwitchSelection(Option<usize>),
+    ShaderSource(u64),
+}
+
+/// Estimated GPU memory compiled plans may hold before least recently used ones are dropped.
+pub const DEFAULT_PLAN_CACHE_BUDGET_BYTES: u64 = 1 << 30;
+
+/// Rejected plan estimates remembered before they are all forgotten.
+const MAX_REJECTED_PLANS: usize = 256;
 
 struct PreparedComposition {
     renderer: lumen_gpu::Renderer,
     compiled: CompiledComposition,
     current_media_textures: HashMap<lumen_gpu::TextureId, MediaTextureKey>,
+    estimated_bytes: u64,
+    last_used: u64,
 }
 
 pub struct GpuCompositionRenderer {
     renderer: lumen_gpu::Renderer,
     compiled_plans: HashMap<CompiledPlanKey, PreparedComposition>,
     active_key: Option<CompiledPlanKey>,
+    plan_cache_bytes: u64,
+    plan_cache_budget: u64,
+    plan_use_clock: u64,
+    /// Signature of the plan-key nodes and canvas size the cache was last pruned against.
+    pruned_signature: Option<u64>,
+    /// Estimated sizes of lookahead plans that did not fit the budget, so later windows can skip
+    /// them without compiling. Valid only for the composition inputs with this signature.
+    rejected_plan_bytes: HashMap<CompiledPlanKey, u64>,
+    rejected_signature: Option<u64>,
+    plan_compile_count: u64,
     bind_sequence: u64,
     text_atlas: Arc<Mutex<lumen_text::GlyphAtlas>>,
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
@@ -59,6 +124,13 @@ impl GpuCompositionRenderer {
             renderer,
             compiled_plans: HashMap::new(),
             active_key: None,
+            plan_cache_bytes: 0,
+            plan_cache_budget: DEFAULT_PLAN_CACHE_BUDGET_BYTES,
+            plan_use_clock: 0,
+            pruned_signature: None,
+            rejected_plan_bytes: HashMap::new(),
+            rejected_signature: None,
+            plan_compile_count: 0,
             bind_sequence: 0,
             text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
                 super::types::TEXT_ATLAS_SIZE,
@@ -82,8 +154,37 @@ impl GpuCompositionRenderer {
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
         let key = self.compiled_plan_key(composition, 0.0, None)?;
+        self.plan_compile_count += 1;
         let compiled = CompileContext::with_frame(composition, 0, output_format).compile()?;
         self.prepare_compiled(key, compiled)
+    }
+
+    /// Sets the estimated GPU memory compiled plans may hold. Rendering drops least recently used
+    /// plans past it, and lookahead skips plans that would not fit. The current plan always stays.
+    pub fn set_plan_cache_budget(&mut self, bytes: u64) {
+        self.plan_cache_budget = bytes;
+        let active = self.active_key.clone();
+        self.evict_over_budget(&[active.as_ref()]);
+    }
+
+    /// Estimated GPU memory held by compiled plans, excluding the shared text atlas and media cache.
+    pub fn plan_cache_bytes(&self) -> u64 {
+        self.plan_cache_bytes
+    }
+
+    pub fn cached_plan_count(&self) -> usize {
+        self.compiled_plans.len()
+    }
+
+    /// Number of times a plan has been built on the CPU, whether or not it was kept.
+    pub fn plan_compile_count(&self) -> u64 {
+        self.plan_compile_count
+    }
+
+    /// Number of rejected lookahead plans whose estimated size is remembered.
+    #[doc(hidden)]
+    pub fn rejected_plan_count(&self) -> usize {
+        self.rejected_plan_bytes.len()
     }
 
     pub fn compile_with_media<M: MediaStore>(
@@ -93,7 +194,8 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        self.ensure_compiled_for_frame(composition, 0.0, Some(media))
+        self.ensure_compiled_for_frame(composition, 0.0, Some(media), PlanUse::Render)
+            .map(drop)
     }
 
     /// Drops every compiled plan and cached media texture, destroying the GPU textures and
@@ -120,6 +222,8 @@ impl GpuCompositionRenderer {
         }
         self.media_texture_cache.clear();
         self.compiled_plans.clear();
+        self.plan_cache_bytes = 0;
+        self.rejected_plan_bytes.clear();
         self.active_key = None;
     }
 
@@ -145,6 +249,10 @@ impl GpuCompositionRenderer {
         self.bind_sequence += 1;
         self.output_format = output_format;
         self.compiled_plans.clear();
+        self.plan_cache_bytes = 0;
+        self.pruned_signature = None;
+        self.rejected_plan_bytes.clear();
+        self.rejected_signature = None;
         self.active_key = None;
     }
 
@@ -155,7 +263,7 @@ impl GpuCompositionRenderer {
     ) -> crate::Result<()> {
         tracing::debug!(
             target: "lumen_render",
-            key_entries = key.0.len(),
+            key_entries = key.entries.len(),
             textures = compiled.plan.textures().len(),
             buffers = compiled.plan.buffers().len(),
             programs = compiled.plan.programs().len(),
@@ -187,25 +295,98 @@ impl GpuCompositionRenderer {
                 })?
                 .destroy();
         }
-        self.compiled_plans.insert(
+        let estimated_bytes = estimated_plan_bytes(&compiled);
+        self.plan_cache_bytes += estimated_bytes;
+        self.plan_use_clock += 1;
+        if let Some(replaced) = self.compiled_plans.insert(
             key.clone(),
             PreparedComposition {
                 renderer,
                 compiled,
                 current_media_textures: HashMap::new(),
+                estimated_bytes,
+                last_used: self.plan_use_clock,
             },
-        );
+        ) {
+            self.plan_cache_bytes -= replaced.estimated_bytes;
+        }
         self.active_key = Some(key);
         Ok(())
     }
 
+    /// Drops plans built from nodes or shader sources the composition no longer has, scanning the
+    /// cache only when those nodes changed since the last prune. Their GPU resources are freed
+    /// once nothing else holds them.
+    fn prune_stale_plans(&mut self, composition: &Composition) {
+        let signature = plan_node_signature(composition);
+        if self.pruned_signature.replace(signature) == Some(signature) {
+            return;
+        }
+        let cached_plans = self.compiled_plans.len();
+        let plan_cache_bytes = &mut self.plan_cache_bytes;
+        self.compiled_plans.retain(|key, prepared| {
+            let keep = key.matches(composition);
+            if !keep {
+                *plan_cache_bytes -= prepared.estimated_bytes;
+            }
+            keep
+        });
+        if self.compiled_plans.len() == cached_plans {
+            return;
+        }
+        tracing::debug!(
+            target: "lumen_render",
+            pruned = cached_plans - self.compiled_plans.len(),
+            "prune compiled plans for an edited composition"
+        );
+        if self
+            .active_key
+            .as_ref()
+            .is_some_and(|key| !self.compiled_plans.contains_key(key))
+        {
+            self.active_key = None;
+        }
+    }
+
+    /// Drops least recently used plans other than `pinned` until the cache fits its budget.
+    fn evict_over_budget(&mut self, pinned: &[Option<&CompiledPlanKey>]) {
+        while self.plan_cache_bytes > self.plan_cache_budget {
+            let Some(key) = self
+                .compiled_plans
+                .iter()
+                .filter(|(key, _)| !pinned.contains(&Some(*key)))
+                .min_by_key(|(_, prepared)| prepared.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                return;
+            };
+            let evicted = self.compiled_plans.remove(&key).expect("cached plan");
+            self.plan_cache_bytes -= evicted.estimated_bytes;
+            tracing::debug!(
+                target: "lumen_render",
+                bytes = evicted.estimated_bytes,
+                cached_bytes = self.plan_cache_bytes,
+                budget = self.plan_cache_budget,
+                "evict least recently used compiled plan"
+            );
+        }
+    }
+
+    /// Compiles the plan for `frame` ahead of rendering it, unless it would not fit the plan cache
+    /// budget. Never drops a cached plan, including stale ones, or changes the current one.
     pub fn precompile_frame<M: MediaStore>(
         &mut self,
         composition: &Composition,
         frame: u32,
         media: &M,
     ) -> crate::Result<()> {
-        self.ensure_compiled_for_frame(composition, f64::from(frame), Some(media))
+        self.ensure_compiled_for_frame(
+            composition,
+            f64::from(frame),
+            Some(media),
+            PlanUse::Lookahead,
+        )
+        .map(drop)
     }
 
     pub fn precompile_frame_window<M: MediaStore>(
@@ -222,7 +403,16 @@ impl GpuCompositionRenderer {
             "precompile frame window"
         );
         for offset in 0..frame_count {
-            self.precompile_frame(composition, start_frame.saturating_add(offset), media)?;
+            let frame = start_frame.saturating_add(offset);
+            // Later frames are unlikely to fit either, so stop rather than compile and discard them.
+            if !self.ensure_compiled_for_frame(
+                composition,
+                f64::from(frame),
+                Some(media),
+                PlanUse::Lookahead,
+            )? {
+                break;
+            }
         }
         Ok(())
     }
@@ -319,7 +509,7 @@ impl GpuCompositionRenderer {
             .into());
         }
         self.bind_sequence += 1;
-        self.ensure_compiled_for_frame(composition, frame, Some(media))?;
+        self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
         let compiled = self.active_compiled()?;
         let mut bound =
             FrameBindContext::with_media_at(composition, frame, media).bind(compiled)?;
@@ -629,38 +819,61 @@ impl GpuCompositionRenderer {
         })
     }
 
+    /// Makes the plan for `frame` resident and, when rendering, current. Returns false when
+    /// lookahead skipped a plan that would not fit the budget.
     fn ensure_compiled_for_frame<M: MediaStore>(
         &mut self,
         composition: &Composition,
         frame: f64,
         media: Option<&M>,
-    ) -> crate::Result<()> {
+        plan_use: PlanUse,
+    ) -> crate::Result<bool> {
         let key = self.compiled_plan_key(
             composition,
             frame,
             media.map(|store| store as &dyn MediaStore),
         )?;
-        if self.active_key.as_ref() == Some(&key) {
-            tracing::trace!(target: "lumen_render", frame, "reuse active compiled plan");
-            return Ok(());
+        self.plan_use_clock += 1;
+        if plan_use == PlanUse::Render {
+            self.prune_stale_plans(composition);
         }
-        if self.compiled_plans.contains_key(&key) {
-            tracing::debug!(
-                target: "lumen_render",
-                frame,
-                key_entries = key.0.len(),
-                "switch to cached compiled plan"
-            );
-            self.active_key = Some(key);
-            return Ok(());
+        if let Some(prepared) = self.compiled_plans.get_mut(&key) {
+            prepared.last_used = self.plan_use_clock;
+            if plan_use == PlanUse::Lookahead {
+                return Ok(true);
+            }
+            if self.active_key.as_ref() == Some(&key) {
+                tracing::trace!(target: "lumen_render", frame, "reuse active compiled plan");
+            } else {
+                tracing::debug!(
+                    target: "lumen_render",
+                    frame,
+                    key_entries = key.entries.len(),
+                    "switch to cached compiled plan"
+                );
+                self.active_key = Some(key);
+            }
+            return Ok(true);
+        }
+        if plan_use == PlanUse::Lookahead {
+            let signature = plan_node_signature(composition);
+            if self.rejected_signature.replace(signature) != Some(signature) {
+                self.rejected_plan_bytes.clear();
+            }
+            if let Some(&bytes) = self.rejected_plan_bytes.get(&key)
+                && self.plan_cache_bytes + bytes > self.plan_cache_budget
+            {
+                return Ok(false);
+            }
         }
 
         tracing::debug!(
             target: "lumen_render",
             frame,
-            key_entries = key.0.len(),
+            key_entries = key.entries.len(),
             "compile render plan for frame"
         );
+        self.plan_compile_count += 1;
         let compiled = CompileContext::with_options(
             composition,
             frame,
@@ -668,7 +881,34 @@ impl GpuCompositionRenderer {
             self.output_format,
         )
         .compile()?;
-        self.prepare_compiled(key, compiled)
+        self.rejected_plan_bytes.remove(&key);
+        if plan_use == PlanUse::Lookahead {
+            let estimated_bytes = estimated_plan_bytes(&compiled);
+            if self.plan_cache_bytes + estimated_bytes > self.plan_cache_budget {
+                tracing::debug!(
+                    target: "lumen_render",
+                    frame,
+                    bytes = estimated_bytes,
+                    cached_bytes = self.plan_cache_bytes,
+                    budget = self.plan_cache_budget,
+                    "skip lookahead plan over the plan cache budget"
+                );
+                if self.rejected_plan_bytes.len() >= MAX_REJECTED_PLANS {
+                    self.rejected_plan_bytes.clear();
+                }
+                self.rejected_plan_bytes.insert(key, estimated_bytes);
+                return Ok(false);
+            }
+            let active = self.active_key.clone();
+            let prepared = self.prepare_compiled(key, compiled);
+            self.active_key = active;
+            return prepared.map(|()| true);
+        }
+        let previous = self.active_key.clone();
+        self.prepare_compiled(key, compiled)?;
+        let current = self.active_key.clone();
+        self.evict_over_budget(&[previous.as_ref(), current.as_ref()]);
+        Ok(true)
     }
 
     fn compiled_plan_key(
@@ -677,97 +917,24 @@ impl GpuCompositionRenderer {
         frame: f64,
         media: Option<&dyn MediaStore>,
     ) -> crate::Result<CompiledPlanKey> {
-        let mut selections = Vec::new();
-        let mut visited = std::collections::HashSet::new();
         let output = self.media_output_port(composition)?;
-        self.collect_plan_key(
+        let mut collector = PlanKeyCollector {
             composition,
-            &output,
-            frame,
             media,
-            &mut visited,
-            &mut selections,
-        )?;
-        selections.sort_by_key(|(node_id, _)| node_id.0);
-        selections.dedup();
-        Ok(CompiledPlanKey(selections))
-    }
-
-    fn collect_plan_key(
-        &self,
-        composition: &Composition,
-        port: &PortRef,
-        frame: f64,
-        media: Option<&dyn MediaStore>,
-        visited: &mut std::collections::HashSet<(NodeId, u64)>,
-        selections: &mut Vec<(NodeId, Option<usize>)>,
-    ) -> crate::Result<()> {
-        if port.is_empty() || !visited.insert((port.id, frame.to_bits())) {
-            return Ok(());
-        }
-
-        let Some(node) = composition.graph.nodes.get(&port.id) else {
-            return Ok(());
+            time_remaps: TimeRemapPath::new(),
+            visited: HashSet::new(),
+            stack: Vec::new(),
+            entries: Vec::new(),
         };
-        match node {
-            NodeKind::MediaOutput(media_output) => self.collect_plan_key(
-                composition,
-                &media_output.source,
-                frame,
-                media,
-                visited,
-                selections,
-            ),
-            NodeKind::TimeRemap(time_remap) => {
-                let ctx =
-                    self.expression_context(composition, frame, media, time_remap.id, "params");
-                let params = time_remap.params.eval(&NodeParamEvalContext {
-                    node_id: time_remap.id,
-                    expr: &ctx,
-                })?;
-                let target_frame = crate::node::processing::time_remap::remap_frame(
-                    crate::node::processing::time_remap::TimeRemapSettings {
-                        frame: params.frame,
-                        loop_enabled: params.loop_enabled,
-                        loop_start: params.loop_start,
-                        loop_end: params.loop_end,
-                    },
-                );
-                self.collect_plan_key(
-                    composition,
-                    &time_remap.source,
-                    target_frame,
-                    media,
-                    visited,
-                    selections,
-                )
-            }
-            NodeKind::Switch(switch) => {
-                let ctx =
-                    self.expression_context(composition, frame, media, switch.id, "selected_layer");
-                let selection =
-                    crate::node::compositing::switch::selected_layer_for_frame(switch, &ctx)?;
-                selections.push((switch.id, selection));
-                if let Some(layer) = selection.and_then(|index| switch.layers.get(index)) {
-                    self.collect_plan_key(composition, layer, frame, media, visited, selections)?;
-                }
-                Ok(())
-            }
-            _ => {
-                for input in composition
-                    .graph
-                    .connections
-                    .iter()
-                    .filter(|connection| connection.to_node == port.id)
-                    .map(|connection| {
-                        PortRef::new(connection.from_node, connection.from_port.clone())
-                    })
-                {
-                    self.collect_plan_key(composition, &input, frame, media, visited, selections)?;
-                }
-                Ok(())
-            }
-        }
+        collector.collect(&output, frame)?;
+        let mut entries = collector.entries;
+        entries.sort();
+        entries.dedup();
+        let settings = &composition.render_settings;
+        Ok(CompiledPlanKey {
+            size: (settings.width, settings.height),
+            entries,
+        })
     }
 
     fn media_output_port(&self, composition: &Composition) -> crate::Result<PortRef> {
@@ -788,26 +955,184 @@ impl GpuCompositionRenderer {
         }
         Ok(PortRef::new(output, "output".to_string()))
     }
+}
 
-    fn expression_context<'a>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanUse {
+    Render,
+    Lookahead,
+}
+
+/// Mirrors compilation: inputs come from `input_ports`, and a time remap starts a new instance
+/// path for everything upstream of it.
+struct PlanKeyCollector<'a> {
+    composition: &'a Composition,
+    media: Option<&'a dyn MediaStore>,
+    time_remaps: TimeRemapPath,
+    visited: HashSet<(NodeId, TimeRemapPath)>,
+    /// Nodes on the current traversal path; time remaps extend the instance path, so `visited`
+    /// alone never sees a cycle through one repeat.
+    stack: Vec<NodeId>,
+    entries: Vec<PlanKeyEntry>,
+}
+
+impl<'a> PlanKeyCollector<'a> {
+    fn collect(&mut self, port: &PortRef, frame: f64) -> crate::Result<()> {
+        if port.is_empty() {
+            return Ok(());
+        }
+        if let Some(start) = self.stack.iter().position(|id| *id == port.id) {
+            return Err(GraphValidationError::Cycle {
+                path: self.stack[start..].to_vec(),
+            }
+            .into());
+        }
+        if !self.visited.insert((port.id, self.time_remaps.clone())) {
+            return Ok(());
+        }
+        let composition = self.composition;
+        let Some(node) = composition.graph.nodes.get(&port.id) else {
+            return Ok(());
+        };
+        self.stack.push(port.id);
+        let result = self.collect_node(node, frame);
+        self.stack.pop();
+        result
+    }
+
+    fn collect_node(&mut self, node: &NodeKind, frame: f64) -> crate::Result<()> {
+        match node {
+            NodeKind::TimeRemap(time_remap) => {
+                let ctx = self.expression_context(frame, time_remap.id, "params");
+                let params = time_remap.params.eval(&NodeParamEvalContext {
+                    node_id: time_remap.id,
+                    expr: &ctx,
+                })?;
+                let target_frame = crate::node::processing::time_remap::remap_frame(
+                    crate::node::processing::time_remap::TimeRemapSettings {
+                        frame: params.frame,
+                        loop_enabled: params.loop_enabled,
+                        loop_start: params.loop_start,
+                        loop_end: params.loop_end,
+                    },
+                );
+                self.time_remaps.push(time_remap.id);
+                let result = self.collect(&time_remap.source, target_frame);
+                self.time_remaps.pop();
+                return result;
+            }
+            NodeKind::Switch(switch) => {
+                let ctx = self.expression_context(frame, switch.id, "selected_layer");
+                // Out-of-range selections all compile to transparent, so they share one key.
+                let selection =
+                    crate::node::compositing::switch::selected_layer_for_frame(switch, &ctx)?
+                        .filter(|index| *index < switch.layers.len());
+                self.push_entry(switch.id, PlanChoice::SwitchSelection(selection));
+                return match selection {
+                    Some(index) => self.collect(&switch.layers[index], frame),
+                    None => Ok(()),
+                };
+            }
+            NodeKind::WgslShader(shader) => {
+                let ctx = self.expression_context(frame, shader.id, "params");
+                let params = shader.params.eval(&NodeParamEvalContext {
+                    node_id: shader.id,
+                    expr: &ctx,
+                })?;
+                self.push_entry(
+                    shader.id,
+                    PlanChoice::ShaderSource(source_hash(&params.shader)),
+                );
+            }
+            _ => {}
+        }
+        for input in node.input_ports() {
+            self.collect(&input, frame)?;
+        }
+        Ok(())
+    }
+
+    fn push_entry(&mut self, node_id: NodeId, choice: PlanChoice) {
+        self.entries.push(PlanKeyEntry {
+            time_remaps: self.time_remaps.clone(),
+            node_id,
+            choice,
+        });
+    }
+
+    fn expression_context(
         &self,
-        composition: &'a Composition,
         frame: f64,
-        media: Option<&'a dyn MediaStore>,
         node_id: NodeId,
         property_path: &str,
     ) -> crate::expr::ExpressionContext<'a> {
         crate::expr::ExpressionContext {
             frame,
-            fps: composition.timeline.fps,
-            width: composition.render_settings.width,
-            height: composition.render_settings.height,
-            duration_frames: composition.timeline.duration_frames,
+            fps: self.composition.timeline.fps,
+            width: self.composition.render_settings.width,
+            height: self.composition.render_settings.height,
+            duration_frames: self.composition.timeline.duration_frames,
             path: Some(format!("{node_id}.{property_path}")),
-            graph: Some(&composition.graph),
-            media,
+            graph: Some(&self.composition.graph),
+            media: self.media,
         }
     }
+}
+
+/// Bytes of the textures and buffers a plan allocates for itself; the text atlas is shared.
+fn estimated_plan_bytes(compiled: &CompiledComposition) -> u64 {
+    let textures: u64 = compiled
+        .plan
+        .textures()
+        .iter()
+        .filter(|resource| Some(resource.id) != compiled.text_atlas_texture)
+        .map(|resource| {
+            resource
+                .desc
+                .format
+                .theoretical_memory_footprint(resource.desc.domain.storage_size.as_extent())
+        })
+        .sum();
+    let buffers: u64 = compiled
+        .plan
+        .buffers()
+        .iter()
+        .map(|resource| resource.desc.size)
+        .sum();
+    textures + buffers
+}
+
+/// Order-independent hash of everything `CompiledPlanKey::matches` reads from a composition, plus
+/// the canvas size that plan estimates depend on.
+fn plan_node_signature(composition: &Composition) -> u64 {
+    let settings = &composition.render_settings;
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&(settings.width, settings.height), &mut hasher);
+    let initial = std::hash::Hasher::finish(&hasher);
+    composition
+        .graph
+        .nodes
+        .iter()
+        .fold(initial, |signature: u64, (id, node)| {
+            let entry = match node {
+                NodeKind::TimeRemap(_) => (id, 0, 0),
+                NodeKind::Switch(_) => (id, 1, 0),
+                NodeKind::WgslShader(shader) => match &shader.params.shader {
+                    Deferred::Value(source) => (id, 2, source_hash(source)),
+                    Deferred::Expr(_) => (id, 3, 0),
+                },
+                _ => return signature,
+            };
+            let mut hasher = std::hash::DefaultHasher::new();
+            std::hash::Hash::hash(&entry, &mut hasher);
+            signature.wrapping_add(std::hash::Hasher::finish(&hasher))
+        })
+}
+
+fn source_hash(source: &str) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(source, &mut hasher);
+    std::hash::Hasher::finish(&hasher)
 }
 
 fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32) -> Vec<u8> {
