@@ -412,7 +412,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Applies a simple box blur to a raster.",
+            "description": "Applies a separable Gaussian blur to a raster.",
             "properties": {
               "id": {
                 "type": "integer"
@@ -431,7 +431,7 @@
                       }
                     ],
                     "default": 4.0,
-                    "description": "Blur radius in pixels.",
+                    "description": "Blur radius in pixels. Fractional radii blend smoothly.",
                     "title": "Radius",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -2324,7 +2324,7 @@
                       }
                     ],
                     "default": 8.0,
-                    "description": "Shadow blur radius in pixels.",
+                    "description": "Shadow blur radius in pixels. Fractional radii blend smoothly.",
                     "title": "Blur radius",
                     "x-lumen-constraints": {
                       "min": 0.0,

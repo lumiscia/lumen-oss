@@ -103,7 +103,10 @@ pub(crate) struct LevelsParams {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct BlurParams {
-    pub(crate) values: [u32; 4],
+    /// Gaussian sigma, straight-alpha flag, transparent-edge flag.
+    pub(crate) values: [f32; 4],
+    /// Whole-pixel offset applied to the source in `xy`.
+    pub(crate) offset: [f32; 4],
 }
 
 #[repr(C)]

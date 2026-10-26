@@ -5,7 +5,9 @@ use crate::gpu::{
     RasterHandle, RasterMetadata, compiler,
 };
 
-pub(crate) const SHADER: &str = concat!(
+use super::gaussian;
+
+const COMPOSITE_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("shadow.wgsl")
 );
@@ -19,7 +21,7 @@ pub struct ShadowParams {
     /// Vertical shadow offset in pixels.
     #[meta(name = "Offset Y", step = 1)]
     pub offset_y: f64,
-    /// Shadow blur radius in pixels.
+    /// Shadow blur radius in pixels. Fractional radii blend smoothly.
     #[meta(name = "Blur radius", min = 0, step = 0.5)]
     pub radius: f64,
     /// Shadow color.
@@ -78,89 +80,74 @@ impl GpuCompileNode for Shadow {
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
         let size = source.domain.storage_size;
-        let temp = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
-            Some(format!("shadow:{}:horizontal", self.id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        let blurred = gaussian::compile_passes_with(
+            ctx,
+            self.id,
+            "shadow",
+            source.texture,
+            size,
+            gaussian::GaussianOptions {
+                param_slot: 1,
+                shifted: true,
+            },
         );
-        let texture = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let owner = lumen_gpu::NodeKey(self.id.0);
+        let builder = ctx.builder_mut();
+        let output = builder.texture_for(
+            owner,
             Some(format!("shadow:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let params = ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let params = builder.buffer_for(
+            owner,
             Some(format!("shadow:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ShadowParams>() as u64),
         );
-        let bind_groups = lumen_gpu::BindGroupLayoutSpec::single(vec![
-            lumen_gpu::BindingLayoutEntry::texture(0, lumen_gpu::wgpu::ShaderStages::COMPUTE),
-            lumen_gpu::BindingLayoutEntry::texture(1, lumen_gpu::wgpu::ShaderStages::COMPUTE),
-            lumen_gpu::BindingLayoutEntry::uniform(2, lumen_gpu::wgpu::ShaderStages::COMPUTE),
-            lumen_gpu::BindingLayoutEntry::storage_texture(
-                3,
-                lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-            ),
-        ]);
-        let horizontal = ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let stage = lumen_gpu::wgpu::ShaderStages::COMPUTE;
+        let program = builder.program_for(
+            owner,
             lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
-                label: Some("shadow-horizontal".to_string()),
-                shader: SHADER.to_string(),
-                entry: "horizontal_main".to_string(),
-                bind_groups: bind_groups.clone(),
+                label: Some("shadow-composite".to_string()),
+                shader: COMPOSITE_SHADER.to_string(),
+                entry: "composite_main".to_string(),
+                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
+                    lumen_gpu::BindingLayoutEntry::texture(0, stage),
+                    lumen_gpu::BindingLayoutEntry::texture(1, stage),
+                    lumen_gpu::BindingLayoutEntry::uniform(2, stage),
+                    lumen_gpu::BindingLayoutEntry::storage_texture(
+                        3,
+                        stage,
+                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+                    ),
+                ]),
             }),
         );
-        let vertical = ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(self.id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
-                label: Some("shadow-vertical".to_string()),
-                shader: SHADER.to_string(),
-                entry: "vertical_main".to_string(),
-                bind_groups,
-            }),
-        );
-        ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("shadow:{}:horizontal", self.id.0)),
-            owner: Some(lumen_gpu::NodeKey(self.id.0)),
-            program: horizontal,
+        builder.compute_pass(lumen_gpu::ComputePassDesc {
+            label: Some(format!("shadow:{}:composite", self.id.0)),
+            owner: Some(owner),
+            program,
             bindings: vec![
-                lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
+                lumen_gpu::Binding::sampled_texture(0, 0, blurred.output),
                 lumen_gpu::Binding::sampled_texture(0, 1, source.texture),
                 lumen_gpu::Binding::uniform(0, 2, params),
-                lumen_gpu::Binding::storage_texture(0, 3, temp),
+                lumen_gpu::Binding::storage_texture(0, 3, output),
             ],
             dispatch: compiler::dispatch_for(size).into(),
         });
-        ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("shadow:{}:vertical", self.id.0)),
-            owner: Some(lumen_gpu::NodeKey(self.id.0)),
-            program: vertical,
-            bindings: vec![
-                lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
-                lumen_gpu::Binding::sampled_texture(0, 1, temp),
-                lumen_gpu::Binding::uniform(0, 2, params),
-                lumen_gpu::Binding::storage_texture(0, 3, texture),
-            ],
-            dispatch: compiler::dispatch_for(size).into(),
-        });
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 0,
-            },
+        builder.param(
+            lumen_gpu::ParamKey { owner, slot: 0 },
             lumen_gpu::ParamTarget::Buffer(params),
         );
         ctx.register_compiled_node(CompiledShadow {
             node_id: self.id,
             params: self.params.clone(),
+            blurred,
             buffer: params,
             straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
-            texture,
+            texture: output,
             domain: source.domain,
             metadata: RasterMetadata {
                 alpha_mode: AlphaMode::Premultiplied,
@@ -174,6 +161,7 @@ impl GpuCompileNode for Shadow {
 struct CompiledShadow {
     node_id: NodeId,
     params: ShadowParamsDelegate,
+    blurred: gaussian::GaussianPasses,
     buffer: lumen_gpu::BufferId,
     straight_source: bool,
 }
@@ -191,6 +179,15 @@ impl GpuCompiledNode for CompiledShadow {
         let color = evaluated.color.to_gpu([0, 0, 0, 255]).colors[0];
         // The color alpha is folded into the opacity so `color.w` can carry the
         // source's straight-alpha flag.
+        self.blurred.write(
+            bound,
+            &gaussian::GaussianSettings {
+                radius: evaluated.radius,
+                straight_source: self.straight_source,
+                transparent_edge: true,
+                offset: [evaluated.offset_x, evaluated.offset_y],
+            },
+        );
         let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * color[3];
         let gpu_params = compiler::ShadowParams {
             color: [
@@ -199,12 +196,7 @@ impl GpuCompiledNode for CompiledShadow {
                 color[2],
                 if self.straight_source { 1.0 } else { 0.0 },
             ],
-            values: [
-                evaluated.offset_x as f32,
-                evaluated.offset_y as f32,
-                evaluated.radius.round().clamp(0.0, 32.0) as f32,
-                opacity,
-            ],
+            values: [0.0, 0.0, 0.0, opacity],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
