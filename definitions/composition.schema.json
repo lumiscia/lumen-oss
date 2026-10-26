@@ -210,6 +210,36 @@
         }
       ]
     },
+    "shaderUniformValue": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "$ref": "#/$defs/expression"
+              }
+            ]
+          },
+          "maxItems": 4,
+          "minItems": 2,
+          "type": "array"
+        },
+        {
+          "$ref": "#/$defs/expression"
+        },
+        {
+          "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+          "type": "string"
+        }
+      ],
+      "description": "A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields."
+    },
     "vec2": {
       "items": false,
       "maxItems": 2,
@@ -3587,7 +3617,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Runs a custom WGSL compute shader over a raster.",
+            "description": "Runs a custom WGSL compute shader over one or more rasters.",
             "properties": {
               "id": {
                 "type": "integer"
@@ -3595,25 +3625,6 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
-                  "bindings": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": "",
-                    "description": "JSON object describing shader binding values.",
-                    "title": "Shader bindings",
-                    "x-lumen-constraints": {
-                      "format": "json",
-                      "multiline": true,
-                      "recommendedRows": 6
-                    },
-                    "x-lumen-kind": "string"
-                  },
                   "shader": {
                     "anyOf": [
                       {
@@ -3624,7 +3635,7 @@
                       }
                     ],
                     "default": "",
-                    "description": "Custom WGSL compute shader source.",
+                    "description": "WGSL compute shader; the prelude provides inputs, `input_sampler`, `output` and `lumen`.",
                     "title": "Shader source",
                     "x-lumen-constraints": {
                       "format": "wgsl",
@@ -3632,6 +3643,16 @@
                       "recommendedRows": 10
                     },
                     "x-lumen-kind": "string"
+                  },
+                  "uniforms": {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/shaderUniformValue"
+                    },
+                    "default": {},
+                    "description": "Uniform struct field values by name; unset fields are zero.",
+                    "title": "Shader uniforms",
+                    "type": "object",
+                    "x-lumen-kind": "shader_uniforms"
                   }
                 },
                 "type": "object"
@@ -3649,7 +3670,7 @@
                 "kind": "raster_frame",
                 "name": "source",
                 "optional": false,
-                "variadic": false
+                "variadic": true
               }
             ],
             "x-lumen-outputs": [

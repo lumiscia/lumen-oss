@@ -34,6 +34,8 @@ const paramType = (nodeKind: string, param: NodeParamSpec): string => {
       return "string";
     case "vec2":
       return "Vec2";
+    case "shader_uniforms":
+      return "ShaderUniforms";
     case "enum":
       return enumTypeForParam(nodeKind, param);
     default:
@@ -189,6 +191,7 @@ export type NodeLiteralValue =
   | number
   | string
   | GradientPaint
+  | ShaderUniforms
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]
@@ -226,6 +229,21 @@ export type GradientPaint = {
   readonly stops: readonly GradientStop[];
 };
 export type Paint = Color | GradientPaint;
+export type HexColor = \`#\${string}\`;
+export type ShaderUniformComponent = number | ExpressionString;
+export type ShaderUniformValue =
+  | number
+  | ExpressionString
+  | readonly [ShaderUniformComponent, ShaderUniformComponent]
+  | readonly [ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent]
+  | readonly [
+      ShaderUniformComponent,
+      ShaderUniformComponent,
+      ShaderUniformComponent,
+      ShaderUniformComponent,
+    ]
+  | HexColor;
+export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
 
 ${enumTypes}
 

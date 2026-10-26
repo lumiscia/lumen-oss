@@ -279,6 +279,7 @@ fn node_property_type_name(value: &PropertyValue) -> &'static str {
         PropertyValue::Color(_) => "color",
         PropertyValue::Paint(_) => "paint",
         PropertyValue::Vec2(_) => "vec2",
+        PropertyValue::ShaderUniforms(_) => "shader uniforms",
         PropertyValue::FloatVec(_) => "float[]",
         PropertyValue::IntVec(_) => "int[]",
         PropertyValue::StringVec(_) => "string[]",

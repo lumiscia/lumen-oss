@@ -71,6 +71,12 @@ impl NodeParamType for [f32; 2] {
     }
 }
 
+impl NodeParamType for super::ShaderUniforms {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::ShaderUniforms
+    }
+}
+
 // Only nested delegates may hold `Vec` fields: `#[derive(Node)]` rejects params with
 // `NodeParams::HAS_VEC_FIELDS` because the schema has no array kind.
 impl<T> NodeParamType for Vec<T> {

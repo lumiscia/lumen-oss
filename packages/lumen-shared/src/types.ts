@@ -3,6 +3,7 @@ import type {
   CompositionNode,
   CompositionNodeInput,
   ExpressionString,
+  HexColor,
   LumenComposition,
   NodeKind,
   Vec2,
@@ -123,6 +124,58 @@ export interface AudioClipInput {
   readonly track_id: string;
   readonly volume?: number;
   readonly [key: string]: unknown;
+}
+
+export type WgslUniformType =
+  | "f32"
+  | "i32"
+  | "u32"
+  | "vec2<f32>"
+  | "vec2<i32>"
+  | "vec2<u32>"
+  | "vec3<f32>"
+  | "vec3<i32>"
+  | "vec3<u32>"
+  | "vec4<f32>"
+  | "vec4<i32>"
+  | "vec4<u32>";
+
+/** Uniform field names mapped to their WGSL types, in struct order. */
+export type WgslUniforms = Readonly<Record<string, WgslUniformType>>;
+
+type WgslComponent = number | ExpressionString | Expr<number>;
+
+/**
+ * The values a field of `TType` accepts. Vectors other than vec2 take components rather than a
+ * whole expression, and `vec3<f32>`/`vec4<f32>` also take a hex colour (`#rrggbb` for vec3) or a
+ * colour `Expr`.
+ */
+export type WgslUniformValue<TType extends WgslUniformType> = TType extends `vec2<${string}>`
+  ? readonly [WgslComponent, WgslComponent] | ExpressionString | Expr<Vec2>
+  : TType extends `vec3<${infer TScalar}>`
+    ?
+        | readonly [WgslComponent, WgslComponent, WgslComponent]
+        | (TScalar extends "f32" ? HexColor | Expr<Color> : never)
+    : TType extends `vec4<${infer TScalar}>`
+      ?
+          | readonly [WgslComponent, WgslComponent, WgslComponent, WgslComponent]
+          | (TScalar extends "f32" ? HexColor | Expr<Color> : never)
+      : WgslComponent;
+
+export type WgslUniformValues<TUniforms extends WgslUniforms> = [keyof TUniforms] extends [never]
+  ? Readonly<Record<string, never>>
+  : { readonly [TName in keyof TUniforms]?: WgslUniformValue<TUniforms[TName]> };
+
+export interface WgslShaderOptions<TUniforms extends WgslUniforms> {
+  readonly uniforms?: TUniforms;
+  /** WGSL source that reads `uniforms.<name>`; the struct and its binding are appended. */
+  readonly shader: string;
+}
+
+export interface WgslShader<TUniforms extends WgslUniforms> {
+  /** The full shader source: `shader`, then the generated `Uniforms` struct and binding. */
+  readonly source: string;
+  readonly node: (values?: WgslUniformValues<TUniforms>) => NodeInput<"wgsl_shader">;
 }
 
 export interface RenderOptions {

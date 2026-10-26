@@ -52,6 +52,7 @@ export {
   vec2,
   width,
 } from "./expression.js";
+export { wgslShader } from "./shader.js";
 export type * from "@lumiscia/lumen-types";
 export type {
   Arg,
@@ -76,4 +77,10 @@ export type {
   RenderSettingsInput,
   Size,
   TimelineInput,
+  WgslShader,
+  WgslShaderOptions,
+  WgslUniformType,
+  WgslUniformValue,
+  WgslUniformValues,
+  WgslUniforms,
 } from "./types.js";
