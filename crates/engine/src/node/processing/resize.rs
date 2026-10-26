@@ -30,9 +30,15 @@ pub enum ResizeSampling {
     Linear = 1,
 }
 
-/// Resamples a raster into static output bounds.
+/// Resamples a raster into a rectangle placed on the composition canvas.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ResizeParams {
+    /// Left edge of the output rectangle in pixels.
+    #[meta(step = 1)]
+    pub x: i64,
+    /// Top edge of the output rectangle in pixels.
+    #[meta(step = 1)]
+    pub y: i64,
     /// Output width in pixels.
     #[meta(min = 1, step = 1)]
     pub width: i64,
@@ -50,6 +56,8 @@ pub struct ResizeParams {
 impl Default for ResizeParams {
     fn default() -> Self {
         Self {
+            x: 0,
+            y: 0,
             width: 1,
             height: 1,
             mode: ResizeMode::Stretch,
@@ -58,7 +66,7 @@ impl Default for ResizeParams {
     }
 }
 
-/// Resamples a raster into static output bounds.
+/// Resamples a raster into a rectangle placed on the composition canvas.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "resize", name = "Resize", category = "processing")]
 pub struct Resize {
@@ -94,8 +102,8 @@ impl GpuCompileNode for Resize {
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
         let size = lumen_gpu::Size::new(
-            ctx.static_dimension(&self.params.width, self.id, "width")?,
-            ctx.static_dimension(&self.params.height, self.id, "height")?,
+            ctx.composition().render_settings.width.max(1),
+            ctx.composition().render_settings.height.max(1),
         );
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
@@ -107,12 +115,55 @@ impl GpuCompileNode for Resize {
             Some(format!("resize:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ResizeParams>() as u64),
         );
-        let program = ctx.spatial_program(self.id, "resize", SHADER);
+        // Sources that don't publish bounds fill their whole storage texture.
+        let (bounds, default_bounds) = match ctx.raster_bounds(source.texture) {
+            Some(bounds) => (bounds, None),
+            None => {
+                let bounds = ctx.builder_mut().buffer_for(
+                    lumen_gpu::NodeKey(self.id.0),
+                    Some(format!("resize:{}:source_bounds", self.id.0)),
+                    lumen_gpu::BufferDesc::uniform(
+                        std::mem::size_of::<compiler::CropParams>() as u64
+                    ),
+                );
+                (bounds, Some(bounds))
+            }
+        };
+        let program = ctx.builder_mut().program_for(
+            lumen_gpu::NodeKey(self.id.0),
+            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+                label: Some("resize".to_string()),
+                shader: SHADER.to_string(),
+                entry: "cs_main".to_string(),
+                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
+                    lumen_gpu::BindingLayoutEntry::texture(
+                        0,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                    ),
+                    lumen_gpu::BindingLayoutEntry::uniform(
+                        1,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                    ),
+                    lumen_gpu::BindingLayoutEntry::storage_texture(
+                        2,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+                    ),
+                    lumen_gpu::BindingLayoutEntry::uniform(
+                        3,
+                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
+                    ),
+                ]),
+            }),
+        );
+        let mut bindings = compiler::spatial_bindings(source.texture, params, texture);
+        bindings.push(lumen_gpu::Binding::uniform(0, 3, bounds));
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("resize:{}:apply", self.id.0)),
             owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
-            bindings: compiler::spatial_bindings(source.texture, params, texture),
+            bindings,
             dispatch: compiler::dispatch_for(size).into(),
         });
         ctx.builder_mut().param(
@@ -126,6 +177,7 @@ impl GpuCompileNode for Resize {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,
+            default_bounds: default_bounds.map(|buffer| (buffer, source.domain.storage_size)),
         });
 
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -141,6 +193,8 @@ struct CompiledResize {
     node_id: NodeId,
     params: ResizeParamsDelegate,
     buffer: lumen_gpu::BufferId,
+    /// Full-source bounds written each frame when the source publishes none.
+    default_bounds: Option<(lumen_gpu::BufferId, lumen_gpu::Size)>,
 }
 
 impl GpuCompiledNode for CompiledResize {
@@ -154,14 +208,26 @@ impl GpuCompiledNode for CompiledResize {
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
         let params = compiler::ResizeParams {
+            origin: [
+                compiler::pixel_origin(self.node_id, "x", evaluated.x)?,
+                compiler::pixel_origin(self.node_id, "y", evaluated.y)?,
+            ],
             size: [
-                evaluated.width.max(1) as u32,
-                evaluated.height.max(1) as u32,
+                compiler::pixel_extent(self.node_id, "width", evaluated.width, 1)?,
+                compiler::pixel_extent(self.node_id, "height", evaluated.height, 1)?,
             ],
             mode: evaluated.mode as u32,
             sampling: evaluated.sampling as u32,
+            _pad: [0; 2],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
+        if let Some((buffer, size)) = self.default_bounds {
+            let bounds = compiler::CropParams {
+                origin: [0, 0],
+                size: [size.width, size.height],
+            };
+            bound.write_buffer(buffer, 0, bytemuck::bytes_of(&bounds));
+        }
         Ok(())
     }
 }

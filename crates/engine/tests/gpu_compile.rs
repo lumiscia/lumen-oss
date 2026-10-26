@@ -1367,6 +1367,8 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
         NodeKind::Resize(Resize {
             id: resize,
             params: ResizeParamsDelegate {
+                x: Deferred::value(0),
+                y: Deferred::value(0),
                 width: Deferred::value(4),
                 height: Deferred::value(2),
                 mode: ResizeMode::Fit.into(),
@@ -1400,16 +1402,16 @@ fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
         .into_raster(resize, "output")
         .unwrap();
 
-    assert_eq!(compiled.plan.textures().len(), 5);
+    assert_eq!(compiled.plan.textures().len(), 4);
     assert_eq!(compiled.plan.buffers().len(), 4);
-    assert_eq!(compiled.plan.programs().len(), 5);
-    assert_eq!(compiled.plan.passes().len(), 5);
+    assert_eq!(compiled.plan.programs().len(), 4);
+    assert_eq!(compiled.plan.passes().len(), 4);
     assert_eq!(compiled.compiled_nodes.len(), 4);
     assert!(compiled.compiled_nodes.contains_key(&transform));
     assert!(compiled.compiled_nodes.contains_key(&crop));
     assert!(compiled.compiled_nodes.contains_key(&resize));
     assert_eq!(transformed.domain.storage_size, lumen_gpu::Size::new(8, 4));
-    assert_eq!(resized.domain.storage_size, lumen_gpu::Size::new(4, 2));
+    assert_eq!(resized.domain.storage_size, lumen_gpu::Size::new(8, 4));
 
     FrameBindContext::new(&composition, 7)
         .bind(&compiled)
@@ -2844,6 +2846,8 @@ fn linear_resize_keeps_source_edges_opaque_and_identity_reproduces_input() {
                 NodeKind::Resize(Resize {
                     id: resize,
                     params: ResizeParamsDelegate {
+                        x: Deferred::value(0),
+                        y: Deferred::value(0),
                         width: Deferred::value(8),
                         height: Deferred::value(4),
                         mode: ResizeMode::Stretch.into(),
@@ -2891,6 +2895,312 @@ fn linear_resize_keeps_source_edges_opaque_and_identity_reproduces_input() {
             .0
             .iter()
             .all(|pixel| pixel[3] == 255)
+    );
+}
+
+/// Alpha channel per pixel of an 8x4 render, as rows of 8 characters.
+fn alpha_rows(pixels: &[u8]) -> Vec<String> {
+    pixels
+        .as_chunks::<4>()
+        .0
+        .chunks(8)
+        .map(|row| {
+            row.iter()
+                .map(|pixel| if pixel[3] == 255 { '#' } else { '.' })
+                .collect()
+        })
+        .collect()
+}
+
+fn single_node_composition(node: NodeKind, source_width: u32, source_height: u32) -> Composition {
+    let background = NodeId::new(1);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        background,
+        NodeKind::Background(Background {
+            id: background,
+            params: BackgroundParamsDelegate {
+                paint: lumen_engine::node::vector::paint::PaintDelegate::from(
+                    lumen_engine::node::vector::paint::Paint::solid([255, 0, 0, 255]),
+                ),
+                width: Deferred::value(source_width),
+                height: Deferred::value(source_height),
+                paint_supersample: Deferred::value(true),
+            },
+        }),
+    );
+    let node_id = NodeId::new(2);
+    graph.nodes.insert(node_id, node);
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(node_id, "output".to_string()),
+        }),
+    );
+    test_composition(graph)
+}
+
+#[test]
+fn crop_keeps_its_region_in_place_and_follows_animated_size() {
+    let crop = |width: Deferred<i64>| {
+        single_node_composition(
+            NodeKind::Crop(Crop {
+                id: NodeId::new(2),
+                params: CropParamsDelegate {
+                    x: Deferred::value(2),
+                    y: Deferred::value(1),
+                    width,
+                    height: Deferred::value(2),
+                },
+                source: PortRef::new(NodeId::new(1), "output".to_string()),
+            }),
+            8,
+            4,
+        )
+    };
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+
+    let fixed = crop(Deferred::value(3));
+    assert_eq!(
+        alpha_rows(&render_rgba8(&mut renderer, &fixed, 0, &EmptyMediaStore)),
+        ["........", "..###...", "..###...", "........"]
+    );
+
+    let animated = crop(Deferred::Expr(
+        lumen_engine::expr::Expression::parse("frame").unwrap(),
+    ));
+    // A fresh renderer: plans are cached per renderer by node selections only, so animated
+    // sizes must work without a recompile across frames, not across compositions.
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    assert_eq!(
+        alpha_rows(&render_rgba8(&mut renderer, &animated, 2, &EmptyMediaStore))[1],
+        "..##...."
+    );
+    assert_eq!(
+        alpha_rows(&render_rgba8(&mut renderer, &animated, 5, &EmptyMediaStore))[1],
+        "..#####."
+    );
+}
+
+#[test]
+fn resize_places_its_output_and_follows_animated_size() {
+    let resize = |width: Deferred<i64>| {
+        single_node_composition(
+            NodeKind::Resize(Resize {
+                id: NodeId::new(2),
+                params: ResizeParamsDelegate {
+                    x: Deferred::value(3),
+                    y: Deferred::value(1),
+                    width,
+                    height: Deferred::value(2),
+                    mode: ResizeMode::Stretch.into(),
+                    sampling: ResizeSampling::Nearest.into(),
+                },
+                source: PortRef::new(NodeId::new(1), "output".to_string()),
+            }),
+            4,
+            2,
+        )
+    };
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+
+    let fixed = resize(Deferred::value(2));
+    assert_eq!(
+        alpha_rows(&render_rgba8(&mut renderer, &fixed, 0, &EmptyMediaStore)),
+        ["........", "...##...", "...##...", "........"]
+    );
+
+    let animated = resize(Deferred::Expr(
+        lumen_engine::expr::Expression::parse("frame").unwrap(),
+    ));
+    // A fresh renderer: plans are cached per renderer by node selections only, so animated
+    // sizes must work without a recompile across frames, not across compositions.
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    assert_eq!(
+        alpha_rows(&render_rgba8(&mut renderer, &animated, 1, &EmptyMediaStore))[1],
+        "...#...."
+    );
+    assert_eq!(
+        alpha_rows(&render_rgba8(&mut renderer, &animated, 4, &EmptyMediaStore))[1],
+        "...####."
+    );
+}
+
+fn crop_then_resize(
+    crop: [Deferred<i64>; 4],
+    resize: [Deferred<i64>; 4],
+    mode: ResizeMode,
+) -> Composition {
+    // `single_node_composition` already owns node 3 as the media output; it is repointed below.
+    let (background, crop_id, resize_id, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(5),
+        NodeId::new(3),
+    );
+    let [x, y, width, height] = crop;
+    let mut composition = single_node_composition(
+        NodeKind::Crop(Crop {
+            id: crop_id,
+            params: CropParamsDelegate {
+                x,
+                y,
+                width,
+                height,
+            },
+            source: PortRef::new(background, "output".to_string()),
+        }),
+        8,
+        4,
+    );
+    let [x, y, width, height] = resize;
+    composition.graph.nodes.insert(
+        resize_id,
+        NodeKind::Resize(Resize {
+            id: resize_id,
+            params: ResizeParamsDelegate {
+                x,
+                y,
+                width,
+                height,
+                mode: mode.into(),
+                sampling: ResizeSampling::Linear.into(),
+            },
+            source: PortRef::new(crop_id, "output".to_string()),
+        }),
+    );
+    composition.graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(resize_id, "output".to_string()),
+        }),
+    );
+    composition
+}
+
+fn values(values: [i64; 4]) -> [Deferred<i64>; 4] {
+    values.map(Deferred::value)
+}
+
+#[test]
+fn resize_uses_the_cropped_region_as_its_source_bounds() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let fit = crop_then_resize(values([2, 0, 4, 4]), values([0, 0, 4, 4]), ResizeMode::Fit);
+    assert_eq!(
+        alpha_rows(&render_rgba8(&mut renderer, &fit, 0, &EmptyMediaStore)),
+        ["####....", "####....", "####....", "####...."]
+    );
+
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let fill = crop_then_resize(values([0, 0, 2, 4]), values([0, 0, 2, 4]), ResizeMode::Fill);
+    assert_eq!(
+        alpha_rows(&render_rgba8(&mut renderer, &fill, 0, &EmptyMediaStore)),
+        ["##......", "##......", "##......", "##......"]
+    );
+}
+
+#[test]
+fn resize_follows_an_animated_crop_region() {
+    let frame = || Deferred::Expr(lumen_engine::expr::Expression::parse("frame").unwrap());
+    let [x, y, _, height] = values([0, 0, 0, 4]);
+    let composition = crop_then_resize(
+        [x, y, frame(), height],
+        values([0, 0, 4, 4]),
+        ResizeMode::Fit,
+    );
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // A 2x4 region is centred in the 4x4 box; a 4x4 region fills it.
+    assert_eq!(
+        alpha_rows(&render_rgba8(
+            &mut renderer,
+            &composition,
+            2,
+            &EmptyMediaStore
+        ))[0],
+        ".##....."
+    );
+    assert_eq!(
+        alpha_rows(&render_rgba8(
+            &mut renderer,
+            &composition,
+            4,
+            &EmptyMediaStore
+        ))[0],
+        "####...."
+    );
+}
+
+#[test]
+fn crop_and_resize_reject_values_the_gpu_cannot_represent() {
+    // The renderer caches compiled plans, so each composition gets its own.
+    let error_for = |crop: [i64; 4], resize: [i64; 4]| {
+        let mut renderer = gpu_composition_renderer()?;
+        let composition = crop_then_resize(values(crop), values(resize), ResizeMode::Stretch);
+        Some(
+            renderer
+                .render_frame(&composition, 0, &EmptyMediaStore)
+                .map(|_| ())
+                .unwrap_err()
+                .to_string(),
+        )
+    };
+    let valid = [0, 0, 4, 4];
+    for (index, property) in ["x", "y", "width", "height"].into_iter().enumerate() {
+        let mut invalid = valid;
+        invalid[index] = 1 << 32;
+        let Some(crop_error) = error_for(invalid, valid) else {
+            return;
+        };
+        let resize_error = error_for(valid, invalid).unwrap();
+        for message in [crop_error, resize_error] {
+            assert!(message.contains(&format!("`{property}`")), "{message}");
+        }
+    }
+    let Some(message) = error_for([i64::from(i32::MIN) - 1, 0, 4, 4], valid) else {
+        return;
+    };
+    assert!(message.contains("`x`"), "{message}");
+}
+
+#[test]
+fn crop_accepts_sizes_beyond_i32() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let crop = single_node_composition(
+        NodeKind::Crop(Crop {
+            id: NodeId::new(2),
+            params: CropParamsDelegate {
+                x: Deferred::value(0),
+                y: Deferred::value(0),
+                width: Deferred::value(1 << 31),
+                height: Deferred::value(i64::from(u32::MAX)),
+            },
+            source: PortRef::new(NodeId::new(1), "output".to_string()),
+        }),
+        8,
+        4,
+    );
+    assert_eq!(
+        alpha_rows(&render_rgba8(&mut renderer, &crop, 0, &EmptyMediaStore)),
+        ["########"; 4]
     );
 }
 

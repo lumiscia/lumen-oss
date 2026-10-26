@@ -839,7 +839,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Extracts a fixed raster region into static output bounds.",
+            "description": "Keeps a raster region in place and clears everything outside it.",
             "properties": {
               "id": {
                 "type": "integer"
@@ -2049,7 +2049,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Resamples a raster into static output bounds.",
+            "description": "Resamples a raster into a rectangle placed on the composition canvas.",
             "properties": {
               "id": {
                 "type": "integer"
@@ -2136,6 +2136,40 @@
                     "title": "Width",
                     "x-lumen-constraints": {
                       "min": 1.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "x": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0,
+                    "description": "Left edge of the output rectangle in pixels.",
+                    "title": "X",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "y": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0,
+                    "description": "Top edge of the output rectangle in pixels.",
+                    "title": "Y",
+                    "x-lumen-constraints": {
                       "step": 1.0
                     },
                     "x-lumen-kind": "int"

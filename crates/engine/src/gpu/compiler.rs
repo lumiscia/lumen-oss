@@ -9,7 +9,7 @@ use crate::{
         RasterHandle, RasterMetadata, TimeRemapPath,
     },
     media::MediaStore,
-    node::{Deferred, NodeId, NodeKind, PortRef},
+    node::{NodeId, NodeKind, PortRef},
 };
 
 pub(crate) use super::params::*;
@@ -62,6 +62,7 @@ pub struct CompileContext<'a> {
     compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
     text_atlas_texture: Option<lumen_gpu::TextureId>,
+    raster_bounds: HashMap<lumen_gpu::TextureId, lumen_gpu::BufferId>,
 }
 
 impl<'a> CompileContext<'a> {
@@ -118,6 +119,7 @@ impl<'a> CompileContext<'a> {
             compiled_nodes: HashMap::new(),
             output_format,
             text_atlas_texture: None,
+            raster_bounds: HashMap::new(),
         }
     }
 
@@ -167,6 +169,27 @@ impl<'a> CompileContext<'a> {
                 ),
             )
         })
+    }
+
+    /// Records the uniform holding a raster's logical bounds (`origin: vec2<i32>`,
+    /// `size: vec2<u32>`), written every frame, within its storage texture.
+    ///
+    /// Bounds are looked up by texture, so they survive nodes that pass the same texture through
+    /// and stop at any node that writes a new texture.
+    pub(crate) fn publish_raster_bounds(
+        &mut self,
+        texture: lumen_gpu::TextureId,
+        bounds: lumen_gpu::BufferId,
+    ) {
+        self.raster_bounds.insert(texture, bounds);
+    }
+
+    /// The logical bounds of a raster, or `None` when it fills its whole storage texture.
+    pub(crate) fn raster_bounds(
+        &self,
+        texture: lumen_gpu::TextureId,
+    ) -> Option<lumen_gpu::BufferId> {
+        self.raster_bounds.get(&texture).copied()
     }
 
     pub(crate) fn builder_mut(&mut self) -> &mut lumen_gpu::RenderPlanBuilder {
@@ -392,29 +415,6 @@ impl<'a> CompileContext<'a> {
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: RasterMetadata::default(),
         })
-    }
-
-    pub(crate) fn static_dimension(
-        &self,
-        property: &Deferred<i64>,
-        node_id: NodeId,
-        property_path: &str,
-    ) -> crate::Result<u32> {
-        let value = property.resolve_int(
-            node_id,
-            property_path,
-            &self.expr_context(node_id, property_path),
-        )?;
-        let value = if value <= 0 {
-            match property_path {
-                "width" => i64::from(self.composition.render_settings.width),
-                "height" => i64::from(self.composition.render_settings.height),
-                _ => value,
-            }
-        } else {
-            value
-        };
-        Ok(value.clamp(1, i64::from(u32::MAX)) as u32)
     }
 
     pub(crate) fn static_dimension_value(&self, value: i64, property_path: &str) -> u32 {

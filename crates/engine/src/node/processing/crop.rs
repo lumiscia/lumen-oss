@@ -7,7 +7,7 @@ use crate::gpu::{
 
 pub(crate) const SHADER: &str = include_str!("crop.wgsl");
 
-/// Extracts a fixed raster region into static output bounds.
+/// Keeps a raster region in place and clears everything outside it.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct CropParams {
     /// Left edge of the crop region in pixels.
@@ -35,7 +35,7 @@ impl Default for CropParams {
     }
 }
 
-/// Extracts a fixed raster region into static output bounds.
+/// Keeps a raster region in place and clears everything outside it.
 #[derive(Debug, Clone, lumen_macros::Node)]
 #[node(kind = "crop", name = "Crop", category = "processing")]
 pub struct Crop {
@@ -70,10 +70,7 @@ impl GpuCompileNode for Crop {
         let source = ctx
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
-        let size = lumen_gpu::Size::new(
-            ctx.static_dimension(&self.params.width, self.id, "width")?,
-            ctx.static_dimension(&self.params.height, self.id, "height")?,
-        );
+        let size = source.domain.storage_size;
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("crop:{}:output", self.id.0)),
@@ -99,10 +96,14 @@ impl GpuCompileNode for Crop {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
+        // The params buffer holds the region clamped to the source, which is the output's logical
+        // bounds. Only a `resize` wired directly to this node sees them.
+        ctx.publish_raster_bounds(texture, params);
         ctx.register_compiled_node(CompiledCrop {
             node_id: self.id,
             params: self.params.clone(),
             buffer: params,
+            source_size: size,
         });
 
         Ok(CompiledOutput::Raster(RasterHandle {
@@ -118,6 +119,7 @@ struct CompiledCrop {
     node_id: NodeId,
     params: CropParamsDelegate,
     buffer: lumen_gpu::BufferId,
+    source_size: lumen_gpu::Size,
 }
 
 impl GpuCompiledNode for CompiledCrop {
@@ -130,9 +132,20 @@ impl GpuCompiledNode for CompiledCrop {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
+        let x = compiler::pixel_origin(self.node_id, "x", params.x)?;
+        let y = compiler::pixel_origin(self.node_id, "y", params.y)?;
+        let width = compiler::pixel_extent(self.node_id, "width", params.width, 0)?;
+        let height = compiler::pixel_extent(self.node_id, "height", params.height, 0)?;
+        // The region is clamped to the source so it doubles as the output's logical bounds.
+        let left = i64::from(x).clamp(0, i64::from(self.source_size.width));
+        let top = i64::from(y).clamp(0, i64::from(self.source_size.height));
+        let right =
+            (i64::from(x) + i64::from(width)).clamp(left, i64::from(self.source_size.width));
+        let bottom =
+            (i64::from(y) + i64::from(height)).clamp(top, i64::from(self.source_size.height));
         let gpu_params = compiler::CropParams {
-            origin: [params.x as i32, params.y as i32],
-            size: [params.width.max(0) as u32, params.height.max(0) as u32],
+            origin: [left as i32, top as i32],
+            size: [(right - left) as u32, (bottom - top) as u32],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())

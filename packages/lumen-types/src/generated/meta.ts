@@ -277,6 +277,8 @@ export interface ResizeNode extends CompositionNodeBase<"resize"> {
     readonly "mode"?: ResizeMode;
     readonly "sampling"?: ResizeSampling;
     readonly "width"?: ExpressionValue<number>;
+    readonly "x"?: ExpressionValue<number>;
+    readonly "y"?: ExpressionValue<number>;
   };
 }
 
