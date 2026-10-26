@@ -1844,6 +1844,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "anchor": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Pivot for scale and rotation, in pixels relative to `position`.",
+                    "title": "Anchor",
+                    "x-lumen-kind": "vec2"
+                  },
                   "data": {
                     "anyOf": [
                       {
@@ -1905,6 +1919,27 @@
                     "title": "Fill Paint",
                     "x-lumen-kind": "paint"
                   },
+                  "opacity": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Opacity multiplier.",
+                    "title": "Opacity",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "position": {
                     "anyOf": [
                       {
@@ -1917,6 +1952,37 @@
                     "default": [0.0, 0.0],
                     "description": "Path origin in pixels.",
                     "title": "Position",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Clockwise rotation in degrees, about the anchor.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0],
+                    "description": "Scale multiplier per axis, about the anchor.",
+                    "title": "Scale",
                     "x-lumen-kind": "vec2"
                   },
                   "stroke_enabled": {
@@ -1958,7 +2024,7 @@
                       }
                     ],
                     "default": 1.0,
-                    "description": "Stroke width in pixels.",
+                    "description": "Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches\nwith the path, so it is wider across the more scaled axis.",
                     "title": "Stroke Width",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -2421,6 +2487,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "anchor": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Pivot for scale and rotation, in pixels relative to `position`.",
+                    "title": "Anchor",
+                    "x-lumen-kind": "vec2"
+                  },
                   "border_radius": {
                     "anyOf": [
                       {
@@ -2526,6 +2606,27 @@
                     },
                     "x-lumen-kind": "int"
                   },
+                  "opacity": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Opacity multiplier.",
+                    "title": "Opacity",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "polygon_points": {
                     "anyOf": [
                       {
@@ -2536,7 +2637,7 @@
                       }
                     ],
                     "default": "",
-                    "description": "Polygon vertices in pixels relative to `position`, as `x,y; x,y` (3 to 128 points).",
+                    "description": "Polygon vertices in pixels relative to `position`, as `x,y; x,y` (3 to 16384 points).",
                     "title": "Polygon points",
                     "x-lumen-constraints": {
                       "format": "point_list",
@@ -2557,6 +2658,37 @@
                     "default": [0.0, 0.0],
                     "description": "Shape origin in pixels.",
                     "title": "Position",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Clockwise rotation in degrees, about the anchor.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0],
+                    "description": "Scale multiplier per axis, about the anchor.",
+                    "title": "Scale",
                     "x-lumen-kind": "vec2"
                   },
                   "stroke_enabled": {
@@ -2598,7 +2730,7 @@
                       }
                     ],
                     "default": 1.0,
-                    "description": "Stroke width in pixels.",
+                    "description": "Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches\nwith the shape, so it is wider across the more scaled axis.",
                     "title": "Stroke Width",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -2763,6 +2895,20 @@
                       }
                     ],
                     "x-lumen-kind": "enum"
+                  },
+                  "anchor": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Pivot for scale and rotation, in pixels relative to `position`.",
+                    "title": "Anchor",
+                    "x-lumen-kind": "vec2"
                   },
                   "color": {
                     "anyOf": [
@@ -2935,6 +3081,27 @@
                     },
                     "x-lumen-kind": "float"
                   },
+                  "opacity": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Opacity multiplier.",
+                    "title": "Opacity",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "paint_supersample": {
                     "anyOf": [
                       {
@@ -2987,6 +3154,37 @@
                       }
                     ],
                     "x-lumen-kind": "enum"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Clockwise rotation in degrees, about the anchor.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0],
+                    "description": "Scale multiplier per axis, about the anchor. Raster glyphs are resampled, so\nuse MSDF rendering to keep scaled text sharp.",
+                    "title": "Scale",
+                    "x-lumen-kind": "vec2"
                   }
                 },
                 "type": "object"

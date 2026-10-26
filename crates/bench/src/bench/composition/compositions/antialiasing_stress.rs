@@ -101,6 +101,7 @@ impl CompositionFixture for AntialiasingStress {
                         trim_start: Deferred::value(0.0),
                         trim_end: Deferred::value(1.0),
                         edge_antialias: Deferred::value(self.edge_antialias),
+                        ..Default::default()
                     },
                 })
             };

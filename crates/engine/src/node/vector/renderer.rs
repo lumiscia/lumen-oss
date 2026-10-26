@@ -2,12 +2,13 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::{
     gpu::{CompiledOutput, RasterHandle, RasterMetadata, compiler},
-    node::{NodeId, PortRef},
+    node::{Deferred, NodeId, PortRef},
 };
 
 use crate::node::source::text::{CompiledText, Text, TextState};
 
 use super::{
+    drawable::GpuDrawableTransform,
     path::{CompiledPath, Path},
     shape::{CompiledPolygonShape, CompiledShape, Shape},
 };
@@ -15,12 +16,14 @@ use super::{
 pub(crate) const SHAPE_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("paint/paint.wgsl"),
+    include_str!("drawable.wgsl"),
     include_str!("vector_common.wgsl"),
     include_str!("shape_renderer.wgsl")
 );
 pub(crate) const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("paint/paint.wgsl"),
+    include_str!("drawable.wgsl"),
     include_str!("vector_common.wgsl"),
     include_str!("path_renderer.wgsl")
 );
@@ -28,16 +31,19 @@ fn text_shader() -> String {
     [
         include_str!("../../gpu/shaders/alpha.wgsl"),
         include_str!("paint/paint.wgsl"),
+        super::drawable::DRAWABLE_SHADER,
         lumen_text::TEXT_SHADER,
     ]
     .concat()
 }
 pub(crate) const MAX_TEXT_GLYPHS: usize = 2048;
-pub(crate) const MAX_PATH_POINTS: usize = 128;
+/// Most points a path or polygon may flatten to. Points buffers are sized to the
+/// flattened point count when the geometry is constant, and to this when animated.
+pub(crate) const MAX_PATH_POINTS: usize = 16384;
 
 // Bits of the `flags` field in both uniform structs; keep in sync with `vector_common.wgsl`.
-const STYLE_FILL_ENABLED: u32 = 1;
-const STYLE_STROKE_ENABLED: u32 = 2;
+pub(super) const STYLE_FILL_ENABLED: u32 = 1;
+pub(super) const STYLE_STROKE_ENABLED: u32 = 2;
 const STYLE_EDGE_ANTIALIAS: u32 = 4;
 
 pub(super) fn style_flags(fill: bool, stroke: bool, edge_antialias: bool) -> u32 {
@@ -68,7 +74,14 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         shape: &Shape,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        let source = self.compile_vector_source(shape.id, port, "shape", SHAPE_SHADER, None)?;
+        let source = self.compile_vector_source(
+            shape.id,
+            port,
+            "shape",
+            SHAPE_SHADER,
+            std::mem::size_of::<ShapeUniforms>(),
+            &[],
+        )?;
         self.ctx.register_compiled_node(CompiledShape {
             node_id: shape.id,
             params: shape.params.clone(),
@@ -82,13 +95,12 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         path: &Path,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        let (output, params_buffer, points_buffer) =
-            self.compile_path_source(path.id, port, "path")?;
+        let point_capacity = super::path::point_capacity(&path.params.data, &path.params.scale);
+        let (output, buffers) = self.compile_path_source(path.id, port, "path", point_capacity)?;
         self.ctx.register_compiled_node(CompiledPath {
             node_id: path.id,
             params: path.params.clone(),
-            params_buffer,
-            points_buffer,
+            buffers,
         });
         Ok(output)
     }
@@ -99,13 +111,13 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         shape: &Shape,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        let (output, params_buffer, points_buffer) =
-            self.compile_path_source(shape.id, port, "shape")?;
+        let point_capacity = super::shape::polygon_point_capacity(&shape.params.polygon_points);
+        let (output, buffers) =
+            self.compile_path_source(shape.id, port, "shape", point_capacity)?;
         self.ctx.register_compiled_node(CompiledPolygonShape {
             node_id: shape.id,
             params: shape.params.clone(),
-            params_buffer,
-            points_buffer,
+            buffers,
         });
         Ok(output)
     }
@@ -115,14 +127,37 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         node_id: NodeId,
         port: &PortRef,
         label: &str,
-    ) -> crate::Result<(CompiledOutput, lumen_gpu::BufferId, lumen_gpu::BufferId)> {
-        let points_size = (MAX_PATH_POINTS * std::mem::size_of::<PathPoint>()) as u64;
-        let source =
-            self.compile_vector_source(node_id, port, label, PATH_SHADER, Some(points_size))?;
-        let points = source
-            .points
-            .expect("a source compiled with a points size has a points buffer");
-        Ok((source.output, source.params, points))
+        point_capacity: usize,
+    ) -> crate::Result<(CompiledOutput, PathBuffers)> {
+        let point_capacity = point_capacity.max(1);
+        let band_capacity = super::path_bands::band_capacity(point_capacity);
+        let source = self.compile_vector_source(
+            node_id,
+            port,
+            label,
+            PATH_SHADER,
+            std::mem::size_of::<PathUniforms>(),
+            &[
+                (
+                    "points",
+                    (point_capacity * std::mem::size_of::<PathPoint>()) as u64,
+                ),
+                ("bands", (band_capacity * std::mem::size_of::<u32>()) as u64),
+            ],
+        )?;
+        let [points, bands] = source.storage[..] else {
+            unreachable!("a path source has points and bands buffers");
+        };
+        Ok((
+            source.output,
+            PathBuffers {
+                params: source.params,
+                points,
+                bands,
+                point_capacity,
+                band_capacity,
+            },
+        ))
     }
 
     pub(crate) fn compile_text(
@@ -162,9 +197,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         let paint_buffer = self.ctx.builder_mut().buffer_for(
             lumen_gpu::NodeKey(text.id.0),
             Some(format!("text:{}:paint", text.id.0)),
-            lumen_gpu::BufferDesc::uniform(
-                std::mem::size_of::<crate::node::vector::paint::GpuPaint>() as u64,
-            ),
+            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<TextStyleUniforms>() as u64),
         );
         let atlas_sampler = self.ctx.builder_mut().sampler(
             Some(format!("text:{}:atlas-sampler", text.id.0)),
@@ -179,13 +212,12 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 ..Default::default()
             },
         );
-        let program = self.ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(text.id.0),
+        let text_program = |label: &str, entry: &str, blend| {
             lumen_gpu::ProgramDesc::Render(lumen_gpu::RenderProgramDesc {
-                label: Some("text".to_string()),
+                label: Some(label.to_string()),
                 shader: text_shader(),
-                vertex_entry: "vs_main".to_string(),
-                fragment_entry: "fs_main".to_string(),
+                vertex_entry: format!("vs_{entry}"),
+                fragment_entry: format!("fs_{entry}"),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
                     lumen_gpu::BindingLayoutEntry::uniform(
                         0,
@@ -206,44 +238,86 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                     ),
                     lumen_gpu::BindingLayoutEntry::uniform(
                         4,
-                        lumen_gpu::wgpu::ShaderStages::FRAGMENT,
+                        lumen_gpu::wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ),
                 ]),
                 targets: vec![Some(lumen_gpu::wgpu::ColorTargetState {
                     format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(lumen_gpu::wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend: Some(blend),
                     write_mask: lumen_gpu::wgpu::ColorWrites::ALL,
                 })],
                 vertex_buffers: Vec::new(),
                 primitive: lumen_gpu::wgpu::PrimitiveState::default(),
-            }),
+            })
+        };
+        let bindings = vec![
+            lumen_gpu::Binding::uniform(0, 0, globals_buffer),
+            lumen_gpu::Binding::sampled_texture(0, 1, atlas_texture),
+            lumen_gpu::Binding::sampler(0, 2, atlas_sampler),
+            lumen_gpu::Binding::storage_buffer(0, 3, instances_buffer),
+            lumen_gpu::Binding::uniform(0, 4, paint_buffer),
+        ];
+        let text_pass = |label: &str, program, load, draw| lumen_gpu::RenderPassDesc {
+            label: Some(format!("text:{}:{label}", text.id.0)),
+            owner: Some(lumen_gpu::NodeKey(text.id.0)),
+            program,
+            targets: vec![lumen_gpu::RenderTargetRef {
+                texture,
+                load,
+                store: lumen_gpu::wgpu::StoreOp::Store,
+            }],
+            bindings: bindings.clone(),
+            vertex_buffers: Vec::new(),
+            index_buffer: None,
+            draw: lumen_gpu::DrawCommand::Draw(draw),
+            scissor: None,
+        };
+        let program = self.ctx.builder_mut().program_for(
+            lumen_gpu::NodeKey(text.id.0),
+            text_program(
+                "text",
+                "main",
+                lumen_gpu::wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            ),
         );
-        self.ctx
-            .builder_mut()
-            .render_pass(lumen_gpu::RenderPassDesc {
-                label: Some(format!("text:{}:render", text.id.0)),
-                owner: Some(lumen_gpu::NodeKey(text.id.0)),
+        self.ctx.builder_mut().render_pass(text_pass(
+            "render",
+            program,
+            lumen_gpu::LoadOp::Clear(lumen_gpu::wgpu::Color::TRANSPARENT),
+            lumen_gpu::Draw {
+                vertices: 0..6,
+                instances: 0..MAX_TEXT_GLYPHS as u32,
+            },
+        ));
+        // Fading the composited layer keeps overlapping glyphs from doubling up. Fully
+        // transparent text draws no glyphs, so constant full opacity needs no pass.
+        if !matches!(text.params.opacity, Deferred::Value(opacity) if opacity >= 1.0) {
+            let multiply = lumen_gpu::wgpu::BlendComponent {
+                src_factor: lumen_gpu::wgpu::BlendFactor::Zero,
+                dst_factor: lumen_gpu::wgpu::BlendFactor::SrcAlpha,
+                operation: lumen_gpu::wgpu::BlendOperation::Add,
+            };
+            let program = self.ctx.builder_mut().program_for(
+                lumen_gpu::NodeKey(text.id.0),
+                text_program(
+                    "text opacity",
+                    "opacity",
+                    lumen_gpu::wgpu::BlendState {
+                        color: multiply,
+                        alpha: multiply,
+                    },
+                ),
+            );
+            self.ctx.builder_mut().render_pass(text_pass(
+                "opacity",
                 program,
-                targets: vec![lumen_gpu::RenderTargetRef {
-                    texture,
-                    load: lumen_gpu::LoadOp::Clear(lumen_gpu::wgpu::Color::TRANSPARENT),
-                    store: lumen_gpu::wgpu::StoreOp::Store,
-                }],
-                bindings: vec![
-                    lumen_gpu::Binding::uniform(0, 0, globals_buffer),
-                    lumen_gpu::Binding::sampled_texture(0, 1, atlas_texture),
-                    lumen_gpu::Binding::sampler(0, 2, atlas_sampler),
-                    lumen_gpu::Binding::storage_buffer(0, 3, instances_buffer),
-                    lumen_gpu::Binding::uniform(0, 4, paint_buffer),
-                ],
-                vertex_buffers: Vec::new(),
-                index_buffer: None,
-                draw: lumen_gpu::DrawCommand::Draw(lumen_gpu::Draw {
-                    vertices: 0..6,
-                    instances: 0..MAX_TEXT_GLYPHS as u32,
-                }),
-                scissor: None,
-            });
+                lumen_gpu::LoadOp::Load,
+                lumen_gpu::Draw {
+                    vertices: 0..3,
+                    instances: 0..1,
+                },
+            ));
+        }
         self.ctx.register_compiled_node(CompiledText {
             node_id: text.id,
             params: text.params.clone(),
@@ -263,15 +337,16 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         }))
     }
 
-    /// Compiles the compute pass shared by all vector rasterizers. Sources with a
-    /// `points_size` also bind a read-only storage buffer of that size.
+    /// Compiles the compute pass shared by all vector rasterizers. Each of `storage`
+    /// binds a read-only storage buffer of that name and size, after the uniforms.
     fn compile_vector_source(
         &mut self,
         node_id: NodeId,
         port: &PortRef,
         label: &str,
         shader: &str,
-        points_size: Option<u64>,
+        uniforms_size: usize,
+        storage: &[(&str, u64)],
     ) -> crate::Result<VectorSource> {
         if port.port != "output" {
             return Err(self.ctx.missing_output(node_id, &port.port));
@@ -287,30 +362,28 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             Some(format!("{label}:{}:output", node_id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let uniforms_size = if points_size.is_some() {
-            std::mem::size_of::<PathUniforms>()
-        } else {
-            std::mem::size_of::<ShapeUniforms>()
-        };
         let params = self.ctx.builder_mut().buffer_for(
             key,
             Some(format!("{label}:{}:params", node_id.0)),
             lumen_gpu::BufferDesc::uniform(uniforms_size as u64),
         );
-        let points = points_size.map(|points_size| {
-            self.ctx.builder_mut().buffer_for(
-                key,
-                Some(format!("{label}:{}:points", node_id.0)),
-                lumen_gpu::BufferDesc::storage(points_size),
-            )
-        });
+        let storage: Vec<_> = storage
+            .iter()
+            .map(|(name, size)| {
+                self.ctx.builder_mut().buffer_for(
+                    key,
+                    Some(format!("{label}:{}:{name}", node_id.0)),
+                    lumen_gpu::BufferDesc::storage(*size),
+                )
+            })
+            .collect();
 
         let stages = lumen_gpu::wgpu::ShaderStages::COMPUTE;
         let mut layout = vec![lumen_gpu::BindingLayoutEntry::uniform(0, stages)];
         let mut bindings = vec![lumen_gpu::Binding::uniform(0, 0, params)];
-        if let Some(points) = points {
-            layout.push(lumen_gpu::BindingLayoutEntry::storage(1, stages, true));
-            bindings.push(lumen_gpu::Binding::storage_buffer(0, 1, points));
+        for (index, buffer) in (1..).zip(&storage) {
+            layout.push(lumen_gpu::BindingLayoutEntry::storage(index, stages, true));
+            bindings.push(lumen_gpu::Binding::storage_buffer(0, index, *buffer));
         }
         let texture_binding = layout.len() as u32;
         layout.push(lumen_gpu::BindingLayoutEntry::storage_texture(
@@ -358,7 +431,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 metadata: RasterMetadata::default(),
             }),
             params,
-            points,
+            storage,
         })
     }
 }
@@ -366,7 +439,17 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
 struct VectorSource {
     output: CompiledOutput,
     params: lumen_gpu::BufferId,
-    points: Option<lumen_gpu::BufferId>,
+    storage: Vec<lumen_gpu::BufferId>,
+}
+
+/// Buffers of a source rasterized by the path shader.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PathBuffers {
+    pub(crate) params: lumen_gpu::BufferId,
+    pub(crate) points: lumen_gpu::BufferId,
+    pub(crate) bands: lumen_gpu::BufferId,
+    pub(crate) point_capacity: usize,
+    pub(crate) band_capacity: usize,
 }
 
 #[repr(C)]
@@ -380,6 +463,9 @@ pub(crate) struct ShapeUniforms {
     pub(crate) stroke_width: f32,
     pub(crate) geometry_kind: u32,
     pub(crate) flags: u32,
+    pub(crate) transform: GpuDrawableTransform,
+    /// Canvas-space `[min_x, min_y, max_x, max_y]` outside which nothing is drawn.
+    pub(crate) screen_bounds: [f32; 4],
 }
 
 #[repr(C)]
@@ -396,6 +482,23 @@ pub(crate) struct PathUniforms {
     pub(crate) trim_start: f32,
     pub(crate) trim_end: f32,
     pub(crate) _pad: u32,
+    pub(crate) transform: GpuDrawableTransform,
+    /// Canvas-space `[min_x, min_y, max_x, max_y]` outside which nothing is drawn.
+    pub(crate) screen_bounds: [f32; 4],
+    /// Untransformed `y`, relative to `position`, where the first band starts.
+    pub(crate) band_origin: f32,
+    /// Bands per untransformed pixel.
+    pub(crate) band_scale: f32,
+    pub(crate) band_count: u32,
+    /// Untransformed distance beyond which a segment cannot cover a pixel.
+    pub(crate) reach: f32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct TextStyleUniforms {
+    pub(crate) fill_paint: super::paint::GpuPaint,
+    pub(crate) transform: GpuDrawableTransform,
 }
 
 #[repr(C)]
