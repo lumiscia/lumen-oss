@@ -10,7 +10,11 @@ use std::time::Instant;
 use crate::error::{LumenError, RenderError};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::media::MediaStore;
-use crate::node::vector::{drawable::DrawableTransform, paint::Paint, renderer::TextStyleUniforms};
+use crate::node::vector::{
+    drawable::{DeferredTransform, DrawableMotion, DrawableTransform},
+    paint::Paint,
+    renderer::TextStyleUniforms,
+};
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 #[derive(
@@ -108,6 +112,10 @@ pub struct TextParams {
     /// Opacity multiplier.
     #[meta(min = 0, max = 1, step = 0.01)]
     pub opacity: f64,
+    /// Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
+    /// usual film look and 360 smears over the whole frame.
+    #[meta(min = 0, max = 360, step = 1)]
+    pub motion_blur: f64,
     /// Text color.
     #[meta(role = "color")]
     pub color: Paint,
@@ -139,6 +147,7 @@ impl Default for TextParams {
             rotation: 0.0,
             anchor: (0.0, 0.0),
             opacity: 1.0,
+            motion_blur: 0.0,
             color: Paint::solid([255, 255, 255, 255]),
             alignment_horizontal: TextAlignmentHorizontal::Left,
             alignment_vertical: TextAlignmentVertical::Top,
@@ -185,6 +194,8 @@ pub(crate) struct CompiledText {
     pub(crate) paint_buffer: lumen_gpu::BufferId,
     pub(crate) max_glyphs: usize,
     pub(crate) size: lumen_gpu::Size,
+    /// The size of what the glyphs are drawn to: the layer of blurred text, else the output.
+    pub(crate) layer_size: lumen_gpu::Size,
     pub(crate) state: Arc<Mutex<TextState>>,
 }
 
@@ -195,21 +206,28 @@ impl GpuCompiledNode for CompiledText {
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let trace_started = crate::log_level_enabled(tracing::Level::TRACE).then(trace_now_ms);
+        let expr = ctx.expr_context(self.node_id, "params");
         let evaluated = self.params.eval(&NodeParamEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &expr,
         })?;
         let mut paint = evaluated.color.to_gpu([255, 255, 255, 255]);
         paint.paint_supersample = u32::from(evaluated.paint_supersample);
         let (position_x, position_y) = evaluated.position;
-        let transform = DrawableTransform {
+        let drawable = DrawableTransform {
             position: evaluated.position,
             scale: evaluated.scale,
             rotation: evaluated.rotation,
             anchor: evaluated.anchor,
             opacity: evaluated.opacity,
+        };
+        let shutter = DeferredTransform {
+            position: &self.params.position,
+            scale: &self.params.scale,
+            rotation: &self.params.rotation,
+            anchor: &self.params.anchor,
         }
-        .to_gpu();
+        .shutter(evaluated.motion_blur, drawable, self.node_id, &expr)?;
         let mut request = layout_request(
             evaluated.content,
             evaluated.font_family,
@@ -342,15 +360,21 @@ impl GpuCompiledNode for CompiledText {
             );
         }
         let globals = lumen_text::GpuTextGlobals {
-            target_size: [self.size.width as f32, self.size.height as f32],
+            target_size: [self.layer_size.width as f32, self.layer_size.height as f32],
             px_range: lumen_text::MSDF_PX_RANGE,
             glyph_count: prepared.instances.len() as u32,
             paint_bounds: layout.bounds,
         };
         bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
+        let [x, y, width, height] = layout.bounds;
+        let (min, max) = ([x, y], [x + width, y + height]);
+        let motion = DrawableMotion::new(shutter.as_ref(), min, max);
+        let canvas = [self.size.width as f32, self.size.height as f32];
+        let layer = [self.layer_size.width as f32, self.layer_size.height as f32];
         let style = TextStyleUniforms {
             fill_paint: paint,
-            transform,
+            transform: motion.layer_transform(&drawable, min, max, canvas, layer),
+            motion: motion.to_gpu(),
         };
         bound.write_buffer(self.paint_buffer, 0, bytemuck::bytes_of(&style));
         if !prepared.instances.is_empty() {

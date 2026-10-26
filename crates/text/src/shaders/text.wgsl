@@ -30,6 +30,7 @@ struct VertexOut {
 struct TextStyle {
     fill: Paint,
     transform: DrawableTransform,
+    motion: DrawableMotion,
 }
 
 @group(0) @binding(4) var<uniform> style: TextStyle;
@@ -156,14 +157,61 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     return text_paint * (coverage * in.color.a);
 }
 
-// Opacity pass: a full-target triangle drawn over the composited text with a blend that
-// multiplies the target by the source alpha, so overlapping glyphs fade as one layer.
+@group(0) @binding(5) var layer_texture: texture_2d<f32>;
+
+fn layer_texel(coord: vec2<i32>) -> vec4<f32> {
+    let size = vec2<i32>(textureDimensions(layer_texture));
+    if (any(coord < vec2<i32>(0)) || any(coord >= size)) {
+        return vec4<f32>(0.0);
+    }
+    return textureLoad(layer_texture, coord, 0);
+}
+
+// Bilinear sample of the layer at a continuous coordinate, whose texel centres lie at
+// integer + 0.5, and which is transparent beyond the layer.
+fn layer_bilinear(coord: vec2<f32>) -> vec4<f32> {
+    let base = floor(coord - vec2<f32>(0.5));
+    let frac = coord - vec2<f32>(0.5) - base;
+    let p0 = vec2<i32>(base);
+    let c00 = layer_texel(p0);
+    let c10 = layer_texel(p0 + vec2<i32>(1, 0));
+    let c01 = layer_texel(p0 + vec2<i32>(0, 1));
+    let c11 = layer_texel(p0 + vec2<i32>(1, 1));
+    return mix(mix(c00, c10, frac.x), mix(c01, c11, frac.x), frac.y);
+}
+
+// Smear pass, for text that may move during the shutter. The layer holds the composited
+// text, drawn still under `style.transform`, so overlapping glyphs and the paint's
+// supersampling are already resolved. Each tap maps the layer's text to where it lies
+// then, and the premultiplied layer is averaged over them. Where nothing moves, the
+// layer is copied.
+@fragment
+fn fs_smear(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    if (style.motion.tap_count == 0u) {
+        return textureLoad(layer_texture, vec2<i32>(position.xy), 0);
+    }
+    var color = vec4<f32>(0.0);
+    for (var tap = 0u; tap < style.motion.tap_count; tap = tap + 1u) {
+        let transform = style.motion.taps[tap];
+        // A tap that collapses the text, or fades it out, shows none of it.
+        if (transform.opacity <= 0.0) {
+            continue;
+        }
+        let local = drawable_to_local(transform, position.xy);
+        color += layer_bilinear(drawable_to_canvas(style.transform, local));
+    }
+    return color / f32(style.motion.tap_count);
+}
+
+// A triangle covering the target, for the passes that treat the composited text as a layer.
 @vertex
-fn vs_opacity(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+fn vs_fullscreen(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
     let corner = vec2<f32>(f32((vertex_index << 1u) & 2u), f32(vertex_index & 2u));
     return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
 }
 
+// Opacity pass: drawn over the composited text with a blend that multiplies the target by
+// the source alpha, so overlapping glyphs fade as one layer.
 @fragment
 fn fs_opacity() -> @location(0) vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, style.transform.opacity);

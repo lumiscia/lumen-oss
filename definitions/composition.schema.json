@@ -1919,6 +1919,27 @@
                     "title": "Fill Paint",
                     "x-lumen-kind": "paint"
                   },
+                  "motion_blur": {
+                    "anyOf": [
+                      {
+                        "maximum": 360.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame.",
+                    "title": "Motion Blur",
+                    "x-lumen-constraints": {
+                      "max": 360.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "opacity": {
                     "anyOf": [
                       {
@@ -2606,6 +2627,27 @@
                     },
                     "x-lumen-kind": "int"
                   },
+                  "motion_blur": {
+                    "anyOf": [
+                      {
+                        "maximum": 360.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame.",
+                    "title": "Motion Blur",
+                    "x-lumen-constraints": {
+                      "max": 360.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "opacity": {
                     "anyOf": [
                       {
@@ -3081,6 +3123,27 @@
                     },
                     "x-lumen-kind": "float"
                   },
+                  "motion_blur": {
+                    "anyOf": [
+                      {
+                        "maximum": 360.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame.",
+                    "title": "Motion Blur",
+                    "x-lumen-constraints": {
+                      "max": 360.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "opacity": {
                     "anyOf": [
                       {
@@ -3335,6 +3398,27 @@
                     "description": "Uses the pivot as given; when off, a (0, 0) pivot means the source centre.",
                     "title": "Custom pivot",
                     "x-lumen-kind": "bool"
+                  },
+                  "motion_blur": {
+                    "anyOf": [
+                      {
+                        "maximum": 360.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame.",
+                    "title": "Motion blur",
+                    "x-lumen-constraints": {
+                      "max": 360.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
                   },
                   "pivot_x": {
                     "anyOf": [

@@ -4366,6 +4366,16 @@ fn render_drawable_graph(
     nodes: Vec<NodeKind>,
     size: u32,
 ) -> Vec<u8> {
+    render_drawable_frame(renderer, nodes, size, 0, &EmptyMediaStore)
+}
+
+fn render_drawable_frame(
+    renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+    nodes: Vec<NodeKind>,
+    size: u32,
+    frame: u32,
+    media: &impl MediaStore,
+) -> Vec<u8> {
     let mut graph = Graph::new();
     let mut last = NodeId::new(0);
     for node in nodes {
@@ -4386,11 +4396,11 @@ fn render_drawable_graph(
     renderer
         .compile_with_media(
             &composition,
-            &EmptyMediaStore,
+            media,
             lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
         )
         .unwrap();
-    render_rgba8(renderer, &composition, 0, &EmptyMediaStore)
+    render_rgba8(renderer, &composition, frame, media)
 }
 
 fn max_channel_difference(a: &[u8], b: &[u8]) -> u8 {
@@ -6133,4 +6143,790 @@ fn shadow_keeps_content_shifted_outside_the_canvas_across_level_switches() {
             "radius {below} -> {above} must not pop: {before:?} -> {after:?}"
         );
     }
+}
+
+fn expression<T>(source: &str) -> Deferred<T> {
+    Deferred::Expr(Expression::parse(source).unwrap())
+}
+
+/// Averages renders of the same size, as the shutter's taps are averaged.
+fn average_renders(renders: &[Vec<u8>]) -> Vec<u8> {
+    (0..renders[0].len())
+        .map(|index| {
+            let sum: f64 = renders.iter().map(|render| f64::from(render[index])).sum();
+            (sum / renders.len() as f64).round() as u8
+        })
+        .collect()
+}
+
+/// Frames at the middle of each of `taps` equal parts of a shutter of `angle` degrees
+/// centred on `frame`.
+fn tap_frames(frame: u32, angle: f64, taps: usize) -> Vec<f64> {
+    (0..taps)
+        .map(|tap| {
+            let s = (2 * tap + 1) as f64 / taps as f64 - 1.0;
+            f64::from(frame) + s * angle / 720.0
+        })
+        .collect()
+}
+
+fn total_alpha(pixels: &[u8]) -> u64 {
+    pixels
+        .iter()
+        .skip(3)
+        .step_by(4)
+        .map(|&a| u64::from(a))
+        .sum()
+}
+
+#[test]
+fn motion_blur_on_still_layers_changes_nothing() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let media = TestMediaStore::image("plate", 16, 16);
+    // An expression that holds still is evaluated over the shutter like a moving one.
+    let layers = |motion_blur: f64| {
+        vec![
+            vec![NodeKind::Shape(Shape {
+                id: NodeId::new(1),
+                params: ShapeParamsDelegate {
+                    width: Deferred::value(30),
+                    height: Deferred::value(20),
+                    position: expression("vec2(30.5, 40)"),
+                    rotation: Deferred::value(20.0),
+                    stroke_enabled: Deferred::value(true),
+                    motion_blur: Deferred::value(motion_blur),
+                    ..Default::default()
+                },
+            })],
+            vec![NodeKind::Path(Path {
+                id: NodeId::new(1),
+                params: PathParamsDelegate {
+                    data: Deferred::value("M 5 5 Q 40 0 45 40 L 5 45 Z".to_string()),
+                    position: expression("vec2(20, 10 + 0 * frame)"),
+                    scale: Deferred::value((1.5, 0.75)),
+                    motion_blur: Deferred::value(motion_blur),
+                    ..Default::default()
+                },
+            })],
+            vec![NodeKind::Text(Text {
+                id: NodeId::new(1),
+                params: TextParamsDelegate {
+                    content: Deferred::value("Lumen".to_string()),
+                    font_size: Deferred::value(24.0),
+                    render_mode: TextRenderMode::Msdf.into(),
+                    position: expression("vec2(10, 30)"),
+                    rotation: Deferred::value(10.0),
+                    motion_blur: Deferred::value(motion_blur),
+                    ..Default::default()
+                },
+            })],
+            vec![
+                NodeKind::MediaIn(MediaIn {
+                    id: NodeId::new(1),
+                    params: MediaInParamsDelegate {
+                        source: Deferred::value("plate".to_string()),
+                        ..Default::default()
+                    },
+                }),
+                NodeKind::Transform(Transform {
+                    id: NodeId::new(2),
+                    params: TransformParamsDelegate {
+                        translate_x: expression("20 + 0 * frame"),
+                        rotate: Deferred::value(30.0),
+                        motion_blur: Deferred::value(motion_blur),
+                        ..Default::default()
+                    },
+                    source: PortRef::new(NodeId::new(1), "output".to_string()),
+                }),
+            ],
+        ]
+    };
+    for (still, blurred) in layers(0.0).into_iter().zip(layers(180.0)) {
+        let still = render_drawable_frame(&mut renderer, still, 64, 3, &media);
+        let blurred = render_drawable_frame(&mut renderer, blurred, 64, 3, &media);
+        assert!(total_alpha(&still) > 0);
+        assert_eq!(blurred, still);
+    }
+}
+
+#[test]
+fn moving_rectangle_smear_matches_averaged_subframe_renders() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let rectangle = |position: Deferred<(f64, f64)>, motion_blur: f64| {
+        vec![NodeKind::Shape(Shape {
+            id: NodeId::new(1),
+            params: ShapeParamsDelegate {
+                width: Deferred::value(20),
+                height: Deferred::value(12),
+                position,
+                rotation: Deferred::value(15.0),
+                anchor: Deferred::value((10.0, 6.0)),
+                motion_blur: Deferred::value(motion_blur),
+                ..Default::default()
+            },
+        })]
+    };
+    let moving = || expression("vec2(10 + frame * 31, 30)");
+    // Over a 180 degree shutter the rectangle travels 15.5 pixels, so it takes 16 taps.
+    let blurred = render_drawable_frame(
+        &mut renderer,
+        rectangle(moving(), 180.0),
+        96,
+        2,
+        &EmptyMediaStore,
+    );
+    let still = render_drawable_frame(
+        &mut renderer,
+        rectangle(moving(), 0.0),
+        96,
+        2,
+        &EmptyMediaStore,
+    );
+    let taps: Vec<_> = tap_frames(2, 180.0, 16)
+        .into_iter()
+        .map(|frame| {
+            let position = Deferred::value((10.0 + frame * 31.0, 30.0));
+            render_drawable_frame(
+                &mut renderer,
+                rectangle(position, 0.0),
+                96,
+                2,
+                &EmptyMediaStore,
+            )
+        })
+        .collect();
+    let expected = average_renders(&taps);
+    let difference = max_channel_difference(&blurred, &expected);
+    eprintln!(
+        "smear: max difference {difference}, partially covered {} vs {} still",
+        partially_covered(&blurred),
+        partially_covered(&still)
+    );
+    assert!(partially_covered(&blurred) > 4 * partially_covered(&still));
+    assert!(difference <= 2, "max difference {difference}");
+}
+
+#[test]
+fn rotation_smears_along_its_arc() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // An 8 pixel square 32 pixels above the canvas centre, turning about the centre by 90
+    // degrees a frame. A 360 degree shutter at frame 1 sweeps it from 45 to 135 degrees.
+    let square = NodeKind::Shape(Shape {
+        id: NodeId::new(1),
+        params: ShapeParamsDelegate {
+            width: Deferred::value(8),
+            height: Deferred::value(8),
+            position: Deferred::value((60.0, 28.0)),
+            anchor: Deferred::value((4.0, 36.0)),
+            rotation: expression("frame * 90"),
+            motion_blur: Deferred::value(360.0),
+            ..Default::default()
+        },
+    });
+    let pixels = render_drawable_frame(&mut renderer, vec![square], 128, 1, &EmptyMediaStore);
+    let alpha_at = |degrees: f64, radius: f64| {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let (x, y) = (64.0 + radius * sin, 64.0 - radius * cos);
+        pixels[(y as usize * 128 + x as usize) * 4 + 3]
+    };
+    for degrees in [55.0, 90.0, 125.0] {
+        let alpha = alpha_at(degrees, 32.0);
+        assert!(
+            alpha > 0 && alpha < 128,
+            "alpha {alpha} at {degrees} degrees"
+        );
+    }
+    // The chord between the sweep's ends lies 9.4 pixels inside the arc.
+    assert_eq!(alpha_at(90.0, 22.0), 0);
+    assert_eq!(alpha_at(20.0, 32.0), 0);
+    assert_eq!(alpha_at(160.0, 32.0), 0);
+}
+
+#[test]
+fn blurred_image_through_transform_matches_averaged_subframe_renders() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let media = TestMediaStore::image("plate", 16, 16);
+    let image = |translate_x: Deferred<f64>, motion_blur: f64| {
+        vec![
+            NodeKind::MediaIn(MediaIn {
+                id: NodeId::new(1),
+                params: MediaInParamsDelegate {
+                    source: Deferred::value("plate".to_string()),
+                    ..Default::default()
+                },
+            }),
+            NodeKind::Transform(Transform {
+                id: NodeId::new(2),
+                params: TransformParamsDelegate {
+                    translate_x,
+                    translate_y: Deferred::value(20.0),
+                    rotate: Deferred::value(10.0),
+                    motion_blur: Deferred::value(motion_blur),
+                    ..Default::default()
+                },
+                source: PortRef::new(NodeId::new(1), "output".to_string()),
+            }),
+        ]
+    };
+    // Over a 180 degree shutter the image travels 9.5 pixels, so it takes 10 taps.
+    let blurred = render_drawable_frame(
+        &mut renderer,
+        image(expression("10 + frame * 19"), 180.0),
+        64,
+        1,
+        &media,
+    );
+    let still = render_drawable_frame(
+        &mut renderer,
+        image(expression("10 + frame * 19"), 0.0),
+        64,
+        1,
+        &media,
+    );
+    let taps: Vec<_> = tap_frames(1, 180.0, 10)
+        .into_iter()
+        .map(|frame| {
+            render_drawable_frame(
+                &mut renderer,
+                image(Deferred::value(10.0 + frame * 19.0), 0.0),
+                64,
+                1,
+                &media,
+            )
+        })
+        .collect();
+    let expected = average_renders(&taps);
+    let difference = max_channel_difference(&blurred, &expected);
+    eprintln!(
+        "image smear: max difference {difference}, partially covered {} vs {} still",
+        partially_covered(&blurred),
+        partially_covered(&still)
+    );
+    assert!(partially_covered(&blurred) > 2 * partially_covered(&still));
+    assert!(difference <= 2, "max difference {difference}");
+}
+
+#[test]
+fn blurred_text_keeps_its_coverage_where_glyph_smears_cross() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
+        let text = |motion_blur: f64| {
+            vec![NodeKind::Text(Text {
+                id: NodeId::new(1),
+                params: TextParamsDelegate {
+                    content: Deferred::value("Lumen".to_string()),
+                    font_size: Deferred::value(32.0),
+                    render_mode: mode.into(),
+                    position: expression("vec2(frame * 40 - 20, 40)"),
+                    motion_blur: Deferred::value(motion_blur),
+                    ..Default::default()
+                },
+            })]
+        };
+        // Each glyph smears 40 pixels, across its neighbours.
+        let still = render_drawable_frame(&mut renderer, text(0.0), 192, 2, &EmptyMediaStore);
+        let blurred = render_drawable_frame(&mut renderer, text(360.0), 192, 2, &EmptyMediaStore);
+        let (still_alpha, blurred_alpha) = (total_alpha(&still), total_alpha(&blurred));
+        eprintln!("{mode:?} text: total alpha {blurred_alpha} blurred vs {still_alpha} still");
+        assert!(partially_covered(&blurred) > 2 * partially_covered(&still));
+        assert!(still_alpha.abs_diff(blurred_alpha) * 50 < still_alpha);
+    }
+}
+
+#[test]
+fn blur_keeps_taps_around_a_frame_whose_scale_is_zero() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // The scale is zero at frame 1 and not at any other time of a 360 degree shutter.
+    let layers = |scale: Deferred<(f64, f64)>, motion_blur: f64| {
+        vec![
+            vec![NodeKind::Shape(Shape {
+                id: NodeId::new(1),
+                params: ShapeParamsDelegate {
+                    width: Deferred::value(40),
+                    height: Deferred::value(20),
+                    position: Deferred::value((20.0, 30.0)),
+                    scale: scale.clone(),
+                    motion_blur: Deferred::value(motion_blur),
+                    ..Default::default()
+                },
+            })],
+            vec![NodeKind::Path(Path {
+                id: NodeId::new(1),
+                params: PathParamsDelegate {
+                    data: Deferred::value("M 0 0 L 40 0 L 40 20 L 0 20 Z".to_string()),
+                    position: Deferred::value((20.0, 30.0)),
+                    scale: scale.clone(),
+                    motion_blur: Deferred::value(motion_blur),
+                    ..Default::default()
+                },
+            })],
+            vec![NodeKind::Path(Path {
+                id: NodeId::new(1),
+                params: PathParamsDelegate {
+                    data: Deferred::value("M 0 0 C 40 0 40 40 0 40 Z".to_string()),
+                    position: Deferred::value((20.0, 30.0)),
+                    scale,
+                    motion_blur: Deferred::value(motion_blur),
+                    ..Default::default()
+                },
+            })],
+        ]
+    };
+    let text = |scale: Deferred<(f64, f64)>, motion_blur: f64| {
+        vec![NodeKind::Text(Text {
+            id: NodeId::new(1),
+            params: TextParamsDelegate {
+                content: Deferred::value("Lumen".to_string()),
+                font_size: Deferred::value(32.0),
+                render_mode: TextRenderMode::Msdf.into(),
+                position: Deferred::value((10.0, 30.0)),
+                scale,
+                motion_blur: Deferred::value(motion_blur),
+                ..Default::default()
+            },
+        })]
+    };
+    let scale = || expression::<(f64, f64)>("vec2(frame - 1, 1)");
+    let cases: Vec<_> = layers(scale(), 360.0)
+        .into_iter()
+        .zip(["shape", "rectangle path", "curved path"])
+        .chain([(text(scale(), 360.0), "text")])
+        .collect();
+    let mut still_cases = layers(scale(), 0.0);
+    still_cases.push(text(scale(), 0.0));
+    let at = |frame: f64| Deferred::value((frame - 1.0, 1.0));
+    for (index, (blurred, name)) in cases.into_iter().enumerate() {
+        let blurred = render_drawable_frame(&mut renderer, blurred, 96, 1, &EmptyMediaStore);
+        let taps: Vec<_> = tap_frames(1, 360.0, 20)
+            .into_iter()
+            .map(|frame| {
+                let layer = if index < 3 {
+                    layers(at(frame), 0.0).swap_remove(index)
+                } else {
+                    text(at(frame), 0.0)
+                };
+                render_drawable_frame(&mut renderer, layer, 96, 1, &EmptyMediaStore)
+            })
+            .collect();
+        let (blurred, expected) = (total_alpha(&blurred), total_alpha(&average_renders(&taps)));
+        eprintln!("{name}: total alpha {blurred} vs {expected} from the taps");
+        assert!(blurred > 0, "{name} is hidden");
+        assert!(
+            blurred.abs_diff(expected) * 10 < expected,
+            "{name}: {blurred} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn transform_blur_averages_straight_alpha_premultiplied() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let convert = |id: u64, source: u64, mode: &str| {
+        NodeKind::AlphaPremultiply(AlphaPremultiply {
+            id: NodeId::new(id),
+            params: AlphaPremultiplyParamsDelegate {
+                mode: Deferred::value(mode.to_string()),
+            },
+            source: PortRef::new(NodeId::new(source), "output".to_string()),
+        })
+    };
+    // Half transparent red slides across the canvas, so some pixels see it under some taps.
+    let pixels = render_drawable_frame(
+        &mut renderer,
+        vec![
+            solid(NodeId::new(1), [255, 0, 0, 128]),
+            convert(2, 1, "unpremultiply"),
+            NodeKind::Transform(Transform {
+                id: NodeId::new(3),
+                params: TransformParamsDelegate {
+                    translate_x: expression("frame * 20"),
+                    motion_blur: Deferred::value(360.0),
+                    sampling: TransformSampling::Nearest.into(),
+                    ..Default::default()
+                },
+                source: PortRef::new(NodeId::new(2), "output".to_string()),
+            }),
+            convert(4, 3, "premultiply"),
+        ],
+        64,
+        1,
+        &EmptyMediaStore,
+    );
+    let mut partial = 0;
+    for pixel in pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel[3] > 0)
+    {
+        // The colour stays red, so premultiplied it equals the alpha.
+        assert!(
+            pixel[0].abs_diff(pixel[3]) <= 1 && pixel[1] == 0,
+            "{pixel:?}"
+        );
+        partial += usize::from(pixel[3] < 127);
+    }
+    assert!(partial > 0);
+}
+
+#[test]
+fn transform_blur_with_linear_sampling_filters_straight_alpha_premultiplied() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let blur = |source: u64| {
+        NodeKind::Transform(Transform {
+            id: NodeId::new(3),
+            params: TransformParamsDelegate {
+                translate_x: expression("0.5 + frame * 2.999"),
+                motion_blur: Deferred::value(360.0),
+                sampling: TransformSampling::Linear.into(),
+                ..Default::default()
+            },
+            source: PortRef::new(NodeId::new(source), "output".to_string()),
+        })
+    };
+    let convert = |id: u64, source: u64, mode: &str| {
+        NodeKind::AlphaPremultiply(AlphaPremultiply {
+            id: NodeId::new(id),
+            params: AlphaPremultiplyParamsDelegate {
+                mode: Deferred::value(mode.to_string()),
+            },
+            source: PortRef::new(NodeId::new(source), "output".to_string()),
+        })
+    };
+    // Half transparent red, translated by fractions of a pixel so its edge is filtered.
+    let premultiplied = render_drawable_frame(
+        &mut renderer,
+        vec![solid(NodeId::new(1), [255, 0, 0, 128]), blur(1)],
+        64,
+        0,
+        &EmptyMediaStore,
+    );
+    let straight = render_drawable_frame(
+        &mut renderer,
+        vec![
+            solid(NodeId::new(1), [255, 0, 0, 128]),
+            convert(2, 1, "unpremultiply"),
+            blur(2),
+            convert(4, 3, "premultiply"),
+        ],
+        64,
+        0,
+        &EmptyMediaStore,
+    );
+    let difference = max_channel_difference(&straight, &premultiplied);
+    eprintln!("straight vs premultiplied linear blur: max difference {difference}");
+    assert!(partially_covered(&premultiplied) > 0);
+    assert!(difference <= 2, "max difference {difference}");
+}
+
+/// Renders `text` blurred at frame 0, moving 2.999 pixels over the shutter, which takes
+/// three taps at one pixel apart, and checks it against the average of the text held at
+/// each of those positions.
+fn assert_blurred_text_matches_taps(
+    renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+    text: impl Fn(Deferred<(f64, f64)>, f64) -> NodeKind,
+    name: &str,
+) {
+    let render = |renderer: &mut _, position, motion_blur| {
+        render_drawable_frame(
+            renderer,
+            vec![text(position, motion_blur)],
+            128,
+            0,
+            &EmptyMediaStore,
+        )
+    };
+    let blurred = render(renderer, expression("vec2(20 + frame * 2.999, 30)"), 360.0);
+    let still = render(renderer, Deferred::value((20.0, 30.0)), 0.0);
+    let taps: Vec<_> = [19.0, 20.0, 21.0]
+        .map(|x| render(renderer, Deferred::value((x, 30.0)), 0.0))
+        .into();
+    let difference = max_channel_difference(&blurred, &average_renders(&taps));
+    eprintln!("{name}: max difference {difference} from the taps");
+    assert!(max_channel_difference(&blurred, &still) > 16, "{name}");
+    assert!(difference <= 4, "{name}: max difference {difference}");
+}
+
+#[test]
+fn blurred_text_composites_glyphs_and_paint_before_averaging() {
+    use lumen_engine::node::{
+        source::text::TextRenderMode,
+        vector::paint::{GradientPaint, GradientStop, GradientUnits},
+    };
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
+        // Combining marks overlap their base glyphs, and the paint and the layer are
+        // translucent, so summing glyphs would count the overlaps twice.
+        assert_blurred_text_matches_taps(
+            &mut renderer,
+            |position, motion_blur| {
+                NodeKind::Text(Text {
+                    id: NodeId::new(1),
+                    params: TextParamsDelegate {
+                        content: Deferred::value("A\u{338} f\u{301}".to_string()),
+                        font_size: Deferred::value(48.0),
+                        render_mode: mode.into(),
+                        position,
+                        opacity: Deferred::value(0.6),
+                        color: Paint::solid([255, 255, 255, 128]).into(),
+                        motion_blur: Deferred::value(motion_blur),
+                        ..Default::default()
+                    },
+                })
+            },
+            &format!("{mode:?} overlapping marks"),
+        );
+    }
+    // A hard gradient stop falls within the enlarged glyph, and paint supersampling
+    // antialiases it.
+    assert_blurred_text_matches_taps(
+        &mut renderer,
+        |position, motion_blur| {
+            NodeKind::Text(Text {
+                id: NodeId::new(1),
+                params: TextParamsDelegate {
+                    content: Deferred::value("H".to_string()),
+                    font_size: Deferred::value(40.0),
+                    render_mode: TextRenderMode::Msdf.into(),
+                    position,
+                    scale: Deferred::value((2.0, 2.0)),
+                    paint_supersample: Deferred::value(true),
+                    color: Paint::Gradient(GradientPaint {
+                        units: GradientUnits::ObjectBoundingBox,
+                        start: [0.5, 0.0],
+                        end: [0.52, 0.0],
+                        stops: vec![
+                            GradientStop {
+                                offset: 0.0,
+                                color: [255, 0, 0, 255],
+                            },
+                            GradientStop {
+                                offset: 0.5,
+                                color: [255, 0, 0, 255],
+                            },
+                            GradientStop {
+                                offset: 0.5,
+                                color: [0, 0, 255, 255],
+                            },
+                            GradientStop {
+                                offset: 1.0,
+                                color: [0, 0, 255, 255],
+                            },
+                        ],
+                        ..Default::default()
+                    })
+                    .into(),
+                    motion_blur: Deferred::value(motion_blur),
+                    ..Default::default()
+                },
+            })
+        },
+        "supersampled gradient",
+    );
+}
+
+#[test]
+fn blurred_text_entering_from_beyond_the_edge_keeps_its_smear() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let text = |position: Deferred<(f64, f64)>, motion_blur: f64| {
+        vec![NodeKind::Text(Text {
+            id: NodeId::new(1),
+            params: TextParamsDelegate {
+                content: Deferred::value("Lumen".to_string()),
+                font_size: Deferred::value(32.0),
+                position,
+                motion_blur: Deferred::value(motion_blur),
+                ..Default::default()
+            },
+        })]
+    };
+    // At frame 0 the text lies wholly beyond the left edge, and the shutter carries it 400
+    // pixels across, through 32 taps.
+    let at = |frame: f64| Deferred::value((-150.0 + frame * 400.0, 40.0));
+    let still = render_drawable_frame(&mut renderer, text(at(0.0), 0.0), 128, 0, &EmptyMediaStore);
+    assert_eq!(total_alpha(&still), 0);
+    let blurred = render_drawable_frame(
+        &mut renderer,
+        text(expression("vec2(-150 + frame * 400, 40)"), 360.0),
+        128,
+        0,
+        &EmptyMediaStore,
+    );
+    let taps: Vec<_> = tap_frames(0, 360.0, 32)
+        .into_iter()
+        .map(|frame| {
+            render_drawable_frame(
+                &mut renderer,
+                text(at(frame), 0.0),
+                128,
+                0,
+                &EmptyMediaStore,
+            )
+        })
+        .collect();
+    let (blurred, expected) = (total_alpha(&blurred), total_alpha(&average_renders(&taps)));
+    eprintln!("entering text: total alpha {blurred} vs {expected} from the taps");
+    assert!(expected > 0 && blurred.abs_diff(expected) * 20 < expected);
+}
+
+#[test]
+fn blurred_text_scrolling_beyond_the_canvas_is_not_clipped() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let text = |position: Deferred<(f64, f64)>, motion_blur: f64| {
+        vec![NodeKind::Text(Text {
+            id: NodeId::new(1),
+            params: TextParamsDelegate {
+                content: Deferred::value("MMMMMMMMMMMM".to_string()),
+                font_size: Deferred::value(32.0),
+                position,
+                motion_blur: Deferred::value(motion_blur),
+                ..Default::default()
+            },
+        })]
+    };
+    // The text is far wider than the canvas, and the shutter slides it 64 pixels, so the
+    // taps show a region of the text wider than the canvas.
+    let blurred = render_drawable_frame(
+        &mut renderer,
+        text(expression("vec2(-60 + frame * 64, 40)"), 360.0),
+        128,
+        0,
+        &EmptyMediaStore,
+    );
+    let taps: Vec<_> = tap_frames(0, 360.0, 32)
+        .into_iter()
+        .map(|frame| {
+            render_drawable_frame(
+                &mut renderer,
+                text(Deferred::value((-60.0 + frame * 64.0, 40.0)), 0.0),
+                128,
+                0,
+                &EmptyMediaStore,
+            )
+        })
+        .collect();
+    let expected = average_renders(&taps);
+    let (blurred_alpha, expected_alpha) = (total_alpha(&blurred), total_alpha(&expected));
+    eprintln!("scrolling text: total alpha {blurred_alpha} vs {expected_alpha} from the taps");
+    assert!(blurred_alpha.abs_diff(expected_alpha) * 50 < expected_alpha);
+    let last_column = |pixels: &[u8]| -> u64 {
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .skip(127)
+            .step_by(128)
+            .map(|pixel| u64::from(pixel[3]))
+            .sum()
+    };
+    assert!(last_column(&expected) > 0);
+    assert!(last_column(&blurred).abs_diff(last_column(&expected)) * 10 < last_column(&expected));
+}
+
+#[test]
+fn blurred_msdf_text_keeps_its_resolution_whichever_way_the_scale_changes() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let text = |scale: Deferred<(f64, f64)>, motion_blur: f64| {
+        vec![NodeKind::Text(Text {
+            id: NodeId::new(1),
+            params: TextParamsDelegate {
+                content: Deferred::value("Hi".to_string()),
+                font_size: Deferred::value(32.0),
+                render_mode: TextRenderMode::Msdf.into(),
+                position: Deferred::value((10.0, 10.0)),
+                scale,
+                motion_blur: Deferred::value(motion_blur),
+                ..Default::default()
+            },
+        })]
+    };
+    // Frame 1 scales (0.5, 0.5), after (3, 0.5) at the shutter's open, and before
+    // (0.5, 3) at its close; the reverse swaps the axes.
+    let opening = |renderer: &mut _, x: &str, y: &str| {
+        let scale = format!("vec2({x}, {y})");
+        render_drawable_frame(
+            renderer,
+            text(expression(&scale), 360.0),
+            192,
+            1,
+            &EmptyMediaStore,
+        )
+    };
+    let forward = opening(
+        &mut renderer,
+        "0.5 + 5 * max(0, 1 - frame)",
+        "0.5 + 5 * max(0, frame - 1)",
+    );
+    let reverse = opening(
+        &mut renderer,
+        "0.5 + 5 * max(0, frame - 1)",
+        "0.5 + 5 * max(0, 1 - frame)",
+    );
+    let reversed_difference = max_channel_difference(&forward, &reverse);
+    eprintln!("anisotropic scale: reversed by {reversed_difference}");
+    assert!(
+        reversed_difference <= 2,
+        "reversal changes {reversed_difference}"
+    );
+
+    let taps: Vec<_> = tap_frames(1, 360.0, 32)
+        .into_iter()
+        .map(|frame| {
+            let scale = (
+                0.5 + 5.0 * (1.0 - frame).max(0.0),
+                0.5 + 5.0 * (frame - 1.0).max(0.0),
+            );
+            render_drawable_frame(
+                &mut renderer,
+                text(Deferred::value(scale), 0.0),
+                192,
+                1,
+                &EmptyMediaStore,
+            )
+        })
+        .collect();
+    let expected = average_renders(&taps);
+    let mean_error = forward
+        .iter()
+        .zip(&expected)
+        .map(|(a, b)| u64::from(a.abs_diff(*b)))
+        .sum::<u64>() as f64
+        / forward.len() as f64;
+    eprintln!("anisotropic scale: mean error {mean_error:.3} from the taps");
+    assert!(mean_error < 1.0, "mean error {mean_error}");
 }

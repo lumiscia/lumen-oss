@@ -16,6 +16,7 @@ struct PathUniforms {
     band_scale: f32,
     band_count: u32,
     reach: f32,
+    motion: DrawableMotion,
 }
 
 // Bits of `flags` in `PathPoint`; unrelated to the style bits in `PathUniforms.flags`.
@@ -138,11 +139,11 @@ struct PathEdges {
 // been transformed to the canvas. The stroke is the union of a capsule around each
 // segment, measured exactly in canvas pixels, so its caps and joins stay elliptical
 // under non-uniform scale.
-fn path_edges(p: vec2<f32>, fill_enabled: bool, stroke_enabled: bool) -> PathEdges {
+fn path_edges(transform: DrawableTransform, p: vec2<f32>, fill_enabled: bool, stroke_enabled: bool) -> PathEdges {
     var edges = PathEdges(1000000.0, 1000000.0, false);
-    let canvas_p = drawable_vector_to_canvas(params.transform, p);
+    let canvas_p = drawable_vector_to_canvas(transform, p);
     let stroke_half_width = params.stroke_width * 0.5;
-    let axis_scale = drawable_axis_scale(params.transform);
+    let axis_scale = drawable_axis_scale(transform);
     let band_position = (p.y - params.band_origin) * params.band_scale;
     if (band_position < 0.0 || band_position >= f32(params.band_count)) {
         return edges;
@@ -170,8 +171,8 @@ fn path_edges(p: vec2<f32>, fill_enabled: bool, stroke_enabled: bool) -> PathEdg
             continue;
         }
         if (fill_enabled) {
-            let canvas_a = drawable_vector_to_canvas(params.transform, a);
-            let canvas_b = drawable_vector_to_canvas(params.transform, b);
+            let canvas_a = drawable_vector_to_canvas(transform, a);
+            let canvas_b = drawable_vector_to_canvas(transform, b);
             edges.full = min(edges.full, length(segment_offset(canvas_p, canvas_a, canvas_b)));
         }
         let span = stroke_span(current, next, is_end);
@@ -216,17 +217,14 @@ fn path_edges(p: vec2<f32>, fill_enabled: bool, stroke_enabled: bool) -> PathEdg
     return edges;
 }
 
-fn sample_path(pixel: vec2<f32>) -> vec4<f32> {
-    if (any(pixel < params.screen_bounds.xy) || any(pixel > params.screen_bounds.zw)) {
-        return vec4<f32>(0.0);
-    }
+fn sample_path(pixel: vec2<f32>, transform: DrawableTransform) -> vec4<f32> {
     let fill_enabled = (params.flags & STYLE_FILL_ENABLED) != 0u;
     let stroke_enabled = (params.flags & STYLE_STROKE_ENABLED) != 0u;
     let edge_antialias = (params.flags & STYLE_EDGE_ANTIALIAS) != 0u;
     // Edges are located in untransformed space and measured in canvas pixels, so
     // antialiasing stays one canvas pixel wide at any scale.
-    let local = drawable_to_local(params.transform, pixel);
-    let edges = path_edges(local - params.position, fill_enabled, stroke_enabled);
+    let local = drawable_to_local(transform, pixel);
+    let edges = path_edges(transform, local - params.position, fill_enabled, stroke_enabled);
     let signed_distance = select(edges.full, -edges.full, edges.inside);
     let fill_alpha = select(
         0.0,
@@ -241,7 +239,22 @@ fn sample_path(pixel: vec2<f32>) -> vec4<f32> {
     let local01 = clamp((local - bounds_origin) / max(params.bounds_size, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));
     let fill = sample_paint(params.fill_paint, local, local01) * fill_alpha;
     let stroke = sample_paint(params.stroke_paint, local, local01) * stroke_alpha;
-    return (stroke + fill * (1.0 - stroke.a)) * params.transform.opacity;
+    return (stroke + fill * (1.0 - stroke.a)) * transform.opacity;
+}
+
+// Averages the path over the shutter's taps when it moves.
+fn path_color(pixel: vec2<f32>) -> vec4<f32> {
+    if (any(pixel < params.screen_bounds.xy) || any(pixel > params.screen_bounds.zw)) {
+        return vec4<f32>(0.0);
+    }
+    if (params.motion.tap_count == 0u) {
+        return sample_path(pixel, params.transform);
+    }
+    var color = vec4<f32>(0.0);
+    for (var tap = 0u; tap < params.motion.tap_count; tap = tap + 1u) {
+        color += sample_path(pixel, params.motion.taps[tap]);
+    }
+    return color / f32(params.motion.tap_count);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -252,5 +265,5 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let pixel_origin = vec2<f32>(f32(id.x), f32(id.y));
-    textureStore(output_tex, vec2<i32>(id.xy), sample_path(pixel_origin + vec2<f32>(0.5)));
+    textureStore(output_tex, vec2<i32>(id.xy), path_color(pixel_origin + vec2<f32>(0.5)));
 }

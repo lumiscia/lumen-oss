@@ -1,8 +1,11 @@
-use super::drawable::{DrawableTransform, largest_scale};
+use super::drawable::{
+    DeferredTransform, DrawableMotion, DrawableTransform, largest_scale, peak_scale,
+};
 use super::paint::Paint;
 use super::renderer::{MAX_PATH_POINTS, PathBuffers, PathPoint, PathUniforms, style_flags};
 use crate::error::RenderError;
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::node::motion::Shutter;
 use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 /// Produces a rasterized vector path source.
@@ -31,6 +34,10 @@ pub struct PathParams {
     /// Opacity multiplier.
     #[meta(min = 0, max = 1, step = 0.01)]
     pub opacity: f64,
+    /// Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
+    /// usual film look and 360 smears over the whole frame.
+    #[meta(min = 0, max = 360, step = 1)]
+    pub motion_blur: f64,
     /// Enables fill rendering.
     #[meta()]
     pub fill_enabled: bool,
@@ -67,6 +74,7 @@ impl Default for PathParams {
             rotation: 0.0,
             anchor: (0.0, 0.0),
             opacity: 1.0,
+            motion_blur: 0.0,
             fill_enabled: true,
             fill_paint: Paint::solid([255, 255, 255, 255]),
             stroke_enabled: false,
@@ -120,14 +128,30 @@ impl GpuCompiledNode for CompiledPath {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let expr = ctx.expr_context(self.node_id, "params");
         let evaluated = self.params.eval(&NodeParamEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &expr,
         })?;
+        let transform = DrawableTransform {
+            position: evaluated.position,
+            scale: evaluated.scale,
+            rotation: evaluated.rotation,
+            anchor: evaluated.anchor,
+            opacity: evaluated.opacity,
+        };
+        let shutter = DeferredTransform {
+            position: &self.params.position,
+            scale: &self.params.scale,
+            rotation: &self.params.rotation,
+            anchor: &self.params.anchor,
+        }
+        .shutter(evaluated.motion_blur, transform, self.node_id, &expr)?;
         let point_capacity = self.buffers.point_capacity;
+        // Curves are flattened for the largest scale that the shutter draws them at.
         let mut points = parse_path_points(
             &evaluated.data,
-            flattening_tolerance(evaluated.scale),
+            flattening_tolerance(peak_scale(evaluated.scale, shutter.as_ref())),
             point_capacity,
         )
         .ok_or_else(|| RenderError::NodeEvaluation {
@@ -158,14 +182,8 @@ impl GpuCompiledNode for CompiledPath {
             trim_end,
             ..bytemuck::Zeroable::zeroed()
         };
-        let transform = DrawableTransform {
-            position: evaluated.position,
-            scale: evaluated.scale,
-            rotation: evaluated.rotation,
-            anchor: evaluated.anchor,
-            opacity: evaluated.opacity,
-        };
-        self.buffers.write(bound, params, &points, &transform);
+        self.buffers
+            .write(bound, params, &points, &transform, shutter.as_ref());
         Ok(())
     }
 }
@@ -178,10 +196,24 @@ impl PathBuffers {
         mut uniforms: PathUniforms,
         points: &[PathPoint],
         transform: &DrawableTransform,
+        shutter: Option<&Shutter<DrawableTransform>>,
     ) {
         uniforms.transform = transform.to_gpu();
-        let bands =
-            super::path_bands::bin_path(&mut uniforms, points, transform, self.band_capacity);
+        let [x, y] = uniforms.position;
+        let min = [x + uniforms.bounds_min[0], y + uniforms.bounds_min[1]];
+        let max = [
+            min[0] + uniforms.bounds_size[0],
+            min[1] + uniforms.bounds_size[1],
+        ];
+        let motion = DrawableMotion::new(shutter, min, max);
+        let bands = super::path_bands::bin_path(
+            &mut uniforms,
+            points,
+            transform,
+            &motion,
+            self.band_capacity,
+        );
+        uniforms.motion = motion.to_gpu();
         bound.write_buffer(self.params, 0, bytemuck::bytes_of(&uniforms));
         if !points.is_empty() {
             bound.write_buffer(self.points, 0, bytemuck::cast_slice(points));

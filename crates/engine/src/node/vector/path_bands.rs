@@ -1,4 +1,4 @@
-use super::drawable::{DrawableTransform, smallest_scale};
+use super::drawable::{DrawableMotion, DrawableTransform};
 use super::path::{POINT_CLOSED, POINT_END};
 use super::renderer::{PathPoint, PathUniforms, STYLE_FILL_ENABLED, STYLE_STROKE_ENABLED};
 
@@ -18,11 +18,13 @@ pub(super) fn band_capacity(point_capacity: usize) -> usize {
 /// all of which are listed in its band, so the fill rule needs no other bands.
 ///
 /// The buffer starts with a `(start, count)` pair per band, followed by the index of the
-/// first point of each listed segment. An empty buffer means nothing is drawn.
+/// first point of each listed segment. An empty buffer means nothing is drawn. A blurred
+/// path's culling covers every tap of its `motion`.
 pub(super) fn bin_path(
     uniforms: &mut PathUniforms,
     points: &[PathPoint],
     transform: &DrawableTransform,
+    motion: &DrawableMotion,
     capacity: usize,
 ) -> Vec<u32> {
     uniforms.screen_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
@@ -46,7 +48,7 @@ pub(super) fn bin_path(
                 .then(|| (index as u32, [f64::from(y0.min(y1)), f64::from(y0.max(y1))]))
         })
         .collect();
-    if segments.is_empty() || !(fill || stroke) || uniforms.transform.opacity <= 0.0 {
+    if segments.is_empty() || !(fill || stroke) || !motion.is_visible(transform) {
         return Vec::new();
     }
 
@@ -57,7 +59,7 @@ pub(super) fn bin_path(
     } else {
         0.0
     };
-    let reach = 1.0 / smallest_scale(transform.scale) + stroke_reach;
+    let reach = 1.0 / motion.smallest_scale(transform) + stroke_reach;
     let (min, max) = points
         .iter()
         .fold(([f32::MAX; 2], [f32::MIN; 2]), |(min, max), point| {
@@ -113,7 +115,8 @@ pub(super) fn bin_path(
 
     let reach = reach as f32;
     let [x, y] = uniforms.position;
-    uniforms.screen_bounds = uniforms.transform.canvas_bounds(
+    uniforms.screen_bounds = motion.canvas_bounds(
+        uniforms.transform,
         [min[0] - reach + x, min[1] - reach + y],
         [max[0] + reach + x, max[1] + reach + y],
     );
@@ -145,7 +148,13 @@ mod tests {
         uniforms.flags = STYLE_FILL_ENABLED;
         uniforms.transform = transform.to_gpu();
         let points = super::super::path::closed_contour(vertices);
-        let data = bin_path(&mut uniforms, &points, &transform, capacity);
+        let data = bin_path(
+            &mut uniforms,
+            &points,
+            &transform,
+            &DrawableMotion::default(),
+            capacity,
+        );
         (uniforms, data)
     }
 
@@ -183,7 +192,16 @@ mod tests {
         uniforms.flags = STYLE_FILL_ENABLED;
         uniforms.transform = transform.to_gpu();
         let points = super::super::path::closed_contour(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
-        assert!(bin_path(&mut uniforms, &points, &transform, 4096).is_empty());
+        assert!(
+            bin_path(
+                &mut uniforms,
+                &points,
+                &transform,
+                &DrawableMotion::default(),
+                4096
+            )
+            .is_empty()
+        );
         assert_eq!(uniforms.band_count, 0);
     }
 }
