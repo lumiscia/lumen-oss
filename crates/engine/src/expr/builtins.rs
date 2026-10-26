@@ -295,6 +295,7 @@ fn measure_text_node(
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<lumen_text::TextMeasurement> {
     let _measurement_guard = TextMeasurementGuard::enter(node_id, ctx)?;
+    let ctx = &ctx.without_glyph();
     let graph = ctx.graph.ok_or_else(|| {
         eval_error(
             ctx,

@@ -193,7 +193,18 @@ impl TextSystem {
             }
             lines += 1;
         }
+        // Wrapping drops the whitespace it breaks at from the runs, so clusters are taken from
+        // the unwrapped shaping too, which keeps numbering independent of the wrap width.
         let mut ordered = clusters.clone();
+        for (paragraph, line) in buffer.lines.iter().enumerate() {
+            let shaping = line.shape_opt().into_iter().flat_map(|shape| &shape.spans);
+            ordered.extend(
+                shaping
+                    .flat_map(|span| &span.words)
+                    .flat_map(|word| &word.glyphs)
+                    .map(|glyph| (paragraph, glyph.start)),
+            );
+        }
         ordered.sort_unstable();
         ordered.dedup();
         for (shaped, cluster) in glyphs.iter_mut().zip(&clusters) {
@@ -1975,8 +1986,32 @@ mod tests {
         assert_eq!(&words[..3], [(0, 0); 3]);
         assert_eq!(*words.last().unwrap(), (2, 2));
         assert_eq!((counts.word, counts.line), (3, 3));
-        let glyphs: Vec<_> = items.iter().map(|[glyph, ..]| *glyph).collect();
-        assert!(glyphs.windows(2).all(|pair| pair[1] == pair[0] + 1));
+    }
+
+    #[test]
+    fn wrapping_does_not_change_glyph_or_word_numbering() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("one two three");
+        request.font_size = 20.0;
+        let (unwrapped, unwrapped_counts) = items(&mut system, &request);
+        request.max_width = Some(50.0);
+        let (wrapped, wrapped_counts) = items(&mut system, &request);
+        assert_eq!(unwrapped_counts.glyph, 13);
+        assert_eq!(wrapped_counts.glyph, unwrapped_counts.glyph);
+        assert_eq!(wrapped_counts.word, unwrapped_counts.word);
+        assert_eq!(unwrapped_counts.line, 1);
+        assert_eq!(wrapped_counts.line, 3);
+        // The wrap drops the two separating spaces from the drawn glyphs, but the glyphs
+        // around them keep their numbers.
+        let numbering = |items: &[[u32; 3]]| -> Vec<[u32; 2]> {
+            items
+                .iter()
+                .map(|[glyph, word, _]| [*glyph, *word])
+                .collect()
+        };
+        let mut expected = numbering(&unwrapped);
+        expected.retain(|[glyph, _]| ![3, 7].contains(glyph));
+        assert_eq!(numbering(&wrapped), expected);
     }
 
     #[test]

@@ -73,6 +73,15 @@ impl ExpressionContext<'_> {
         }
     }
 
+    /// This context outside any glyph scope, for evaluating another node's properties.
+    pub fn without_glyph(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            glyph: None,
+            ..*self
+        }
+    }
+
     /// This context moved by `offset` frames.
     pub fn at_subframe(&self, offset: f64) -> Self {
         Self {

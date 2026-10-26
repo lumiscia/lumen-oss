@@ -5,6 +5,12 @@ pub const GLYPH_MODE_RASTER_COLOR: u32 = 1;
 pub const GLYPH_MODE_MSDF: u32 = 2;
 /// Bit of [`GpuGlyphInstance::flags`] set when the glyph has its own transform.
 pub const GLYPH_TRANSFORMED: u32 = 1;
+/// Bit of [`GpuGlyphInstance::flags`] set on an instance that the preceding lead instance of
+/// its cluster draws.
+pub const GLYPH_CLUSTER_FOLLOWER: u32 = 2;
+/// The bits of [`GpuGlyphInstance::flags`] from here up count the follower instances after a
+/// cluster's lead, which draws the cluster's instances as one.
+pub const GLYPH_CLUSTER_SHIFT: u32 = 8;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]

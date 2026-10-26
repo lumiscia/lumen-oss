@@ -480,7 +480,9 @@ impl GlyphParams {
         let mut rotation = PerGlyph::new(&self.rotation, "glyph_rotation");
         let mut opacity = PerGlyph::new(&self.opacity, "glyph_opacity");
         let mut bounds: Option<[f32; 4]> = None;
-        for (instance, &source) in instances.iter_mut().zip(sources) {
+        // The instance and cluster that the instances so far fade as one.
+        let mut fading: Option<(usize, u32)> = None;
+        for (index, &source) in sources.iter().enumerate() {
             let glyph = &layout.glyphs[source];
             expr.glyph = Some(GlyphScope {
                 item: glyph.item,
@@ -496,7 +498,21 @@ impl GlyphParams {
             }
             .to_gpu();
             let (offset_x, offset_y) = offset.eval(node_id, expr)?;
-            instance.color[3] *= transform.opacity;
+            instances[index].color[3] *= transform.opacity;
+            // Fading each instance of a cluster separately would count their overlap more than
+            // once, so the cluster's first instance draws the others, composited at full alpha.
+            if transform.opacity < 1.0 {
+                match fading {
+                    Some((lead, cluster)) if cluster == glyph.item.glyph => {
+                        instances[lead].flags += 1 << lumen_text::GLYPH_CLUSTER_SHIFT;
+                        instances[index].flags |= lumen_text::GLYPH_CLUSTER_FOLLOWER;
+                    }
+                    _ => fading = Some((index, glyph.item.glyph)),
+                }
+            } else {
+                fading = None;
+            }
+            let instance = &mut instances[index];
             if transform.flags == 0 && (offset_x, offset_y) == (0.0, 0.0) {
                 continue;
             }
@@ -547,8 +563,6 @@ impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
                 ExprNode::Global(GlobalVar::Glyph) => reads[0] = true,
                 ExprNode::Global(GlobalVar::Word) => reads[1] = true,
                 ExprNode::Global(GlobalVar::Line) => reads[2] = true,
-                // A referenced property may read any of them.
-                ExprNode::PropertyValue(..) => reads = [true; 3],
                 _ => {}
             });
         }

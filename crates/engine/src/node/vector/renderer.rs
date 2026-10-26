@@ -258,7 +258,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 lumen_gpu::BindingLayoutEntry::sampler(2, lumen_gpu::wgpu::ShaderStages::FRAGMENT),
                 lumen_gpu::BindingLayoutEntry::storage(
                     3,
-                    lumen_gpu::wgpu::ShaderStages::VERTEX,
+                    lumen_gpu::wgpu::ShaderStages::VERTEX_FRAGMENT,
                     true,
                 ),
                 lumen_gpu::BindingLayoutEntry::uniform(

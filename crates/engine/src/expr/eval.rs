@@ -169,7 +169,7 @@ pub(crate) fn evaluate_expr(
                     })
                 })?;
             match &prop {
-                PropertyExpression::Expr(inner_expr) => inner_expr.evaluate(ctx),
+                PropertyExpression::Expr(inner_expr) => inner_expr.evaluate(&ctx.without_glyph()),
                 PropertyExpression::Value(value) => property_value_to_expression_value(value),
             }
         }

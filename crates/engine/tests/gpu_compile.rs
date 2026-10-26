@@ -7916,6 +7916,39 @@ fn text_glyph_offset_and_opacity_stagger_each_glyph() {
 }
 
 #[test]
+fn glyph_opacity_fades_a_cluster_of_overlapping_instances_as_one() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
+        // The overlay is a second instance in the base's cluster, and they overlap.
+        let render = |renderer: &mut _, opacity| {
+            let params = TextParamsDelegate {
+                render_mode: mode.into(),
+                glyph_opacity: Deferred::value(opacity),
+                ..Default::default()
+            };
+            render_drawable_graph(renderer, glyph_text("A\u{338}", params), size)
+        };
+        let opaque = render(&mut renderer, 1.0);
+        let faded = render(&mut renderer, 0.5);
+        assert!(
+            opaque.iter().skip(3).step_by(4).any(|&a| a == 255),
+            "{mode:?}"
+        );
+        for (index, (full, half)) in opaque.iter().zip(&faded).enumerate() {
+            assert!(
+                (f32::from(*full) * 0.5 - f32::from(*half)).abs() <= 1.5,
+                "{mode:?} byte {index}: {full} at half opacity gave {half}"
+            );
+        }
+    }
+}
+
+#[test]
 fn text_glyph_rotation_turns_each_word_about_its_glyphs() {
     use lumen_engine::node::source::text::TextRenderMode;
     let _guard = TEXT_TEST_LOCK.lock().unwrap();
@@ -8109,6 +8142,71 @@ fn glyph_globals_outside_glyph_params_are_an_error() {
             "{error}"
         );
     }
+}
+
+#[test]
+fn glyph_scope_ends_at_property_references_but_crosses_functions() {
+    let node = |id: u64, params: TextParamsDelegate| {
+        NodeKind::Text(Text {
+            id: NodeId::new(id),
+            params: TextParamsDelegate {
+                content: Deferred::value("Lumen".to_string()),
+                ..params
+            },
+        })
+    };
+    let bind = |first: TextParamsDelegate| {
+        let mut graph = Graph::new();
+        graph.nodes.insert(NodeId::new(1), node(1, first));
+        graph.nodes.insert(
+            NodeId::new(2),
+            node(
+                2,
+                TextParamsDelegate {
+                    font_size: expression("20 + glyph * 10"),
+                    ..Default::default()
+                },
+            ),
+        );
+        graph.nodes.insert(
+            NodeId::new(3),
+            NodeKind::MediaOutput(MediaOutput {
+                id: NodeId::new(3),
+                source: PortRef::new(NodeId::new(1), "output".to_string()),
+            }),
+        );
+        let composition = test_composition(graph);
+        let compiled = CompileContext::new(&composition).compile().unwrap();
+        FrameBindContext::new(&composition, 0)
+            .bind(&compiled)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    };
+    // Another node's property is evaluated outside the glyph, so it fails as it would alone.
+    let error = bind(TextParamsDelegate {
+        glyph_offset: expression("vec2(node(2, \"font_size\"), 0)"),
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(error.contains("`glyph` is only available"), "{error}");
+    let error = bind(TextParamsDelegate {
+        glyph_offset: expression("vec2(text_width(node(2)), 0)"),
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(error.contains("`glyph` is only available"), "{error}");
+
+    let definitions = std::collections::BTreeMap::from([(
+        "slide(distance)".into(),
+        "vec2(distance * glyph, 0)".into(),
+    )]);
+    let _functions = lumen_engine::expr::FunctionScope::enter(&definitions).unwrap();
+    let offset = expression("slide(5)");
+    bind(TextParamsDelegate {
+        glyph_offset: offset,
+        ..Default::default()
+    })
+    .unwrap();
 }
 
 #[test]
