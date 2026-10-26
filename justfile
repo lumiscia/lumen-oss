@@ -30,6 +30,11 @@ verify-typescript-artifacts: ci-typescript-artifacts
         exit 1
     fi
 
+# The round-trip fixture `crates/engine/tests/ts_expressions.rs` checks; `pnpm test` fails when it is stale.
+generate-expression-fixture:
+    pnpm --filter @lumiscia/lumen-types build
+    pnpm exec vitest run packages/lumen-shared/test/expression.test.ts --update
+
 generate-definitions:
     cargo run -p lumen-generators -- definitions --out-dir {{ definitions_out }}
     pnpm exec oxfmt --write {{ definitions_out }}

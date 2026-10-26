@@ -1,9 +1,14 @@
 import type {
+  Color,
   CompositionNode,
   CompositionNodeInput,
+  ExpressionString,
   LumenComposition,
   NodeKind,
+  Vec2,
 } from "@lumiscia/lumen-types";
+
+import type { Expr } from "./expression.js";
 
 export interface LumenOptions {
   readonly apiKey: string;
@@ -21,7 +26,32 @@ export interface CompositionOptions {
   readonly schemaVersion?: string;
 }
 
-export type NodeInput<TKind extends NodeKind = NodeKind> = CompositionNodeInput<TKind>;
+export type NodeInput<TKind extends NodeKind = NodeKind> = NodeInputByKind[TKind];
+
+type NodeInputByKind = {
+  readonly [TKind in NodeKind]: WithExpressionParams<CompositionNodeInput<TKind>>;
+};
+
+/** Lets each param that takes `=...` strings take an `Expr` of the matching type too. */
+type WithExpressionParams<TNode extends { readonly params?: object }> = Omit<TNode, "params"> & {
+  readonly params?: {
+    readonly [K in keyof NonNullable<TNode["params"]>]: ParamInput<NonNullable<TNode["params"]>[K]>;
+  };
+};
+
+type ParamInput<TParam> = [Extract<TParam, ExpressionString>] extends [never]
+  ? TParam
+  : TParam | ParamExpr<Exclude<TParam, ExpressionString | undefined>>;
+
+type ParamExpr<T> = [T] extends [boolean]
+  ? never
+  : [T] extends [number]
+    ? Expr<number>
+    : [T] extends [Vec2]
+      ? Expr<Vec2>
+      : [T] extends [string]
+        ? Expr<string>
+        : Expr<Color>;
 
 export type NodeReference = number | Pick<CompositionNode, "id">;
 

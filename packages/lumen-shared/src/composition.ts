@@ -7,6 +7,7 @@ import type {
 } from "@lumiscia/lumen-types";
 
 import { AudioTrack, audioTrackTimeline } from "./audio.js";
+import { Expr, type FunctionDefinition } from "./expression.js";
 import type {
   AudioTimelineInput,
   CompositionOptions,
@@ -31,6 +32,7 @@ const defaultTimeline = {
 
 export class Composition {
   readonly #connections: Connection[] = [];
+  readonly #functions = new Map<string, FunctionDefinition>();
   readonly #nodeIds = new Set<number>();
   readonly #nodes: CompositionNode[] = [];
   #nextNodeId = 0;
@@ -56,7 +58,11 @@ export class Composition {
       throw new Error(`Node \`${id}\` already exists.`);
     }
 
-    const nextNode = { ...node, id } as CompositionNode<TKind>;
+    const nextNode = {
+      ...node,
+      id,
+      ...(node.params === undefined ? {} : { params: lowerParams(node.params) }),
+    } as CompositionNode<TKind>;
 
     this.#nodeIds.add(id);
     this.#nodes.push(nextNode);
@@ -71,6 +77,29 @@ export class Composition {
     const id = this.#nextNodeId;
     this.#nextNodeId += 1;
     return id;
+  }
+
+  /** Adds a function from `fn` to the composition's `functions`. */
+  addFunction(definition: FunctionDefinition): this {
+    const name = functionName(definition);
+    const existing = this.#functions.get(name);
+    if (existing !== undefined && existing !== definition) {
+      throw new Error(`Function \`${name}\` already exists.`);
+    }
+
+    for (const other of [...this.#functions.values(), definition]) {
+      const clash = functionParams(other).find(
+        (param) => param === name || this.#functions.has(param),
+      );
+      if (clash !== undefined) {
+        throw new Error(
+          `Parameter \`${clash}\` of \`${functionName(other)}\` has the same name as a function.`,
+        );
+      }
+    }
+
+    this.#functions.set(name, definition);
+    return this;
   }
 
   connect(from: NodeReference, to: NodeReference, options: ConnectOptions = {}): this {
@@ -159,6 +188,13 @@ export class Composition {
   toJSON(): LumenComposition {
     return {
       connections: [...this.#connections],
+      ...(this.#functions.size > 0
+        ? {
+            functions: Object.fromEntries(
+              [...this.#functions.values()].map(({ signature, body }) => [signature, body]),
+            ),
+          }
+        : {}),
       nodes: [...this.#nodes],
       render_settings: this.#renderSettings,
       timeline: this.#timeline,
@@ -170,6 +206,15 @@ export class Composition {
       ...(this.#schemaVersion !== undefined ? { schemaVersion: this.#schemaVersion } : {}),
     };
   }
+}
+
+function lowerParams(params: object): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(params).map(([name, value]) => [
+      name,
+      value instanceof Expr ? value.toString() : value,
+    ]),
+  );
 }
 
 function nodeId(node: NodeReference): number {
@@ -215,4 +260,17 @@ function emptyAudioTimeline(): AudioTimelineInput {
     clips: [],
     tracks: [],
   };
+}
+
+function functionName(definition: FunctionDefinition): string {
+  return definition.signature.slice(0, definition.signature.indexOf("("));
+}
+
+function functionParams(definition: FunctionDefinition): string[] {
+  const { signature } = definition;
+  return signature
+    .slice(signature.indexOf("(") + 1, signature.lastIndexOf(")"))
+    .split(",")
+    .map((param) => param.trim())
+    .filter((param) => param !== "");
 }
