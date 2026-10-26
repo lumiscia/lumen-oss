@@ -2536,7 +2536,7 @@ fn compiles_vector_path_through_shared_renderer() {
         .unwrap();
 
     assert!(compiled.compiled_nodes.contains_key(&path));
-    assert_eq!(bound.frame_update().uploads().len(), 2);
+    assert_eq!(bound.frame_update().uploads().len(), 3);
 }
 
 #[test]
@@ -4359,6 +4359,1190 @@ impl VideoFrameResolver for TestMediaStore {
     fn frame(&self, _frame: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
         Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
     }
+}
+
+fn render_drawable_graph(
+    renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+    nodes: Vec<NodeKind>,
+    size: u32,
+) -> Vec<u8> {
+    let mut graph = Graph::new();
+    let mut last = NodeId::new(0);
+    for node in nodes {
+        last = node.id();
+        graph.nodes.insert(last, node);
+    }
+    let output = NodeId::new(100);
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(last, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = size;
+    composition.render_settings.height = size;
+    renderer
+        .compile_with_media(
+            &composition,
+            &EmptyMediaStore,
+            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .unwrap();
+    render_rgba8(renderer, &composition, 0, &EmptyMediaStore)
+}
+
+fn max_channel_difference(a: &[u8], b: &[u8]) -> u8 {
+    a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).max().unwrap()
+}
+
+fn partially_covered(pixels: &[u8]) -> usize {
+    pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel[3] > 0 && pixel[3] < 255)
+        .count()
+}
+
+#[test]
+fn shape_scaled_through_its_own_transform_stays_pixel_sharp() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shape = |params: ShapeParamsDelegate| {
+        vec![NodeKind::Shape(Shape {
+            id: NodeId::new(1),
+            params,
+        })]
+    };
+    let cases = [
+        (
+            "stroked ellipse, uniform 8x",
+            2,
+            ShapeParamsDelegate {
+                geometry_kind: ShapeGeometryKind::Ellipse.into(),
+                width: Deferred::value(10),
+                height: Deferred::value(9),
+                position: Deferred::value((20.25, 30.5)),
+                scale: Deferred::value((8.0, 8.0)),
+                stroke_enabled: Deferred::value(true),
+                stroke_width: Deferred::value(0.75),
+                fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+                stroke_paint: Paint::solid([0, 0, 255, 255]).into(),
+                ..Default::default()
+            },
+            ShapeParamsDelegate {
+                geometry_kind: ShapeGeometryKind::Ellipse.into(),
+                width: Deferred::value(80),
+                height: Deferred::value(72),
+                position: Deferred::value((20.25, 30.5)),
+                stroke_enabled: Deferred::value(true),
+                stroke_width: Deferred::value(6.0),
+                fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+                stroke_paint: Paint::solid([0, 0, 255, 255]).into(),
+                ..Default::default()
+            },
+        ),
+        // Corner distances under non-uniform scale are a first-order estimate.
+        (
+            "rectangle, non-uniform 8x2 about an anchor",
+            32,
+            ShapeParamsDelegate {
+                width: Deferred::value(10),
+                height: Deferred::value(30),
+                position: Deferred::value((60.3, 40.6)),
+                anchor: Deferred::value((5.0, 15.0)),
+                scale: Deferred::value((8.0, 2.0)),
+                ..Default::default()
+            },
+            ShapeParamsDelegate {
+                width: Deferred::value(80),
+                height: Deferred::value(60),
+                position: Deferred::value((25.3, 25.6)),
+                ..Default::default()
+            },
+        ),
+    ];
+    for (name, tolerance, scaled, direct) in cases {
+        let scaled = render_drawable_graph(&mut renderer, shape(scaled), 128);
+        let direct = render_drawable_graph(&mut renderer, shape(direct), 128);
+        assert!(
+            partially_covered(&direct) > 0,
+            "{name}: no antialiased edge"
+        );
+        assert!(
+            partially_covered(&scaled).abs_diff(partially_covered(&direct)) <= 2,
+            "{name}: edge width"
+        );
+        assert!(
+            max_channel_difference(&scaled, &direct) <= tolerance,
+            "{name}: scaled shape differs from the shape drawn at its size"
+        );
+    }
+}
+
+#[test]
+fn non_uniform_scale_antialiases_the_nearest_canvas_edge() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shape = |width: i64, height: i64, scale: (f64, f64)| {
+        vec![NodeKind::Shape(Shape {
+            id: NodeId::new(1),
+            params: ShapeParamsDelegate {
+                width: Deferred::value(width),
+                height: Deferred::value(height),
+                position: Deferred::value((8.0, 8.2)),
+                scale: Deferred::value(scale),
+                fill_paint: Paint::solid([255, 255, 255, 255]).into(),
+                ..Default::default()
+            },
+        })]
+    };
+    let path = |data: &str, scale: (f64, f64)| {
+        vec![NodeKind::Path(Path {
+            id: NodeId::new(1),
+            params: PathParamsDelegate {
+                data: Deferred::value(data.to_string()),
+                position: Deferred::value((8.0, 8.2)),
+                scale: Deferred::value(scale),
+                fill_enabled: Deferred::value(true),
+                fill_paint: Paint::solid([255, 255, 255, 255]).into(),
+                ..Default::default()
+            },
+        })]
+    };
+    let reference = render_drawable_graph(&mut renderer, shape(100, 10, (1.0, 1.0)), 128);
+    let scaled_shape = render_drawable_graph(&mut renderer, shape(1, 100, (100.0, 0.1)), 128);
+    let scaled_path =
+        render_drawable_graph(&mut renderer, path("M0 0 H1 V100 H0 Z", (100.0, 0.1)), 128);
+    let alpha = |pixels: &[u8], x: usize, y: usize| pixels[(y * 128 + x) * 4 + 3];
+    assert_eq!(
+        alpha(&reference, 58, 8),
+        204,
+        "the reference edge is partial"
+    );
+    for (name, pixels) in [("shape", &scaled_shape), ("path", &scaled_path)] {
+        assert!(
+            max_channel_difference(pixels, &reference) <= 2,
+            "{name}: differs from the unscaled rectangle by {}",
+            max_channel_difference(pixels, &reference),
+        );
+    }
+}
+
+/// Maps a canvas point to untransformed pixels with the drawable transform's conventions.
+fn drawable_to_local(
+    point: (f64, f64),
+    pivot: (f64, f64),
+    scale: (f64, f64),
+    rotation: f64,
+) -> (f64, f64) {
+    let (sin, cos) = rotation.to_radians().sin_cos();
+    let (dx, dy) = (point.0 - pivot.0, point.1 - pivot.1);
+    (
+        pivot.0 + (cos * dx + sin * dy) / scale.0,
+        pivot.1 + (cos * dy - sin * dx) / scale.1,
+    )
+}
+
+/// Alpha of an outline in untransformed pixels, drawn about `pivot` and supersampled
+/// per canvas pixel. The samples are a sphere of radius half a pixel projected onto the
+/// canvas, so a straight edge at any angle covers them linearly across one pixel, as
+/// analytic antialiasing does, and any difference comes from the distance estimate.
+fn supersampled_alpha(
+    size: usize,
+    pivot: (f64, f64),
+    scale: (f64, f64),
+    rotation: f64,
+    inside: &dyn Fn(f64, f64) -> bool,
+) -> Vec<u8> {
+    const RINGS: usize = 32;
+    const ANGLES: usize = 16;
+    let golden_angle = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+    let offsets: Vec<(f64, f64)> = (0..RINGS * ANGLES)
+        .map(|sample| {
+            let (ring, angle) = (sample / ANGLES, sample % ANGLES);
+            let height = (ring as f64 + 0.5) / RINGS as f64;
+            let radius = 0.5 * (1.0 - height * height).sqrt();
+            let angle = std::f64::consts::TAU * (angle as f64 + 0.5) / ANGLES as f64
+                + ring as f64 * golden_angle;
+            (0.5 + radius * angle.cos(), 0.5 + radius * angle.sin())
+        })
+        .collect();
+    let inside_canvas = |point: (f64, f64)| {
+        let (x, y) = drawable_to_local(point, pivot, scale, rotation);
+        inside(x, y)
+    };
+    (0..size * size)
+        .map(|index| {
+            let origin = ((index % size) as f64, (index / size) as f64);
+            let centre = inside_canvas((origin.0 + 0.5, origin.1 + 0.5));
+            // Pixels whose surroundings out to a pixel agree with their centre are uniform.
+            let uniform = (0..16).all(|step| {
+                let angle = std::f64::consts::TAU * step as f64 / 16.0;
+                inside_canvas((origin.0 + 0.5 + angle.cos(), origin.1 + 0.5 + angle.sin()))
+                    == centre
+            });
+            if uniform {
+                return if centre { 255 } else { 0 };
+            }
+            let covered = offsets
+                .iter()
+                .filter(|(dx, dy)| inside_canvas((origin.0 + dx, origin.1 + dy)))
+                .count();
+            (covered as f64 * 255.0 / offsets.len() as f64).round() as u8
+        })
+        .collect()
+}
+
+#[test]
+fn non_uniform_scale_matches_a_supersampled_outline() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    const SIZE: usize = 256;
+    let square = ShapeParamsDelegate {
+        width: Deferred::value(40),
+        height: Deferred::value(40),
+        position: Deferred::value((50.3, 40.2)),
+        fill_paint: Paint::solid([255, 255, 255, 255]).into(),
+        stroke_paint: Paint::solid([255, 255, 255, 255]).into(),
+        ..Default::default()
+    };
+    let shape = |params: ShapeParamsDelegate, scale: (f64, f64), rotation: f64| {
+        NodeKind::Shape(Shape {
+            id: NodeId::new(1),
+            params: ShapeParamsDelegate {
+                scale: Deferred::value(scale),
+                rotation: Deferred::value(rotation),
+                ..params
+            },
+        })
+    };
+    let path = |scale: (f64, f64), rotation: f64| {
+        NodeKind::Path(Path {
+            id: NodeId::new(1),
+            params: PathParamsDelegate {
+                data: Deferred::value("M5 20 L35 20".to_string()),
+                position: Deferred::value((55.0, 60.0)),
+                anchor: Deferred::value((20.0, 20.0)),
+                scale: Deferred::value(scale),
+                rotation: Deferred::value(rotation),
+                fill_enabled: Deferred::value(false),
+                stroke_enabled: Deferred::value(true),
+                stroke_width: Deferred::value(4.0),
+                stroke_paint: Paint::solid([255, 255, 255, 255]).into(),
+                ..Default::default()
+            },
+        })
+    };
+    // Untransformed outlines; the shapes are centred on (70.3, 60.2).
+    let centred = |x: f64, y: f64| ((x - 70.3).abs(), (y - 60.2).abs());
+    let capsule = |x: f64, y: f64| (x - x.clamp(60.0, 90.0)).hypot(y - 80.0) <= 2.0;
+    let stroked_rect = |x: f64, y: f64| {
+        let (x, y) = centred(x, y);
+        (x - 20.0).max(0.0).hypot((y - 20.0).max(0.0)) <= 2.0 && !(x < 18.0 && y < 18.0)
+    };
+    let rounded_rect = |x: f64, y: f64| {
+        let (x, y) = centred(x, y);
+        (x - 5.0).max(0.0).hypot((y - 5.0).max(0.0)) <= 15.0
+    };
+    let ellipse = |x: f64, y: f64| {
+        let (x, y) = centred(x, y);
+        (x / 20.0).powi(2) + (y / 10.0).powi(2) <= 1.0
+    };
+    // Sharp corners have no distance gradient, so analytic antialiasing cannot match
+    // area coverage within a pixel of them. Under scale (4, 1) the stroke's ends and outer
+    // corners curve with a radius of half a canvas pixel, where even the exact distance
+    // differs from coverage by about 28, so those cases get a looser tolerance.
+    let inner_corners = [(-18.0, -18.0), (18.0, -18.0), (-18.0, 18.0), (18.0, 18.0)]
+        .map(|(x, y)| (70.3 + x, 60.2 + y));
+
+    for (scale, rotation) in [((1.0, 1.0), 0.0), ((4.0, 1.0), 0.0), ((4.0, 1.0), 25.0)] {
+        let stroke_tolerance = if scale == (1.0, 1.0) { 10 } else { 32 };
+        #[allow(clippy::type_complexity)]
+        let cases: [(
+            &str,
+            NodeKind,
+            (f64, f64),
+            &dyn Fn(f64, f64) -> bool,
+            &[(f64, f64)],
+            u8,
+        ); 4] = [
+            (
+                "path caps",
+                path(scale, rotation),
+                (75.0, 80.0),
+                &capsule,
+                &[],
+                stroke_tolerance,
+            ),
+            (
+                "stroked rectangle",
+                shape(
+                    ShapeParamsDelegate {
+                        fill_enabled: Deferred::value(false),
+                        stroke_enabled: Deferred::value(true),
+                        stroke_width: Deferred::value(4.0),
+                        ..square.clone()
+                    },
+                    scale,
+                    rotation,
+                ),
+                (50.3, 40.2),
+                &stroked_rect,
+                &inner_corners,
+                stroke_tolerance,
+            ),
+            (
+                "rounded rectangle",
+                shape(
+                    ShapeParamsDelegate {
+                        border_radius: Deferred::value(15.0),
+                        ..square.clone()
+                    },
+                    scale,
+                    rotation,
+                ),
+                (50.3, 40.2),
+                &rounded_rect,
+                &[],
+                8,
+            ),
+            (
+                "ellipse",
+                shape(
+                    ShapeParamsDelegate {
+                        geometry_kind: ShapeGeometryKind::Ellipse.into(),
+                        height: Deferred::value(20),
+                        position: Deferred::value((50.3, 50.2)),
+                        ..square.clone()
+                    },
+                    scale,
+                    rotation,
+                ),
+                (50.3, 50.2),
+                &ellipse,
+                &[],
+                12,
+            ),
+        ];
+        for (name, node, pivot, inside, sharp_corners, tolerance) in cases {
+            let pixels = render_drawable_graph(&mut renderer, vec![node], SIZE as u32);
+            let reference = supersampled_alpha(SIZE, pivot, scale, rotation, inside);
+            let near_sharp_corner = |index: usize| {
+                let centre = ((index % SIZE) as f64 + 0.5, (index / SIZE) as f64 + 0.5);
+                sharp_corners.iter().any(|&corner| {
+                    let (x, y) = drawable_to_local(centre, pivot, scale, rotation);
+                    let local = (x - corner.0, y - corner.1);
+                    // Back to canvas pixels about the corner.
+                    let (sin, cos) = rotation.to_radians().sin_cos();
+                    let (dx, dy) = (local.0 * scale.0, local.1 * scale.1);
+                    (cos * dx - sin * dy).hypot(sin * dx + cos * dy) < 1.5
+                })
+            };
+            let (error, at) = pixels
+                .iter()
+                .skip(3)
+                .step_by(4)
+                .zip(&reference)
+                .enumerate()
+                .filter(|(index, _)| !near_sharp_corner(*index))
+                .map(|(index, (gpu, reference))| (gpu.abs_diff(*reference), index))
+                .max()
+                .unwrap();
+            let case = format!("{name} at scale {scale:?}, {rotation} degrees");
+            eprintln!(
+                "{case}: max alpha error {error} at ({}, {})",
+                at % SIZE,
+                at / SIZE
+            );
+            assert!(reference.contains(&255), "{case}: off canvas");
+            assert!(
+                error <= tolerance,
+                "{case}: alpha differs by {error} at ({}, {})",
+                at % SIZE,
+                at / SIZE
+            );
+            if name == "stroked rectangle" && scale == (4.0, 1.0) && rotation == 0.0 {
+                assert_eq!(
+                    pixels[(43 * SIZE + 54) * 4 + 3],
+                    255,
+                    "{case}: inside corner"
+                );
+            }
+        }
+    }
+}
+
+/// Signed distance from `(x, y)` to the ellipse with radii `(a, b)` about the origin. The
+/// nearest point is `(a² x / (t + a²), b² y / (t + b²))` for the root `t` of the function
+/// below, which falls from infinity to -1 as `t` rises from `-min(a, b)²`.
+fn ellipse_distance(x: f64, y: f64, a: f64, b: f64) -> f64 {
+    let (x, y) = (x.abs().max(1e-9), y.abs().max(1e-9));
+    let nearest = |t: f64| (a * a * x / (t + a * a), b * b * y / (t + b * b));
+    let (mut low, mut high) = (-a.min(b).powi(2), a.max(b) * x.hypot(y));
+    for _ in 0..80 {
+        let t = 0.5 * (low + high);
+        let (px, py) = nearest(t);
+        if (px / a).powi(2) + (py / b).powi(2) > 1.0 {
+            low = t;
+        } else {
+            high = t;
+        }
+    }
+    let (px, py) = nearest(0.5 * (low + high));
+    (x - px).hypot(y - py) * if low < 0.0 { -1.0 } else { 1.0 }
+}
+
+#[test]
+fn wide_ellipse_strokes_compressed_caps_and_slivers_stay_exact() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    const SIZE: usize = 256;
+    let ellipse = |params: ShapeParamsDelegate| {
+        NodeKind::Shape(Shape {
+            id: NodeId::new(1),
+            params: ShapeParamsDelegate {
+                geometry_kind: ShapeGeometryKind::Ellipse.into(),
+                width: Deferred::value(40),
+                height: Deferred::value(20),
+                fill_paint: Paint::solid([255, 255, 255, 255]).into(),
+                stroke_paint: Paint::solid([255, 255, 255, 255]).into(),
+                ..params
+            },
+        })
+    };
+    // A stroke wider than the ellipse is tall covers its whole inside.
+    let stroke = ellipse(ShapeParamsDelegate {
+        position: Deferred::value((50.5, 40.5)),
+        fill_enabled: Deferred::value(false),
+        stroke_enabled: Deferred::value(true),
+        stroke_width: Deferred::value(24.0),
+        ..Default::default()
+    });
+    let stroke_distance =
+        |x: f64, y: f64| ellipse_distance(x - 70.5, y - 50.5, 20.0, 10.0).abs() - 12.0;
+    // Scaled by (4, 0.1) about its start, the stroke is a band 0.4 canvas pixels tall
+    // from x = 70.5 to 190.5, and each cap an ellipse with radii (8, 0.2).
+    let compressed = NodeKind::Path(Path {
+        id: NodeId::new(1),
+        params: PathParamsDelegate {
+            data: Deferred::value("M5 20 L35 20".to_string()),
+            position: Deferred::value((50.5, 40.5)),
+            anchor: Deferred::value((0.0, 20.0)),
+            scale: Deferred::value((4.0, 0.1)),
+            fill_enabled: Deferred::value(false),
+            stroke_enabled: Deferred::value(true),
+            stroke_width: Deferred::value(4.0),
+            stroke_paint: Paint::solid([255, 255, 255, 255]).into(),
+            ..Default::default()
+        },
+    });
+    let capsule_distance = |x: f64, y: f64| {
+        let (x, y) = (x - 130.5, y - 60.5);
+        let (bx, by) = (x.abs() - 60.0, y.abs() - 0.2);
+        let band = bx.max(0.0).hypot(by.max(0.0)) + bx.max(by).min(0.0);
+        let caps =
+            ellipse_distance(x + 60.0, y, 8.0, 0.2).min(ellipse_distance(x - 60.0, y, 8.0, 0.2));
+        band.min(caps)
+    };
+    // Compared with the exact canvas distance ramp at each pixel centre, so any
+    // difference comes from the shader's distance.
+    for (name, node, distance) in [
+        (
+            "wide ellipse stroke",
+            stroke,
+            &stroke_distance as &dyn Fn(f64, f64) -> f64,
+        ),
+        ("compressed caps", compressed, &capsule_distance),
+    ] {
+        let pixels = render_drawable_graph(&mut renderer, vec![node], SIZE as u32);
+        let (error, at) = pixels
+            .iter()
+            .skip(3)
+            .step_by(4)
+            .enumerate()
+            .map(|(index, gpu)| {
+                let centre = ((index % SIZE) as f64 + 0.5, (index / SIZE) as f64 + 0.5);
+                let exact = (0.5 - distance(centre.0, centre.1)).clamp(0.0, 1.0) * 255.0;
+                (gpu.abs_diff(exact.round() as u8), index)
+            })
+            .max()
+            .unwrap();
+        eprintln!(
+            "{name}: max alpha error {error} at ({}, {})",
+            at % SIZE,
+            at / SIZE
+        );
+        assert!(
+            error <= 2,
+            "{name}: alpha differs by {error} at ({}, {})",
+            at % SIZE,
+            at / SIZE
+        );
+    }
+
+    // A sliver a millionth of a pixel wide covers at most half of the pixels it crosses
+    // and nothing beyond its ends.
+    let sliver = ellipse(ShapeParamsDelegate {
+        position: Deferred::value((128.5, 128.5)),
+        anchor: Deferred::value((20.0, 10.0)),
+        scale: Deferred::value((0.000001, 1.0)),
+        ..Default::default()
+    });
+    let pixels = render_drawable_graph(&mut renderer, vec![sliver], SIZE as u32);
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
+        let (x, y) = (index % SIZE, index / SIZE);
+        let limit = if x == 148 && (128..=148).contains(&y) {
+            128
+        } else {
+            0
+        };
+        assert!(
+            pixel[3] <= limit,
+            "sliver: alpha {} at ({x}, {y})",
+            pixel[3]
+        );
+    }
+}
+
+#[test]
+fn eccentric_ellipse_tips_stay_exact() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    const SIZE: usize = 256;
+    let mut failures = Vec::new();
+    // Each ellipse has a tip, on its outline, at the centre of pixel (100, 100), and its
+    // body runs along the row or column through it, so the neighbouring pixels are inside
+    // the ellipse close to its major axis.
+    for (name, width, height, position, centre) in [
+        ("2000x2", 2000, 2, (-1899.5, 99.5), (-899.5, 100.5)),
+        ("20000x100", 20000, 100, (-19899.5, 50.5), (-9899.5, 100.5)),
+        ("2x2000", 2, 2000, (99.5, -1899.5), (100.5, -899.5)),
+    ] {
+        let node = NodeKind::Shape(Shape {
+            id: NodeId::new(1),
+            params: ShapeParamsDelegate {
+                geometry_kind: ShapeGeometryKind::Ellipse.into(),
+                width: Deferred::value(width),
+                height: Deferred::value(height),
+                position: Deferred::value(position),
+                fill_paint: Paint::solid([255, 255, 255, 255]).into(),
+                ..Default::default()
+            },
+        });
+        let pixels = render_drawable_graph(&mut renderer, vec![node], SIZE as u32);
+        let (error, at) = pixels
+            .iter()
+            .skip(3)
+            .step_by(4)
+            .enumerate()
+            .map(|(index, gpu)| {
+                let (x, y) = ((index % SIZE) as f64 + 0.5, (index / SIZE) as f64 + 0.5);
+                let distance = ellipse_distance(
+                    x - centre.0,
+                    y - centre.1,
+                    width as f64 / 2.0,
+                    height as f64 / 2.0,
+                );
+                let exact = (0.5 - distance).clamp(0.0, 1.0) * 255.0;
+                (gpu.abs_diff(exact.round() as u8), index)
+            })
+            .max()
+            .unwrap();
+        eprintln!(
+            "{name}: max alpha error {error} at ({}, {})",
+            at % SIZE,
+            at / SIZE
+        );
+        if error > 2 {
+            failures.push(format!("{name}: alpha differs by {error}"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[test]
+fn eccentric_stroked_tip_keeps_its_corner_pixels() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // The right tip sits at (99.5, 101.5); pixel (100, 100) is 1.41 px from it, inside the
+    // 2.5 px half stroke.
+    let node = NodeKind::Shape(Shape {
+        id: NodeId::new(1),
+        params: ShapeParamsDelegate {
+            geometry_kind: ShapeGeometryKind::Ellipse.into(),
+            width: Deferred::value(68797),
+            height: Deferred::value(1),
+            position: Deferred::value((-68697.5, 101.0)),
+            fill_enabled: Deferred::value(false),
+            stroke_enabled: Deferred::value(true),
+            stroke_width: Deferred::value(5.0),
+            ..Default::default()
+        },
+    });
+    let pixels = render_drawable_graph(&mut renderer, vec![node], 256);
+    assert_eq!(pixels[(100 * 256 + 100) * 4 + 3], 255);
+
+    // Squashed vertically, the tip's falloff runs diagonally, so the antialiasing ramp
+    // must follow the displacement rather than the tip's horizontal surface normal.
+    let node = NodeKind::Shape(Shape {
+        id: NodeId::new(1),
+        params: ShapeParamsDelegate {
+            geometry_kind: ShapeGeometryKind::Ellipse.into(),
+            width: Deferred::value(68797),
+            height: Deferred::value(1),
+            position: Deferred::value((-68697.5, 100.1)),
+            anchor: Deferred::value((68797.0, 0.5)),
+            scale: Deferred::value((1.0, 0.1)),
+            fill_enabled: Deferred::value(false),
+            stroke_enabled: Deferred::value(true),
+            stroke_width: Deferred::value(2.5),
+            ..Default::default()
+        },
+    });
+    let pixels = render_drawable_graph(&mut renderer, vec![node], 256);
+    let alpha = pixels[(100 * 256 + 100) * 4 + 3];
+    assert!(
+        alpha.abs_diff(121) <= 6,
+        "squashed tip alpha {alpha}, expected about 121"
+    );
+
+    // A thousandth of a pixel of motion must not flip the edge between two normals.
+    let mut squashed_at = |x: f64| {
+        let node = NodeKind::Shape(Shape {
+            id: NodeId::new(1),
+            params: ShapeParamsDelegate {
+                geometry_kind: ShapeGeometryKind::Ellipse.into(),
+                width: Deferred::value(68797),
+                height: Deferred::value(1),
+                position: Deferred::value((x, 99.9255)),
+                anchor: Deferred::value((34398.5, 0.5)),
+                scale: Deferred::value((1.0, 0.1)),
+                fill_enabled: Deferred::value(false),
+                stroke_enabled: Deferred::value(true),
+                stroke_width: Deferred::value(2.5),
+                ..Default::default()
+            },
+        });
+        render_drawable_graph(&mut renderer, vec![node], 256)[(100 * 256 + 100) * 4 + 3]
+    };
+    let (before, after) = (squashed_at(-68697.378), squashed_at(-68697.379));
+    assert!(
+        before.abs_diff(after) <= 3,
+        "alpha jumped {before} -> {after}"
+    );
+}
+
+#[test]
+fn near_circle_stroke_stays_empty_near_the_centre() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    const SIZE: usize = 256;
+    // Positions a hair apart put pixel (102, 100) on either side of the evolute cusp, where
+    // the iteration used to collapse onto the centre and draw a stray opaque pixel.
+    for x in [-0.4889678955078125, -0.48895263671875, -0.4889831542968750] {
+        let node = NodeKind::Shape(Shape {
+            id: NodeId::new(1),
+            params: ShapeParamsDelegate {
+                geometry_kind: ShapeGeometryKind::Ellipse.into(),
+                width: Deferred::value(202),
+                height: Deferred::value(200),
+                position: Deferred::value((x, 0.5)),
+                fill_enabled: Deferred::value(false),
+                stroke_enabled: Deferred::value(true),
+                stroke_width: Deferred::value(5.0),
+                ..Default::default()
+            },
+        });
+        let pixels = render_drawable_graph(&mut renderer, vec![node], SIZE as u32);
+        let stray = pixels
+            .iter()
+            .skip(3)
+            .step_by(4)
+            .enumerate()
+            .filter(|&(index, &alpha)| {
+                let (px, py) = ((index % SIZE) as f64 + 0.5, (index / SIZE) as f64 + 0.5);
+                let distance = ellipse_distance(px - (x + 101.0), py - 100.5, 101.0, 100.0);
+                distance < -10.0 && alpha != 0
+            })
+            .map(|(index, _)| (index % SIZE, index / SIZE))
+            .collect::<Vec<_>>();
+        assert!(
+            stray.is_empty(),
+            "x = {x}: stray stroke pixels at {stray:?}"
+        );
+    }
+}
+
+#[test]
+fn shape_rotation_and_anchor_match_the_transform_node() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let shape = |transformed: bool| {
+        NodeKind::Shape(Shape {
+            id: NodeId::new(1),
+            params: ShapeParamsDelegate {
+                width: Deferred::value(48),
+                height: Deferred::value(24),
+                border_radius: Deferred::value(6.0),
+                position: Deferred::value((30.0, 50.0)),
+                stroke_enabled: Deferred::value(true),
+                stroke_width: Deferred::value(3.0),
+                fill_paint: Paint::solid([255, 128, 0, 255]).into(),
+                stroke_paint: Paint::solid([0, 64, 255, 255]).into(),
+                scale: Deferred::value(if transformed { (1.25, 0.8) } else { (1.0, 1.0) }),
+                rotation: Deferred::value(if transformed { 30.0 } else { 0.0 }),
+                anchor: Deferred::value((12.0, 6.0)),
+                ..Default::default()
+            },
+        })
+    };
+    let own = render_drawable_graph(&mut renderer, vec![shape(true)], 128);
+    let via_node = render_drawable_graph(
+        &mut renderer,
+        vec![
+            shape(false),
+            NodeKind::Transform(Transform {
+                id: NodeId::new(2),
+                params: TransformParamsDelegate {
+                    scale_x: Deferred::value(1.25),
+                    scale_y: Deferred::value(0.8),
+                    rotate: Deferred::value(30.0),
+                    pivot_x: Deferred::value(42.0),
+                    pivot_y: Deferred::value(56.0),
+                    custom_pivot: Deferred::value(true),
+                    ..Default::default()
+                },
+                source: PortRef::new(NodeId::new(1), "output".to_string()),
+            }),
+        ],
+        128,
+    );
+
+    let alpha = |pixels: &[u8]| -> u64 {
+        pixels
+            .iter()
+            .skip(3)
+            .step_by(4)
+            .map(|&a| u64::from(a))
+            .sum()
+    };
+    let mean_difference = own
+        .iter()
+        .zip(&via_node)
+        .map(|(a, b)| u64::from(a.abs_diff(*b)))
+        .sum::<u64>() as f64
+        / own.len() as f64;
+    eprintln!(
+        "rotation: mean difference {mean_difference:.3}, max {}",
+        max_channel_difference(&own, &via_node)
+    );
+    assert!(alpha(&own).abs_diff(alpha(&via_node)) * 100 < alpha(&via_node));
+    assert!(mean_difference < 1.0, "mean difference {mean_difference}");
+    // Only the resampled edges of the raster may differ noticeably.
+    assert!(max_channel_difference(&own, &via_node) < 128);
+}
+
+#[test]
+fn drawable_opacity_scales_premultiplied_output() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let gradient = Paint::Gradient(GradientPaint {
+        kind: PaintKind::LinearGradient,
+        stops: vec![
+            GradientStop {
+                offset: 0.0,
+                color: [255, 0, 0, 255],
+            },
+            GradientStop {
+                offset: 1.0,
+                color: [0, 0, 255, 128],
+            },
+        ],
+        ..Default::default()
+    });
+    let nodes = |opacity: f64| {
+        [
+            NodeKind::Shape(Shape {
+                id: NodeId::new(1),
+                params: ShapeParamsDelegate {
+                    geometry_kind: ShapeGeometryKind::Ellipse.into(),
+                    width: Deferred::value(40),
+                    height: Deferred::value(30),
+                    position: Deferred::value((4.5, 6.0)),
+                    fill_paint: gradient.clone().into(),
+                    opacity: Deferred::value(opacity),
+                    ..Default::default()
+                },
+            }),
+            NodeKind::Path(Path {
+                id: NodeId::new(1),
+                params: PathParamsDelegate {
+                    data: Deferred::value("M 5 5 Q 40 0 45 40 L 5 45 Z".to_string()),
+                    fill_paint: gradient.clone().into(),
+                    stroke_enabled: Deferred::value(true),
+                    stroke_width: Deferred::value(2.0),
+                    opacity: Deferred::value(opacity),
+                    ..Default::default()
+                },
+            }),
+        ]
+    };
+    for (opaque, translucent) in nodes(1.0).into_iter().zip(nodes(0.5)) {
+        let opaque = render_drawable_graph(&mut renderer, vec![opaque], 50);
+        let translucent = render_drawable_graph(&mut renderer, vec![translucent], 50);
+        assert!(opaque.iter().skip(3).step_by(4).any(|&a| a > 200));
+        for (full, half) in opaque.iter().zip(&translucent) {
+            assert!(
+                (f32::from(*full) * 0.5 - f32::from(*half)).abs() <= 1.0,
+                "{full} at half opacity gave {half}"
+            );
+        }
+    }
+}
+
+#[test]
+fn text_transform_in_msdf_mode_matches_larger_and_rotated_text() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let text = |font_size: f64, scale: f64, rotation: f64, anchor: (f64, f64)| {
+        vec![NodeKind::Text(Text {
+            id: NodeId::new(1),
+            params: TextParamsDelegate {
+                content: Deferred::value("Lumen AV".to_string()),
+                font_size: Deferred::value(font_size),
+                render_mode: TextRenderMode::Msdf.into(),
+                position: Deferred::value((20.0, 30.0)),
+                scale: Deferred::value((scale, scale)),
+                rotation: Deferred::value(rotation),
+                anchor: Deferred::value(anchor),
+                ..Default::default()
+            },
+        })]
+    };
+    let size = 256;
+    let coverage =
+        |pixels: &[u8]| -> Vec<u8> { pixels.iter().skip(3).step_by(4).copied().collect() };
+    let iou = |a: &[u8], b: &[u8]| {
+        let (intersection, union) = a.iter().zip(b).fold((0u64, 0u64), |(i, u), (a, b)| {
+            (i + u64::from(*a.min(b)), u + u64::from(*a.max(b)))
+        });
+        intersection as f64 / union as f64
+    };
+
+    // Scaled glyphs keep MSDF edges as sharp as glyphs laid out at the larger size.
+    let scaled = coverage(&render_drawable_graph(
+        &mut renderer,
+        text(16.0, 3.0, 0.0, (0.0, 0.0)),
+        size,
+    ));
+    let larger = coverage(&render_drawable_graph(
+        &mut renderer,
+        text(48.0, 1.0, 0.0, (0.0, 0.0)),
+        size,
+    ));
+    let scaled_edges = scaled.iter().filter(|&&a| a > 0 && a < 255).count();
+    let larger_edges = larger.iter().filter(|&&a| a > 0 && a < 255).count();
+    eprintln!(
+        "msdf scale: IoU {:.3}, edges {scaled_edges} vs {larger_edges}",
+        iou(&scaled, &larger)
+    );
+    assert!(iou(&scaled, &larger) > 0.9);
+    assert!(scaled_edges.abs_diff(larger_edges) * 4 < larger_edges);
+
+    // A quarter turn about a whole-pixel anchor moves pixel centres onto pixel centres.
+    let upright = coverage(&render_drawable_graph(
+        &mut renderer,
+        text(24.0, 2.0, 0.0, (40.0, 20.0)),
+        size,
+    ));
+    let turned = coverage(&render_drawable_graph(
+        &mut renderer,
+        text(24.0, 2.0, 90.0, (40.0, 20.0)),
+        size,
+    ));
+    let (pivot_x, pivot_y) = (60i64, 50i64);
+    let mut expected = vec![0u8; turned.len()];
+    for y in 0..size as i64 {
+        for x in 0..size as i64 {
+            let (tx, ty) = (pivot_x - (y - pivot_y) - 1, pivot_y + (x - pivot_x));
+            if (0..size as i64).contains(&tx) && (0..size as i64).contains(&ty) {
+                expected[(ty * size as i64 + tx) as usize] =
+                    upright[(y * size as i64 + x) as usize];
+            }
+        }
+    }
+    let turned_iou = iou(&turned, &expected);
+    eprintln!("msdf rotation: IoU {turned_iou:.3}");
+    assert!(upright.iter().any(|&a| a == 255));
+    assert!(turned_iou > 0.97);
+}
+
+#[test]
+fn path_with_more_than_128_points_renders_fully_and_errors_past_the_maximum() {
+    let polyline = |count: usize| {
+        let mut data = String::from("M 10 10");
+        for index in 1..count - 2 {
+            let x = 10.0 + 100.0 * index as f64 / (count - 3) as f64;
+            data += &format!(" L {x:.4} {}", if index % 2 == 0 { 10.0 } else { 11.0 });
+        }
+        data + " L 110 90 L 10 90 Z"
+    };
+    let path = |data: String| {
+        NodeKind::Path(Path {
+            id: NodeId::new(1),
+            params: PathParamsDelegate {
+                data: Deferred::value(data),
+                ..Default::default()
+            },
+        })
+    };
+
+    let mut graph = Graph::new();
+    graph.nodes.insert(NodeId::new(1), path(polyline(20_000)));
+    graph.nodes.insert(
+        NodeId::new(2),
+        NodeKind::MediaOutput(MediaOutput {
+            id: NodeId::new(2),
+            source: PortRef::new(NodeId::new(1), "output".to_string()),
+        }),
+    );
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let error = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("more than 16384 points"),
+        "{error}"
+    );
+
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let pixels = render_drawable_graph(&mut renderer, vec![path(polyline(400))], 128);
+    let points_buffer = renderer
+        .compiled()
+        .unwrap()
+        .plan
+        .buffers()
+        .iter()
+        .find(|buffer| buffer.label.as_deref() == Some("path:1:points"))
+        .unwrap()
+        .desc
+        .size;
+    assert_eq!(points_buffer, 400 * 24, "sized to the flattened path");
+    let alpha = |x: usize, y: usize| pixels[(y * 128 + x) * 4 + 3];
+    for (x, y) in [(15, 50), (60, 50), (105, 50), (105, 85)] {
+        assert_eq!(alpha(x, y), 255, "({x}, {y}) is inside the path");
+    }
+    for (x, y) in [(5, 50), (115, 50), (60, 95)] {
+        assert_eq!(alpha(x, y), 0, "({x}, {y}) is outside the path");
+    }
+}
+
+#[test]
+fn banded_path_fill_keeps_holes_and_self_intersections() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // An outer square, then a pentagram: even-odd leaves its points as holes and fills
+    // its centre. Edges are subdivided so the path spans many bands.
+    let star: Vec<[f64; 2]> = (0..5)
+        .map(|index| {
+            let angle = (index * 2) as f64 * std::f64::consts::TAU / 5.0;
+            [64.0 + 50.0 * angle.sin(), 64.0 - 50.0 * angle.cos()]
+        })
+        .collect();
+    let square = [[6.0, 6.0], [122.0, 6.0], [122.0, 122.0], [6.0, 122.0]];
+    let contours = [square.to_vec(), star];
+    let mut data = String::new();
+    let mut segments = Vec::new();
+    for contour in &contours {
+        for (index, &from) in contour.iter().enumerate() {
+            let to = contour[(index + 1) % contour.len()];
+            segments.push((from, to));
+            for step in 0..300 {
+                let t = step as f64 / 300.0;
+                let command = if index == 0 && step == 0 { "M" } else { "L" };
+                data += &format!(
+                    "{command} {:.4} {:.4} ",
+                    from[0] + (to[0] - from[0]) * t,
+                    from[1] + (to[1] - from[1]) * t
+                );
+            }
+        }
+        data += "Z ";
+    }
+    let (scale, rotation) = ((1.1, 0.8), 20.0_f64);
+    let path = NodeKind::Path(Path {
+        id: NodeId::new(1),
+        params: PathParamsDelegate {
+            data: Deferred::value(data),
+            fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+            stroke_enabled: Deferred::value(true),
+            stroke_paint: Paint::solid([0, 0, 255, 255]).into(),
+            stroke_width: Deferred::value(3.0),
+            scale: Deferred::value(scale),
+            rotation: Deferred::value(rotation),
+            anchor: Deferred::value((64.0, 64.0)),
+            ..Default::default()
+        },
+    });
+    let pixels = render_drawable_graph(&mut renderer, vec![path], 128);
+
+    let (sin, cos) = rotation.to_radians().sin_cos();
+    let mut checked = [0; 4];
+    for y in 0..128 {
+        for x in 0..128 {
+            let (dx, dy) = (x as f64 + 0.5 - 64.0, y as f64 + 0.5 - 64.0);
+            let local = [
+                64.0 + (cos * dx + sin * dy) / scale.0,
+                64.0 + (-sin * dx + cos * dy) / scale.1,
+            ];
+            let mut inside = false;
+            let mut distance = f64::MAX;
+            for &(a, b) in &segments {
+                if (a[1] > local[1]) != (b[1] > local[1])
+                    && local[0] < (b[0] - a[0]) * (local[1] - a[1]) / (b[1] - a[1]) + a[0]
+                {
+                    inside = !inside;
+                }
+                let ab = [b[0] - a[0], b[1] - a[1]];
+                let h = (((local[0] - a[0]) * ab[0] + (local[1] - a[1]) * ab[1])
+                    / (ab[0] * ab[0] + ab[1] * ab[1]))
+                    .clamp(0.0, 1.0);
+                distance =
+                    distance.min((local[0] - a[0] - ab[0] * h).hypot(local[1] - a[1] - ab[1] * h));
+            }
+            // Stroke covers 1.5 untransformed pixels; at 0.8x a canvas pixel is 1.25.
+            let expected = if distance < 0.5 {
+                [0, 0, 255, 255]
+            } else if distance > 1.5 + 2.5 {
+                if inside {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 0, 0]
+                }
+            } else {
+                continue;
+            };
+            let in_square = local.iter().all(|value| (6.0..122.0).contains(value));
+            let class = match (distance < 0.5, inside, in_square) {
+                (true, _, _) => 0,
+                (_, true, _) => 1,
+                (_, false, true) => 2,
+                (_, false, false) => 3,
+            };
+            checked[class] += 1;
+            let offset = (y * 128 + x) * 4;
+            assert_eq!(
+                pixels[offset..offset + 4],
+                expected,
+                "pixel ({x}, {y}), inside {inside}, distance {distance:.2}"
+            );
+        }
+    }
+    // Stroked, filled, holes in the square, and outside it.
+    assert!(checked.iter().all(|&count| count > 300), "{checked:?}");
+}
+
+#[test]
+fn text_opacity_fades_overlapping_glyphs_as_one_layer() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let text = |opacity: f64| {
+        vec![NodeKind::Text(Text {
+            id: NodeId::new(1),
+            params: TextParamsDelegate {
+                content: Deferred::value("A\u{338} f\u{301}".to_string()),
+                font_size: Deferred::value(48.0),
+                position: Deferred::value((8.0, 8.0)),
+                opacity: Deferred::value(opacity),
+                ..Default::default()
+            },
+        })]
+    };
+    let opaque = render_drawable_graph(&mut renderer, text(1.0), 128);
+    let translucent = render_drawable_graph(&mut renderer, text(0.5), 128);
+    assert!(opaque.iter().skip(3).step_by(4).any(|&a| a == 255));
+    for (full, half) in opaque.iter().zip(&translucent) {
+        assert!(
+            (f32::from(*full) * 0.5 - f32::from(*half)).abs() <= 1.0,
+            "{full} at half opacity gave {half}"
+        );
+    }
+}
+
+#[test]
+fn scaled_text_supersamples_paint_over_one_canvas_pixel() {
+    use lumen_engine::node::{source::text::TextRenderMode, vector::paint::GradientUnits};
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let stop = |offset: f32, color: [u8; 4]| GradientStop { offset, color };
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    // A hard red-to-blue stop through the crossbar of an `H` scaled 8x, at canvas x 57.6.
+    let text = vec![NodeKind::Text(Text {
+        id: NodeId::new(1),
+        params: TextParamsDelegate {
+            content: Deferred::value("H".to_string()),
+            font_size: Deferred::value(16.0),
+            render_mode: TextRenderMode::Msdf.into(),
+            position: Deferred::value((8.0, 8.0)),
+            scale: Deferred::value((8.0, 8.0)),
+            paint_supersample: Deferred::value(true),
+            color: Paint::Gradient(GradientPaint {
+                units: GradientUnits::UserSpace,
+                start: [0.0, 0.0],
+                end: [28.4, 0.0],
+                stops: vec![
+                    stop(0.0, red),
+                    stop(0.5, red),
+                    stop(0.5, blue),
+                    stop(1.0, blue),
+                ],
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        },
+    })];
+    let pixels = render_drawable_graph(&mut renderer, text, 128);
+    let mixed_columns = (0..128)
+        .filter(|&x| {
+            (0..128).any(|y| {
+                let pixel = &pixels[(y * 128 + x) * 4..][..4];
+                pixel[3] == 255 && pixel[0] > 8 && pixel[2] > 8
+            })
+        })
+        .count();
+    assert!(
+        pixels.as_chunks::<4>().0.iter().any(|pixel| *pixel == red)
+            && pixels.as_chunks::<4>().0.iter().any(|pixel| *pixel == blue)
+    );
+    assert!(
+        mixed_columns <= 2,
+        "the stop is blurred over {mixed_columns} columns"
+    );
 }
 
 #[test]

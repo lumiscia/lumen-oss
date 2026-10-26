@@ -950,11 +950,15 @@ export interface OpacityNode extends CompositionNodeBase<"opacity"> {
 
 export interface PathNode extends CompositionNodeBase<"path"> {
   readonly params?: {
+    readonly "anchor"?: ExpressionValue<Vec2>;
     readonly "data"?: ExpressionValue<string>;
     readonly "edge_antialias"?: ExpressionValue<boolean>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
     readonly "fill_paint"?: ExpressionValue<Paint>;
+    readonly "opacity"?: ExpressionValue<number>;
     readonly "position"?: ExpressionValue<Vec2>;
+    readonly "rotation"?: ExpressionValue<number>;
+    readonly "scale"?: ExpressionValue<Vec2>;
     readonly "stroke_enabled"?: ExpressionValue<boolean>;
     readonly "stroke_paint"?: ExpressionValue<Paint>;
     readonly "stroke_width"?: ExpressionValue<number>;
@@ -993,14 +997,18 @@ export interface ShadowNode extends CompositionNodeBase<"shadow"> {
 
 export interface ShapeNode extends CompositionNodeBase<"shape"> {
   readonly params?: {
+    readonly "anchor"?: ExpressionValue<Vec2>;
     readonly "border_radius"?: ExpressionValue<number>;
     readonly "edge_antialias"?: ExpressionValue<boolean>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
     readonly "fill_paint"?: ExpressionValue<Paint>;
     readonly "geometry_kind"?: ShapeGeometryKind;
     readonly "height"?: ExpressionValue<number>;
+    readonly "opacity"?: ExpressionValue<number>;
     readonly "polygon_points"?: ExpressionValue<string>;
     readonly "position"?: ExpressionValue<Vec2>;
+    readonly "rotation"?: ExpressionValue<number>;
+    readonly "scale"?: ExpressionValue<Vec2>;
     readonly "stroke_enabled"?: ExpressionValue<boolean>;
     readonly "stroke_paint"?: ExpressionValue<Paint>;
     readonly "stroke_width"?: ExpressionValue<number>;
@@ -1018,6 +1026,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
   readonly params?: {
     readonly "alignment_horizontal"?: TextAlignmentHorizontal;
     readonly "alignment_vertical"?: TextAlignmentVertical;
+    readonly "anchor"?: ExpressionValue<Vec2>;
     readonly "color"?: ExpressionValue<Paint>;
     readonly "content"?: ExpressionValue<string>;
     readonly "font_family"?: ExpressionValue<string>;
@@ -1027,9 +1036,12 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "letter_spacing"?: ExpressionValue<number>;
     readonly "line_height"?: ExpressionValue<number>;
     readonly "max_width"?: ExpressionValue<number>;
+    readonly "opacity"?: ExpressionValue<number>;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
     readonly "position"?: ExpressionValue<Vec2>;
     readonly "render_mode"?: TextRenderMode;
+    readonly "rotation"?: ExpressionValue<number>;
+    readonly "scale"?: ExpressionValue<Vec2>;
   };
 }
 

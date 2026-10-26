@@ -10,7 +10,8 @@ use std::time::Instant;
 use crate::error::{LumenError, RenderError};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::media::MediaStore;
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint};
+use crate::node::vector::{drawable::DrawableTransform, paint::Paint, renderer::TextStyleUniforms};
+use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
@@ -94,6 +95,19 @@ pub struct TextParams {
     /// Text origin in pixels.
     #[meta()]
     pub position: (f64, f64),
+    /// Scale multiplier per axis, about the anchor. Raster glyphs are resampled, so
+    /// use MSDF rendering to keep scaled text sharp.
+    #[meta()]
+    pub scale: (f64, f64),
+    /// Clockwise rotation in degrees, about the anchor.
+    #[meta(step = 1)]
+    pub rotation: f64,
+    /// Pivot for scale and rotation, in pixels relative to `position`.
+    #[meta()]
+    pub anchor: (f64, f64),
+    /// Opacity multiplier.
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub opacity: f64,
     /// Text color.
     #[meta(role = "color")]
     pub color: Paint,
@@ -121,6 +135,10 @@ impl Default for TextParams {
             letter_spacing: 0.0,
             line_height: 0.0,
             position: (0.0, 0.0),
+            scale: (1.0, 1.0),
+            rotation: 0.0,
+            anchor: (0.0, 0.0),
+            opacity: 1.0,
             color: Paint::solid([255, 255, 255, 255]),
             alignment_horizontal: TextAlignmentHorizontal::Left,
             alignment_vertical: TextAlignmentVertical::Top,
@@ -184,6 +202,14 @@ impl GpuCompiledNode for CompiledText {
         let mut paint = evaluated.color.to_gpu([255, 255, 255, 255]);
         paint.paint_supersample = u32::from(evaluated.paint_supersample);
         let (position_x, position_y) = evaluated.position;
+        let transform = DrawableTransform {
+            position: evaluated.position,
+            scale: evaluated.scale,
+            rotation: evaluated.rotation,
+            anchor: evaluated.anchor,
+            opacity: evaluated.opacity,
+        }
+        .to_gpu();
         let mut request = layout_request(
             evaluated.content,
             evaluated.font_family,
@@ -322,7 +348,11 @@ impl GpuCompiledNode for CompiledText {
             paint_bounds: layout.bounds,
         };
         bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
-        bound.write_buffer(self.paint_buffer, 0, bytemuck::bytes_of(&paint));
+        let style = TextStyleUniforms {
+            fill_paint: paint,
+            transform,
+        };
+        bound.write_buffer(self.paint_buffer, 0, bytemuck::bytes_of(&style));
         if !prepared.instances.is_empty() {
             bound.write_buffer(
                 self.instances_buffer,

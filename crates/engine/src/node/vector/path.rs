@@ -1,7 +1,9 @@
+use super::drawable::{DrawableTransform, largest_scale};
 use super::paint::Paint;
-use super::renderer::{MAX_PATH_POINTS, PathUniforms, style_flags};
+use super::renderer::{MAX_PATH_POINTS, PathBuffers, PathPoint, PathUniforms, style_flags};
+use crate::error::RenderError;
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 /// Produces a rasterized vector path source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -17,6 +19,18 @@ pub struct PathParams {
     /// Path origin in pixels.
     #[meta()]
     pub position: (f64, f64),
+    /// Scale multiplier per axis, about the anchor.
+    #[meta()]
+    pub scale: (f64, f64),
+    /// Clockwise rotation in degrees, about the anchor.
+    #[meta(step = 1)]
+    pub rotation: f64,
+    /// Pivot for scale and rotation, in pixels relative to `position`.
+    #[meta()]
+    pub anchor: (f64, f64),
+    /// Opacity multiplier.
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub opacity: f64,
     /// Enables fill rendering.
     #[meta()]
     pub fill_enabled: bool,
@@ -29,7 +43,8 @@ pub struct PathParams {
     /// Stroke paint. Accepts a solid color or gradient.
     #[meta()]
     pub stroke_paint: Paint,
-    /// Stroke width in pixels.
+    /// Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches
+    /// with the path, so it is wider across the more scaled axis.
     #[meta(min = 0, step = 0.5)]
     pub stroke_width: f64,
     /// Normalized start of the visible stroke range for each contour.
@@ -48,6 +63,10 @@ impl Default for PathParams {
         Self {
             data: "M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string(),
             position: (0.0, 0.0),
+            scale: (1.0, 1.0),
+            rotation: 0.0,
+            anchor: (0.0, 0.0),
+            opacity: 1.0,
             fill_enabled: true,
             fill_paint: Paint::solid([255, 255, 255, 255]),
             stroke_enabled: false,
@@ -92,8 +111,7 @@ impl GpuCompileNode for Path {
 pub(crate) struct CompiledPath {
     pub(crate) node_id: NodeId,
     pub(crate) params: PathParamsDelegate,
-    pub(crate) params_buffer: lumen_gpu::BufferId,
-    pub(crate) points_buffer: lumen_gpu::BufferId,
+    pub(crate) buffers: PathBuffers,
 }
 
 impl GpuCompiledNode for CompiledPath {
@@ -106,7 +124,18 @@ impl GpuCompiledNode for CompiledPath {
             node_id: self.node_id,
             expr: &ctx.expr_context(self.node_id, "params"),
         })?;
-        let mut points = parse_path_points(&evaluated.data, MAX_PATH_POINTS);
+        let point_capacity = self.buffers.point_capacity;
+        let mut points = parse_path_points(
+            &evaluated.data,
+            flattening_tolerance(evaluated.scale),
+            point_capacity,
+        )
+        .ok_or_else(|| RenderError::NodeEvaluation {
+            frame: ctx.frame(),
+            node_id: self.node_id,
+            node_kind: "Path",
+            details: format!("path data flattens to more than {point_capacity} points"),
+        })?;
         normalize_contour_offsets(&mut points);
         let (x, y) = evaluated.position;
         let (trim_start, trim_end) =
@@ -127,39 +156,85 @@ impl GpuCompiledNode for CompiledPath {
             point_count: points.len() as u32,
             trim_start,
             trim_end,
-            _pad: 0,
+            ..bytemuck::Zeroable::zeroed()
         };
-        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&params));
-        if !points.is_empty() {
-            bound.write_buffer(self.points_buffer, 0, bytemuck::cast_slice(&points));
-        }
+        let transform = DrawableTransform {
+            position: evaluated.position,
+            scale: evaluated.scale,
+            rotation: evaluated.rotation,
+            anchor: evaluated.anchor,
+            opacity: evaluated.opacity,
+        };
+        self.buffers.write(bound, params, &points, &transform);
         Ok(())
     }
 }
 
+impl PathBuffers {
+    /// Writes a frame's uniforms, points and bands for the path shader.
+    pub(super) fn write(
+        &self,
+        bound: &mut BoundFrame,
+        mut uniforms: PathUniforms,
+        points: &[PathPoint],
+        transform: &DrawableTransform,
+    ) {
+        uniforms.transform = transform.to_gpu();
+        let bands =
+            super::path_bands::bin_path(&mut uniforms, points, transform, self.band_capacity);
+        bound.write_buffer(self.params, 0, bytemuck::bytes_of(&uniforms));
+        if !points.is_empty() {
+            bound.write_buffer(self.points, 0, bytemuck::cast_slice(points));
+        }
+        if !bands.is_empty() {
+            bound.write_buffer(self.bands, 0, bytemuck::cast_slice(&bands));
+        }
+    }
+}
+
+/// Canvas-space flattening tolerance in pixels; curves are flattened untransformed, so
+/// the local tolerance shrinks as the path is scaled up.
 const PATH_FLATTENING_TOLERANCE: f32 = 0.25;
 const PATH_MAX_FLATTENING_ATTEMPTS: usize = 12;
 // Bits of `PathPoint::flags`; keep in sync with `path_renderer.wgsl`.
-const POINT_END: u32 = 1;
-const POINT_CLOSED: u32 = 2;
+pub(super) const POINT_END: u32 = 1;
+pub(super) const POINT_CLOSED: u32 = 2;
 
-fn parse_path_points(data: &str, max_points: usize) -> Vec<super::renderer::PathPoint> {
-    let Some(path) = build_lyon_path(data) else {
-        return Vec::new();
-    };
-    if max_points == 0 {
-        return Vec::new();
+fn flattening_tolerance(scale: (f64, f64)) -> f32 {
+    (f64::from(PATH_FLATTENING_TOLERANCE) / largest_scale(scale)) as f32
+}
+
+/// Points buffer capacity for path data: the flattened point count when the data and
+/// scale are constant, or `MAX_PATH_POINTS` when either may change per frame.
+pub(super) fn point_capacity(data: &Deferred<String>, scale: &Deferred<(f64, f64)>) -> usize {
+    match (data, scale) {
+        (Deferred::Value(data), Deferred::Value(scale)) => {
+            parse_path_points(data, flattening_tolerance(*scale), MAX_PATH_POINTS)
+                .map_or(MAX_PATH_POINTS, |points| points.len().max(1))
+        }
+        _ => MAX_PATH_POINTS,
     }
+}
 
-    let mut tolerance = PATH_FLATTENING_TOLERANCE;
+/// Flattens path data, coarsening `tolerance` until it fits `max_points`. Malformed
+/// data is empty; `None` means it exceeds `max_points` even at the coarsest tolerance.
+fn parse_path_points(
+    data: &str,
+    tolerance: f32,
+    max_points: usize,
+) -> Option<Vec<super::renderer::PathPoint>> {
+    let Some(path) = build_lyon_path(data) else {
+        return Some(Vec::new());
+    };
+
+    let mut tolerance = tolerance;
     for _ in 0..PATH_MAX_FLATTENING_ATTEMPTS {
         if let Some(points) = flatten_path(&path, tolerance, max_points) {
-            return points;
+            return Some(points);
         }
         tolerance *= 2.0;
     }
-
-    flatten_path_capped(&path, tolerance, max_points)
+    None
 }
 
 /// Builds a single closed contour from polygon vertices.
@@ -333,23 +408,6 @@ fn flatten_path(
     tolerance: f32,
     max_points: usize,
 ) -> Option<Vec<super::renderer::PathPoint>> {
-    collect_flattened_path(path, tolerance, max_points, false)
-}
-
-fn flatten_path_capped(
-    path: &lyon_path::Path,
-    tolerance: f32,
-    max_points: usize,
-) -> Vec<super::renderer::PathPoint> {
-    collect_flattened_path(path, tolerance, max_points, true).unwrap_or_default()
-}
-
-fn collect_flattened_path(
-    path: &lyon_path::Path,
-    tolerance: f32,
-    max_points: usize,
-    truncate: bool,
-) -> Option<Vec<super::renderer::PathPoint>> {
     use lyon_path::{PathEvent, iterator::PathIterator};
 
     let mut points = Vec::new();
@@ -359,7 +417,7 @@ fn collect_flattened_path(
             PathEvent::Begin { at } => {
                 contour_start = points.len() as u32;
                 if !push_path_point(&mut points, at, contour_start, max_points) {
-                    return truncated(points, truncate);
+                    return None;
                 }
             }
             PathEvent::Line { to, .. } => {
@@ -368,7 +426,7 @@ fn collect_flattened_path(
                     .is_none_or(|last| last.position != [to.x, to.y])
                     && !push_path_point(&mut points, to, contour_start, max_points)
                 {
-                    return truncated(points, truncate);
+                    return None;
                 }
             }
             PathEvent::End { close, .. } => {
@@ -404,20 +462,6 @@ fn push_path_point(
         _pad: 0.0,
     });
     true
-}
-
-fn truncated(
-    mut points: Vec<super::renderer::PathPoint>,
-    truncate: bool,
-) -> Option<Vec<super::renderer::PathPoint>> {
-    if !truncate {
-        return None;
-    }
-    if let Some(last) = points.last_mut() {
-        last.flags |= POINT_END;
-        last.flags &= !POINT_CLOSED;
-    }
-    Some(points)
 }
 
 pub(super) fn bounds_min(points: &[super::renderer::PathPoint]) -> [f32; 2] {
@@ -479,7 +523,8 @@ mod tests {
     use super::*;
 
     fn positions(data: &str) -> Vec<[f32; 2]> {
-        parse_path_points(data, 128)
+        parse_path_points(data, PATH_FLATTENING_TOLERANCE, 128)
+            .unwrap()
             .into_iter()
             .map(|point| point.position)
             .collect()
@@ -487,7 +532,9 @@ mod tests {
 
     #[test]
     fn parses_absolute_relative_and_close_commands() {
-        let points = parse_path_points("M 10 20 h 10 v 10 l -5 5 z", 128);
+        let points =
+            parse_path_points("M 10 20 h 10 v 10 l -5 5 z", PATH_FLATTENING_TOLERANCE, 128)
+                .unwrap();
         assert_eq!(
             points
                 .iter()
@@ -533,7 +580,12 @@ mod tests {
 
     #[test]
     fn preserves_subpath_boundaries_and_closure() {
-        let points = parse_path_points("M 0 0 L 10 0 M 100 0 L 110 0 Z", 128);
+        let points = parse_path_points(
+            "M 0 0 L 10 0 M 100 0 L 110 0 Z",
+            PATH_FLATTENING_TOLERANCE,
+            128,
+        )
+        .unwrap();
         assert_eq!(points.len(), 4);
         assert_eq!(points[1].flags, POINT_END);
         assert_eq!(points[1].contour_start, 0);
@@ -544,8 +596,16 @@ mod tests {
 
     #[test]
     fn malformed_or_non_finite_paths_are_empty() {
-        assert!(parse_path_points("M 0 0 C nope", 128).is_empty());
-        assert!(parse_path_points("M 1e999 0 L 10 10", 128).is_empty());
+        assert!(
+            parse_path_points("M 0 0 C nope", PATH_FLATTENING_TOLERANCE, 128)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            parse_path_points("M 1e999 0 L 10 10", PATH_FLATTENING_TOLERANCE, 128)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -579,8 +639,13 @@ mod tests {
     }
 
     #[test]
-    fn caps_flattened_output_to_gpu_buffer_capacity() {
-        let points = parse_path_points("M 0 0 C 0 1000 1000 1000 1000 0", 5);
+    fn coarsens_curves_to_fit_capacity() {
+        let points = parse_path_points(
+            "M 0 0 C 0 1000 1000 1000 1000 0",
+            PATH_FLATTENING_TOLERANCE,
+            5,
+        )
+        .unwrap();
         assert!(points.len() <= 5);
         assert_eq!(points.first().unwrap().position, [0.0, 0.0]);
         assert_eq!(points.last().unwrap().position, [1000.0, 0.0]);
@@ -588,8 +653,77 @@ mod tests {
     }
 
     #[test]
+    fn rejects_paths_with_more_corners_than_capacity() {
+        assert!(
+            parse_path_points(
+                "M 0 0 L 10 0 L 10 10 L 0 10 L 5 5 Z",
+                PATH_FLATTENING_TOLERANCE,
+                4
+            )
+            .is_none()
+        );
+        assert_eq!(
+            point_capacity(
+                &Deferred::value("M 0 0 L 10 0 L 10 10 Z".to_string()),
+                &Deferred::value((1.0, 1.0))
+            ),
+            3
+        );
+        assert_eq!(
+            point_capacity(
+                &Deferred::value(String::new()),
+                &Deferred::value((1.0, 1.0))
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn scaled_curves_flatten_as_finely_as_curves_drawn_at_that_size() {
+        let circle = |radius: f64| {
+            format!(
+                "M {radius} 0 A {radius} {radius} 0 1 1 -{radius} 0 A {radius} {radius} 0 1 1 {radius} 0 Z"
+            )
+        };
+        let count = |data: &str, scale: f64| {
+            parse_path_points(
+                data,
+                flattening_tolerance((scale, -scale * 0.5)),
+                MAX_PATH_POINTS,
+            )
+            .unwrap()
+            .len()
+        };
+        let scaled = count(&circle(10.0), 8.0);
+        let direct = count(&circle(80.0), 1.0);
+        assert!(
+            scaled.abs_diff(direct) <= 2,
+            "{scaled} points against {direct}"
+        );
+        assert_eq!(
+            point_capacity(
+                &Deferred::value(circle(10.0)),
+                &Deferred::value((8.0, -4.0))
+            ),
+            scaled
+        );
+        assert_eq!(
+            point_capacity(
+                &Deferred::value(circle(10.0)),
+                &Deferred::Expr(crate::expr::Expression::parse("frame").unwrap())
+            ),
+            MAX_PATH_POINTS
+        );
+    }
+
+    #[test]
     fn normalizes_each_contour_by_its_drawn_length() {
-        let mut points = parse_path_points("M 0 0 L 25 0 L 100 0 M 0 10 L 0 30 Z", 128);
+        let mut points = parse_path_points(
+            "M 0 0 L 25 0 L 100 0 M 0 10 L 0 30 Z",
+            PATH_FLATTENING_TOLERANCE,
+            128,
+        )
+        .unwrap();
         normalize_contour_offsets(&mut points);
 
         assert_eq!(points[0].offset, 0.0);
@@ -601,7 +735,7 @@ mod tests {
 
     #[test]
     fn degenerate_contour_offsets_remain_finite() {
-        let mut points = parse_path_points("M 5 5 L 5 5", 128);
+        let mut points = parse_path_points("M 5 5 L 5 5", PATH_FLATTENING_TOLERANCE, 128).unwrap();
         normalize_contour_offsets(&mut points);
         assert!(points.iter().all(|point| point.offset.is_finite()));
     }
