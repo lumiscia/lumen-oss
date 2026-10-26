@@ -53,7 +53,7 @@ struct CompiledPortKey {
 #[derive(Debug)]
 pub struct CompileContext<'a> {
     composition: &'a Composition,
-    frame: u32,
+    frame: f64,
     time_remaps: TimeRemapPath,
     media: Option<&'a dyn MediaStore>,
     builder: lumen_gpu::RenderPlanBuilder,
@@ -74,7 +74,7 @@ impl<'a> CompileContext<'a> {
         composition: &'a Composition,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> Self {
-        Self::with_options(composition, 0, None, output_format)
+        Self::with_options(composition, 0.0, None, output_format)
     }
 
     pub fn with_frame(
@@ -82,7 +82,7 @@ impl<'a> CompileContext<'a> {
         frame: u32,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> Self {
-        Self::with_options(composition, frame, None, output_format)
+        Self::with_options(composition, f64::from(frame), None, output_format)
     }
 
     pub fn with_media<M: MediaStore>(
@@ -99,12 +99,12 @@ impl<'a> CompileContext<'a> {
         media: &'a M,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> Self {
-        Self::with_options(composition, frame, Some(media), output_format)
+        Self::with_options(composition, f64::from(frame), Some(media), output_format)
     }
 
-    fn with_options(
+    pub(crate) fn with_options(
         composition: &'a Composition,
-        frame: u32,
+        frame: f64,
         media: Option<&'a dyn MediaStore>,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> Self {
@@ -263,7 +263,7 @@ impl<'a> CompileContext<'a> {
     pub(crate) fn with_frame_context<T>(
         &mut self,
         time_remap: NodeId,
-        frame: u32,
+        frame: f64,
         f: impl FnOnce(&mut Self) -> crate::Result<T>,
     ) -> crate::Result<T> {
         let original_frame = self.frame;

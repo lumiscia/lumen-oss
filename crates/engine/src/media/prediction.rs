@@ -81,7 +81,7 @@ pub fn collect_frame_requirements<M: MediaStore>(
     let mut context = RequirementContext {
         composition,
         media_store,
-        frame,
+        frame: f64::from(frame),
     };
     context.collect_port(&output_port, &mut collector)?;
     let requirements = FrameRequirements::from(collector);
@@ -98,7 +98,7 @@ pub fn collect_frame_requirements<M: MediaStore>(
 struct RequirementContext<'a, M: MediaStore> {
     composition: &'a Composition,
     media_store: &'a M,
-    frame: u32,
+    frame: f64,
 }
 
 impl<'a, M: MediaStore> RequirementContext<'a, M> {
@@ -218,7 +218,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 )
                 .ok_or_else(|| MediaError::FrameOutOfRange {
                     media_source: stream_id.clone(),
-                    frame: self.frame,
+                    frame: self.frame as u32,
                     frame_count: metadata.frame_count,
                 })?;
                 tracing::trace!(
@@ -238,7 +238,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
     fn remapped_frame(
         &self,
         time_remap: &crate::node::processing::time_remap::TimeRemap,
-    ) -> Result<u32, LumenError> {
+    ) -> Result<f64, LumenError> {
         let expr_context = self.expr_context("time_remap_requirements");
         let params = time_remap.params.eval(&NodeParamEvalContext {
             node_id: time_remap.id,
@@ -254,7 +254,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
 
     fn with_frame<T>(
         &mut self,
-        frame: u32,
+        frame: f64,
         f: impl FnOnce(&mut Self) -> Result<T, LumenError>,
     ) -> Result<T, LumenError> {
         let original_frame = self.frame;

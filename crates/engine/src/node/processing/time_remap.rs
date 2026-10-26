@@ -49,13 +49,25 @@ impl Default for TimeRemap {
     }
 }
 
-pub fn remap_frame(settings: TimeRemapSettings) -> u32 {
-    let mut frame = settings.frame.max(0.0).floor() as i64;
+/// Returns the (possibly fractional) source frame. Consumers that index media floor it themselves.
+///
+/// Looping runs on the whole frame, exactly as for integer frames, and the fraction is carried
+/// separately so rounding can never cross into the next frame or the excluded loop end.
+pub fn remap_frame(settings: TimeRemapSettings) -> f64 {
+    let frame = settings.frame.max(0.0);
+    let mut whole = frame.floor() as i64;
+    let fraction = if frame.is_finite() {
+        frame - frame.floor()
+    } else {
+        0.0
+    };
     if settings.loop_enabled && settings.loop_end > settings.loop_start {
         let span = settings.loop_end - settings.loop_start;
-        frame = settings.loop_start + (frame - settings.loop_start).rem_euclid(span);
+        whole = settings.loop_start + (whole - settings.loop_start).rem_euclid(span);
     }
-    frame.max(0) as u32
+    // Matches the integer-frame behaviour, including its wrapping cast.
+    let whole = f64::from(whole.max(0) as u32);
+    (whole + fraction).min((whole + 1.0).next_down())
 }
 
 impl GpuCompileNode for TimeRemap {
@@ -108,5 +120,69 @@ impl GpuCompiledNode for CompiledTimeRemap {
             loop_end: evaluated.loop_end,
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TimeRemapSettings, remap_frame};
+
+    fn remap(frame: f64, loop_enabled: bool) -> f64 {
+        remap_frame(TimeRemapSettings {
+            frame,
+            loop_enabled,
+            loop_start: 2,
+            loop_end: 6,
+        })
+    }
+
+    #[test]
+    fn keeps_fractional_target_frames() {
+        assert_eq!(remap(2.5, false), 2.5);
+        assert_eq!(remap(-1.5, false), 0.0);
+        assert_eq!(remap(7.25, true), 3.25);
+        assert_eq!(remap(1.5, true), 5.5);
+    }
+
+    #[test]
+    fn integer_target_frames_are_unchanged() {
+        assert_eq!(remap(9.0, false), 9.0);
+        assert_eq!(remap(6.0, true), 2.0);
+        assert_eq!(remap(11.0, true), 3.0);
+    }
+
+    #[test]
+    fn loop_boundaries_survive_float_rounding() {
+        let settings = |frame| TimeRemapSettings {
+            frame,
+            loop_enabled: true,
+            loop_start: 1,
+            loop_end: 2,
+        };
+        assert_eq!(remap_frame(settings(1.0 / 49.0 * 49.0)).floor(), 1.0);
+        assert!(remap_frame(settings(1.9999999999999998)) < 2.0);
+    }
+
+    #[test]
+    fn large_targets_loop_before_clamping() {
+        let frame = remap_frame(TimeRemapSettings {
+            frame: 4_294_967_296.0,
+            loop_enabled: true,
+            loop_start: 0,
+            loop_end: 10,
+        });
+        assert_eq!(frame, 6.0);
+    }
+
+    #[test]
+    fn non_finite_and_huge_targets_match_integer_frames() {
+        let settings = |frame, loop_enabled| TimeRemapSettings {
+            frame,
+            loop_enabled,
+            loop_start: 0,
+            loop_end: 10,
+        };
+        assert_eq!(remap_frame(settings(f64::INFINITY, true)), 7.0);
+        assert_eq!(remap_frame(settings(4_294_967_296.0, false)), 0.0);
     }
 }

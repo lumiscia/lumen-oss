@@ -90,7 +90,7 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        let key = self.compiled_plan_key(composition, 0, None)?;
+        let key = self.compiled_plan_key(composition, 0.0, None)?;
         let compiled = CompileContext::with_frame(composition, 0, output_format).compile()?;
         self.prepare_compiled(key, compiled)
     }
@@ -102,7 +102,7 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        self.ensure_compiled_for_frame(composition, 0, Some(media))
+        self.ensure_compiled_for_frame(composition, 0.0, Some(media))
     }
 
     /// Drops every compiled plan and cached media texture, destroying the GPU textures and
@@ -214,7 +214,7 @@ impl GpuCompositionRenderer {
         frame: u32,
         media: &M,
     ) -> crate::Result<()> {
-        self.ensure_compiled_for_frame(composition, frame, Some(media))
+        self.ensure_compiled_for_frame(composition, f64::from(frame), Some(media))
     }
 
     pub fn precompile_frame_window<M: MediaStore>(
@@ -243,6 +243,18 @@ impl GpuCompositionRenderer {
         media: &M,
     ) -> crate::Result<RasterHandle> {
         self.render_frame_submitted(composition, frame, media)
+            .map(|(raster, _submission)| raster)
+    }
+
+    /// Renders at a fractional frame time; `frame` is in composition frames, not seconds.
+    pub fn render_frame_at<M: MediaStore>(
+        &mut self,
+        composition: &Composition,
+        frame: f64,
+        media: &M,
+    ) -> crate::Result<RasterHandle> {
+        let bound = self.bind_frame_at(composition, frame, media)?;
+        self.submit_bound_frame(&bound)
             .map(|(raster, _submission)| raster)
     }
 
@@ -297,10 +309,29 @@ impl GpuCompositionRenderer {
         frame: u32,
         media: &M,
     ) -> crate::Result<BoundFrame> {
+        self.bind_frame_at(composition, f64::from(frame), media)
+    }
+
+    /// Binds at a fractional frame time. Expressions see the fractional `frame`/`time`; video
+    /// inputs show the source frame displayed at that instant.
+    pub fn bind_frame_at<M: MediaStore>(
+        &mut self,
+        composition: &Composition,
+        frame: f64,
+        media: &M,
+    ) -> crate::Result<BoundFrame> {
+        if !(frame.is_finite() && frame >= 0.0) {
+            return Err(RenderError::FrameOutOfRange {
+                frame: frame.max(0.0) as u32,
+                duration_frames: composition.timeline.duration_frames,
+            }
+            .into());
+        }
         self.bind_sequence += 1;
         self.ensure_compiled_for_frame(composition, frame, Some(media))?;
         let compiled = self.active_compiled()?;
-        let mut bound = FrameBindContext::with_media(composition, frame, media).bind(compiled)?;
+        let mut bound =
+            FrameBindContext::with_media_at(composition, frame, media).bind(compiled)?;
         bound.renderer_binding = self.active_key.clone().map(|key| (self.bind_sequence, key));
         Ok(bound)
     }
@@ -610,7 +641,7 @@ impl GpuCompositionRenderer {
     fn ensure_compiled_for_frame<M: MediaStore>(
         &mut self,
         composition: &Composition,
-        frame: u32,
+        frame: f64,
         media: Option<&M>,
     ) -> crate::Result<()> {
         let key = self.compiled_plan_key(
@@ -639,20 +670,20 @@ impl GpuCompositionRenderer {
             key_entries = key.0.len(),
             "compile render plan for frame"
         );
-        let compiled = match media {
-            Some(media) => {
-                CompileContext::with_media_for_frame(composition, frame, media, self.output_format)
-                    .compile()?
-            }
-            None => CompileContext::with_frame(composition, frame, self.output_format).compile()?,
-        };
+        let compiled = CompileContext::with_options(
+            composition,
+            frame,
+            media.map(|store| store as &dyn MediaStore),
+            self.output_format,
+        )
+        .compile()?;
         self.prepare_compiled(key, compiled)
     }
 
     fn compiled_plan_key(
         &self,
         composition: &Composition,
-        frame: u32,
+        frame: f64,
         media: Option<&dyn MediaStore>,
     ) -> crate::Result<CompiledPlanKey> {
         let mut selections = Vec::new();
@@ -675,12 +706,12 @@ impl GpuCompositionRenderer {
         &self,
         composition: &Composition,
         port: &PortRef,
-        frame: u32,
+        frame: f64,
         media: Option<&dyn MediaStore>,
-        visited: &mut std::collections::HashSet<(NodeId, u32)>,
+        visited: &mut std::collections::HashSet<(NodeId, u64)>,
         selections: &mut Vec<(NodeId, Option<usize>)>,
     ) -> crate::Result<()> {
-        if port.is_empty() || !visited.insert((port.id, frame)) {
+        if port.is_empty() || !visited.insert((port.id, frame.to_bits())) {
             return Ok(());
         }
 
@@ -770,7 +801,7 @@ impl GpuCompositionRenderer {
     fn expression_context<'a>(
         &self,
         composition: &'a Composition,
-        frame: u32,
+        frame: f64,
         media: Option<&'a dyn MediaStore>,
         node_id: NodeId,
         property_path: &str,

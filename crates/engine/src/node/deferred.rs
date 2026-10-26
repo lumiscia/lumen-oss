@@ -796,7 +796,7 @@ mod tests {
 
     fn context() -> ExpressionContext<'static> {
         ExpressionContext {
-            frame: 12,
+            frame: 12.0,
             fps: 24.0,
             width: 1920,
             height: 1080,

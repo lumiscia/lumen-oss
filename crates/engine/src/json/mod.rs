@@ -489,7 +489,7 @@ mod tests {
         else {
             panic!("expected path node");
         };
-        for (frame, expected) in [(0, (0.0, 3.0)), (24, (48.0, 4.0)), (48, (96.0, 5.0))] {
+        for (frame, expected) in [(0.0, (0.0, 3.0)), (24.0, (48.0, 4.0)), (48.0, (96.0, 5.0))] {
             let context = crate::expr::ExpressionContext {
                 frame,
                 fps: 24.0,

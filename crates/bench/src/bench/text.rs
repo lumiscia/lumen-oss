@@ -313,7 +313,7 @@ impl MeasurementFixture {
 
     fn run_once(&self) -> anyhow::Result<()> {
         let ctx = ExpressionContext {
-            frame: 48,
+            frame: 48.0,
             fps: 24.0,
             width: 1400,
             height: 900,

@@ -303,7 +303,7 @@ mod tests {
 
     fn context() -> crate::expr::ExpressionContext<'static> {
         crate::expr::ExpressionContext {
-            frame: 0,
+            frame: 0.0,
             fps: 30.0,
             width: 1,
             height: 1,

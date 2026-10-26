@@ -21,7 +21,8 @@ impl Expression {
 
 #[derive(Debug)]
 pub struct ExpressionContext<'a> {
-    pub frame: u32,
+    /// Composition frame being evaluated; fractional values sample between frames.
+    pub frame: f64,
     pub fps: f32,
     pub width: u32,
     pub height: u32,
@@ -34,7 +35,7 @@ pub struct ExpressionContext<'a> {
 impl Default for ExpressionContext<'_> {
     fn default() -> Self {
         Self {
-            frame: 0,
+            frame: 0.0,
             fps: 0.0,
             width: 0,
             height: 0,
@@ -51,7 +52,7 @@ impl ExpressionContext<'_> {
         if self.fps <= 0.0 {
             0.0
         } else {
-            self.frame as f64 / self.fps as f64
+            self.frame / self.fps as f64
         }
     }
 }
