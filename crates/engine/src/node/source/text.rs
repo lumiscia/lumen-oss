@@ -481,7 +481,7 @@ impl GlyphParams {
         let mut opacity = PerGlyph::new(&self.opacity, "glyph_opacity");
         let mut bounds: Option<[f32; 4]> = None;
         // The instance and cluster that the instances so far fade as one.
-        let mut fading: Option<(usize, u32)> = None;
+        let mut fading: Option<(usize, (u32, u32))> = None;
         for (index, &source) in sources.iter().enumerate() {
             let glyph = &layout.glyphs[source];
             expr.glyph = Some(GlyphScope {
@@ -498,30 +498,38 @@ impl GlyphParams {
             }
             .to_gpu();
             let (offset_x, offset_y) = offset.eval(node_id, expr)?;
-            instances[index].color[3] *= transform.opacity;
+            let instance = &mut instances[index];
+            instance.color[3] *= transform.opacity;
+            if transform.flags != 0 || (offset_x, offset_y) != (0.0, 0.0) {
+                instance.flags |= lumen_text::GLYPH_TRANSFORMED;
+                instance.linear = transform.linear;
+                instance.offset = [
+                    transform.offset[0] + offset_x as f32,
+                    transform.offset[1] + offset_y as f32,
+                ];
+            }
             // Fading each instance of a cluster separately would count their overlap more than
             // once, so the cluster's first instance draws the others, composited at full alpha.
+            // The lead draws them with its own transform and colour, so only instances on the
+            // same line that match those join it.
+            let key = (glyph.item.glyph, glyph.item.line);
             if transform.opacity < 1.0 {
                 match fading {
-                    Some((lead, cluster)) if cluster == glyph.item.glyph => {
+                    Some((lead, lead_key))
+                        if lead_key == key && same_draw(&instances[lead], &instances[index]) =>
+                    {
                         instances[lead].flags += 1 << lumen_text::GLYPH_CLUSTER_SHIFT;
                         instances[index].flags |= lumen_text::GLYPH_CLUSTER_FOLLOWER;
                     }
-                    _ => fading = Some((index, glyph.item.glyph)),
+                    _ => fading = Some((index, key)),
                 }
             } else {
                 fading = None;
             }
-            let instance = &mut instances[index];
-            if transform.flags == 0 && (offset_x, offset_y) == (0.0, 0.0) {
+            let instance = &instances[index];
+            if instance.flags & lumen_text::GLYPH_TRANSFORMED == 0 {
                 continue;
             }
-            instance.flags |= lumen_text::GLYPH_TRANSFORMED;
-            instance.linear = transform.linear;
-            instance.offset = [
-                transform.offset[0] + offset_x as f32,
-                transform.offset[1] + offset_y as f32,
-            ];
             let [x, y, width, height] = instance.rect;
             for [x, y] in [
                 [x, y],
@@ -543,6 +551,15 @@ impl GlyphParams {
         expr.glyph = None;
         Ok(bounds)
     }
+}
+
+/// Whether two glyph instances draw with the same transform and colour.
+fn same_draw(a: &lumen_text::GpuGlyphInstance, b: &lumen_text::GpuGlyphInstance) -> bool {
+    let transformed =
+        |glyph: &lumen_text::GpuGlyphInstance| glyph.flags & lumen_text::GLYPH_TRANSFORMED != 0;
+    transformed(a) == transformed(b)
+        && (!transformed(a) || (a.linear == b.linear && a.offset == b.offset))
+        && a.color == b.color
 }
 
 /// A per-glyph param, evaluated again only when an index it reads changes. A constant, or

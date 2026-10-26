@@ -7949,6 +7949,37 @@ fn glyph_opacity_fades_a_cluster_of_overlapping_instances_as_one() {
 }
 
 #[test]
+fn glyph_opacity_keeps_a_cluster_split_by_wrapping_apart() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
+        // Wrapping puts the base and its mark on separate lines, each moved by its own offset.
+        let render = |renderer: &mut _, opacity| {
+            let params = TextParamsDelegate {
+                render_mode: mode.into(),
+                max_width: Deferred::value(15.0),
+                glyph_offset: expression("vec2(line * 40, 0)"),
+                glyph_opacity: Deferred::value(opacity),
+                ..Default::default()
+            };
+            render_drawable_graph(renderer, glyph_text("A\u{338}", params), size)
+        };
+        let opaque = render(&mut renderer, 1.0);
+        let faded = render(&mut renderer, 0.5);
+        for (index, (full, half)) in opaque.iter().zip(&faded).enumerate() {
+            assert!(
+                (f32::from(*full) * 0.5 - f32::from(*half)).abs() <= 1.5,
+                "{mode:?} byte {index}: {full} at half opacity gave {half}"
+            );
+        }
+    }
+}
+
+#[test]
 fn text_glyph_rotation_turns_each_word_about_its_glyphs() {
     use lumen_engine::node::source::text::TextRenderMode;
     let _guard = TEXT_TEST_LOCK.lock().unwrap();
