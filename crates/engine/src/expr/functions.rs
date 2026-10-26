@@ -380,7 +380,7 @@ mod tests {
 
     fn at_frame(expression: &Expression, frame: u32) -> ExpressionValue {
         let ctx = ExpressionContext {
-            frame,
+            frame: f64::from(frame),
             fps: 30.0,
             ..Default::default()
         };

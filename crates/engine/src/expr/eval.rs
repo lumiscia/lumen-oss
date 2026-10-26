@@ -446,7 +446,7 @@ mod tests {
 
     fn number_at(source: &str, frame: u32) -> f64 {
         let ctx = ExpressionContext {
-            frame,
+            frame: f64::from(frame),
             fps: 30.0,
             ..test_context()
         };
@@ -562,7 +562,7 @@ mod tests {
 
     fn evaluate(source: &str, frame: u32) -> crate::Result<ExpressionValue> {
         let ctx = ExpressionContext {
-            frame,
+            frame: f64::from(frame),
             ..test_context()
         };
         Expression::parse(source).unwrap().evaluate(&ctx)
