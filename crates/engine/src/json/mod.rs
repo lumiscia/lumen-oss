@@ -25,8 +25,10 @@ use crate::{
     node::NodeId,
 };
 
-pub(crate) use property::{StringParam, classify_string, integral_i64, parse_property};
-pub use property::{parse_color, try_parse_color};
+pub(crate) use property::{
+    StringParam, classify_string, integer_mismatch, integral_i64, parse_property,
+};
+pub use property::{parse_color, try_parse_color, unknown_param_error};
 
 const DEFAULT_FPS: f32 = 30.0;
 
@@ -631,6 +633,45 @@ mod tests {
 
         let err = parse(json).unwrap_err().to_string();
         assert!(err.contains("unknown enum value `not_real`"));
+    }
+
+    fn param_error(node_type: &str, params: &str) -> String {
+        let json = format!(
+            r#"{{
+                "timeline": {{ "fps": 30, "duration_frames": 1 }},
+                "render_settings": {{ "width": 100, "height": 100 }},
+                "nodes": [{{ "id": 1, "type": "{node_type}", "params": {params} }}],
+                "connections": []
+            }}"#
+        );
+        format!("{:#}", parse(&json).unwrap_err())
+    }
+
+    #[test]
+    fn fractional_int_param_says_whole_number() {
+        let err = param_error("shape", r#"{ "height": 23.84 }"#);
+        assert!(
+            err.contains("`height` must be a whole number, got 23.84"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn out_of_range_int_param_keeps_range_message() {
+        let err = param_error("shape", r#"{ "height": 1e30 }"#);
+        assert!(
+            err.contains("`height` must be an integer within the i64 range"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn removed_bindings_param_points_to_uniforms() {
+        let err = param_error("wgsl_shader", r#"{ "bindings": {} }"#);
+        assert!(
+            err.contains("unknown param `bindings` on node 1; `wgsl_shader` takes a `uniforms` object instead"),
+            "{err}"
+        );
     }
 
     #[test]

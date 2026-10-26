@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::{
     expr::Expression,
-    node::{PropertyDef, PropertyExpression, PropertyKind, PropertyValue, ShaderUniforms},
+    node::{NodeId, PropertyDef, PropertyExpression, PropertyKind, PropertyValue, ShaderUniforms},
 };
 
 /// How a JSON string parameter starting with `=` is interpreted.
@@ -81,8 +81,8 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
             Ok(PropertyValue::Float(f))
         }
         PropertyKind::Int => {
-            let i = integral_i64(val)
-                .with_context(|| format!("`{name}` expected an integer within the i64 range"))?;
+            let i =
+                integral_i64(val).ok_or_else(|| anyhow!("`{name}` {}", integer_mismatch(val)))?;
             Ok(PropertyValue::Int(i))
         }
         PropertyKind::Bool => {
@@ -151,6 +151,34 @@ pub(crate) fn integral_i64(value: &Value) -> Option<i64> {
     let float = value.as_f64()?;
     (float.fract() == 0.0 && (i64::MIN as f64..i64::MAX as f64).contains(&float))
         .then_some(float as i64)
+}
+
+/// Says why a JSON value is not an `i64`, for values [`integral_i64`] rejected.
+pub(crate) fn integer_mismatch(value: &Value) -> String {
+    match value.as_f64() {
+        Some(float) if float.is_finite() && float.fract() != 0.0 => {
+            format!("must be a whole number, got {value}")
+        }
+        _ => format!("must be an integer within the i64 range, got {value}"),
+    }
+}
+
+/// Params that were renamed or removed, with the hint shown when a composition
+/// still uses them: `(node kind, param, hint)`.
+const RETIRED_PARAMS: &[(&str, &str, &str)] = &[(
+    "wgsl_shader",
+    "bindings",
+    "`wgsl_shader` takes a `uniforms` object instead",
+)];
+
+/// The error for a param a node does not have, with a hint for retired params.
+pub fn unknown_param_error(kind: &str, key: &str, id: NodeId) -> anyhow::Error {
+    let hint = RETIRED_PARAMS
+        .iter()
+        .find(|(retired_kind, retired_key, _)| *retired_kind == kind && *retired_key == key)
+        .map(|(_, _, hint)| format!("; {hint}"))
+        .unwrap_or_default();
+    anyhow!("unknown param `{key}` on node {id}{hint}")
 }
 
 /// Parses `[r, g, b]`, `[r, g, b, a]` with integer components in 0–255, or a
@@ -286,6 +314,34 @@ mod tests {
         ] {
             assert_eq!(integral_i64(&value), None, "{value}");
         }
+    }
+
+    #[test]
+    fn int_errors_distinguish_fractions_from_range() {
+        assert_eq!(
+            integer_mismatch(&serde_json::json!(23.84)),
+            "must be a whole number, got 23.84"
+        );
+        assert_eq!(
+            integer_mismatch(&serde_json::json!(1e30)),
+            "must be an integer within the i64 range, got 1e+30"
+        );
+        assert_eq!(
+            integer_mismatch(&serde_json::json!("3")),
+            "must be an integer within the i64 range, got \"3\""
+        );
+    }
+
+    #[test]
+    fn retired_params_get_a_hint() {
+        assert_eq!(
+            unknown_param_error("wgsl_shader", "bindings", NodeId(4)).to_string(),
+            "unknown param `bindings` on node 4; `wgsl_shader` takes a `uniforms` object instead"
+        );
+        assert_eq!(
+            unknown_param_error("wgsl_shader", "nope", NodeId(4)).to_string(),
+            "unknown param `nope` on node 4"
+        );
     }
 
     #[test]

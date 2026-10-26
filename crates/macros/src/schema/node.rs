@@ -174,7 +174,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                         match key.as_str() {
                             #(#json_known_properties,)*
                             _ if false #(|| #json_metas_known)* => (),
-                            _ => ::anyhow::bail!("unknown param `{key}` on node {id}"),
+                            _ => return ::core::result::Result::Err(::lumen_engine::json::unknown_param_error(#kind, key, id)),
                         };
                     }
                 }
