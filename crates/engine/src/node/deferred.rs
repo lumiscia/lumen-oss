@@ -736,8 +736,7 @@ impl DeferredJsonValue for f32 {
 #[cfg(feature = "json")]
 impl DeferredJsonValue for i64 {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        crate::json::integral_i64(value)
-            .ok_or_else(|| "expected an integer within the i64 range".to_string())
+        crate::json::integral_i64(value).ok_or_else(|| crate::json::integer_mismatch(value))
     }
 }
 
