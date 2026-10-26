@@ -1,7 +1,7 @@
 use cosmic_text::{CacheKey, CacheKeyFlags, FontSystem, SubpixelBin, SwashCache};
 use fdsm::{
     bezier::{Point, Segment, scanline::FillRule},
-    correct_error::{DistanceCheckMode, ErrorCorrectionConfig, correct_error_msdf},
+    correct_error::{ErrorCorrectionConfig, correct_error_msdf},
     generate::generate_msdf,
     render::correct_sign_msdf,
     shape::{Contour, Shape},
@@ -9,16 +9,17 @@ use fdsm::{
 use image::{ImageBuffer, Rgb};
 use swash::zeno::{Command, Vector};
 
-use crate::{GLYPH_MODE_MSDF, GlyphPixels, MSDF_EM_SIZE, MSDF_PX_RANGE, RenderedGlyph};
+use crate::{GLYPH_MODE_MSDF, GlyphPixels, MSDF_PX_RANGE, RenderedGlyph, msdf_em_size};
 
 /// Field texels kept around the outline: half the range plus one texel that
 /// the drawn quad insets by half a texel.
 const PADDING: f32 = MSDF_PX_RANGE / 2.0 + 1.0;
 
-/// The size-independent key that an MSDF field is generated and cached for.
+/// The key that an MSDF field is generated and cached for, shared by every size
+/// that [`msdf_em_size`] gives the same resolution.
 pub(crate) fn msdf_key(key: CacheKey) -> CacheKey {
     CacheKey {
-        font_size_bits: MSDF_EM_SIZE.to_bits(),
+        font_size_bits: msdf_em_size(f32::from_bits(key.font_size_bits)).to_bits(),
         x_bin: SubpixelBin::Zero,
         y_bin: SubpixelBin::Zero,
         flags: (key.flags & CacheKeyFlags::FAKE_ITALIC) | CacheKeyFlags::DISABLE_HINTING,
@@ -66,9 +67,13 @@ pub(crate) fn render_msdf_glyph(
     let range = f64::from(MSDF_PX_RANGE);
     let mut field = ImageBuffer::<Rgb<f32>, _>::new(width, height);
     generate_msdf(&prepared, range, &mut field);
-    let mut correction = ErrorCorrectionConfig::default();
-    correction.distance_check = DistanceCheckMode::Never;
-    correct_error_msdf(&mut field, &shape, &prepared, range, &correction);
+    correct_error_msdf(
+        &mut field,
+        &shape,
+        &prepared,
+        range,
+        &ErrorCorrectionConfig::default(),
+    );
     correct_sign_msdf(&mut field, &prepared, FillRule::Nonzero);
 
     let pixels = field
