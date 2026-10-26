@@ -194,7 +194,22 @@ pub(crate) struct TransformParams {
     pub(crate) pivot: [f32; 2],
     pub(crate) rotate_radians: f32,
     pub(crate) sampling: u32,
-    pub(crate) _pad: [u32; 4],
+    /// Taps to average over the shutter, or 0 to sample with the fields above alone.
+    pub(crate) tap_count: u32,
+    /// Whether the source stores straight alpha, which taps average premultiplied.
+    pub(crate) straight_source: u32,
+    pub(crate) _pad: [u32; 2],
+    pub(crate) taps: [TransformTap; crate::node::motion::MAX_MOTION_TAPS],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct TransformTap {
+    pub(crate) scale: [f32; 2],
+    pub(crate) translate: [f32; 2],
+    pub(crate) pivot: [f32; 2],
+    pub(crate) rotate_radians: f32,
+    pub(crate) _pad: u32,
 }
 
 #[repr(C)]

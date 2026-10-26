@@ -7,6 +7,7 @@ mod deferred;
 mod delegate;
 mod ids;
 mod kind;
+pub(crate) mod motion;
 mod param_type;
 mod ports;
 mod property;

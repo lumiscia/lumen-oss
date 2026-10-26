@@ -10,6 +10,17 @@ struct DrawableTransform {
     _pad: vec2<u32>,
 }
 
+// Transforms to average over the shutter, each mapping geometry laid out at the frame to
+// the canvas at the tap's time. With no taps the frame's transform is drawn alone. The
+// array length is `MAX_MOTION_TAPS`.
+struct DrawableMotion {
+    tap_count: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+    taps: array<DrawableTransform, 32>,
+}
+
 // Bit of `DrawableTransform.flags`, set when scale or rotation differ from the identity.
 // Without it, points pass through unchanged so untransformed output stays exact.
 const TRANSFORM_LINEAR: u32 = 1u;

@@ -955,6 +955,7 @@ export interface PathNode extends CompositionNodeBase<"path"> {
     readonly "edge_antialias"?: ExpressionValue<boolean>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
     readonly "fill_paint"?: ExpressionValue<Paint>;
+    readonly "motion_blur"?: ExpressionValue<number>;
     readonly "opacity"?: ExpressionValue<number>;
     readonly "position"?: ExpressionValue<Vec2>;
     readonly "rotation"?: ExpressionValue<number>;
@@ -1004,6 +1005,7 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
     readonly "fill_paint"?: ExpressionValue<Paint>;
     readonly "geometry_kind"?: ShapeGeometryKind;
     readonly "height"?: ExpressionValue<number>;
+    readonly "motion_blur"?: ExpressionValue<number>;
     readonly "opacity"?: ExpressionValue<number>;
     readonly "polygon_points"?: ExpressionValue<string>;
     readonly "position"?: ExpressionValue<Vec2>;
@@ -1036,6 +1038,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "letter_spacing"?: ExpressionValue<number>;
     readonly "line_height"?: ExpressionValue<number>;
     readonly "max_width"?: ExpressionValue<number>;
+    readonly "motion_blur"?: ExpressionValue<number>;
     readonly "opacity"?: ExpressionValue<number>;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
     readonly "position"?: ExpressionValue<Vec2>;
@@ -1057,6 +1060,7 @@ export interface TimeRemapNode extends CompositionNodeBase<"time_remap"> {
 export interface TransformNode extends CompositionNodeBase<"transform"> {
   readonly params?: {
     readonly "custom_pivot"?: ExpressionValue<boolean>;
+    readonly "motion_blur"?: ExpressionValue<number>;
     readonly "pivot_x"?: ExpressionValue<number>;
     readonly "pivot_y"?: ExpressionValue<number>;
     readonly "rotate"?: ExpressionValue<number>;

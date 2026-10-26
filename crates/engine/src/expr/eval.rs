@@ -355,6 +355,20 @@ mod tests {
     }
 
     #[test]
+    fn subframe_offsets_frame_and_time() {
+        let ctx = test_context().at_subframe(-0.25);
+
+        assert_eq!(
+            evaluate_expr(&ExprNode::Global(GlobalVar::Frame), &ctx).unwrap(),
+            ExpressionValue::Number(47.75)
+        );
+        assert_eq!(
+            evaluate_expr(&ExprNode::Global(GlobalVar::Time), &ctx).unwrap(),
+            ExpressionValue::Number(47.75 / 24.0)
+        );
+    }
+
+    #[test]
     fn converts_supported_node_properties() {
         assert_eq!(
             property_value_to_expression_value(&PropertyValue::Int(7)).unwrap(),

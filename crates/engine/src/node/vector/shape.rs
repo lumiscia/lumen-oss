@@ -1,10 +1,11 @@
-use super::drawable::DrawableTransform;
+use super::drawable::{DeferredTransform, DrawableMotion, DrawableTransform};
 use super::paint::Paint;
 use super::renderer::{
     MAX_PATH_POINTS, PathBuffers, PathUniforms, ShapeUniforms, VectorRenderer, style_flags,
 };
 use crate::error::RenderError;
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::node::motion::Shutter;
 use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 #[derive(
@@ -57,6 +58,10 @@ pub struct ShapeParams {
     /// Opacity multiplier.
     #[meta(min = 0, max = 1, step = 0.01)]
     pub opacity: f64,
+    /// Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
+    /// usual film look and 360 smears over the whole frame.
+    #[meta(min = 0, max = 360, step = 1)]
+    pub motion_blur: f64,
     /// Enables fill rendering.
     #[meta()]
     pub fill_enabled: bool,
@@ -91,6 +96,7 @@ impl Default for ShapeParams {
             rotation: 0.0,
             anchor: (0.0, 0.0),
             opacity: 1.0,
+            motion_blur: 0.0,
             fill_enabled: true,
             fill_paint: Paint::solid([255, 255, 255, 255]),
             stroke_enabled: false,
@@ -147,11 +153,13 @@ impl GpuCompiledNode for CompiledShape {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let expr = ctx.expr_context(self.node_id, "params");
         let evaluated = self.params.eval(&NodeParamEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &expr,
         })?;
-        let params = shape_uniforms(&evaluated);
+        let shutter = shape_shutter(&self.params, &evaluated, self.node_id, &expr)?;
+        let params = shape_uniforms(&evaluated, shutter.as_ref());
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
     }
@@ -170,9 +178,10 @@ impl GpuCompiledNode for CompiledPolygonShape {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let expr = ctx.expr_context(self.node_id, "params");
         let evaluated = self.params.eval(&NodeParamEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &expr,
         })?;
         // Invalid or incomplete point lists draw nothing, so editing the field never fails the frame.
         let vertices = parse_polygon_points(&evaluated.polygon_points).unwrap_or_default();
@@ -203,13 +212,22 @@ impl GpuCompiledNode for CompiledPolygonShape {
             trim_end: 1.0,
             ..bytemuck::Zeroable::zeroed()
         };
-        self.buffers
-            .write(bound, params, &points, &drawable_transform(&evaluated));
+        let shutter = shape_shutter(&self.params, &evaluated, self.node_id, &expr)?;
+        self.buffers.write(
+            bound,
+            params,
+            &points,
+            &drawable_transform(&evaluated),
+            shutter.as_ref(),
+        );
         Ok(())
     }
 }
 
-fn shape_uniforms(params: &ShapeParams) -> ShapeUniforms {
+fn shape_uniforms(
+    params: &ShapeParams,
+    shutter: Option<&Shutter<DrawableTransform>>,
+) -> ShapeUniforms {
     let position = [params.position.0 as f32, params.position.1 as f32];
     let empty = params.width <= 0 || params.height <= 0;
     let size = [params.width.max(0) as f32, params.height.max(0) as f32];
@@ -220,13 +238,13 @@ fn shape_uniforms(params: &ShapeParams) -> ShapeUniforms {
     } else {
         0.0
     };
-    let [min_x, min_y, max_x, max_y] = transform.canvas_bounds(
-        [position[0] - margin, position[1] - margin],
-        [
-            position[0] + size[0] + margin,
-            position[1] + size[1] + margin,
-        ],
-    );
+    let min = [position[0] - margin, position[1] - margin];
+    let max = [
+        position[0] + size[0] + margin,
+        position[1] + size[1] + margin,
+    ];
+    let motion = DrawableMotion::new(shutter, min, max);
+    let [min_x, min_y, max_x, max_y] = motion.canvas_bounds(transform, min, max);
     ShapeUniforms {
         fill_paint: params.fill_paint.to_gpu([255, 255, 255, 255]),
         stroke_paint: params.stroke_paint.to_gpu([0, 0, 0, 255]),
@@ -239,7 +257,28 @@ fn shape_uniforms(params: &ShapeParams) -> ShapeUniforms {
         flags: if empty { 0 } else { shape_flags(params) },
         transform,
         screen_bounds: [min_x - 1.0, min_y - 1.0, max_x + 1.0, max_y + 1.0],
+        motion: motion.to_gpu(),
     }
+}
+
+fn shape_shutter(
+    deferred: &ShapeParamsDelegate,
+    params: &ShapeParams,
+    node_id: NodeId,
+    expr: &crate::expr::ExpressionContext<'_>,
+) -> crate::Result<Option<Shutter<DrawableTransform>>> {
+    DeferredTransform {
+        position: &deferred.position,
+        scale: &deferred.scale,
+        rotation: &deferred.rotation,
+        anchor: &deferred.anchor,
+    }
+    .shutter(
+        params.motion_blur,
+        drawable_transform(params),
+        node_id,
+        expr,
+    )
 }
 
 fn drawable_transform(params: &ShapeParams) -> DrawableTransform {
@@ -304,7 +343,7 @@ mod tests {
             border_radius: -12.0,
             ..ShapeParams::default()
         };
-        assert_eq!(shape_uniforms(&params).border_radius, 0.0);
+        assert_eq!(shape_uniforms(&params, None).border_radius, 0.0);
     }
 
     #[test]

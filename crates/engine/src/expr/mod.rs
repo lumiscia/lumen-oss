@@ -61,4 +61,13 @@ impl ExpressionContext<'_> {
             self.frame / self.fps as f64
         }
     }
+
+    /// This context moved by `offset` frames.
+    pub fn at_subframe(&self, offset: f64) -> Self {
+        Self {
+            frame: self.frame + offset,
+            path: self.path.clone(),
+            ..*self
+        }
+    }
 }
