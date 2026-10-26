@@ -524,7 +524,7 @@
                       }
                     ],
                     "default": 0.0,
-                    "description": "Alpha cutoff used before evaluating the boolean operation.",
+                    "description": "Alpha above this cutoff counts as opaque; 0 applies no cutoff and keeps antialiased edges.",
                     "title": "Threshold",
                     "x-lumen-constraints": {
                       "max": 1.0,
@@ -1665,6 +1665,59 @@
                     ],
                     "x-lumen-kind": "enum"
                   },
+                  "feather": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`.",
+                    "title": "Feather",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.5
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "invert": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Swaps the masked and unmasked areas.",
+                    "title": "Invert",
+                    "x-lumen-kind": "bool"
+                  },
+                  "mask_mode": {
+                    "default": "alpha",
+                    "description": "Channel of the `mask` input that controls overlay visibility.",
+                    "enum": ["alpha", "luma"],
+                    "title": "Mask Mode",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Alpha",
+                        "name": "alpha",
+                        "value": 0
+                      },
+                      {
+                        "label": "Luma",
+                        "name": "luma",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
                   "opacity": {
                     "anyOf": [
                       {
@@ -2457,7 +2510,7 @@
                   "height": {
                     "anyOf": [
                       {
-                        "minimum": 1.0,
+                        "minimum": 0.0,
                         "type": "integer"
                       },
                       {
@@ -2465,10 +2518,10 @@
                       }
                     ],
                     "default": 1,
-                    "description": "Shape height in pixels. Ignored for polygon geometry.",
+                    "description": "Shape height in pixels; 0 draws nothing. Ignored for polygon geometry.",
                     "title": "Height",
                     "x-lumen-constraints": {
-                      "min": 1.0,
+                      "min": 0.0,
                       "step": 1.0
                     },
                     "x-lumen-kind": "int"
@@ -2556,7 +2609,7 @@
                   "width": {
                     "anyOf": [
                       {
-                        "minimum": 1.0,
+                        "minimum": 0.0,
                         "type": "integer"
                       },
                       {
@@ -2564,10 +2617,10 @@
                       }
                     ],
                     "default": 1,
-                    "description": "Shape width in pixels. Ignored for polygon geometry.",
+                    "description": "Shape width in pixels; 0 draws nothing. Ignored for polygon geometry.",
                     "title": "Width",
                     "x-lumen-constraints": {
-                      "min": 1.0,
+                      "min": 0.0,
                       "step": 1.0
                     },
                     "x-lumen-kind": "int"

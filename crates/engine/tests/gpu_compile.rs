@@ -11,7 +11,8 @@ use lumen_engine::{
     node::{
         Deferred, NodeId, NodeKind, PortRef,
         compositing::{
-            merge::{Merge, MergeParamsDelegate},
+            boolean::{Boolean, BooleanOperation, BooleanParamsDelegate},
+            merge::{MaskMode, Merge, MergeParamsDelegate},
             raster_multimerge::{RasterMultiMerge, RasterMultiMergeParamsDelegate},
             switch::{Switch, SwitchParamsDelegate},
         },
@@ -3477,6 +3478,697 @@ fn filled_path_composition() -> Composition {
         }),
     );
     test_composition(graph)
+}
+
+const MASK_CANVAS_WIDTH: usize = 24;
+// Tall enough that the middle row is unaffected by the transparent area beyond the top and bottom.
+const MASK_CANVAS_HEIGHT: usize = 64;
+const MASK_ROW: usize = MASK_CANVAS_HEIGHT / 2;
+
+fn sized_solid(id: NodeId, color: [u8; 4], width: usize) -> NodeKind {
+    sized_solid_rect(id, color, width, MASK_CANVAS_HEIGHT)
+}
+
+fn sized_solid_rect(id: NodeId, color: [u8; 4], width: usize, height: usize) -> NodeKind {
+    NodeKind::Background(Background {
+        id,
+        params: BackgroundParamsDelegate {
+            paint: Paint::solid(color).into(),
+            width: Deferred::value(width as u32),
+            height: Deferred::value(height as u32),
+            paint_supersample: Deferred::value(true),
+        },
+    })
+}
+
+fn wide_solid(id: NodeId, color: [u8; 4]) -> NodeKind {
+    sized_solid(id, color, MASK_CANVAS_WIDTH)
+}
+
+/// A white-filled rectangle spanning the canvas height with half-covered pixels on both sides.
+fn edged_rectangle(id: NodeId, x: f64, width: i64, color: [u8; 4]) -> NodeKind {
+    NodeKind::Shape(Shape {
+        id,
+        params: ShapeParamsDelegate {
+            width: Deferred::value(width),
+            height: Deferred::value(MASK_CANVAS_HEIGHT as i64),
+            position: Deferred::value((x, 0.0)),
+            fill_paint: Paint::solid(color).into(),
+            ..Default::default()
+        },
+    })
+}
+
+/// Renders the red channel of white merged over black through `mask`, so the result is the matte.
+fn render_matte(
+    mask_nodes: impl FnOnce(&mut Graph) -> NodeId,
+    params: MergeParamsDelegate,
+) -> Vec<u8> {
+    render_matte_on(MASK_CANVAS_WIDTH, mask_nodes, params)
+}
+
+fn render_matte_on(
+    canvas_width: usize,
+    mask_nodes: impl FnOnce(&mut Graph) -> NodeId,
+    params: MergeParamsDelegate,
+) -> Vec<u8> {
+    let (base, overlay, merge, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(3),
+        NodeId::new(4),
+    );
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(base, sized_solid(base, [0, 0, 0, 255], canvas_width));
+    graph.nodes.insert(
+        overlay,
+        sized_solid(overlay, [255, 255, 255, 255], canvas_width),
+    );
+    let mask = mask_nodes(&mut graph);
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            params,
+            base: PortRef::new(base, "output".to_string()),
+            overlay: PortRef::new(overlay, "output".to_string()),
+            mask: PortRef::new(mask, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = canvas_width as u32;
+    composition.render_settings.height = MASK_CANVAS_HEIGHT as u32;
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return Vec::new();
+    };
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    // The middle row of the red channel.
+    (0..canvas_width)
+        .map(|x| pixels[(MASK_ROW * canvas_width + x) * 4])
+        .collect()
+}
+
+fn assert_matte(actual: &[u8], expected: &[(usize, u8)]) {
+    if actual.is_empty() {
+        return;
+    }
+    for &(x, value) in expected {
+        assert!(
+            actual[x].abs_diff(value) <= 2,
+            "column {x}: expected {value}, got {} in {actual:?}",
+            actual[x]
+        );
+    }
+}
+
+#[test]
+fn merge_alpha_mask_keeps_antialiased_edges() {
+    // Covers columns 8 (half), 9..=15 (full) and 16 (half).
+    let matte = render_matte(
+        |graph| {
+            let mask = NodeId::new(5);
+            graph
+                .nodes
+                .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 255, 255, 255]));
+            mask
+        },
+        MergeParamsDelegate::default(),
+    );
+    assert_matte(
+        &matte,
+        &[
+            (0, 0),
+            (7, 0),
+            (8, 128),
+            (9, 255),
+            (15, 255),
+            (16, 128),
+            (17, 0),
+        ],
+    );
+}
+
+#[test]
+fn merge_luma_mask_uses_rec709_over_black() {
+    let luma = || MergeParamsDelegate {
+        mask_mode: MaskMode::Luma.into(),
+        ..Default::default()
+    };
+
+    // An opaque red edge-antialiased mask: alpha mode would give 255 and 128 here.
+    let matte = render_matte(
+        |graph| {
+            let mask = NodeId::new(5);
+            graph
+                .nodes
+                .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 0, 0, 255]));
+            mask
+        },
+        luma(),
+    );
+    assert_matte(
+        &matte,
+        &[(7, 0), (8, 27), (9, 54), (15, 54), (16, 27), (17, 0)],
+    );
+
+    let matte = render_matte(
+        |graph| {
+            let mask = NodeId::new(5);
+            graph.nodes.insert(mask, wide_solid(mask, [0, 255, 0, 255]));
+            mask
+        },
+        luma(),
+    );
+    assert_matte(&matte, &[(0, 182), (12, 182)]);
+
+    // A straight-alpha mask is premultiplied before taking luma: white at 50% alpha is 50%.
+    let matte = render_matte(
+        |graph| {
+            let (solid_id, mask) = (NodeId::new(5), NodeId::new(6));
+            graph
+                .nodes
+                .insert(solid_id, wide_solid(solid_id, [255, 255, 255, 128]));
+            graph.nodes.insert(
+                mask,
+                NodeKind::AlphaPremultiply(AlphaPremultiply {
+                    id: mask,
+                    params: AlphaPremultiplyParamsDelegate {
+                        mode: Deferred::value("unpremultiply".to_string()),
+                    },
+                    source: PortRef::new(solid_id, "output".to_string()),
+                }),
+            );
+            mask
+        },
+        luma(),
+    );
+    assert_matte(&matte, &[(0, 128), (12, 128)]);
+}
+
+#[test]
+fn merge_invert_flips_alpha_and_luma_masks() {
+    let rectangle = |graph: &mut Graph| {
+        let mask = NodeId::new(5);
+        graph
+            .nodes
+            .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 255, 255, 255]));
+        mask
+    };
+    for mask_mode in [MaskMode::Alpha, MaskMode::Luma] {
+        let matte = render_matte(
+            rectangle,
+            MergeParamsDelegate {
+                mask_mode: mask_mode.into(),
+                invert: Deferred::value(true),
+                ..Default::default()
+            },
+        );
+        assert_matte(
+            &matte,
+            &[
+                (0, 255),
+                (7, 255),
+                (8, 127),
+                (9, 0),
+                (15, 0),
+                (16, 127),
+                (17, 255),
+            ],
+        );
+    }
+}
+
+#[test]
+fn merge_feather_softens_mask_edges_and_preserves_coverage() {
+    let rectangle = |graph: &mut Graph| {
+        let mask = NodeId::new(5);
+        graph
+            .nodes
+            .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 255, 255, 255]));
+        mask
+    };
+    let sharp = render_matte(rectangle, MergeParamsDelegate::default());
+    let soft = render_matte(
+        rectangle,
+        MergeParamsDelegate {
+            feather: Deferred::value(2.0),
+            ..Default::default()
+        },
+    );
+    if soft.is_empty() {
+        return;
+    }
+
+    assert_matte(&soft, &[(0, 0), (2, 0), (12, 255)]);
+    // The sharp edge ramps up over several pixels instead of one.
+    assert!(
+        soft[7] > 0 && soft[8] > 0,
+        "feather spreads the matte outside the shape: {soft:?}"
+    );
+    assert!(
+        soft[9] < 255,
+        "feather spreads the matte inside the shape: {soft:?}"
+    );
+    assert!(
+        soft[6..=11].windows(2).all(|pair| pair[0] <= pair[1]),
+        "the feathered edge rises monotonically: {soft:?}"
+    );
+    // Averaging redistributes coverage without adding or removing any.
+    let total = |matte: &[u8]| matte.iter().map(|&value| i32::from(value)).sum::<i32>();
+    let (sharp_total, soft_total) = (total(&sharp), total(&soft));
+    assert!(
+        (sharp_total - soft_total).abs() * 20 <= sharp_total,
+        "total coverage changed from {sharp_total} to {soft_total}"
+    );
+
+    // Negative values behave like no feather, and huge values stay bounded and still render.
+    let negative = render_matte(
+        rectangle,
+        MergeParamsDelegate {
+            feather: Deferred::value(-3.0),
+            ..Default::default()
+        },
+    );
+    assert_eq!(negative, sharp);
+    let huge = render_matte(
+        rectangle,
+        MergeParamsDelegate {
+            feather: Deferred::value(1.0e9),
+            ..Default::default()
+        },
+    );
+    assert_eq!(huge.len(), MASK_CANVAS_WIDTH);
+}
+
+#[test]
+fn merge_feather_spreads_outside_a_smaller_mask() {
+    // The mask texture is half the canvas wide, so its right edge is a texture edge.
+    let mask_nodes = |graph: &mut Graph| {
+        let mask = NodeId::new(5);
+        graph
+            .nodes
+            .insert(mask, sized_solid(mask, [255, 255, 255, 255], 12));
+        mask
+    };
+    let sharp = render_matte(mask_nodes, MergeParamsDelegate::default());
+    assert_matte(&sharp, &[(11, 255), (12, 0)]);
+
+    let soft = render_matte(
+        mask_nodes,
+        MergeParamsDelegate {
+            feather: Deferred::value(2.0),
+            ..Default::default()
+        },
+    );
+    if soft.is_empty() {
+        return;
+    }
+    assert!(
+        soft[12] > 40 && soft[13] > 0,
+        "feather spreads past the mask texture: {soft:?}"
+    );
+    assert!(soft[11] < 230, "feather softens the inside: {soft:?}");
+    assert!(
+        soft[6..=16].windows(2).all(|pair| pair[0] >= pair[1]),
+        "the feathered edge falls monotonically: {soft:?}"
+    );
+}
+
+/// Compiles a merge of two canvas-sized solids through a solid mask of the given size.
+fn compile_feathered_merge(
+    mask_size: (usize, usize),
+    feather: Deferred<f64>,
+) -> lumen_engine::gpu::CompiledComposition {
+    let (base, overlay, mask, merge, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(5),
+        NodeId::new(3),
+        NodeId::new(4),
+    );
+    let mut graph = Graph::new();
+    graph.nodes.insert(base, wide_solid(base, [0, 0, 0, 255]));
+    graph
+        .nodes
+        .insert(overlay, wide_solid(overlay, [255, 255, 255, 255]));
+    graph.nodes.insert(
+        mask,
+        sized_solid_rect(mask, [255, 255, 255, 255], mask_size.0, mask_size.1),
+    );
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            params: MergeParamsDelegate {
+                feather,
+                ..Default::default()
+            },
+            base: PortRef::new(base, "output".to_string()),
+            overlay: PortRef::new(overlay, "output".to_string()),
+            mask: PortRef::new(mask, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(merge, "output".to_string()),
+        }),
+    );
+    CompileContext::new(&test_composition(graph))
+        .compile()
+        .unwrap()
+}
+
+fn feather_passes(compiled: &lumen_engine::gpu::CompiledComposition) -> usize {
+    compiled
+        .plan
+        .passes()
+        .iter()
+        .filter(|pass| {
+            matches!(
+                &pass.desc,
+                lumen_gpu::PassDesc::Compute(desc)
+                    if desc.label.as_deref().is_some_and(|label| label.starts_with("merge-feather:"))
+            )
+        })
+        .count()
+}
+
+#[test]
+fn merge_without_a_feather_skips_the_gaussian_passes() {
+    let size = (MASK_CANVAS_WIDTH, MASK_CANVAS_HEIGHT);
+    let sharp = compile_feathered_merge(size, Deferred::value(0.0));
+    let negative = compile_feathered_merge(size, Deferred::value(-2.0));
+    let expression = compile_feathered_merge(
+        size,
+        Deferred::Expr(lumen_engine::expr::Expression::parse("0").unwrap()),
+    );
+
+    assert_eq!(feather_passes(&sharp), 0);
+    assert_eq!(feather_passes(&negative), 0);
+    assert!(feather_passes(&expression) > 0);
+    let extra_textures = expression.plan.textures().len() - sharp.plan.textures().len();
+    assert!(
+        extra_textures > 0 && negative.plan.textures().len() == sharp.plan.textures().len(),
+        "the expression feather allocates the blur's textures"
+    );
+
+    // A feather that evaluates to zero reads the mask exactly like a literal zero, including
+    // a translucent straight-alpha mask.
+    let rectangle = |graph: &mut Graph| {
+        let (shape, mask) = (NodeId::new(5), NodeId::new(6));
+        graph
+            .nodes
+            .insert(shape, edged_rectangle(shape, 8.5, 8, [200, 90, 40, 150]));
+        graph.nodes.insert(
+            mask,
+            NodeKind::AlphaPremultiply(AlphaPremultiply {
+                id: mask,
+                params: AlphaPremultiplyParamsDelegate {
+                    mode: Deferred::value("unpremultiply".to_string()),
+                },
+                source: PortRef::new(shape, "output".to_string()),
+            }),
+        );
+        mask
+    };
+    for mask_mode in [MaskMode::Alpha, MaskMode::Luma] {
+        let render = |feather: Deferred<f64>| {
+            render_matte(
+                rectangle,
+                MergeParamsDelegate {
+                    mask_mode: mask_mode.into(),
+                    feather,
+                    ..Default::default()
+                },
+            )
+        };
+        let skipped = render(Deferred::value(0.0));
+        let blurred = render(Deferred::Expr(
+            lumen_engine::expr::Expression::parse("0").unwrap(),
+        ));
+        assert_eq!(skipped, blurred, "{mask_mode:?}");
+    }
+}
+
+#[test]
+fn merge_feather_blurs_the_union_of_the_mask_and_the_base() {
+    let feather = || Deferred::value(2.0);
+    let output_size = |compiled: &lumen_engine::gpu::CompiledComposition| {
+        compiled
+            .plan
+            .textures()
+            .iter()
+            .find(|texture| texture.label.as_deref() == Some("merge-feather:3:output"))
+            .map(|texture| texture.desc.domain.storage_size)
+            .unwrap()
+    };
+    let base = lumen_gpu::Size::new(MASK_CANVAS_WIDTH as u32, MASK_CANVAS_HEIGHT as u32);
+
+    let larger =
+        compile_feathered_merge((MASK_CANVAS_WIDTH + 40, MASK_CANVAS_HEIGHT + 30), feather());
+    assert_eq!(
+        output_size(&larger),
+        lumen_gpu::Size::new(base.width + 40, base.height + 30)
+    );
+    let wider = compile_feathered_merge((MASK_CANVAS_WIDTH + 8, MASK_CANVAS_HEIGHT / 2), feather());
+    assert_eq!(
+        output_size(&wider),
+        lumen_gpu::Size::new(base.width + 8, base.height)
+    );
+    let smaller = compile_feathered_merge((12, 12), feather());
+    assert_eq!(output_size(&smaller), base);
+}
+
+#[test]
+fn merge_feather_animates_smoothly() {
+    let rectangle = |graph: &mut Graph| {
+        let mask = NodeId::new(5);
+        graph
+            .nodes
+            .insert(mask, edged_rectangle(mask, 8.5, 8, [255, 255, 255, 255]));
+        mask
+    };
+    let render = |feather: f64| {
+        render_matte(
+            rectangle,
+            MergeParamsDelegate {
+                feather: Deferred::value(feather),
+                ..Default::default()
+            },
+        )
+    };
+    let mut previous = render(0.0);
+    if previous.is_empty() {
+        return;
+    }
+    for step in 1..=32 {
+        let feather = f64::from(step) * 0.25;
+        let current = render(feather);
+        let largest_change = previous
+            .iter()
+            .zip(&current)
+            .map(|(before, after)| before.abs_diff(*after))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            largest_change <= 16,
+            "feather {} -> {feather} changed a pixel by {largest_change}: {previous:?} -> {current:?}",
+            feather - 0.25
+        );
+        previous = current;
+    }
+}
+
+#[test]
+fn merge_large_feather_has_no_ripples_on_a_thin_line() {
+    const WIDTH: usize = 256;
+    let line = |graph: &mut Graph| {
+        let mask = NodeId::new(5);
+        graph
+            .nodes
+            .insert(mask, edged_rectangle(mask, 128.0, 1, [255, 255, 255, 255]));
+        mask
+    };
+    let blurred = render_matte_on(
+        WIDTH,
+        line,
+        MergeParamsDelegate {
+            feather: Deferred::value(32.0),
+            ..Default::default()
+        },
+    );
+    if blurred.is_empty() {
+        return;
+    }
+    let peak = blurred[128];
+    assert!(
+        (3..=9).contains(&peak) && blurred[128 - 24] > 0 && blurred[128 + 24] > 0,
+        "the line spreads into a wide, low bump: {blurred:?}"
+    );
+    // Each side only rises towards the line and then falls away, within a level of rounding.
+    let (rising, falling) = (&blurred[..=128], &blurred[128..]);
+    assert!(
+        rising.windows(2).all(|pair| pair[1] + 1 >= pair[0]),
+        "ripples left of the line: {blurred:?}"
+    );
+    assert!(
+        falling.windows(2).all(|pair| pair[0] + 1 >= pair[1]),
+        "ripples right of the line: {blurred:?}"
+    );
+}
+
+fn render_boolean_alpha(a: (f64, i64), b: (f64, i64), params: BooleanParamsDelegate) -> Vec<u8> {
+    let (a_id, b_id, boolean, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(3),
+        NodeId::new(4),
+    );
+    let mut graph = Graph::new();
+    graph
+        .nodes
+        .insert(a_id, edged_rectangle(a_id, a.0, a.1, [255, 255, 255, 255]));
+    graph
+        .nodes
+        .insert(b_id, edged_rectangle(b_id, b.0, b.1, [255, 255, 255, 255]));
+    graph.nodes.insert(
+        boolean,
+        NodeKind::Boolean(Boolean {
+            id: boolean,
+            params,
+            a: PortRef::new(a_id, "output".to_string()),
+            b: PortRef::new(b_id, "output".to_string()),
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(boolean, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = MASK_CANVAS_WIDTH as u32;
+    composition.render_settings.height = MASK_CANVAS_HEIGHT as u32;
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return Vec::new();
+    };
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    (0..MASK_CANVAS_WIDTH)
+        .map(|x| pixels[(MASK_ROW * MASK_CANVAS_WIDTH + x) * 4 + 3])
+        .collect()
+}
+
+#[test]
+fn boolean_preserves_antialiased_edges_by_default() {
+    // A covers columns 1 (half), 2..=3 and 4 (half); B covers 3 (half), 4..=7 and 8 (half).
+    let (a, b) = ((1.5, 3), (3.5, 5));
+    let union = render_boolean_alpha(a, b, BooleanParamsDelegate::default());
+    let intersect = render_boolean_alpha(
+        a,
+        b,
+        BooleanParamsDelegate {
+            operation: Deferred::value(BooleanOperation::Intersect as i64),
+            ..Default::default()
+        },
+    );
+    if union.is_empty() {
+        return;
+    }
+    assert_matte(
+        &[union.clone(), intersect.clone()].concat(),
+        &[
+            (0, 0),
+            (1, 128),
+            (2, 255),
+            (3, 255),
+            (4, 255),
+            (8, 128),
+            (9, 0),
+            (MASK_CANVAS_WIDTH + 3, 128),
+            (MASK_CANVAS_WIDTH + 4, 128),
+            (MASK_CANVAS_WIDTH + 2, 0),
+            (MASK_CANVAS_WIDTH + 5, 0),
+        ],
+    );
+
+    // An explicit threshold still binarizes the pixels above it.
+    let thresholded = render_boolean_alpha(
+        a,
+        b,
+        BooleanParamsDelegate {
+            threshold: Deferred::value(0.25),
+            ..Default::default()
+        },
+    );
+    assert_matte(&thresholded, &[(1, 255), (4, 255), (8, 255), (9, 0)]);
+}
+
+#[test]
+fn boolean_subtracting_a_mask_from_itself_leaves_nothing() {
+    let subtract = BooleanParamsDelegate {
+        operation: Deferred::value(BooleanOperation::Subtract as i64),
+        ..Default::default()
+    };
+    // Columns 1 and 4 are half covered.
+    let result = render_boolean_alpha((1.5, 3), (1.5, 3), subtract.clone());
+    if result.is_empty() {
+        return;
+    }
+    assert_eq!(result, vec![0; MASK_CANVAS_WIDTH]);
+
+    // Subtracting a partially overlapping mask keeps only what B does not cover.
+    let result = render_boolean_alpha((1.5, 3), (3.5, 5), subtract);
+    assert_matte(&result, &[(1, 128), (2, 255), (3, 128), (4, 0)]);
+}
+
+#[test]
+fn zero_size_shape_draws_nothing() {
+    for (width, height) in [(0, 4), (8, 0), (0, 0)] {
+        let shape = NodeId::new(1);
+        let output = NodeId::new(2);
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            shape,
+            NodeKind::Shape(Shape {
+                id: shape,
+                params: ShapeParamsDelegate {
+                    width: Deferred::value(width),
+                    height: Deferred::value(height),
+                    stroke_enabled: Deferred::value(true),
+                    stroke_paint: Paint::solid([0, 255, 0, 255]).into(),
+                    fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+                    ..Default::default()
+                },
+            }),
+        );
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(shape, "output".to_string()),
+            }),
+        );
+        let Some(mut renderer) = gpu_composition_renderer() else {
+            return;
+        };
+        let pixels = render_rgba8(&mut renderer, &test_composition(graph), 0, &EmptyMediaStore);
+        assert!(
+            pixels.iter().all(|&channel| channel == 0),
+            "{width}x{height} shape drew something: {pixels:?}"
+        );
+    }
 }
 
 #[derive(Debug)]

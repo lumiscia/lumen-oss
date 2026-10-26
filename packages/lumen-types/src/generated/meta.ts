@@ -807,6 +807,7 @@ export type ChannelShuffleRed = "red" | "green" | "blue" | "alpha" | "zero" | "o
 export type MediaInKind = "image" | "video";
 export type MediaInLoopMode = "clamp" | "repeat" | "ping_pong";
 export type MergeBlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
+export type MergeMaskMode = "alpha" | "luma";
 export type RasterMultimergeBlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
 export type ResizeMode = "stretch" | "fit" | "fill";
 export type ResizeSampling = "nearest" | "linear";
@@ -934,6 +935,9 @@ export interface MemoNode extends CompositionNodeBase<"memo"> {
 export interface MergeNode extends CompositionNodeBase<"merge"> {
   readonly params?: {
     readonly "blend_mode"?: MergeBlendMode;
+    readonly "feather"?: ExpressionValue<number>;
+    readonly "invert"?: ExpressionValue<boolean>;
+    readonly "mask_mode"?: MergeMaskMode;
     readonly "opacity"?: ExpressionValue<number>;
   };
 }

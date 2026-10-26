@@ -36,7 +36,7 @@ pub struct BooleanParams {
     /// Boolean operation used to combine the two input masks.
     #[meta(kind = "enum", enum_type = BooleanOperation)]
     pub operation: i64,
-    /// Alpha cutoff used before evaluating the boolean operation.
+    /// Alpha above this cutoff counts as opaque; 0 applies no cutoff and keeps antialiased edges.
     #[meta(min = 0, max = 1, step = 0.01)]
     pub threshold: f64,
 }

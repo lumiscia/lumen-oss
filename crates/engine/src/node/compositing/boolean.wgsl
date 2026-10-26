@@ -26,13 +26,16 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let b = to_premultiplied_alpha(sample_or_transparent(b_tex, id.xy), params.values.w >= 0.5);
     let operation = u32(params.values.x);
     let threshold = clamp(params.values.y, 0.0, 1.0);
-    let aa = select(a.a, 1.0, a.a > threshold);
-    let ba = select(b.a, 1.0, b.a > threshold);
+    // A zero threshold applies no cutoff, so antialiased coverage passes through.
+    let aa = select(a.a, 1.0, threshold > 0.0 && a.a > threshold);
+    let ba = select(b.a, 1.0, threshold > 0.0 && b.a > threshold);
     var alpha = max(aa, ba);
     if (operation == 1u) {
         alpha = min(aa, ba);
     } else if (operation == 2u) {
-        alpha = aa * (1.0 - ba);
+        // Subtracting a mask from itself must leave nothing, which a product would not for
+        // partially covered pixels.
+        alpha = max(aa - ba, 0.0);
     } else if (operation == 3u) {
         alpha = abs(aa - ba);
     }
