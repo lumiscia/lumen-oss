@@ -3,6 +3,8 @@ use bytemuck::{Pod, Zeroable};
 pub const GLYPH_MODE_RASTER_MASK: u32 = 0;
 pub const GLYPH_MODE_RASTER_COLOR: u32 = 1;
 pub const GLYPH_MODE_MSDF: u32 = 2;
+/// Bit of [`GpuGlyphInstance::flags`] set when the glyph has its own transform.
+pub const GLYPH_TRANSFORMED: u32 = 1;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
@@ -23,5 +25,9 @@ pub struct GpuGlyphInstance {
     pub uv_rect: [f32; 4],
     pub color: [f32; 4],
     pub mode: u32,
-    pub _padding: [u32; 3],
+    pub flags: u32,
+    /// The glyph's own transform, applied to `rect` before the text's: the offset after
+    /// the columns of `linear`. Used only with [`GLYPH_TRANSFORMED`].
+    pub offset: [f32; 2],
+    pub linear: [[f32; 2]; 2],
 }

@@ -10,10 +10,14 @@ struct GlyphInstance {
     uv_rect: vec4<f32>,
     color: vec4<f32>,
     mode: u32,
-    _padding0: u32,
-    _padding1: u32,
-    _padding2: u32,
+    flags: u32,
+    // The glyph's own transform, applied before the text's when `GLYPH_TRANSFORMED` is set.
+    offset: vec2<f32>,
+    linear: mat2x2<f32>,
 }
+
+// Bit of `GlyphInstance.flags`; keep in sync with `GLYPH_TRANSFORMED` in `gpu.rs`.
+const GLYPH_TRANSFORMED: u32 = 1u;
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -21,6 +25,10 @@ struct VertexOut {
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) mode: u32,
     @location(3) @interpolate(flat) uv_rect: vec4<f32>,
+    // Inverse of the glyph's own transform, as the columns of its linear part and its offset.
+    @location(4) @interpolate(flat) inverse_linear: vec4<f32>,
+    @location(5) @interpolate(flat) inverse_offset: vec2<f32>,
+    @location(6) @interpolate(flat) transformed: u32,
 }
 
 @group(0) @binding(0) var<uniform> globals: TextGlobals;
@@ -45,14 +53,22 @@ fn text_paint_at(pixel: vec2<f32>) -> vec4<f32> {
     return sample_paint(style.fill, pixel, local01);
 }
 
+// The untransformed position under a canvas pixel of the glyph `in` draws, undoing the
+// text's transform and then the glyph's own.
+fn glyph_to_local(in: VertexOut, pixel: vec2<f32>) -> vec2<f32> {
+    let point = drawable_to_local(style.transform, pixel);
+    let inverse = mat2x2<f32>(in.inverse_linear.xy, in.inverse_linear.zw);
+    return select(point, inverse * point + in.inverse_offset, in.transformed != 0u);
+}
+
 // Averages the paint over the canvas pixel; paint follows the text, so each sample
 // is evaluated at its untransformed position.
-fn text_paint_aa(pixel: vec2<f32>) -> vec4<f32> {
+fn text_paint_aa(in: VertexOut) -> vec4<f32> {
     var color = vec4<f32>(0.0);
     for (var y = 0u; y < 4u; y = y + 1u) {
         for (var x = 0u; x < 4u; x = x + 1u) {
             let offset = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) * 0.25 - vec2<f32>(0.5);
-            color += text_paint_at(drawable_to_local(style.transform, pixel + offset));
+            color += text_paint_at(glyph_to_local(in, in.position.xy + offset));
         }
     }
     return color * 0.0625;
@@ -63,16 +79,21 @@ fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOut {
-    if (instance_index >= globals.glyph_count || style.transform.opacity <= 0.0) {
+    if (instance_index >= globals.glyph_count || style.transform.opacity <= 0.0
+        || glyphs[instance_index].color.a <= 0.0) {
         var out: VertexOut;
         out.position = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         out.texel = vec2<f32>(0.0);
         out.color = vec4<f32>(0.0);
         out.mode = 0u;
         out.uv_rect = vec4<f32>(0.0);
+        out.inverse_linear = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+        out.inverse_offset = vec2<f32>(0.0);
+        out.transformed = 0u;
         return out;
     }
     let glyph = glyphs[instance_index];
+    let transformed = (glyph.flags & GLYPH_TRANSFORMED) != 0u;
     let corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0),
         vec2<f32>(1.0, 0.0),
@@ -82,11 +103,13 @@ fn vs_main(
         vec2<f32>(1.0, 1.0),
     );
     let corner = corners[vertex_index];
-    // Scaled or rotated raster glyphs are filtered, so their quads grow by a texel
+    // Scaled, rotated or moved raster glyphs are filtered, so their quads grow by a texel
     // to fit the filter's falloff; raster texels are one layout pixel.
-    let pad = select(0.0, 1.0, drawable_is_linear(style.transform) && glyph.mode != 2u);
+    let filtered = drawable_is_linear(style.transform) || transformed;
+    let pad = select(0.0, 1.0, filtered && glyph.mode != 2u);
     let local = glyph.rect.xy - vec2<f32>(pad) + corner * (glyph.rect.zw + vec2<f32>(2.0 * pad));
-    let pixel = drawable_to_canvas(style.transform, local);
+    let moved = select(local, glyph.linear * local + glyph.offset, transformed);
+    let pixel = drawable_to_canvas(style.transform, moved);
     let clip = vec2<f32>(
         (pixel.x / globals.target_size.x) * 2.0 - 1.0,
         1.0 - (pixel.y / globals.target_size.y) * 2.0,
@@ -98,6 +121,14 @@ fn vs_main(
     out.color = glyph.color;
     out.mode = glyph.mode;
     out.uv_rect = glyph.uv_rect;
+    // A glyph scaled to nothing has no opacity, so is never drawn; its inverse is finite.
+    let inverse = mat2x2<f32>(
+        vec2<f32>(glyph.linear[1].y, -glyph.linear[0].y),
+        vec2<f32>(-glyph.linear[1].x, glyph.linear[0].x),
+    ) * (1.0 / determinant(glyph.linear));
+    out.inverse_linear = vec4<f32>(inverse[0], inverse[1]);
+    out.inverse_offset = -(inverse * glyph.offset);
+    out.transformed = select(0u, 1u, transformed);
     return out;
 }
 
@@ -132,7 +163,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let raster = select(
         textureLoad(atlas_texture, vec2<i32>(floor(in.texel)), 0),
         raster_bilinear(in.texel, in.uv_rect),
-        drawable_is_linear(style.transform),
+        drawable_is_linear(style.transform) || in.transformed != 0u,
     );
     let field = textureSample(
         atlas_texture,
@@ -141,9 +172,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     );
     let screen_px_range = max(0.5 * dot(vec2<f32>(globals.px_range), 1.0 / fwidth(in.texel)), 1.0);
     // Paint follows the text, so it is evaluated at the untransformed pixel.
-    var text_paint = text_paint_at(drawable_to_local(style.transform, in.position.xy));
+    var text_paint = text_paint_at(glyph_to_local(in, in.position.xy));
     if (style.fill.paint_supersample != 0u) {
-        text_paint = text_paint_aa(in.position.xy);
+        text_paint = text_paint_aa(in);
     }
     // The atlas, the paint and the output are premultiplied. Opacity is applied once
     // the glyphs are composited, by the opacity pass below.

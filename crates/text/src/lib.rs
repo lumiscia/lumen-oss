@@ -145,6 +145,10 @@ impl TextSystem {
         buffer.shape_until_scroll(&mut self.font_system, true);
 
         let mut glyphs = Vec::new();
+        // Each glyph's cluster as `(paragraph, byte offset)`, which orders clusters logically.
+        let mut clusters = Vec::new();
+        let mut words = WordCounter::default();
+        let mut lines = 0;
         let mut width: f32 = 0.0;
         let mut height: f32 = 0.0;
         let mut x_min = f32::INFINITY;
@@ -154,14 +158,46 @@ impl TextSystem {
                 width = width.max(run.line_w - request.letter_spacing);
             }
             height = height.max(run.line_top + run.line_height);
+            words.enter(run.line_i, run.text);
+            let line_middle = run.line_top + run.line_height * 0.5;
+            let first = glyphs.len();
             for glyph in run.glyphs {
                 x_min = x_min.min(glyph.x);
                 x_max = x_max.max(glyph.x + glyph.w - request.letter_spacing);
+                clusters.push((run.line_i, glyph.start));
                 glyphs.push(ShapedGlyph {
                     glyph: glyph.clone(),
                     line_y: run.line_y,
+                    item: TextItem {
+                        glyph: 0,
+                        word: words.word_at(&run.text[glyph.start..glyph.end], glyph.start),
+                        line: lines,
+                    },
+                    pivot: [0.0, line_middle],
                 });
             }
+            // A cluster turns about the middle of its advance, which its marks share.
+            for cluster in glyphs[first..].chunk_by_mut(|a, b| a.glyph.start == b.glyph.start) {
+                let (min, max) = cluster.iter().fold(
+                    (f32::INFINITY, f32::NEG_INFINITY),
+                    |(min, max), shaped| {
+                        let glyph = &shaped.glyph;
+                        let end = glyph.x + glyph.w - request.letter_spacing;
+                        (min.min(glyph.x), max.max(end))
+                    },
+                );
+                let middle = (min + max.max(min)) * 0.5;
+                for shaped in cluster {
+                    shaped.pivot[0] = middle;
+                }
+            }
+            lines += 1;
+        }
+        let mut ordered = clusters.clone();
+        ordered.sort_unstable();
+        ordered.dedup();
+        for (shaped, cluster) in glyphs.iter_mut().zip(&clusters) {
+            shaped.item.glyph = ordered.binary_search(cluster).unwrap_or_default() as u32;
         }
         let bounds = if glyphs.is_empty() {
             [0.0, 0.0, 0.0, height]
@@ -172,6 +208,11 @@ impl TextSystem {
         ShapedText {
             measurement: TextMeasurement { width, height },
             bounds,
+            counts: TextItem {
+                glyph: ordered.len() as u32,
+                word: words.total(),
+                line: lines,
+            },
             glyphs,
         }
     }
@@ -247,13 +288,17 @@ impl TextSystem {
         }
 
         let mut instances = Vec::with_capacity(visible.len());
+        let mut sources = Vec::with_capacity(visible.len());
         let mut capacity_dropped = 0;
-        for glyph in visible {
+        for (index, glyph) in visible.iter().enumerate() {
             match atlas.glyphs.get(&atlas.key_for(glyph.key, mode)) {
                 Some(AtlasGlyph {
                     image: AtlasImage::Placed(placed),
                     ..
-                }) => instances.push(placed.instance(glyph)),
+                }) => {
+                    instances.push(placed.instance(glyph));
+                    sources.push(index);
+                }
                 Some(AtlasGlyph {
                     image: AtlasImage::Empty,
                     ..
@@ -267,6 +312,7 @@ impl TextSystem {
         PreparedGlyphs {
             frame: atlas.frame,
             instances,
+            sources,
             uploads,
             dropped_glyphs: layout.glyphs.len() - visible.len() + capacity_dropped,
             compacted,
@@ -477,6 +523,57 @@ pub enum TextAlign {
     Justified,
 }
 
+/// Where a glyph lies in its text, for animating glyphs, words or lines apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TextItem {
+    /// Character cluster, in logical order and counting whitespace. Ligatures are one
+    /// cluster, and combining marks share their base's.
+    pub glyph: u32,
+    /// Whitespace-separated word. Whitespace belongs to the word before it.
+    pub word: u32,
+    /// Line after wrapping, counting empty lines.
+    pub line: u32,
+}
+
+/// Numbers the words of a text's paragraphs, which arrive in order.
+#[derive(Debug, Default)]
+struct WordCounter {
+    paragraph: Option<usize>,
+    /// Words in the paragraphs before the current one.
+    before: u32,
+    /// Byte offsets where the current paragraph's words start.
+    starts: Vec<usize>,
+}
+
+impl WordCounter {
+    fn enter(&mut self, paragraph: usize, text: &str) {
+        if self.paragraph == Some(paragraph) {
+            return;
+        }
+        self.before = self.total();
+        self.paragraph = Some(paragraph);
+        self.starts.clear();
+        let mut previous_space = true;
+        for (offset, char) in text.char_indices() {
+            if previous_space && !char.is_whitespace() {
+                self.starts.push(offset);
+            }
+            previous_space = char.is_whitespace();
+        }
+    }
+
+    /// The word of the cluster `text` that starts at byte `start` of the paragraph.
+    fn word_at(&self, text: &str, start: usize) -> u32 {
+        let offset = start + text.find(|char: char| !char.is_whitespace()).unwrap_or(0);
+        let started = self.starts.partition_point(|&word| word <= offset);
+        self.before + started.saturating_sub(1) as u32
+    }
+
+    fn total(&self) -> u32 {
+        self.before + self.starts.len() as u32
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextMeasurement {
     pub width: f32,
@@ -489,6 +586,8 @@ pub struct ShapedText {
     pub measurement: TextMeasurement,
     /// Advance box of all glyphs as `[x, y, width, height]`.
     pub bounds: [f32; 4],
+    /// Number of glyphs, words and lines.
+    pub counts: TextItem,
     glyphs: Vec<ShapedGlyph>,
 }
 
@@ -496,6 +595,8 @@ pub struct ShapedText {
 struct ShapedGlyph {
     glyph: LayoutGlyph,
     line_y: f32,
+    item: TextItem,
+    pivot: [f32; 2],
 }
 
 impl ShapedText {
@@ -526,11 +627,14 @@ impl ShapedText {
                     y: -y as f32,
                     position,
                     color,
+                    item: shaped.item,
+                    pivot: [shaped.pivot[0] + origin[0], shaped.pivot[1] + origin[1]],
                 }
             })
             .collect();
         TextLayout {
             measurement: self.measurement,
+            counts: self.counts,
             bounds: [
                 origin[0] + self.bounds[0],
                 origin[1] + self.bounds[1],
@@ -547,6 +651,8 @@ pub struct TextLayout {
     pub measurement: TextMeasurement,
     /// Advance box of all glyphs as `[x, y, width, height]`.
     pub bounds: [f32; 4],
+    /// Number of glyphs, words and lines.
+    pub counts: TextItem,
     pub glyphs: Vec<TextGlyph>,
 }
 
@@ -560,6 +666,9 @@ pub struct TextGlyph {
     /// Exact pen position, used by distance-field glyphs.
     pub position: [f32; 2],
     pub color: [f32; 4],
+    pub item: TextItem,
+    /// Centre of the glyph's cluster: the middle of its advance and of its line.
+    pub pivot: [f32; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -846,7 +955,9 @@ impl PlacedGlyph {
             uv_rect,
             color: glyph.color,
             mode: self.mode,
-            _padding: [0; 3],
+            flags: 0,
+            offset: [0.0; 2],
+            linear: [[1.0, 0.0], [0.0, 1.0]],
         }
     }
 }
@@ -930,6 +1041,8 @@ pub struct PreparedGlyphs {
     /// Pass to [`GlyphAtlas::commit`] once `uploads` have been written.
     pub frame: u64,
     pub instances: Vec<GpuGlyphInstance>,
+    /// Index in the layout's glyphs of each instance.
+    pub sources: Vec<usize>,
     pub uploads: Vec<GlyphUpload>,
     /// Glyphs not drawn because of `max_glyphs` or atlas capacity.
     pub dropped_glyphs: usize,
@@ -1809,5 +1922,81 @@ mod tests {
             let italic = prepare(&mut system, &mut atlas, &overlapping, TextRenderMode::Msdf);
             assert_eq!(msdf_instances(&italic), 1);
         }
+    }
+
+    fn items(system: &mut TextSystem, request: &TextLayoutRequest) -> (Vec<[u32; 3]>, TextItem) {
+        let layout = system.layout(request);
+        let items = layout
+            .glyphs
+            .iter()
+            .map(|glyph| [glyph.item.glyph, glyph.item.word, glyph.item.line])
+            .collect();
+        (items, layout.counts)
+    }
+
+    #[test]
+    fn glyphs_words_and_lines_are_numbered_through_spaces_and_paragraphs() {
+        let mut system = TextSystem::new();
+        let (items, counts) = items(&mut system, &TextLayoutRequest::new(" ab  cd\n\nef"));
+        // Whitespace counts as glyphs and belongs to the word before it, and the empty
+        // paragraph is a line of its own.
+        assert_eq!(
+            items,
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [2, 0, 0],
+                [3, 0, 0],
+                [4, 0, 0],
+                [5, 1, 0],
+                [6, 1, 0],
+                [7, 2, 2],
+                [8, 2, 2],
+            ]
+        );
+        assert_eq!(
+            counts,
+            TextItem {
+                glyph: 9,
+                word: 3,
+                line: 3
+            }
+        );
+    }
+
+    #[test]
+    fn wrapped_words_take_the_next_line() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("one two three");
+        request.font_size = 20.0;
+        request.max_width = Some(50.0);
+        let (items, counts) = items(&mut system, &request);
+        let words: Vec<_> = items.iter().map(|[_, word, line]| (*word, *line)).collect();
+        assert_eq!(&words[..3], [(0, 0); 3]);
+        assert_eq!(*words.last().unwrap(), (2, 2));
+        assert_eq!((counts.word, counts.line), (3, 3));
+        let glyphs: Vec<_> = items.iter().map(|[glyph, ..]| *glyph).collect();
+        assert!(glyphs.windows(2).all(|pair| pair[1] == pair[0] + 1));
+    }
+
+    #[test]
+    fn marks_and_ligatures_share_one_glyph_index_and_pivot() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("A\u{338}x fix");
+        request.font_size = 40.0;
+        let layout = system.layout(&request);
+        let (items, counts) = items(&mut system, &request);
+        // The overlay mark is a glyph of its own, numbered and pivoting with its base.
+        assert_eq!(items[0], [0, 0, 0]);
+        assert_eq!(items[1], [0, 0, 0]);
+        assert_eq!(layout.glyphs[0].pivot, layout.glyphs[1].pivot);
+        assert_eq!(items[2], [1, 0, 0]);
+        // Roboto joins `fi` into one glyph, which is one cluster.
+        assert_eq!(items[3..], [[2, 0, 0], [3, 1, 0], [4, 1, 0]]);
+        assert_eq!(counts.glyph, 5);
+        assert!(layout.glyphs[4].pivot[0] < layout.glyphs[5].pivot[0]);
+        // Pivots sit mid-line, at the middle of each cluster's advance.
+        let line_middle = 0.6 * 40.0;
+        assert!((layout.glyphs[2].pivot[1] - line_middle).abs() < 0.01);
     }
 }

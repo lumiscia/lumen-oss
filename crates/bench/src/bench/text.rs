@@ -321,6 +321,7 @@ impl MeasurementFixture {
             path: Some("text_benchmark".to_string()),
             graph: self.graph.as_ref(),
             media: None,
+            glyph: None,
         };
         std::hint::black_box(self.width.evaluate(&ctx)?);
         std::hint::black_box(self.height.evaluate(&ctx)?);

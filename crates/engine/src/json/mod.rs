@@ -323,6 +323,11 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_kinetic_type_demo() {
+        parse(include_str!("../../../local/demo/kinetic-type.json")).expect("should parse");
+    }
+
+    #[test]
     fn parse_minimal_composition() {
         let json = r#"{
             "lumenSchemaVersion": "0.1.0",
@@ -531,6 +536,7 @@ mod tests {
                 path: Some("1.position".to_string()),
                 graph: Some(&composition.graph),
                 media: None,
+                glyph: None,
             };
 
             assert_eq!(

@@ -186,6 +186,30 @@ pub const GLOBALS: &[GlobalSpec] = &[
         name: "height",
         doc: "Render height in pixels.",
     },
+    GlobalSpec {
+        name: "glyph",
+        doc: "Index of the glyph being drawn, counting spaces. Only in a text node's `glyph_*` params.",
+    },
+    GlobalSpec {
+        name: "word",
+        doc: "Index of the word being drawn. Only in a text node's `glyph_*` params.",
+    },
+    GlobalSpec {
+        name: "line",
+        doc: "Index of the line being drawn. Only in a text node's `glyph_*` params.",
+    },
+    GlobalSpec {
+        name: "glyph_count",
+        doc: "Number of glyphs in the text. Only in a text node's `glyph_*` params.",
+    },
+    GlobalSpec {
+        name: "word_count",
+        doc: "Number of words in the text. Only in a text node's `glyph_*` params.",
+    },
+    GlobalSpec {
+        name: "line_count",
+        doc: "Number of lines in the text. Only in a text node's `glyph_*` params.",
+    },
 ];
 
 #[cfg(test)]

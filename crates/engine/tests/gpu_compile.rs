@@ -7819,3 +7819,335 @@ struct Uniforms {
     let pixels = render_rgba8(&mut renderer, &composition, 6, &EmptyMediaStore);
     assert_uniform_pixels(&pixels, [128, 64, 12, 255], "uniforms from JSON");
 }
+
+fn glyph_text(content: &str, params: TextParamsDelegate) -> Vec<NodeKind> {
+    vec![NodeKind::Text(Text {
+        id: NodeId::new(1),
+        params: TextParamsDelegate {
+            content: Deferred::value(content.to_string()),
+            font_size: Deferred::value(40.0),
+            position: Deferred::value((20.0, 10.0)),
+            ..params
+        },
+    })]
+}
+
+fn alpha_of(pixels: &[u8], size: u32, x: usize, y: usize) -> u8 {
+    pixels[(y * size as usize + x) * 4 + 3]
+}
+
+/// Runs of columns that hold any ink, left to right.
+fn inked_columns(pixels: &[u8], size: u32) -> Vec<std::ops::Range<usize>> {
+    let size = size as usize;
+    let inked = |x: usize| (0..size).any(|y| alpha_of(pixels, size as u32, x, y) > 0);
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for x in (0..size).filter(|&x| inked(x)) {
+        match runs.last_mut() {
+            Some(run) if run.end == x => run.end = x + 1,
+            _ => runs.push(x..x + 1),
+        }
+    }
+    runs
+}
+
+/// `[min_x, min_y, max_x, max_y]` of the pixels in `columns` with alpha over half.
+fn ink_box(pixels: &[u8], size: u32, columns: std::ops::Range<usize>) -> [usize; 4] {
+    let mut bounds = [usize::MAX, usize::MAX, 0, 0];
+    for y in 0..size as usize {
+        for x in columns.clone() {
+            if alpha_of(pixels, size, x, y) > 128 {
+                bounds = [
+                    bounds[0].min(x),
+                    bounds[1].min(y),
+                    bounds[2].max(x),
+                    bounds[3].max(y),
+                ];
+            }
+        }
+    }
+    bounds
+}
+
+#[test]
+fn text_glyph_offset_and_opacity_stagger_each_glyph() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
+        let params = || TextParamsDelegate {
+            render_mode: mode.into(),
+            ..Default::default()
+        };
+        let still = render_drawable_graph(&mut renderer, glyph_text("IIII", params()), size);
+        let staggered = render_drawable_graph(
+            &mut renderer,
+            glyph_text(
+                "IIII",
+                TextParamsDelegate {
+                    glyph_offset: expression("vec2(0, glyph * 10)"),
+                    glyph_opacity: expression("glyph / (glyph_count - 1)"),
+                    ..params()
+                },
+            ),
+            size,
+        );
+        let bars = inked_columns(&still, size);
+        assert_eq!(bars.len(), 4, "{mode:?}");
+        // Each bar moves down 10 pixels more than the last, and fades in from the first.
+        for (index, bar) in bars.into_iter().enumerate() {
+            let opacity = index as f32 / 3.0;
+            for y in 0..size as usize {
+                for x in bar.clone() {
+                    let expected = y
+                        .checked_sub(10 * index)
+                        .map_or(0.0, |y| f32::from(alpha_of(&still, size, x, y)) * opacity);
+                    let actual = f32::from(alpha_of(&staggered, size, x, y));
+                    assert!(
+                        (actual - expected).abs() <= 1.5,
+                        "{mode:?} glyph {index} at ({x}, {y}): {actual} vs {expected}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn text_glyph_rotation_turns_each_word_about_its_glyphs() {
+    use lumen_engine::node::source::text::TextRenderMode;
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 160;
+    for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
+        let params = || TextParamsDelegate {
+            render_mode: mode.into(),
+            ..Default::default()
+        };
+        let still = render_drawable_graph(&mut renderer, glyph_text("II   II", params()), size);
+        let turned = render_drawable_graph(
+            &mut renderer,
+            glyph_text(
+                "II   II",
+                TextParamsDelegate {
+                    glyph_rotation: expression("word * 90"),
+                    ..params()
+                },
+            ),
+            size,
+        );
+        let bars = inked_columns(&still, size);
+        assert_eq!(bars.len(), 4, "{mode:?}");
+        // The first word is untouched.
+        for y in 0..size as usize {
+            for x in bars[0].start..bars[1].end {
+                assert_eq!(
+                    alpha_of(&turned, size, x, y),
+                    alpha_of(&still, size, x, y),
+                    "{mode:?} ({x}, {y})"
+                );
+            }
+        }
+        // Each glyph of the second turns a quarter about its own middle, so the upright bars
+        // lie down where they stood, beside each other.
+        let word = bars[1].end + 4..size as usize;
+        let [x0, y0, x1, y1] = ink_box(&still, size, word.clone());
+        assert!(y1 - y0 > x1 - x0, "{mode:?} still {:?}", [x0, y0, x1, y1]);
+        let [tx0, ty0, tx1, ty1] = ink_box(&turned, size, word);
+        assert!(
+            tx1 - tx0 > 4 * (ty1 - ty0),
+            "{mode:?} turned {:?}",
+            [tx0, ty0, tx1, ty1]
+        );
+        let middle = |low: usize, high: usize| (low + high) as f32 / 2.0;
+        assert!((middle(tx0, tx1) - middle(x0, x1)).abs() <= 2.0, "{mode:?}");
+    }
+}
+
+#[test]
+fn text_glyph_params_read_the_line_index() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 192;
+    let still = render_drawable_graph(
+        &mut renderer,
+        glyph_text("I\nI\nI", Default::default()),
+        size,
+    );
+    let shifted = render_drawable_graph(
+        &mut renderer,
+        glyph_text(
+            "I\nI\nI",
+            TextParamsDelegate {
+                glyph_offset: expression("vec2(line * 30, 0)"),
+                glyph_opacity: expression("line < line_count - 1"),
+                ..Default::default()
+            },
+        ),
+        size,
+    );
+    // Lines are 48 pixels apart from y = 10. Each moves 30 pixels further right than the
+    // last, and the last is hidden.
+    for line in 0..3 {
+        for y in 10 + 48 * line..10 + 48 * (line + 1) {
+            for x in 0..size as usize - 60 {
+                let expected = if line < 2 {
+                    alpha_of(&still, size, x, y)
+                } else {
+                    0
+                };
+                let actual = alpha_of(&shifted, size, x + 30 * line, y);
+                assert!(actual.abs_diff(expected) <= 1, "line {line} ({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
+fn constant_glyph_params_match_the_equivalent_static_text() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let content = "Lumen fi";
+    let mut moved = glyph_text(content, Default::default());
+    let NodeKind::Text(text) = &mut moved[0] else {
+        unreachable!()
+    };
+    text.params.position = Deferred::value((32.0, 17.0));
+    let moved = render_drawable_graph(&mut renderer, moved, size);
+    let offset = render_drawable_graph(
+        &mut renderer,
+        glyph_text(
+            content,
+            TextParamsDelegate {
+                glyph_offset: Deferred::value((12.0, 7.0)),
+                ..Default::default()
+            },
+        ),
+        size,
+    );
+    assert!(total_alpha(&moved) > 0);
+    assert!(max_channel_difference(&moved, &offset) <= 1);
+    // An expression that reads no index is the constant it evaluates to.
+    let uniform = render_drawable_graph(
+        &mut renderer,
+        glyph_text(
+            content,
+            TextParamsDelegate {
+                glyph_offset: expression("vec2(12, 7 + 0 * frame)"),
+                glyph_scale: expression("vec2(1, 1)"),
+                ..Default::default()
+            },
+        ),
+        size,
+    );
+    assert_eq!(uniform, offset);
+}
+
+#[test]
+fn glyph_globals_outside_glyph_params_are_an_error() {
+    let text = |params: TextParamsDelegate| {
+        NodeKind::Text(Text {
+            id: NodeId::new(1),
+            params: TextParamsDelegate {
+                content: Deferred::value("Lumen".to_string()),
+                ..params
+            },
+        })
+    };
+    let shape = NodeKind::Shape(Shape {
+        id: NodeId::new(1),
+        params: ShapeParamsDelegate {
+            opacity: expression("glyph / glyph_count"),
+            ..Default::default()
+        },
+    });
+    for (node, name) in [
+        (
+            text(TextParamsDelegate {
+                position: expression("vec2(word * 10, 0)"),
+                ..Default::default()
+            }),
+            "word",
+        ),
+        (
+            text(TextParamsDelegate {
+                opacity: expression("line"),
+                ..Default::default()
+            }),
+            "line",
+        ),
+        (shape, "glyph"),
+    ] {
+        let mut graph = Graph::new();
+        graph.nodes.insert(NodeId::new(1), node);
+        graph.nodes.insert(
+            NodeId::new(2),
+            NodeKind::MediaOutput(MediaOutput {
+                id: NodeId::new(2),
+                source: PortRef::new(NodeId::new(1), "output".to_string()),
+            }),
+        );
+        let composition = test_composition(graph);
+        let compiled = CompileContext::new(&composition).compile().unwrap();
+        let error = FrameBindContext::new(&composition, 0)
+            .bind(&compiled)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!(
+                "`{name}` is only available in a text node's glyph_offset"
+            )),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn blurred_text_draws_glyphs_moved_beyond_its_box() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 256;
+    let text = |position: Deferred<(f64, f64)>, motion_blur: f64| {
+        glyph_text(
+            "II",
+            TextParamsDelegate {
+                position,
+                motion_blur: Deferred::value(motion_blur),
+                glyph_offset: expression("vec2(0, glyph * 180)"),
+                glyph_rotation: expression("glyph * 30"),
+                ..Default::default()
+            },
+        )
+    };
+    let below = |pixels: &[u8]| total_alpha(&pixels[200 * size as usize * 4..]);
+    let blurred = render_drawable_frame(
+        &mut renderer,
+        text(expression("vec2(10 + frame * 60, 10)"), 180.0),
+        size,
+        1,
+        &EmptyMediaStore,
+    );
+    let still = render_drawable_frame(
+        &mut renderer,
+        text(Deferred::value((70.0, 10.0)), 0.0),
+        size,
+        1,
+        &EmptyMediaStore,
+    );
+    // The second glyph lies wholly below the text's box. It is smeared by the text's motion,
+    // and keeps its coverage.
+    let (blurred, still) = (below(&blurred), below(&still));
+    eprintln!("moved glyph: total alpha {blurred} blurred vs {still} still");
+    assert!(still > 0 && blurred.abs_diff(still) * 20 < still);
+}

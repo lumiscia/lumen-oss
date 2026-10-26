@@ -274,6 +274,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
             path: Some(path.to_string()),
             graph: Some(&self.composition.graph),
             media: Some(self.media_store),
+            glyph: None,
         }
     }
 }

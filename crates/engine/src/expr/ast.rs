@@ -128,6 +128,12 @@ pub enum GlobalVar {
     Fps,
     Width,
     Height,
+    Glyph,
+    Word,
+    Line,
+    GlyphCount,
+    WordCount,
+    LineCount,
     Custom(String),
 }
 

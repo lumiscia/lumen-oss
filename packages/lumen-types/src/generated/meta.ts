@@ -697,6 +697,30 @@ export const expressionGlobals = [
   {
     "doc": "Render height in pixels.",
     "name": "height"
+  },
+  {
+    "doc": "Index of the glyph being drawn, counting spaces. Only in a text node's `glyph_*` params.",
+    "name": "glyph"
+  },
+  {
+    "doc": "Index of the word being drawn. Only in a text node's `glyph_*` params.",
+    "name": "word"
+  },
+  {
+    "doc": "Index of the line being drawn. Only in a text node's `glyph_*` params.",
+    "name": "line"
+  },
+  {
+    "doc": "Number of glyphs in the text. Only in a text node's `glyph_*` params.",
+    "name": "glyph_count"
+  },
+  {
+    "doc": "Number of words in the text. Only in a text node's `glyph_*` params.",
+    "name": "word_count"
+  },
+  {
+    "doc": "Number of lines in the text. Only in a text node's `glyph_*` params.",
+    "name": "line_count"
   }
 ] as const;
 export type ExpressionGlobalName = (typeof expressionGlobals)[number]["name"];
@@ -1051,6 +1075,10 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "font_size"?: ExpressionValue<number>;
     readonly "font_style"?: TextFontStyle;
     readonly "font_weight"?: ExpressionValue<number>;
+    readonly "glyph_offset"?: ExpressionValue<Vec2>;
+    readonly "glyph_opacity"?: ExpressionValue<number>;
+    readonly "glyph_rotation"?: ExpressionValue<number>;
+    readonly "glyph_scale"?: ExpressionValue<Vec2>;
     readonly "letter_spacing"?: ExpressionValue<number>;
     readonly "line_height"?: ExpressionValue<number>;
     readonly "max_width"?: ExpressionValue<number>;

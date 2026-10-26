@@ -1075,6 +1075,7 @@ impl<'a> PlanKeyCollector<'a> {
             path: Some(format!("{node_id}.{property_path}")),
             graph: Some(&self.composition.graph),
             media: self.media,
+            glyph: None,
         }
     }
 }
