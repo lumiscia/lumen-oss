@@ -8,6 +8,8 @@ use objc2_core_foundation::CFRetained;
 #[cfg(feature = "metal")]
 use objc2_core_video::CVPixelBuffer;
 
+#[cfg(feature = "vulkan")]
+use crate::ffi;
 use crate::ffi::{AvFrame, sys};
 use crate::gpu::{GpuBackend, GpuVideoInput};
 use crate::video::EncodeMode;
@@ -50,10 +52,16 @@ impl VideoEncoder {
                     encoder.send_cuda_frame(output, cuda_frame)
                 })
             }
+            #[cfg(feature = "vulkan")]
+            GpuVideoInput::Vulkan(vulkan_frame) => {
+                self.with_gpu_encode_telemetry(output, &upload, started, |encoder, output| {
+                    encoder.send_vulkan_frame(output, vulkan_frame)
+                })
+            }
             _ => {
                 let error = FfmpegError::new(
                     "VideoEncoder::send_gpu_frame",
-                    "GPU texture encode currently supports CVPixelBuffer-backed Metal frames and CUDA device pointers",
+                    "GPU texture encode currently supports CVPixelBuffer-backed Metal frames, CUDA device pointers and Vulkan NV12 buffers",
                 )
                 .with_backend(frame.backend());
                 self.gpu_telemetry.record_upload_failed(
@@ -164,6 +172,75 @@ impl VideoEncoder {
                 )
                 .with_backend(GpuBackend::Cuda));
             }
+        }
+        self.next_pts = self.next_pts.saturating_add(1);
+        self.send_frame(output, av_frame.as_ptr())
+    }
+
+    #[cfg(feature = "vulkan")]
+    fn send_vulkan_frame(
+        &mut self,
+        output: &mut OutputContext,
+        frame: &crate::gpu::VulkanVideoFrame,
+    ) -> Result<()> {
+        if self.mode != EncodeMode::GpuTexture(GpuBackend::Vulkan) {
+            return Err(FfmpegError::new(
+                "VideoEncoder::send_vulkan_frame",
+                "Vulkan frames require a Vulkan Video hardware texture encoder",
+            )
+            .with_backend(GpuBackend::Vulkan));
+        }
+        let (Some(hw_frames), Some(device)) =
+            (self.hw_frames.as_ref(), self.vulkan_device.as_ref())
+        else {
+            return Err(FfmpegError::new(
+                "VideoEncoder::send_vulkan_frame",
+                "Vulkan Video encoder was created without a Vulkan hardware frames context",
+            )
+            .with_backend(GpuBackend::Vulkan));
+        };
+        let (width, height) = frame.dimensions();
+        if (width, height) != (self.width, self.height) {
+            return Err(FfmpegError::new(
+                "VideoEncoder::send_vulkan_frame",
+                format!(
+                    "Vulkan frame dimensions {width}x{height} do not match encoder dimensions {}x{}",
+                    self.width, self.height,
+                ),
+            )
+            .with_backend(GpuBackend::Vulkan));
+        }
+        if frame.device() != device.handle() {
+            return Err(FfmpegError::new(
+                "VideoEncoder::send_vulkan_frame",
+                format!(
+                    "Vulkan frame is on device {:?}, but the encoder uses device {:?}",
+                    frame.device(),
+                    device.handle(),
+                ),
+            )
+            .with_backend(GpuBackend::Vulkan));
+        }
+
+        let mut av_frame = AvFrame::new()?;
+        unsafe {
+            ffi::check(
+                sys::av_hwframe_get_buffer(hw_frames.ptr, av_frame.as_mut_ptr(), 0),
+                "av_hwframe_get_buffer",
+            )
+            .map_err(|error| error.with_backend(GpuBackend::Vulkan))?;
+            let target = (*av_frame.as_ptr()).data[0].cast::<sys::AVVkFrame>();
+            let frames_context = (*hw_frames.ptr).data.cast::<sys::AVHWFramesContext>();
+            let vulkan_frames = (*frames_context).hwctx.cast::<sys::AVVulkanFramesContext>();
+            if let Some(lock) = (*vulkan_frames).lock_frame {
+                lock(frames_context, target);
+            }
+            let uploaded = device.upload(frame, target);
+            if let Some(unlock) = (*vulkan_frames).unlock_frame {
+                unlock(frames_context, target);
+            }
+            uploaded?;
+            (*av_frame.as_mut_ptr()).pts = frame.pts().unwrap_or(self.next_pts);
         }
         self.next_pts = self.next_pts.saturating_add(1);
         self.send_frame(output, av_frame.as_ptr())

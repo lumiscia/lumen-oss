@@ -13,6 +13,8 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use image::{ImageEncoder, codecs::png::PngEncoder};
+#[cfg(target_os = "linux")]
+use lumen_engine::gpu::VulkanVideoTarget;
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 use lumen_engine::{
@@ -24,8 +26,10 @@ use lumen_engine::{
     image::ImageFileResolver,
     media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
-#[cfg(all(target_os = "macos", feature = "metal"))]
+#[cfg(any(all(target_os = "macos", feature = "metal"), target_os = "linux"))]
 use lumen_ffmpeg::EncodeMode;
+#[cfg(target_os = "linux")]
+use lumen_ffmpeg::GpuVideoInput;
 use lumen_ffmpeg::encode::RateControl;
 use lumen_ffmpeg::{
     AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, Rational,
@@ -412,13 +416,12 @@ impl LumenFfmpegEncoder {
         quality: &EncoderQuality,
         include_audio: bool,
     ) -> Result<Self> {
-        let codec = match encoder {
-            "hevc" | "hevc_videotoolbox" | "hevc_vulkan" | "libx265" => VideoCodec::Hevc,
-            "av1_vulkan" | "libsvtav1" | "libaom-av1" => VideoCodec::Av1,
-            _ => VideoCodec::H264,
-        };
-        let mut config =
-            VideoEncoderConfig::cpu_rgba(width, height, Rational::from_fps(f64::from(fps))?, codec);
+        let mut config = VideoEncoderConfig::cpu_rgba(
+            width,
+            height,
+            Rational::from_fps(f64::from(fps))?,
+            video_codec_for_encoder(encoder),
+        );
         config.encoder_name = Some(encoder.to_string());
         config.bit_rate = 14_000_000;
         quality.apply(&mut config);
@@ -499,6 +502,14 @@ impl LumenFfmpegEncoder {
             .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer thread missing"))?
             .join()
             .map_err(|_| anyhow!("lumen-ffmpeg encoder writer thread panicked"))?
+    }
+}
+
+fn video_codec_for_encoder(encoder: &str) -> VideoCodec {
+    match encoder {
+        "hevc" | "hevc_videotoolbox" | "hevc_vulkan" | "libx265" => VideoCodec::Hevc,
+        "av1_vulkan" | "libsvtav1" | "libaom-av1" => VideoCodec::Av1,
+        _ => VideoCodec::H264,
     }
 }
 
@@ -794,6 +805,23 @@ fn render_mp4(
             quality,
         );
     }
+    #[cfg(target_os = "linux")]
+    if is_vulkan_video_encoder(&encoder) {
+        match start_vulkan_video_encode(&composition, output, &encoder, quality) {
+            Ok(session) => {
+                return render_video_gpu_vulkan(
+                    composition,
+                    media_store,
+                    output,
+                    total_frames,
+                    session,
+                );
+            }
+            Err(error) => eprintln!(
+                "vulkan zero-copy encode unavailable, uploading frames from the CPU instead: {error}"
+            ),
+        }
+    }
     let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
         .context("failed to create GPU renderer")?;
     renderer
@@ -1085,6 +1113,181 @@ fn render_video_gpu_videotoolbox(
     ))
 }
 
+#[cfg(target_os = "linux")]
+fn is_vulkan_video_encoder(encoder: &str) -> bool {
+    let support = gpu_texture_encode_support(video_codec_for_encoder(encoder), GpuBackend::Vulkan);
+    support.available && support.encoder_name == Some(encoder)
+}
+
+#[cfg(target_os = "linux")]
+struct VulkanVideoSession {
+    renderer: GpuCompositionRenderer,
+    target: VulkanVideoTarget,
+    encoder: MuxedEncoder,
+}
+
+/// Renders and encodes on one Vulkan device, so frames never leave the GPU.
+#[cfg(target_os = "linux")]
+fn start_vulkan_video_encode(
+    composition: &Composition,
+    output: &Path,
+    encoder: &str,
+    quality: &EncoderQuality,
+) -> Result<VulkanVideoSession> {
+    let (width, height) = (
+        composition.render_settings.width,
+        composition.render_settings.height,
+    );
+    if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+        return Err(anyhow!(
+            "NV12 frames need even dimensions, got {width}x{height}"
+        ));
+    }
+    let (renderer, device) = pollster::block_on(GpuCompositionRenderer::new_vulkan_video())?;
+    let target =
+        VulkanVideoTarget::nv12(renderer.gpu_renderer(), lumen_gpu::Size::new(width, height));
+    let mut config = VideoEncoderConfig::cpu_rgba(
+        width,
+        height,
+        Rational::from_fps(f64::from(composition.timeline.fps))?,
+        video_codec_for_encoder(encoder),
+    );
+    config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
+    config.vulkan_device = Some(device);
+    config.bit_rate = 14_000_000;
+    quality.apply(&mut config);
+    let audio = has_audio(composition)
+        .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
+    let encoder =
+        MuxedEncoder::create_with_audio(output.to_string_lossy().to_string(), config, audio)
+            .map_err(|error| anyhow!("lumen-ffmpeg Vulkan encoder failed to start: {error}"))?;
+    Ok(VulkanVideoSession {
+        renderer,
+        target,
+        encoder,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn render_video_gpu_vulkan(
+    composition: Composition,
+    media_store: LocalMediaStore,
+    output: &Path,
+    total_frames: u32,
+    session: VulkanVideoSession,
+) -> Result<()> {
+    let VulkanVideoSession {
+        mut renderer,
+        target,
+        mut encoder,
+    } = session;
+    renderer
+        .compile_with_media(
+            &composition,
+            &media_store,
+            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .context("failed to compile composition")?;
+    let (width, height) = (
+        composition.render_settings.width,
+        composition.render_settings.height,
+    );
+
+    let mut timings = RenderTiming::default();
+    let render_started = Instant::now();
+    for frame in 0..total_frames {
+        let bind_started = Instant::now();
+        let bound = renderer
+            .bind_frame(&composition, frame, &media_store)
+            .with_context(|| format!("frame bind failed at frame {frame}"))?;
+        timings.bind_ms = timings
+            .bind_ms
+            .saturating_add(bind_started.elapsed().as_millis());
+
+        let upload_started = Instant::now();
+        renderer
+            .upload_bound_frame(&bound)
+            .with_context(|| format!("frame upload failed at frame {frame}"))?;
+        timings.upload_ms = timings
+            .upload_ms
+            .saturating_add(upload_started.elapsed().as_millis());
+
+        let render_frame_started = Instant::now();
+        let (raster, _submission) = renderer
+            .submit_render()
+            .with_context(|| format!("render submit failed at frame {frame}"))?;
+        let size = raster.domain.storage_size;
+        if (size.width, size.height) != (width, height) {
+            return Err(anyhow!(
+                "unexpected frame {frame} dimensions {}x{} (expected {width}x{height})",
+                size.width,
+                size.height,
+            ));
+        }
+        let texture = renderer
+            .gpu_renderer()
+            .texture(raster.texture)
+            .ok_or_else(|| anyhow!("render output texture {:?} is unavailable", raster.texture))?;
+        let video_frame = target
+            .convert(renderer.gpu_renderer(), texture, Some(i64::from(frame)))
+            .with_context(|| format!("NV12 conversion failed at frame {frame}"))?;
+        timings.render_ms = timings
+            .render_ms
+            .saturating_add(render_frame_started.elapsed().as_millis());
+
+        let flush_started = Instant::now();
+        renderer
+            .gpu_renderer()
+            .device
+            .poll(lumen_gpu::wgpu::PollType::Poll)?;
+        timings.flush_ms = timings
+            .flush_ms
+            .saturating_add(flush_started.elapsed().as_millis());
+
+        let encode_send_started = Instant::now();
+        encoder
+            .write_gpu_frame(&GpuVideoInput::Vulkan(&video_frame))
+            .map_err(|error| {
+                anyhow!("lumen-ffmpeg Vulkan encode failed at frame {frame}: {error}")
+            })?;
+        timings.encode_send_ms = timings
+            .encode_send_ms
+            .saturating_add(encode_send_started.elapsed().as_millis());
+
+        if frame == 0 || frame + 1 == total_frames || frame % 60 == 0 {
+            println!("progress frame={}/{}", frame + 1, total_frames);
+        }
+    }
+
+    if has_audio(&composition) {
+        let audio_started = Instant::now();
+        write_composited_audio_direct(&composition, &media_store, &mut encoder)?;
+        timings.audio_mix_ms = audio_started.elapsed().as_millis();
+    }
+
+    let encode_finish_started = Instant::now();
+    encoder
+        .finish()
+        .map_err(|error| anyhow!("lumen-ffmpeg Vulkan encoder finish failed: {error}"))?;
+    timings.encode_finish_ms = encode_finish_started.elapsed().as_millis();
+
+    let total_ms = render_started.elapsed().as_millis();
+    println!(
+        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={}",
+        output.display(),
+        total_frames,
+        timings.audio_mix_ms,
+        timings.bind_ms,
+        timings.upload_ms,
+        timings.render_ms,
+        timings.flush_ms,
+        timings.encode_send_ms,
+        timings.encode_finish_ms,
+        total_ms,
+    );
+    Ok(())
+}
+
 fn write_composited_audio(
     composition: &Composition,
     media_store: &LocalMediaStore,
@@ -1115,7 +1318,7 @@ fn write_composited_audio(
     Ok(())
 }
 
-#[cfg(all(target_os = "macos", feature = "metal"))]
+#[cfg(any(all(target_os = "macos", feature = "metal"), target_os = "linux"))]
 fn write_composited_audio_direct(
     composition: &Composition,
     media_store: &LocalMediaStore,

@@ -23,6 +23,12 @@ pub(crate) fn hardware_texture_encoder_name(
         (GpuBackend::Cuda, VideoCodec::Av1) => Some("av1_nvenc"),
         (GpuBackend::Metal, VideoCodec::H264) => Some("h264_videotoolbox"),
         (GpuBackend::Metal, VideoCodec::Hevc) => Some("hevc_videotoolbox"),
+        #[cfg(feature = "vulkan")]
+        (GpuBackend::Vulkan, VideoCodec::H264) => Some("h264_vulkan"),
+        #[cfg(feature = "vulkan")]
+        (GpuBackend::Vulkan, VideoCodec::Hevc) => Some("hevc_vulkan"),
+        #[cfg(feature = "vulkan")]
+        (GpuBackend::Vulkan, VideoCodec::Av1) => Some("av1_vulkan"),
         _ => None,
     }
 }
@@ -32,7 +38,8 @@ pub fn gpu_texture_encode_support(
     backend: GpuBackend,
 ) -> GpuTextureEncodeSupport {
     let encoder_name = hardware_texture_encoder_name(backend, codec);
-    let texture_path_wired = matches!(backend, GpuBackend::Cuda | GpuBackend::Metal);
+    let texture_path_wired = matches!(backend, GpuBackend::Cuda | GpuBackend::Metal)
+        || (cfg!(feature = "vulkan") && backend == GpuBackend::Vulkan);
     let encoder_available =
         texture_path_wired && encoder_name.is_some_and(|name| encoder_by_name(name).is_ok());
     let reason = if !encoder_available {

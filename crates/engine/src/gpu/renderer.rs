@@ -47,25 +47,16 @@ impl GpuCompositionRenderer {
                 details: error.to_string(),
             })?;
         tracing::debug!(target: "lumen_render", "created gpu composition renderer");
-        Ok(Self {
-            renderer,
-            compiled_plans: HashMap::new(),
-            active_key: None,
-            bind_sequence: 0,
-            text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
-                super::types::TEXT_ATLAS_SIZE,
-            ))),
-            text_atlas_texture: None,
-            output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-            media_texture_cache: HashMap::new(),
-            #[cfg(feature = "ffmpeg")]
-            gpu_media_importer: GpuMediaFrameImporter::default(),
-        })
+        Ok(Self::from_renderer(renderer))
     }
 
     pub fn from_device(device: lumen_gpu::wgpu::Device, queue: lumen_gpu::wgpu::Queue) -> Self {
+        Self::from_renderer(lumen_gpu::Renderer::from_device(device, queue))
+    }
+
+    pub fn from_renderer(renderer: lumen_gpu::Renderer) -> Self {
         Self {
-            renderer: lumen_gpu::Renderer::from_device(device, queue),
+            renderer,
             compiled_plans: HashMap::new(),
             active_key: None,
             bind_sequence: 0,

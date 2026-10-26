@@ -39,6 +39,9 @@ pub struct VideoEncoderConfig {
     pub rate_control: Option<RateControl>,
     /// Encoder preset: `ultrafast`..`placebo` for libx264, `p1`..`p7` for NVENC.
     pub preset: Option<String>,
+    /// Device the frames sent in `EncodeMode::GpuTexture(GpuBackend::Vulkan)` live on.
+    #[cfg(feature = "vulkan")]
+    pub vulkan_device: Option<crate::gpu::VulkanDevice>,
 }
 
 impl VideoEncoderConfig {
@@ -53,6 +56,8 @@ impl VideoEncoderConfig {
             bit_rate: 8_000_000,
             rate_control: None,
             preset: None,
+            #[cfg(feature = "vulkan")]
+            vulkan_device: None,
         }
     }
 
@@ -65,8 +70,8 @@ impl VideoEncoderConfig {
 }
 
 pub struct VideoEncoder {
-    width: u32,
-    height: u32,
+    pub(in crate::encode) width: u32,
+    pub(in crate::encode) height: u32,
     stream_index: usize,
     stream_time_base: sys::AVRational,
     pub(in crate::encode) context: *mut sys::AVCodecContext,
@@ -78,6 +83,8 @@ pub struct VideoEncoder {
     pub(in crate::encode) next_pts: i64,
     pub(in crate::encode) mode: EncodeMode,
     pub(in crate::encode) gpu_telemetry: GpuEncodeTelemetry,
+    #[cfg(feature = "vulkan")]
+    pub(in crate::encode) vulkan_device: Option<crate::gpu::VulkanDevice>,
 }
 
 unsafe impl Send for VideoEncoder {}
@@ -119,6 +126,22 @@ impl VideoEncoder {
                 "fps is too large to calculate the encoder GOP size",
             )
         })?;
+        #[cfg(feature = "vulkan")]
+        if config.mode == EncodeMode::GpuTexture(GpuBackend::Vulkan) {
+            if !config.width.is_multiple_of(2) || !config.height.is_multiple_of(2) {
+                return Err(FfmpegError::new(
+                    "VideoEncoder::create",
+                    format!(
+                        "Vulkan texture encode needs even dimensions for NV12, got {}x{}",
+                        config.width, config.height,
+                    ),
+                )
+                .with_backend(GpuBackend::Vulkan));
+            }
+            if config.vulkan_device.is_none() {
+                return Err(super::hw::missing_vulkan_device());
+            }
+        }
         let codec = find_encoder(&config)?;
         if codec.is_null() {
             return Err(FfmpegError::new(
@@ -271,6 +294,12 @@ impl VideoEncoder {
             ptr::null_mut()
         };
 
+        #[cfg(feature = "vulkan")]
+        let vulkan_device = config
+            .vulkan_device
+            .clone()
+            .filter(|_| config.mode == EncodeMode::GpuTexture(GpuBackend::Vulkan));
+
         Ok(Self {
             width: config.width,
             height: config.height,
@@ -286,6 +315,8 @@ impl VideoEncoder {
             next_pts: 0,
             mode: config.mode,
             gpu_telemetry: GpuEncodeTelemetry::default(),
+            #[cfg(feature = "vulkan")]
+            vulkan_device,
         })
     }
 
