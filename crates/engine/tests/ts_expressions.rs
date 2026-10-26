@@ -22,7 +22,7 @@ fn typescript_helper_expressions_round_trip() {
         serde_json::from_value(fixture["composition"]["functions"].clone()).unwrap();
     let _scope = FunctionScope::enter(&functions).unwrap();
     let ctx = ExpressionContext {
-        frame: u32::try_from(fixture["frame"].as_u64().unwrap()).unwrap(),
+        frame: fixture["frame"].as_f64().unwrap(),
         fps: composition.timeline.fps,
         width: composition.render_settings.width,
         height: composition.render_settings.height,
