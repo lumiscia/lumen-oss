@@ -2,8 +2,11 @@
 
 pub mod ast;
 pub mod builtins;
+pub mod easing;
 pub mod eval;
+pub mod functions;
 pub mod parser;
+pub mod spec;
 
 use crate::{error::ExpressionError, graph::Graph};
 
@@ -11,7 +14,10 @@ pub use ast::{
     BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionId, ExpressionReference, ExpressionValue,
     GlobalVar, PropertyPath, UnaryOp, VirtualPropertyId,
 };
+pub use easing::Easing;
 pub use eval::property_value_to_expression_value;
+pub use functions::FunctionScope;
+pub use spec::{BUILTINS, BuiltinArg, BuiltinSpec, GLOBALS, GlobalSpec, ValueKind};
 
 impl Expression {
     pub fn parse(source: &str) -> Result<Self, ExpressionError> {

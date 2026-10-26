@@ -8,6 +8,699 @@ export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" |
 
 export const schemaVersion = 1 as const;
 
+export const expressionBuiltins = [
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "values"
+      }
+    ],
+    "doc": "Smallest of two or more numbers.",
+    "maxArgs": null,
+    "minArgs": 2,
+    "name": "min",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "values"
+      }
+    ],
+    "doc": "Largest of two or more numbers.",
+    "maxArgs": null,
+    "minArgs": 2,
+    "name": "max",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "value"
+      }
+    ],
+    "doc": "Absolute value.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "abs",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "value"
+      }
+    ],
+    "doc": "Rounds down to an integer.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "floor",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "value"
+      }
+    ],
+    "doc": "Rounds up to an integer.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "ceil",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "value"
+      }
+    ],
+    "doc": "Rounds to the nearest integer.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "round",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "radians"
+      }
+    ],
+    "doc": "Sine of an angle in radians.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "sin",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "radians"
+      }
+    ],
+    "doc": "Cosine of an angle in radians.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "cos",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "value"
+      },
+      {
+        "kind": "number",
+        "name": "min"
+      },
+      {
+        "kind": "number",
+        "name": "max"
+      }
+    ],
+    "doc": "Limits a value to `min..=max`.",
+    "maxArgs": 3,
+    "minArgs": 3,
+    "name": "clamp",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "any",
+        "name": "from"
+      },
+      {
+        "kind": "any",
+        "name": "to"
+      },
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Interpolates two numbers, vec2 values or colours by `t`. Colours mix premultiplied.",
+    "maxArgs": 3,
+    "minArgs": 3,
+    "name": "lerp",
+    "returns": "any"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "base"
+      },
+      {
+        "kind": "number",
+        "name": "exponent"
+      }
+    ],
+    "doc": "Raises `base` to `exponent`.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "pow",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "value"
+      },
+      {
+        "kind": "number",
+        "name": "divisor"
+      }
+    ],
+    "doc": "Remainder of `value / divisor`, keeping the sign of `value`.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "mod",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "value"
+      }
+    ],
+    "doc": "Fractional part of a number.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "fract",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "edge0"
+      },
+      {
+        "kind": "number",
+        "name": "edge1"
+      },
+      {
+        "kind": "number",
+        "name": "x"
+      }
+    ],
+    "doc": "Hermite smoothing of `x` between two edges.",
+    "maxArgs": 3,
+    "minArgs": 3,
+    "name": "smoothstep",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "any",
+        "name": "from"
+      },
+      {
+        "kind": "any",
+        "name": "to"
+      },
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Same as `lerp`. Not to be confused with the `'linear'` easing name.",
+    "maxArgs": 3,
+    "minArgs": 3,
+    "name": "linear",
+    "returns": "any"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "from"
+      },
+      {
+        "kind": "number",
+        "name": "to"
+      },
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "`to` once `t >= 1`, otherwise `from`.",
+    "maxArgs": 3,
+    "minArgs": 3,
+    "name": "step",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "any",
+        "name": "text"
+      },
+      {
+        "kind": "number",
+        "name": "font_size"
+      },
+      {
+        "kind": "number",
+        "name": "max_width"
+      },
+      {
+        "kind": "string",
+        "name": "font_family"
+      }
+    ],
+    "doc": "Laid-out height of a string, or of `node(id)` for a text node.",
+    "maxArgs": 4,
+    "minArgs": 1,
+    "name": "text_height",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "any",
+        "name": "text"
+      },
+      {
+        "kind": "number",
+        "name": "font_size"
+      },
+      {
+        "kind": "number",
+        "name": "max_width"
+      },
+      {
+        "kind": "string",
+        "name": "font_family"
+      }
+    ],
+    "doc": "Laid-out width of a string, or of `node(id)` for a text node.",
+    "maxArgs": 4,
+    "minArgs": 1,
+    "name": "text_width",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "string",
+        "name": "text"
+      }
+    ],
+    "doc": "Uppercases a string.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "uppercase",
+    "returns": "string"
+  },
+  {
+    "args": [
+      {
+        "kind": "string",
+        "name": "text"
+      }
+    ],
+    "doc": "Lowercases a string.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "lowercase",
+    "returns": "string"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "x"
+      },
+      {
+        "kind": "number",
+        "name": "y"
+      }
+    ],
+    "doc": "Builds a 2D vector.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "vec2",
+    "returns": "vec2"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "r"
+      },
+      {
+        "kind": "number",
+        "name": "g"
+      },
+      {
+        "kind": "number",
+        "name": "b"
+      }
+    ],
+    "doc": "Opaque colour from components in `0..=255`.",
+    "maxArgs": 3,
+    "minArgs": 3,
+    "name": "rgb",
+    "returns": "color"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "r"
+      },
+      {
+        "kind": "number",
+        "name": "g"
+      },
+      {
+        "kind": "number",
+        "name": "b"
+      },
+      {
+        "kind": "number",
+        "name": "a"
+      }
+    ],
+    "doc": "Colour from components in `0..=255`, alpha included.",
+    "maxArgs": 4,
+    "minArgs": 4,
+    "name": "rgba",
+    "returns": "color"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "start"
+      },
+      {
+        "kind": "number",
+        "name": "end"
+      }
+    ],
+    "doc": "0 before frame `start`, 1 after frame `end`, linear in between.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "progress",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "any",
+        "name": "from"
+      },
+      {
+        "kind": "any",
+        "name": "to"
+      },
+      {
+        "kind": "number",
+        "name": "start"
+      },
+      {
+        "kind": "number",
+        "name": "duration"
+      },
+      {
+        "kind": "easing",
+        "name": "ease"
+      }
+    ],
+    "doc": "Eases from `from` to `to` over `duration` frames from frame `start`. `ease` defaults to `'linear'`.",
+    "maxArgs": 5,
+    "minArgs": 4,
+    "name": "tween",
+    "returns": "any"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quadratic ease-in.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_quad",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quadratic ease-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_quad",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quadratic ease-in-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_quad",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Cubic ease-in.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_cubic",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Cubic ease-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_cubic",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Cubic ease-in-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_cubic",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Exponential ease-in.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_expo",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Exponential ease-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_expo",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Exponential ease-in-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_expo",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-in that pulls back first.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_back",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-out that overshoots.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_back",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-in-out that pulls back and overshoots.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_back",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "x1"
+      },
+      {
+        "kind": "number",
+        "name": "y1"
+      },
+      {
+        "kind": "number",
+        "name": "x2"
+      },
+      {
+        "kind": "number",
+        "name": "y2"
+      },
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.",
+    "maxArgs": 5,
+    "minArgs": 5,
+    "name": "cubic_bezier",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      },
+      {
+        "kind": "number",
+        "name": "stiffness"
+      },
+      {
+        "kind": "number",
+        "name": "damping"
+      }
+    ],
+    "doc": "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.",
+    "maxArgs": 3,
+    "minArgs": 1,
+    "name": "spring",
+    "returns": "number"
+  }
+] as const;
+export type ExpressionBuiltinName = (typeof expressionBuiltins)[number]["name"];
+
+export const easingNames = [
+  "linear",
+  "in_quad",
+  "out_quad",
+  "in_out_quad",
+  "in_cubic",
+  "out_cubic",
+  "in_out_cubic",
+  "in_expo",
+  "out_expo",
+  "in_out_expo",
+  "in_back",
+  "out_back",
+  "in_out_back"
+] as const;
+/** Easing names accepted by `tween`. `'linear'` here is unrelated to the `linear(a, b, t)` builtin. */
+export type EasingName = (typeof easingNames)[number];
+
+export const expressionGlobals = [
+  {
+    "doc": "Current frame number.",
+    "name": "frame"
+  },
+  {
+    "doc": "Current time in seconds.",
+    "name": "time"
+  },
+  {
+    "doc": "Frames per second.",
+    "name": "fps"
+  },
+  {
+    "doc": "Render width in pixels.",
+    "name": "width"
+  },
+  {
+    "doc": "Render height in pixels.",
+    "name": "height"
+  }
+] as const;
+export type ExpressionGlobalName = (typeof expressionGlobals)[number]["name"];
+
 export interface MetaManifest {
   readonly schemaVersion: 1;
   readonly nodeKinds: readonly NodeKind[];
@@ -136,7 +829,7 @@ export interface AlphaPremultiplyNode extends CompositionNodeBase<"alpha_premult
 export interface BackgroundNode extends CompositionNodeBase<"background"> {
   readonly params?: {
     readonly "height"?: ExpressionValue<number>;
-    readonly "paint"?: Paint;
+    readonly "paint"?: ExpressionValue<Paint>;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
     readonly "width"?: ExpressionValue<number>;
   };
@@ -254,10 +947,10 @@ export interface PathNode extends CompositionNodeBase<"path"> {
     readonly "data"?: ExpressionValue<string>;
     readonly "edge_antialias"?: ExpressionValue<boolean>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
-    readonly "fill_paint"?: Paint;
+    readonly "fill_paint"?: ExpressionValue<Paint>;
     readonly "position"?: ExpressionValue<Vec2>;
     readonly "stroke_enabled"?: ExpressionValue<boolean>;
-    readonly "stroke_paint"?: Paint;
+    readonly "stroke_paint"?: ExpressionValue<Paint>;
     readonly "stroke_width"?: ExpressionValue<number>;
     readonly "trim_end"?: ExpressionValue<number>;
     readonly "trim_start"?: ExpressionValue<number>;
@@ -284,7 +977,7 @@ export interface ResizeNode extends CompositionNodeBase<"resize"> {
 
 export interface ShadowNode extends CompositionNodeBase<"shadow"> {
   readonly params?: {
-    readonly "color"?: Paint;
+    readonly "color"?: ExpressionValue<Paint>;
     readonly "offset_x"?: ExpressionValue<number>;
     readonly "offset_y"?: ExpressionValue<number>;
     readonly "opacity"?: ExpressionValue<number>;
@@ -297,13 +990,13 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
     readonly "border_radius"?: ExpressionValue<number>;
     readonly "edge_antialias"?: ExpressionValue<boolean>;
     readonly "fill_enabled"?: ExpressionValue<boolean>;
-    readonly "fill_paint"?: Paint;
+    readonly "fill_paint"?: ExpressionValue<Paint>;
     readonly "geometry_kind"?: ShapeGeometryKind;
     readonly "height"?: ExpressionValue<number>;
     readonly "polygon_points"?: ExpressionValue<string>;
     readonly "position"?: ExpressionValue<Vec2>;
     readonly "stroke_enabled"?: ExpressionValue<boolean>;
-    readonly "stroke_paint"?: Paint;
+    readonly "stroke_paint"?: ExpressionValue<Paint>;
     readonly "stroke_width"?: ExpressionValue<number>;
     readonly "width"?: ExpressionValue<number>;
   };
@@ -319,7 +1012,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
   readonly params?: {
     readonly "alignment_horizontal"?: TextAlignmentHorizontal;
     readonly "alignment_vertical"?: TextAlignmentVertical;
-    readonly "color"?: Paint;
+    readonly "color"?: ExpressionValue<Paint>;
     readonly "content"?: ExpressionValue<string>;
     readonly "font_family"?: ExpressionValue<string>;
     readonly "font_size"?: ExpressionValue<number>;

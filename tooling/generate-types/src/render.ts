@@ -77,6 +77,22 @@ const renderNodeInputMapMember = (spec: NodeSpec): string =>
     readonly id?: number;
   };`;
 
+const renderConst = (name: string, value: unknown): string =>
+  `export const ${name} = ${JSON.stringify(value, null, 2)} as const;`;
+
+const renderExpressionTables = ({ expressions }: MetaManifest): string => `${renderConst(
+  "expressionBuiltins",
+  expressions.builtins,
+)}
+export type ExpressionBuiltinName = (typeof expressionBuiltins)[number]["name"];
+
+${renderConst("easingNames", expressions.easings)}
+/** Easing names accepted by \`tween\`. \`'linear'\` here is unrelated to the \`linear(a, b, t)\` builtin. */
+export type EasingName = (typeof easingNames)[number];
+
+${renderConst("expressionGlobals", expressions.globals)}
+export type ExpressionGlobalName = (typeof expressionGlobals)[number]["name"];`;
+
 export function renderMetaTypes(manifest: MetaManifest): string {
   const nodeKinds = uniqueSorted(manifest.nodeKinds);
   const specs = Object.values(manifest.nodeSpecs);
@@ -110,6 +126,8 @@ export type NodeParamKind = ${union(paramKinds)};
 export type NodeKind = ${union(nodeKinds)};
 
 export const schemaVersion = ${JSON.stringify(manifest.schemaVersion)} as const;
+
+${renderExpressionTables(manifest)}
 
 export interface MetaManifest {
   readonly schemaVersion: ${JSON.stringify(manifest.schemaVersion)};
@@ -277,6 +295,8 @@ export interface LumenComposition {
     readonly [key: string]: unknown;
   };
   readonly connections: readonly Connection[];
+  /** Expression functions keyed by signature, such as \`rise(start)\`. */
+  readonly functions?: Readonly<Record<\`\${string}(\${string})\`, string>>;
   readonly lumenSchemaVersion?: string;
   readonly metadata?: {
     readonly name?: string;

@@ -262,6 +262,7 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
         serde_json::to_string_pretty(&json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "x-lumen-schemaVersion": manifest.schema_version,
+            "x-lumen-expressions": expressions_json(),
             "type": "object",
             "required": ["timeline", "render_settings", "nodes", "connections"],
             "additionalProperties": true,
@@ -303,6 +304,14 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                         "background_color": { "$ref": "#/$defs/color" }
                     },
                     "additionalProperties": true
+                },
+                "functions": {
+                    "description": "Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used.",
+                    "type": "object",
+                    "propertyNames": {
+                        "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
+                    },
+                    "additionalProperties": { "type": "string" }
                 },
                 "nodes": {
                     "type": "array",
@@ -448,6 +457,34 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
             }
         }))?
     ))
+}
+
+fn expressions_json() -> Value {
+    use lumen_engine::expr::{BUILTINS, Easing, GLOBALS};
+    let builtins = BUILTINS
+        .iter()
+        .map(|spec| {
+            let args = spec
+                .args
+                .iter()
+                .map(|arg| json!({ "name": arg.name, "kind": arg.kind.name() }))
+                .collect::<Vec<_>>();
+            json!({
+                "name": spec.name,
+                "minArgs": spec.min_args,
+                "maxArgs": spec.max_args,
+                "args": args,
+                "returns": spec.returns.name(),
+                "doc": spec.doc,
+            })
+        })
+        .collect::<Vec<_>>();
+    let globals = GLOBALS
+        .iter()
+        .map(|global| json!({ "name": global.name, "doc": global.doc }))
+        .collect::<Vec<_>>();
+    let easings = Easing::ALL.map(Easing::name);
+    json!({ "builtins": builtins, "easings": easings, "globals": globals })
 }
 
 fn node_schema_json(spec: &NodeSpec) -> Value {
@@ -814,7 +851,8 @@ mod tests {
         assert!(validator.is_valid(&node("media_in", json!({ "kind": "=1" }))));
 
         assert!(!validator.is_valid(&node("exposure", json!({ "exposure": "frame" }))));
-        assert!(!validator.is_valid(&node("text", json!({ "color": "=frame" }))));
+        assert!(validator.is_valid(&node("text", json!({ "color": "=rgb(255, 0, 0)" }))));
+        assert!(validator.is_valid(&node("shape", json!({ "fill_paint": "=#ff0000" }))));
         assert!(!validator.is_valid(&node("text", json!({ "position": ["=frame", 0] }))));
         assert!(!validator.is_valid(&node("transform", json!({ "sampling": "=1" }))));
         // `alpha_premultiply.mode` decides output metadata, so it is literal-only.
@@ -838,6 +876,20 @@ mod tests {
             "text",
             json!({ "color": gradient_with_expression_stop })
         )));
+        for (signature, valid) in [
+            ("rise(start)", true),
+            ("pop( )", true),
+            ("rise(start", false),
+        ] {
+            let mut value = node("shape", json!({ "position": "=vec2(0, 0)" }));
+            value["functions"] = json!({ signature: "vec2(0, 0)" });
+            assert_eq!(validator.is_valid(&value), valid, "{signature}");
+            assert_eq!(
+                lumen_engine::json::parse_value(&value).is_ok(),
+                valid,
+                "{signature}"
+            );
+        }
         assert!(!validator.is_valid(&composition(
             json!({ "id": 1, "type": "background" }),
             vec![json!({ "from_node": 1, "to_node": OUTPUT_ID, "to_port": "source" })],

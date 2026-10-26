@@ -2,8 +2,15 @@ import { readFile } from "node:fs/promises";
 
 export interface MetaManifest {
   readonly schemaVersion: number;
+  readonly expressions: ExpressionsSpec;
   readonly nodeKinds: readonly string[];
   readonly nodeSpecs: Readonly<Record<string, NodeSpec>>;
+}
+
+export interface ExpressionsSpec {
+  readonly builtins: readonly unknown[];
+  readonly easings: readonly string[];
+  readonly globals: readonly unknown[];
 }
 
 export interface NodeSpec {
@@ -70,8 +77,14 @@ function manifestFromCompositionSchema(schema: JsonSchema): MetaManifest {
       return [spec.kind, spec];
     }),
   );
+  const expressions = objectValue(schema["x-lumen-expressions"]);
   return {
     schemaVersion,
+    expressions: {
+      builtins: arrayValue(expressions.builtins),
+      easings: arrayValue(expressions.easings).filter((value) => typeof value === "string"),
+      globals: arrayValue(expressions.globals),
+    },
     nodeKinds: Object.keys(nodeSpecs),
     nodeSpecs,
   };

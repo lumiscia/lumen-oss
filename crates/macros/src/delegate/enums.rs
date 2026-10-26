@@ -122,6 +122,13 @@ pub(crate) fn expand_enum_delegate(
     let delegate = parse_delegate_attr(input)?;
     let delegate_ident = delegate.name.clone();
     let has_kind = delegate.kind.is_some();
+    let expressions = delegate.expressions;
+    if expressions && !has_kind {
+        return Err(syn::Error::new(
+            ident.span(),
+            "`expressions` requires a delegate `kind`",
+        ));
+    }
     let is_enum_kind = delegate
         .kind
         .as_ref()
@@ -155,17 +162,23 @@ pub(crate) fn expand_enum_delegate(
             }
         }
     };
-    let delegate_variants = variants
+    let mut delegate_variants = variants
         .iter()
         .map(enum_delegate_variant_tokens)
         .collect::<Result<Vec<_>>>()?;
+    let mut eval_matches = variants
+        .iter()
+        .map(|variant| enum_eval_match_tokens(ident, variant))
+        .collect::<Result<Vec<_>>>()?;
+    if expressions {
+        delegate_variants.push(quote!(Expr(::lumen_engine::node::Deferred<#ident>)));
+        eval_matches.push(quote!(
+            Self::Expr(deferred) => deferred.eval(ctx.node_id, ctx.property_path, ctx.expr)
+        ));
+    }
     let from_matches = variants
         .iter()
         .map(|variant| enum_from_match_tokens(ident, variant))
-        .collect::<Result<Vec<_>>>()?;
-    let eval_matches = variants
-        .iter()
-        .map(|variant| enum_eval_match_tokens(ident, variant))
         .collect::<Result<Vec<_>>>()?;
     let assert_field_types = enum_field_types(variants)
         .into_iter()
@@ -245,6 +258,39 @@ pub(crate) fn expand_enum_delegate(
         quote! {}
     };
 
+    let expr_arm = if expressions {
+        quote! {
+            ::lumen_engine::node::PropertyExpression::Expr(expr) => {
+                Ok(Self::Expr(::lumen_engine::node::Deferred::Expr(expr)))
+            }
+        }
+    } else {
+        quote! {
+            ::lumen_engine::node::PropertyExpression::Expr(_) => {
+                Err(::lumen_engine::node::PropertyValue::invalid_type(
+                    node_id,
+                    property_path,
+                    expected,
+                    "expression",
+                ))
+            }
+        }
+    };
+    let to_property_expression = expressions.then(|| {
+        quote! {
+            fn to_property_expression(&self) -> ::lumen_engine::node::PropertyExpression {
+                match self {
+                    Self::Expr(deferred) => deferred.to_property_expression(),
+                    _ => ::lumen_engine::node::PropertyExpression::Value(self.to_property_value()),
+                }
+            }
+        }
+    });
+    let accepts_expressions = if expressions {
+        quote!(<#ident as ::lumen_engine::node::DeferredValue>::ACCEPTS_EXPRESSIONS)
+    } else {
+        quote!(false)
+    };
     let enum_property_methods = if has_kind {
         quote! {
             fn to_property_value(&self) -> ::lumen_engine::node::PropertyValue {
@@ -275,16 +321,11 @@ pub(crate) fn expand_enum_delegate(
                                 )
                             })
                     }
-                    ::lumen_engine::node::PropertyExpression::Expr(_) => {
-                        Err(::lumen_engine::node::PropertyValue::invalid_type(
-                            node_id,
-                            property_path,
-                            expected,
-                            "expression",
-                        ))
-                    }
+                    #expr_arm
                 }
             }
+
+            #to_property_expression
         }
     } else {
         // Without a `kind` there is no property value mapping, so properties cannot set it.
@@ -372,7 +413,7 @@ pub(crate) fn expand_enum_delegate(
         }
 
         impl ::lumen_engine::node::DelegateValue for #delegate_ident {
-            const ACCEPTS_EXPRESSIONS: bool = false;
+            const ACCEPTS_EXPRESSIONS: bool = #accepts_expressions;
 
             #enum_property_methods
         }

@@ -12,12 +12,15 @@ mod migrations;
 mod node;
 mod property;
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 
 use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack},
     composition::{Composition, CompositionMetadata, RenderSettings, TimelineSettings},
+    expr::FunctionScope,
     graph::{Connection, Graph},
     node::NodeId,
 };
@@ -57,6 +60,8 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
         .context("`connections` must be an array")?;
 
     let mut graph = Graph::new();
+    let functions = parse_functions(obj.get("functions"))?;
+    let function_scope = FunctionScope::enter(&functions)?;
 
     // First pass: create all nodes
     for node_val in nodes_arr {
@@ -70,6 +75,7 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
         let node_kind = node::build_node(kind_str, id, node_obj)?;
         graph.nodes.insert(id, node_kind);
     }
+    drop(function_scope);
 
     // Second pass: create connections and wire up PortRefs
     for conn_val in connections_arr {
@@ -125,6 +131,22 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
 // ---------------------------------------------------------------------------
 // Section parsers
 // ---------------------------------------------------------------------------
+
+fn parse_functions(val: Option<&Value>) -> Result<BTreeMap<String, String>> {
+    let Some(val) = val else {
+        return Ok(BTreeMap::new());
+    };
+    val.as_object()
+        .context("`functions` must be an object")?
+        .iter()
+        .map(|(signature, body)| {
+            let body = body
+                .as_str()
+                .with_context(|| format!("`functions.{signature}` must be a string"))?;
+            Ok((signature.clone(), body.to_string()))
+        })
+        .collect()
+}
 
 fn parse_timeline(val: &Value) -> Result<TimelineSettings> {
     let obj = val.as_object().context("`timeline` must be an object")?;
@@ -289,6 +311,14 @@ fn parse_node_id(val: &Value) -> Result<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_the_expression_animation_demo() {
+        parse(include_str!(
+            "../../../local/demo/expression-animation.json"
+        ))
+        .expect("should parse");
+    }
 
     #[test]
     fn parse_minimal_composition() {

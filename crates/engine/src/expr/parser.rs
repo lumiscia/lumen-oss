@@ -1,10 +1,16 @@
-use std::ops::Range;
+use std::{collections::HashSet, ops::Range};
 
 use crate::{
     error::ExpressionError,
-    expr::ast::{
-        BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionId, ExpressionReference,
-        ExpressionValue, GlobalVar, PropertyPath, UnaryOp,
+    expr::{
+        ast::{
+            BinaryOp, ExprNode, Expression, ExpressionId, ExpressionReference, ExpressionValue,
+            GlobalVar, PropertyPath, UnaryOp,
+        },
+        builtins::range_error,
+        easing::Easing,
+        functions,
+        spec::{BuiltinSpec, ValueKind, builtin_for_name},
     },
     node::NodeId,
 };
@@ -13,6 +19,9 @@ use crate::{
 enum TokenKind {
     Identifier(String),
     Number(f64),
+    /// A number with an `s` or `ms` suffix, in seconds.
+    Seconds(f64),
+    Color([u8; 4]),
     String(String),
     LParen,
     RParen,
@@ -164,8 +173,9 @@ impl<'a> Lexer<'a> {
                     });
                 }
             }
+            '#' => TokenKind::Color(self.read_color()?),
             '\'' | '"' => TokenKind::String(self.read_string(ch)?),
-            c if c.is_ascii_digit() => TokenKind::Number(self.read_number()?),
+            c if c.is_ascii_digit() => self.read_number_or_duration()?,
             c if is_ident_start(c) => TokenKind::Identifier(self.read_identifier()),
             other => {
                 return Err(ExpressionError::Parse {
@@ -245,6 +255,45 @@ impl<'a> Lexer<'a> {
             })
     }
 
+    fn read_number_or_duration(&mut self) -> Result<TokenKind, ExpressionError> {
+        let start = self.position;
+        let value = self.read_number()?;
+        if !matches!(self.peek_char(), Some(ch) if is_ident_start(ch)) {
+            return Ok(TokenKind::Number(value));
+        }
+        match self.read_identifier().as_str() {
+            "s" => Ok(TokenKind::Seconds(value)),
+            "ms" => Ok(TokenKind::Seconds(value / 1000.0)),
+            unit => Err(ExpressionError::Parse {
+                path: None,
+                details: format!(
+                    "unknown unit `{unit}` after the number at byte {start}; use `s` or `ms`"
+                ),
+            }),
+        }
+    }
+
+    fn read_color(&mut self) -> Result<[u8; 4], ExpressionError> {
+        let start = self.position;
+        self.bump_char();
+        while matches!(self.peek_char(), Some(ch) if ch.is_ascii_alphanumeric()) {
+            self.bump_char();
+        }
+        let literal = &self.source[start..self.position];
+        let hex = &literal[1..];
+        if !(matches!(hex.len(), 6 | 8) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+            return Err(ExpressionError::Parse {
+                path: None,
+                details: format!("invalid colour `{literal}`; use #rrggbb or #rrggbbaa"),
+            });
+        }
+        let mut color = [255; 4];
+        for (index, channel) in color.iter_mut().take(hex.len() / 2).enumerate() {
+            *channel = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).expect("hex digits");
+        }
+        Ok(color)
+    }
+
     fn read_identifier(&mut self) -> String {
         let start = self.position;
         self.bump_char();
@@ -278,11 +327,85 @@ pub fn parse_expression(source: &str) -> Result<Expression, ExpressionError> {
     parser.parse()
 }
 
+/// The distinct nodes and properties `ast` reads, in the order they first appear.
+fn references(ast: &ExprNode) -> Vec<ExpressionReference> {
+    let mut seen = HashSet::new();
+    let mut references = Vec::new();
+    functions::visit(ast, &mut |node| {
+        let reference = match node {
+            ExprNode::SymbolicPath(segments) => ExpressionReference::SymbolicPath {
+                segments: segments.clone(),
+            },
+            ExprNode::Node(node_id) => ExpressionReference::Node { node_id: *node_id },
+            ExprNode::PropertyValue(node_id, property_path) => ExpressionReference::PropertyValue {
+                node_id: *node_id,
+                property_path: property_path.clone(),
+            },
+            ExprNode::VirtualProperty(id) => ExpressionReference::VirtualProperty { id: *id },
+            _ => return,
+        };
+        if seen.insert(reference.clone()) {
+            references.push(reference);
+        }
+    });
+    references
+}
+
+fn tokenize(source: &str) -> Result<Vec<TokenKind>, ExpressionError> {
+    let mut lexer = Lexer::new(source);
+    let mut tokens = Vec::new();
+    loop {
+        match lexer.next_token()?.kind {
+            TokenKind::Eof => return Ok(tokens),
+            kind => tokens.push(kind),
+        }
+    }
+}
+
+/// Splits a function signature such as `rise(start, distance)` into its name and parameters.
+pub(crate) fn parse_signature(signature: &str) -> Result<(String, Vec<String>), ExpressionError> {
+    let invalid = || ExpressionError::Parse {
+        path: None,
+        details: format!("invalid function signature `{signature}`; expected `name(a, b)`"),
+    };
+    let tokens = tokenize(signature).map_err(|_| invalid())?;
+    let [
+        TokenKind::Identifier(name),
+        TokenKind::LParen,
+        rest @ ..,
+        TokenKind::RParen,
+    ] = &tokens[..]
+    else {
+        return Err(invalid());
+    };
+    let mut params = Vec::new();
+    for (index, token) in rest.iter().enumerate() {
+        match token {
+            TokenKind::Identifier(param) if index % 2 == 0 => params.push(param.clone()),
+            TokenKind::Comma if index % 2 == 1 && index + 1 < rest.len() => {}
+            _ => return Err(invalid()),
+        }
+    }
+    Ok((name.clone(), params))
+}
+
+/// Names called anywhere in `source`, such as `rise` in `rise(4) + 1`.
+pub(crate) fn called_names(source: &str) -> Result<Vec<String>, ExpressionError> {
+    let tokens = tokenize(source)?;
+    Ok(tokens
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [TokenKind::Identifier(name), TokenKind::LParen] => Some(name.clone()),
+            _ => None,
+        })
+        .collect())
+}
+
 struct Parser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
     position: usize,
-    references: Vec<ExpressionReference>,
+    budget: functions::Budget,
 }
 
 impl<'a> Parser<'a> {
@@ -291,7 +414,7 @@ impl<'a> Parser<'a> {
             source,
             tokens: Vec::new(),
             position: 0,
-            references: Vec::new(),
+            budget: functions::Budget::default(),
         }
     }
 
@@ -301,10 +424,20 @@ impl<'a> Parser<'a> {
         self.expect(TokenExpectation::Eof)?;
         Ok(Expression {
             id: ExpressionId(0),
+            references: references(&ast),
             ast,
-            references: self.references.clone(),
             source: self.source.to_string(),
         })
+    }
+
+    fn binary(
+        &mut self,
+        lhs: ExprNode,
+        op: BinaryOp,
+        rhs: ExprNode,
+    ) -> Result<ExprNode, ExpressionError> {
+        self.budget
+            .push(ExprNode::Binary(Box::new(lhs), op, Box::new(rhs)))
     }
 
     fn tokenize(&mut self) -> Result<(), ExpressionError> {
@@ -324,7 +457,7 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_and()?;
         while self.match_token(|kind| matches!(kind, TokenKind::OrOr)) {
             let rhs = self.parse_and()?;
-            node = ExprNode::Binary(Box::new(node), BinaryOp::Or, Box::new(rhs));
+            node = self.binary(node, BinaryOp::Or, rhs)?;
         }
         Ok(node)
     }
@@ -333,7 +466,7 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_equality()?;
         while self.match_token(|kind| matches!(kind, TokenKind::AndAnd)) {
             let rhs = self.parse_equality()?;
-            node = ExprNode::Binary(Box::new(node), BinaryOp::And, Box::new(rhs));
+            node = self.binary(node, BinaryOp::And, rhs)?;
         }
         Ok(node)
     }
@@ -352,7 +485,7 @@ impl<'a> Parser<'a> {
                 break;
             };
             let rhs = self.parse_comparison()?;
-            node = ExprNode::Binary(Box::new(node), op, Box::new(rhs));
+            node = self.binary(node, op, rhs)?;
         }
         Ok(node)
     }
@@ -375,7 +508,7 @@ impl<'a> Parser<'a> {
                 break;
             };
             let rhs = self.parse_term()?;
-            node = ExprNode::Binary(Box::new(node), op, Box::new(rhs));
+            node = self.binary(node, op, rhs)?;
         }
         Ok(node)
     }
@@ -394,7 +527,7 @@ impl<'a> Parser<'a> {
                 break;
             };
             let rhs = self.parse_factor()?;
-            node = ExprNode::Binary(Box::new(node), op, Box::new(rhs));
+            node = self.binary(node, op, rhs)?;
         }
         Ok(node)
     }
@@ -415,17 +548,23 @@ impl<'a> Parser<'a> {
                 break;
             };
             let rhs = self.parse_unary()?;
-            node = ExprNode::Binary(Box::new(node), op, Box::new(rhs));
+            node = self.binary(node, op, rhs)?;
         }
         Ok(node)
     }
 
     fn parse_unary(&mut self) -> Result<ExprNode, ExpressionError> {
         if self.match_token(|kind| matches!(kind, TokenKind::Bang)) {
-            return Ok(ExprNode::Unary(UnaryOp::Not, Box::new(self.parse_unary()?)));
+            let value = self.parse_unary()?;
+            return self
+                .budget
+                .push(ExprNode::Unary(UnaryOp::Not, Box::new(value)));
         }
         if self.match_token(|kind| matches!(kind, TokenKind::Minus)) {
-            return Ok(ExprNode::Unary(UnaryOp::Neg, Box::new(self.parse_unary()?)));
+            let value = self.parse_unary()?;
+            return self
+                .budget
+                .push(ExprNode::Unary(UnaryOp::Neg, Box::new(value)));
         }
         self.parse_primary()
     }
@@ -438,11 +577,26 @@ impl<'a> Parser<'a> {
         match token.kind {
             TokenKind::Number(value) => {
                 self.position += 1;
-                Ok(ExprNode::Literal(ExpressionValue::Number(value)))
+                self.budget
+                    .push(ExprNode::Literal(ExpressionValue::Number(value)))
+            }
+            TokenKind::Seconds(value) => {
+                self.position += 1;
+                let seconds = self
+                    .budget
+                    .push(ExprNode::Literal(ExpressionValue::Number(value)))?;
+                let fps = self.budget.push(ExprNode::Global(GlobalVar::Fps))?;
+                self.binary(seconds, BinaryOp::Mul, fps)
             }
             TokenKind::String(value) => {
                 self.position += 1;
-                Ok(ExprNode::Literal(ExpressionValue::String(value)))
+                self.budget
+                    .push(ExprNode::Literal(ExpressionValue::String(value)))
+            }
+            TokenKind::Color(value) => {
+                self.position += 1;
+                self.budget
+                    .push(ExprNode::Literal(ExpressionValue::color_from_u8(value)))
             }
             TokenKind::Identifier(identifier) => {
                 self.position += 1;
@@ -482,17 +636,18 @@ impl<'a> Parser<'a> {
             }
         }
         if dotted_segments.len() > 1 {
-            self.references.push(ExpressionReference::SymbolicPath {
-                segments: dotted_segments.clone(),
-            });
-            return Ok(ExprNode::SymbolicPath(dotted_segments));
+            return self.budget.push(ExprNode::SymbolicPath(dotted_segments));
         }
 
         if identifier == "true" {
-            return Ok(ExprNode::Literal(ExpressionValue::Boolean(true)));
+            return self
+                .budget
+                .push(ExprNode::Literal(ExpressionValue::Boolean(true)));
         }
         if identifier == "false" {
-            return Ok(ExprNode::Literal(ExpressionValue::Boolean(false)));
+            return self
+                .budget
+                .push(ExprNode::Literal(ExpressionValue::Boolean(false)));
         }
 
         if self.match_token(|kind| matches!(kind, TokenKind::LParen)) {
@@ -515,32 +670,42 @@ impl<'a> Parser<'a> {
                         details: "if(cond, then, else) requires exactly 3 arguments".to_string(),
                     });
                 }
-                return Ok(ExprNode::Conditional(
-                    Box::new(args[0].clone()),
-                    Box::new(args[1].clone()),
-                    Box::new(args[2].clone()),
-                ));
+                let mut args = args.into_iter();
+                let (condition, when_true, when_false) = (
+                    Box::new(args.next().expect("3 args")),
+                    Box::new(args.next().expect("3 args")),
+                    Box::new(args.next().expect("3 args")),
+                );
+                return self
+                    .budget
+                    .push(ExprNode::Conditional(condition, when_true, when_false));
             }
 
             if identifier == "node" {
                 return self.parse_node_reference(args);
             }
 
-            let builtin = builtin_for_name(&identifier).ok_or(ExpressionError::Parse {
-                path: None,
-                details: format!("unknown function `{identifier}`"),
-            })?;
-            return Ok(ExprNode::Builtin(builtin, args));
+            if let Some(spec) = builtin_for_name(&identifier) {
+                validate_builtin_call(spec, &args)?;
+                return self.budget.push(ExprNode::Builtin(spec.builtin, args));
+            }
+            return functions::expand(&identifier, &args, &mut self.budget)?.ok_or(
+                ExpressionError::Parse {
+                    path: None,
+                    details: format!("unknown function `{identifier}`"),
+                },
+            );
         }
 
-        Ok(ExprNode::Global(match identifier.as_str() {
-            "frame" => GlobalVar::Frame,
-            "time" => GlobalVar::Time,
-            "fps" => GlobalVar::Fps,
-            "width" => GlobalVar::Width,
-            "height" => GlobalVar::Height,
-            _ => GlobalVar::Custom(identifier),
-        }))
+        self.budget
+            .push(ExprNode::Global(match identifier.as_str() {
+                "frame" => GlobalVar::Frame,
+                "time" => GlobalVar::Time,
+                "fps" => GlobalVar::Fps,
+                "width" => GlobalVar::Width,
+                "height" => GlobalVar::Height,
+                _ => GlobalVar::Custom(identifier),
+            }))
     }
 
     fn parse_node_reference(&mut self, args: Vec<ExprNode>) -> Result<ExprNode, ExpressionError> {
@@ -571,8 +736,7 @@ impl<'a> Parser<'a> {
         };
 
         if args.len() == 1 {
-            self.references.push(ExpressionReference::Node { node_id });
-            return Ok(ExprNode::Node(node_id));
+            return self.budget.push(ExprNode::Node(node_id));
         }
 
         let property_path = match &args[1] {
@@ -585,12 +749,8 @@ impl<'a> Parser<'a> {
             }
         };
 
-        self.references.push(ExpressionReference::PropertyValue {
-            node_id,
-            property_path: property_path.clone(),
-        });
-
-        Ok(ExprNode::PropertyValue(node_id, property_path))
+        self.budget
+            .push(ExprNode::PropertyValue(node_id, property_path))
     }
 
     fn match_token(&mut self, predicate: impl Fn(&TokenKind) -> bool) -> bool {
@@ -643,31 +803,44 @@ impl TokenExpectation {
     }
 }
 
-fn builtin_for_name(name: &str) -> Option<BuiltinFn> {
-    match name {
-        "min" => Some(BuiltinFn::Min),
-        "max" => Some(BuiltinFn::Max),
-        "abs" => Some(BuiltinFn::Abs),
-        "floor" => Some(BuiltinFn::Floor),
-        "ceil" => Some(BuiltinFn::Ceil),
-        "round" => Some(BuiltinFn::Round),
-        "sin" => Some(BuiltinFn::Sin),
-        "cos" => Some(BuiltinFn::Cos),
-        "clamp" => Some(BuiltinFn::Clamp),
-        "lerp" => Some(BuiltinFn::Lerp),
-        "pow" => Some(BuiltinFn::Pow),
-        "mod" => Some(BuiltinFn::Mod),
-        "fract" => Some(BuiltinFn::Fract),
-        "smoothstep" => Some(BuiltinFn::Smoothstep),
-        "linear" => Some(BuiltinFn::Linear),
-        "step" => Some(BuiltinFn::Step),
-        "text_height" => Some(BuiltinFn::TextHeight),
-        "text_width" => Some(BuiltinFn::TextWidth),
-        "uppercase" => Some(BuiltinFn::Uppercase),
-        "lowercase" => Some(BuiltinFn::Lowercase),
-        "vec2" => Some(BuiltinFn::Vec2),
-        _ => None,
+/// Checks what can be known before evaluation: arity, easing names and literal spring ranges.
+fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), ExpressionError> {
+    let error = |details: String| ExpressionError::Parse {
+        path: None,
+        details: format!("`{}`: {details}", spec.name),
+    };
+    if !spec.accepts_arity(args.len()) {
+        return Err(error(format!(
+            "expects {} arguments, got {}",
+            spec.arity_description(),
+            args.len()
+        )));
     }
+    for (arg, param) in args.iter().zip(spec.args) {
+        if param.kind != ValueKind::Easing {
+            continue;
+        }
+        let ExprNode::Literal(ExpressionValue::String(name)) = arg else {
+            return Err(error(format!(
+                "`{}` must be a quoted easing name such as 'out_expo'",
+                param.name
+            )));
+        };
+        if Easing::from_name(name).is_none() {
+            let names = Easing::ALL.map(Easing::name).join(", ");
+            return Err(error(format!(
+                "unknown easing `{name}`; expected one of {names}"
+            )));
+        }
+    }
+    for (index, arg) in args.iter().enumerate() {
+        if let ExprNode::Literal(ExpressionValue::Number(value)) = arg
+            && let Some(details) = range_error(spec.builtin, index, *value)
+        {
+            return Err(error(details.to_string()));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -42,17 +42,22 @@ struct PropertyAttr {
 struct DelegateAttr {
     name: Ident,
     kind: Option<Ident>,
+    /// Adds an `Expr` variant evaluated through the enum's `DeferredValue` impl.
+    expressions: bool,
 }
 
 fn parse_delegate_attr(input: &DeriveInput) -> Result<DelegateAttr> {
     let mut name = None;
     let mut kind = None;
+    let mut expressions = false;
     if let Some(attr) = optional_attr(&input.attrs, "delegate") {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
                 name = Some(meta.value()?.parse::<Ident>()?);
             } else if meta.path.is_ident("kind") {
                 kind = Some(ident_value(&meta)?);
+            } else if meta.path.is_ident("expressions") {
+                expressions = true;
             } else {
                 return Err(meta.error("unknown delegate attribute key"));
             }
@@ -62,6 +67,7 @@ fn parse_delegate_attr(input: &DeriveInput) -> Result<DelegateAttr> {
     Ok(DelegateAttr {
         name: name.unwrap_or_else(|| format_ident!("{}Delegate", input.ident)),
         kind,
+        expressions,
     })
 }
 
