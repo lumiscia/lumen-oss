@@ -8569,6 +8569,31 @@ fn ink_box(pixels: &[u8], size: u32, columns: std::ops::Range<usize>) -> [usize;
 }
 
 #[test]
+fn bounded_text_holds_glyphs_its_glyph_params_move() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let text = |position: (f64, f64), glyph_offset: (f64, f64)| {
+        vec![NodeKind::Text(Text {
+            id: NodeId::new(1),
+            params: TextParamsDelegate {
+                content: Deferred::value("Hi".to_string()),
+                font_size: Deferred::value(30.0),
+                position: Deferred::value(position),
+                glyph_offset: Deferred::value(glyph_offset),
+                ..Default::default()
+            },
+        })]
+    };
+    let moved = render_drawable_graph(&mut renderer, text((10.0, 10.0), (0.0, 60.0)), size);
+    let placed = render_drawable_graph(&mut renderer, text((10.0, 70.0), (0.0, 0.0)), size);
+    assert!(placed.iter().skip(3).step_by(4).any(|&a| a > 0));
+    assert_eq!(moved, placed);
+}
+
+#[test]
 fn text_glyph_offset_and_opacity_stagger_each_glyph() {
     use lumen_engine::node::source::text::TextRenderMode;
     let _guard = TEXT_TEST_LOCK.lock().unwrap();

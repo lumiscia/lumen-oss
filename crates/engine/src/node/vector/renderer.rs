@@ -499,10 +499,12 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
     /// Only text whose layout is constant and whose paint is a solid colour is bounded: its
     /// paint is evaluated at the pixel it is drawn to, which a viewport offset moves. Text in a
     /// font that the media store has not resolved is not bounded either, since the font drawn
-    /// later may be wider than the one measured here.
+    /// later may be wider than the one measured here, nor text with `glyph_*` params, which
+    /// move glyphs off the layout and fade clusters across their union.
     fn text_bounds(&self, text: &Text) -> Option<lumen_gpu::RectI> {
         let params = &text.params;
-        if !matches!(params.color, super::paint::PaintDelegate::SolidColor(..))
+        if GlyphParams::any(params)
+            || !matches!(params.color, super::paint::PaintDelegate::SolidColor(..))
             || params.content.is_expr()
             || params.font_family.is_expr()
             || params.font_size.is_expr()
