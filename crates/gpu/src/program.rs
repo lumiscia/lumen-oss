@@ -1,6 +1,6 @@
 use crate::{NodeKey, ProgramId};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BindingLayoutEntry {
     pub binding: u32,
     pub visibility: wgpu::ShaderStages,
@@ -70,7 +70,7 @@ impl BindingLayoutEntry {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BindGroupLayoutSpec {
     pub label: Option<String>,
     pub entries: Vec<BindingLayoutEntry>,
@@ -85,7 +85,7 @@ impl BindGroupLayoutSpec {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RenderProgramDesc {
     pub label: Option<String>,
     pub shader: String,
@@ -97,7 +97,7 @@ pub struct RenderProgramDesc {
     pub primitive: wgpu::PrimitiveState,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ComputeProgramDesc {
     pub label: Option<String>,
     pub shader: String,
@@ -105,7 +105,7 @@ pub struct ComputeProgramDesc {
     pub bind_groups: Vec<BindGroupLayoutSpec>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProgramDesc {
     Render(RenderProgramDesc),
     Compute(ComputeProgramDesc),

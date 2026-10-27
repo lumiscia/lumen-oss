@@ -1,11 +1,18 @@
-use std::{collections::HashMap, env, sync::Arc};
+use std::{
+    collections::HashMap,
+    env,
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::{
     BindGroupLayoutSpec, Binding, BindingResource, BufferDesc, BufferId, BufferResource,
     ComputeDispatch, ComputePassDesc, ComputeProgramDesc, CopyTextureDesc, DrawCommand,
-    FrameUpdate, LoadOp, PassDesc, Program, ProgramDesc, ProgramId, RenderPassDesc, RenderPlan,
+    FrameUpdate, LoadOp, PassDesc, ProgramDesc, ProgramId, RenderPassDesc, RenderPlan,
     RenderProgramDesc, SamplerId, TextureDesc, TextureId, TextureResource, Upload,
 };
 
@@ -13,11 +20,19 @@ struct RuntimeTexture {
     texture: Arc<wgpu::Texture>,
     view: wgpu::TextureView,
     desc: TextureDesc,
+    /// Changes whenever the texture is replaced, so bind groups built on the old one are rebuilt.
+    generation: u64,
 }
 
 struct RuntimeBuffer {
     buffer: wgpu::Buffer,
     desc: BufferDesc,
+    /// Bytes last written from offset 0 of a uniform buffer, which shaders cannot write, so an
+    /// identical write can be skipped.
+    uploaded: Option<Vec<u8>>,
+    /// Set once the buffer is handed out through `Renderer::buffer`, after which it can be
+    /// written without the renderer seeing it, so no write to it is skipped.
+    shared: AtomicBool,
 }
 
 struct RuntimeSampler {
@@ -39,6 +54,19 @@ enum RuntimeProgram {
     Compute(RuntimeComputeProgram),
 }
 
+/// Programs compiled by a renderer and its siblings, so plans built from the same shaders compile
+/// each once. Holds only programs some renderer still uses.
+#[derive(Clone, Default)]
+struct ProgramCache(Arc<Mutex<HashMap<ProgramDesc, Weak<RuntimeProgram>>>>);
+
+/// A pass's bind groups and the bindings and texture generations they were built from.
+struct CachedBindGroups {
+    program: ProgramId,
+    bindings: Vec<Binding>,
+    texture_generations: Vec<u64>,
+    groups: Vec<wgpu::BindGroup>,
+}
+
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -46,7 +74,11 @@ pub struct Renderer {
     textures: Vec<RuntimeTexture>,
     buffers: Vec<RuntimeBuffer>,
     samplers: Vec<RuntimeSampler>,
-    programs: Vec<RuntimeProgram>,
+    programs: Vec<Arc<RuntimeProgram>>,
+    program_cache: ProgramCache,
+    /// Indexed by pass.
+    bind_groups: Vec<Option<CachedBindGroups>>,
+    texture_generation: u64,
 }
 
 #[derive(Clone)]
@@ -217,6 +249,22 @@ impl Renderer {
             buffers: Vec::new(),
             samplers: Vec::new(),
             programs: Vec::new(),
+            program_cache: ProgramCache::default(),
+            bind_groups: Vec::new(),
+            texture_generation: 0,
+        }
+    }
+
+    /// An empty renderer on the same device that reuses programs this renderer and its other
+    /// siblings compiled.
+    pub fn sibling(&self) -> Self {
+        Self {
+            program_cache: self.program_cache.clone(),
+            ..Self::from_device_with_adapter_info(
+                self.device.clone(),
+                self.queue.clone(),
+                self.adapter_info.clone(),
+            )
         }
     }
 
@@ -252,12 +300,47 @@ impl Renderer {
                 sampler: self.device.create_sampler(&resource.desc),
             })
             .collect();
-        self.programs = plan
+        self.bind_groups.clear();
+        let mut cache = self
+            .program_cache
+            .0
+            .lock()
+            .map_err(|_| anyhow!("program cache lock was poisoned"))?;
+        let mut created = Vec::new();
+        let programs = plan
             .programs
             .iter()
-            .map(|program| self.create_program(program))
-            .collect::<Result<Vec<_>>>()?;
-        scope.finish()
+            .map(|program| {
+                if let Some(runtime) = cache.get(&program.desc).and_then(Weak::upgrade) {
+                    return Ok(runtime);
+                }
+                let runtime = Arc::new(self.create_program(&program.desc)?);
+                cache.insert(program.desc.clone(), Arc::downgrade(&runtime));
+                created.push(&program.desc);
+                Ok(runtime)
+            })
+            .collect::<Result<Vec<_>>>();
+        let programs = match programs {
+            Ok(programs) => programs,
+            Err(error) => {
+                for desc in created {
+                    cache.remove(desc);
+                }
+                return Err(error);
+            }
+        };
+        self.programs = programs;
+        // The cache stays locked until validation, so no sibling picks up a program that fails it.
+        let result = scope.finish();
+        if result.is_err() {
+            self.programs.clear();
+            for desc in created {
+                cache.remove(desc);
+            }
+        }
+        cache.retain(|_, runtime| runtime.strong_count() > 0);
+        drop(cache);
+        result
     }
 
     pub fn texture_view(&self, id: TextureId) -> Option<&wgpu::TextureView> {
@@ -305,6 +388,8 @@ impl Renderer {
         let old = std::mem::replace(&mut runtime.texture, texture);
         runtime.view = view;
         runtime.desc = desc;
+        self.texture_generation += 1;
+        runtime.generation = self.texture_generation;
         Ok(old)
     }
 
@@ -384,7 +469,10 @@ impl Renderer {
     }
 
     pub fn buffer(&self, id: BufferId) -> Option<&wgpu::Buffer> {
-        self.buffers.get(id.0 as usize).map(|buffer| &buffer.buffer)
+        self.buffers.get(id.0 as usize).map(|buffer| {
+            buffer.shared.store(true, Ordering::Relaxed);
+            &buffer.buffer
+        })
     }
 
     pub fn execute(
@@ -419,16 +507,22 @@ impl Renderer {
         );
 
         let scope = ValidationScope::push(&self.device);
+        self.refresh_bind_groups(plan)?;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("lumen-gpu render-plan encoder"),
             });
 
-        for pass in &plan.passes {
+        for (pass, cached) in plan.passes.iter().zip(&self.bind_groups) {
+            let bind_groups = cached.as_ref().map_or(&[][..], |cached| &cached.groups);
             match &pass.desc {
-                PassDesc::Render(desc) => self.execute_render_pass(desc, &mut encoder)?,
-                PassDesc::Compute(desc) => self.execute_compute_pass(desc, &mut encoder)?,
+                PassDesc::Render(desc) => {
+                    self.execute_render_pass(desc, bind_groups, &mut encoder)?
+                }
+                PassDesc::Compute(desc) => {
+                    self.execute_compute_pass(desc, bind_groups, &mut encoder)?
+                }
                 PassDesc::CopyTexture(desc) => self.execute_copy_texture(desc, &mut encoder)?,
             }
         }
@@ -463,6 +557,7 @@ impl Renderer {
             texture: Arc::new(texture),
             view,
             desc: resource.desc,
+            generation: 0,
         })
     }
 
@@ -476,11 +571,13 @@ impl Renderer {
         RuntimeBuffer {
             buffer,
             desc: resource.desc,
+            uploaded: None,
+            shared: AtomicBool::new(false),
         }
     }
 
-    fn create_program(&self, program: &Program) -> Result<RuntimeProgram> {
-        match &program.desc {
+    fn create_program(&self, desc: &ProgramDesc) -> Result<RuntimeProgram> {
+        match desc {
             ProgramDesc::Render(desc) => {
                 self.create_render_program(desc).map(RuntimeProgram::Render)
             }
@@ -609,7 +706,7 @@ impl Renderer {
         Ok(())
     }
 
-    fn apply_uploads(&self, update: &FrameUpdate<'_>) -> Result<()> {
+    fn apply_uploads(&mut self, update: &FrameUpdate<'_>) -> Result<()> {
         for upload in update.uploads() {
             match upload {
                 Upload::Buffer { id, offset, data } => {
@@ -620,12 +717,27 @@ impl Renderer {
                         bytes = data.len(),
                         "upload buffer"
                     );
-                    let buffer = self.runtime_buffer(*id)?;
+                    let buffer = self
+                        .buffers
+                        .get_mut(id.0 as usize)
+                        .ok_or_else(|| anyhow!("unknown buffer id {id:?}"))?;
                     let end = offset.saturating_add(data.len() as u64);
                     if end > buffer.desc.size {
                         bail!("buffer upload for {id:?} exceeds declared buffer size");
                     }
+                    if *offset == 0
+                        && !buffer.shared.load(Ordering::Relaxed)
+                        && buffer.uploaded.as_deref() == Some(*data)
+                    {
+                        continue;
+                    }
                     self.queue.write_buffer(&buffer.buffer, *offset, data);
+                    let usage = buffer.desc.usage;
+                    if usage.contains(wgpu::BufferUsages::UNIFORM)
+                        && !usage.contains(wgpu::BufferUsages::STORAGE)
+                    {
+                        buffer.uploaded = (*offset == 0).then(|| data.to_vec());
+                    }
                 }
                 Upload::TextureRgba8 {
                     id,
@@ -738,6 +850,7 @@ impl Renderer {
     fn execute_render_pass(
         &self,
         desc: &RenderPassDesc,
+        bind_groups: &[wgpu::BindGroup],
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<()> {
         tracing::trace!(
@@ -779,8 +892,6 @@ impl Renderer {
             multiview_mask: None,
         });
         pass.set_pipeline(&program.pipeline);
-        let bind_groups =
-            self.create_pass_bind_groups(&program.bind_group_layouts, &desc.bindings)?;
         for (group, bind_group) in bind_groups.iter().enumerate() {
             pass.set_bind_group(group as u32, bind_group, &[]);
         }
@@ -820,6 +931,7 @@ impl Renderer {
     fn execute_compute_pass(
         &self,
         desc: &ComputePassDesc,
+        bind_groups: &[wgpu::BindGroup],
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<()> {
         match desc.dispatch {
@@ -842,8 +954,6 @@ impl Renderer {
         let RuntimeProgram::Compute(program) = self.runtime_program(desc.program)? else {
             bail!("program {:?} is not a compute program", desc.program);
         };
-        let bind_groups =
-            self.create_pass_bind_groups(&program.bind_group_layouts, &desc.bindings)?;
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: desc.label.as_deref(),
             timestamp_writes: None,
@@ -890,6 +1000,58 @@ impl Renderer {
             desc.size.as_extent(),
         );
         Ok(())
+    }
+
+    /// Rebuilds the bind groups of passes whose program, bindings, or bound textures changed since
+    /// they were last built.
+    fn refresh_bind_groups(&mut self, plan: &RenderPlan) -> Result<()> {
+        self.bind_groups.resize_with(plan.passes.len(), || None);
+        for (index, pass) in plan.passes.iter().enumerate() {
+            let (program, bindings) = match &pass.desc {
+                PassDesc::Render(desc) => (desc.program, &desc.bindings),
+                PassDesc::Compute(desc) => (desc.program, &desc.bindings),
+                PassDesc::CopyTexture(_) => continue,
+            };
+            if self.bind_groups[index].as_ref().is_some_and(|cached| {
+                cached.program == program
+                    && cached.bindings == *bindings
+                    && cached
+                        .texture_generations
+                        .iter()
+                        .copied()
+                        .eq(self.texture_generations(bindings))
+            }) {
+                continue;
+            }
+            let layouts = match self.runtime_program(program)? {
+                RuntimeProgram::Render(program) => &program.bind_group_layouts,
+                RuntimeProgram::Compute(program) => &program.bind_group_layouts,
+            };
+            let groups = self.create_pass_bind_groups(layouts, bindings)?;
+            self.bind_groups[index] = Some(CachedBindGroups {
+                program,
+                bindings: bindings.clone(),
+                texture_generations: self.texture_generations(bindings).collect(),
+                groups,
+            });
+        }
+        Ok(())
+    }
+
+    fn texture_generations<'a>(
+        &'a self,
+        bindings: &'a [Binding],
+    ) -> impl Iterator<Item = u64> + 'a {
+        bindings
+            .iter()
+            .filter_map(|binding| match binding.resource {
+                BindingResource::Texture { id, .. } => Some(
+                    self.textures
+                        .get(id.0 as usize)
+                        .map_or(u64::MAX, |texture| texture.generation),
+                ),
+                _ => None,
+            })
     }
 
     fn create_pass_bind_groups(
@@ -960,6 +1122,7 @@ impl Renderer {
     fn runtime_program(&self, id: ProgramId) -> Result<&RuntimeProgram> {
         self.programs
             .get(id.0 as usize)
+            .map(Arc::as_ref)
             .ok_or_else(|| anyhow!("unknown program id {id:?}"))
     }
 }
