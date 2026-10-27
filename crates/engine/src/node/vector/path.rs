@@ -128,76 +128,112 @@ impl GpuCompiledNode for CompiledPath {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let expr = ctx.expr_context(self.node_id, "params");
-        let evaluated = self.params.eval(&NodeParamEvalContext {
-            node_id: self.node_id,
-            expr: &expr,
-        })?;
-        let transform = DrawableTransform {
-            position: evaluated.position,
-            scale: evaluated.scale,
-            rotation: evaluated.rotation,
-            anchor: evaluated.anchor,
-            opacity: evaluated.opacity,
-        };
-        let shutter = DeferredTransform {
-            position: &self.params.position,
-            scale: &self.params.scale,
-            rotation: &self.params.rotation,
-            anchor: &self.params.anchor,
-        }
-        .shutter(evaluated.motion_blur, transform, self.node_id, &expr)?;
-        let point_capacity = self.buffers.point_capacity;
-        // Curves are flattened for the largest scale that the shutter draws them at.
-        let mut points = parse_path_points(
-            &evaluated.data,
-            flattening_tolerance(peak_scale(evaluated.scale, shutter.as_ref())),
-            point_capacity,
-        )
-        .ok_or_else(|| RenderError::NodeEvaluation {
-            frame: ctx.frame(),
-            node_id: self.node_id,
-            node_kind: "Path",
-            details: format!("path data flattens to more than {point_capacity} points"),
-        })?;
-        normalize_contour_offsets(&mut points);
-        let (x, y) = evaluated.position;
-        let (trim_start, trim_end) =
-            normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
-
-        let params = PathUniforms {
-            fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
-            stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
-            position: [x as f32, y as f32],
-            bounds_min: bounds_min(&points),
-            bounds_size: bounds_size(&points),
-            stroke_width: evaluated.stroke_width as f32,
-            flags: style_flags(
-                evaluated.fill_enabled,
-                evaluated.stroke_enabled,
-                evaluated.edge_antialias,
-            ),
-            point_count: points.len() as u32,
-            trim_start,
-            trim_end,
-            ..bytemuck::Zeroable::zeroed()
-        };
-        self.buffers
-            .write(bound, params, &points, &transform, shutter.as_ref());
+        let frame = path_frame(
+            &self.params,
+            self.node_id,
+            &ctx.expr_context(self.node_id, "params"),
+            self.buffers.point_capacity,
+            self.buffers.band_capacity,
+        )?;
+        self.buffers.write(bound, &frame);
         Ok(())
     }
 }
 
-impl PathBuffers {
-    /// Writes a frame's uniforms, points and bands for the path shader.
-    pub(super) fn write(
-        &self,
-        bound: &mut BoundFrame,
+/// Evaluates a path node's uniforms, points and bands at the frame of `expr`.
+pub(super) fn path_frame(
+    params: &PathParamsDelegate,
+    node_id: NodeId,
+    expr: &crate::expr::ExpressionContext<'_>,
+    point_capacity: usize,
+    band_capacity: usize,
+) -> crate::Result<PathFrame> {
+    let evaluated = params.eval(&NodeParamEvalContext { node_id, expr })?;
+    let transform = DrawableTransform {
+        position: evaluated.position,
+        scale: evaluated.scale,
+        rotation: evaluated.rotation,
+        anchor: evaluated.anchor,
+        opacity: evaluated.opacity,
+    };
+    let shutter = DeferredTransform {
+        position: &params.position,
+        scale: &params.scale,
+        rotation: &params.rotation,
+        anchor: &params.anchor,
+    }
+    .shutter(evaluated.motion_blur, transform, node_id, expr)?;
+    // Curves are flattened for the largest scale that the shutter draws them at.
+    let mut points = parse_path_points(
+        &evaluated.data,
+        flattening_tolerance(peak_scale(evaluated.scale, shutter.as_ref())),
+        point_capacity,
+    )
+    .ok_or_else(|| RenderError::NodeEvaluation {
+        frame: expr.frame as u32,
+        node_id,
+        node_kind: "Path",
+        details: format!("path data flattens to more than {point_capacity} points"),
+    })?;
+    normalize_contour_offsets(&mut points);
+    let (x, y) = evaluated.position;
+    let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
+
+    let uniforms = PathUniforms {
+        fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
+        stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
+        position: [x as f32, y as f32],
+        bounds_min: bounds_min(&points),
+        bounds_size: bounds_size(&points),
+        stroke_width: evaluated.stroke_width as f32,
+        flags: style_flags(
+            evaluated.fill_enabled,
+            evaluated.stroke_enabled,
+            evaluated.edge_antialias,
+        ),
+        point_count: points.len() as u32,
+        trim_start,
+        trim_end,
+        ..bytemuck::Zeroable::zeroed()
+    };
+    Ok(PathFrame::new(
+        uniforms,
+        points,
+        &transform,
+        shutter.as_ref(),
+        band_capacity,
+    ))
+}
+
+/// Whether a path node's canvas bounds may change between frames.
+pub(super) fn path_is_animated(params: &PathParamsDelegate) -> bool {
+    params.data.is_expr()
+        || params.position.is_expr()
+        || params.scale.is_expr()
+        || params.rotation.is_expr()
+        || params.anchor.is_expr()
+        || params.motion_blur.is_expr()
+        || params.fill_enabled.is_expr()
+        || params.stroke_enabled.is_expr()
+        || params.stroke_width.is_expr()
+}
+
+/// A frame's uniforms, points and bands for the path shader.
+pub(super) struct PathFrame {
+    pub(super) uniforms: PathUniforms,
+    points: Vec<PathPoint>,
+    bands: Vec<u32>,
+}
+
+impl PathFrame {
+    /// Fills in the transform, culling and motion of `uniforms` and bins `points`.
+    pub(super) fn new(
         mut uniforms: PathUniforms,
-        points: &[PathPoint],
+        points: Vec<PathPoint>,
         transform: &DrawableTransform,
         shutter: Option<&Shutter<DrawableTransform>>,
-    ) {
+        band_capacity: usize,
+    ) -> Self {
         uniforms.transform = transform.to_gpu();
         let [x, y] = uniforms.position;
         let min = [x + uniforms.bounds_min[0], y + uniforms.bounds_min[1]];
@@ -206,20 +242,27 @@ impl PathBuffers {
             min[1] + uniforms.bounds_size[1],
         ];
         let motion = DrawableMotion::new(shutter, min, max);
-        let bands = super::path_bands::bin_path(
-            &mut uniforms,
-            points,
-            transform,
-            &motion,
-            self.band_capacity,
-        );
+        let bands =
+            super::path_bands::bin_path(&mut uniforms, &points, transform, &motion, band_capacity);
         uniforms.motion = motion.to_gpu();
-        bound.write_buffer(self.params, 0, bytemuck::bytes_of(&uniforms));
-        if !points.is_empty() {
-            bound.write_buffer(self.points, 0, bytemuck::cast_slice(points));
+        Self {
+            uniforms,
+            points,
+            bands,
         }
-        if !bands.is_empty() {
-            bound.write_buffer(self.bands, 0, bytemuck::cast_slice(&bands));
+    }
+}
+
+impl PathBuffers {
+    pub(super) fn write(&self, bound: &mut BoundFrame, frame: &PathFrame) {
+        let mut uniforms = frame.uniforms;
+        uniforms.origin = self.origin;
+        bound.write_buffer(self.params, 0, bytemuck::bytes_of(&uniforms));
+        if !frame.points.is_empty() {
+            bound.write_buffer(self.points, 0, bytemuck::cast_slice(&frame.points));
+        }
+        if !frame.bands.is_empty() {
+            bound.write_buffer(self.bands, 0, bytemuck::cast_slice(&frame.bands));
         }
     }
 }

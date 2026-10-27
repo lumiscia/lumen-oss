@@ -2,6 +2,15 @@
 
 /// Most taps a motion-blurred layer averages over its shutter.
 pub(crate) const MAX_MOTION_TAPS: usize = 32;
+
+/// The largest coordinate, in pixels, that a bounded texture's bounds are worked out for. Past
+/// it the shader's single-precision rounding is too coarse to pad for, and the source stays at
+/// full frame.
+pub(crate) const MAX_BOUNDED_MAGNITUDE: f64 = 1e6;
+
+/// Single-precision epsilons of rounding that bounds are padded by, per unit of the largest
+/// coordinate involved.
+pub(crate) const ROUNDING_ERROR_FACTOR: f64 = 16.0;
 /// Steps per half of the shutter when measuring how far a layer travels, so that rotation
 /// is measured along its arc.
 const TRAVEL_STEPS: usize = 8;

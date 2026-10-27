@@ -1,5 +1,6 @@
 mod animated_showcase;
 mod antialiasing_stress;
+mod many_elements;
 mod simple_pipeline;
 mod small_media_transform;
 mod vector_showcase;
@@ -21,6 +22,7 @@ pub fn all() -> Vec<Box<dyn CompositionFixture>> {
         Box::new(antialiasing_stress::AntialiasingStress {
             edge_antialias: false,
         }),
+        Box::new(many_elements::ManyElements),
     ]
 }
 

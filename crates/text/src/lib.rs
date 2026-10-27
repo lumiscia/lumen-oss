@@ -228,6 +228,97 @@ impl TextSystem {
         }
     }
 
+    /// The pixels `shaped` may draw to, as `[min_x, min_y, max_x, max_y]` from its origin, in any
+    /// render mode. This is the union of its glyph outlines grown by a margin for antialiasing,
+    /// subpixel snapping and distance field padding. `None` when a glyph's extent is unknown.
+    pub fn ink_bounds(&mut self, shaped: &ShapedText) -> Option<[f32; 4]> {
+        let mut outlines: HashMap<CacheKey, Option<[f32; 4]>> = HashMap::new();
+        let mut ink: Option<[f32; 4]> = None;
+        for shaped_glyph in &shaped.glyphs {
+            let glyph = &shaped_glyph.glyph;
+            let position = [
+                glyph.x + glyph.font_size * glyph.x_offset,
+                glyph.y - glyph.font_size * glyph.y_offset + shaped_glyph.line_y,
+            ];
+            let (key, ..) = CacheKey::new(
+                glyph.font_id,
+                glyph.glyph_id,
+                glyph.font_size,
+                (0.0, 0.0),
+                glyph.font_weight,
+                glyph.cache_key_flags,
+            );
+            let outline = match outlines.get(&key) {
+                Some(outline) => *outline,
+                None => {
+                    let outline = self.glyph_extent(key)?;
+                    outlines.insert(key, outline);
+                    outline
+                }
+            };
+            let Some([min_x, min_y, max_x, max_y]) = outline else {
+                continue;
+            };
+            let margin = 2.0 + 0.1 * glyph.font_size;
+            let glyph_ink = [
+                position[0] + min_x - margin,
+                position[1] - max_y - margin,
+                position[0] + max_x + margin,
+                position[1] - min_y + margin,
+            ];
+            ink = Some(match ink {
+                Some(ink) => [
+                    ink[0].min(glyph_ink[0]),
+                    ink[1].min(glyph_ink[1]),
+                    ink[2].max(glyph_ink[2]),
+                    ink[3].max(glyph_ink[3]),
+                ],
+                None => glyph_ink,
+            });
+        }
+        let bounds = ink.unwrap_or([0.0; 4]);
+        bounds
+            .iter()
+            .all(|value| value.is_finite())
+            .then_some(bounds)
+    }
+
+    /// A glyph's `[min_x, min_y, max_x, max_y]` with Y pointing up from its pen position, or
+    /// `Some(None)` when it draws nothing. `None` when its extent cannot be determined.
+    fn glyph_extent(&mut self, key: CacheKey) -> Option<Option<[f32; 4]>> {
+        if self.is_plain_outline(key)
+            && let Some(commands) = self
+                .swash_cache
+                .get_outline_commands_uncached(&mut self.font_system, key)
+        {
+            return Some(outline_bounds(&commands));
+        }
+        let Some(image) = self
+            .swash_cache
+            .get_image_uncached(&mut self.font_system, key)
+        else {
+            return Some(None);
+        };
+        let placement = image.placement;
+        Some((placement.width > 0 && placement.height > 0).then_some([
+            placement.left as f32,
+            placement.top as f32 - placement.height as f32,
+            placement.left as f32 + placement.width as f32,
+            placement.top as f32,
+        ]))
+    }
+
+    /// Whether the glyph's font draws it from its outline alone, with no colour or bitmap tables.
+    fn is_plain_outline(&mut self, key: CacheKey) -> bool {
+        self.font_system
+            .get_font(key.font_id, key.font_weight)
+            .is_some_and(|font| {
+                ![b"COLR", b"CBDT", b"sbix", b"EBDT"]
+                    .iter()
+                    .any(|tag| font.as_swash().table(u32::from_be_bytes(**tag)).is_some())
+            })
+    }
+
     /// Draws `layout` into a fresh `size`² atlas and returns its pixels.
     #[cfg(test)]
     fn render_atlas(
@@ -424,15 +515,7 @@ impl TextSystem {
     fn render_glyph(&mut self, key: AtlasKey, max_size: u32) -> RenderedGlyph {
         match key {
             AtlasKey::Raster(key) => {
-                let plain_outline = self
-                    .font_system
-                    .get_font(key.font_id, key.font_weight)
-                    .is_some_and(|font| {
-                        ![b"COLR", b"CBDT", b"sbix", b"EBDT"]
-                            .iter()
-                            .any(|tag| font.as_swash().table(u32::from_be_bytes(**tag)).is_some())
-                    });
-                if plain_outline
+                if self.is_plain_outline(key)
                     && let Some(commands) = self
                         .swash_cache
                         .get_outline_commands_uncached(&mut self.font_system, key)
@@ -470,6 +553,39 @@ impl Default for TextSystem {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// `[min_x, min_y, max_x, max_y]` of an outline's control points, or `None` when it is empty.
+fn outline_bounds(commands: &[swash::zeno::Command]) -> Option<[f32; 4]> {
+    use swash::zeno::Command;
+    let mut bounds: Option<[f32; 4]> = None;
+    let mut include = |point: swash::zeno::Vector| {
+        bounds = Some(match bounds {
+            Some([min_x, min_y, max_x, max_y]) => [
+                min_x.min(point.x),
+                min_y.min(point.y),
+                max_x.max(point.x),
+                max_y.max(point.y),
+            ],
+            None => [point.x, point.y, point.x, point.y],
+        });
+    };
+    for command in commands {
+        match *command {
+            Command::MoveTo(p) | Command::LineTo(p) => include(p),
+            Command::QuadTo(c, p) => {
+                include(c);
+                include(p);
+            }
+            Command::CurveTo(c0, c1, p) => {
+                include(c0);
+                include(c1);
+                include(p);
+            }
+            Command::Close => {}
+        }
+    }
+    bounds
 }
 
 fn load_default_fonts(font_system: &mut FontSystem) {

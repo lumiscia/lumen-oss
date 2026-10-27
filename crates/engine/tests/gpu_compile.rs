@@ -538,9 +538,14 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
         media_raster.domain.storage_size,
         lumen_gpu::Size::new(320, 180)
     );
+    // The transform places the plate on the canvas but stores only the pixels it covers.
     assert_eq!(
-        transformed_raster.domain.storage_size,
+        transformed_raster.domain.display_size(),
         lumen_gpu::Size::new(1920, 1080)
+    );
+    assert_eq!(
+        transformed_raster.domain.data_rect,
+        lumen_gpu::RectI::new(0, 0, 323, 183)
     );
     assert_eq!(
         merge_raster.domain.storage_size,
@@ -2615,6 +2620,701 @@ fn polygon_shape_renders_its_points_instead_of_a_rectangle() {
             [0, 0, 0, 0],
             "({x}, {y}) is outside the triangle"
         );
+    }
+}
+
+#[test]
+fn small_shape_compiles_to_a_texture_and_dispatch_around_its_bounds() {
+    let shape = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        shape,
+        NodeKind::Shape(Shape {
+            id: shape,
+            params: ShapeParamsDelegate {
+                width: Deferred::value(40),
+                height: Deferred::value(20),
+                position: Deferred::value((100.0, 200.0)),
+                stroke_enabled: Deferred::value(true),
+                stroke_width: Deferred::value(2.0),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(shape, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 1920;
+    composition.render_settings.height = 1080;
+
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let raster = compiled
+        .node_outputs
+        .get(&PortRef::new(shape, "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(shape, "output")
+        .unwrap();
+    let data = raster.domain.data_rect;
+    let texture = compiled
+        .plan
+        .textures()
+        .iter()
+        .find(|texture| texture.id == raster.texture)
+        .unwrap();
+    let dispatch = compiled
+        .plan
+        .passes()
+        .iter()
+        .find_map(|pass| match &pass.desc {
+            lumen_gpu::PassDesc::Compute(desc)
+                if desc.label.as_deref() == Some("shape:1:rasterize") =>
+            {
+                Some(desc.dispatch)
+            }
+            _ => None,
+        })
+        .unwrap();
+
+    assert_eq!(
+        raster.domain.display_size(),
+        lumen_gpu::Size::new(1920, 1080)
+    );
+    assert!(data.contains(lumen_gpu::RectI::new(99, 199, 42, 22)));
+    assert!(data.width <= 48 && data.height <= 28, "{data:?}");
+    assert_eq!(texture.desc.domain.storage_size, data.size());
+    assert_eq!(
+        dispatch,
+        lumen_gpu::ComputeDispatch::Direct(lumen_gpu::Dispatch {
+            x: data.width.div_ceil(8),
+            y: data.height.div_ceil(8),
+            z: 1,
+        })
+    );
+    assert_eq!(
+        compiled.output.domain.storage_size,
+        lumen_gpu::Size::new(1920, 1080)
+    );
+}
+
+/// Text drawn in a font whose glyphs are `scale` times the size of Roboto's, held back until the
+/// media store resolves it.
+#[derive(Debug, Clone)]
+struct ScaledFontStore {
+    family: &'static str,
+    data: Vec<u8>,
+}
+
+impl ScaledFontStore {
+    fn new(family: &'static str, scale: u16) -> Self {
+        assert_eq!(family.len(), "Roboto".len());
+        let mut data = lumen_text::ROBOTO_REGULAR_BYTES.to_vec();
+        let utf16 = |name: &str| {
+            name.encode_utf16()
+                .flat_map(u16::to_be_bytes)
+                .collect::<Vec<_>>()
+        };
+        for (old, new) in [
+            (b"Roboto".to_vec(), family.as_bytes().to_vec()),
+            (utf16("Roboto"), utf16(family)),
+        ] {
+            for offset in 0..=data.len() - old.len() {
+                if data[offset..offset + old.len()] == old[..] {
+                    data[offset..offset + old.len()].copy_from_slice(&new);
+                }
+            }
+        }
+        let table_count = u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize;
+        let head = data[12..12 + table_count * 16]
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .find(|table| &table[..4] == b"head")
+            .unwrap();
+        let units_offset = u32::from_be_bytes(head[8..12].try_into().unwrap()) as usize + 18;
+        let units = u16::from_be_bytes(data[units_offset..units_offset + 2].try_into().unwrap());
+        data[units_offset..units_offset + 2].copy_from_slice(&(units / scale).to_be_bytes());
+        Self { family, data }
+    }
+
+    fn composition(&self, line_height: f64, bounded: bool) -> Composition {
+        let text = NodeId::new(1);
+        let output = NodeId::new(2);
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            text,
+            NodeKind::Text(Text {
+                id: text,
+                params: TextParamsDelegate {
+                    content: Deferred::value("WWW".to_string()),
+                    font_family: Deferred::value(self.family.to_string()),
+                    font_size: if bounded {
+                        Deferred::value(20.0)
+                    } else {
+                        Deferred::Expr(Expression::parse("20").unwrap())
+                    },
+                    line_height: Deferred::value(line_height),
+                    position: Deferred::value((10.0, 90.0)),
+                    ..Default::default()
+                },
+            }),
+        );
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(text, "output".to_string()),
+            }),
+        );
+        let mut composition = test_composition(graph);
+        composition.render_settings.width = 640;
+        composition.render_settings.height = 360;
+        composition
+    }
+}
+
+impl lumen_engine::media::FontResolver for ScaledFontStore {
+    fn id(&self) -> &str {
+        self.family
+    }
+
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![self.data.clone()])
+    }
+}
+
+impl MediaStore for ScaledFontStore {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family == self.family).then(|| self.family.to_string())
+    }
+
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        (family == self.family).then(|| Box::new(self.clone()) as _)
+    }
+}
+
+/// Renders text that is bounded to its ink, after compiling without the media store when
+/// `compile_first` is set, and the same text at full frame. Returns whether they are the same
+/// pixels and whether the first was bounded.
+fn bounded_text_matches_full_frame(
+    store: &ScaledFontStore,
+    line_height: f64,
+    compile_first: bool,
+) -> Option<(bool, bool)> {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let mut renderer = gpu_composition_renderer()?;
+    let composition = store.composition(line_height, true);
+    if compile_first {
+        renderer.compile(&composition).unwrap();
+    } else {
+        renderer
+            .compile_with_media(
+                &composition,
+                store,
+                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .unwrap();
+    }
+    let pixels = render_rgba8(&mut renderer, &composition, 0, store);
+    let text = PortRef::new(NodeId::new(1), "output".to_string());
+    let bounded = !renderer.compiled().unwrap().node_outputs[&text]
+        .clone()
+        .into_raster(text.id, "output")
+        .unwrap()
+        .domain
+        .is_full_frame();
+
+    let mut reference = gpu_composition_renderer()?;
+    let expected = render_rgba8(
+        &mut reference,
+        &store.composition(line_height, false),
+        0,
+        store,
+    );
+    Some((pixels == expected, bounded))
+}
+
+#[test]
+fn bounded_text_holds_the_ink_of_the_font_it_is_drawn_in() {
+    // A font that only the render's media store resolves, wider than the fallback.
+    let wide = ScaledFontStore::new("WideIn", 2);
+    if let Some((same, bounded)) = bounded_text_matches_full_frame(&wide, 1.2, true) {
+        assert!(same, "text measured with the fallback font was clipped");
+        assert!(bounded, "text in a resolved font should be bounded");
+    }
+    // Ink eight times the em tall, far beyond a margin measured in em from the line box.
+    let tall = ScaledFontStore::new("TallIn", 8);
+    if let Some((same, bounded)) = bounded_text_matches_full_frame(&tall, 1.0, false) {
+        assert!(same, "text with ink outside its line box was clipped");
+        assert!(bounded, "text in a resolved font should be bounded");
+    }
+}
+
+impl ScaledFontStore {
+    /// The same font declaring `weight` in its OS/2 table.
+    fn with_weight(mut self, weight: u16) -> Self {
+        let table_count = u16::from_be_bytes(self.data[4..6].try_into().unwrap()) as usize;
+        let os2 = self.data[12..12 + table_count * 16]
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .find(|table| &table[..4] == b"OS/2")
+            .unwrap();
+        let offset = u32::from_be_bytes(os2[8..12].try_into().unwrap()) as usize + 4;
+        self.data[offset..offset + 2].copy_from_slice(&weight.to_be_bytes());
+        self
+    }
+}
+
+impl ScaledFontStore {
+    /// The same font data, resolved under `family`.
+    fn resolved_as(mut self, family: &'static str) -> Self {
+        self.family = family;
+        self
+    }
+}
+
+#[test]
+fn bounded_text_is_remeasured_after_binding_loads_a_font() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let text = NodeId::new(1);
+    let loader = NodeId::new(2);
+    let merge = NodeId::new(3);
+    let output = NodeId::new(4);
+    let composition = |bounded: bool| {
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            text,
+            NodeKind::Text(Text {
+                id: text,
+                params: TextParamsDelegate {
+                    content: Deferred::value("WWWWWWWWWW".to_string()),
+                    font_family: Deferred::value("Roboto".to_string()),
+                    font_size: if bounded {
+                        Deferred::value(20.0)
+                    } else {
+                        Deferred::Expr(Expression::parse("20").unwrap())
+                    },
+                    font_weight: Deferred::value(700),
+                    position: Deferred::value((5.0, 40.0)),
+                    render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
+                    ..Default::default()
+                },
+            }),
+        );
+        // Its font family is only known when it is bound, and the font it loads then is a
+        // wider bold Roboto, which the text above is drawn in.
+        graph.nodes.insert(
+            loader,
+            NodeKind::Text(Text {
+                id: loader,
+                params: TextParamsDelegate {
+                    content: Deferred::value("W".to_string()),
+                    font_family: Deferred::Expr(Expression::parse("\"Loader\"").unwrap()),
+                    position: Deferred::value((0.0, 400.0)),
+                    render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
+                    ..Default::default()
+                },
+            }),
+        );
+        graph.nodes.insert(
+            merge,
+            NodeKind::RasterMultiMerge(RasterMultiMerge {
+                id: merge,
+                layers: vec![
+                    PortRef::new(loader, "output".to_string()),
+                    PortRef::new(text, "output".to_string()),
+                ],
+                ..Default::default()
+            }),
+        );
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(merge, "output".to_string()),
+            }),
+        );
+        let mut composition = test_composition(graph);
+        composition.render_settings.width = 256;
+        composition.render_settings.height = 192;
+        composition
+    };
+    let store = ScaledFontStore::new("Roboto", 2)
+        .with_weight(700)
+        .resolved_as("Loader");
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let pixels = render_rgba8(&mut renderer, &composition(true), 0, &store);
+
+    // The font is shared by every renderer, so the reference sees it loaded from the start.
+    let mut reference = gpu_composition_renderer().unwrap();
+    let expected = render_rgba8(&mut reference, &composition(false), 0, &store);
+    assert!(
+        pixels == expected,
+        "the first frame was clipped to bounds measured before binding loaded a font"
+    );
+}
+
+#[test]
+fn bounded_text_is_remeasured_after_another_renderer_loads_a_font() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let text_composition = |bounded: bool| {
+        let text = NodeId::new(1);
+        let output = NodeId::new(2);
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            text,
+            NodeKind::Text(Text {
+                id: text,
+                params: TextParamsDelegate {
+                    content: Deferred::value("WWWWWWWWWW".to_string()),
+                    font_size: if bounded {
+                        Deferred::value(20.0)
+                    } else {
+                        Deferred::Expr(Expression::parse("20").unwrap())
+                    },
+                    font_weight: Deferred::value(700),
+                    position: Deferred::value((5.0, 40.0)),
+                    render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
+                    ..Default::default()
+                },
+            }),
+        );
+        graph.nodes.insert(
+            output,
+            NodeKind::MediaOutput(MediaOutput {
+                id: output,
+                source: PortRef::new(text, "output".to_string()),
+            }),
+        );
+        let mut composition = test_composition(graph);
+        composition.render_settings.width = 256;
+        composition.render_settings.height = 192;
+        composition
+    };
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = text_composition(true);
+    render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+
+    // A wider bold Roboto, loaded into the text system that every renderer shares.
+    let wide = ScaledFontStore::new("Roboto", 2).with_weight(700);
+    let mut loader = gpu_composition_renderer().unwrap();
+    render_rgba8(&mut loader, &composition, 0, &wide);
+
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let mut reference = gpu_composition_renderer().unwrap();
+    let expected = render_rgba8(
+        &mut reference,
+        &text_composition(false),
+        0,
+        &EmptyMediaStore,
+    );
+    assert!(
+        pixels == expected,
+        "text was clipped to bounds measured before a font was loaded"
+    );
+}
+
+#[derive(Clone, Copy)]
+enum TransformParamKind {
+    Literal,
+    /// An expression of the frame, whose bounds are held over the timeline.
+    Animated,
+    /// An expression that reads another node, so that the transform fills the canvas.
+    Unbounded,
+}
+
+impl TransformParamKind {
+    fn param(self, name: &str, value: f64) -> Deferred<f64> {
+        match self {
+            Self::Literal => Deferred::value(value),
+            Self::Animated => {
+                Deferred::Expr(Expression::parse(&format!("{value:.0} + 0 * frame")).unwrap())
+            }
+            Self::Unbounded => {
+                Deferred::Expr(Expression::parse(&format!("node(99, \"{name}\")")).unwrap())
+            }
+        }
+    }
+}
+
+/// Renders a small shape through a transform with the given rotation and scale.
+fn render_transformed_small_shape(
+    kind: TransformParamKind,
+    rotate: f64,
+    scale: f64,
+    pivot: Option<f64>,
+    position: (f64, f64),
+) -> Option<Vec<u8>> {
+    let pivot_params = |kind: TransformParamKind| match pivot {
+        Some(pivot) => (
+            Deferred::value(true),
+            kind.param("pivot_x", pivot),
+            kind.param("pivot_y", pivot),
+        ),
+        None => (
+            Deferred::value(false),
+            Deferred::value(0.0),
+            Deferred::value(0.0),
+        ),
+    };
+    let (custom_pivot, pivot_x, pivot_y) = pivot_params(kind);
+    let mut renderer = gpu_composition_renderer()?;
+    let shape = NodeId::new(1);
+    let transform = NodeId::new(2);
+    let output = NodeId::new(3);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        shape,
+        NodeKind::Shape(Shape {
+            id: shape,
+            params: ShapeParamsDelegate {
+                position: Deferred::value(position),
+                width: Deferred::value(14),
+                height: Deferred::value(11),
+                fill_paint: Paint::solid([255, 100, 0, 200]).into(),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        transform,
+        NodeKind::Transform(Transform {
+            id: transform,
+            source: PortRef::new(shape, "output".to_string()),
+            params: TransformParamsDelegate {
+                rotate: kind.param("rotate", rotate),
+                scale_x: kind.param("scale_x", scale),
+                scale_y: kind.param("scale_y", scale),
+                custom_pivot,
+                pivot_x,
+                pivot_y,
+                ..Default::default()
+            },
+        }),
+    );
+    // The values the unbounded reference reads.
+    graph.nodes.insert(
+        NodeId::new(99),
+        NodeKind::Transform(Transform {
+            id: NodeId::new(99),
+            source: PortRef::new(shape, "output".to_string()),
+            params: TransformParamsDelegate {
+                rotate: Deferred::value(rotate),
+                scale_x: Deferred::value(scale),
+                scale_y: Deferred::value(scale),
+                custom_pivot: pivot_params(TransformParamKind::Literal).0,
+                pivot_x: pivot_params(TransformParamKind::Literal).1,
+                pivot_y: pivot_params(TransformParamKind::Literal).2,
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(transform, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 256;
+    composition.render_settings.height = 192;
+    composition.timeline.duration_frames = 2;
+    Some(render_rgba8(
+        &mut renderer,
+        &composition,
+        0,
+        &EmptyMediaStore,
+    ))
+}
+
+#[test]
+fn transform_bounds_never_clip_what_the_shader_draws() {
+    // A rotation too large for the shader's single-precision angle to be bounded, and a scale
+    // that overflows single precision.
+    // A pivot far enough away that single precision cannot place the shape about it.
+    for (rotate, scale, pivot, position) in [
+        (1e9, 1.0, None, (40.0, 45.0)),
+        (4.5e4, 1.0, None, (40.0, 45.0)),
+        (0.0, 1e40, None, (40.0, 45.0)),
+        (0.0, 1e300, None, (40.0, 45.0)),
+        (0.0, 1.0, Some(1e10), (0.0, 0.0)),
+        (0.0, 1.0, Some(1e7), (0.0, 0.0)),
+        (30.0, 1.0, Some(1e6), (0.0, 0.0)),
+    ] {
+        for kind in [TransformParamKind::Literal, TransformParamKind::Animated] {
+            let Some(pixels) = render_transformed_small_shape(kind, rotate, scale, pivot, position)
+            else {
+                return;
+            };
+            let expected = render_transformed_small_shape(
+                TransformParamKind::Unbounded,
+                rotate,
+                scale,
+                pivot,
+                position,
+            )
+            .unwrap();
+            assert!(
+                pixels == expected,
+                "transform with rotate {rotate}, scale {scale} and pivot {pivot:?} was clipped"
+            );
+        }
+    }
+}
+
+fn moving_shape_composition(
+    position: &str,
+    width: Deferred<i64>,
+    fps: f32,
+    duration_frames: u32,
+) -> Composition {
+    let shape = NodeId::new(1);
+    let output = NodeId::new(2);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        shape,
+        NodeKind::Shape(Shape {
+            id: shape,
+            params: ShapeParamsDelegate {
+                position: Deferred::Expr(Expression::parse(position).unwrap()),
+                width,
+                height: Deferred::value(8),
+                fill_paint: Paint::solid([255, 100, 0, 255]).into(),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(shape, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 128;
+    composition.render_settings.height = 64;
+    composition.timeline = TimelineSettings {
+        fps,
+        duration_frames,
+    };
+    composition
+}
+
+fn pixel_alpha(pixels: &[u8], width: u32, x: u32, y: u32) -> u8 {
+    pixels[(y * width + x) as usize * 4 + 3]
+}
+
+#[test]
+fn animated_bounds_follow_timeline_edits() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut composition =
+        moving_shape_composition("vec2(10 + frame * 10, 20)", Deferred::value(8), 24.0, 2);
+    render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+
+    composition.timeline.duration_frames = 10;
+    let pixels = render_rgba8(&mut renderer, &composition, 8, &EmptyMediaStore);
+    assert!(
+        pixel_alpha(&pixels, 128, 94, 24) > 0,
+        "duration edit clipped the shape"
+    );
+
+    let mut composition =
+        moving_shape_composition("vec2(10 + time * 100, 20)", Deferred::value(8), 24.0, 10);
+    renderer.release_resources();
+    render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+
+    composition.timeline.fps = 12.0;
+    let pixels = render_rgba8(&mut renderer, &composition, 8, &EmptyMediaStore);
+    assert!(
+        pixel_alpha(&pixels, 128, 80, 24) > 0,
+        "fps edit clipped the shape"
+    );
+}
+
+#[test]
+fn animated_bounds_follow_referenced_node_edits() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let referenced = NodeId::new(99);
+    let mut composition = moving_shape_composition(
+        "vec2(10, 20)",
+        Deferred::Expr(Expression::parse("node(99, \"width\")").unwrap()),
+        24.0,
+        2,
+    );
+    composition.graph.nodes.insert(
+        referenced,
+        NodeKind::Shape(Shape {
+            id: referenced,
+            params: ShapeParamsDelegate {
+                width: Deferred::value(8),
+                ..Default::default()
+            },
+        }),
+    );
+    render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+
+    let Some(NodeKind::Shape(shape)) = composition.graph.nodes.get_mut(&referenced) else {
+        unreachable!("the referenced node is a shape");
+    };
+    shape.params.width = Deferred::value(100);
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    assert!(
+        pixel_alpha(&pixels, 128, 100, 24) > 0,
+        "referenced edit clipped the shape"
+    );
+}
+
+#[test]
+fn standalone_compile_keeps_animated_sources_full_frame_for_fractional_binds() {
+    let composition = moving_shape_composition(
+        "vec2(20 + 100 * sin(frame * 3.141592653589793), 50)",
+        Deferred::value(8),
+        24.0,
+        2,
+    );
+    let shape = PortRef::new(NodeId::new(1), "output".to_string());
+    let shape_domain = |compiled: &lumen_engine::gpu::CompiledComposition| {
+        compiled.node_outputs[&shape]
+            .clone()
+            .into_raster(shape.id, "output")
+            .unwrap()
+            .domain
+    };
+
+    let standalone = CompileContext::new(&composition).compile().unwrap();
+    assert!(shape_domain(&standalone).is_full_frame());
+
+    if let Some(mut renderer) = gpu_composition_renderer() {
+        renderer.compile(&composition).unwrap();
+        assert!(!shape_domain(renderer.compiled().unwrap()).is_full_frame());
     }
 }
 
@@ -7866,6 +8566,31 @@ fn ink_box(pixels: &[u8], size: u32, columns: std::ops::Range<usize>) -> [usize;
         }
     }
     bounds
+}
+
+#[test]
+fn bounded_text_holds_glyphs_its_glyph_params_move() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let text = |position: (f64, f64), glyph_offset: (f64, f64)| {
+        vec![NodeKind::Text(Text {
+            id: NodeId::new(1),
+            params: TextParamsDelegate {
+                content: Deferred::value("Hi".to_string()),
+                font_size: Deferred::value(30.0),
+                position: Deferred::value(position),
+                glyph_offset: Deferred::value(glyph_offset),
+                ..Default::default()
+            },
+        })]
+    };
+    let moved = render_drawable_graph(&mut renderer, text((10.0, 10.0), (0.0, 60.0)), size);
+    let placed = render_drawable_graph(&mut renderer, text((10.0, 70.0), (0.0, 0.0)), size);
+    assert!(placed.iter().skip(3).step_by(4).any(|&a| a > 0));
+    assert_eq!(moved, placed);
 }
 
 #[test]

@@ -28,6 +28,12 @@ impl TextureDesc {
         }
     }
 
+    /// This descriptor with storage sized to `domain`.
+    pub fn with_domain(mut self, domain: TextureDomain) -> Self {
+        self.domain = domain;
+        self
+    }
+
     pub fn storage(size: Size, format: wgpu::TextureFormat) -> Self {
         Self {
             domain: TextureDomain::full_frame(size),

@@ -142,6 +142,7 @@ impl GpuCompileNode for MediaOutput {
                     instances: 0..1,
                 }),
                 scissor: None,
+                viewport: None,
             });
         }
 

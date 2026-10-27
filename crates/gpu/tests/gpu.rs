@@ -202,6 +202,7 @@ fn render_pass_draws_fullscreen_triangle_to_target() {
             instances: 0..1,
         }),
         scissor: None,
+        viewport: None,
     });
     let plan = builder.build();
 
@@ -252,6 +253,7 @@ fn submit_plan_with_external_texture_restores_slot_and_retains_target() {
             instances: 0..1,
         }),
         scissor: None,
+        viewport: None,
     });
     let plan = builder.build();
     renderer.prepare_plan(&plan).unwrap();

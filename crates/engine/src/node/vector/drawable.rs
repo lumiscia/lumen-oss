@@ -1,7 +1,9 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::expr::ExpressionContext;
-use crate::node::motion::{self, Lerp, MAX_MOTION_TAPS, Shutter};
+use crate::node::motion::{
+    self, Lerp, MAX_BOUNDED_MAGNITUDE, MAX_MOTION_TAPS, ROUNDING_ERROR_FACTOR, Shutter,
+};
 use crate::node::{Deferred, NodeId};
 
 pub(crate) const DRAWABLE_SHADER: &str = include_str!("drawable.wgsl");
@@ -371,6 +373,9 @@ impl DrawableMotion {
 }
 
 fn union_bounds(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    if a.iter().chain(&b).any(|value| value.is_nan()) {
+        return [f32::NAN; 4];
+    }
     [
         a[0].min(b[0]),
         a[1].min(b[1]),
@@ -444,15 +449,32 @@ impl GpuDrawableTransform {
     }
 
     /// Canvas-space `[min_x, min_y, max_x, max_y]` of the untransformed box from `min` to
-    /// `max`.
+    /// `max`, widened by the single-precision rounding of the shader's map. All NaN when a
+    /// corner does not land on a finite point, or when the map or box reaches past
+    /// `MAX_BOUNDED_MAGNITUDE`, where that rounding is not worth bounding.
     pub(crate) fn canvas_bounds(self, min: [f32; 2], max: [f32; 2]) -> [f32; 4] {
         let corners = [min, [max[0], min[1]], [min[0], max[1]], max];
-        corners.map(|corner| self.to_canvas(corner)).iter().fold(
+        let corners = corners.map(|corner| self.to_canvas(corner));
+        let magnitude = [min, max]
+            .iter()
+            .flatten()
+            .chain(self.linear.iter().flatten())
+            .chain(&self.offset)
+            .chain(corners.iter().flatten())
+            .fold(0.0_f32, |largest, value| largest.max(value.abs()));
+        if corners.iter().flatten().any(|value| !value.is_finite())
+            || f64::from(magnitude) > MAX_BOUNDED_MAGNITUDE
+        {
+            return [f32::NAN; 4];
+        }
+        let pad = (ROUNDING_ERROR_FACTOR * f64::from(f32::EPSILON)) as f32 * magnitude;
+        let [min_x, min_y, max_x, max_y] = corners.iter().fold(
             [f32::MAX, f32::MAX, f32::MIN, f32::MIN],
             |[min_x, min_y, max_x, max_y], [x, y]| {
                 [min_x.min(*x), min_y.min(*y), max_x.max(*x), max_y.max(*y)]
             },
-        )
+        );
+        [min_x - pad, min_y - pad, max_x + pad, max_y + pad]
     }
 }
 

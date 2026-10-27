@@ -793,6 +793,16 @@ impl Renderer {
         if let Some((buffer_id, format)) = desc.index_buffer {
             pass.set_index_buffer(self.runtime_buffer(buffer_id)?.buffer.slice(..), format);
         }
+        if let Some(viewport) = desc.viewport {
+            pass.set_viewport(
+                viewport.x,
+                viewport.y,
+                viewport.width,
+                viewport.height,
+                0.0,
+                1.0,
+            );
+        }
         if let Some(scissor) = desc.scissor {
             pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         }

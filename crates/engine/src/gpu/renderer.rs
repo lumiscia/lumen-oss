@@ -22,15 +22,22 @@ use super::media::GpuMediaFrameImporter;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CompiledPlanKey {
     size: (u32, u32),
+    /// Whether the frame is a whole frame of the timeline, so animated sources may be sized to
+    /// their bounds over it.
+    on_timeline: bool,
+    /// Frame count and fps bits of the timeline that bounds over it were taken from.
+    timeline: (u32, u32),
     entries: Vec<PlanKeyEntry>,
 }
 
 impl CompiledPlanKey {
-    /// Whether the canvas size is unchanged and the nodes this key chose between still exist with
-    /// the same kind and, for literal shader sources, the same source.
+    /// Whether the canvas size and timeline are unchanged and the nodes this key chose between
+    /// still exist with the same kind and, for literal shader sources, the same source.
     fn matches(&self, composition: &Composition) -> bool {
         let settings = &composition.render_settings;
-        if self.size != (settings.width, settings.height) {
+        if self.size != (settings.width, settings.height)
+            || self.timeline != timeline_key(composition)
+        {
             return false;
         }
         let nodes = &composition.graph.nodes;
@@ -41,6 +48,8 @@ impl CompiledPlanKey {
                 .all(|id| matches!(nodes.get(id), Some(NodeKind::TimeRemap(_))))
                 && match (&entry.choice, nodes.get(&entry.node_id)) {
                     (PlanChoice::SwitchSelection(_), Some(NodeKind::Switch(_))) => true,
+                    (PlanChoice::TextFont(_), Some(NodeKind::Text(_))) => true,
+                    (PlanChoice::TextFontGeneration(_), Some(NodeKind::Text(_))) => true,
                     (PlanChoice::ShaderSource(hash), Some(NodeKind::WgslShader(shader))) => {
                         match &shader.params.shader {
                             Deferred::Value(source) => source_hash(source) == *hash,
@@ -64,6 +73,12 @@ struct PlanKeyEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum PlanChoice {
     SwitchSelection(Option<usize>),
+    /// The resolver the media store gave a text node's font family, which its bounds were
+    /// measured with.
+    TextFont(String),
+    /// The fonts the shared text system held when a text node's bounds were measured; loading
+    /// any face may change how that text is shaped.
+    TextFontGeneration(u64),
     ShaderSource(u64),
 }
 
@@ -155,7 +170,8 @@ impl GpuCompositionRenderer {
         self.reset_compiled(output_format);
         let key = self.compiled_plan_key(composition, 0.0, None)?;
         self.plan_compile_count += 1;
-        let compiled = CompileContext::with_frame(composition, 0, output_format).compile()?;
+        let compiled =
+            CompileContext::with_options(composition, 0.0, None, output_format, true).compile()?;
         self.prepare_compiled(key, compiled)
     }
 
@@ -269,6 +285,7 @@ impl GpuCompositionRenderer {
             programs = compiled.plan.programs().len(),
             passes = compiled.plan.passes().len(),
             compiled_nodes = compiled.compiled_nodes.len(),
+            estimated_bytes = estimated_plan_bytes(&compiled),
             "prepare compiled render plan"
         );
         let mut renderer = lumen_gpu::Renderer::from_device_with_adapter_info(
@@ -509,10 +526,29 @@ impl GpuCompositionRenderer {
             .into());
         }
         self.bind_sequence += 1;
-        self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
-        let compiled = self.active_compiled()?;
-        let mut bound =
-            FrameBindContext::with_media_at(composition, frame, media).bind(compiled)?;
+        // A font loaded while the plan compiles or the frame binds, here or by another renderer,
+        // can widen text past the bounds the plan measured. The plan is then keyed by the new
+        // font generation, so the frame is bound again to it; a font loads once, so this settles.
+        let mut rebinds = 0;
+        let mut bound = loop {
+            let generation = text_font_generation();
+            self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
+            let compiled = self.active_compiled()?;
+            let bound =
+                FrameBindContext::with_media_at(composition, frame, media).bind(compiled)?;
+            if text_font_generation() == generation {
+                break bound;
+            }
+            if rebinds == MAX_FONT_REBINDS {
+                return Err(RenderError::Gpu {
+                    details: format!(
+                        "fonts kept loading while frame {frame} was bound; its text bounds could not settle"
+                    ),
+                }
+                .into());
+            }
+            rebinds += 1;
+        };
         bound.renderer_binding = self.active_key.clone().map(|key| (self.bind_sequence, key));
         Ok(bound)
     }
@@ -879,6 +915,7 @@ impl GpuCompositionRenderer {
             frame,
             media.map(|store| store as &dyn MediaStore),
             self.output_format,
+            true,
         )
         .compile()?;
         self.rejected_plan_bytes.remove(&key);
@@ -933,6 +970,8 @@ impl GpuCompositionRenderer {
         let settings = &composition.render_settings;
         Ok(CompiledPlanKey {
             size: (settings.width, settings.height),
+            on_timeline: super::compiler::on_timeline(composition, frame),
+            timeline: timeline_key(composition),
             entries,
         })
     }
@@ -1033,6 +1072,16 @@ impl<'a> PlanKeyCollector<'a> {
                     None => Ok(()),
                 };
             }
+            NodeKind::Text(text) => {
+                if let Deferred::Value(family) = &text.params.font_family
+                    && let Some(resolver) = self.media.and_then(|m| m.font_resolver_id(family))
+                {
+                    self.push_entry(text.id, PlanChoice::TextFont(resolver));
+                }
+                if let Some(generation) = self.text_font_generation(&text.params.font_family) {
+                    self.push_entry(text.id, PlanChoice::TextFontGeneration(generation));
+                }
+            }
             NodeKind::WgslShader(shader) => {
                 let ctx = self.expression_context(frame, shader.id, "params");
                 let params = shader.params.eval(&NodeParamEvalContext {
@@ -1050,6 +1099,17 @@ impl<'a> PlanKeyCollector<'a> {
             self.collect(&input, frame)?;
         }
         Ok(())
+    }
+
+    /// The font generation after loading the literal `family` the media store resolves, as the
+    /// compile would; `None` when the text system is unavailable.
+    fn text_font_generation(&self, family: &Deferred<String>) -> Option<u64> {
+        let mut text_system = crate::node::source::text::text_system().ok()?;
+        if let Deferred::Value(family) = family {
+            crate::node::source::text::load_font_family(&mut text_system, self.media, family)
+                .ok()?;
+        }
+        Some(text_system.font_generation())
     }
 
     fn push_entry(&mut self, node_id: NodeId, choice: PlanChoice) {
@@ -1103,12 +1163,30 @@ fn estimated_plan_bytes(compiled: &CompiledComposition) -> u64 {
     textures + buffers
 }
 
+/// Times a frame is bound again after fonts load during binding, before binding fails rather
+/// than draw text past its bounds.
+const MAX_FONT_REBINDS: u32 = 3;
+
+fn text_font_generation() -> Option<u64> {
+    crate::node::source::text::text_system()
+        .ok()
+        .map(|text_system| text_system.font_generation())
+}
+
+fn timeline_key(composition: &Composition) -> (u32, u32) {
+    let timeline = &composition.timeline;
+    (timeline.duration_frames, timeline.fps.to_bits())
+}
+
 /// Order-independent hash of everything `CompiledPlanKey::matches` reads from a composition, plus
-/// the canvas size that plan estimates depend on.
+/// the canvas size and timeline that plan estimates depend on.
 fn plan_node_signature(composition: &Composition) -> u64 {
     let settings = &composition.render_settings;
     let mut hasher = std::hash::DefaultHasher::new();
-    std::hash::Hash::hash(&(settings.width, settings.height), &mut hasher);
+    std::hash::Hash::hash(
+        &(settings.width, settings.height, timeline_key(composition)),
+        &mut hasher,
+    );
     let initial = std::hash::Hasher::finish(&hasher);
     composition
         .graph

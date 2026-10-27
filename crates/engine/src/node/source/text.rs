@@ -454,11 +454,30 @@ impl GlyphParams {
         }
     }
 
+    /// Whether `params` transform or fade any glyph.
+    pub(crate) fn any(params: &TextParamsDelegate) -> bool {
+        !Self::identity(
+            &params.glyph_offset,
+            &params.glyph_scale,
+            &params.glyph_rotation,
+            &params.glyph_opacity,
+        )
+    }
+
     fn is_identity(&self) -> bool {
-        matches!(self.offset, Deferred::Value(offset) if offset == (0.0, 0.0))
-            && matches!(self.scale, Deferred::Value(scale) if scale == (1.0, 1.0))
-            && matches!(self.rotation, Deferred::Value(rotation) if rotation == 0.0)
-            && matches!(self.opacity, Deferred::Value(opacity) if opacity >= 1.0)
+        Self::identity(&self.offset, &self.scale, &self.rotation, &self.opacity)
+    }
+
+    fn identity(
+        offset: &Deferred<(f64, f64)>,
+        scale: &Deferred<(f64, f64)>,
+        rotation: &Deferred<f64>,
+        opacity: &Deferred<f64>,
+    ) -> bool {
+        matches!(offset, Deferred::Value(offset) if *offset == (0.0, 0.0))
+            && matches!(scale, Deferred::Value(scale) if *scale == (1.0, 1.0))
+            && matches!(rotation, Deferred::Value(rotation) if *rotation == 0.0)
+            && matches!(opacity, Deferred::Value(opacity) if *opacity >= 1.0)
     }
 
     /// Transforms and fades each glyph instance by its params, evaluated with `expr` scoped

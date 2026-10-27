@@ -27,3 +27,28 @@ pub fn print_plan_profile(compiled: Option<&CompiledComposition>) {
         );
     }
 }
+
+/// Prints the GPU memory the compiled plan's textures take. The shared text atlas is a
+/// placeholder in the plan, so it is left out.
+pub fn print_plan_memory(compiled: Option<&CompiledComposition>) {
+    let Some(compiled) = compiled else {
+        return;
+    };
+    let textures: Vec<u64> = compiled
+        .plan
+        .textures()
+        .iter()
+        .map(|texture| {
+            texture
+                .desc
+                .format
+                .theoretical_memory_footprint(texture.desc.domain.storage_size.as_extent())
+        })
+        .collect();
+    println!(
+        "plan_memory textures={} plan_texture_bytes={} plan_texture_mib={:.1}",
+        textures.len(),
+        textures.iter().sum::<u64>(),
+        textures.iter().sum::<u64>() as f64 / (1024.0 * 1024.0)
+    );
+}

@@ -158,6 +158,9 @@ pub(crate) struct MergeParams {
     pub(crate) straight_inputs: u32,
     pub(crate) mask_mode: u32,
     pub(crate) invert: u32,
+    /// Canvas pixels of the first texels of the output, base, overlay and raw mask.
+    pub(crate) origins: [[i32; 2]; 4],
+    pub(crate) _pad: [u32; 2],
 }
 
 #[repr(C)]
@@ -170,6 +173,9 @@ pub(crate) struct BooleanParams {
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct RasterMultiMergeParams {
     pub(crate) values: [f32; 4],
+    /// Output texel of the pass's first invocation, then canvas pixels of the first texels
+    /// of the output, base and overlay.
+    pub(crate) origins: [[i32; 2]; 4],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -192,6 +198,10 @@ pub(crate) struct TransformParams {
     pub(crate) tap_count: u32,
     /// Whether the source stores straight alpha, which taps average premultiplied.
     pub(crate) straight_source: u32,
+    /// Canvas pixel of the output's first texel.
+    pub(crate) output_origin: [i32; 2],
+    /// Source pixel of the source's first texel.
+    pub(crate) source_origin: [i32; 2],
     pub(crate) _pad: [u32; 2],
     pub(crate) taps: [TransformTap; crate::node::motion::MAX_MOTION_TAPS],
 }

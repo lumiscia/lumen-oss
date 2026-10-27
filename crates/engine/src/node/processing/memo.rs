@@ -44,7 +44,7 @@ impl GpuCompileNode for Memo {
         if port.port != "output" {
             return Err(ctx.missing_output(self.id, &port.port));
         }
-        let source = ctx.compile_port(&self.source)?;
+        let source = ctx.compile_bounded_port(&self.source)?;
         ctx.register_compiled_node(CompiledMemo {
             node_id: self.id,
             params: self.params.clone(),

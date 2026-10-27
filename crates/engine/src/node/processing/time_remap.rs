@@ -93,7 +93,9 @@ impl GpuCompileNode for TimeRemap {
             loop_start: params.loop_start,
             loop_end: params.loop_end,
         });
-        ctx.with_frame_context(self.id, target_frame, |ctx| ctx.compile_port(&self.source))
+        ctx.with_frame_context(self.id, target_frame, |ctx| {
+            ctx.compile_bounded_port(&self.source)
+        })
     }
 }
 

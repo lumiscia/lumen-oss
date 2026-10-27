@@ -9,7 +9,7 @@ use crate::{
         RasterHandle, RasterMetadata, TimeRemapPath,
     },
     media::MediaStore,
-    node::{NodeId, NodeKind, PortRef},
+    node::{NodeId, NodeKind, NodeParams, PortRef, PropertyExpression},
 };
 
 pub(crate) use super::params::*;
@@ -44,6 +44,72 @@ pub trait GpuCompileNode {
     ) -> crate::Result<CompiledOutput>;
 }
 
+/// Longest timeline that animated sources are bounded over, which costs an evaluation of
+/// their params per frame each time a plan compiles.
+const MAX_UNION_FRAMES: u32 = 3600;
+
+/// The domain a unary filter writes, and so how it reads its source.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FilterDomain {
+    /// Reads the source at full frame, texel for texel.
+    FullFrame,
+    /// Maps each texel on its own and keeps transparent texels transparent, so it reads
+    /// and writes the source's domain.
+    Source,
+    /// `Source` for premultiplied sources. Transparent texels of straight sources may
+    /// still carry colour, so those are read at full frame.
+    PremultipliedSource,
+    /// Reads the source through its domain and writes this one.
+    Bounded(lumen_gpu::TextureDomain),
+}
+
+/// How a source's canvas bounds vary, which decides how they are held.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SourceMotion {
+    /// The bounds never change.
+    Fixed,
+    /// The bounds follow the frame through the node's own expressions.
+    Animated,
+    /// The bounds depend on state outside the node, which edits can change after the plan is
+    /// cached.
+    Unbounded,
+}
+
+impl SourceMotion {
+    /// The motion of a node whose params are `params`, of which `animated` says whether any
+    /// that move the source are expressions.
+    pub(crate) fn of<P: NodeParams>(animated: bool, params: &P) -> Self {
+        if !animated {
+            Self::Fixed
+        } else if reads_outside_node(params) {
+            Self::Unbounded
+        } else {
+            Self::Animated
+        }
+    }
+}
+
+/// Whether an expression of `params` reads another node or measures text, whose values live
+/// outside of the node and its plan.
+fn reads_outside_node<P: NodeParams>(params: &P) -> bool {
+    P::property_defs().iter().any(|def| {
+        let Some(PropertyExpression::Expr(expr)) = params.get_property(def.id) else {
+            return false;
+        };
+        let mut measures_text = false;
+        crate::expr::functions::visit(&expr.ast, &mut |node| {
+            measures_text |= matches!(
+                node,
+                crate::expr::ExprNode::Builtin(
+                    crate::expr::BuiltinFn::TextWidth | crate::expr::BuiltinFn::TextHeight,
+                    _
+                )
+            );
+        });
+        measures_text || !expr.references.is_empty()
+    })
+}
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct CompiledPortKey {
     port: PortRef,
@@ -63,6 +129,11 @@ pub struct CompileContext<'a> {
     output_format: lumen_gpu::wgpu::TextureFormat,
     text_atlas_texture: Option<lumen_gpu::TextureId>,
     raster_bounds: HashMap<lumen_gpu::TextureId, lumen_gpu::BufferId>,
+    /// Whether the plan is only used for whole frames of the timeline, so animated sources may be
+    /// sized to their bounds over it.
+    timeline_bounds: bool,
+    /// Full-frame copies of bounded rasters, by the bounded texture.
+    full_frames: HashMap<lumen_gpu::TextureId, RasterHandle>,
 }
 
 impl<'a> CompileContext<'a> {
@@ -74,7 +145,7 @@ impl<'a> CompileContext<'a> {
         composition: &'a Composition,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> Self {
-        Self::with_options(composition, 0.0, None, output_format)
+        Self::with_options(composition, 0.0, None, output_format, false)
     }
 
     pub fn with_frame(
@@ -82,7 +153,7 @@ impl<'a> CompileContext<'a> {
         frame: u32,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> Self {
-        Self::with_options(composition, f64::from(frame), None, output_format)
+        Self::with_options(composition, f64::from(frame), None, output_format, false)
     }
 
     pub fn with_media<M: MediaStore>(
@@ -99,14 +170,23 @@ impl<'a> CompileContext<'a> {
         media: &'a M,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> Self {
-        Self::with_options(composition, f64::from(frame), Some(media), output_format)
+        Self::with_options(
+            composition,
+            f64::from(frame),
+            Some(media),
+            output_format,
+            false,
+        )
     }
 
+    /// `timeline_bounds` sizes animated sources to their bounds over the timeline, which holds
+    /// only for plans the caller keeps to whole frames of it.
     pub(crate) fn with_options(
         composition: &'a Composition,
         frame: f64,
         media: Option<&'a dyn MediaStore>,
         output_format: lumen_gpu::wgpu::TextureFormat,
+        timeline_bounds: bool,
     ) -> Self {
         Self {
             composition,
@@ -120,6 +200,8 @@ impl<'a> CompileContext<'a> {
             output_format,
             text_atlas_texture: None,
             raster_bounds: HashMap::new(),
+            timeline_bounds,
+            full_frames: HashMap::new(),
         }
     }
 
@@ -206,7 +288,17 @@ impl<'a> CompileContext<'a> {
             .insert(self.time_remaps.clone(), Box::new(node));
     }
 
+    /// Compiles `port` to a raster that fills its display, for consumers that read their
+    /// inputs texel for texel.
     pub(crate) fn compile_port(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
+        Ok(match self.compile_bounded_port(port)? {
+            CompiledOutput::Raster(raster) => CompiledOutput::Raster(self.full_frame(raster)),
+            CompiledOutput::Empty => CompiledOutput::Empty,
+        })
+    }
+
+    /// Compiles `port` as is, for consumers that read a raster's texels through its domain.
+    pub(crate) fn compile_bounded_port(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
         let key = CompiledPortKey {
             port: port.clone(),
             time_remaps: self.time_remaps.clone(),
@@ -260,6 +352,101 @@ impl<'a> CompileContext<'a> {
         Ok(output)
     }
 
+    /// `raster` stored at its full display size, copied there when it is bounded. The copy's
+    /// texels outside the bounded data are never written, so they stay transparent.
+    pub(crate) fn full_frame(&mut self, raster: RasterHandle) -> RasterHandle {
+        if raster.domain.is_full_frame() {
+            return raster;
+        }
+        if let Some(full) = self.full_frames.get(&raster.texture) {
+            return *full;
+        }
+        let size = raster.domain.display_size();
+        let data = raster.domain.data_rect;
+        let texture = self.builder.texture(
+            Some(format!("full-frame:{}", raster.texture.0)),
+            copyable_texture_desc(size),
+        );
+        self.builder.copy_texture(lumen_gpu::CopyTextureDesc {
+            label: Some(format!("full-frame:{}:copy", raster.texture.0)),
+            source: raster.texture,
+            destination: texture,
+            origin: lumen_gpu::wgpu::Origin3d {
+                x: data.x as u32,
+                y: data.y as u32,
+                z: 0,
+            },
+            size: raster.domain.storage_size,
+        });
+        let full = RasterHandle {
+            texture,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: raster.metadata,
+        };
+        self.full_frames.insert(raster.texture, full);
+        full
+    }
+
+    /// The canvas pixels a source may draw to: the box `bounds_at` gives at the frame when its
+    /// `motion` is fixed, or the union of its boxes over every frame of the timeline.
+    ///
+    /// `None` when the source should fill the canvas instead: `bounds_at` failed or gave
+    /// `None` for some frame, the bounds are not finite, the bounds read state outside the node,
+    /// the timeline is longer than `MAX_UNION_FRAMES`, or the union cannot be relied on, as in a plan that may be bound
+    /// at fractional frames, under a time remap or for a frame off the timeline, since plans
+    /// are reused across the frames they are keyed for.
+    pub(crate) fn source_bounds(
+        &self,
+        node_id: NodeId,
+        motion: SourceMotion,
+        mut bounds_at: impl FnMut(&ExpressionContext<'_>) -> crate::Result<Option<[f32; 4]>>,
+    ) -> Option<lumen_gpu::RectI> {
+        let mut expr = self.expr_context(node_id, "params");
+        match motion {
+            SourceMotion::Fixed => {
+                return bounds_at(&expr)
+                    .ok()
+                    .flatten()
+                    .and_then(lumen_gpu::RectI::covering);
+            }
+            SourceMotion::Unbounded => return None,
+            SourceMotion::Animated => {}
+        }
+        if !self.timeline_bounds
+            || !self.time_remaps.is_empty()
+            || !on_timeline(self.composition, self.frame)
+            || self.composition.timeline.duration_frames > MAX_UNION_FRAMES
+        {
+            return None;
+        }
+        let mut union = lumen_gpu::RectI::new(0, 0, 0, 0);
+        for frame in 0..self.composition.timeline.duration_frames {
+            expr.frame = f64::from(frame);
+            union = union.union(lumen_gpu::RectI::covering(bounds_at(&expr).ok()??)?);
+        }
+        Some(union)
+    }
+
+    /// The domain of a source drawn within `bounds` on the canvas, or across it without them.
+    pub(crate) fn source_domain(
+        &self,
+        bounds: Option<lumen_gpu::RectI>,
+    ) -> lumen_gpu::TextureDomain {
+        let canvas = self.canvas_size();
+        match bounds {
+            Some(bounds) => lumen_gpu::TextureDomain::bounded(canvas, bounds),
+            None => lumen_gpu::TextureDomain::full_frame(canvas),
+        }
+    }
+
+    /// The canvas size, which sources are drawn at.
+    pub(crate) fn canvas_size(&self) -> lumen_gpu::Size {
+        lumen_gpu::Size::new(
+            self.composition.render_settings.width.max(1),
+            self.composition.render_settings.height.max(1),
+        )
+    }
+
     pub(crate) fn with_frame_context<T>(
         &mut self,
         time_remap: NodeId,
@@ -275,6 +462,9 @@ impl<'a> CompileContext<'a> {
         result
     }
 
+    /// Compiles a compute pass from `source_ref` into a new texture of the domain `domain`
+    /// picks. Returns the source as read, which is at full frame unless `domain` reads it
+    /// through its domain.
     #[allow(
         clippy::too_many_arguments,
         reason = "every filter node passes the same flat set of compile inputs"
@@ -287,20 +477,31 @@ impl<'a> CompileContext<'a> {
         label: &str,
         shader: &str,
         params_size: u64,
-        output_size: Option<lumen_gpu::Size>,
+        domain: FilterDomain,
     ) -> crate::Result<(RasterHandle, lumen_gpu::TextureId, lumen_gpu::BufferId)> {
         if port.port != "output" {
             return Err(self.missing_output(node_id, &port.port));
         }
 
         let source = self
-            .compile_port(source_ref)?
+            .compile_bounded_port(source_ref)?
             .into_raster(source_ref.id, &source_ref.port)?;
-        let size = output_size.unwrap_or(source.domain.storage_size);
+        let straight = source.metadata.alpha_mode == crate::gpu::AlphaMode::Unpremultiplied;
+        let source = match domain {
+            FilterDomain::FullFrame => self.full_frame(source),
+            FilterDomain::PremultipliedSource if straight => self.full_frame(source),
+            _ => source,
+        };
+        let domain = match domain {
+            FilterDomain::Bounded(domain) => domain,
+            _ => source.domain,
+        };
+        let size = domain.storage_size;
         let texture = self.builder.texture_for(
             lumen_gpu::NodeKey(node_id.0),
             Some(format!("{label}:{}:output", node_id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+                .with_domain(domain),
         );
         let params = self.builder.buffer_for(
             lumen_gpu::NodeKey(node_id.0),
@@ -352,15 +553,18 @@ impl<'a> CompileContext<'a> {
         Ok((source, texture, params))
     }
 
+    /// A canvas-sized transparent raster, which stores a single texel.
     pub(crate) fn compile_transparent(&mut self, node_id: NodeId) -> CompiledOutput {
-        let size = lumen_gpu::Size::new(
-            self.composition.render_settings.width.max(1),
-            self.composition.render_settings.height.max(1),
+        let domain = lumen_gpu::TextureDomain::bounded(
+            self.canvas_size(),
+            lumen_gpu::RectI::new(0, 0, 0, 0),
         );
+        let size = domain.storage_size;
         let texture = self.builder.texture_for(
             lumen_gpu::NodeKey(node_id.0),
             Some(format!("transparent:{}:output", node_id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+                .with_domain(domain),
         );
         let params = self.builder.buffer_for(
             lumen_gpu::NodeKey(node_id.0),
@@ -412,7 +616,7 @@ impl<'a> CompileContext<'a> {
 
         CompiledOutput::Raster(RasterHandle {
             texture,
-            domain: lumen_gpu::TextureDomain::full_frame(size),
+            domain,
             metadata: RasterMetadata::default(),
         })
     }
@@ -553,4 +757,10 @@ impl<'a> CompileContext<'a> {
         }
         .into()
     }
+}
+
+/// Whether `frame` is a whole frame of the composition's timeline, which bounds unioned over
+/// the timeline hold for.
+pub(crate) fn on_timeline(composition: &Composition, frame: f64) -> bool {
+    frame.fract() == 0.0 && frame >= 0.0 && frame < f64::from(composition.timeline.duration_frames)
 }

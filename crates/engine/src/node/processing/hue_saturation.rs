@@ -102,7 +102,7 @@ impl GpuCompileNode for HueSaturation {
             "hue-saturation",
             SHADER,
             std::mem::size_of::<compiler::HueSaturationParams>() as u64,
-            None,
+            compiler::FilterDomain::PremultipliedSource,
         )?;
         ctx.register_compiled_node(CompiledHueSaturation {
             node_id: self.id,
