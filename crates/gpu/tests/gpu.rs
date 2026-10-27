@@ -201,13 +201,43 @@ fn uniform_upload_updates_compute_shader_output_without_replanning() {
     );
 
     let second = [1.0_f32, 0.0, 0.0, 1.0];
-    let mut update = FrameUpdate::new();
-    update.write_buffer(uniforms, 0, bytemuck::cast_slice(&second));
-    renderer.execute(&plan, &update).unwrap();
+    let mut second_update = FrameUpdate::new();
+    second_update.write_buffer(uniforms, 0, bytemuck::cast_slice(&second));
+    renderer.execute(&plan, &second_update).unwrap();
     assert_eq!(
         &read_texture_rgba8(&renderer, output, size)[0..4],
         &[255, 0, 0, 255]
     );
+
+    // A write through the exposed buffer is not seen by the renderer, so the same upload
+    // repeated afterwards must still be written.
+    renderer.queue.write_buffer(
+        renderer.buffer(uniforms).unwrap(),
+        0,
+        bytemuck::cast_slice(&first),
+    );
+    renderer.execute(&plan, &second_update).unwrap();
+    assert_eq!(
+        &read_texture_rgba8(&renderer, output, size)[0..4],
+        &[255, 0, 0, 255]
+    );
+}
+
+#[test]
+fn invalid_program_is_rejected_on_every_prepare() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let mut builder = RenderPlan::builder();
+    builder.program(ProgramDesc::Compute(ComputeProgramDesc {
+        label: Some("invalid".to_string()),
+        shader: "@compute @workgroup_size(1) fn cs_main() { missing(); }".to_string(),
+        entry: "cs_main".to_string(),
+        bind_groups: vec![],
+    }));
+    let plan = builder.build();
+    assert!(renderer.prepare_plan(&plan).is_err());
+    assert!(renderer.prepare_plan(&plan).is_err());
 }
 
 #[test]

@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     env,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -27,6 +30,9 @@ struct RuntimeBuffer {
     /// Bytes last written from offset 0 of a uniform buffer, which shaders cannot write, so an
     /// identical write can be skipped.
     uploaded: Option<Vec<u8>>,
+    /// Set once the buffer is handed out through `Renderer::buffer`, after which it can be
+    /// written without the renderer seeing it, so no write to it is skipped.
+    shared: AtomicBool,
 }
 
 struct RuntimeSampler {
@@ -300,6 +306,7 @@ impl Renderer {
             .0
             .lock()
             .map_err(|_| anyhow!("program cache lock was poisoned"))?;
+        let mut created = Vec::new();
         let programs = plan
             .programs
             .iter()
@@ -309,13 +316,36 @@ impl Renderer {
                 }
                 let runtime = Arc::new(self.create_program(&program.desc)?);
                 cache.insert(program.desc.clone(), Arc::downgrade(&runtime));
+                created.push(&program.desc);
                 Ok(runtime)
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>();
+        let programs = match programs {
+            Ok(programs) => programs,
+            Err(error) => {
+                for desc in created {
+                    cache.remove(desc);
+                }
+                return Err(error);
+            }
+        };
         self.programs = programs;
         cache.retain(|_, runtime| runtime.strong_count() > 0);
         drop(cache);
-        scope.finish()
+        let result = scope.finish();
+        if result.is_err() {
+            // Programs that failed validation must not satisfy a later lookup.
+            self.programs.clear();
+            let mut cache = self
+                .program_cache
+                .0
+                .lock()
+                .map_err(|_| anyhow!("program cache lock was poisoned"))?;
+            for desc in created {
+                cache.remove(desc);
+            }
+        }
+        result
     }
 
     pub fn texture_view(&self, id: TextureId) -> Option<&wgpu::TextureView> {
@@ -444,7 +474,10 @@ impl Renderer {
     }
 
     pub fn buffer(&self, id: BufferId) -> Option<&wgpu::Buffer> {
-        self.buffers.get(id.0 as usize).map(|buffer| &buffer.buffer)
+        self.buffers.get(id.0 as usize).map(|buffer| {
+            buffer.shared.store(true, Ordering::Relaxed);
+            &buffer.buffer
+        })
     }
 
     pub fn execute(
@@ -544,6 +577,7 @@ impl Renderer {
             buffer,
             desc: resource.desc,
             uploaded: None,
+            shared: AtomicBool::new(false),
         }
     }
 
@@ -696,7 +730,10 @@ impl Renderer {
                     if end > buffer.desc.size {
                         bail!("buffer upload for {id:?} exceeds declared buffer size");
                     }
-                    if *offset == 0 && buffer.uploaded.as_deref() == Some(*data) {
+                    if *offset == 0
+                        && !buffer.shared.load(Ordering::Relaxed)
+                        && buffer.uploaded.as_deref() == Some(*data)
+                    {
                         continue;
                     }
                     self.queue.write_buffer(&buffer.buffer, *offset, data);
