@@ -13,7 +13,7 @@ use crate::{
         ClipPropValue, NodeId, NodeKind, NodeParams, PortRef, PropertyExpression,
         compositing::clip::Clip,
     },
-    scope::{PropValues, Routed, Scope},
+    scope::{FrameTime, PropValues, Routed, Scope},
 };
 
 pub(crate) use super::params::*;
@@ -149,7 +149,7 @@ impl GpuCompiledNode for ClipCropBinding {
 /// A frame a plan may bind a scope at, with the props the scope then has.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlanFrame {
-    frame: f64,
+    frame: FrameTime,
     props: Option<Arc<PropValues>>,
 }
 
@@ -164,7 +164,7 @@ pub struct CompileContext<'a> {
     composition: &'a Composition,
     /// The composition the nodes being compiled belong to.
     scope: Scope<'a>,
-    frame: f64,
+    frame: FrameTime,
     time_remaps: TimeRemapPath,
     media: Option<&'a dyn MediaStore>,
     builder: lumen_gpu::RenderPlanBuilder,
@@ -239,7 +239,7 @@ impl<'a> CompileContext<'a> {
                 .then(|| {
                     (0..duration)
                         .map(|frame| PlanFrame {
-                            frame: f64::from(frame),
+                            frame: f64::from(frame).into(),
                             props: None,
                         })
                         .collect()
@@ -247,7 +247,7 @@ impl<'a> CompileContext<'a> {
         Self {
             composition,
             scope: Scope::root(composition),
-            frame,
+            frame: frame.into(),
             time_remaps: TimeRemapPath::new(),
             media,
             builder: lumen_gpu::RenderPlan::builder(),
@@ -619,7 +619,7 @@ impl<'a> CompileContext<'a> {
         }
         let mut union = lumen_gpu::RectI::new(0, 0, 0, 0);
         for frame in frames {
-            expr.frame = frame.frame;
+            expr.frame = frame.frame.value();
             expr.props = frame.props.as_deref();
             union = union.union(lumen_gpu::RectI::covering(bounds_at(&expr).ok()??)?);
         }

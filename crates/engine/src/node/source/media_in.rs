@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
 use crate::node::{NodeId, NodeParams};
+use crate::scope::FrameTime;
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey,
@@ -133,18 +134,13 @@ pub fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
     Some(start.max(0) as u32..end.max(0) as u32)
 }
 
-/// The whole source frame `frame` is the rounded conversion of, if it is. A clip at another
-/// frame rate converts whole frames with one rounding, which this repeats to tell them from
-/// the frames just below a whole one that are meant to stay there.
-fn whole_source_frame(frame: f64, comp_fps: f32, media_fps: f32) -> Option<f64> {
-    let whole = ((frame / comp_fps as f64) * media_fps as f64).round();
-    (whole * comp_fps as f64 / media_fps as f64 == frame).then_some(whole)
-}
-
 /// Maps a (possibly fractional) composition frame to the source frame shown at that instant.
 /// The source position is floored, so a frame stays on screen until the next one starts.
+///
+/// Frame rates are `f32`, so a rate with no exact binary form, like NTSC's 30000/1001, converts
+/// whole frames only to within `f64` rounding.
 pub fn map_to_source_frame(
-    frame: f64,
+    frame: impl Into<FrameTime>,
     composition_fps: f32,
     source_fps: f32,
     frame_count: u32,
@@ -164,21 +160,23 @@ pub fn map_to_source_frame(
         return None;
     }
     let span = end - start;
+    let frame = frame.into();
     let comp_fps = composition_fps.max(1.0);
     let media_fps = if source_fps.is_finite() && source_fps > 0.0 {
         source_fps
     } else {
         comp_fps
     };
-    // Matching rates skip the divide-then-multiply, which can round a frame just below an
-    // integer (e.g. a looped `time_remap` target) up onto the next one.
-    let media_frame = if media_fps == comp_fps {
-        frame
+    // The time is divided once, after it is multiplied out, so whole frames convert exactly.
+    // Matching rates skip the conversion, which can round a frame just below an integer (e.g.
+    // a looped `time_remap` target) up onto the next one.
+    let scale = speed.abs() as f64;
+    let relative = if media_fps == comp_fps {
+        (frame.num() * scale) / frame.den()
     } else {
-        let media_frame = (frame / comp_fps as f64) * media_fps as f64;
-        whole_source_frame(frame, comp_fps, media_fps).unwrap_or(media_frame)
-    };
-    let relative = (media_frame * speed.abs() as f64).floor() as u32;
+        (frame.num() * media_fps as f64 * scale) / (frame.den() * comp_fps as f64)
+    }
+    .floor() as u32;
     let forward = speed >= 0.0;
     let mapped = match loop_mode {
         LoopMode::Clamp => {
@@ -221,8 +219,16 @@ mod frame_mapping_tests {
     fn lower_fps_media_repeats_frames_at_composition_rate() {
         let mapped = (0..6)
             .map(|frame| {
-                map_to_source_frame(frame.into(), 30.0, 15.0, 100, None, 1.0, LoopMode::Clamp)
-                    .expect("mapped frame")
+                map_to_source_frame(
+                    f64::from(frame),
+                    30.0,
+                    15.0,
+                    100,
+                    None,
+                    1.0,
+                    LoopMode::Clamp,
+                )
+                .expect("mapped frame")
             })
             .collect::<Vec<_>>();
 
@@ -233,8 +239,16 @@ mod frame_mapping_tests {
     fn higher_fps_media_advances_at_source_rate() {
         let mapped = (0..3)
             .map(|frame| {
-                map_to_source_frame(frame.into(), 30.0, 60.0, 100, None, 1.0, LoopMode::Clamp)
-                    .expect("mapped frame")
+                map_to_source_frame(
+                    f64::from(frame),
+                    30.0,
+                    60.0,
+                    100,
+                    None,
+                    1.0,
+                    LoopMode::Clamp,
+                )
+                .expect("mapped frame")
             })
             .collect::<Vec<_>>();
 

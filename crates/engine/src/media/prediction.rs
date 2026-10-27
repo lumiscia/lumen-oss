@@ -5,7 +5,7 @@ use crate::{
     error::{LumenError, MediaError},
     expr::ExpressionContext,
     node::{NodeKind, PortRef, source::media_in},
-    scope::{Routed, Scope},
+    scope::{FrameTime, Routed, Scope},
 };
 
 use super::MediaStore;
@@ -79,7 +79,7 @@ pub fn collect_frame_requirements<M: MediaStore>(
     let context = RequirementContext {
         scope,
         media_store,
-        frame: f64::from(frame),
+        frame: f64::from(frame).into(),
     };
     context.collect_port(&output_port, &mut collector)?;
     let requirements = FrameRequirements::from(collector);
@@ -96,7 +96,7 @@ pub fn collect_frame_requirements<M: MediaStore>(
 struct RequirementContext<'a, M: MediaStore> {
     scope: Scope<'a>,
     media_store: &'a M,
-    frame: f64,
+    frame: FrameTime,
 }
 
 impl<'a, M: MediaStore> RequirementContext<'a, M> {
@@ -141,7 +141,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
             media_in::MediaInKind::Image { image_id } => {
                 tracing::trace!(
                     target: "lumen_media",
-                    frame = self.frame,
+                    frame = self.frame.value(),
                     image_id = %image_id,
                     "require image"
                 );
@@ -171,12 +171,12 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 )
                 .ok_or_else(|| MediaError::FrameOutOfRange {
                     media_source: stream_id.clone(),
-                    frame: self.frame as u32,
+                    frame: self.frame.value() as u32,
                     frame_count: metadata.frame_count,
                 })?;
                 tracing::trace!(
                     target: "lumen_media",
-                    frame = self.frame,
+                    frame = self.frame.value(),
                     stream_id = %stream_id,
                     source_frame,
                     "require video frame"

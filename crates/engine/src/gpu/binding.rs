@@ -6,7 +6,7 @@ use crate::{
     expr::ExpressionContext,
     media::MediaStore,
     node::{NodeId, PortRef},
-    scope::{Routed, Scope},
+    scope::{FrameTime, Routed, Scope},
 };
 
 use super::{BoundFrame, CompiledComposition, TimeRemapPath};
@@ -15,7 +15,7 @@ use super::{BoundFrame, CompiledComposition, TimeRemapPath};
 pub struct FrameBindContext<'a> {
     /// The composition the node being bound belongs to.
     scope: Scope<'a>,
-    frame: f64,
+    frame: FrameTime,
     media: Option<&'a dyn MediaStore>,
 }
 
@@ -23,7 +23,7 @@ impl<'a> FrameBindContext<'a> {
     pub fn new(composition: &'a Composition, frame: u32) -> Self {
         Self {
             scope: Scope::root(composition),
-            frame: f64::from(frame),
+            frame: f64::from(frame).into(),
             media: None,
         }
     }
@@ -44,7 +44,7 @@ impl<'a> FrameBindContext<'a> {
     ) -> Self {
         Self {
             scope: Scope::root(composition),
-            frame,
+            frame: frame.into(),
             media: Some(media),
         }
     }
@@ -52,7 +52,7 @@ impl<'a> FrameBindContext<'a> {
     pub fn bind(&self, compiled: &CompiledComposition) -> crate::Result<BoundFrame> {
         tracing::trace!(
             target: "lumen_bind",
-            frame = self.frame,
+            frame = self.frame.value(),
             nodes = compiled.compiled_nodes.len(),
             "bind compiled frame"
         );
@@ -97,7 +97,7 @@ impl<'a> FrameBindContext<'a> {
         }
 
         let node = self.scope.node(port.id).ok_or(RenderError::MissingNode {
-            frame: self.frame as u32,
+            frame: self.frame(),
             node_id: port.id,
         })?;
 
@@ -127,7 +127,7 @@ impl<'a> FrameBindContext<'a> {
         {
             tracing::trace!(
                 target: "lumen_bind",
-                binding_frame = self.frame,
+                binding_frame = self.frame.value(),
                 node_id = port.id.0,
                 "bind compiled node"
             );
@@ -139,10 +139,10 @@ impl<'a> FrameBindContext<'a> {
 
     /// Integer frame containing the current frame time, for diagnostics.
     pub(crate) fn frame(&self) -> u32 {
-        self.frame as u32
+        self.frame.value() as u32
     }
 
-    pub(crate) fn frame_time(&self) -> f64 {
+    pub(crate) fn frame_time(&self) -> FrameTime {
         self.frame
     }
 

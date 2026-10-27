@@ -12,7 +12,7 @@ use crate::{
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
-    scope::{Routed, Scope},
+    scope::{FrameTime, Routed, Scope},
 };
 
 #[cfg(feature = "ffmpeg")]
@@ -971,7 +971,7 @@ impl GpuCompositionRenderer {
             stack: Vec::new(),
             entries: Vec::new(),
         };
-        collector.collect(&root, &output, frame)?;
+        collector.collect(&root, &output, frame.into())?;
         let mut entries = collector.entries;
         entries.sort();
         entries.dedup();
@@ -1005,7 +1005,12 @@ struct PlanKeyCollector<'a> {
 }
 
 impl<'a> PlanKeyCollector<'a> {
-    fn collect(&mut self, scope: &Scope<'_>, port: &PortRef, frame: f64) -> crate::Result<()> {
+    fn collect(
+        &mut self,
+        scope: &Scope<'_>,
+        port: &PortRef,
+        frame: FrameTime,
+    ) -> crate::Result<()> {
         if port.is_empty() {
             return Ok(());
         }
@@ -1032,7 +1037,7 @@ impl<'a> PlanKeyCollector<'a> {
         &mut self,
         scope: &Scope<'_>,
         node: &NodeKind,
-        frame: f64,
+        frame: FrameTime,
     ) -> crate::Result<()> {
         let routes = crate::scope::route(scope, node, frame, self.media)?;
         match node {

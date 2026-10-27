@@ -1245,7 +1245,7 @@ mod tests {
             let NodeKind::Clip(clip) = &comp.graph.nodes[&NodeId::new(1)] else {
                 unreachable!("node 1 is the clip");
             };
-            clip.route(&scope, frame, None).unwrap().is_some()
+            clip.route(&scope, frame.into(), None).unwrap().is_some()
         };
         assert!(!shown_at(serde_json::json!(0), 0.0));
         assert!(shown_at(serde_json::json!(-1), 59.0));
@@ -1291,9 +1291,10 @@ mod tests {
         ))
         .unwrap();
         let scope = crate::scope::Scope::root(&comp);
-        let error = crate::scope::route(&scope, &comp.graph.nodes[&NodeId::new(1)], 0.0, None)
-            .unwrap_err()
-            .to_string();
+        let error =
+            crate::scope::route(&scope, &comp.graph.nodes[&NodeId::new(1)], 0.0.into(), None)
+                .unwrap_err()
+                .to_string();
         assert!(
             error.contains("prop `index`: expected a number, got string"),
             "{error}"

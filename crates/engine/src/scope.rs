@@ -18,6 +18,53 @@ use crate::{
     },
 };
 
+/// A point in a composition's time, in its frames, as `num / den`.
+///
+/// A clip converts time between frame rates by multiplying numerators and denominators, so
+/// whole frames stay exact through any depth of nested clips and are divided once, where the
+/// time is used.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameTime {
+    num: f64,
+    den: f64,
+}
+
+impl FrameTime {
+    /// `f64` represents integers up to this exactly.
+    const EXACT_LIMIT: f64 = 9_007_199_254_740_992.0;
+
+    /// `num / den`. Parts too large to stay exact are divided out.
+    pub fn new(num: f64, den: f64) -> Self {
+        if num.abs() <= Self::EXACT_LIMIT && den <= Self::EXACT_LIMIT {
+            Self { num, den }
+        } else {
+            Self::from(num / den)
+        }
+    }
+
+    pub fn num(self) -> f64 {
+        self.num
+    }
+
+    pub fn den(self) -> f64 {
+        self.den
+    }
+
+    /// The time in frames.
+    pub fn value(self) -> f64 {
+        self.num / self.den
+    }
+}
+
+impl From<f64> for FrameTime {
+    fn from(frame: f64) -> Self {
+        Self {
+            num: frame,
+            den: 1.0,
+        }
+    }
+}
+
 /// The props a template instance was given, by name.
 pub type PropValues = BTreeMap<String, ExpressionValue>;
 
@@ -79,12 +126,12 @@ impl<'a> Scope<'a> {
     /// The context expressions of this scope are evaluated in at `frame`.
     pub fn expr_context<'s>(
         &'s self,
-        frame: f64,
+        frame: FrameTime,
         path: String,
         media: Option<&'s dyn MediaStore>,
     ) -> ExpressionContext<'s> {
         ExpressionContext {
-            frame,
+            frame: frame.value(),
             fps: self.timeline.fps,
             width: self.render_settings.width,
             height: self.render_settings.height,
@@ -116,7 +163,7 @@ impl<'a> Scope<'a> {
 #[derive(Debug, Clone)]
 pub struct Routed<'a> {
     pub port: PortRef,
-    pub frame: f64,
+    pub frame: FrameTime,
     pub scope: Scope<'a>,
     /// The time remap or clip that instances the input, which then compiles once per path of
     /// them from the root.
@@ -124,7 +171,7 @@ pub struct Routed<'a> {
 }
 
 impl<'a> Routed<'a> {
-    fn same(scope: &Scope<'a>, port: PortRef, frame: f64) -> Self {
+    fn same(scope: &Scope<'a>, port: PortRef, frame: FrameTime) -> Self {
         Self {
             port,
             frame,
@@ -140,7 +187,7 @@ impl<'a> Routed<'a> {
 pub fn route<'a>(
     scope: &Scope<'a>,
     node: &NodeKind,
-    frame: f64,
+    frame: FrameTime,
     media: Option<&dyn MediaStore>,
 ) -> crate::Result<Vec<Routed<'a>>> {
     Ok(match node {
@@ -165,7 +212,7 @@ pub fn route<'a>(
 pub(crate) fn route_time_remap<'a>(
     scope: &Scope<'a>,
     node: &TimeRemap,
-    frame: f64,
+    frame: FrameTime,
     media: Option<&dyn MediaStore>,
 ) -> crate::Result<Routed<'a>> {
     let params = node.params.eval(&NodeParamEvalContext {
@@ -180,6 +227,6 @@ pub(crate) fn route_time_remap<'a>(
     });
     Ok(Routed {
         instance: Some(node.id),
-        ..Routed::same(scope, node.source.clone(), frame)
+        ..Routed::same(scope, node.source.clone(), frame.into())
     })
 }

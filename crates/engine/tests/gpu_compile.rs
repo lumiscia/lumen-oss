@@ -9983,6 +9983,59 @@ fn clip_frame_rate_round_trips_land_on_the_source_frame() {
     }
 }
 
+/// A `fps[0]` root playing a `fps[1]` template that plays a `fps[2]` template with the 30 fps
+/// video, all at default timing.
+fn nested_video_composition(fps: [u32; 3]) -> lumen_engine::composition::Composition {
+    let template = |fps: u32, nodes: serde_json::Value| {
+        json!({
+            "timeline": { "fps": fps, "duration_frames": 600 },
+            "render_settings": { "width": 1, "height": 1 },
+            "nodes": nodes,
+            "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+        })
+    };
+    let clip = |composition: &str| {
+        json!([
+            { "id": 1, "type": "clip", "params": { "composition": composition } },
+            { "id": 2, "type": "media_output" }
+        ])
+    };
+    let mut composition = template(fps[0], clip("middle"));
+    composition["compositions"] = json!({
+        "middle": template(fps[1], clip("inner")),
+        "inner": template(fps[2], json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "video", "source": "video" } },
+            { "id": 2, "type": "media_output" }
+        ])),
+    });
+    lumen_engine::json::parse_value(&composition).unwrap()
+}
+
+fn assert_nested_video_frames(fps: [u32; 3], frames: u32, source: impl Fn(u32) -> u32) {
+    let composition = nested_video_composition(fps);
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    for frame in 0..frames {
+        let required = collect_frame_requirements(&composition, &NumberedVideo, frame).unwrap();
+        assert_eq!(
+            required.videos[0].frames,
+            [source(frame)],
+            "predicted at {frame}"
+        );
+        let pixels = render_rgba8(&mut renderer, &composition, frame, &NumberedVideo);
+        assert_eq!(pixels[0], source(frame) as u8, "rendered at {frame}");
+    }
+}
+
+#[test]
+fn nested_clips_at_other_frame_rates_land_on_the_source_frame() {
+    // 30 -> 24 -> 60 fps -> 30 fps video: root frame n shows video frame n.
+    assert_nested_video_frames([30, 24, 60], 250, |frame| frame);
+    // 25 -> 30 -> 24 fps -> 30 fps video: root frame n shows video frame 6n / 5.
+    assert_nested_video_frames([25, 30, 24], 200, |frame| frame * 6 / 5);
+}
+
 #[test]
 fn clip_props_reading_other_nodes_do_not_bound_the_template() {
     let mut composition = small_template_composition(json!([

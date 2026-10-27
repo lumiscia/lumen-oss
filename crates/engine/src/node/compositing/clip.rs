@@ -23,7 +23,7 @@ use crate::{
         ClipPropValue, ClipProps, Deferred, DelegateEvalContext, DelegateEvaluable, NodeId,
         NodeParams, PortRef,
     },
-    scope::{PropValues, Routed, Scope},
+    scope::{FrameTime, PropValues, Routed, Scope},
 };
 
 /// The literal `duration` that plays the content to its end. Other negative literals are
@@ -121,30 +121,41 @@ pub struct ClipWindow {
 
 impl ClipWindow {
     /// The content frame shown at `frame`, or `None` while the clip is hidden.
+    pub fn local_frame(&self, frame: f64) -> Option<f64> {
+        self.local_time(frame.into()).map(FrameTime::value)
+    }
+
+    /// The content time shown at `frame`, or `None` while the clip is hidden.
     ///
     /// `hold` freezes on the last whole frame inside the window, and `loop` wraps back to the
-    /// window's start.
-    pub fn local_frame(&self, frame: f64) -> Option<f64> {
-        let elapsed = frame - self.start;
+    /// window's start. The frame rates scale the numerator and denominator instead of
+    /// dividing, so whole frames stay exact. Matching rates leave the denominator alone, which
+    /// keeps a frame just below a whole one, as a looped `time_remap` target is.
+    pub fn local_time(&self, frame: FrameTime) -> Option<FrameTime> {
+        let den = frame.den();
+        let elapsed = frame.num() - self.start * den;
+        let duration = self.duration * den;
         if !(elapsed >= 0.0) || !(self.duration > 0.0) {
             return None;
         }
-        let elapsed = if elapsed < self.duration {
+        let elapsed = if elapsed < duration {
             elapsed
         } else {
             match self.end {
                 ClipEnd::Hide => return None,
-                ClipEnd::Hold => ((self.start + self.duration).ceil() - 1.0 - self.start).max(0.0),
-                ClipEnd::Loop => elapsed.rem_euclid(self.duration),
+                ClipEnd::Hold => {
+                    ((self.start + self.duration).ceil() - 1.0 - self.start).max(0.0) * den
+                }
+                ClipEnd::Loop => elapsed.rem_euclid(duration),
             }
         };
-        // The frame rates apply last, in one division, so whole frames convert with a single
-        // rounding. Matching rates skip it, which keeps a frame just below a whole one, as a
-        // looped `time_remap` target is.
         Some(if self.content_fps == self.fps {
-            elapsed * self.speed + self.offset
+            FrameTime::new(elapsed * self.speed + self.offset * den, den)
         } else {
-            (elapsed * self.speed * self.content_fps + self.offset * self.fps) / self.fps
+            FrameTime::new(
+                elapsed * self.speed * self.content_fps + self.offset * self.fps * den,
+                den * self.fps,
+            )
         })
     }
 
@@ -243,11 +254,11 @@ impl Clip {
     pub(crate) fn route<'a>(
         &self,
         scope: &Scope<'a>,
-        frame: f64,
+        frame: FrameTime,
         media: Option<&dyn crate::media::MediaStore>,
     ) -> crate::Result<Option<Routed<'a>>> {
         let ctx = scope.expr_context(frame, format!("{}.params", self.id), media);
-        let Some(local) = self.window(scope, &ctx)?.local_frame(frame) else {
+        let Some(local) = self.window(scope, &ctx)?.local_time(frame) else {
             return Ok(None);
         };
         let Some(template) = self.template(scope)? else {
@@ -370,7 +381,7 @@ mod tests {
             end: ClipEnd::Hide,
         };
         for frame in 3..250 {
-            let local = clip.local_frame(frame.into()).unwrap();
+            let local = clip.local_time(f64::from(frame).into()).unwrap();
             let source = map_to_source_frame(local, 24.0, 30.0, 1000, None, 1.0, LoopMode::Clamp);
             assert_eq!(source, Some(frame - 3 + 5), "at {frame}");
         }
