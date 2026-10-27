@@ -9,6 +9,7 @@ concurrency:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   publish:
@@ -31,6 +32,10 @@ jobs:
           node-version: 22
           cache: pnpm
           registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - name: Update npm
+        run: npm install -g npm@latest
 
       - uses: extractions/setup-just@v3
 
@@ -77,12 +82,20 @@ jobs:
           git diff --exit-code Cargo.toml pnpm-lock.yaml packages/*/package.json
           cargo metadata --no-deps --format-version 1 > /dev/null
 
-      - name: Publish packages
-        run: pnpm release:publish
+      - name: Build packages
+        run: pnpm release:build
+
+      # crates.io tokens from trusted publishing expire after 30 minutes, so fetch one after the build.
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: crates_io_auth
+
+      - name: Publish crates
+        run: pnpm publish:crates
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
+
+      - name: Publish npm packages
+        run: pnpm publish:packages
 
       - name: Read release metadata
         id: release_metadata
