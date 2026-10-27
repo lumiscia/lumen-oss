@@ -9005,3 +9005,501 @@ fn blurred_text_draws_glyphs_moved_beyond_its_box() {
     eprintln!("moved glyph: total alpha {blurred} blurred vs {still} still");
     assert!(still > 0 && blurred.abs_diff(still) * 20 < still);
 }
+
+/// A small shape through a `blur`, or a `shadow` when `offset` is given. Number params may be
+/// expressions of `frame`.
+#[derive(Clone, Copy)]
+struct BoundedEffect {
+    position: [&'static str; 2],
+    offset: Option<[&'static str; 2]>,
+    radius: &'static str,
+    straight_alpha: bool,
+    duration_frames: u32,
+}
+
+/// `spec` as a literal when it is a number and `bounded`. Otherwise an expression that reads
+/// another node, which no bounds can be worked out for.
+fn effect_param(spec: &str, bounded: bool) -> Deferred<f64> {
+    match spec.parse::<f64>() {
+        Ok(value) if bounded => Deferred::value(value),
+        _ if bounded => Deferred::Expr(Expression::parse(spec).unwrap()),
+        _ => {
+            Deferred::Expr(Expression::parse(&format!("{spec} + 0 * node(99, \"width\")")).unwrap())
+        }
+    }
+}
+
+/// Renders `frames` of `case`, with the pixels and whether the effect's output was bounded.
+/// Without `bounded` the shape and the effect fill the canvas, as they would without bounds.
+fn render_bounded_effect(
+    case: BoundedEffect,
+    bounded: bool,
+    frames: &[u32],
+) -> Option<(Vec<Vec<u8>>, bool)> {
+    let (shape, convert, effect, output) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(3),
+        NodeId::new(4),
+    );
+    let [x, y] = case.position;
+    let position = match (x.parse::<f64>(), y.parse::<f64>(), bounded) {
+        (Ok(x), Ok(y), true) => Deferred::value((x, y)),
+        (.., true) => Deferred::Expr(Expression::parse(&format!("vec2({x}, {y})")).unwrap()),
+        _ => Deferred::Expr(
+            Expression::parse(&format!("vec2({x} + 0 * node(99, \"width\"), {y})")).unwrap(),
+        ),
+    };
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        shape,
+        NodeKind::Shape(Shape {
+            id: shape,
+            params: ShapeParamsDelegate {
+                position,
+                width: Deferred::value(14),
+                height: Deferred::value(11),
+                fill_paint: Paint::solid([255, 100, 0, 200]).into(),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        NodeId::new(99),
+        NodeKind::Shape(Shape {
+            id: NodeId::new(99),
+            params: ShapeParamsDelegate::default(),
+        }),
+    );
+    let mut source = shape;
+    if case.straight_alpha {
+        graph.nodes.insert(
+            convert,
+            NodeKind::AlphaPremultiply(AlphaPremultiply {
+                id: convert,
+                params: AlphaPremultiplyParamsDelegate {
+                    mode: Deferred::value("unpremultiply".to_string()),
+                },
+                source: PortRef::new(shape, "output".to_string()),
+            }),
+        );
+        source = convert;
+    }
+    let source = PortRef::new(source, "output".to_string());
+    let radius = effect_param(case.radius, bounded);
+    graph.nodes.insert(
+        effect,
+        match case.offset {
+            Some([offset_x, offset_y]) => NodeKind::Shadow(Shadow {
+                id: effect,
+                params: ShadowParamsDelegate {
+                    offset_x: effect_param(offset_x, bounded),
+                    offset_y: effect_param(offset_y, bounded),
+                    radius,
+                    color: Paint::solid([20, 40, 200, 255]).into(),
+                    opacity: Deferred::value(0.8),
+                },
+                source,
+            }),
+            None => NodeKind::Blur(Blur {
+                id: effect,
+                params: BlurParamsDelegate { radius },
+                source,
+            }),
+        },
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(effect, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = 384;
+    composition.render_settings.height = 288;
+    composition.timeline.duration_frames = case.duration_frames;
+    let mut renderer = gpu_composition_renderer()?;
+    let pixels = frames
+        .iter()
+        .map(|&frame| render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore))
+        .collect();
+    let domain = renderer.compiled().unwrap().node_outputs
+        [&PortRef::new(effect, "output".to_string())]
+        .clone()
+        .into_raster(effect, "output")
+        .unwrap()
+        .domain;
+    Some((pixels, !domain.is_full_frame()))
+}
+
+/// Asserts that a bounded render matches its full-frame reference up to the rounding of the
+/// hardware filter, which depends on the size of the texture read: no channel differs by more
+/// than 1, and few bytes differ at all. Coverage the bounded render lost, rather than rounded,
+/// shows up as a zero alpha where the reference has some.
+fn assert_matches_within_rounding(pixels: &[u8], expected: &[u8], name: &str) {
+    assert_eq!(pixels.len(), expected.len(), "{name}: size differs");
+    let mut differing = 0usize;
+    for (index, (&actual, &expected)) in pixels.iter().zip(expected).enumerate() {
+        let difference = actual.abs_diff(expected);
+        assert!(
+            difference <= 1,
+            "{name}: byte {index} is {actual}, expected {expected}"
+        );
+        differing += usize::from(difference > 0);
+    }
+    assert!(
+        differing * 1000 <= pixels.len(),
+        "{name}: {differing} of {} bytes differ",
+        pixels.len()
+    );
+    for (index, (pixel, reference)) in pixels.chunks(4).zip(expected.chunks(4)).enumerate() {
+        assert!(
+            reference[3] <= 8 || pixel[3] > 0,
+            "{name}: pixel {index} lost its coverage, expected alpha {}",
+            reference[3]
+        );
+    }
+}
+
+/// Asserts that `case` renders the same bounded as at full frame, and that it is bounded when
+/// `expect_bounded`. A blur that reaches past the canvas may still be bounded on one side.
+fn assert_bounded_effect_matches_full_frame(
+    case: BoundedEffect,
+    frames: &[u32],
+    expect_bounded: bool,
+    name: &str,
+) {
+    let Some((pixels, bounded)) = render_bounded_effect(case, true, frames) else {
+        return;
+    };
+    let (expected, full) = render_bounded_effect(case, false, frames).unwrap();
+    assert!(bounded || !expect_bounded, "{name}: should be bounded");
+    assert!(!full, "{name}: the reference should fill the canvas");
+    for (frame, (pixels, expected)) in frames.iter().zip(pixels.iter().zip(&expected)) {
+        assert!(expected.iter().any(|&byte| byte > 0), "{name}: blank frame");
+        assert_matches_within_rounding(pixels, expected, &format!("{name}: frame {frame}"));
+    }
+}
+
+#[test]
+fn bounded_blur_matches_full_frame_near_canvas_edges() {
+    // Radii that blur at full resolution, on a reduced level and across two, with the shape in
+    // each corner and straight alpha, so that the blur reads its edge and the canvas'. The
+    // largest reaches past the canvas on every side.
+    for radius in ["0", "3", "8.5", "21", "40", "150"] {
+        for position in [["2", "3"], ["368", "274"], ["190", "140"], ["-5", "270"]] {
+            for straight_alpha in [false, true] {
+                assert_bounded_effect_matches_full_frame(
+                    BoundedEffect {
+                        position,
+                        offset: None,
+                        radius,
+                        straight_alpha,
+                        duration_frames: 1,
+                    },
+                    &[0],
+                    radius != "150",
+                    &format!("blur {radius} at {position:?}, straight {straight_alpha}"),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn bounded_blur_with_animated_radius_covers_the_largest_radius() {
+    // The radius passes through the band where the full level hands over to the reduced one.
+    assert_bounded_effect_matches_full_frame(
+        BoundedEffect {
+            position: ["100", "70"],
+            offset: None,
+            radius: "2 + frame * 9",
+            straight_alpha: false,
+            duration_frames: 8,
+        },
+        &[0, 1, 2, 3, 5, 7],
+        true,
+        "animated blur radius",
+    );
+}
+
+#[test]
+fn bounded_blur_follows_a_moving_shape() {
+    assert_bounded_effect_matches_full_frame(
+        BoundedEffect {
+            position: ["10 + frame * 30", "40 + frame * 10"],
+            offset: None,
+            radius: "10",
+            straight_alpha: false,
+            duration_frames: 8,
+        },
+        &[0, 2, 4, 7],
+        true,
+        "blur of a moving shape",
+    );
+}
+
+#[test]
+fn bounded_shadow_covers_its_offset_and_the_source() {
+    // Offsets that move the shadow off each edge, and one that moves it off the canvas.
+    for (offset, radius) in [
+        (["12", "-9"], "6"),
+        (["-30", "40"], "25"),
+        (["0.4", "7.6"], "0"),
+        (["-250", "0"], "12"),
+        (["400", "-300"], "60"),
+    ] {
+        for (position, straight_alpha) in [(["30", "20"], false), (["366", "270"], true)] {
+            assert_bounded_effect_matches_full_frame(
+                BoundedEffect {
+                    position,
+                    offset: Some(offset),
+                    radius,
+                    straight_alpha,
+                    duration_frames: 1,
+                },
+                &[0],
+                true,
+                &format!("shadow offset {offset:?} radius {radius} at {position:?}"),
+            );
+        }
+    }
+    assert_bounded_effect_matches_full_frame(
+        BoundedEffect {
+            position: ["40", "40"],
+            offset: Some(["frame * 12", "-frame * 8"]),
+            radius: "4 + frame * 3",
+            straight_alpha: false,
+            duration_frames: 6,
+        },
+        &[0, 1, 3, 5],
+        true,
+        "animated shadow",
+    );
+}
+
+#[test]
+fn blur_and_shadow_fill_the_canvas_for_values_that_cannot_be_bounded() {
+    for (offset, radius) in [
+        (None, "1000000"),
+        (None, "5000000000"),
+        (Some(["10000000", "0"]), "4"),
+        (Some(["0", "-1000000000000"]), "4"),
+    ] {
+        let case = BoundedEffect {
+            position: ["100", "70"],
+            offset,
+            radius,
+            straight_alpha: false,
+            duration_frames: 1,
+        };
+        let Some((pixels, bounded)) = render_bounded_effect(case, true, &[0]) else {
+            return;
+        };
+        let (expected, _) = render_bounded_effect(case, false, &[0]).unwrap();
+        assert!(!bounded, "{offset:?} {radius}: should fill the canvas");
+        assert!(pixels == expected, "{offset:?} {radius}: differs");
+    }
+}
+
+/// Inter, the only family [`render_blurred_text`] resolves.
+#[derive(Debug, Clone)]
+struct BlurFont;
+
+impl lumen_engine::media::FontResolver for BlurFont {
+    fn id(&self) -> &str {
+        "bounded-blur-inter"
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![
+            include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf").to_vec(),
+        ])
+    }
+}
+
+impl MediaStore for BlurFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family == "Inter").then(|| "bounded-blur-inter".to_string())
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        (family == "Inter")
+            .then(|| Box::new(self.clone()) as Box<dyn lumen_engine::media::FontResolver>)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BlurredText {
+    canvas: (u32, u32),
+    position: (f64, f64),
+    font_size: f64,
+    radius: f64,
+    /// Offset of a shadow with the repro's color and opacity, or a plain blur without.
+    shadow_offset: Option<(f64, f64)>,
+}
+
+/// Renders `frames` of `case`, with the pixels and whether the effect's output was bounded.
+/// Without `bounded` the text reads another node, so it and the effect fill the canvas.
+fn render_blurred_text(
+    case: BlurredText,
+    bounded: bool,
+    frames: &[u32],
+) -> Option<(Vec<Vec<u8>>, bool)> {
+    let (text, effect, output) = (NodeId::new(2), NodeId::new(4), NodeId::new(9));
+    let (x, y) = case.position;
+    let position = if bounded {
+        Deferred::value((x, y))
+    } else {
+        Deferred::Expr(
+            Expression::parse(&format!("vec2({x} + 0 * node(99, \"width\"), {y})")).unwrap(),
+        )
+    };
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        NodeId::new(99),
+        NodeKind::Shape(Shape {
+            id: NodeId::new(99),
+            params: ShapeParamsDelegate::default(),
+        }),
+    );
+    graph.nodes.insert(
+        text,
+        NodeKind::Text(Text {
+            id: text,
+            params: TextParamsDelegate {
+                content: Deferred::value("Blur edge".to_string()),
+                font_family: Deferred::value("Inter".to_string()),
+                font_size: Deferred::value(case.font_size),
+                position,
+                ..Default::default()
+            },
+        }),
+    );
+    let source = PortRef::new(text, "output".to_string());
+    let radius = effect_param(&case.radius.to_string(), bounded);
+    graph.nodes.insert(
+        effect,
+        match case.shadow_offset {
+            Some((offset_x, offset_y)) => NodeKind::Shadow(Shadow {
+                id: effect,
+                params: ShadowParamsDelegate {
+                    offset_x: Deferred::value(offset_x),
+                    offset_y: Deferred::value(offset_y),
+                    radius,
+                    color: Paint::solid([73, 137, 239, 213]).into(),
+                    opacity: Deferred::value(0.83),
+                },
+                source,
+            }),
+            None => NodeKind::Blur(Blur {
+                id: effect,
+                params: BlurParamsDelegate { radius },
+                source,
+            }),
+        },
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(effect, "output".to_string()),
+        }),
+    );
+    let mut composition = test_composition(graph);
+    (
+        composition.render_settings.width,
+        composition.render_settings.height,
+    ) = case.canvas;
+    let mut renderer = gpu_composition_renderer()?;
+    let pixels = frames
+        .iter()
+        .map(|&frame| render_rgba8(&mut renderer, &composition, frame, &BlurFont))
+        .collect();
+    let domain = renderer.compiled().unwrap().node_outputs
+        [&PortRef::new(effect, "output".to_string())]
+        .clone()
+        .into_raster(effect, "output")
+        .unwrap()
+        .domain;
+    Some((pixels, !domain.is_full_frame()))
+}
+
+fn assert_blurred_text_matches_full_frame(case: BlurredText, name: &str) {
+    let frames = [0, 1, 5];
+    let Some((pixels, bounded)) = render_blurred_text(case, true, &frames) else {
+        return;
+    };
+    let (expected, full) = render_blurred_text(case, false, &frames).unwrap();
+    assert!(bounded, "{name}: should be bounded");
+    assert!(!full, "{name}: the reference should fill the canvas");
+    for (frame, (pixels, expected)) in frames.iter().zip(pixels.iter().zip(&expected)) {
+        assert!(expected.iter().any(|&byte| byte > 0), "{name}: blank frame");
+        assert_matches_within_rounding(pixels, expected, &format!("{name}: frame {frame}"));
+    }
+}
+
+#[test]
+fn bounded_shadow_of_text_matches_full_frame_on_odd_canvases() {
+    for (canvas, position, radius, shadow_offset) in [
+        ((1027, 773), (338.91, 309.2), 34.15, (-67.5, 32.5)),
+        ((1029, 775), (401.37, 288.6), 22.4, (-31.5, 18.5)),
+    ] {
+        assert_blurred_text_matches_full_frame(
+            BlurredText {
+                canvas,
+                position,
+                font_size: 37.0,
+                radius,
+                shadow_offset: Some(shadow_offset),
+            },
+            &format!("shadow of text on {canvas:?}"),
+        );
+    }
+}
+
+#[test]
+fn bounded_blur_of_text_matches_full_frame_at_fractional_positions() {
+    for (canvas, position, font_size, radius, shadow_offset) in [
+        ((383, 289), (171.3, 133.6), 29.0, 8.5, None),
+        ((385, 291), (-3.4, 277.5), 41.0, 21.0, None),
+        ((769, 577), (311.2, 201.1), 33.0, 40.0, None),
+        ((769, 577), (311.2, 201.1), 33.0, 12.7, Some((-17.5, 26.4))),
+        ((385, 291), (301.7, 22.3), 41.0, 30.6, Some((24.5, -9.5))),
+        (
+            (1031, 771),
+            (355.7, 300.1),
+            37.0,
+            34.15,
+            Some((-67.5, 32.5)),
+        ),
+        (
+            (1111, 777),
+            (800.77, 252.78),
+            37.0,
+            18.2,
+            Some((31.5, 32.5)),
+        ),
+    ] {
+        assert_blurred_text_matches_full_frame(
+            BlurredText {
+                canvas,
+                position,
+                font_size,
+                radius,
+                shadow_offset,
+            },
+            &format!(
+                "text at {position:?} on {canvas:?}, radius {radius}, shadow {shadow_offset:?}"
+            ),
+        );
+    }
+}

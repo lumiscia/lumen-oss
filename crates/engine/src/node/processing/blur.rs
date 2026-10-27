@@ -2,7 +2,7 @@ use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata,
+    RasterHandle, RasterMetadata, compiler,
 };
 
 use super::gaussian;
@@ -83,14 +83,32 @@ impl GpuCompileNode for Blur {
         }
 
         let source = ctx
-            .compile_port(&self.source)?
+            .compile_bounded_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
-        let passes = gaussian::compile_passes(
+        // The blur spreads the source's data by the radius, up to its largest over the timeline.
+        let bounds = ctx.source_bounds(
+            self.id,
+            compiler::SourceMotion::of(self.params.radius.is_expr(), &self.params),
+            |expr| {
+                let params = self.params.eval(&NodeParamEvalContext {
+                    node_id: self.id,
+                    expr,
+                })?;
+                Ok(gaussian::blur_bounds(
+                    source.domain.data_rect,
+                    [0.0; 2],
+                    params.radius,
+                ))
+            },
+        );
+        let domain = gaussian::domain_within(source.domain.display_size(), bounds);
+        let passes = gaussian::compile_passes_with(
             ctx,
             self.id,
             "blur",
-            source.texture,
-            source.domain.storage_size,
+            source,
+            domain,
+            gaussian::GaussianOptions::default(),
         );
         let output = passes.output;
         ctx.register_compiled_node(CompiledBlur {
@@ -101,7 +119,7 @@ impl GpuCompileNode for Blur {
         });
         Ok(CompiledOutput::Raster(RasterHandle {
             texture: output,
-            domain: source.domain,
+            domain,
             metadata: RasterMetadata {
                 alpha_mode: AlphaMode::Premultiplied,
                 ..source.metadata

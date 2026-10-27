@@ -207,13 +207,7 @@ impl GpuCompileNode for Merge {
                 size.height.max(mask_size.height),
             );
             CompiledFeather {
-                passes: gaussian::compile_passes(
-                    ctx,
-                    self.id,
-                    "merge-feather",
-                    mask.texture,
-                    union,
-                ),
+                passes: gaussian::compile_passes(ctx, self.id, "merge-feather", mask, union),
                 straight_mask: straight(&mask),
             }
         });
