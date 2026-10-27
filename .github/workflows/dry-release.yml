@@ -66,9 +66,13 @@ jobs:
       - name: Install WASM tooling
         run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
 
+      # The version PR has already applied its changesets, so only apply what is still pending.
       - name: Apply pull request changesets
         if: github.event_name == 'pull_request'
-        run: pnpm release:version
+        run: |
+          if [ -n "$(find .changeset -type f -name '*.md' ! -name README.md -print -quit)" ]; then
+            pnpm release:version
+          fi
 
       - name: Check release readiness
         run: |
