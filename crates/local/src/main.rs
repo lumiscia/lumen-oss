@@ -98,6 +98,17 @@ struct RenderTiming {
     encode_finish_ms: u128,
 }
 
+/// Passes per frame skipped because their output was kept from an earlier frame (static nodes and
+/// holding memos), out of the passes per frame in the plans rendered.
+fn cached_pass_summary(renderer: &GpuCompositionRenderer, frames: u32) -> String {
+    let frames = f64::from(frames.max(1));
+    format!(
+        "static_cached={:.1} passes={:.1}",
+        renderer.cached_pass_count() as f64 / frames,
+        renderer.submitted_pass_count() as f64 / frames,
+    )
+}
+
 struct LocalMediaStore {
     root: PathBuf,
     font_catalogs: Vec<FontCatalog>,
@@ -932,7 +943,7 @@ fn render_mp4(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={}",
+        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
         output.display(),
         total_frames,
         timings.audio_mix_ms,
@@ -945,6 +956,7 @@ fn render_mp4(
         timings.encode_finish_ms,
         total_ms,
         renderer.plan_cache_bytes(),
+        cached_pass_summary(&renderer, total_frames),
     );
     Ok(())
 }
@@ -1045,7 +1057,7 @@ fn render_video_gpu_videotoolbox(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={}",
+        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
         output.display(),
         total_frames,
         timings.audio_mix_ms,
@@ -1057,6 +1069,7 @@ fn render_video_gpu_videotoolbox(
         timings.encode_finish_ms,
         total_ms,
         renderer.plan_cache_bytes(),
+        cached_pass_summary(&renderer, total_frames),
     );
     Ok(())
 }
@@ -1275,7 +1288,7 @@ fn render_video_gpu_vulkan(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={}",
+        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
         output.display(),
         total_frames,
         timings.audio_mix_ms,
@@ -1287,6 +1300,7 @@ fn render_video_gpu_vulkan(
         timings.encode_finish_ms,
         total_ms,
         renderer.plan_cache_bytes(),
+        cached_pass_summary(&renderer, total_frames),
     );
     Ok(())
 }

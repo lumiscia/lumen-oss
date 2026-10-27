@@ -821,10 +821,7 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_compiled_nodes() {
         memo,
         NodeKind::Memo(Memo {
             id: memo,
-            params: MemoParamsDelegate {
-                cache_id: Deferred::value("cached-comp".to_string()),
-                allow_expressions: Deferred::value(false),
-            },
+            params: MemoParamsDelegate::default(),
             source: PortRef::new(time_remap, "output".to_string()),
         }),
     );
@@ -862,7 +859,7 @@ fn compiles_memo_and_time_remap_as_gpu_aliases_with_compiled_nodes() {
 
     assert_eq!(compiled.plan.textures().len(), 1);
     assert_eq!(compiled.plan.passes().len(), 1);
-    assert_eq!(compiled.compiled_nodes.len(), 3);
+    assert_eq!(compiled.compiled_nodes.len(), 2);
     assert_eq!(remapped.texture, source.texture);
     assert_eq!(memoized.texture, source.texture);
 }
@@ -9501,5 +9498,506 @@ fn bounded_blur_of_text_matches_full_frame_at_fractional_positions() {
                 "text at {position:?} on {canvas:?}, radius {radius}, shadow {shadow_offset:?}"
             ),
         );
+    }
+}
+
+const CACHE_CANVAS: (u32, u32) = (32, 16);
+
+fn canvas_background(id: NodeId, color: [u8; 4]) -> NodeKind {
+    NodeKind::Background(Background {
+        id,
+        params: BackgroundParamsDelegate {
+            paint: Paint::solid(color).into(),
+            width: Deferred::value(CACHE_CANVAS.0),
+            height: Deferred::value(CACHE_CANVAS.1),
+            paint_supersample: Deferred::value(true),
+        },
+    })
+}
+
+fn square(id: NodeId, position: Deferred<(f64, f64)>, size: i64, color: [u8; 4]) -> NodeKind {
+    NodeKind::Shape(Shape {
+        id,
+        params: ShapeParamsDelegate {
+            position,
+            width: Deferred::value(size),
+            height: Deferred::value(size),
+            fill_paint: Paint::solid(color).into(),
+            ..Default::default()
+        },
+    })
+}
+
+fn multimerge(id: NodeId, layers: &[u64]) -> NodeKind {
+    NodeKind::RasterMultiMerge(RasterMultiMerge {
+        id,
+        layers: layers
+            .iter()
+            .map(|layer| PortRef::new(NodeId::new(*layer), "output".to_string()))
+            .collect(),
+        ..Default::default()
+    })
+}
+
+fn output_node(id: NodeId, source: u64) -> NodeKind {
+    NodeKind::MediaOutput(MediaOutput {
+        id,
+        source: PortRef::new(NodeId::new(source), "output".to_string()),
+    })
+}
+
+fn cache_composition(nodes: Vec<NodeKind>) -> Composition {
+    let mut graph = Graph::new();
+    for node in nodes {
+        graph.nodes.insert(node.id(), node);
+    }
+    let mut composition = test_composition(graph);
+    composition.render_settings.width = CACHE_CANVAS.0;
+    composition.render_settings.height = CACHE_CANVAS.1;
+    composition
+}
+
+/// A static layer (node 3: a background and a square) under a square moving with the frame.
+fn static_under_animated(background: [u8; 4]) -> Composition {
+    cache_composition(vec![
+        canvas_background(NodeId::new(1), background),
+        square(
+            NodeId::new(2),
+            Deferred::value((4.0, 4.0)),
+            8,
+            [20, 40, 220, 255],
+        ),
+        multimerge(NodeId::new(3), &[1, 2]),
+        square(
+            NodeId::new(4),
+            expression("vec2(frame * 2, 6)"),
+            4,
+            [30, 220, 60, 255],
+        ),
+        multimerge(NodeId::new(5), &[3, 4]),
+        output_node(NodeId::new(6), 5),
+    ])
+}
+
+/// Renders `frame` without any output kept from earlier frames.
+fn uncached_rgba8(
+    renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+    composition: &Composition,
+    frame: u32,
+    media: &impl MediaStore,
+) -> Vec<u8> {
+    renderer.release_resources();
+    render_rgba8(renderer, composition, frame, media)
+}
+
+#[test]
+fn static_subgraph_dispatches_once_and_matches_uncached_frames() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    let composition = static_under_animated([200, 30, 30, 255]);
+    let mut cached = Vec::new();
+    let mut frames = Vec::new();
+    for frame in 0..4 {
+        let pixels = render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore);
+        let expected = uncached_rgba8(&mut reference, &composition, frame, &EmptyMediaStore);
+        assert!(
+            pixels == expected,
+            "frame {frame} differs from an uncached render"
+        );
+        cached.push(renderer.cached_pass_count());
+        frames.push(pixels);
+    }
+    let per_frame = cached[1];
+    assert!(
+        per_frame >= 3,
+        "the background, square and their merge are kept"
+    );
+    assert_eq!(cached, [0, per_frame, 2 * per_frame, 3 * per_frame]);
+    assert!(frames[0] != frames[3], "the animated square still moves");
+}
+
+const MEMO_FRAME_SHADER: &str = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let color = vec4<f32>(f32(lumen.frame) / 255.0, lumen.time, 0.5, 1.0);
+    textureStore(output, vec2<i32>(id.xy), color);
+}
+";
+
+/// A frame-dependent shader, read through a memo keyed by `key` when there is one.
+fn memo_shader_composition(key: Option<&str>) -> Composition {
+    let (shader, memo, output, input) = (
+        NodeId::new(1),
+        NodeId::new(2),
+        NodeId::new(3),
+        NodeId::new(4),
+    );
+    let mut nodes = vec![
+        canvas_background(input, [0, 0, 0, 255]),
+        wgsl_shader_node(
+            shader,
+            Deferred::value(MEMO_FRAME_SHADER.to_string()),
+            vec![PortRef::new(input, "output".to_string())],
+        ),
+        output_node(output, if key.is_some() { 2 } else { 1 }),
+    ];
+    if let Some(key) = key {
+        nodes.push(NodeKind::Memo(Memo {
+            id: memo,
+            params: MemoParamsDelegate {
+                key: expression(key),
+            },
+            source: PortRef::new(shader, "output".to_string()),
+        }));
+    }
+    cache_composition(nodes)
+}
+
+#[test]
+fn memo_key_renders_its_source_only_when_the_key_changes() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    let memoized = memo_shader_composition(Some("floor(frame / 4)"));
+    let plain = memo_shader_composition(None);
+    let mut skipped = Vec::new();
+    let mut frames = Vec::new();
+    for frame in 0..9 {
+        let before = renderer.cached_pass_count();
+        let pixels = render_rgba8(&mut renderer, &memoized, frame, &EmptyMediaStore);
+        skipped.push(renderer.cached_pass_count() - before);
+        let expected = uncached_rgba8(&mut reference, &plain, frame - frame % 4, &EmptyMediaStore);
+        assert!(
+            pixels == expected,
+            "frame {frame} shows the shader at frame {}",
+            frame - frame % 4
+        );
+        frames.push(pixels);
+    }
+    // Refreshes skip only the shader's static input; held frames skip the shader and the
+    // memo's copy as well.
+    let (refresh, held) = (skipped[4], skipped[1]);
+    assert_eq!(held, refresh + 2);
+    assert_eq!(
+        skipped,
+        [0, held, held, held, refresh, held, held, held, refresh]
+    );
+    assert!(frames[3] != frames[4]);
+}
+
+#[test]
+fn memo_key_is_evaluated_at_fractional_frame_times() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    let memoized = memo_shader_composition(Some("floor(frame / 4)"));
+    let plain = memo_shader_composition(None);
+    let at = |renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+              composition: &Composition,
+              frame: f64| {
+        let raster = renderer
+            .render_frame_at(composition, frame, &EmptyMediaStore)
+            .unwrap();
+        read_rgba8(renderer.gpu_renderer(), raster)
+    };
+    let first = at(&mut renderer, &memoized, 3.5);
+    assert!(first == at(&mut reference, &plain, 3.5));
+    assert!(
+        at(&mut reference, &plain, 3.75) != first,
+        "the shader animates"
+    );
+    assert!(
+        at(&mut renderer, &memoized, 3.75) == first,
+        "the key is still 0 at frame 3.75"
+    );
+    assert!(at(&mut renderer, &memoized, 4.25) == at(&mut reference, &plain, 4.25));
+}
+
+#[test]
+fn kept_text_is_drawn_again_after_its_font_loads() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    let store = ScaledFontStore::new("Cachey", 2);
+    let mut composition = store.composition(0.0, true);
+    let output = composition.graph.nodes.remove(&NodeId::new(2)).unwrap();
+    let NodeKind::MediaOutput(output) = output else {
+        unreachable!();
+    };
+    composition.graph.nodes.insert(
+        NodeId::new(3),
+        square(
+            NodeId::new(3),
+            expression("vec2(frame * 4, 0)"),
+            4,
+            [255, 255, 255, 255],
+        ),
+    );
+    composition
+        .graph
+        .nodes
+        .insert(NodeId::new(4), multimerge(NodeId::new(4), &[1, 3]));
+    composition
+        .graph
+        .nodes
+        .insert(output.id, output_node(output.id, 4));
+
+    let unloaded = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
+    let loaded = render_rgba8(&mut renderer, &composition, 2, &store);
+    assert!(loaded != unloaded, "the text is drawn in the loaded font");
+    assert!(loaded == uncached_rgba8(&mut reference, &composition, 2, &store));
+}
+
+/// Static layers 4 and 5 sharing square 3, alternately selected every two frames, under a moving
+/// square.
+fn switching_static_layers() -> Composition {
+    cache_composition(vec![
+        canvas_background(NodeId::new(1), [200, 30, 30, 255]),
+        canvas_background(NodeId::new(2), [30, 200, 30, 255]),
+        square(
+            NodeId::new(3),
+            Deferred::value((4.0, 4.0)),
+            8,
+            [255, 255, 255, 255],
+        ),
+        multimerge(NodeId::new(4), &[1, 3]),
+        multimerge(NodeId::new(5), &[2, 3]),
+        NodeKind::Switch(Switch {
+            id: NodeId::new(6),
+            params: SwitchParamsDelegate {
+                selected_layer: expression("floor(frame / 2) % 2"),
+            },
+            layers: vec![
+                PortRef::new(NodeId::new(4), "output".to_string()),
+                PortRef::new(NodeId::new(5), "output".to_string()),
+            ],
+        }),
+        square(
+            NodeId::new(7),
+            expression("vec2(frame * 2, 6)"),
+            4,
+            [20, 40, 220, 255],
+        ),
+        multimerge(NodeId::new(8), &[6, 7]),
+        output_node(NodeId::new(9), 8),
+    ])
+}
+
+#[test]
+fn kept_output_survives_plan_switches_and_is_dropped_with_evicted_plans() {
+    let Some(mut reference) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = switching_static_layers();
+    for budget in [None, Some(0)] {
+        let mut renderer = gpu_composition_renderer().unwrap();
+        if let Some(budget) = budget {
+            renderer.set_plan_cache_budget(budget);
+        }
+        for frame in 0..8 {
+            let pixels = render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore);
+            let expected = uncached_rgba8(&mut reference, &composition, frame, &EmptyMediaStore);
+            assert!(pixels == expected, "frame {frame} with budget {budget:?}");
+        }
+        assert!(renderer.cached_pass_count() > 0);
+        if budget.is_some() {
+            assert!(
+                renderer.cached_plan_count() <= 2,
+                "only the current and previous plans stay"
+            );
+        }
+    }
+}
+
+#[test]
+fn replacing_a_kept_texture_renders_it_again() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    let composition = static_under_animated([200, 30, 30, 255]);
+    for frame in 0..2 {
+        render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore);
+    }
+    let kept = renderer
+        .compiled()
+        .unwrap()
+        .node_outputs
+        .get(&PortRef::new(NodeId::new(3), "output".to_string()))
+        .unwrap()
+        .clone()
+        .into_raster(NodeId::new(3), "output")
+        .unwrap();
+    let gpu = renderer.gpu_renderer_mut();
+    let desc = gpu.texture_desc(kept.texture).unwrap();
+    let blank = gpu
+        .device
+        .create_texture(&lumen_gpu::wgpu::TextureDescriptor {
+            label: Some("blank"),
+            size: desc.domain.storage_size.as_extent(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: lumen_gpu::wgpu::TextureDimension::D2,
+            format: desc.format,
+            usage: desc.usage,
+            view_formats: &[],
+        });
+    gpu.replace_texture_discard_old(kept.texture, blank, desc)
+        .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 2, &EmptyMediaStore);
+    assert!(pixels == uncached_rgba8(&mut reference, &composition, 2, &EmptyMediaStore));
+}
+
+#[test]
+fn discarded_binds_keep_nothing_and_stale_uploads_are_still_rejected() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    let mut composition = static_under_animated([200, 30, 30, 255]);
+    composition.graph.nodes.insert(
+        NodeId::new(2),
+        NodeKind::Text(Text {
+            id: NodeId::new(2),
+            params: TextParamsDelegate {
+                content: Deferred::value("Kept".to_string()),
+                font_size: Deferred::value(12.0),
+                position: Deferred::value((2.0, 8.0)),
+                ..Default::default()
+            },
+        }),
+    );
+    let submit = |renderer: &mut lumen_engine::gpu::GpuCompositionRenderer, frame| {
+        let bound = renderer
+            .bind_frame(&composition, frame, &EmptyMediaStore)
+            .unwrap();
+        let (raster, _) = renderer.submit_bound_frame(&bound).unwrap();
+        read_rgba8(renderer.gpu_renderer(), raster)
+    };
+    for (discarded, submitted) in [(0, 1), (2, 3)] {
+        renderer
+            .bind_frame(&composition, discarded, &EmptyMediaStore)
+            .unwrap();
+        let pixels = submit(&mut renderer, submitted);
+        assert!(
+            pixels == uncached_rgba8(&mut reference, &composition, submitted, &EmptyMediaStore),
+            "frame {submitted} after discarding a bind of frame {discarded}"
+        );
+    }
+    assert!(renderer.cached_pass_count() > 0);
+
+    let older = renderer
+        .bind_frame(&composition, 4, &EmptyMediaStore)
+        .unwrap();
+    let current = renderer
+        .bind_frame(&composition, 5, &EmptyMediaStore)
+        .unwrap();
+    assert!(renderer.upload_bound_frame(&older).is_err());
+    renderer.upload_bound_frame(&current).unwrap();
+    let (raster, _) = renderer.submit_render().unwrap();
+    assert!(
+        read_rgba8(renderer.gpu_renderer(), raster)
+            == uncached_rgba8(&mut reference, &composition, 5, &EmptyMediaStore)
+    );
+}
+
+#[test]
+fn kept_output_reaches_external_output_textures() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    let fully_static = cache_composition(vec![
+        canvas_background(NodeId::new(1), [200, 30, 30, 255]),
+        square(
+            NodeId::new(2),
+            Deferred::value((4.0, 4.0)),
+            8,
+            [20, 40, 220, 255],
+        ),
+        multimerge(NodeId::new(3), &[1, 2]),
+        output_node(NodeId::new(4), 3),
+    ]);
+    let memo_root = {
+        let mut composition = static_under_animated([200, 30, 30, 255]);
+        composition.graph.nodes.insert(
+            NodeId::new(7),
+            NodeKind::Memo(Memo {
+                id: NodeId::new(7),
+                params: MemoParamsDelegate {
+                    key: expression("floor(frame / 2)"),
+                },
+                source: PortRef::new(NodeId::new(5), "output".to_string()),
+            }),
+        );
+        composition
+            .graph
+            .nodes
+            .insert(NodeId::new(6), output_node(NodeId::new(6), 7));
+        composition
+    };
+    for (composition, held) in [(&fully_static, false), (&memo_root, true)] {
+        renderer.release_resources();
+        render_rgba8(&mut renderer, composition, 0, &EmptyMediaStore);
+        let output = renderer.compiled().unwrap().output;
+        let desc = renderer
+            .gpu_renderer()
+            .texture_desc(output.texture)
+            .unwrap();
+        for frame in 1..4 {
+            let gpu = renderer.gpu_renderer();
+            let texture = gpu
+                .device
+                .create_texture(&lumen_gpu::wgpu::TextureDescriptor {
+                    label: Some("external output"),
+                    size: desc.domain.storage_size.as_extent(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: lumen_gpu::wgpu::TextureDimension::D2,
+                    format: desc.format,
+                    usage: desc.usage | lumen_gpu::wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+            let submitted = renderer
+                .render_frame_into_external(
+                    composition,
+                    frame,
+                    &EmptyMediaStore,
+                    lumen_gpu::ExternalTexture::from_texture(texture, desc),
+                )
+                .unwrap();
+            submitted.wait(&renderer.gpu_renderer().device).unwrap();
+            let pixels = read_texture_rgba8(
+                renderer.gpu_renderer(),
+                submitted.texture(),
+                desc.domain.storage_size,
+            );
+            let shown = if held { frame - frame % 2 } else { frame };
+            let mut expected_composition = composition;
+            let plain;
+            if held {
+                plain = static_under_animated([200, 30, 30, 255]);
+                expected_composition = &plain;
+            }
+            let expected = uncached_rgba8(
+                &mut reference,
+                expected_composition,
+                shown,
+                &EmptyMediaStore,
+            );
+            assert!(
+                pixels == expected,
+                "external frame {frame} (memo root: {held})"
+            );
+        }
+        assert!(renderer.cached_pass_count() > 0);
     }
 }

@@ -9,6 +9,7 @@ use crate::{
     gpu::{
         BoundFrame, CompileContext, CompiledComposition, FrameBindContext, MediaTextureKey,
         RasterHandle, TimeRemapPath,
+        cache::{BindCache, CacheState, skipped_count},
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
@@ -91,6 +92,8 @@ const MAX_REJECTED_PLANS: usize = 256;
 struct PreparedComposition {
     renderer: lumen_gpu::Renderer,
     compiled: CompiledComposition,
+    /// Output kept from frames submitted to this plan.
+    cache: CacheState,
     current_media_textures: HashMap<lumen_gpu::TextureId, MediaTextureKey>,
     estimated_bytes: u64,
     last_used: u64,
@@ -110,6 +113,8 @@ pub struct GpuCompositionRenderer {
     rejected_plan_bytes: HashMap<CompiledPlanKey, u64>,
     rejected_signature: Option<u64>,
     plan_compile_count: u64,
+    submitted_pass_count: u64,
+    cached_pass_count: u64,
     bind_sequence: u64,
     text_atlas: Arc<Mutex<lumen_text::GlyphAtlas>>,
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
@@ -146,6 +151,8 @@ impl GpuCompositionRenderer {
             rejected_plan_bytes: HashMap::new(),
             rejected_signature: None,
             plan_compile_count: 0,
+            submitted_pass_count: 0,
+            cached_pass_count: 0,
             bind_sequence: 0,
             text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
                 super::types::TEXT_ATLAS_SIZE,
@@ -195,6 +202,18 @@ impl GpuCompositionRenderer {
     /// Number of times a plan has been built on the CPU, whether or not it was kept.
     pub fn plan_compile_count(&self) -> u64 {
         self.plan_compile_count
+    }
+
+    /// Number of passes in the plans of submitted frames, whether they ran or not.
+    pub fn submitted_pass_count(&self) -> u64 {
+        self.submitted_pass_count
+    }
+
+    /// Number of passes submitted frames skipped because the output they would write was kept
+    /// from an earlier frame: that of nodes without frame-dependent params and of what a holding
+    /// `memo` reads.
+    pub fn cached_pass_count(&self) -> u64 {
+        self.cached_pass_count
     }
 
     /// Number of rejected lookahead plans whose estimated size is remembered.
@@ -316,6 +335,7 @@ impl GpuCompositionRenderer {
             PreparedComposition {
                 renderer,
                 compiled,
+                cache: CacheState::default(),
                 current_media_textures: HashMap::new(),
                 estimated_bytes,
                 last_used: self.plan_use_clock,
@@ -484,17 +504,19 @@ impl GpuCompositionRenderer {
         let bound = self.bind_frame(composition, frame, media)?;
         self.upload_bound_frame(&bound)?;
         let prepared = self.active_prepared_mut()?;
-        prepared
+        let submitted = prepared
             .renderer
-            .submit_plan_with_external_texture(
+            .submit_plan_with_external_texture_skipping(
                 &prepared.compiled.plan,
                 prepared.compiled.output.texture,
                 external,
+                prepared.cache.skip(),
             )
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
-            })
-            .map_err(Into::into)
+            })?;
+        self.count_submitted();
+        Ok(submitted)
     }
 
     pub fn bind_frame<M: MediaStore>(
@@ -529,9 +551,14 @@ impl GpuCompositionRenderer {
         let mut bound = loop {
             let generation = text_font_generation();
             self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
-            let compiled = self.active_compiled()?;
-            let bound =
-                FrameBindContext::with_media_at(composition, frame, media).bind(compiled)?;
+            let prepared = self.active_prepared()?;
+            let layout = &prepared.compiled.cache;
+            let epoch = layout.epoch(&prepared.renderer);
+            let bound = FrameBindContext::with_media_at(composition, frame, media)
+                .bind_with_cache(
+                    &prepared.compiled,
+                    Some(BindCache::new(layout, &prepared.cache, epoch)),
+                )?;
             if text_font_generation() == generation {
                 break bound;
             }
@@ -577,6 +604,8 @@ impl GpuCompositionRenderer {
             }
             .into());
         }
+        let prepared = self.active_prepared_mut()?;
+        prepared.cache.upload(&prepared.compiled.cache, None);
         if bound.text_atlas.is_some() {
             self.ensure_text_atlas_texture()?;
         }
@@ -590,6 +619,9 @@ impl GpuCompositionRenderer {
                 details: error.to_string(),
             })?;
         bound.mark_uploaded()?;
+        prepared
+            .cache
+            .upload(&prepared.compiled.cache, bound.cache.as_ref());
         Ok(())
     }
 
@@ -798,11 +830,25 @@ impl GpuCompositionRenderer {
         );
         let submission = prepared
             .renderer
-            .submit_plan(&prepared.compiled.plan)
+            .submit_plan_skipping(&prepared.compiled.plan, prepared.cache.skip())
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        Ok((prepared.compiled.output, submission))
+        let output = prepared.compiled.output;
+        self.count_submitted();
+        Ok((output, submission))
+    }
+
+    /// Keeps what the active plan's submitted frame rendered and counts its passes.
+    fn count_submitted(&mut self) {
+        let Ok(prepared) = self.active_prepared_mut() else {
+            return;
+        };
+        let passes = prepared.compiled.plan.passes().len() as u64;
+        let skipped = skipped_count(prepared.cache.skip()) as u64;
+        prepared.cache.submitted(&prepared.compiled.cache);
+        self.submitted_pass_count += passes;
+        self.cached_pass_count += skipped;
     }
 
     pub fn gpu_renderer(&self) -> &lumen_gpu::Renderer {
@@ -830,13 +876,16 @@ impl GpuCompositionRenderer {
             .map(|prepared| &prepared.compiled)
     }
 
-    fn active_compiled(&self) -> crate::Result<&CompiledComposition> {
-        self.compiled().ok_or_else(|| {
-            RenderError::Gpu {
-                details: "composition has not been compiled".to_string(),
-            }
-            .into()
-        })
+    fn active_prepared(&self) -> crate::Result<&PreparedComposition> {
+        self.active_key
+            .as_ref()
+            .and_then(|key| self.compiled_plans.get(key))
+            .ok_or_else(|| {
+                RenderError::Gpu {
+                    details: "composition has not been compiled".to_string(),
+                }
+                .into()
+            })
     }
 
     fn active_prepared_mut(&mut self) -> crate::Result<&mut PreparedComposition> {

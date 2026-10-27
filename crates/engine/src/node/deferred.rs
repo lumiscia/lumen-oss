@@ -224,6 +224,11 @@ pub trait DeferredValue: Clone {
     /// Whether `eval_deferred` can resolve a `Deferred::Expr` to this type.
     const ACCEPTS_EXPRESSIONS: bool;
 
+    /// Whether a literal `value` holds expressions of its own.
+    fn has_expressions(_value: &Self) -> bool {
+        false
+    }
+
     fn eval_deferred(
         deferred: &Deferred<Self>,
         node_id: NodeId,
@@ -248,6 +253,13 @@ where
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
         Deferred::eval(self, ctx.node_id, ctx.property_path, ctx.expr)
+    }
+
+    fn has_expressions(&self) -> bool {
+        match self {
+            Self::Value(value) => T::has_expressions(value),
+            Self::Expr(_) => true,
+        }
     }
 }
 
@@ -616,6 +628,16 @@ impl DeferredValue for vector::paint::Paint {
 
 impl DeferredValue for ShaderUniforms {
     const ACCEPTS_EXPRESSIONS: bool = false;
+
+    fn has_expressions(value: &Self) -> bool {
+        value.0.values().any(|value| match value {
+            super::ShaderUniformValue::Expr(_) => true,
+            super::ShaderUniformValue::Vector(components) => {
+                components.iter().any(Deferred::is_expr)
+            }
+            super::ShaderUniformValue::Number(_) | super::ShaderUniformValue::Color { .. } => false,
+        })
+    }
 
     fn eval_deferred(
         deferred: &Deferred<Self>,

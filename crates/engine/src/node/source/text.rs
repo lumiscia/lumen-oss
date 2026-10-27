@@ -348,6 +348,7 @@ impl GpuCompiledNode for CompiledText {
         }
 
         let dropping = prepared.dropped_glyphs > 0;
+        bound.text_dropped_glyphs |= dropping;
         if dropping != state.dropping_glyphs {
             if dropping {
                 tracing::warn!(

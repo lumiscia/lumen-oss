@@ -1580,7 +1580,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Aliases a raster input through a stable cache boundary.",
+            "description": "Renders its source again only when `key` changes.",
             "properties": {
               "id": {
                 "type": "integer"
@@ -1588,36 +1588,19 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
-                  "allow_expressions": {
+                  "key": {
                     "anyOf": [
                       {
-                        "type": "boolean"
+                        "type": "number"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
-                    "default": false,
-                    "description": "Allows property expressions to be evaluated across this memo boundary.",
-                    "title": "Allow Expressions",
-                    "x-lumen-kind": "bool"
-                  },
-                  "cache_id": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": "",
-                    "description": "Stable cache identifier for this memo boundary.",
-                    "title": "Cache key",
-                    "x-lumen-constraints": {
-                      "role": "cache_id"
-                    },
-                    "x-lumen-kind": "string"
+                    "default": 0.0,
+                    "description": "Expression whose value decides when the source renders again: while it evaluates to the\nsame value as on the frame last rendered, the memo shows that frame's output and its\nsource is not rendered. A literal key adds nothing to the caching every node without\nframe-dependent params already gets.",
+                    "title": "Key",
+                    "x-lumen-kind": "float"
                   }
                 },
                 "type": "object"

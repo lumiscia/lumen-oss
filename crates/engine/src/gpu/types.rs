@@ -88,6 +88,7 @@ pub trait GpuCompiledNode: std::fmt::Debug + Send + Sync {
 #[derive(Debug)]
 pub struct CompiledComposition {
     pub plan: lumen_gpu::RenderPlan,
+    pub(crate) cache: super::cache::CacheLayout,
     pub(crate) text_atlas_texture: Option<lumen_gpu::TextureId>,
     pub(crate) text_atlas: std::sync::Arc<std::sync::Mutex<lumen_text::GlyphAtlas>>,
     pub output: RasterHandle,
@@ -145,6 +146,8 @@ pub(super) fn create_text_atlas_texture(
 #[derive(Debug, Clone, Default)]
 pub struct BoundFrame {
     pub(crate) renderer_binding: Option<(u64, super::renderer::CompiledPlanKey)>,
+    /// Which nodes were bound, when bound against a renderer's kept output.
+    pub(crate) cache: Option<super::cache::BoundCache>,
     buffer_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
     texture_uploads: Vec<TextureUpload>,
     media_textures: Vec<MediaTextureUpload>,
@@ -152,6 +155,8 @@ pub struct BoundFrame {
     pub(crate) text_atlas_frame: u64,
     pub(crate) text_generation_count: usize,
     pub(crate) text_generation_ms: f64,
+    /// Whether text dropped glyphs that a later frame with more atlas room may draw.
+    pub(crate) text_dropped_glyphs: bool,
 }
 
 #[derive(Debug, Clone)]
