@@ -16,12 +16,12 @@
 //!   holds, instances that only it reaches are neither bound nor dispatched.
 //!
 //! A memo's snapshot belongs to the renderer rather than to a plan: it is identified by the memo
-//! node and its time-remap path, and holds while the key keeps its value and the composition
-//! around the memo's source keeps its signature (the canvas, timeline and every node the source
-//! reaches, whichever a switch selects). A plan bound with a held key that does not have the
-//! snapshot yet copies it from a plan that does. Snapshots live in their plans' textures, so they
-//! count against the plan cache budget; once every plan holding one is evicted or recompiled, the
-//! next frame renders the source again and takes a new snapshot.
+//! node and its time-remap path, and holds only across frames of the exact composition it was
+//! taken from, as fingerprinted by `composition_fingerprint`, and while the key keeps its value.
+//! A plan bound with a held key that does not have the snapshot yet copies it from a plan that
+//! does. Snapshots live in their plans' textures, so they count against the plan cache budget;
+//! once every plan holding one is evicted or recompiled, the next frame renders the source again
+//! and takes a new snapshot.
 //!
 //! Compiled nodes bind the params they were compiled with, so a plan's static instances bind the
 //! same values whatever edits the composition gets until it is compiled again. The epoch hashes
@@ -34,13 +34,13 @@
 //! texture, nothing is kept but memo snapshots, whose sources are then bound and dispatched every
 //! frame.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::Hasher;
 
 use crate::{
     composition::Composition,
     gpu::TimeRemapPath,
-    node::{NodeId, NodeKind, PortRef},
+    node::{NodeId, NodeKind},
 };
 
 /// A memo node reached through one time-remap path.
@@ -129,14 +129,12 @@ impl CacheRecorder {
         texture: lumen_gpu::TextureId,
         bounds: Option<lumen_gpu::BufferId>,
         copy_pass: lumen_gpu::PassId,
-        signature: u64,
     ) {
         if let Some(&instance) = self.stack.last() {
             self.memos.push(MemoRecord {
                 instance,
                 memo: LayoutMemo {
                     id: (self.node_ids[instance], path.clone()),
-                    signature,
                     texture,
                     bounds,
                     copy_pass: copy_pass.0 as usize,
@@ -298,40 +296,32 @@ fn is_static_candidate(node: &NodeKind) -> bool {
     }
 }
 
-/// Identifies what a memo reading `source` renders: the canvas, the timeline and every node
-/// the source reaches through any input.
-pub(crate) fn source_signature(composition: &Composition, source: &PortRef) -> u64 {
-    let nodes = &composition.graph.nodes;
-    let mut reached = HashSet::new();
-    let mut pending = vec![source.id];
-    while let Some(id) = pending.pop() {
-        if reached.insert(id)
-            && let Some(node) = nodes.get(&id)
-        {
-            pending.extend(node.input_ports().into_iter().map(|port| port.id));
+/// Identifies the exact content of a composition: its canvas, timeline, connections and every
+/// node's params, literal values and expression sources.
+pub(crate) fn composition_fingerprint(composition: &Composition) -> u64 {
+    use std::fmt::Write;
+
+    // Debug output spells out every param, expression and input.
+    struct HashWriter(std::hash::DefaultHasher);
+    impl Write for HashWriter {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.write(text.as_bytes());
+            Ok(())
         }
     }
-    let mut reached = reached.into_iter().collect::<Vec<_>>();
-    reached.sort_unstable_by_key(|id| id.0);
-    let mut hasher = std::hash::DefaultHasher::new();
-    let settings = &composition.render_settings;
-    let timeline = &composition.timeline;
-    std::hash::Hash::hash(
-        &(
-            &source.port,
-            settings.width,
-            settings.height,
-            settings.background_color,
-            timeline.fps.to_bits(),
-            timeline.duration_frames,
-        ),
-        &mut hasher,
+
+    let mut nodes = composition.graph.nodes.iter().collect::<Vec<_>>();
+    nodes.sort_unstable_by_key(|(id, _)| id.0);
+    let mut out = HashWriter(std::hash::DefaultHasher::new());
+    let _ = write!(
+        out,
+        "{:?}{:?}{:?}",
+        composition.render_settings, composition.timeline, composition.graph.connections
     );
-    for id in reached {
-        // Debug output spells out every param, expression and input.
-        std::hash::Hash::hash(&(id.0, format!("{:?}", nodes.get(&id))), &mut hasher);
+    for (id, node) in nodes {
+        let _ = write!(out, "{}{:?}", id.0, node);
     }
-    hasher.finish()
+    out.0.finish()
 }
 
 /// A plan's instances and which of their output can be kept across frames.
@@ -353,8 +343,6 @@ pub(crate) struct CacheLayout {
 #[derive(Debug, Clone)]
 pub(crate) struct LayoutMemo {
     pub(crate) id: MemoId,
-    /// `source_signature` of the memo's source when the plan was compiled.
-    pub(crate) signature: u64,
     pub(crate) texture: lumen_gpu::TextureId,
     pub(crate) bounds: Option<lumen_gpu::BufferId>,
     copy_pass: usize,
@@ -372,6 +360,10 @@ impl CacheLayout {
     /// Whether passes may be skipped for instances that were not bound.
     pub(crate) fn enabled(&self) -> bool {
         !self.pass_owners.is_empty()
+    }
+
+    pub(crate) fn has_memos(&self) -> bool {
+        !self.memos.is_empty()
     }
 
     pub(crate) fn is_keyed_memo(&self, instance: usize) -> bool {
@@ -412,7 +404,8 @@ pub(crate) struct MemoSnapshots(HashMap<MemoId, MemoSnapshot>);
 #[derive(Debug)]
 struct MemoSnapshot {
     key: u64,
-    signature: u64,
+    /// `composition_fingerprint` of the composition the snapshot was taken from.
+    fingerprint: u64,
     /// The plans whose memo texture holds the snapshot, with the epoch they copied it at.
     holders: HashMap<u64, u64>,
 }
@@ -432,10 +425,7 @@ impl MemoSnapshots {
             .memos
             .iter()
             .filter_map(|(instance, memo)| {
-                let snapshot = self
-                    .0
-                    .get(&memo.id)
-                    .filter(|snapshot| snapshot.signature == memo.signature)?;
+                let snapshot = self.0.get(&memo.id)?;
                 let from = if snapshot.holders.get(&plan) == Some(&epoch) {
                     None
                 } else {
@@ -458,6 +448,16 @@ impl MemoSnapshots {
 
     pub(crate) fn clear(&mut self) {
         self.0.clear();
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Drops the snapshots taken from any composition but the one with `fingerprint`.
+    pub(crate) fn retain_composition(&mut self, fingerprint: u64) {
+        self.0
+            .retain(|_, snapshot| snapshot.fingerprint == fingerprint);
     }
 }
 
@@ -564,16 +564,20 @@ impl CacheState {
                     memo.id.clone(),
                     MemoSnapshot {
                         key: *key,
-                        signature: memo.signature,
+                        fingerprint: bound.fingerprint,
                         holders: HashMap::from([(self.plan, bound.epoch)]),
                     },
                 );
-            } else if let Some(snapshot) = snapshots.0.get_mut(&memo.id) {
-                snapshot.holders.remove(&self.plan);
+            } else {
+                // The source was copied here under a new key and nothing retains it, so no
+                // plan's copy of the previous snapshot may be shown again.
+                snapshots.0.remove(&memo.id);
             }
         }
         for (instance, _) in &bound.adopted {
-            if let Some(snapshot) = snapshots.0.get_mut(&layout.memos[instance].id) {
+            if let Some(snapshot) = snapshots.0.get_mut(&layout.memos[instance].id)
+                && snapshot.fingerprint == bound.fingerprint
+            {
                 snapshot.holders.insert(self.plan, bound.epoch);
             }
         }
@@ -584,6 +588,8 @@ impl CacheState {
 #[derive(Debug, Clone)]
 pub(crate) struct BoundCache {
     epoch: u64,
+    /// `composition_fingerprint` of the composition the frame was bound from.
+    fingerprint: u64,
     bound: Vec<bool>,
     /// Keyed memos that copy their source this frame, with their key.
     refreshed: Vec<(usize, u64)>,
@@ -619,6 +625,7 @@ impl<'a> BindCache<'a> {
         layout: &'a CacheLayout,
         state: &'a CacheState,
         epoch: u64,
+        fingerprint: u64,
         held: HashMap<usize, HeldMemo>,
     ) -> Self {
         Self {
@@ -628,6 +635,7 @@ impl<'a> BindCache<'a> {
             held,
             bound: BoundCache {
                 epoch,
+                fingerprint,
                 bound: vec![false; layout.instance_count()],
                 refreshed: Vec::new(),
                 adopted: Vec::new(),

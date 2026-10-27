@@ -288,18 +288,16 @@ impl<'a> CompileContext<'a> {
         &mut self.builder
     }
 
-    /// Records a keyed memo reading `source`: its texture, the bounds buffer copied with it and
-    /// the pass copying the source into them.
+    /// Records a keyed memo: its texture, the bounds buffer copied with it and the pass copying
+    /// its source into them.
     pub(crate) fn record_memo(
         &mut self,
         texture: lumen_gpu::TextureId,
         bounds: Option<lumen_gpu::BufferId>,
         copy: lumen_gpu::PassId,
-        source: &PortRef,
     ) {
-        let signature = super::cache::source_signature(self.composition, source);
         self.cache
-            .record_memo(&self.time_remaps, texture, bounds, copy, signature);
+            .record_memo(&self.time_remaps, texture, bounds, copy);
     }
 
     /// Whether `texture` holds a keyed memo's copy, which only its memo may write.

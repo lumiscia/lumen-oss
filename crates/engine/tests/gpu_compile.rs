@@ -10201,3 +10201,124 @@ fn memo_holds_sources_that_publish_raster_bounds() {
         }
     }
 }
+
+fn render_rgba8_at(
+    renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+    composition: &Composition,
+    frame: f64,
+) -> Vec<u8> {
+    let raster = renderer
+        .render_frame_at(composition, frame, &EmptyMediaStore)
+        .unwrap();
+    read_rgba8(renderer.gpu_renderer(), raster)
+}
+
+fn keyed_memo(id: u64, source: u64, key: &str) -> NodeKind {
+    NodeKind::Memo(Memo {
+        id: NodeId::new(id),
+        params: MemoParamsDelegate {
+            key: expression(key),
+        },
+        source: PortRef::new(NodeId::new(source), "output".to_string()),
+    })
+}
+
+#[test]
+fn memo_snapshots_do_not_survive_composition_edits() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut composition = cache_composition(vec![
+        square(
+            NodeId::new(99),
+            Deferred::value((0.0, 0.0)),
+            4,
+            [0, 255, 0, 255],
+        ),
+        square(
+            NodeId::new(1),
+            expression("vec2(node(99, 'width'), 0)"),
+            4,
+            [255, 0, 0, 255],
+        ),
+        keyed_memo(2, 1, "0 + frame * 0"),
+        output_node(NodeId::new(3), 2),
+    ]);
+    let before = render_rgba8_at(&mut renderer, &composition, 0.0);
+    let NodeKind::Shape(shape) = composition.graph.nodes.get_mut(&NodeId::new(99)).unwrap() else {
+        unreachable!();
+    };
+    shape.params.width = Deferred::value(16);
+    let mut fresh = gpu_composition_renderer().unwrap();
+    let expected = render_rgba8_at(&mut fresh, &composition, 0.0);
+    assert!(expected != before, "the edit moves the square");
+    // The existing plan, then a plan compiled for a fractional frame.
+    for frame in [1.0, 0.5] {
+        assert!(
+            render_rgba8_at(&mut renderer, &composition, frame) == expected,
+            "frame {frame} shows the edited composition"
+        );
+    }
+}
+
+#[test]
+fn memo_snapshot_dropped_with_its_key_change_is_not_shown_again() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    // Frame 1 places more glyphs than the atlas holds, so its frame is not kept.
+    let mut composition = memo_shader_composition(Some("floor(frame) % 2"));
+    composition.graph.nodes.insert(
+        NodeId::new(5),
+        NodeKind::Text(Text {
+            id: NodeId::new(5),
+            params: TextParamsDelegate {
+                content: expression(&format!(
+                    "if(floor(frame) % 2 == 1, '{}', 'W')",
+                    "W".repeat(3000)
+                )),
+                font_size: Deferred::value(12.0),
+                scale: Deferred::value((0.001, 0.001)),
+                position: Deferred::value((30.0, 10.0)),
+                render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
+                ..Default::default()
+            },
+        }),
+    );
+    composition
+        .graph
+        .nodes
+        .insert(NodeId::new(6), multimerge(NodeId::new(6), &[2, 5]));
+    composition
+        .graph
+        .nodes
+        .insert(NodeId::new(3), output_node(NodeId::new(3), 6));
+    let plain = memo_shader_composition(None);
+    // Frames 0 and 0.5 are bound to different plans, each holding key 0.
+    for frame in [0.0, 0.5, 1.0, 2.0] {
+        let pixels = render_rgba8_at(&mut renderer, &composition, frame);
+        let expected = render_rgba8_at(&mut reference, &plain, frame.floor());
+        assert!(
+            pixels[..4] == expected[..4],
+            "frame {frame} shows the shader at frame {}",
+            frame.floor()
+        );
+    }
+}
+
+#[test]
+fn plan_cache_budget_keeps_the_plan_a_bound_frame_copies_from() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = memo_shader_composition(Some("frame * 0"));
+    let first = render_rgba8_at(&mut renderer, &composition, 0.0);
+    let bound = renderer
+        .bind_frame_at(&composition, 0.5, &EmptyMediaStore)
+        .unwrap();
+    renderer.set_plan_cache_budget(0);
+    let raster = renderer.submit_bound_frame(&bound).unwrap().0;
+    assert!(read_rgba8(renderer.gpu_renderer(), raster) == first);
+}

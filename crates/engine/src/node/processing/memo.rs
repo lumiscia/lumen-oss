@@ -143,7 +143,7 @@ impl GpuCompileNode for Memo {
         if let Some(bounds) = bounds {
             ctx.publish_raster_bounds(texture, bounds);
         }
-        ctx.record_memo(texture, bounds, copy, &self.source);
+        ctx.record_memo(texture, bounds, copy);
         Ok(CompiledOutput::Raster(RasterHandle { texture, ..source }))
     }
 }

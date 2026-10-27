@@ -9,7 +9,10 @@ use crate::{
     gpu::{
         BoundFrame, CompileContext, CompiledComposition, FrameBindContext, MediaTextureKey,
         RasterHandle, TimeRemapPath,
-        cache::{BindCache, CacheState, LayoutMemo, MemoSnapshots, skipped_count},
+        cache::{
+            BindCache, CacheState, LayoutMemo, MemoSnapshots, composition_fingerprint,
+            skipped_count,
+        },
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
@@ -117,6 +120,9 @@ pub struct GpuCompositionRenderer {
     cached_pass_count: u64,
     /// Memo snapshots, which outlive the plan that took them while another plan holds a copy.
     memo_snapshots: MemoSnapshots,
+    /// Plans the latest bound frame copies memo snapshots from, which stay cached until it is
+    /// submitted or another frame is bound.
+    pinned_plans: Vec<u64>,
     /// Prepared plans so far, which identifies each among the cached plans.
     prepared_plan_count: u64,
     bind_sequence: u64,
@@ -158,6 +164,7 @@ impl GpuCompositionRenderer {
             submitted_pass_count: 0,
             cached_pass_count: 0,
             memo_snapshots: MemoSnapshots::default(),
+            pinned_plans: Vec::new(),
             prepared_plan_count: 0,
             bind_sequence: 0,
             text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
@@ -396,7 +403,10 @@ impl GpuCompositionRenderer {
             let Some(key) = self
                 .compiled_plans
                 .iter()
-                .filter(|(key, _)| !pinned.contains(&Some(*key)))
+                .filter(|(key, prepared)| {
+                    !pinned.contains(&Some(*key))
+                        && !self.pinned_plans.contains(&prepared.cache.plan())
+                })
                 .min_by_key(|(_, prepared)| prepared.last_used)
                 .map(|(key, _)| key.clone())
             else {
@@ -560,6 +570,14 @@ impl GpuCompositionRenderer {
         let mut bound = loop {
             let generation = text_font_generation();
             self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
+            let fingerprint = if self.active_prepared()?.compiled.cache.has_memos()
+                || !self.memo_snapshots.is_empty()
+            {
+                composition_fingerprint(composition)
+            } else {
+                0
+            };
+            self.memo_snapshots.retain_composition(fingerprint);
             let prepared = self.active_prepared()?;
             let layout = &prepared.compiled.cache;
             let epoch = layout.epoch(&prepared.renderer);
@@ -572,7 +590,13 @@ impl GpuCompositionRenderer {
             let bound = FrameBindContext::with_media_at(composition, frame, media)
                 .bind_with_cache(
                     &prepared.compiled,
-                    Some(BindCache::new(layout, &prepared.cache, epoch, held)),
+                    Some(BindCache::new(
+                        layout,
+                        &prepared.cache,
+                        epoch,
+                        fingerprint,
+                        held,
+                    )),
                 )?;
             if text_font_generation() == generation {
                 break bound;
@@ -588,6 +612,11 @@ impl GpuCompositionRenderer {
             rebinds += 1;
         };
         bound.renderer_binding = self.active_key.clone().map(|key| (self.bind_sequence, key));
+        self.pinned_plans = bound
+            .cache
+            .iter()
+            .flat_map(|cache| cache.adopted().iter().map(|(_, plan)| *plan))
+            .collect();
         Ok(bound)
     }
 
@@ -658,8 +687,7 @@ impl GpuCompositionRenderer {
             .find(|prepared| prepared.cache.plan() == plan)?;
         let source = from.compiled.cache.memo_by_id(&memo.id)?;
         let desc = from.renderer.texture_desc(source.texture)?;
-        if source.signature != memo.signature
-            || Some(desc) != to.renderer.texture_desc(memo.texture)
+        if Some(desc) != to.renderer.texture_desc(memo.texture)
             || source.bounds.is_some() != memo.bounds.is_some()
         {
             return None;
@@ -947,6 +975,10 @@ impl GpuCompositionRenderer {
             .submitted(&prepared.compiled.cache, &mut self.memo_snapshots);
         self.submitted_pass_count += passes;
         self.cached_pass_count += skipped;
+        if !std::mem::take(&mut self.pinned_plans).is_empty() {
+            let active = self.active_key.clone();
+            self.evict_over_budget(&[active.as_ref()]);
+        }
     }
 
     pub fn gpu_renderer(&self) -> &lumen_gpu::Renderer {
