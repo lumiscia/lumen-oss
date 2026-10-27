@@ -1,5 +1,6 @@
 use super::drawable::{DeferredTransform, DrawableMotion, DrawableTransform};
 use super::paint::Paint;
+use super::path::PathFrame;
 use super::renderer::{
     MAX_PATH_POINTS, PathBuffers, PathUniforms, ShapeUniforms, VectorRenderer, style_flags,
 };
@@ -145,6 +146,8 @@ pub(crate) struct CompiledShape {
     pub(crate) node_id: NodeId,
     pub(crate) params: ShapeParamsDelegate,
     pub(crate) buffer: lumen_gpu::BufferId,
+    /// Canvas pixel of the output's first texel.
+    pub(crate) origin: [i32; 2],
 }
 
 impl GpuCompiledNode for CompiledShape {
@@ -153,16 +156,41 @@ impl GpuCompiledNode for CompiledShape {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let expr = ctx.expr_context(self.node_id, "params");
-        let evaluated = self.params.eval(&NodeParamEvalContext {
-            node_id: self.node_id,
-            expr: &expr,
-        })?;
-        let shutter = shape_shutter(&self.params, &evaluated, self.node_id, &expr)?;
-        let params = shape_uniforms(&evaluated, shutter.as_ref());
+        let mut params = shape_frame(
+            &self.params,
+            self.node_id,
+            &ctx.expr_context(self.node_id, "params"),
+        )?;
+        params.origin = self.origin;
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
     }
+}
+
+/// Evaluates a rectangle or ellipse shape's uniforms at the frame of `expr`.
+pub(super) fn shape_frame(
+    params: &ShapeParamsDelegate,
+    node_id: NodeId,
+    expr: &crate::expr::ExpressionContext<'_>,
+) -> crate::Result<ShapeUniforms> {
+    let evaluated = params.eval(&NodeParamEvalContext { node_id, expr })?;
+    let shutter = shape_shutter(params, &evaluated, node_id, expr)?;
+    Ok(shape_uniforms(&evaluated, shutter.as_ref()))
+}
+
+/// Whether a shape's canvas bounds may change between frames.
+pub(super) fn shape_is_animated(params: &ShapeParamsDelegate) -> bool {
+    params.width.is_expr()
+        || params.height.is_expr()
+        || params.polygon_points.is_expr()
+        || params.position.is_expr()
+        || params.scale.is_expr()
+        || params.rotation.is_expr()
+        || params.anchor.is_expr()
+        || params.motion_blur.is_expr()
+        || params.fill_enabled.is_expr()
+        || params.stroke_enabled.is_expr()
+        || params.stroke_width.is_expr()
 }
 
 #[derive(Debug, Clone)]
@@ -178,50 +206,61 @@ impl GpuCompiledNode for CompiledPolygonShape {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let expr = ctx.expr_context(self.node_id, "params");
-        let evaluated = self.params.eval(&NodeParamEvalContext {
-            node_id: self.node_id,
-            expr: &expr,
-        })?;
-        // Invalid or incomplete point lists draw nothing, so editing the field never fails the frame.
-        let vertices = parse_polygon_points(&evaluated.polygon_points).unwrap_or_default();
-        if vertices.len() > self.buffers.point_capacity {
-            return Err(RenderError::NodeEvaluation {
-                frame: ctx.frame(),
-                node_id: self.node_id,
-                node_kind: "Shape",
-                details: format!(
-                    "polygon has more than {} points",
-                    self.buffers.point_capacity
-                ),
-            }
-            .into());
-        }
-        let points = super::path::closed_contour(&vertices);
-        let (x, y) = evaluated.position;
-        let params = PathUniforms {
-            fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
-            stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
-            position: [x as f32, y as f32],
-            bounds_min: super::path::bounds_min(&points),
-            bounds_size: super::path::bounds_size(&points),
-            stroke_width: evaluated.stroke_width as f32,
-            flags: shape_flags(&evaluated),
-            point_count: points.len() as u32,
-            trim_start: 0.0,
-            trim_end: 1.0,
-            ..bytemuck::Zeroable::zeroed()
-        };
-        let shutter = shape_shutter(&self.params, &evaluated, self.node_id, &expr)?;
-        self.buffers.write(
-            bound,
-            params,
-            &points,
-            &drawable_transform(&evaluated),
-            shutter.as_ref(),
-        );
+        let frame = polygon_frame(
+            &self.params,
+            self.node_id,
+            &ctx.expr_context(self.node_id, "params"),
+            self.buffers.point_capacity,
+            self.buffers.band_capacity,
+        )?;
+        self.buffers.write(bound, &frame);
         Ok(())
     }
+}
+
+/// Evaluates a polygon shape's uniforms, points and bands at the frame of `expr`.
+pub(super) fn polygon_frame(
+    params: &ShapeParamsDelegate,
+    node_id: NodeId,
+    expr: &crate::expr::ExpressionContext<'_>,
+    point_capacity: usize,
+    band_capacity: usize,
+) -> crate::Result<PathFrame> {
+    let evaluated = params.eval(&NodeParamEvalContext { node_id, expr })?;
+    // Invalid or incomplete point lists draw nothing, so editing the field never fails the frame.
+    let vertices = parse_polygon_points(&evaluated.polygon_points).unwrap_or_default();
+    if vertices.len() > point_capacity {
+        return Err(RenderError::NodeEvaluation {
+            frame: expr.frame as u32,
+            node_id,
+            node_kind: "Shape",
+            details: format!("polygon has more than {point_capacity} points"),
+        }
+        .into());
+    }
+    let points = super::path::closed_contour(&vertices);
+    let (x, y) = evaluated.position;
+    let uniforms = PathUniforms {
+        fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
+        stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
+        position: [x as f32, y as f32],
+        bounds_min: super::path::bounds_min(&points),
+        bounds_size: super::path::bounds_size(&points),
+        stroke_width: evaluated.stroke_width as f32,
+        flags: shape_flags(&evaluated),
+        point_count: points.len() as u32,
+        trim_start: 0.0,
+        trim_end: 1.0,
+        ..bytemuck::Zeroable::zeroed()
+    };
+    let shutter = shape_shutter(params, &evaluated, node_id, expr)?;
+    Ok(PathFrame::new(
+        uniforms,
+        points,
+        &drawable_transform(&evaluated),
+        shutter.as_ref(),
+        band_capacity,
+    ))
 }
 
 fn shape_uniforms(
@@ -257,6 +296,8 @@ fn shape_uniforms(
         flags: if empty { 0 } else { shape_flags(params) },
         transform,
         screen_bounds: [min_x - 1.0, min_y - 1.0, max_x + 1.0, max_y + 1.0],
+        origin: [0, 0],
+        _origin_pad: [0, 0],
         motion: motion.to_gpu(),
     }
 }

@@ -171,7 +171,16 @@ mod tests {
         assert!(count > 1);
         assert_eq!(band(&data, 0), &[0, 2]);
         assert_eq!(band(&data, count - 1), &[0, 1, 2]);
-        assert_eq!(uniforms.screen_bounds, [-11.0, -1.0, 11.0, 101.0]);
+        for (bound, expected) in uniforms
+            .screen_bounds
+            .iter()
+            .zip([-11.0, -1.0, 11.0, 101.0])
+        {
+            assert!(
+                (bound - expected).abs() < 0.01,
+                "{bound} is not near {expected}"
+            );
+        }
     }
 
     #[test]

@@ -2,13 +2,13 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::{
     gpu::{CompiledOutput, RasterHandle, RasterMetadata, compiler},
-    node::{Deferred, NodeId, PortRef},
+    node::{Deferred, NodeId, NodeParams, PortRef},
 };
 
 use crate::node::source::text::{CompiledText, GlyphParams, Text, TextState};
 
 use super::{
-    drawable::{GpuDrawableMotion, GpuDrawableTransform},
+    drawable::{DrawableTransform, GpuDrawableMotion, GpuDrawableTransform},
     path::{CompiledPath, Path},
     shape::{CompiledPolygonShape, CompiledShape, Shape},
 };
@@ -82,6 +82,18 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         shape: &Shape,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
+        let bounds = self.ctx.source_bounds(
+            shape.id,
+            compiler::SourceMotion::of(
+                super::shape::shape_is_animated(&shape.params),
+                &shape.params,
+            ),
+            |expr| {
+                super::shape::shape_frame(&shape.params, shape.id, expr)
+                    .map(|uniforms| Some(uniforms.screen_bounds))
+            },
+        );
+        let domain = self.ctx.source_domain(bounds);
         let source = self.compile_vector_source(
             shape.id,
             port,
@@ -89,11 +101,13 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             SHAPE_SHADER,
             std::mem::size_of::<ShapeUniforms>(),
             &[],
+            domain,
         )?;
         self.ctx.register_compiled_node(CompiledShape {
             node_id: shape.id,
             params: shape.params.clone(),
             buffer: source.params,
+            origin: domain_origin(domain),
         });
         Ok(source.output)
     }
@@ -104,7 +118,21 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
         let point_capacity = super::path::point_capacity(&path.params.data, &path.params.scale);
-        let (output, buffers) = self.compile_path_source(path.id, port, "path", point_capacity)?;
+        // Opacity only hides what is drawn, so it is left out of the bounds.
+        let opaque = super::path::PathParamsDelegate {
+            opacity: Deferred::value(1.0),
+            ..path.params.clone()
+        };
+        let (output, buffers) = self.compile_path_source(
+            path.id,
+            port,
+            "path",
+            point_capacity,
+            compiler::SourceMotion::of(super::path::path_is_animated(&path.params), &path.params),
+            |expr, point_capacity, band_capacity| {
+                super::path::path_frame(&opaque, path.id, expr, point_capacity, band_capacity)
+            },
+        )?;
         self.ctx.register_compiled_node(CompiledPath {
             node_id: path.id,
             params: path.params.clone(),
@@ -120,8 +148,24 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
         let point_capacity = super::shape::polygon_point_capacity(&shape.params.polygon_points);
-        let (output, buffers) =
-            self.compile_path_source(shape.id, port, "shape", point_capacity)?;
+        // Opacity only hides what is drawn, so it is left out of the bounds.
+        let opaque = super::shape::ShapeParamsDelegate {
+            opacity: Deferred::value(1.0),
+            ..shape.params.clone()
+        };
+        let (output, buffers) = self.compile_path_source(
+            shape.id,
+            port,
+            "shape",
+            point_capacity,
+            compiler::SourceMotion::of(
+                super::shape::shape_is_animated(&shape.params),
+                &shape.params,
+            ),
+            |expr, point_capacity, band_capacity| {
+                super::shape::polygon_frame(&opaque, shape.id, expr, point_capacity, band_capacity)
+            },
+        )?;
         self.ctx.register_compiled_node(CompiledPolygonShape {
             node_id: shape.id,
             params: shape.params.clone(),
@@ -130,15 +174,32 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         Ok(output)
     }
 
+    /// Compiles a source rasterized by the path shader, sized to the screen bounds that
+    /// `frame_at` gives over the frames it may draw.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the path and polygon sources share every input but how a frame is evaluated"
+    )]
     fn compile_path_source(
         &mut self,
         node_id: NodeId,
         port: &PortRef,
         label: &str,
         point_capacity: usize,
+        motion: compiler::SourceMotion,
+        frame_at: impl Fn(
+            &crate::expr::ExpressionContext<'_>,
+            usize,
+            usize,
+        ) -> crate::Result<super::path::PathFrame>,
     ) -> crate::Result<(CompiledOutput, PathBuffers)> {
         let point_capacity = point_capacity.max(1);
         let band_capacity = super::path_bands::band_capacity(point_capacity);
+        let bounds = self.ctx.source_bounds(node_id, motion, |expr| {
+            frame_at(expr, point_capacity, band_capacity)
+                .map(|frame| Some(frame.uniforms.screen_bounds))
+        });
+        let domain = self.ctx.source_domain(bounds);
         let source = self.compile_vector_source(
             node_id,
             port,
@@ -152,6 +213,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 ),
                 ("bands", (band_capacity * std::mem::size_of::<u32>()) as u64),
             ],
+            domain,
         )?;
         let [points, bands] = source.storage[..] else {
             unreachable!("a path source has points and bands buffers");
@@ -164,6 +226,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 bands,
                 point_capacity,
                 band_capacity,
+                origin: domain_origin(domain),
             },
         ))
     }
@@ -177,15 +240,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             return Err(self.ctx.missing_output(text.id, &port.port));
         }
 
-        let size = lumen_gpu::Size::new(
-            self.ctx.composition().render_settings.width.max(1),
-            self.ctx.composition().render_settings.height.max(1),
-        );
-        let texture = self.ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(text.id.0),
-            Some(format!("text:{}:output", text.id.0)),
-            lumen_gpu::TextureDesc::render_target(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
-        );
+        let size = self.ctx.canvas_size();
         // Text that may move during the shutter is drawn still to a layer first, which is
         // then smeared over the shutter's taps into the output. Text with motion blur
         // constantly off, or whose transform is constant, is drawn to the output directly.
@@ -197,6 +252,29 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             && matches!(params.scale, Deferred::Value(_))
             && matches!(params.rotation, Deferred::Value(_))
             && matches!(params.anchor, Deferred::Value(_)));
+        let bounds = if blurred {
+            None
+        } else {
+            self.text_bounds(text)
+        };
+        let domain = self.ctx.source_domain(bounds);
+        let texture = self.ctx.builder_mut().texture_for(
+            lumen_gpu::NodeKey(text.id.0),
+            Some(format!("text:{}:output", text.id.0)),
+            lumen_gpu::TextureDesc::render_target(
+                domain.storage_size,
+                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .with_domain(domain),
+        );
+        // Glyphs are placed in canvas pixels, so a bounded output sees the canvas through a
+        // viewport offset to its origin.
+        let viewport = (!domain.is_full_frame()).then(|| lumen_gpu::Viewport {
+            x: -domain.data_rect.x as f32,
+            y: -domain.data_rect.y as f32,
+            width: size.width as f32,
+            height: size.height as f32,
+        });
         let layer_size = if blurred {
             let fit =
                 |canvas: u32| (canvas * TEXT_LAYER_SCALE).min(MAX_TEXTURE_DIMENSION.max(canvas));
@@ -294,8 +372,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             lumen_gpu::Binding::storage_buffer(0, 3, instances_buffer),
             lumen_gpu::Binding::uniform(0, 4, paint_buffer),
         ];
-        let text_pass =
-            |label: &str, program, target, load, bindings, draw| lumen_gpu::RenderPassDesc {
+        let text_pass = |label: &str, program, target, load, bindings, draw, viewport| {
+            lumen_gpu::RenderPassDesc {
                 label: Some(format!("text:{}:{label}", text.id.0)),
                 owner: Some(lumen_gpu::NodeKey(text.id.0)),
                 program,
@@ -309,7 +387,9 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 index_buffer: None,
                 draw: lumen_gpu::DrawCommand::Draw(draw),
                 scissor: None,
-            };
+                viewport,
+            }
+        };
         let fullscreen = lumen_gpu::Draw {
             vertices: 0..3,
             instances: 0..1,
@@ -334,6 +414,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 vertices: 0..6,
                 instances: 0..MAX_TEXT_GLYPHS as u32,
             },
+            viewport,
         ));
         if let Some(layer) = layer {
             let program = self.ctx.builder_mut().program_for(
@@ -355,6 +436,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 lumen_gpu::LoadOp::Clear(lumen_gpu::wgpu::Color::TRANSPARENT),
                 bindings,
                 fullscreen.clone(),
+                None,
             ));
         }
         // Fading the composited layer keeps overlapping glyphs from doubling up. Fully
@@ -385,6 +467,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 lumen_gpu::LoadOp::Load,
                 bindings,
                 fullscreen,
+                None,
             ));
         }
         let mut params = text.params.clone();
@@ -405,13 +488,111 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
 
         Ok(CompiledOutput::Raster(RasterHandle {
             texture,
-            domain: lumen_gpu::TextureDomain::full_frame(size),
+            domain,
             metadata: RasterMetadata::default(),
         }))
     }
 
-    /// Compiles the compute pass shared by all vector rasterizers. Each of `storage`
-    /// binds a read-only storage buffer of that name and size, after the uniforms.
+    /// The canvas pixels unblurred text may draw to, or `None` when it should fill the
+    /// canvas: the ink of its glyphs, as the font that will draw it measures them.
+    ///
+    /// Only text whose layout is constant and whose paint is a solid colour is bounded: its
+    /// paint is evaluated at the pixel it is drawn to, which a viewport offset moves. Text in a
+    /// font that the media store has not resolved is not bounded either, since the font drawn
+    /// later may be wider than the one measured here.
+    fn text_bounds(&self, text: &Text) -> Option<lumen_gpu::RectI> {
+        let params = &text.params;
+        if !matches!(params.color, super::paint::PaintDelegate::SolidColor(..))
+            || params.content.is_expr()
+            || params.font_family.is_expr()
+            || params.font_size.is_expr()
+            || params.font_weight.is_expr()
+            || params.max_width.is_expr()
+            || params.letter_spacing.is_expr()
+            || params.line_height.is_expr()
+        {
+            return None;
+        }
+        let expr = self.ctx.expr_context(text.id, "params");
+        let evaluated = params
+            .eval(&crate::node::NodeParamEvalContext {
+                node_id: text.id,
+                expr: &expr,
+            })
+            .ok()?;
+        let mut request = crate::node::source::text::layout_request(
+            evaluated.content,
+            evaluated.font_family,
+            evaluated.font_size as f32,
+            evaluated.font_weight,
+            evaluated.font_style,
+            evaluated.max_width as f32,
+            evaluated.alignment_horizontal,
+        );
+        crate::node::source::text::apply_line_spacing(
+            &mut request,
+            evaluated.letter_spacing,
+            evaluated.line_height,
+        );
+        let family = request.font_family.as_str();
+        let resolved = self
+            .ctx
+            .media()
+            .is_some_and(|media| media.font_resolver_id(family).is_some());
+        if !resolved && !family.is_empty() && family != lumen_text::DEFAULT_FONT_FAMILY {
+            return None;
+        }
+        let (shaped, ink) = {
+            let mut text_system = crate::node::source::text::text_system().ok()?;
+            crate::node::source::text::load_font_family(
+                &mut text_system,
+                self.ctx.media(),
+                &request.font_family,
+            )
+            .ok()?;
+            let shaped = text_system.shape(&request);
+            let ink = text_system.ink_bounds(&shaped)?;
+            (shaped, ink)
+        };
+        let line_height = shaped.measurement.height;
+        let alignment = evaluated.alignment_vertical;
+        let animated = params.position.is_expr()
+            || params.scale.is_expr()
+            || params.rotation.is_expr()
+            || params.anchor.is_expr();
+        let motion = compiler::SourceMotion::of(animated, params);
+        self.ctx.source_bounds(text.id, motion, |expr| {
+            let position = params.position.eval(text.id, "position", expr)?;
+            let top = match alignment {
+                crate::node::source::text::TextAlignmentVertical::Top => position.1 as f32,
+                crate::node::source::text::TextAlignmentVertical::Middle => {
+                    position.1 as f32 - line_height * 0.5
+                }
+                crate::node::source::text::TextAlignmentVertical::Bottom => {
+                    position.1 as f32 - line_height
+                }
+            };
+            let min = [position.0 as f32 + ink[0], top + ink[1]];
+            let max = [position.0 as f32 + ink[2], top + ink[3]];
+            let transform = DrawableTransform {
+                position,
+                scale: params.scale.eval(text.id, "scale", expr)?,
+                rotation: params.rotation.eval(text.id, "rotation", expr)?,
+                anchor: params.anchor.eval(text.id, "anchor", expr)?,
+                opacity: 1.0,
+            };
+            let [x0, y0, x1, y1] = transform.to_gpu().canvas_bounds(min, max);
+            Ok(Some([x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0]))
+        })
+    }
+
+    /// Compiles the compute pass shared by all vector rasterizers, over the texels of
+    /// `domain`. Each of `storage` binds a read-only storage buffer of that name and size,
+    /// after the uniforms.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every vector rasterizer passes the same flat set of compile inputs"
+    )]
     fn compile_vector_source(
         &mut self,
         node_id: NodeId,
@@ -420,20 +601,19 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         shader: &str,
         uniforms_size: usize,
         storage: &[(&str, u64)],
+        domain: lumen_gpu::TextureDomain,
     ) -> crate::Result<VectorSource> {
         if port.port != "output" {
             return Err(self.ctx.missing_output(node_id, &port.port));
         }
 
-        let size = lumen_gpu::Size::new(
-            self.ctx.composition().render_settings.width.max(1),
-            self.ctx.composition().render_settings.height.max(1),
-        );
+        let size = domain.storage_size;
         let key = lumen_gpu::NodeKey(node_id.0);
         let texture = self.ctx.builder_mut().texture_for(
             key,
             Some(format!("{label}:{}:output", node_id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+                .with_domain(domain),
         );
         let params = self.ctx.builder_mut().buffer_for(
             key,
@@ -500,13 +680,18 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         Ok(VectorSource {
             output: CompiledOutput::Raster(RasterHandle {
                 texture,
-                domain: lumen_gpu::TextureDomain::full_frame(size),
+                domain,
                 metadata: RasterMetadata::default(),
             }),
             params,
             storage,
         })
     }
+}
+
+/// The canvas pixel of a domain's first texel.
+pub(crate) fn domain_origin(domain: lumen_gpu::TextureDomain) -> [i32; 2] {
+    [domain.data_rect.x, domain.data_rect.y]
 }
 
 struct VectorSource {
@@ -523,6 +708,8 @@ pub(crate) struct PathBuffers {
     pub(crate) bands: lumen_gpu::BufferId,
     pub(crate) point_capacity: usize,
     pub(crate) band_capacity: usize,
+    /// Canvas pixel of the output's first texel.
+    pub(crate) origin: [i32; 2],
 }
 
 #[repr(C)]
@@ -539,6 +726,9 @@ pub(crate) struct ShapeUniforms {
     pub(crate) transform: GpuDrawableTransform,
     /// Canvas-space `[min_x, min_y, max_x, max_y]` outside which nothing is drawn.
     pub(crate) screen_bounds: [f32; 4],
+    /// Canvas pixel of the output's first texel.
+    pub(crate) origin: [i32; 2],
+    pub(crate) _origin_pad: [i32; 2],
     pub(crate) motion: GpuDrawableMotion,
 }
 
@@ -566,6 +756,9 @@ pub(crate) struct PathUniforms {
     pub(crate) band_count: u32,
     /// Untransformed distance beyond which a segment cannot cover a pixel.
     pub(crate) reach: f32,
+    /// Canvas pixel of the output's first texel.
+    pub(crate) origin: [i32; 2],
+    pub(crate) _origin_pad: [i32; 2],
     pub(crate) motion: GpuDrawableMotion,
 }
 

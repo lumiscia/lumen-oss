@@ -932,7 +932,7 @@ fn render_mp4(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={}",
+        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={}",
         output.display(),
         total_frames,
         timings.audio_mix_ms,
@@ -944,6 +944,7 @@ fn render_mp4(
         timings.encode_send_ms,
         timings.encode_finish_ms,
         total_ms,
+        renderer.plan_cache_bytes(),
     );
     Ok(())
 }
@@ -1044,7 +1045,7 @@ fn render_video_gpu_videotoolbox(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={}",
+        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={}",
         output.display(),
         total_frames,
         timings.audio_mix_ms,
@@ -1055,6 +1056,7 @@ fn render_video_gpu_videotoolbox(
         timings.encode_send_ms,
         timings.encode_finish_ms,
         total_ms,
+        renderer.plan_cache_bytes(),
     );
     Ok(())
 }
@@ -1273,7 +1275,7 @@ fn render_video_gpu_vulkan(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={}",
+        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={}",
         output.display(),
         total_frames,
         timings.audio_mix_ms,
@@ -1284,6 +1286,7 @@ fn render_video_gpu_vulkan(
         timings.encode_send_ms,
         timings.encode_finish_ms,
         total_ms,
+        renderer.plan_cache_bytes(),
     );
     Ok(())
 }

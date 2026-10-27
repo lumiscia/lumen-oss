@@ -134,7 +134,7 @@ impl GpuCompileNode for ChannelShuffle {
             "channel-shuffle",
             SHADER,
             std::mem::size_of::<compiler::ChannelShuffleParams>() as u64,
-            None,
+            compiler::FilterDomain::FullFrame,
         )?;
         ctx.register_compiled_node(CompiledChannelShuffle {
             node_id: self.id,

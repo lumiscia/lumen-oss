@@ -114,6 +114,7 @@ fn builder_assigns_stable_ids_and_node_ownership() {
             width: 3,
             height: 4,
         }),
+        viewport: None,
     });
     let plan = builder.build();
 
@@ -174,6 +175,7 @@ fn plan_records_pass_order_across_render_compute_and_copy() {
             instances: 0..1,
         }),
         scissor: None,
+        viewport: None,
     });
     builder.copy_texture(CopyTextureDesc {
         label: Some("third".to_string()),

@@ -19,6 +19,10 @@ impl<T> Deferred<T> {
         Self::Value(value)
     }
 
+    pub fn is_expr(&self) -> bool {
+        matches!(self, Self::Expr(_))
+    }
+
     pub fn eval(
         &self,
         node_id: NodeId,

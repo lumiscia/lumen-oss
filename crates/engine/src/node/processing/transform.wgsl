@@ -16,6 +16,9 @@ struct TransformParams {
     sampling: u32,
     tap_count: u32,
     straight_source: u32,
+    // Canvas pixel of the output's first texel, and source pixel of the source's.
+    output_origin: vec2<i32>,
+    source_origin: vec2<i32>,
     _pad0: u32,
     _pad1: u32,
     taps: array<TransformTap, 32>,
@@ -27,8 +30,9 @@ struct TransformParams {
 
 // A pixel of the source, premultiplied first when `straight`, so that filtering weights
 // colour by coverage.
-fn read_pixel(coord: vec2<i32>, straight: bool) -> vec4<f32> {
+fn read_pixel(pixel: vec2<i32>, straight: bool) -> vec4<f32> {
     let size = textureDimensions(input_tex);
+    let coord = pixel - params.source_origin;
     if (coord.x < 0 || coord.y < 0 || coord.x >= i32(size.x) || coord.y >= i32(size.y)) {
         return vec4<f32>(0.0);
     }
@@ -85,7 +89,7 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let pixel = vec2<f32>(id.xy) + vec2<f32>(0.5);
+    let pixel = vec2<f32>(vec2<i32>(id.xy) + params.output_origin) + vec2<f32>(0.5);
     var color = vec4<f32>(0.0);
     if (params.tap_count == 0u) {
         color = sample_source(

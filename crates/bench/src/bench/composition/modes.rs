@@ -23,7 +23,7 @@ use lumen_ffmpeg::{CudaDriver, EncodeMode, GpuBackend, import_owned_vulkan_opaqu
 use crate::bench::{media::BenchmarkMediaStore, timing::micros_per_frame};
 
 use super::{
-    profile::print_plan_profile,
+    profile::{print_plan_memory, print_plan_profile},
     readback::{read_texture_rgba8, read_texture_rgba8_profile},
 };
 
@@ -229,7 +229,9 @@ async fn benchmark_render_only(
             .device
             .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())?;
     }
-    Ok(started.elapsed())
+    let elapsed = started.elapsed();
+    print_plan_memory(renderer.compiled());
+    Ok(elapsed)
 }
 
 async fn benchmark_render_profile(

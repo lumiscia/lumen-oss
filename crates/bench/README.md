@@ -34,7 +34,9 @@ Linux-only benchmark modes such as `vk-cuda-export` and `vk-cuda-nvenc` require 
 
 Text measurement cases compare repeated `text_width` and `text_height` evaluation for literal arguments (`measure-literal`), expression-backed text-node properties (`measure-expression`), and nonrecursive nested measurement with property references (`measure-nested-reference`).
 
-Composition names: `simple_pipeline`, `small_media_transform`, `small_media_transform_exposure`, `vector_showcase`, `animated_showcase`, `antialiasing_stress_aa`, `antialiasing_stress_noaa`.
+Composition names: `simple_pipeline`, `small_media_transform`, `small_media_transform_exposure`, `vector_showcase`, `animated_showcase`, `antialiasing_stress_aa`, `antialiasing_stress_noaa`, `many_elements`.
+
+`many_elements` is 300 labelled cards and 100 dots over a 1080p background, each card a shape and a text label merged into a group. `render-only` also reports `plan_texture_bytes`, the GPU memory the compiled plan's textures take.
 
 The small-media fixtures use the same deterministic in-memory 320×180 checkerboard and 1920×1080 composition canvas, so they have no file or decoder dependency:
 

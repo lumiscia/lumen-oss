@@ -1,4 +1,4 @@
-use crate::node::motion::{self, Lerp, Shutter};
+use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
 use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
@@ -103,6 +103,20 @@ impl GpuCompileNode for Transform {
         ctx: &mut crate::gpu::CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
+        let source = ctx
+            .compile_bounded_port(&self.source)?
+            .into_raster(self.source.id, &self.source.port)?;
+        let motion = TransformMotion {
+            node_id: self.id,
+            params: self.params.clone(),
+            source_size: source.domain.display_size(),
+        };
+        let bounds = ctx.source_bounds(
+            self.id,
+            compiler::SourceMotion::of(motion.is_animated(), &motion.params),
+            |expr| motion.canvas_bounds(source.domain.data_rect, expr),
+        );
+        let domain = ctx.source_domain(bounds);
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
             &self.source,
@@ -110,24 +124,18 @@ impl GpuCompileNode for Transform {
             "transform",
             SHADER,
             std::mem::size_of::<compiler::TransformParams>() as u64,
-            Some(lumen_gpu::Size::new(
-                ctx.composition().render_settings.width.max(1),
-                ctx.composition().render_settings.height.max(1),
-            )),
+            compiler::FilterDomain::Bounded(domain),
         )?;
         ctx.register_compiled_node(CompiledTransform {
-            node_id: self.id,
-            params: self.params.clone(),
-            source_size: source.domain.storage_size,
+            motion,
             straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
+            output_origin: [domain.data_rect.x, domain.data_rect.y],
+            source_origin: [source.domain.data_rect.x, source.domain.data_rect.y],
             buffer: params,
         });
         Ok(CompiledOutput::Raster(RasterHandle {
             texture,
-            domain: lumen_gpu::TextureDomain::full_frame(lumen_gpu::Size::new(
-                ctx.composition().render_settings.width.max(1),
-                ctx.composition().render_settings.height.max(1),
-            )),
+            domain,
             metadata: source.metadata,
         }))
     }
@@ -135,28 +143,30 @@ impl GpuCompileNode for Transform {
 
 #[derive(Debug, Clone)]
 struct CompiledTransform {
-    node_id: NodeId,
-    params: TransformParamsDelegate,
-    source_size: lumen_gpu::Size,
+    motion: TransformMotion,
     straight_source: bool,
+    /// Canvas pixel of the output's first texel.
+    output_origin: [i32; 2],
+    /// Source pixel of the source's first texel.
+    source_origin: [i32; 2],
     buffer: lumen_gpu::BufferId,
 }
 
 impl GpuCompiledNode for CompiledTransform {
     fn node_id(&self) -> NodeId {
-        self.node_id
+        self.motion.node_id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let expr = ctx.expr_context(self.node_id, "params");
-        let evaluated = self.params.eval(&NodeParamEvalContext {
-            node_id: self.node_id,
+        let expr = ctx.expr_context(self.motion.node_id, "params");
+        let evaluated = self.motion.params.eval(&NodeParamEvalContext {
+            node_id: self.motion.node_id,
             expr: &expr,
         })?;
         let pivot = resolve_pivot(
             evaluated.custom_pivot,
             [evaluated.pivot_x as f32, evaluated.pivot_y as f32],
-            self.source_size,
+            self.motion.source_size,
         );
         let mut params = compiler::TransformParams {
             scale: [evaluated.scale_x as f32, evaluated.scale_y as f32],
@@ -165,15 +175,11 @@ impl GpuCompiledNode for CompiledTransform {
             rotate_radians: (evaluated.rotate as f32).to_radians(),
             sampling: evaluated.sampling as u32,
             straight_source: u32::from(self.straight_source),
+            output_origin: self.output_origin,
+            source_origin: self.source_origin,
             ..bytemuck::Zeroable::zeroed()
         };
-        if let Some(shutter) = self.shutter(&evaluated, &expr)? {
-            let (width, height) = (
-                f64::from(self.source_size.width),
-                f64::from(self.source_size.height),
-            );
-            let corners = [[0.0, 0.0], [width, 0.0], [0.0, height], [width, height]];
-            let taps = shutter.taps(&corners, |key, point| key.to_canvas(point));
+        if let Some(taps) = self.motion.taps(&evaluated, &expr)? {
             params.tap_count = taps.len() as u32;
             for (gpu, tap) in params.taps.iter_mut().zip(&taps) {
                 *gpu = tap.to_gpu();
@@ -184,7 +190,133 @@ impl GpuCompiledNode for CompiledTransform {
     }
 }
 
-impl CompiledTransform {
+/// The largest rotation, in radians, that bounds are taken for. Past it a GPU's sine and cosine
+/// of the single-precision angle are not reliable enough to pad for.
+const MAX_BOUNDED_RADIANS: f64 = 1000.0;
+
+/// The error assumed in the shader's sine and cosine, as a fraction of the distance from the
+/// pivot, which rotating moves a point by.
+const SHADER_ANGLE_ERROR: f64 = 1e-3;
+
+/// What a `transform` node needs to place its source at a frame.
+#[derive(Debug, Clone)]
+struct TransformMotion {
+    node_id: NodeId,
+    params: TransformParamsDelegate,
+    source_size: lumen_gpu::Size,
+}
+
+impl TransformMotion {
+    /// Whether the placement may change between frames.
+    fn is_animated(&self) -> bool {
+        let params = &self.params;
+        params.scale_x.is_expr()
+            || params.scale_y.is_expr()
+            || params.translate_x.is_expr()
+            || params.translate_y.is_expr()
+            || params.rotate.is_expr()
+            || params.pivot_x.is_expr()
+            || params.pivot_y.is_expr()
+            || params.custom_pivot.is_expr()
+            || params.motion_blur.is_expr()
+    }
+
+    /// The taps to average over the shutter, or `None` when motion blur is off or nothing
+    /// moves.
+    fn taps(
+        &self,
+        evaluated: &TransformParams,
+        expr: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Option<Vec<TransformKey>>> {
+        let Some(shutter) = self.shutter(evaluated, expr)? else {
+            return Ok(None);
+        };
+        let (width, height) = (
+            f64::from(self.source_size.width),
+            f64::from(self.source_size.height),
+        );
+        let corners = [[0.0, 0.0], [width, 0.0], [0.0, height], [width, height]];
+        Ok(Some(
+            shutter.taps(&corners, |key, point| key.to_canvas(point)),
+        ))
+    }
+
+    /// Canvas-space `[min_x, min_y, max_x, max_y]` that the source's pixels within `data`
+    /// can show on at the frame of `expr`, under each tap when blurred. A source pixel
+    /// shows wherever the filter footprint around an output pixel reaches it.
+    ///
+    /// The placement is taken from the single-precision values that the shader receives.
+    /// `None` when it is not finite or turns by more than `MAX_BOUNDED_RADIANS`, where the
+    /// shader's sine and cosine cannot be bounded.
+    fn canvas_bounds(
+        &self,
+        data: lumen_gpu::RectI,
+        expr: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Option<[f32; 4]>> {
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.node_id,
+            expr,
+        })?;
+        let keys = self
+            .taps(&evaluated, expr)?
+            .unwrap_or_else(|| vec![self.key(&evaluated)]);
+        let (x0, y0) = (f64::from(data.x) - 0.5, f64::from(data.y) - 0.5);
+        let (x1, y1) = (
+            x0 + f64::from(data.width) + 1.0,
+            y0 + f64::from(data.height) + 1.0,
+        );
+        let corners = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]];
+        let mut bounds = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        let mut pad = 2.0;
+        let mut magnitude = 0.0_f64;
+        for key in keys {
+            let tap = key.sampled().to_gpu();
+            let radians = f64::from(tap.rotate_radians);
+            if radians.is_nan() || radians.abs() > MAX_BOUNDED_RADIANS {
+                return Ok(None);
+            }
+            let (sin, cos) = radians.sin_cos();
+            let [scale, translate, pivot] =
+                [tap.scale, tap.translate, tap.pivot].map(|pair| pair.map(f64::from));
+            magnitude = [scale, translate, pivot]
+                .iter()
+                .flatten()
+                .fold(magnitude, |largest, value| largest.max(value.abs()));
+            for corner in corners {
+                let x = (corner[0] - pivot[0]) * scale[0];
+                let y = (corner[1] - pivot[1]) * scale[1];
+                let point = [
+                    x * cos - y * sin + pivot[0] + translate[0],
+                    x * sin + y * cos + pivot[1] + translate[1],
+                ];
+                if !point.iter().all(|value| value.is_finite()) {
+                    return Ok(None);
+                }
+                magnitude = [corner[0], corner[1], x, y, point[0], point[1]]
+                    .iter()
+                    .fold(magnitude, |largest, value| largest.max(value.abs()));
+                bounds = [
+                    bounds[0].min(point[0]),
+                    bounds[1].min(point[1]),
+                    bounds[2].max(point[0]),
+                    bounds[3].max(point[1]),
+                ];
+                if radians != 0.0 {
+                    pad = f64::max(pad, 2.0 + SHADER_ANGLE_ERROR * x.hypot(y));
+                }
+            }
+        }
+        if magnitude > MAX_BOUNDED_MAGNITUDE {
+            return Ok(None);
+        }
+        // Single-precision rounding in the shader grows with the largest value it handles.
+        pad += ROUNDING_ERROR_FACTOR * f64::from(f32::EPSILON) * magnitude;
+        let [min_x, min_y, max_x, max_y] = bounds;
+        Ok(Some(
+            [min_x - pad, min_y - pad, max_x + pad, max_y + pad].map(|value| value as f32),
+        ))
+    }
+
     /// The transform at either end of the shutter and at the frame, or `None` when motion
     /// blur is off or nothing moves.
     fn shutter(
@@ -265,6 +397,21 @@ impl TransformKey {
             x * cos - y * sin + self.pivot.0 + self.translate.0,
             x * sin + y * cos + self.pivot.1 + self.translate.1,
         ]
+    }
+
+    /// This key with each scale that the shader would replace, by its clamp, replaced.
+    fn sampled(self) -> Self {
+        let clamp = |scale: f64| {
+            if scale.abs() <= 0.000001 {
+                0.000001
+            } else {
+                scale
+            }
+        };
+        Self {
+            scale: (clamp(self.scale.0), clamp(self.scale.1)),
+            ..self
+        }
     }
 
     fn to_gpu(self) -> compiler::TransformTap {

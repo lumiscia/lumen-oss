@@ -9,6 +9,9 @@ struct ShapeUniforms {
     flags: u32,
     transform: DrawableTransform,
     screen_bounds: vec4<f32>,
+    // Canvas pixel of the output's first texel.
+    origin: vec2<i32>,
+    _origin_pad: vec2<i32>,
     motion: DrawableMotion,
 }
 
@@ -116,6 +119,6 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let pixel_origin = vec2<f32>(f32(id.x), f32(id.y));
+    let pixel_origin = vec2<f32>(vec2<i32>(id.xy) + params.origin);
     textureStore(output_tex, vec2<i32>(id.xy), shape_color(pixel_origin + vec2<f32>(0.5)));
 }

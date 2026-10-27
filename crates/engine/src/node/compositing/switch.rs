@@ -69,7 +69,7 @@ impl GpuCompileNode for Switch {
         if layer.is_empty() {
             return Ok(ctx.compile_transparent(self.id));
         }
-        ctx.compile_port(layer)
+        ctx.compile_bounded_port(layer)
     }
 }
 

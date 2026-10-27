@@ -23,6 +23,15 @@ pub struct ScissorRect {
     pub height: u32,
 }
 
+/// Maps clip space onto this box of target pixels, which may extend past the target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Viewport {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Draw {
     pub vertices: Range<u32>,
@@ -53,6 +62,8 @@ pub struct RenderPassDesc {
     pub index_buffer: Option<(BufferId, wgpu::IndexFormat)>,
     pub draw: DrawCommand,
     pub scissor: Option<ScissorRect>,
+    /// Defaults to the whole target.
+    pub viewport: Option<Viewport>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
