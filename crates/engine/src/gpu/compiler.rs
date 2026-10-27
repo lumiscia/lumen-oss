@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     composition::Composition,
@@ -9,32 +9,11 @@ use crate::{
         RasterHandle, RasterMetadata, TimeRemapPath,
     },
     media::MediaStore,
-    node::{NodeId, NodeKind, NodeParams, PortRef, PropertyExpression},
+    node::{NodeId, NodeKind, NodeParams, PortRef, PropertyExpression, compositing::clip::Clip},
+    scope::{PropValues, Routed, Scope},
 };
 
 pub(crate) use super::params::*;
-
-#[derive(Debug, Clone)]
-struct BackgroundClearBinding {
-    node_id: NodeId,
-    color: [u8; 4],
-    buffer: lumen_gpu::BufferId,
-}
-
-impl GpuCompiledNode for BackgroundClearBinding {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, _ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        bound.write_buffer(
-            self.buffer,
-            0,
-            bytemuck::bytes_of(&ColorParams::from_rgba8(self.color)),
-        );
-        Ok(())
-    }
-}
 
 pub trait GpuCompileNode {
     fn compile_gpu(
@@ -110,6 +89,54 @@ fn reads_outside_node<P: NodeParams>(params: &P) -> bool {
     })
 }
 
+/// Copies the visible part of a clip's raster into a texture of the parent canvas.
+const CLIP_CROP_SHADER: &str = "
+struct Params {
+    offset: vec2<i32>,
+    _pad: vec2<i32>,
+}
+
+@group(0) @binding(0) var input_tex: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> params: Params;
+@group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(output_tex);
+    if (id.x >= size.x || id.y >= size.y) {
+        return;
+    }
+    let texel = textureLoad(input_tex, vec2<i32>(id.xy) + params.offset, 0);
+    textureStore(output_tex, vec2<i32>(id.xy), texel);
+}
+";
+
+#[derive(Debug, Clone)]
+struct ClipCropBinding {
+    node_id: NodeId,
+    offset: [i32; 2],
+    buffer: lumen_gpu::BufferId,
+}
+
+impl GpuCompiledNode for ClipCropBinding {
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, _ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let [x, y] = self.offset;
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&[x, y, 0, 0]));
+        Ok(())
+    }
+}
+
+/// A frame a plan may bind a scope at, with the props the scope then has.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PlanFrame {
+    frame: f64,
+    props: Option<Arc<PropValues>>,
+}
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct CompiledPortKey {
     port: PortRef,
@@ -119,6 +146,8 @@ struct CompiledPortKey {
 #[derive(Debug)]
 pub struct CompileContext<'a> {
     composition: &'a Composition,
+    /// The composition the nodes being compiled belong to.
+    scope: Scope<'a>,
     frame: f64,
     time_remaps: TimeRemapPath,
     media: Option<&'a dyn MediaStore>,
@@ -129,11 +158,11 @@ pub struct CompileContext<'a> {
     output_format: lumen_gpu::wgpu::TextureFormat,
     text_atlas_texture: Option<lumen_gpu::TextureId>,
     raster_bounds: HashMap<lumen_gpu::TextureId, lumen_gpu::BufferId>,
-    /// Whether the plan is only used for whole frames of the timeline, so animated sources may be
-    /// sized to their bounds over it.
-    timeline_bounds: bool,
-    /// Full-frame copies of bounded rasters, by the bounded texture.
-    full_frames: HashMap<lumen_gpu::TextureId, RasterHandle>,
+    /// Every frame the plan may bind the current scope at, so animated sources may be sized to
+    /// their bounds over them; `None` when that is unknown.
+    bound_frames: Option<Arc<[PlanFrame]>>,
+    /// Full-frame copies of bounded rasters, by the bounded texture and display size.
+    full_frames: HashMap<(lumen_gpu::TextureId, u32, u32), RasterHandle>,
 }
 
 impl<'a> CompileContext<'a> {
@@ -188,8 +217,20 @@ impl<'a> CompileContext<'a> {
         output_format: lumen_gpu::wgpu::TextureFormat,
         timeline_bounds: bool,
     ) -> Self {
+        let duration = composition.timeline.duration_frames;
+        let bound_frames =
+            (timeline_bounds && on_timeline(composition, frame) && duration <= MAX_UNION_FRAMES)
+                .then(|| {
+                    (0..duration)
+                        .map(|frame| PlanFrame {
+                            frame: f64::from(frame),
+                            props: None,
+                        })
+                        .collect()
+                });
         Self {
             composition,
+            scope: Scope::root(composition),
             frame,
             time_remaps: TimeRemapPath::new(),
             media,
@@ -200,7 +241,7 @@ impl<'a> CompileContext<'a> {
             output_format,
             text_atlas_texture: None,
             raster_bounds: HashMap::new(),
-            timeline_bounds,
+            bound_frames,
             full_frames: HashMap::new(),
         }
     }
@@ -212,7 +253,7 @@ impl<'a> CompileContext<'a> {
             // error remains typed, so return the first one before traversing any graph edges.
             return Err(errors.remove(0));
         }
-        let output_node = self.media_output_node()?;
+        let output_node = self.scope.media_output()?;
         let output_ref = PortRef::new(output_node, "output".to_string());
         let output = self
             .compile_port(&output_ref)?
@@ -307,15 +348,10 @@ impl<'a> CompileContext<'a> {
             return Ok(output.clone());
         }
 
-        let node = self
-            .composition
-            .graph
-            .nodes
-            .get(&port.id)
-            .ok_or(RenderError::MissingNode {
-                frame: 0,
-                node_id: port.id,
-            })?;
+        let node = self.scope.node(port.id).ok_or(RenderError::MissingNode {
+            frame: 0,
+            node_id: port.id,
+        })?;
         let output = match node {
             NodeKind::MediaIn(node) => node.compile_gpu(self, port)?,
             NodeKind::Background(node) => node.compile_gpu(self, port)?,
@@ -342,14 +378,144 @@ impl<'a> CompileContext<'a> {
             NodeKind::Shadow(node) => node.compile_gpu(self, port)?,
             NodeKind::WgslShader(node) => node.compile_gpu(self, port)?,
             NodeKind::Switch(node) => node.compile_gpu(self, port)?,
+            NodeKind::Clip(node) => node.compile_gpu(self, port)?,
             NodeKind::MediaOutput(node) => node.compile_gpu(self, port)?,
         };
 
         self.outputs.insert(key, output.clone());
-        self.public_outputs
-            .entry(port.clone())
-            .or_insert_with(|| output.clone());
+        if std::ptr::eq(self.scope.graph, &self.composition.graph) {
+            self.public_outputs
+                .entry(port.clone())
+                .or_insert_with(|| output.clone());
+        }
         Ok(output)
+    }
+
+    /// Compiles the input `routed` names, in its frame, scope and instance. `bound_frames` are
+    /// the frames the plan may bind it at.
+    fn compile_routed(
+        &mut self,
+        routed: Routed<'a>,
+        bound_frames: Option<Arc<[PlanFrame]>>,
+    ) -> crate::Result<CompiledOutput> {
+        let frame = std::mem::replace(&mut self.frame, routed.frame);
+        let scope = std::mem::replace(&mut self.scope, routed.scope);
+        let outer_frames = std::mem::replace(&mut self.bound_frames, bound_frames);
+        self.time_remaps.extend(routed.instance);
+        let result = self.compile_bounded_port(&routed.port);
+        if routed.instance.is_some() {
+            self.time_remaps.pop();
+        }
+        self.bound_frames = outer_frames;
+        self.scope = scope;
+        self.frame = frame;
+        result
+    }
+
+    /// Compiles a time remap's source at the frame it maps to. The frames that plan may bind it
+    /// at are not tracked, so its animated sources fill the canvas.
+    pub(crate) fn compile_time_remap(
+        &mut self,
+        node: &crate::node::processing::time_remap::TimeRemap,
+    ) -> crate::Result<CompiledOutput> {
+        let routed = crate::scope::route_time_remap(&self.scope, node, self.frame, self.media)?;
+        self.compile_routed(routed, None)
+    }
+
+    /// Compiles what a clip shows at this frame, placed on this composition's canvas, or a
+    /// transparent raster while it is hidden.
+    pub(crate) fn compile_clip(&mut self, clip: &Clip) -> crate::Result<CompiledOutput> {
+        let routed = clip.route(&self.scope, self.frame, self.media)?;
+        let Some(routed) = routed.filter(|routed| !routed.port.is_empty()) else {
+            return Ok(self.compile_transparent(clip.id));
+        };
+        let bound_frames = self.clip_bound_frames(clip);
+        let raster = self
+            .compile_routed(routed, bound_frames)?
+            .into_raster(clip.id, "output")?;
+        Ok(self.place_on_canvas(clip.id, raster))
+    }
+
+    /// The frames a clip's content may be bound at in this plan: each frame the plan may bind
+    /// this scope at where the clip shows, in the content's time and with its props.
+    fn clip_bound_frames(&self, clip: &Clip) -> Option<Arc<[PlanFrame]>> {
+        let frames = self.bound_frames.as_ref()?;
+        let mut scope = self.scope.clone();
+        let mut local = Vec::new();
+        for frame in frames.iter() {
+            scope.props.clone_from(&frame.props);
+            if let Some(routed) = clip.route(&scope, frame.frame, self.media).ok()? {
+                local.push(PlanFrame {
+                    frame: routed.frame,
+                    props: routed.scope.props,
+                });
+            }
+        }
+        local.dedup();
+        Some(local.into())
+    }
+
+    /// `raster`, drawn on another canvas from its top-left corner, as a raster of this canvas.
+    /// It keeps its texture when all of it is on this canvas, and is cropped to it otherwise.
+    fn place_on_canvas(&mut self, node_id: NodeId, raster: RasterHandle) -> CompiledOutput {
+        let canvas = self.canvas_size();
+        if raster.domain.display_size() == canvas {
+            return CompiledOutput::Raster(raster);
+        }
+        let canvas_rect = lumen_gpu::RectI::from_size(canvas);
+        let data = raster.domain.data_rect;
+        let visible = canvas_rect.intersection(data);
+        if visible.is_empty() {
+            return self.compile_transparent(node_id);
+        }
+        if visible == data {
+            return CompiledOutput::Raster(RasterHandle {
+                domain: lumen_gpu::TextureDomain {
+                    storage_size: raster.domain.storage_size,
+                    display_rect: canvas_rect,
+                    data_rect: data,
+                },
+                ..raster
+            });
+        }
+        let domain = lumen_gpu::TextureDomain::bounded(canvas, visible);
+        let size = domain.storage_size;
+        let texture = self.builder.texture_for(
+            lumen_gpu::NodeKey(node_id.0),
+            Some(format!("clip:{}:crop", node_id.0)),
+            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+                .with_domain(domain),
+        );
+        let params = self.builder.buffer_for(
+            lumen_gpu::NodeKey(node_id.0),
+            Some(format!("clip:{}:crop-params", node_id.0)),
+            lumen_gpu::BufferDesc::uniform(16),
+        );
+        let program = self.spatial_program(node_id, "clip-crop", CLIP_CROP_SHADER);
+        self.builder.compute_pass(lumen_gpu::ComputePassDesc {
+            label: Some(format!("clip:{}:crop", node_id.0)),
+            owner: Some(lumen_gpu::NodeKey(node_id.0)),
+            program,
+            bindings: spatial_bindings(raster.texture, params, texture),
+            dispatch: dispatch_for(size).into(),
+        });
+        self.builder.param(
+            lumen_gpu::ParamKey {
+                owner: lumen_gpu::NodeKey(node_id.0),
+                slot: 0,
+            },
+            lumen_gpu::ParamTarget::Buffer(params),
+        );
+        self.register_compiled_node(ClipCropBinding {
+            node_id,
+            offset: [domain.data_rect.x - data.x, domain.data_rect.y - data.y],
+            buffer: params,
+        });
+        CompiledOutput::Raster(RasterHandle {
+            texture,
+            domain,
+            metadata: raster.metadata,
+        })
     }
 
     /// `raster` stored at its full display size, copied there when it is bounded. The copy's
@@ -358,10 +524,13 @@ impl<'a> CompileContext<'a> {
         if raster.domain.is_full_frame() {
             return raster;
         }
-        if let Some(full) = self.full_frames.get(&raster.texture) {
+        let size = raster.domain.display_size();
+        if let Some(full) = self
+            .full_frames
+            .get(&(raster.texture, size.width, size.height))
+        {
             return *full;
         }
-        let size = raster.domain.display_size();
         let data = raster.domain.data_rect;
         let texture = self.builder.texture(
             Some(format!("full-frame:{}", raster.texture.0)),
@@ -383,18 +552,20 @@ impl<'a> CompileContext<'a> {
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: raster.metadata,
         };
-        self.full_frames.insert(raster.texture, full);
+        self.full_frames
+            .insert((raster.texture, size.width, size.height), full);
         full
     }
 
     /// The canvas pixels a source may draw to: the box `bounds_at` gives at the frame when its
-    /// `motion` is fixed, or the union of its boxes over every frame of the timeline.
+    /// `motion` is fixed, or the union of its boxes over every frame the plan may bind it at.
     ///
     /// `None` when the source should fill the canvas instead: `bounds_at` failed or gave
     /// `None` for some frame, the bounds are not finite, the bounds read state outside the node,
-    /// the timeline is longer than `MAX_UNION_FRAMES`, or the union cannot be relied on, as in a plan that may be bound
-    /// at fractional frames, under a time remap or for a frame off the timeline, since plans
-    /// are reused across the frames they are keyed for.
+    /// there are more than `MAX_UNION_FRAMES` frames, or the frames are unknown, as in a plan
+    /// that may be bound at fractional frames, under a time remap or for a frame off the
+    /// timeline, since plans are reused across the frames they are keyed for. Inside a clip the
+    /// frames are the clip's own, with the props it has at each.
     pub(crate) fn source_bounds(
         &self,
         node_id: NodeId,
@@ -412,16 +583,14 @@ impl<'a> CompileContext<'a> {
             SourceMotion::Unbounded => return None,
             SourceMotion::Animated => {}
         }
-        if !self.timeline_bounds
-            || !self.time_remaps.is_empty()
-            || !on_timeline(self.composition, self.frame)
-            || self.composition.timeline.duration_frames > MAX_UNION_FRAMES
-        {
+        let frames = self.bound_frames.as_deref()?;
+        if frames.len() > MAX_UNION_FRAMES as usize {
             return None;
         }
         let mut union = lumen_gpu::RectI::new(0, 0, 0, 0);
-        for frame in 0..self.composition.timeline.duration_frames {
-            expr.frame = f64::from(frame);
+        for frame in frames {
+            expr.frame = frame.frame;
+            expr.props = frame.props.as_deref();
             union = union.union(lumen_gpu::RectI::covering(bounds_at(&expr).ok()??)?);
         }
         Some(union)
@@ -439,27 +608,10 @@ impl<'a> CompileContext<'a> {
         }
     }
 
-    /// The canvas size, which sources are drawn at.
+    /// The canvas size of the composition being compiled, which its sources are drawn at.
     pub(crate) fn canvas_size(&self) -> lumen_gpu::Size {
-        lumen_gpu::Size::new(
-            self.composition.render_settings.width.max(1),
-            self.composition.render_settings.height.max(1),
-        )
-    }
-
-    pub(crate) fn with_frame_context<T>(
-        &mut self,
-        time_remap: NodeId,
-        frame: f64,
-        f: impl FnOnce(&mut Self) -> crate::Result<T>,
-    ) -> crate::Result<T> {
-        let original_frame = self.frame;
-        self.frame = frame;
-        self.time_remaps.push(time_remap);
-        let result = f(self);
-        self.time_remaps.pop();
-        self.frame = original_frame;
-        result
+        let settings = self.scope.render_settings;
+        lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1))
     }
 
     /// Compiles a compute pass from `source_ref` into a new texture of the domain `domain`
@@ -553,67 +705,22 @@ impl<'a> CompileContext<'a> {
         Ok((source, texture, params))
     }
 
-    /// A canvas-sized transparent raster, which stores a single texel.
+    /// A canvas-sized transparent raster, which stores a single texel. Textures start zeroed
+    /// and nothing writes this one, so it needs no pass.
     pub(crate) fn compile_transparent(&mut self, node_id: NodeId) -> CompiledOutput {
         let domain = lumen_gpu::TextureDomain::bounded(
             self.canvas_size(),
             lumen_gpu::RectI::new(0, 0, 0, 0),
         );
-        let size = domain.storage_size;
         let texture = self.builder.texture_for(
             lumen_gpu::NodeKey(node_id.0),
             Some(format!("transparent:{}:output", node_id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
-                .with_domain(domain),
+            lumen_gpu::TextureDesc::storage(
+                domain.storage_size,
+                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .with_domain(domain),
         );
-        let params = self.builder.buffer_for(
-            lumen_gpu::NodeKey(node_id.0),
-            Some(format!("transparent:{}:params", node_id.0)),
-            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<ColorParams>() as u64),
-        );
-        let program = self.builder.program_for(
-            lumen_gpu::NodeKey(node_id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
-                label: Some("transparent".to_string()),
-                shader: crate::node::source::background::SHADER.to_string(),
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                ]),
-            }),
-        );
-        self.builder.compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("transparent:{}:fill", node_id.0)),
-            owner: Some(lumen_gpu::NodeKey(node_id.0)),
-            program,
-            bindings: vec![
-                lumen_gpu::Binding::uniform(0, 0, params),
-                lumen_gpu::Binding::storage_texture(0, 1, texture),
-            ],
-            dispatch: dispatch_for(size).into(),
-        });
-        self.builder.param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(node_id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
-        self.register_compiled_node(BackgroundClearBinding {
-            node_id,
-            color: [0, 0, 0, 0],
-            buffer: params,
-        });
-
         CompiledOutput::Raster(RasterHandle {
             texture,
             domain,
@@ -624,8 +731,8 @@ impl<'a> CompileContext<'a> {
     pub(crate) fn static_dimension_value(&self, value: i64, property_path: &str) -> u32 {
         let value = if value <= 0 {
             match property_path {
-                "width" => i64::from(self.composition.render_settings.width),
-                "height" => i64::from(self.composition.render_settings.height),
+                "width" => i64::from(self.scope.render_settings.width),
+                "height" => i64::from(self.scope.render_settings.height),
                 _ => value,
             }
         } else {
@@ -712,42 +819,13 @@ impl<'a> CompileContext<'a> {
         Ok((source, texture, params))
     }
 
-    fn media_output_node(&self) -> crate::Result<NodeId> {
-        let mut outputs = self
-            .composition
-            .graph
-            .nodes
-            .iter()
-            .filter_map(|(node_id, node)| {
-                matches!(node, NodeKind::MediaOutput(_)).then_some(*node_id)
-            });
-        let Some(output) = outputs.next() else {
-            return Err(crate::error::GraphValidationError::MissingMediaOutput.into());
-        };
-        if outputs.next().is_some() {
-            return Err(
-                crate::error::GraphValidationError::MultipleMediaOutputs { count: 2 }.into(),
-            );
-        }
-        Ok(output)
-    }
-
     pub(crate) fn expr_context(
         &self,
         node_id: NodeId,
         property_path: &str,
     ) -> ExpressionContext<'_> {
-        ExpressionContext {
-            frame: self.frame,
-            fps: self.composition.timeline.fps,
-            width: self.composition.render_settings.width,
-            height: self.composition.render_settings.height,
-            duration_frames: self.composition.timeline.duration_frames,
-            path: Some(format!("{node_id}.{property_path}")),
-            graph: Some(&self.composition.graph),
-            media: self.media,
-            glyph: None,
-        }
+        self.scope
+            .expr_context(self.frame, format!("{node_id}.{property_path}"), self.media)
     }
 
     pub(crate) fn missing_output(&self, node_id: NodeId, port: &str) -> crate::error::LumenError {

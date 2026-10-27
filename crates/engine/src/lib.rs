@@ -17,6 +17,7 @@ pub mod gpu;
 pub mod graph;
 pub mod media;
 pub mod node;
+pub mod scope;
 
 #[cfg(feature = "ffmpeg")]
 pub use media::ffmpeg;

@@ -138,6 +138,8 @@ builtins! {
     CubicBezier "cubic_bezier" (5, Some(5))
         [x1: Number, y1: Number, x2: Number, y2: Number, t: Number] -> Number,
         "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.";
+    Prop "prop" (1, Some(1)) [name: String] -> Any,
+        "The value of a composition template's prop, e.g. `prop('title')`. Only inside a template.";
     Spring "spring" (1, Some(3)) [t: Number, stiffness: Number, damping: Number] -> Number,
         "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.";
 }

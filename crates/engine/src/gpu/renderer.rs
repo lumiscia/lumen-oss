@@ -12,6 +12,7 @@ use crate::{
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
+    scope::{Routed, Scope},
 };
 
 #[cfg(feature = "ffmpeg")]
@@ -27,6 +28,8 @@ pub struct CompiledPlanKey {
     on_timeline: bool,
     /// Frame count and fps bits of the timeline that bounds over it were taken from.
     timeline: (u32, u32),
+    /// Hash of the templates' canvases and timelines, which their textures were sized for.
+    templates: u64,
     entries: Vec<PlanKeyEntry>,
 }
 
@@ -37,32 +40,33 @@ impl CompiledPlanKey {
         let settings = &composition.render_settings;
         if self.size != (settings.width, settings.height)
             || self.timeline != timeline_key(composition)
+            || self.templates != templates_key(composition)
         {
             return false;
         }
-        let nodes = &composition.graph.nodes;
         self.entries.iter().all(|entry| {
-            entry
-                .time_remaps
-                .iter()
-                .all(|id| matches!(nodes.get(id), Some(NodeKind::TimeRemap(_))))
-                && match (&entry.choice, nodes.get(&entry.node_id)) {
-                    (PlanChoice::SwitchSelection(_), Some(NodeKind::Switch(_))) => true,
-                    (PlanChoice::TextFont(_), Some(NodeKind::Text(_))) => true,
-                    (PlanChoice::TextFontGeneration(_), Some(NodeKind::Text(_))) => true,
-                    (PlanChoice::ShaderSource(hash), Some(NodeKind::WgslShader(shader))) => {
-                        match &shader.params.shader {
-                            Deferred::Value(source) => source_hash(source) == *hash,
-                            Deferred::Expr(_) => true,
-                        }
+            let Some(graph) = Scope::graph_at(composition, &entry.time_remaps) else {
+                return false;
+            };
+            match (&entry.choice, graph.nodes.get(&entry.node_id)) {
+                (PlanChoice::SwitchSelection(_), Some(NodeKind::Switch(_))) => true,
+                (PlanChoice::ClipShown(_), Some(NodeKind::Clip(_))) => true,
+                (PlanChoice::TextFont(_), Some(NodeKind::Text(_))) => true,
+                (PlanChoice::TextFontGeneration(_), Some(NodeKind::Text(_))) => true,
+                (PlanChoice::ShaderSource(hash), Some(NodeKind::WgslShader(shader))) => {
+                    match &shader.params.shader {
+                        Deferred::Value(source) => source_hash(source) == *hash,
+                        Deferred::Expr(_) => true,
                     }
-                    _ => false,
                 }
+                _ => false,
+            }
         })
     }
 }
 
-/// A node instance's structural choice; the compiler builds one instance per time-remap path.
+/// A node instance's structural choice; the compiler builds one instance per path of time remaps
+/// and clips.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct PlanKeyEntry {
     time_remaps: TimeRemapPath,
@@ -73,6 +77,8 @@ struct PlanKeyEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum PlanChoice {
     SwitchSelection(Option<usize>),
+    /// Whether a clip shows, which decides whether anything upstream of it is compiled.
+    ClipShown(bool),
     /// The resolver the media store gave a text node's font family, which its bounds were
     /// measured with.
     TextFont(String),
@@ -950,16 +956,16 @@ impl GpuCompositionRenderer {
         frame: f64,
         media: Option<&dyn MediaStore>,
     ) -> crate::Result<CompiledPlanKey> {
-        let output = self.media_output_port(composition)?;
+        let root = Scope::root(composition);
+        let output = PortRef::new(root.media_output()?, "output".to_string());
         let mut collector = PlanKeyCollector {
-            composition,
             media,
             time_remaps: TimeRemapPath::new(),
             visited: HashSet::new(),
             stack: Vec::new(),
             entries: Vec::new(),
         };
-        collector.collect(&output, frame)?;
+        collector.collect(&root, &output, frame)?;
         let mut entries = collector.entries;
         entries.sort();
         entries.dedup();
@@ -968,27 +974,9 @@ impl GpuCompositionRenderer {
             size: (settings.width, settings.height),
             on_timeline: super::compiler::on_timeline(composition, frame),
             timeline: timeline_key(composition),
+            templates: templates_key(composition),
             entries,
         })
-    }
-
-    fn media_output_port(&self, composition: &Composition) -> crate::Result<PortRef> {
-        let mut outputs = composition
-            .graph
-            .nodes
-            .iter()
-            .filter_map(|(node_id, node)| {
-                matches!(node, NodeKind::MediaOutput(_)).then_some(*node_id)
-            });
-        let Some(output) = outputs.next() else {
-            return Err(crate::error::GraphValidationError::MissingMediaOutput.into());
-        };
-        if outputs.next().is_some() {
-            return Err(
-                crate::error::GraphValidationError::MultipleMediaOutputs { count: 2 }.into(),
-            );
-        }
-        Ok(PortRef::new(output, "output".to_string()))
     }
 }
 
@@ -998,75 +986,61 @@ enum PlanUse {
     Lookahead,
 }
 
-/// Mirrors compilation: inputs come from `input_ports`, and a time remap starts a new instance
-/// path for everything upstream of it.
+/// Mirrors compilation: inputs come from `scope::route`, and a time remap or clip starts a new
+/// instance path for everything upstream of it.
 struct PlanKeyCollector<'a> {
-    composition: &'a Composition,
     media: Option<&'a dyn MediaStore>,
     time_remaps: TimeRemapPath,
     visited: HashSet<(NodeId, TimeRemapPath)>,
-    /// Nodes on the current traversal path; time remaps extend the instance path, so `visited`
-    /// alone never sees a cycle through one repeat.
-    stack: Vec<NodeId>,
+    /// Nodes on the current traversal path, with the graph they are in; time remaps and clips
+    /// extend the instance path, so `visited` alone never sees a cycle through one repeat.
+    stack: Vec<(NodeId, *const crate::graph::Graph)>,
     entries: Vec<PlanKeyEntry>,
 }
 
 impl<'a> PlanKeyCollector<'a> {
-    fn collect(&mut self, port: &PortRef, frame: f64) -> crate::Result<()> {
+    fn collect(&mut self, scope: &Scope<'_>, port: &PortRef, frame: f64) -> crate::Result<()> {
         if port.is_empty() {
             return Ok(());
         }
-        if let Some(start) = self.stack.iter().position(|id| *id == port.id) {
+        let entry = (port.id, std::ptr::from_ref(scope.graph));
+        if let Some(start) = self.stack.iter().position(|visiting| *visiting == entry) {
             return Err(GraphValidationError::Cycle {
-                path: self.stack[start..].to_vec(),
+                path: self.stack[start..].iter().map(|(id, _)| *id).collect(),
             }
             .into());
         }
         if !self.visited.insert((port.id, self.time_remaps.clone())) {
             return Ok(());
         }
-        let composition = self.composition;
-        let Some(node) = composition.graph.nodes.get(&port.id) else {
+        let Some(node) = scope.node(port.id) else {
             return Ok(());
         };
-        self.stack.push(port.id);
-        let result = self.collect_node(node, frame);
+        self.stack.push(entry);
+        let result = self.collect_node(scope, node, frame);
         self.stack.pop();
         result
     }
 
-    fn collect_node(&mut self, node: &NodeKind, frame: f64) -> crate::Result<()> {
+    fn collect_node(
+        &mut self,
+        scope: &Scope<'_>,
+        node: &NodeKind,
+        frame: f64,
+    ) -> crate::Result<()> {
+        let routes = crate::scope::route(scope, node, frame, self.media)?;
         match node {
-            NodeKind::TimeRemap(time_remap) => {
-                let ctx = self.expression_context(frame, time_remap.id, "params");
-                let params = time_remap.params.eval(&NodeParamEvalContext {
-                    node_id: time_remap.id,
-                    expr: &ctx,
-                })?;
-                let target_frame = crate::node::processing::time_remap::remap_frame(
-                    crate::node::processing::time_remap::TimeRemapSettings {
-                        frame: params.frame,
-                        loop_enabled: params.loop_enabled,
-                        loop_start: params.loop_start,
-                        loop_end: params.loop_end,
-                    },
-                );
-                self.time_remaps.push(time_remap.id);
-                let result = self.collect(&time_remap.source, target_frame);
-                self.time_remaps.pop();
-                return result;
-            }
             NodeKind::Switch(switch) => {
-                let ctx = self.expression_context(frame, switch.id, "selected_layer");
                 // Out-of-range selections all compile to transparent, so they share one key.
+                let ctx = scope.expr_context(frame, format!("{}.params", switch.id), self.media);
                 let selection =
                     crate::node::compositing::switch::selected_layer_for_frame(switch, &ctx)?
                         .filter(|index| *index < switch.layers.len());
                 self.push_entry(switch.id, PlanChoice::SwitchSelection(selection));
-                return match selection {
-                    Some(index) => self.collect(&switch.layers[index], frame),
-                    None => Ok(()),
-                };
+            }
+            NodeKind::Clip(clip) => {
+                let shown = routes.first().is_some_and(|routed| !routed.port.is_empty());
+                self.push_entry(clip.id, PlanChoice::ClipShown(shown));
             }
             NodeKind::Text(text) => {
                 if let Deferred::Value(family) = &text.params.font_family
@@ -1079,7 +1053,7 @@ impl<'a> PlanKeyCollector<'a> {
                 }
             }
             NodeKind::WgslShader(shader) => {
-                let ctx = self.expression_context(frame, shader.id, "params");
+                let ctx = scope.expr_context(frame, format!("{}.params", shader.id), self.media);
                 let params = shader.params.eval(&NodeParamEvalContext {
                     node_id: shader.id,
                     expr: &ctx,
@@ -1091,8 +1065,19 @@ impl<'a> PlanKeyCollector<'a> {
             }
             _ => {}
         }
-        for input in node.input_ports() {
-            self.collect(&input, frame)?;
+        for Routed {
+            port,
+            frame,
+            scope,
+            instance,
+        } in routes
+        {
+            self.time_remaps.extend(instance);
+            let result = self.collect(&scope, &port, frame);
+            if instance.is_some() {
+                self.time_remaps.pop();
+            }
+            result?;
         }
         Ok(())
     }
@@ -1114,25 +1099,6 @@ impl<'a> PlanKeyCollector<'a> {
             node_id,
             choice,
         });
-    }
-
-    fn expression_context(
-        &self,
-        frame: f64,
-        node_id: NodeId,
-        property_path: &str,
-    ) -> crate::expr::ExpressionContext<'a> {
-        crate::expr::ExpressionContext {
-            frame,
-            fps: self.composition.timeline.fps,
-            width: self.composition.render_settings.width,
-            height: self.composition.render_settings.height,
-            duration_frames: self.composition.timeline.duration_frames,
-            path: Some(format!("{node_id}.{property_path}")),
-            graph: Some(&self.composition.graph),
-            media: self.media,
-            glyph: None,
-        }
     }
 }
 
@@ -1174,34 +1140,68 @@ fn timeline_key(composition: &Composition) -> (u32, u32) {
     (timeline.duration_frames, timeline.fps.to_bits())
 }
 
+fn templates_key(composition: &Composition) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    for (name, template) in &composition.compositions {
+        let settings = &template.render_settings;
+        let timeline = &template.timeline;
+        std::hash::Hash::hash(
+            &(
+                name,
+                settings.width,
+                settings.height,
+                timeline.duration_frames,
+                timeline.fps.to_bits(),
+            ),
+            &mut hasher,
+        );
+    }
+    std::hash::Hasher::finish(&hasher)
+}
+
 /// Order-independent hash of everything `CompiledPlanKey::matches` reads from a composition, plus
 /// the canvas size and timeline that plan estimates depend on.
 fn plan_node_signature(composition: &Composition) -> u64 {
     let settings = &composition.render_settings;
     let mut hasher = std::hash::DefaultHasher::new();
     std::hash::Hash::hash(
-        &(settings.width, settings.height, timeline_key(composition)),
+        &(
+            settings.width,
+            settings.height,
+            timeline_key(composition),
+            templates_key(composition),
+        ),
         &mut hasher,
     );
     let initial = std::hash::Hasher::finish(&hasher);
-    composition
-        .graph
-        .nodes
-        .iter()
-        .fold(initial, |signature: u64, (id, node)| {
-            let entry = match node {
-                NodeKind::TimeRemap(_) => (id, 0, 0),
-                NodeKind::Switch(_) => (id, 1, 0),
-                NodeKind::WgslShader(shader) => match &shader.params.shader {
-                    Deferred::Value(source) => (id, 2, source_hash(source)),
-                    Deferred::Expr(_) => (id, 3, 0),
-                },
-                _ => return signature,
-            };
-            let mut hasher = std::hash::DefaultHasher::new();
-            std::hash::Hash::hash(&entry, &mut hasher);
-            signature.wrapping_add(std::hash::Hasher::finish(&hasher))
-        })
+    let graphs = std::iter::once((None, &composition.graph)).chain(
+        composition
+            .compositions
+            .iter()
+            .map(|(name, template)| (Some(name), &template.graph)),
+    );
+    graphs.fold(initial, |signature, (template, graph)| {
+        graph
+            .nodes
+            .iter()
+            .fold(signature, |signature: u64, (id, node)| {
+                let entry = match node {
+                    NodeKind::TimeRemap(_) => (id, 0, 0),
+                    NodeKind::Switch(_) => (id, 1, 0),
+                    NodeKind::WgslShader(shader) => match &shader.params.shader {
+                        Deferred::Value(source) => (id, 2, source_hash(source)),
+                        Deferred::Expr(_) => (id, 3, 0),
+                    },
+                    NodeKind::Clip(clip) => {
+                        (id, 4, source_hash(clip.template_name().unwrap_or("")))
+                    }
+                    _ => return signature,
+                };
+                let mut hasher = std::hash::DefaultHasher::new();
+                std::hash::Hash::hash(&(template, entry), &mut hasher);
+                signature.wrapping_add(std::hash::Hasher::finish(&hasher))
+            })
+    })
 }
 
 fn source_hash(source: &str) -> u64 {

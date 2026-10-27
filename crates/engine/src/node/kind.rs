@@ -33,6 +33,7 @@ pub enum NodeKind {
     Shadow(processing::shadow::Shadow),
     WgslShader(processing::wgsl_shader::WgslShader),
     Switch(compositing::switch::Switch),
+    Clip(compositing::clip::Clip),
     MediaOutput(media_output::MediaOutput),
 }
 
@@ -64,6 +65,7 @@ impl NodeKind {
             Self::Shadow(node) => node.id,
             Self::WgslShader(node) => node.id,
             Self::Switch(node) => node.id,
+            Self::Clip(node) => node.id,
             Self::MediaOutput(node) => node.id,
         }
     }
@@ -95,6 +97,7 @@ impl NodeKind {
             Self::Shadow(node) => node.input_ports(),
             Self::WgslShader(node) => node.input_ports(),
             Self::Switch(node) => node.input_ports(),
+            Self::Clip(node) => node.input_ports(),
             Self::MediaOutput(node) => node.input_ports(),
         }
     }
@@ -115,6 +118,7 @@ impl NodeKind {
             compositing::merge::Merge::schema(),
             compositing::raster_multimerge::RasterMultiMerge::schema(),
             compositing::switch::Switch::schema(),
+            compositing::clip::Clip::schema(),
             processing::memo::Memo::schema(),
             processing::opacity::Opacity::schema(),
             processing::alpha_premultiply::AlphaPremultiply::schema(),
@@ -168,6 +172,7 @@ impl Node for NodeKind {
             Self::Shadow(node) => node.input_port_defs(),
             Self::WgslShader(node) => node.input_port_defs(),
             Self::Switch(node) => node.input_port_defs(),
+            Self::Clip(node) => node.input_port_defs(),
             Self::MediaOutput(node) => node.input_port_defs(),
         }
     }
@@ -209,6 +214,7 @@ impl PropertyEval for NodeKind {
             Self::Shadow(node) => node.get_property(id),
             Self::WgslShader(node) => node.get_property(id),
             Self::Switch(node) => node.get_property(id),
+            Self::Clip(node) => node.get_property(id),
             Self::MediaOutput(node) => node.get_property(id),
         }
     }

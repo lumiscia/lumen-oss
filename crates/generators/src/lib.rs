@@ -60,6 +60,7 @@ pub enum NodeParamKind {
     Vec2,
     Enum,
     ShaderUniforms,
+    ClipProps,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -73,6 +74,7 @@ pub enum NodeLiteralValue {
     Paint(Value),
     Vec2((f64, f64)),
     ShaderUniforms(Value),
+    ClipProps(Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -315,6 +317,11 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                     },
                     "additionalProperties": { "type": "string" }
                 },
+                "compositions": {
+                    "description": "Reusable compositions by name, which `clip` nodes play. Node ids are scoped to each template.",
+                    "type": "object",
+                    "additionalProperties": { "$ref": "#/$defs/compositionTemplate" }
+                },
                 "nodes": {
                     "type": "array",
                     "items": { "oneOf": node_variants }
@@ -325,6 +332,65 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                 }
             },
             "$defs": {
+                "compositionTemplate": {
+                    "description": "A composition a `clip` plays. Without `render_settings` it takes the root's size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's fps.",
+                    "type": "object",
+                    "required": ["nodes", "connections"],
+                    "properties": {
+                        "render_settings": {
+                            "type": "object",
+                            "required": ["width", "height"],
+                            "properties": {
+                                "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                                "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                                "background_color": { "$ref": "#/$defs/color" }
+                            },
+                            "additionalProperties": true
+                        },
+                        "timeline": {
+                            "type": "object",
+                            "required": ["duration_frames"],
+                            "properties": {
+                                "fps": { "type": "number", "exclusiveMinimum": 0 },
+                                "duration_frames": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 4294967295u32
+                                }
+                            },
+                            "additionalProperties": true
+                        },
+                        "props": {
+                            "description": "Props that `prop('name')` reads inside the template, set per `clip`.",
+                            "type": "object",
+                            "additionalProperties": { "$ref": "#/$defs/compositionProp" }
+                        },
+                        "nodes": { "type": "array", "items": { "$ref": "#/properties/nodes/items" } },
+                        "connections": {
+                            "type": "array",
+                            "items": { "$ref": "#/$defs/connection" }
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "compositionProp": {
+                    "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent or [0, 0].",
+                    "oneOf": [
+                        prop_declaration_json("string", json!({ "type": "string" })),
+                        prop_declaration_json("number", json!({ "type": "number" })),
+                        prop_declaration_json("color", json!({ "$ref": "#/$defs/color" })),
+                        prop_declaration_json("vec2", json!({ "$ref": "#/$defs/vec2" }))
+                    ]
+                },
+                "clipPropValue": {
+                    "description": "A value for a template prop: a literal of the prop's type or an expression.",
+                    "anyOf": [
+                        { "type": "number" },
+                        { "type": "string" },
+                        { "$ref": "#/$defs/vec2" },
+                        { "$ref": "#/$defs/color" }
+                    ]
+                },
                 "expression": {
                     "description": "An expression evaluated per frame in place of a literal value.",
                     "type": "string",
@@ -480,6 +546,15 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
     ))
 }
 
+fn prop_declaration_json(kind: &str, default: Value) -> Value {
+    json!({
+        "type": "object",
+        "required": ["type"],
+        "properties": { "type": { "const": kind }, "default": default },
+        "additionalProperties": false
+    })
+}
+
 fn expressions_json() -> Value {
     use lumen_engine::expr::{BUILTINS, Easing, GLOBALS};
     let builtins = BUILTINS
@@ -550,6 +625,10 @@ fn property_schema_json(property: &NodeParamSpec) -> Value {
         NodeParamKind::ShaderUniforms => json!({
             "type": "object",
             "additionalProperties": { "$ref": "#/$defs/shaderUniformValue" }
+        }),
+        NodeParamKind::ClipProps => json!({
+            "type": "object",
+            "additionalProperties": { "$ref": "#/$defs/clipPropValue" }
         }),
         NodeParamKind::Enum => {
             let values = property
@@ -700,6 +779,7 @@ fn property_kind_from_schema(kind: lumen_engine::node::PropertyKind) -> NodePara
         lumen_engine::node::PropertyKind::Vec2 => NodeParamKind::Vec2,
         lumen_engine::node::PropertyKind::Enum => NodeParamKind::Enum,
         lumen_engine::node::PropertyKind::ShaderUniforms => NodeParamKind::ShaderUniforms,
+        lumen_engine::node::PropertyKind::ClipProps => NodeParamKind::ClipProps,
     }
 }
 
@@ -747,6 +827,9 @@ fn literal_from_property_value(
         lumen_engine::node::PropertyValue::Vec2(value) => Ok(NodeLiteralValue::Vec2(*value)),
         lumen_engine::node::PropertyValue::ShaderUniforms(value) => {
             Ok(NodeLiteralValue::ShaderUniforms(value.to_json_value()))
+        }
+        lumen_engine::node::PropertyValue::ClipProps(value) => {
+            Ok(NodeLiteralValue::ClipProps(value.to_json_value()))
         }
         other => bail!("unsupported default param literal: {other:?}"),
     }
@@ -862,6 +945,43 @@ mod tests {
                 lumen_engine::json::parse_value(&composition).is_ok(),
                 valid,
                 "{uniforms}"
+            );
+        }
+    }
+
+    #[test]
+    fn compositions_schema_matches_engine_parsing() {
+        let validator = schema_validator();
+        let demo: Value =
+            serde_json::from_str(include_str!("../../local/demo/clips.json")).unwrap();
+        assert!(validator.is_valid(&demo), "clips demo should validate");
+        lumen_engine::json::parse_value(&demo).unwrap();
+
+        let with_template = |template: Value| {
+            let mut value = demo.clone();
+            value["compositions"]["title_card"] = template;
+            value
+        };
+        let template = &demo["compositions"]["title_card"];
+        for (patch, valid) in [
+            (json!({}), true),
+            (
+                json!({ "props": { "n": { "type": "number", "default": "x" } } }),
+                false,
+            ),
+            (json!({ "props": { "n": { "type": "matrix" } } }), false),
+            (json!({ "functions": {} }), false),
+        ] {
+            let mut template = template.clone();
+            for (key, value) in patch.as_object().unwrap() {
+                template[key] = value.clone();
+            }
+            let composition = with_template(template);
+            assert_eq!(validator.is_valid(&composition), valid, "{patch}");
+            assert_eq!(
+                lumen_engine::json::parse_value(&composition).is_ok(),
+                valid,
+                "{patch}"
             );
         }
     }

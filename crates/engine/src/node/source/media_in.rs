@@ -236,12 +236,7 @@ impl GpuCompileNode for MediaIn {
             return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let size = self.native_size(ctx).unwrap_or_else(|| {
-            lumen_gpu::Size::new(
-                ctx.composition().render_settings.width.max(1),
-                ctx.composition().render_settings.height.max(1),
-            )
-        });
+        let size = self.native_size(ctx).unwrap_or_else(|| ctx.canvas_size());
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("media-in:{}:frame", self.id.0)),

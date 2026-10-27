@@ -2,13 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     composition::Composition,
-    error::{GraphValidationError, LumenError, MediaError},
+    error::{LumenError, MediaError},
     expr::ExpressionContext,
-    node::{
-        NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef,
-        processing::time_remap::{TimeRemapSettings, remap_frame},
-        source::media_in,
-    },
+    node::{NodeKind, PortRef, source::media_in},
+    scope::{Routed, Scope},
 };
 
 use super::MediaStore;
@@ -76,10 +73,11 @@ pub fn collect_frame_requirements<M: MediaStore>(
     frame: u32,
 ) -> Result<FrameRequirements, LumenError> {
     tracing::trace!(target: "lumen_media", frame, "collect frame requirements");
-    let output_port = media_output_port(composition)?;
+    let scope = Scope::root(composition);
+    let output_port = PortRef::new(scope.media_output()?, "output".to_string());
     let mut collector = RenderRequirements::default();
-    let mut context = RequirementContext {
-        composition,
+    let context = RequirementContext {
+        scope,
         media_store,
         frame: f64::from(frame),
     };
@@ -96,14 +94,14 @@ pub fn collect_frame_requirements<M: MediaStore>(
 }
 
 struct RequirementContext<'a, M: MediaStore> {
-    composition: &'a Composition,
+    scope: Scope<'a>,
     media_store: &'a M,
     frame: f64,
 }
 
 impl<'a, M: MediaStore> RequirementContext<'a, M> {
     fn collect_port(
-        &mut self,
+        &self,
         port: &PortRef,
         collector: &mut RenderRequirements,
     ) -> Result<(), LumenError> {
@@ -111,68 +109,23 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
             return Ok(());
         }
 
-        let Some(node) = self.composition.graph.nodes.get(&port.id) else {
+        let Some(node) = self.scope.node(port.id) else {
             return Ok(());
         };
-        self.collect_node(port.id, node, collector)
-    }
-
-    fn collect_node(
-        &mut self,
-        node_id: NodeId,
-        node: &NodeKind,
-        collector: &mut RenderRequirements,
-    ) -> Result<(), LumenError> {
-        match node {
-            NodeKind::MediaOutput(media_output) => {
-                self.collect_port(&media_output.source, collector)?;
-            }
-            NodeKind::MediaIn(media_in_node) => {
-                self.collect_media_in(media_in_node, collector)?;
-            }
-            NodeKind::TimeRemap(time_remap) => {
-                let target_frame = self.remapped_frame(time_remap)?;
-                self.with_frame(target_frame, |context| {
-                    context.collect_port(&time_remap.source, collector)
-                })?;
-            }
-            NodeKind::Opacity(opacity) => {
-                self.collect_port(&opacity.source, collector)?;
-            }
-            NodeKind::Switch(switch) => {
-                if let Some(layer) = crate::node::compositing::switch::selected_layer_for_frame(
-                    switch,
-                    &self.expr_context("switch_requirements"),
-                )?
-                .and_then(|index| switch.layers.get(index))
-                {
-                    self.collect_port(layer, collector)?;
-                }
-            }
-            _ => self.collect_default_inputs(node_id, collector)?,
+        if let NodeKind::MediaIn(media_in_node) = node {
+            return self.collect_media_in(media_in_node, collector);
         }
-
-        Ok(())
-    }
-
-    fn collect_default_inputs(
-        &mut self,
-        node_id: NodeId,
-        collector: &mut RenderRequirements,
-    ) -> Result<(), LumenError> {
-        let inputs: Vec<_> = self
-            .composition
-            .graph
-            .connections
-            .iter()
-            .filter(|connection| connection.to_node == node_id)
-            .map(|connection| PortRef::new(connection.from_node, connection.from_port.clone()))
-            .collect();
-
-        for input in inputs {
-            self.collect_port(&input, collector)?;
+        for Routed {
+            port, frame, scope, ..
+        } in crate::scope::route(&self.scope, node, self.frame, Some(self.media_store))?
+        {
+            let context = RequirementContext {
+                scope,
+                media_store: self.media_store,
+                frame,
+            };
+            context.collect_port(&port, collector)?;
         }
-
         Ok(())
     }
 
@@ -209,7 +162,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 let metadata = resolver.metadata();
                 let source_frame = media_in::map_to_source_frame(
                     self.frame,
-                    self.composition.timeline.fps,
+                    self.scope.timeline.fps,
                     metadata.fps,
                     metadata.frame_count,
                     range.as_ref(),
@@ -235,62 +188,8 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
         Ok(())
     }
 
-    fn remapped_frame(
-        &self,
-        time_remap: &crate::node::processing::time_remap::TimeRemap,
-    ) -> Result<f64, LumenError> {
-        let expr_context = self.expr_context("time_remap_requirements");
-        let params = time_remap.params.eval(&NodeParamEvalContext {
-            node_id: time_remap.id,
-            expr: &expr_context,
-        })?;
-        Ok(remap_frame(TimeRemapSettings {
-            frame: params.frame,
-            loop_enabled: params.loop_enabled,
-            loop_start: params.loop_start,
-            loop_end: params.loop_end,
-        }))
-    }
-
-    fn with_frame<T>(
-        &mut self,
-        frame: f64,
-        f: impl FnOnce(&mut Self) -> Result<T, LumenError>,
-    ) -> Result<T, LumenError> {
-        let original_frame = self.frame;
-        self.frame = frame;
-        let result = f(self);
-        self.frame = original_frame;
-        result
-    }
-
     fn expr_context(&self, path: &str) -> ExpressionContext<'_> {
-        ExpressionContext {
-            frame: self.frame,
-            fps: self.composition.timeline.fps,
-            width: self.composition.render_settings.width,
-            height: self.composition.render_settings.height,
-            duration_frames: self.composition.timeline.duration_frames,
-            path: Some(path.to_string()),
-            graph: Some(&self.composition.graph),
-            media: Some(self.media_store),
-            glyph: None,
-        }
+        self.scope
+            .expr_context(self.frame, path.to_string(), Some(self.media_store))
     }
-}
-
-fn media_output_port(composition: &Composition) -> Result<PortRef, LumenError> {
-    let mut media_outputs = composition
-        .graph
-        .nodes
-        .iter()
-        .filter_map(|(node_id, node)| matches!(node, NodeKind::MediaOutput(_)).then_some(*node_id));
-    let Some(output_node_id) = media_outputs.next() else {
-        return Err(GraphValidationError::MissingMediaOutput.into());
-    };
-    if media_outputs.next().is_some() {
-        return Err(GraphValidationError::MultipleMediaOutputs { count: 2 }.into());
-    }
-
-    Ok(PortRef::new(output_node_id, "output".to_string()))
 }

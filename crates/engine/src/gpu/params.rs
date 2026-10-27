@@ -4,25 +4,6 @@ use crate::{error::RenderError, node::NodeId};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct ColorParams {
-    pub(crate) color: [f32; 4],
-}
-
-impl ColorParams {
-    pub(crate) fn from_rgba8(color: [u8; 4]) -> Self {
-        Self {
-            color: [
-                f32::from(color[0]) / 255.0,
-                f32::from(color[1]) / 255.0,
-                f32::from(color[2]) / 255.0,
-                f32::from(color[3]) / 255.0,
-            ],
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct AlphaPremultiplyParams {
     pub(crate) values: [f32; 4],
 }

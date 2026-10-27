@@ -116,6 +116,7 @@ pub(crate) fn property_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
         "shader_uniforms" | "ShaderUniforms" => {
             quote!(::lumen_engine::node::PropertyKind::ShaderUniforms)
         }
+        "clip_props" | "ClipProps" => quote!(::lumen_engine::node::PropertyKind::ClipProps),
         _ => {
             let span = kind.span();
             quote::quote_spanned!(span=> compile_error!("unknown param kind"))

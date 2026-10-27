@@ -101,10 +101,7 @@ impl GpuCompileNode for Resize {
         let source = ctx
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
-        let size = lumen_gpu::Size::new(
-            ctx.composition().render_settings.width.max(1),
-            ctx.composition().render_settings.height.max(1),
-        );
+        let size = ctx.canvas_size();
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("resize:{}:output", self.id.0)),

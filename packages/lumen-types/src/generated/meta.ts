@@ -3,8 +3,8 @@
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodeParamKind = "bool" | "enum" | "float" | "int" | "paint" | "shader_uniforms" | "string" | "vec2";
-export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "int" | "paint" | "shader_uniforms" | "string" | "vec2";
+export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "clip" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 
@@ -638,6 +638,19 @@ export const expressionBuiltins = [
   {
     "args": [
       {
+        "kind": "string",
+        "name": "name"
+      }
+    ],
+    "doc": "The value of a composition template's prop, e.g. `prop('title')`. Only inside a template.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "prop",
+    "returns": "any"
+  },
+  {
+    "args": [
+      {
         "kind": "number",
         "name": "t"
       },
@@ -786,6 +799,7 @@ export type NodeLiteralValue =
   | string
   | GradientPaint
   | ShaderUniforms
+  | ClipProps
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]
@@ -838,12 +852,16 @@ export type ShaderUniformValue =
     ]
   | HexColor;
 export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
+/** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
+export type ClipPropValue = number | string | Vec2 | Color;
+export type ClipProps = Readonly<Record<string, ClipPropValue>>;
 
 export type BooleanOperation = "union" | "intersect" | "subtract" | "xor";
 export type ChannelShuffleAlpha = "red" | "green" | "blue" | "alpha" | "zero" | "one";
 export type ChannelShuffleBlue = "red" | "green" | "blue" | "alpha" | "zero" | "one";
 export type ChannelShuffleGreen = "red" | "green" | "blue" | "alpha" | "zero" | "one";
 export type ChannelShuffleRed = "red" | "green" | "blue" | "alpha" | "zero" | "one";
+export type ClipEnd = "hide" | "hold" | "loop";
 export type MediaInKind = "image" | "video";
 export type MediaInLoopMode = "clamp" | "repeat" | "ping_pong";
 export type MergeBlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
@@ -897,6 +915,18 @@ export interface ChannelShuffleNode extends CompositionNodeBase<"channel_shuffle
     readonly "blue"?: ChannelShuffleBlue;
     readonly "green"?: ChannelShuffleGreen;
     readonly "red"?: ChannelShuffleRed;
+  };
+}
+
+export interface ClipNode extends CompositionNodeBase<"clip"> {
+  readonly params?: {
+    readonly "composition"?: string;
+    readonly "duration"?: ExpressionValue<number>;
+    readonly "end"?: ClipEnd;
+    readonly "offset"?: ExpressionValue<number>;
+    readonly "props"?: ClipProps;
+    readonly "speed"?: ExpressionValue<number>;
+    readonly "start"?: ExpressionValue<number>;
   };
 }
 
@@ -1129,6 +1159,7 @@ export interface CompositionNodeByKind {
   readonly "blur": BlurNode;
   readonly "boolean": BooleanNode;
   readonly "channel_shuffle": ChannelShuffleNode;
+  readonly "clip": ClipNode;
   readonly "color_grade": ColorGradeNode;
   readonly "crop": CropNode;
   readonly "curves": CurvesNode;
@@ -1166,6 +1197,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "channel_shuffle": Omit<ChannelShuffleNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "clip": Omit<ClipNode, "id"> & {
     readonly id?: number;
   };
   readonly "color_grade": Omit<ColorGradeNode, "id"> & {

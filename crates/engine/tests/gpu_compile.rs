@@ -9503,3 +9503,328 @@ fn bounded_blur_of_text_matches_full_frame_at_fractional_positions() {
         );
     }
 }
+
+/// A composition whose `probe` template draws its whole canvas with red at 10 × its frame and
+/// green at its `g` prop. The root plays `clip` into its output; both use node ids 1 and 2.
+fn probe_composition(template_fps: f64, clip: serde_json::Value) -> serde_json::Value {
+    json!({
+        "timeline": { "fps": 10, "duration_frames": 40 },
+        "render_settings": { "width": 1, "height": 1 },
+        "compositions": {
+            "probe": {
+                "render_settings": { "width": 1, "height": 1 },
+                "timeline": { "fps": template_fps, "duration_frames": 10 },
+                "props": { "g": { "type": "number", "default": 7 } },
+                "nodes": [
+                    { "id": 1, "type": "background", "params": { "paint": "=rgb(frame * 10, prop('g'), 0)" } },
+                    { "id": 2, "type": "media_output" }
+                ],
+                "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+            }
+        },
+        "nodes": [
+            { "id": 1, "type": "clip", "params": clip },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+    })
+}
+
+/// The pixel at (0, 0) of each frame, from one renderer.
+fn first_pixels(composition: &serde_json::Value, frames: &[u32]) -> Option<Vec<[u8; 4]>> {
+    let composition = lumen_engine::json::parse_value(composition).unwrap();
+    let mut renderer = gpu_composition_renderer()?;
+    Some(
+        frames
+            .iter()
+            .map(|frame| {
+                let pixels = render_rgba8(&mut renderer, &composition, *frame, &EmptyMediaStore);
+                pixels[..4].try_into().unwrap()
+            })
+            .collect(),
+    )
+}
+
+const CLEAR: [u8; 4] = [0, 0, 0, 0];
+
+fn probe(red: u8) -> [u8; 4] {
+    [red, 7, 0, 255]
+}
+
+#[test]
+fn clip_plays_its_template_in_local_time_and_hides_outside_its_window() {
+    let composition = probe_composition(
+        10.0,
+        json!({ "composition": "probe", "start": 2, "duration": 3 }),
+    );
+    let Some(pixels) = first_pixels(&composition, &[1, 2, 4, 5]) else {
+        return;
+    };
+    assert_eq!(pixels, [CLEAR, probe(0), probe(20), CLEAR]);
+}
+
+#[test]
+fn clip_end_modes_hold_the_last_frame_or_loop() {
+    let hold = probe_composition(
+        10.0,
+        json!({ "composition": "probe", "start": 2, "duration": 3, "end": "hold" }),
+    );
+    let loops = probe_composition(
+        10.0,
+        json!({ "composition": "probe", "start": 2, "duration": 3, "end": "loop" }),
+    );
+    let (Some(hold), Some(loops)) = (
+        first_pixels(&hold, &[1, 4, 5, 30]),
+        first_pixels(&loops, &[1, 4, 5, 9]),
+    ) else {
+        return;
+    };
+    assert_eq!(hold, [CLEAR, probe(20), probe(20), probe(20)]);
+    assert_eq!(loops, [CLEAR, probe(20), probe(0), probe(10)]);
+}
+
+#[test]
+fn clip_speed_offset_and_template_fps_set_its_local_frame() {
+    // local = (frame - start) * speed * template_fps / fps + offset
+    let fast = probe_composition(
+        10.0,
+        json!({ "composition": "probe", "start": 2, "speed": 1.5, "offset": 2 }),
+    );
+    // The template runs at twice the root's fps, so its 10 frames last 5 root frames.
+    let doubled = probe_composition(20.0, json!({ "composition": "probe", "start": 0 }));
+    let (Some(fast), Some(doubled)) = (
+        first_pixels(&fast, &[2, 3, 4, 7]),
+        first_pixels(&doubled, &[3, 4, 5]),
+    ) else {
+        return;
+    };
+    // The default duration plays the template's remaining 8 frames: 16 / 3 root frames.
+    assert_eq!(fast, [probe(20), probe(35), probe(50), probe(95)]);
+    assert_eq!(doubled, [probe(60), probe(80), CLEAR]);
+}
+
+#[test]
+fn clip_props_take_literals_and_expressions_in_the_parent_time() {
+    let literal = probe_composition(
+        10.0,
+        json!({ "composition": "probe", "start": 2, "props": { "g": 40 } }),
+    );
+    // Evaluated at the root frame, so it differs from the template's own frame.
+    let parent_time = probe_composition(
+        10.0,
+        json!({ "composition": "probe", "start": 2, "props": { "g": "=frame * 10" } }),
+    );
+    let (Some(literal), Some(parent_time)) = (
+        first_pixels(&literal, &[3]),
+        first_pixels(&parent_time, &[3, 5]),
+    ) else {
+        return;
+    };
+    assert_eq!(literal, [[10, 40, 0, 255]]);
+    assert_eq!(parent_time, [[10, 30, 0, 255], [30, 50, 0, 255]]);
+}
+
+#[test]
+fn template_used_n_times_renders_each_instance_with_its_props_and_time() {
+    let composition = json!({
+        "timeline": { "fps": 10, "duration_frames": 40 },
+        "render_settings": { "width": 3, "height": 1 },
+        "compositions": {
+            "probe": {
+                "render_settings": { "width": 3, "height": 1 },
+                "timeline": { "duration_frames": 10 },
+                "props": { "g": { "type": "number" }, "x": { "type": "number" } },
+                "nodes": [
+                    { "id": 1, "type": "background", "params": { "paint": "=rgb(frame * 10, prop('g'), 0)" } },
+                    { "id": 2, "type": "transform", "params": { "translate_x": "=prop('x')" } },
+                    { "id": 3, "type": "media_output" }
+                ],
+                "connections": [
+                    { "from_node": 1, "to_node": 2, "to_port": "source" },
+                    { "from_node": 2, "to_node": 3, "to_port": "source" }
+                ]
+            },
+            "strip": {
+                "render_settings": { "width": 3, "height": 1 },
+                "props": { "g": { "type": "number", "default": 50 } },
+                "nodes": [
+                    { "id": 1, "type": "clip", "params": { "composition": "probe", "start": 0, "props": { "g": "=prop('g')" } } },
+                    { "id": 2, "type": "clip", "params": { "composition": "probe", "start": 1, "props": { "g": "=prop('g') + 1", "x": 1 } } },
+                    { "id": 3, "type": "merge" },
+                    { "id": 4, "type": "media_output" }
+                ],
+                "connections": [
+                    { "from_node": 1, "to_node": 3, "to_port": "base" },
+                    { "from_node": 2, "to_node": 3, "to_port": "overlay" },
+                    { "from_node": 3, "to_node": 4, "to_port": "source" }
+                ]
+            }
+        },
+        "nodes": [
+            { "id": 1, "type": "clip", "params": { "composition": "strip", "start": 2 } },
+            { "id": 2, "type": "clip", "params": { "composition": "probe", "start": 4, "props": { "g": 99, "x": 2 } } },
+            { "id": 3, "type": "merge" },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 3, "to_port": "base" },
+            { "from_node": 2, "to_node": 3, "to_port": "overlay" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    });
+    let composition = lumen_engine::json::parse_value(&composition).unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let pixels = |renderer: &mut TestRenderer, frame| {
+        render_rgba8(renderer, &composition, frame, &EmptyMediaStore)
+            .chunks(4)
+            .map(|pixel| <[u8; 4]>::try_from(pixel).unwrap())
+            .collect::<Vec<_>>()
+    };
+    // Frame 2: the strip's first probe starts; its second and the root's probe wait.
+    assert_eq!(pixels(&mut renderer, 2), [[0, 50, 0, 255]; 3]);
+    // Frame 5: the strip is 3 frames in, its second probe 2 and moved 1 px, and the root's
+    // probe 1 and moved 2 px; each covers the ones before it.
+    assert_eq!(
+        pixels(&mut renderer, 5),
+        [[30, 50, 0, 255], [20, 51, 0, 255], [10, 99, 0, 255]]
+    );
+}
+
+#[test]
+fn hidden_clip_compiles_and_binds_nothing_upstream() {
+    let mut composition = probe_composition(10.0, json!({ "composition": "probe", "start": 5 }));
+    composition["nodes"][0]["id"] = json!(10);
+    composition["nodes"][1] = json!({ "id": 11, "type": "media_output" });
+    composition["connections"][0] = json!({ "from_node": 10, "to_node": 11, "to_port": "source" });
+    let composition = lumen_engine::json::parse_value(&composition).unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut stats = |frame| {
+        let bound = renderer
+            .bind_frame(&composition, frame, &EmptyMediaStore)
+            .unwrap();
+        let compiled = renderer.compiled().unwrap();
+        let background = compiled
+            .compiled_nodes
+            .get(&NodeId::new(1))
+            .map(|instances| instances.keys().cloned().collect::<Vec<_>>());
+        (
+            compiled.plan.passes().len(),
+            bound.buffer_upload_count(),
+            background,
+        )
+    };
+    let (hidden_passes, hidden_uploads, hidden_background) = stats(2);
+    let (shown_passes, shown_uploads, shown_background) = stats(6);
+    assert_eq!(hidden_background, None);
+    assert_eq!(shown_background, Some(vec![vec![NodeId::new(10)]]));
+    assert!(
+        hidden_passes < shown_passes,
+        "{hidden_passes} vs {shown_passes}"
+    );
+    assert!(
+        hidden_uploads < shown_uploads,
+        "{hidden_uploads} vs {shown_uploads}"
+    );
+    assert_eq!(renderer.cached_plan_count(), 2);
+}
+
+#[test]
+fn clip_windows_its_source_like_a_time_remap() {
+    let composition = json!({
+        "timeline": { "fps": 10, "duration_frames": 20 },
+        "render_settings": { "width": 1, "height": 1 },
+        "nodes": [
+            { "id": 1, "type": "background", "params": { "paint": "=rgb(frame * 10, 0, 0)" } },
+            { "id": 2, "type": "clip", "params": { "start": 5, "duration": 4, "offset": 2 } },
+            { "id": 3, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 2, "to_port": "source" },
+            { "from_node": 2, "to_node": 3, "to_port": "source" }
+        ]
+    });
+    let Some(pixels) = first_pixels(&composition, &[4, 5, 8, 9]) else {
+        return;
+    };
+    assert_eq!(pixels, [CLEAR, [20, 0, 0, 255], [50, 0, 0, 255], CLEAR]);
+}
+
+#[test]
+fn template_larger_than_its_parent_is_cropped_to_the_parent_canvas() {
+    let mut composition = probe_composition(10.0, json!({ "composition": "probe", "start": 0 }));
+    composition["render_settings"] = json!({ "width": 3, "height": 2 });
+    composition["compositions"]["probe"]["render_settings"] = json!({ "width": 5, "height": 1 });
+    let composition = lumen_engine::json::parse_value(&composition).unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let pixels = render_rgba8(&mut renderer, &composition, 2, &EmptyMediaStore);
+    assert_eq!(pixels.len(), 3 * 2 * 4);
+    assert_eq!(&pixels[..12], [probe(20), probe(20), probe(20)].concat());
+    assert_eq!(&pixels[12..], [CLEAR; 3].concat());
+}
+
+#[test]
+fn animated_sources_in_a_clip_are_bounded_over_the_clip_frames_without_clipping() {
+    // The square moves with the template's frame, which the offset starts at 4, so bounds taken
+    // over the template's first frames would clip it.
+    let composition = json!({
+        "timeline": { "fps": 10, "duration_frames": 20 },
+        "render_settings": { "width": 16, "height": 4 },
+        "compositions": {
+            "mover": {
+                "timeline": { "duration_frames": 12 },
+                "nodes": [
+                    { "id": 1, "type": "shape", "params": {
+                        "width": 2, "height": 2, "position": "=vec2(frame, 1)",
+                        "fill_paint": "#ffffff", "edge_antialias": false
+                    } },
+                    { "id": 2, "type": "media_output" }
+                ],
+                "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+            }
+        },
+        "nodes": [
+            { "id": 1, "type": "clip", "params": { "composition": "mover", "start": 10, "offset": 4 } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+    });
+    let composition = lumen_engine::json::parse_value(&composition).unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    for (frame, x) in [(10, 4), (14, 8), (17, 11)] {
+        let pixels = render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore);
+        let shape = render_shape_like(x);
+        assert_eq!(pixels, shape, "frame {frame}");
+    }
+    // The square's texture covers x 4..13 of the template's frames 4 to 11, padded by 2 pixels,
+    // rather than its whole timeline.
+    let bounded = renderer
+        .compiled()
+        .unwrap()
+        .plan
+        .textures()
+        .iter()
+        .any(|texture| texture.desc.domain.data_rect == lumen_gpu::RectI::new(2, 0, 13, 4));
+    assert!(
+        bounded,
+        "the square's texture covers its path over the clip's frames"
+    );
+}
+
+/// A 16 × 4 frame with a 2 × 2 white square at (`x`, 1).
+fn render_shape_like(x: usize) -> Vec<u8> {
+    let mut pixels = vec![0; 16 * 4 * 4];
+    for y in 1..3 {
+        for x in x..x + 2 {
+            pixels[(y * 16 + x) * 4..][..4].copy_from_slice(&[255; 4]);
+        }
+    }
+    pixels
+}

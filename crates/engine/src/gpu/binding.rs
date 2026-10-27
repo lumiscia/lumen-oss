@@ -5,14 +5,16 @@ use crate::{
     error::RenderError,
     expr::ExpressionContext,
     media::MediaStore,
-    node::{NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
+    node::{NodeId, PortRef},
+    scope::{Routed, Scope},
 };
 
-use super::{BoundFrame, CompiledComposition, FramePortRef, TimeRemapPath};
+use super::{BoundFrame, CompiledComposition, TimeRemapPath};
 
 #[derive(Debug)]
 pub struct FrameBindContext<'a> {
-    composition: &'a Composition,
+    /// The composition the node being bound belongs to.
+    scope: Scope<'a>,
     frame: f64,
     media: Option<&'a dyn MediaStore>,
 }
@@ -20,7 +22,7 @@ pub struct FrameBindContext<'a> {
 impl<'a> FrameBindContext<'a> {
     pub fn new(composition: &'a Composition, frame: u32) -> Self {
         Self {
-            composition,
+            scope: Scope::root(composition),
             frame: f64::from(frame),
             media: None,
         }
@@ -41,7 +43,7 @@ impl<'a> FrameBindContext<'a> {
         media: &'a M,
     ) -> Self {
         Self {
-            composition,
+            scope: Scope::root(composition),
             frame,
             media: Some(media),
         }
@@ -65,13 +67,12 @@ impl<'a> FrameBindContext<'a> {
                 .begin_frame();
             bound.text_atlas = Some(std::sync::Arc::clone(&compiled.text_atlas));
         }
-        let output = media_output_port(self.composition)?;
+        let output = PortRef::new(self.scope.media_output()?, "output".to_string());
         let mut visited = HashSet::new();
         let mut time_remaps = TimeRemapPath::new();
         self.bind_port(
             compiled,
             &output,
-            self.frame,
             &mut time_remaps,
             &mut visited,
             &mut bound,
@@ -82,11 +83,11 @@ impl<'a> FrameBindContext<'a> {
         Ok(bound)
     }
 
+    /// Binds `port`, which this context's scope and frame are for, after everything it reads.
     fn bind_port(
         &self,
         compiled: &CompiledComposition,
         port: &PortRef,
-        frame: f64,
         time_remaps: &mut TimeRemapPath,
         visited: &mut HashSet<(PortRef, TimeRemapPath)>,
         bound: &mut BoundFrame,
@@ -95,33 +96,28 @@ impl<'a> FrameBindContext<'a> {
             return Ok(());
         }
 
-        let node = self
-            .composition
-            .graph
-            .nodes
-            .get(&port.id)
-            .ok_or(RenderError::MissingNode {
-                frame: frame as u32,
-                node_id: port.id,
-            })?;
+        let node = self.scope.node(port.id).ok_or(RenderError::MissingNode {
+            frame: self.frame as u32,
+            node_id: port.id,
+        })?;
 
-        let frame_ctx = self.with_frame(frame);
-        let is_time_remap = matches!(node, NodeKind::TimeRemap(_));
-        if is_time_remap {
-            time_remaps.push(port.id);
-        }
-        for input in frame_ctx.frame_inputs(node)? {
-            self.bind_port(
-                compiled,
-                &input.port,
-                input.frame,
-                time_remaps,
-                visited,
-                bound,
-            )?;
-        }
-        if is_time_remap {
-            time_remaps.pop();
+        for Routed {
+            port: input,
+            frame,
+            scope,
+            instance,
+        } in crate::scope::route(&self.scope, node, self.frame, self.media)?
+        {
+            let input_ctx = Self {
+                scope,
+                frame,
+                media: self.media,
+            };
+            time_remaps.extend(instance);
+            input_ctx.bind_port(compiled, &input, time_remaps, visited, bound)?;
+            if instance.is_some() {
+                time_remaps.pop();
+            }
         }
 
         if let Some(compiled_node) = compiled
@@ -131,64 +127,14 @@ impl<'a> FrameBindContext<'a> {
         {
             tracing::trace!(
                 target: "lumen_bind",
-                frame = self.frame,
-                binding_frame = frame,
+                binding_frame = self.frame,
                 node_id = port.id.0,
                 "bind compiled node"
             );
-            compiled_node.bind(&frame_ctx, bound)?;
+            compiled_node.bind(self, bound)?;
         }
 
         Ok(())
-    }
-
-    fn with_frame(&self, frame: f64) -> Self {
-        Self {
-            composition: self.composition,
-            frame,
-            media: self.media,
-        }
-    }
-
-    fn frame_inputs(&self, node: &NodeKind) -> crate::Result<Vec<FramePortRef>> {
-        match node {
-            NodeKind::MediaOutput(node) => {
-                Ok(vec![FramePortRef::new(node.source.clone(), self.frame)])
-            }
-            NodeKind::TimeRemap(node) => {
-                let params = node.params.eval(&NodeParamEvalContext {
-                    node_id: node.id,
-                    expr: &self.expr_context(node.id, "params"),
-                })?;
-                let settings = crate::node::processing::time_remap::TimeRemapSettings {
-                    frame: params.frame,
-                    loop_enabled: params.loop_enabled,
-                    loop_start: params.loop_start,
-                    loop_end: params.loop_end,
-                };
-                Ok(vec![FramePortRef::new(
-                    node.source.clone(),
-                    crate::node::processing::time_remap::remap_frame(settings),
-                )])
-            }
-            NodeKind::Switch(node) => {
-                let params = node.params.eval(&NodeParamEvalContext {
-                    node_id: node.id,
-                    expr: &self.expr_context(node.id, "params"),
-                })?;
-                let selected =
-                    (params.selected_layer >= 0).then_some(params.selected_layer as usize);
-                Ok(selected
-                    .and_then(|index| node.layers.get(index))
-                    .map(|port| vec![FramePortRef::new(port.clone(), self.frame)])
-                    .unwrap_or_default())
-            }
-            _ => Ok(node
-                .input_ports()
-                .into_iter()
-                .map(|port| FramePortRef::new(port, self.frame))
-                .collect()),
-        }
     }
 
     /// Integer frame containing the current frame time, for diagnostics.
@@ -209,31 +155,7 @@ impl<'a> FrameBindContext<'a> {
         node_id: NodeId,
         property_path: &str,
     ) -> ExpressionContext<'_> {
-        ExpressionContext {
-            frame: self.frame,
-            fps: self.composition.timeline.fps,
-            width: self.composition.render_settings.width,
-            height: self.composition.render_settings.height,
-            duration_frames: self.composition.timeline.duration_frames,
-            path: Some(format!("{node_id}.{property_path}")),
-            graph: Some(&self.composition.graph),
-            media: self.media,
-            glyph: None,
-        }
+        self.scope
+            .expr_context(self.frame, format!("{node_id}.{property_path}"), self.media)
     }
-}
-
-fn media_output_port(composition: &Composition) -> crate::Result<PortRef> {
-    let mut outputs = composition
-        .graph
-        .nodes
-        .iter()
-        .filter_map(|(node_id, node)| matches!(node, NodeKind::MediaOutput(_)).then_some(*node_id));
-    let Some(output) = outputs.next() else {
-        return Err(crate::error::GraphValidationError::MissingMediaOutput.into());
-    };
-    if outputs.next().is_some() {
-        return Err(crate::error::GraphValidationError::MultipleMediaOutputs { count: 2 }.into());
-    }
-    Ok(PortRef::new(output, "output".to_string()))
 }

@@ -19,10 +19,13 @@ use serde_json::{Map, Value};
 
 use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack},
-    composition::{Composition, CompositionMetadata, RenderSettings, TimelineSettings},
-    expr::FunctionScope,
+    composition::{
+        Composition, CompositionMetadata, CompositionTemplate, PropDef, PropKind, RenderSettings,
+        TimelineSettings,
+    },
+    expr::{BuiltinFn, ExprNode, Expression, ExpressionValue, FunctionScope},
     graph::{Connection, Graph},
-    node::NodeId,
+    node::{ClipPropValue, NodeId, NodeKind},
 };
 
 pub(crate) use property::{
@@ -46,12 +49,49 @@ pub fn parse_value(root: &Value) -> Result<Composition> {
 
 fn parse_current_value(root: &Value) -> Result<Composition> {
     let obj = root.as_object().context("root must be an object")?;
-    let timeline = parse_timeline(obj.get("timeline").context("missing `timeline`")?)?;
+    let timeline = parse_timeline(
+        obj.get("timeline").context("missing `timeline`")?,
+        DEFAULT_FPS,
+    )?;
     let render_settings = parse_render_settings(
         obj.get("render_settings")
             .context("missing `render_settings`")?,
     )?;
 
+    let functions = parse_functions(obj.get("functions"))?;
+    let function_scope = FunctionScope::enter(&functions)?;
+    let graph = parse_graph(obj, None)?;
+    let compositions = parse_compositions(obj.get("compositions"), &timeline, &render_settings)?;
+    drop(function_scope);
+
+    let metadata = obj.get("metadata").map(|v| CompositionMetadata {
+        name: v.get("name").and_then(|n| n.as_str()).map(String::from),
+    });
+
+    let mut comp = Composition::new(graph, timeline, render_settings);
+    comp.metadata = metadata;
+    comp.compositions = compositions;
+    comp.audio = root
+        .get("audio")
+        .map(|audio| parse_audio_timeline(audio, comp.timeline.fps))
+        .transpose()?;
+    validate_clips(&comp)?;
+    if let Err(errors) = comp.validate_structure() {
+        let details = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!("composition structure validation failed: {details}");
+    }
+    Ok(comp)
+}
+
+/// Builds the nodes and connections of the root, or of a template whose props are `props`.
+fn parse_graph(
+    obj: &Map<String, Value>,
+    props: Option<&BTreeMap<String, PropDef>>,
+) -> Result<Graph> {
     let nodes_arr = obj
         .get("nodes")
         .and_then(|v| v.as_array())
@@ -62,8 +102,6 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
         .context("`connections` must be an array")?;
 
     let mut graph = Graph::new();
-    let functions = parse_functions(obj.get("functions"))?;
-    let function_scope = FunctionScope::enter(&functions)?;
 
     // First pass: create all nodes
     for node_val in nodes_arr {
@@ -75,9 +113,11 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
             .context("node missing `type` string")?;
 
         let node_kind = node::build_node(kind_str, id, node_obj)?;
+        if let Some(params) = node_obj.get("params") {
+            check_prop_reads(params, props).with_context(|| format!("node {id}"))?;
+        }
         graph.nodes.insert(id, node_kind);
     }
-    drop(function_scope);
 
     // Second pass: create connections and wire up PortRefs
     for conn_val in connections_arr {
@@ -108,26 +148,287 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
                 format!("connecting {from_node}:{from_port} -> {to_node}:{to_port}")
             })?;
     }
+    Ok(graph)
+}
 
-    let metadata = obj.get("metadata").map(|v| CompositionMetadata {
-        name: v.get("name").and_then(|n| n.as_str()).map(String::from),
-    });
+/// Rejects `prop('name')` calls outside a template, with a name that isn't a string literal, or
+/// for a prop the template doesn't declare. Malformed expressions are left to the node parser.
+fn check_prop_reads(value: &Value, props: Option<&BTreeMap<String, PropDef>>) -> Result<()> {
+    match value {
+        Value::String(text) => {
+            let Some(StringParam::Expression(source)) = classify_string(text) else {
+                return Ok(());
+            };
+            let Ok(expression) = Expression::parse(source) else {
+                return Ok(());
+            };
+            let mut error = None;
+            crate::expr::functions::visit(&expression.ast, &mut |node| {
+                let ExprNode::Builtin(BuiltinFn::Prop, args) = node else {
+                    return;
+                };
+                let name = match args.as_slice() {
+                    [ExprNode::Literal(ExpressionValue::String(name))] => name,
+                    _ => {
+                        error.get_or_insert_with(|| {
+                            format!("`prop` takes the prop's name as a string literal, in `{text}`")
+                        });
+                        return;
+                    }
+                };
+                let Some(props) = props else {
+                    error.get_or_insert_with(|| {
+                        format!(
+                            "`prop('{name}')` is only available inside a composition template, in `{text}`"
+                        )
+                    });
+                    return;
+                };
+                if !props.contains_key(name) {
+                    error.get_or_insert_with(|| {
+                        format!(
+                            "unknown prop `{name}` in `{text}`; {}",
+                            declared_props(props)
+                        )
+                    });
+                }
+            });
+            match error {
+                Some(error) => bail!(error),
+                None => Ok(()),
+            }
+        }
+        Value::Array(items) => items
+            .iter()
+            .try_for_each(|item| check_prop_reads(item, props)),
+        Value::Object(map) => map
+            .values()
+            .try_for_each(|item| check_prop_reads(item, props)),
+        _ => Ok(()),
+    }
+}
 
-    let mut comp = Composition::new(graph, timeline, render_settings);
-    comp.metadata = metadata;
-    comp.audio = root
-        .get("audio")
-        .map(|audio| parse_audio_timeline(audio, comp.timeline.fps))
-        .transpose()?;
-    if let Err(errors) = comp.validate_structure() {
+fn declared_props(props: &BTreeMap<String, PropDef>) -> String {
+    if props.is_empty() {
+        return "the template declares no props".to_string();
+    }
+    let names = props
+        .keys()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("the template declares {names}")
+}
+
+/// Parses the `compositions` templates. A template without `render_settings` takes the root's
+/// size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's
+/// fps.
+fn parse_compositions(
+    val: Option<&Value>,
+    root_timeline: &TimelineSettings,
+    root_settings: &RenderSettings,
+) -> Result<BTreeMap<String, CompositionTemplate>> {
+    let Some(val) = val else {
+        return Ok(BTreeMap::new());
+    };
+    val.as_object()
+        .context("`compositions` must be an object of templates by name")?
+        .iter()
+        .map(|(name, template)| {
+            parse_template(template, root_timeline, root_settings)
+                .with_context(|| format!("composition `{name}`"))
+                .map(|template| (name.clone(), template))
+        })
+        .collect()
+}
+
+fn parse_template(
+    val: &Value,
+    root_timeline: &TimelineSettings,
+    root_settings: &RenderSettings,
+) -> Result<CompositionTemplate> {
+    const KEYS: [&str; 5] = [
+        "render_settings",
+        "timeline",
+        "props",
+        "nodes",
+        "connections",
+    ];
+    let obj = val.as_object().context("template must be an object")?;
+    if let Some(key) = obj.keys().find(|key| !KEYS.contains(&key.as_str())) {
+        bail!(
+            "unknown key `{key}`; a template has {}",
+            KEYS.map(|key| format!("`{key}`")).join(", ")
+        );
+    }
+    let timeline = match obj.get("timeline") {
+        Some(timeline) => parse_timeline(timeline, root_timeline.fps)?,
+        None => root_timeline.clone(),
+    };
+    let render_settings = match obj.get("render_settings") {
+        Some(settings) => parse_render_settings(settings)?,
+        None => root_settings.clone(),
+    };
+    let props = obj
+        .get("props")
+        .map(parse_prop_defs)
+        .transpose()?
+        .unwrap_or_default();
+    let graph = parse_graph(obj, Some(&props))?;
+    if let Err(errors) = graph.validate() {
         let details = errors
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("; ");
-        bail!("composition structure validation failed: {details}");
+        bail!("structure validation failed: {details}");
     }
-    Ok(comp)
+    Ok(CompositionTemplate {
+        graph,
+        timeline,
+        render_settings,
+        props,
+    })
+}
+
+fn parse_prop_defs(val: &Value) -> Result<BTreeMap<String, PropDef>> {
+    val.as_object()
+        .context("`props` must be an object of prop declarations by name")?
+        .iter()
+        .map(|(name, def)| {
+            let obj = def
+                .as_object()
+                .with_context(|| format!("prop `{name}` must be an object with a `type`"))?;
+            if let Some(key) = obj
+                .keys()
+                .find(|key| !matches!(key.as_str(), "type" | "default"))
+            {
+                bail!("prop `{name}` has unknown key `{key}`; a prop has `type` and `default`");
+            }
+            let kind = obj
+                .get("type")
+                .and_then(Value::as_str)
+                .and_then(PropKind::parse)
+                .with_context(|| {
+                    format!("prop `{name}` needs a `type` of string, number, color or vec2")
+                })?;
+            let default = match obj.get("default") {
+                Some(value) => kind
+                    .literal(value)
+                    .map_err(|error| anyhow::anyhow!("prop `{name}` default: {error}"))?,
+                None => kind.zero(),
+            };
+            Ok((name.clone(), PropDef { kind, default }))
+        })
+        .collect()
+}
+
+/// Checks each clip against the template it names: the template exists, the clip doesn't also
+/// take a source, its props are declared with literals of the right kind, and no template
+/// instantiates itself.
+fn validate_clips(comp: &Composition) -> Result<()> {
+    let graphs = std::iter::once((None, &comp.graph)).chain(
+        comp.compositions
+            .iter()
+            .map(|(name, template)| (Some(name.as_str()), &template.graph)),
+    );
+    for (owner, graph) in graphs {
+        let mut clips = graph
+            .nodes
+            .values()
+            .filter_map(|node| match node {
+                NodeKind::Clip(clip) => Some(clip),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        clips.sort_by_key(|clip| clip.id);
+        for clip in clips {
+            let context = || match owner {
+                Some(owner) => format!("composition `{owner}`: node {}", clip.id),
+                None => format!("node {}", clip.id),
+            };
+            validate_clip(comp, clip).with_context(context)?;
+        }
+    }
+    for name in comp.compositions.keys() {
+        let mut path = vec![name.as_str()];
+        check_template_cycle(comp, &mut path)?;
+    }
+    Ok(())
+}
+
+fn validate_clip(comp: &Composition, clip: &crate::node::compositing::clip::Clip) -> Result<()> {
+    let Some(name) = clip.template_name() else {
+        if let Some(prop) = clip.props().0.keys().next() {
+            bail!(
+                "prop `{prop}` is set, but the clip plays its `source` rather than a composition"
+            );
+        }
+        return Ok(());
+    };
+    let Some(template) = comp.compositions.get(name) else {
+        let defined = comp
+            .compositions
+            .keys()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>();
+        bail!(
+            "composition `{name}` is not defined; `compositions` has {}",
+            if defined.is_empty() {
+                "none".to_string()
+            } else {
+                defined.join(", ")
+            }
+        );
+    };
+    if !clip.source.is_empty() {
+        bail!("a clip plays either a `composition` or its `source` input, not both");
+    }
+    for (prop, value) in &clip.props().0 {
+        let Some(def) = template.props.get(prop) else {
+            bail!(
+                "composition `{name}` has no prop `{prop}`; {}",
+                declared_props(&template.props)
+            );
+        };
+        if let ClipPropValue::Literal(value) = value {
+            def.kind
+                .literal(value)
+                .map_err(|error| anyhow::anyhow!("prop `{prop}` of `{name}`: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Fails when the template at the end of `path` instantiates one already on it.
+fn check_template_cycle<'a>(comp: &'a Composition, path: &mut Vec<&'a str>) -> Result<()> {
+    let name = *path.last().expect("path starts with a template");
+    let mut used = comp.compositions[name]
+        .graph
+        .nodes
+        .values()
+        .filter_map(|node| match node {
+            NodeKind::Clip(clip) => clip.template_name(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    used.sort_unstable();
+    used.dedup();
+    for next in used {
+        if let Some(start) = path.iter().position(|name| *name == next) {
+            let cycle = path[start..]
+                .iter()
+                .chain([&next])
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            bail!("compositions instantiate themselves: {cycle}");
+        }
+        path.push(next);
+        check_template_cycle(comp, path)?;
+        path.pop();
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -150,10 +451,10 @@ fn parse_functions(val: Option<&Value>) -> Result<BTreeMap<String, String>> {
         .collect()
 }
 
-fn parse_timeline(val: &Value) -> Result<TimelineSettings> {
+fn parse_timeline(val: &Value, default_fps: f32) -> Result<TimelineSettings> {
     let obj = val.as_object().context("`timeline` must be an object")?;
     let fps = match obj.get("fps") {
-        None => DEFAULT_FPS,
+        None => default_fps,
         Some(value) => value
             .as_f64()
             .map(|fps| fps as f32)
@@ -537,6 +838,7 @@ mod tests {
                 graph: Some(&composition.graph),
                 media: None,
                 glyph: None,
+                props: None,
             };
 
             assert_eq!(
@@ -819,6 +1121,226 @@ mod tests {
         assert_eq!(
             (comp.render_settings.width, comp.render_settings.height),
             (100, 50)
+        );
+    }
+
+    /// A root that plays `card` with `clip` params, where `card` declares a string `title` and a
+    /// number `index` and draws `card_nodes` into its output.
+    fn clip_composition(clip: Value, card_nodes: Value) -> Value {
+        serde_json::json!({
+            "timeline": { "fps": 30, "duration_frames": 60 },
+            "render_settings": { "width": 16, "height": 16 },
+            "compositions": {
+                "card": {
+                    "props": {
+                        "title": { "type": "string", "default": "Untitled" },
+                        "index": { "type": "number" }
+                    },
+                    "nodes": card_nodes,
+                    "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+                }
+            },
+            "nodes": [
+                { "id": 1, "type": "clip", "params": clip },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+        })
+    }
+
+    fn card_nodes(paint: &str) -> Value {
+        serde_json::json!([
+            { "id": 1, "type": "background", "params": { "paint": paint } },
+            { "id": 2, "type": "media_output" }
+        ])
+    }
+
+    fn clip_error(clip: Value, paint: &str) -> String {
+        format!(
+            "{:#}",
+            parse_value(&clip_composition(clip, card_nodes(paint))).unwrap_err()
+        )
+    }
+
+    #[test]
+    fn parses_the_clips_demo() {
+        let comp = parse(include_str!("../../../local/demo/clips.json")).expect("should parse");
+        assert!(comp.compositions.contains_key("title_card"));
+    }
+
+    #[test]
+    fn template_node_ids_are_scoped_to_the_template() {
+        let comp = parse_value(&clip_composition(
+            serde_json::json!({ "composition": "card", "props": { "title": "A", "index": 2 } }),
+            card_nodes("=rgb(prop('index'), 0, 0)"),
+        ))
+        .unwrap();
+        let card = &comp.compositions["card"];
+        assert!(matches!(
+            card.graph.nodes[&NodeId::new(1)],
+            NodeKind::Background(_)
+        ));
+        assert!(matches!(
+            comp.graph.nodes[&NodeId::new(1)],
+            NodeKind::Clip(_)
+        ));
+        assert_eq!(card.props["index"].default, ExpressionValue::Number(0.0));
+        assert_eq!(
+            card.timeline.duration_frames, 60,
+            "a template without a timeline takes the root's"
+        );
+    }
+
+    #[test]
+    fn clip_props_are_checked_against_the_template() {
+        let paint = "#ff0000";
+        for (clip, expected) in [
+            (
+                serde_json::json!({ "composition": "card", "props": { "titel": "x" } }),
+                "node 1: composition `card` has no prop `titel`; the template declares `index`, `title`",
+            ),
+            (
+                serde_json::json!({ "composition": "card", "props": { "index": "two" } }),
+                "prop `index` of `card`: expected a number, got \"two\"",
+            ),
+            (
+                serde_json::json!({ "composition": "missing" }),
+                "composition `missing` is not defined; `compositions` has `card`",
+            ),
+            (
+                serde_json::json!({ "props": { "title": "x" } }),
+                "prop `title` is set, but the clip plays its `source`",
+            ),
+            (
+                serde_json::json!({ "composition": "card", "props": "=1" }),
+                "`props` on node 1 does not support expressions",
+            ),
+        ] {
+            let error = clip_error(clip.clone(), paint);
+            assert!(error.contains(expected), "{clip}: {error}");
+        }
+    }
+
+    #[test]
+    fn prop_reads_must_name_a_declared_prop_inside_a_template() {
+        let clip = serde_json::json!({ "composition": "card" });
+        for (paint, expected) in [
+            (
+                "=rgb(prop('size'), 0, 0)",
+                "unknown prop `size` in `=rgb(prop('size'), 0, 0)`; the template declares `index`, `title`",
+            ),
+            (
+                "=rgb(prop(uppercase('index')), 0, 0)",
+                "`prop` takes the prop's name as a string literal",
+            ),
+        ] {
+            let error = clip_error(clip.clone(), paint);
+            assert!(error.contains("composition `card`"), "{error}");
+            assert!(error.contains(expected), "{paint}: {error}");
+        }
+
+        let mut root_read = clip_composition(clip, card_nodes("#000000"));
+        root_read["nodes"][0] = serde_json::json!({
+            "id": 1, "type": "background", "params": { "paint": "=rgb(prop('index'), 0, 0)" }
+        });
+        let error = format!("{:#}", parse_value(&root_read).unwrap_err());
+        assert!(
+            error.contains("`prop('index')` is only available inside a composition template"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn prop_declarations_need_a_type_and_a_default_of_it() {
+        for (props, expected) in [
+            (
+                serde_json::json!({ "a": { "type": "bool" } }),
+                "prop `a` needs a `type` of string, number, color or vec2",
+            ),
+            (
+                serde_json::json!({ "a": { "type": "color", "default": "red" } }),
+                "prop `a` default: expected a color, got \"red\"",
+            ),
+            (
+                serde_json::json!({ "a": { "type": "vec2", "default": [1] } }),
+                "expected a vec2",
+            ),
+            (
+                serde_json::json!({ "a": { "type": "number", "deflt": 1 } }),
+                "prop `a` has unknown key `deflt`",
+            ),
+        ] {
+            let mut comp = clip_composition(
+                serde_json::json!({ "composition": "card" }),
+                card_nodes("#000000"),
+            );
+            comp["compositions"]["card"]["props"] = props.clone();
+            let error = format!("{:#}", parse_value(&comp).unwrap_err());
+            assert!(error.contains(expected), "{props}: {error}");
+        }
+    }
+
+    #[test]
+    fn templates_that_instantiate_themselves_are_rejected() {
+        let template = |plays: &str| {
+            serde_json::json!({
+                "nodes": [
+                    { "id": 1, "type": "clip", "params": { "composition": plays } },
+                    { "id": 2, "type": "media_output" }
+                ],
+                "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+            })
+        };
+        let mut comp = clip_composition(
+            serde_json::json!({ "composition": "a" }),
+            card_nodes("#000000"),
+        );
+        comp["compositions"] = serde_json::json!({ "a": template("b"), "b": template("a") });
+        let error = format!("{:#}", parse_value(&comp).unwrap_err());
+        assert!(
+            error.contains("compositions instantiate themselves: `a` -> `b` -> `a`"),
+            "{error}"
+        );
+        comp["compositions"] = serde_json::json!({ "a": template("a") });
+        let error = format!("{:#}", parse_value(&comp).unwrap_err());
+        assert!(error.contains("`a` -> `a`"), "{error}");
+    }
+
+    #[test]
+    fn clip_rejects_a_composition_and_a_source_together() {
+        let mut comp = clip_composition(
+            serde_json::json!({ "composition": "card" }),
+            card_nodes("#000000"),
+        );
+        comp["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({ "id": 3, "type": "background" }));
+        comp["connections"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({ "from_node": 3, "to_node": 1, "to_port": "source" }));
+        let error = format!("{:#}", parse_value(&comp).unwrap_err());
+        assert!(
+            error.contains("plays either a `composition` or its `source` input"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn prop_expressions_of_the_wrong_type_fail_when_evaluated() {
+        let comp = parse_value(&clip_composition(
+            serde_json::json!({ "composition": "card", "props": { "index": "='two'" } }),
+            card_nodes("#000000"),
+        ))
+        .unwrap();
+        let scope = crate::scope::Scope::root(&comp);
+        let error = crate::scope::route(&scope, &comp.graph.nodes[&NodeId::new(1)], 0.0, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("prop `index`: expected a number, got string"),
+            "{error}"
         );
     }
 }

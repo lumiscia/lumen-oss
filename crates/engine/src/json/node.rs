@@ -6,7 +6,8 @@ use serde_json::Value;
 use crate::node::{
     JsonNode, NodeId, NodeKind,
     compositing::{
-        boolean::Boolean, merge::Merge, raster_multimerge::RasterMultiMerge, switch::Switch,
+        boolean::Boolean, clip::Clip, merge::Merge, raster_multimerge::RasterMultiMerge,
+        switch::Switch,
     },
     media_output::MediaOutput,
     processing::{
@@ -39,6 +40,7 @@ pub fn build_node(
             id, params,
         )?)),
         "switch" => Ok(NodeKind::Switch(Switch::from_json(id, params)?)),
+        "clip" => Ok(NodeKind::Clip(Clip::from_json(id, params)?)),
         "memo" => Ok(NodeKind::Memo(Memo::from_json(id, params)?)),
         "opacity" => Ok(NodeKind::Opacity(Opacity::from_json(id, params)?)),
         "alpha_premultiply" => Ok(NodeKind::AlphaPremultiply(AlphaPremultiply::from_json(

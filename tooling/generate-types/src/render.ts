@@ -36,6 +36,8 @@ const paramType = (nodeKind: string, param: NodeParamSpec): string => {
       return "Vec2";
     case "shader_uniforms":
       return "ShaderUniforms";
+    case "clip_props":
+      return "ClipProps";
     case "enum":
       return enumTypeForParam(nodeKind, param);
     default:
@@ -192,6 +194,7 @@ export type NodeLiteralValue =
   | string
   | GradientPaint
   | ShaderUniforms
+  | ClipProps
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]
@@ -244,6 +247,9 @@ export type ShaderUniformValue =
     ]
   | HexColor;
 export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
+/** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
+export type ClipPropValue = number | string | Vec2 | Color;
+export type ClipProps = Readonly<Record<string, ClipPropValue>>;
 
 ${enumTypes}
 
@@ -270,7 +276,8 @@ export type CompositionNodeInput<TKind extends NodeKind = NodeKind> = Compositio
 export function renderSchemaTypePrelude(): string {
   return `import type {
   Color,
-  CompositionNode
+  CompositionNode,
+  Vec2
 } from "./meta.js";
 
 export interface Connection {
@@ -278,6 +285,28 @@ export interface Connection {
   readonly from_port?: string;
   readonly to_node: number;
   readonly to_port: string;
+}
+
+export type CompositionPropDeclaration =
+  | { readonly type: "string"; readonly default?: string }
+  | { readonly type: "number"; readonly default?: number }
+  | { readonly type: "color"; readonly default?: Color }
+  | { readonly type: "vec2"; readonly default?: Vec2 };
+
+/** A composition a \`clip\` plays. Without \`render_settings\` or \`timeline\` it takes the root's. */
+export interface CompositionTemplate {
+  readonly render_settings?: {
+    readonly background_color?: Color;
+    readonly height: number;
+    readonly width: number;
+  };
+  readonly timeline?: {
+    readonly duration_frames: number;
+    readonly fps?: number;
+  };
+  readonly props?: Readonly<Record<string, CompositionPropDeclaration>>;
+  readonly nodes: readonly CompositionNode[];
+  readonly connections: readonly Connection[];
 }
 
 `;
@@ -314,6 +343,8 @@ export interface LumenComposition {
     }[];
     readonly [key: string]: unknown;
   };
+  /** Reusable compositions by name, which \`clip\` nodes play. */
+  readonly compositions?: Readonly<Record<string, CompositionTemplate>>;
   readonly connections: readonly Connection[];
   /** Expression functions keyed by signature, such as \`rise(start)\`. */
   readonly functions?: Readonly<Record<\`\${string}(\${string})\`, string>>;
