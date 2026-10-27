@@ -98,6 +98,9 @@ jobs:
           sudo apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/cuda-ubuntu2404-x86_64.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
           sudo apt-get install -y --no-install-recommends cuda-nvcc-12-8 cuda-cudart-dev-12-8
           echo /usr/local/cuda-12.8/bin >> "$GITHUB_PATH"
+          # CUDA 12.8 rejects host compilers newer than gcc 14.
+          command -v g++-14 >/dev/null || sudo apt-get install -y --no-install-recommends g++-14
+          echo NVCC_CCBIN=g++-14 >> "$GITHUB_ENV"
 
       - name: Check CUDA ffmpeg crate
         run: cargo check -p lumen-engine-ffmpeg --features cuda
