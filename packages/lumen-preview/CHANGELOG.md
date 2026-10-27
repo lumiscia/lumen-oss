@@ -1,5 +1,12 @@
 # @lumiscia/lumen-preview
 
+## 0.3.0
+
+### Patch Changes
+
+- 482ec57: Update runtime dependencies to their latest releases.
+- e030363: Keep preview commands applied while a render is in flight, reuse the GPU device across composition and media changes, and bound the wasm video frame cache by bytes through `frameCacheCapacity`.
+
 ## 0.2.2
 
 ## 0.2.0

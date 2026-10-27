@@ -1,5 +1,30 @@
 # @lumiscia/lumen-sdk
 
+## 0.3.0
+
+### Patch Changes
+
+- 482ec57: Update runtime dependencies to their latest releases.
+- Updated dependencies [2c68ade]
+- Updated dependencies [38a05a8]
+- Updated dependencies [5726783]
+- Updated dependencies [577d694]
+- Updated dependencies [d52b7d6]
+- Updated dependencies [b314e00]
+- Updated dependencies [3f45d73]
+- Updated dependencies [076bf72]
+- Updated dependencies [2b50b73]
+- Updated dependencies [f054aaf]
+- Updated dependencies [b0bbf52]
+- Updated dependencies [97f55bf]
+- Updated dependencies [1b30cb7]
+- Updated dependencies [1ab946d]
+- Updated dependencies [d658d6c]
+- Updated dependencies [b88aeda]
+- Updated dependencies [4e61e7a]
+  - @lumiscia/lumen-types@0.3.0
+  - @lumiscia/lumen-shared@0.3.0
+
 ## 0.2.2
 
 ### Patch Changes
