@@ -3,6 +3,7 @@
 //! Node structs stay intentionally small here: they describe graph shape and
 //! animatable parameters. GPU lowering lives in `crate::gpu`.
 
+mod clip_props;
 mod deferred;
 mod delegate;
 mod ids;
@@ -20,6 +21,7 @@ pub mod processing;
 pub mod source;
 pub mod vector;
 
+pub use clip_props::{ClipPropValue, ClipProps};
 pub use deferred::Deferred;
 #[cfg(feature = "json")]
 pub use deferred::DeferredJsonValue;

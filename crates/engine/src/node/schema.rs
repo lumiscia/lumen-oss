@@ -14,6 +14,7 @@ pub enum PropertyKind {
     Enum = 6,
     Paint = 7,
     ShaderUniforms = 8,
+    ClipProps = 9,
 }
 
 #[cfg(any(feature = "json", feature = "metadata"))]

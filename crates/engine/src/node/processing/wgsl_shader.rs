@@ -825,6 +825,7 @@ mod tests {
             graph: None,
             media: None,
             glyph: None,
+            props: None,
         }
     }
 

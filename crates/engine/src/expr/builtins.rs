@@ -148,6 +148,28 @@ pub fn evaluate_builtin(
             number(3)?,
             number(4)?,
         ))),
+        BuiltinFn::Prop => {
+            let name = args[0].as_string();
+            let props = ctx.props.ok_or_else(|| {
+                error(format!(
+                    "`prop('{name}')` is only available inside a composition template"
+                ))
+            })?;
+            props.get(&name).cloned().ok_or_else(|| {
+                let declared = props
+                    .keys()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>();
+                error(format!(
+                    "unknown prop `{name}`; the template declares {}",
+                    if declared.is_empty() {
+                        "no props".to_string()
+                    } else {
+                        declared.join(", ")
+                    }
+                ))
+            })
+        }
         BuiltinFn::Spring => {
             let optional = |index: usize, default: f64| {
                 if index < args.len() {

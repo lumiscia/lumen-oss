@@ -77,6 +77,12 @@ impl NodeParamType for super::ShaderUniforms {
     }
 }
 
+impl NodeParamType for super::ClipProps {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::ClipProps
+    }
+}
+
 // Only nested delegates may hold `Vec` fields: `#[derive(Node)]` rejects params with
 // `NodeParams::HAS_VEC_FIELDS` because the schema has no array kind.
 impl<T> NodeParamType for Vec<T> {

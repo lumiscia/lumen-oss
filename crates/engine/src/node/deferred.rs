@@ -1,6 +1,7 @@
 use crate::expr::Expression;
 
 use super::{
+    clip_props::ClipProps,
     delegate::{DelegateEvalContext, DelegateEvaluable, DelegateValue, Delegated},
     ids::NodeId,
     property::{PropertyExpression, PropertyValue},
@@ -311,7 +312,8 @@ impl_delegated_deferred!(
     [u8; 4],
     (f64, f64),
     [f32; 2],
-    ShaderUniforms
+    ShaderUniforms,
+    ClipProps
 );
 
 macro_rules! impl_deferred_float_expr {
@@ -672,6 +674,49 @@ impl DeferredValue for ShaderUniforms {
     }
 }
 
+impl DeferredValue for ClipProps {
+    const ACCEPTS_EXPRESSIONS: bool = false;
+
+    fn has_expressions(value: &Self) -> bool {
+        value
+            .0
+            .values()
+            .any(|value| matches!(value, super::ClipPropValue::Expr(_)))
+    }
+
+    fn eval_deferred(
+        deferred: &Deferred<Self>,
+        node_id: NodeId,
+        property_path: &str,
+        _ctx: &crate::expr::ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        match deferred {
+            Deferred::Value(value) => Ok(value.clone()),
+            Deferred::Expr(_) => Err(PropertyValue::invalid_type(
+                node_id,
+                property_path,
+                "ClipProps",
+                "expression",
+            )),
+        }
+    }
+
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::ClipProps(value.clone())
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        match value {
+            PropertyValue::ClipProps(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn property_kind_name() -> &'static str {
+        "ClipProps"
+    }
+}
+
 impl DeferredValue for (f64, f64) {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
@@ -824,6 +869,13 @@ impl DeferredJsonValue for ShaderUniforms {
 }
 
 #[cfg(feature = "json")]
+impl DeferredJsonValue for ClipProps {
+    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        ClipProps::from_json_value(value, "props")
+    }
+}
+
+#[cfg(feature = "json")]
 impl DeferredJsonValue for (f64, f64) {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         let values = value
@@ -872,6 +924,7 @@ mod tests {
             graph: None,
             media: None,
             glyph: None,
+            props: None,
         }
     }
 

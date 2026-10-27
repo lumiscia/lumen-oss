@@ -1,0 +1,159 @@
+{
+  "lumenSchemaVersion": "0.1.0",
+  "metadata": { "name": "Clips" },
+  "timeline": { "fps": 30, "duration_frames": 300 },
+  "render_settings": { "width": 1280, "height": 720, "background_color": [11, 16, 32, 255] },
+  "compositions": {
+    "title_card": {
+      "render_settings": { "width": 960, "height": 360 },
+      "timeline": { "fps": 30, "duration_frames": 120 },
+      "props": {
+        "title": { "type": "string", "default": "Untitled" },
+        "subtitle": { "type": "string" },
+        "accent": { "type": "color", "default": "#ee5b24" },
+        "index": { "type": "number", "default": 1 }
+      },
+      "nodes": [
+        {
+          "id": 1,
+          "type": "shape",
+          "params": {
+            "width": 960,
+            "height": 360,
+            "border_radius": 28,
+            "fill_paint": "#111827",
+            "opacity": "=tween(0, 1, 0, 10)"
+          }
+        },
+        {
+          "id": 2,
+          "type": "text",
+          "params": {
+            "content": "=prop('index')",
+            "font_size": 200,
+            "font_weight": 800,
+            "position": [56, 48],
+            "color": "=prop('accent')",
+            "opacity": "=tween(0, 1, 2, 12)"
+          }
+        },
+        {
+          "id": 3,
+          "type": "text",
+          "params": {
+            "content": "=prop('title')",
+            "font_size": 76,
+            "font_weight": 700,
+            "position": "=vec2(224, tween(110, 82, 4, 20, 'out_expo'))",
+            "color": "#f8fafc",
+            "glyph_opacity": "=tween(0, 1, 4 + glyph * 1.5, 12)"
+          }
+        },
+        {
+          "id": 4,
+          "type": "shape",
+          "params": {
+            "width": 560,
+            "height": 6,
+            "position": [228, 196],
+            "scale": "=vec2(tween(0, 1, 10, 24, 'out_expo'), 1)",
+            "fill_paint": "=prop('accent')"
+          }
+        },
+        {
+          "id": 5,
+          "type": "text",
+          "params": {
+            "content": "=prop('subtitle')",
+            "font_size": 32,
+            "position": [228, 226],
+            "color": "#94a3b8",
+            "opacity": "=tween(0, 1, 16, 16)"
+          }
+        },
+        { "id": 6, "type": "raster_multimerge" },
+        { "id": 7, "type": "opacity", "params": { "opacity": "=1 - progress(100, 120)" } },
+        { "id": 8, "type": "media_output" }
+      ],
+      "connections": [
+        { "from_node": 1, "to_node": 6, "to_port": "layers" },
+        { "from_node": 2, "to_node": 6, "to_port": "layers" },
+        { "from_node": 3, "to_node": 6, "to_port": "layers" },
+        { "from_node": 4, "to_node": 6, "to_port": "layers" },
+        { "from_node": 5, "to_node": 6, "to_port": "layers" },
+        { "from_node": 6, "to_node": 7, "to_port": "source" },
+        { "from_node": 7, "to_node": 8, "to_port": "source" }
+      ]
+    }
+  },
+  "nodes": [
+    { "id": 1, "type": "background", "params": { "paint": "#0b1020" } },
+    {
+      "id": 10,
+      "type": "clip",
+      "params": {
+        "composition": "title_card",
+        "start": 0,
+        "props": { "title": "Shapes", "subtitle": "Rectangles, ellipses and polygons", "index": 1 }
+      }
+    },
+    {
+      "id": 11,
+      "type": "clip",
+      "params": {
+        "composition": "title_card",
+        "start": 100,
+        "props": {
+          "title": "Text",
+          "subtitle": "Per glyph, word and line",
+          "accent": "#22d3ee",
+          "index": 2
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "clip",
+      "params": {
+        "composition": "title_card",
+        "start": 200,
+        "speed": 1.5,
+        "end": "hold",
+        "duration": 60,
+        "props": {
+          "title": "Shaders",
+          "subtitle": "Played at 1.5x, then held",
+          "accent": "=lerp(rgb(244, 114, 182), rgb(250, 204, 21), progress(200, 260))",
+          "index": 3
+        }
+      }
+    },
+    { "id": 13, "type": "raster_multimerge" },
+    { "id": 14, "type": "transform", "params": { "translate_x": 160, "translate_y": 180 } },
+    {
+      "id": 20,
+      "type": "shape",
+      "params": {
+        "width": 1280,
+        "height": 6,
+        "position": [0, 714],
+        "scale": "=vec2(frame / 285, 1)",
+        "fill_paint": "#334155"
+      }
+    },
+    { "id": 21, "type": "clip", "params": { "start": 15 } },
+    { "id": 30, "type": "raster_multimerge" },
+    { "id": 31, "type": "media_output" }
+  ],
+  "connections": [
+    { "from_node": 10, "to_node": 13, "to_port": "layers" },
+    { "from_node": 11, "to_node": 13, "to_port": "layers" },
+    { "from_node": 12, "to_node": 13, "to_port": "layers" },
+    { "from_node": 13, "to_node": 14, "to_port": "source" },
+    { "from_node": 20, "to_node": 21, "to_port": "source" },
+    { "from_node": 1, "to_node": 30, "to_port": "layers" },
+    { "from_node": 14, "to_node": 30, "to_port": "layers" },
+    { "from_node": 21, "to_node": 30, "to_port": "layers" },
+    { "from_node": 30, "to_node": 31, "to_port": "source" }
+  ]
+}

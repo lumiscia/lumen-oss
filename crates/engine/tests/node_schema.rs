@@ -15,7 +15,7 @@ use lumen_engine::{
 fn node_schemas_are_derived_from_node_structs() {
     let schemas = NodeKind::schemas();
 
-    assert_eq!(schemas.len(), 26);
+    assert_eq!(schemas.len(), 27);
     assert!(schemas.iter().any(|schema| schema.kind == "media_output"));
     assert!(schemas.iter().any(|schema| schema.kind == "text"));
     assert!(schemas.iter().any(|schema| schema.kind == "path"));

@@ -38,6 +38,8 @@ pub struct ExpressionContext<'a> {
     pub media: Option<&'a dyn crate::media::MediaStore>,
     /// The glyph being drawn, while a text node evaluates its per-glyph params.
     pub glyph: Option<GlyphScope>,
+    /// The props of the template instance being evaluated, which `prop('name')` reads.
+    pub props: Option<&'a crate::scope::PropValues>,
 }
 
 /// A glyph and the text it is drawn in, read by the `glyph`, `word` and `line` globals and
@@ -60,6 +62,7 @@ impl Default for ExpressionContext<'_> {
             graph: None,
             media: None,
             glyph: None,
+            props: None,
         }
     }
 }

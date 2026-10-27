@@ -1,4 +1,5 @@
 pub mod boolean;
+pub mod clip;
 pub mod merge;
 pub mod raster_multimerge;
 pub mod switch;

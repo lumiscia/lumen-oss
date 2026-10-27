@@ -6,6 +6,7 @@ import * as shared from "../src/index.js";
 import {
   Composition,
   abs,
+  defineComposition,
   ceil,
   clamp,
   cos,
@@ -41,6 +42,7 @@ import {
   outQuad,
   pow,
   progress,
+  prop,
   rgb,
   rgba,
   round,
@@ -113,6 +115,7 @@ const cases: Readonly<Record<string, Case>> = {
   in_out_back: { expression: inOutBack(0.5), expected: 0.5 },
   cubic_bezier: { expression: cubicBezier(0, 0, 1, 1, 0.5), expected: 0.5 },
   spring: { expression: spring(0, 170, 26), expected: 0 },
+  prop: { expression: prop("title"), expected: "Lumen" },
   issue_position: { expression: vec2(160, 900).add(rise(570)), expected: [160, 960] },
   issue_opacity: { expression: tween(0, 1, sec(1.5), ms(300), ease.outExpo), expected: 0 },
   nested_function: { expression: bob(100, [5, 0]), expected: [5, 60] },
@@ -159,6 +162,13 @@ function fixture() {
     type: "opacity",
     params: { opacity: tween(0, 1, sec(1.5), ms(300), ease.outExpo) },
   });
+  const card = defineComposition({
+    name: "card",
+    props: { title: prop.string("Lumen"), offset: prop.vec2([0, 40]) },
+    build: (c, p) =>
+      c.addNode({ type: "text", params: { content: uppercase(p.title), position: p.offset } }),
+  });
+  composition.addNode(card.clip({ start: sec(1), props: { offset: vec2(frame, 0) } }));
   const output = composition.addNode({ type: "media_output" });
   composition
     .connect(title, fade, { toPort: "source" })

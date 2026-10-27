@@ -322,6 +322,7 @@ impl MeasurementFixture {
             graph: self.graph.as_ref(),
             media: None,
             glyph: None,
+            props: None,
         };
         std::hint::black_box(self.width.evaluate(&ctx)?);
         std::hint::black_box(self.height.evaluate(&ctx)?);

@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
 use crate::node::{NodeId, NodeParams};
+use crate::scope::FrameTime;
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey,
@@ -135,8 +136,11 @@ pub fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
 
 /// Maps a (possibly fractional) composition frame to the source frame shown at that instant.
 /// The source position is floored, so a frame stays on screen until the next one starts.
+///
+/// Frame rates are `f32`, so a rate with no exact binary form, like NTSC's 30000/1001, converts
+/// whole frames only to within `f64` rounding.
 pub fn map_to_source_frame(
-    frame: f64,
+    frame: impl Into<FrameTime>,
     composition_fps: f32,
     source_fps: f32,
     frame_count: u32,
@@ -156,20 +160,23 @@ pub fn map_to_source_frame(
         return None;
     }
     let span = end - start;
+    let frame = frame.into();
     let comp_fps = composition_fps.max(1.0);
     let media_fps = if source_fps.is_finite() && source_fps > 0.0 {
         source_fps
     } else {
         comp_fps
     };
-    // Matching rates skip the divide-then-multiply, which can round a frame just below an
-    // integer (e.g. a looped `time_remap` target) up onto the next one.
-    let media_frame = if media_fps == comp_fps {
-        frame
+    // The time is divided once, after it is multiplied out, so whole frames convert exactly.
+    // Matching rates skip the conversion, which can round a frame just below an integer (e.g.
+    // a looped `time_remap` target) up onto the next one.
+    let scale = speed.abs() as f64;
+    let relative = if media_fps == comp_fps {
+        (frame.num() * scale) / frame.den()
     } else {
-        (frame / comp_fps as f64) * media_fps as f64
-    };
-    let relative = (media_frame * speed.abs() as f64).floor() as u32;
+        (frame.num() * media_fps as f64 * scale) / (frame.den() * comp_fps as f64)
+    }
+    .floor() as u32;
     let forward = speed >= 0.0;
     let mapped = match loop_mode {
         LoopMode::Clamp => {
@@ -202,11 +209,26 @@ mod frame_mapping_tests {
     use super::{LoopMode, map_to_source_frame};
 
     #[test]
+    fn frames_just_below_a_source_frame_stay_on_the_one_before() {
+        let below = 6.0_f64.next_down();
+        let mapped = map_to_source_frame(below, 30.0, 15.0, 100, None, 1.0, LoopMode::Clamp);
+        assert_eq!(mapped, Some(2));
+    }
+
+    #[test]
     fn lower_fps_media_repeats_frames_at_composition_rate() {
         let mapped = (0..6)
             .map(|frame| {
-                map_to_source_frame(frame.into(), 30.0, 15.0, 100, None, 1.0, LoopMode::Clamp)
-                    .expect("mapped frame")
+                map_to_source_frame(
+                    f64::from(frame),
+                    30.0,
+                    15.0,
+                    100,
+                    None,
+                    1.0,
+                    LoopMode::Clamp,
+                )
+                .expect("mapped frame")
             })
             .collect::<Vec<_>>();
 
@@ -217,8 +239,16 @@ mod frame_mapping_tests {
     fn higher_fps_media_advances_at_source_rate() {
         let mapped = (0..3)
             .map(|frame| {
-                map_to_source_frame(frame.into(), 30.0, 60.0, 100, None, 1.0, LoopMode::Clamp)
-                    .expect("mapped frame")
+                map_to_source_frame(
+                    f64::from(frame),
+                    30.0,
+                    60.0,
+                    100,
+                    None,
+                    1.0,
+                    LoopMode::Clamp,
+                )
+                .expect("mapped frame")
             })
             .collect::<Vec<_>>();
 
@@ -236,12 +266,7 @@ impl GpuCompileNode for MediaIn {
             return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let size = self.native_size(ctx).unwrap_or_else(|| {
-            lumen_gpu::Size::new(
-                ctx.composition().render_settings.width.max(1),
-                ctx.composition().render_settings.height.max(1),
-            )
-        });
+        let size = self.native_size(ctx).unwrap_or_else(|| ctx.canvas_size());
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("media-in:{}:frame", self.id.0)),

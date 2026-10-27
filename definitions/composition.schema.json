@@ -72,6 +72,23 @@
       "required": ["id"],
       "type": "object"
     },
+    "clipPropValue": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/vec2"
+        },
+        {
+          "$ref": "#/$defs/color"
+        }
+      ],
+      "description": "A value for a template prop: a literal of the prop's type or an expression."
+    },
     "color": {
       "oneOf": [
         {
@@ -89,6 +106,126 @@
           "type": "string"
         }
       ]
+    },
+    "compositionProp": {
+      "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent or [0, 0].",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "type": "string"
+            },
+            "type": {
+              "const": "string"
+            }
+          },
+          "required": ["type"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "type": "number"
+            },
+            "type": {
+              "const": "number"
+            }
+          },
+          "required": ["type"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "$ref": "#/$defs/color"
+            },
+            "type": {
+              "const": "color"
+            }
+          },
+          "required": ["type"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "$ref": "#/$defs/vec2"
+            },
+            "type": {
+              "const": "vec2"
+            }
+          },
+          "required": ["type"],
+          "type": "object"
+        }
+      ]
+    },
+    "compositionTemplate": {
+      "additionalProperties": false,
+      "description": "A composition a `clip` plays. Without `render_settings` it takes the root's size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's fps.",
+      "properties": {
+        "connections": {
+          "items": {
+            "$ref": "#/$defs/connection"
+          },
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/properties/nodes/items"
+          },
+          "type": "array"
+        },
+        "props": {
+          "additionalProperties": {
+            "$ref": "#/$defs/compositionProp"
+          },
+          "description": "Props that `prop('name')` reads inside the template, set per `clip`.",
+          "type": "object"
+        },
+        "render_settings": {
+          "additionalProperties": true,
+          "properties": {
+            "background_color": {
+              "$ref": "#/$defs/color"
+            },
+            "height": {
+              "maximum": 4294967295,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "width": {
+              "maximum": 4294967295,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": ["width", "height"],
+          "type": "object"
+        },
+        "timeline": {
+          "additionalProperties": true,
+          "properties": {
+            "duration_frames": {
+              "maximum": 4294967295,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "fps": {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          },
+          "required": ["duration_frames"],
+          "type": "object"
+        }
+      },
+      "required": ["nodes", "connections"],
+      "type": "object"
     },
     "connection": {
       "additionalProperties": false,
@@ -275,6 +412,13 @@
         }
       },
       "required": ["tracks", "clips"],
+      "type": "object"
+    },
+    "compositions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/compositionTemplate"
+      },
+      "description": "Reusable compositions by name, which `clip` nodes play. Node ids are scoped to each template.",
       "type": "object"
     },
     "connections": {
@@ -781,6 +925,157 @@
                 "kind": "raster_frame",
                 "name": "source",
                 "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster_frame",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "Plays a composition template, or its source, over a window of time.",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "composition": {
+                    "default": "",
+                    "description": "Template from `compositions` to play; empty plays the `source` input instead.",
+                    "not": {
+                      "pattern": "^=([^=]|$)"
+                    },
+                    "title": "Composition",
+                    "type": "string",
+                    "x-lumen-kind": "string"
+                  },
+                  "duration": {
+                    "anyOf": [
+                      {
+                        "minimum": -1.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": -1.0,
+                    "description": "Frames the clip plays for; -1 plays the template to its end, or a source to the end of\nthis composition.",
+                    "title": "Duration",
+                    "x-lumen-constraints": {
+                      "min": -1.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "end": {
+                    "default": "hide",
+                    "description": "What the clip shows after its window: nothing, its last frame, or the window again.",
+                    "enum": ["hide", "hold", "loop"],
+                    "title": "End",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Hide",
+                        "name": "hide",
+                        "value": 0
+                      },
+                      {
+                        "label": "Hold",
+                        "name": "hold",
+                        "value": 1
+                      },
+                      {
+                        "label": "Loop",
+                        "name": "loop",
+                        "value": 2
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "offset": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Frames of the content skipped at the start, in the content's frames.",
+                    "title": "Offset",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "props": {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/clipPropValue"
+                    },
+                    "default": {},
+                    "description": "Values for the template's props by name; expressions run in this composition's time.",
+                    "title": "Props",
+                    "type": "object",
+                    "x-lumen-kind": "clip_props"
+                  },
+                  "speed": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Playback rate of the content; must be greater than 0.",
+                    "title": "Speed",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "start": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Frame the clip starts at, in this composition's frames.",
+                    "title": "Start",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "clip"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Clip",
+            "type": "object",
+            "x-lumen-category": "compositing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster_frame",
+                "name": "source",
+                "optional": true,
                 "variadic": false
               }
             ],
@@ -4400,6 +4695,19 @@
         "minArgs": 5,
         "name": "cubic_bezier",
         "returns": "number"
+      },
+      {
+        "args": [
+          {
+            "kind": "string",
+            "name": "name"
+          }
+        ],
+        "doc": "The value of a composition template's prop, e.g. `prop('title')`. Only inside a template.",
+        "maxArgs": 1,
+        "minArgs": 1,
+        "name": "prop",
+        "returns": "any"
       },
       {
         "args": [

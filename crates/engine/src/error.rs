@@ -47,6 +47,18 @@ pub enum GraphValidationError {
     MultipleMediaOutputs { count: usize },
     #[error("target node is not reachable or missing")]
     InvalidEvaluationTarget { node_id: NodeId },
+    #[error("{}node {node_id}: {details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    InvalidClip {
+        /// The template the clip is in, or `None` at the root.
+        template: Option<String>,
+        node_id: NodeId,
+        details: String,
+    },
+    #[error("compositions instantiate themselves: {}", .templates.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(" -> "))]
+    TemplateCycle {
+        /// The templates along the cycle, ending with the one it returns to.
+        templates: Vec<String>,
+    },
 }
 
 #[derive(Debug, Error, Clone)]

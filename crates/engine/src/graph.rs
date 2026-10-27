@@ -303,6 +303,7 @@ fn wire_input_port(
         NodeKind::Shadow(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::WgslShader(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::Switch(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::Clip(node) => node.set_input_json(to_port, source).map_err(wire)?,
         NodeKind::MediaOutput(node) => node.set_input_json(to_port, source).map_err(wire)?,
     }
 

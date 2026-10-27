@@ -1,6 +1,7 @@
 import type {
   Color,
   CompositionNode,
+  CompositionTemplate,
   Connection,
   LumenComposition,
   NodeKind,
@@ -30,7 +31,17 @@ const defaultTimeline = {
   fps: 30,
 } satisfies LumenComposition["timeline"];
 
+interface ClipTemplate {
+  readonly name: string;
+  readonly template: CompositionTemplate;
+  readonly composition: Composition;
+}
+
+/** The template a clip node input plays, which `addNode` registers. Spreading the input keeps it. */
+export const clipTemplate = Symbol("clipTemplate");
+
 export class Composition {
+  readonly #compositions = new Map<string, ClipTemplate>();
   readonly #connections: Connection[] = [];
   readonly #functions = new Map<string, FunctionDefinition>();
   readonly #nodeIds = new Set<number>();
@@ -53,20 +64,45 @@ export class Composition {
   }
 
   addNode<TKind extends NodeKind>(node: NodeInput<TKind>): CompositionNode<TKind> {
-    const id = node.id ?? this.#allocateNodeId();
+    const { [clipTemplate]: template, ...rest } = node as NodeInput<TKind> & {
+      readonly [clipTemplate]?: ClipTemplate;
+    };
+    const input = rest as NodeInput<TKind>;
+    const id = input.id ?? this.#allocateNodeId();
     if (this.#nodeIds.has(id)) {
       throw new Error(`Node \`${id}\` already exists.`);
     }
+    if (template !== undefined) {
+      this.#addComposition(template);
+    }
 
     const nextNode = {
-      ...node,
+      ...input,
       id,
-      ...(node.params === undefined ? {} : { params: lowerParams(node.params) }),
+      ...(input.params === undefined ? {} : { params: lowerParams(input.params) }),
     } as CompositionNode<TKind>;
 
     this.#nodeIds.add(id);
     this.#nodes.push(nextNode);
     return nextNode;
+  }
+
+  #addComposition(template: ClipTemplate): void {
+    const existing = this.#compositions.get(template.name);
+    if (existing === template) {
+      return;
+    }
+    if (existing !== undefined) {
+      throw new Error(`Composition \`${template.name}\` already exists.`);
+    }
+
+    this.#compositions.set(template.name, template);
+    for (const nested of template.composition.#compositions.values()) {
+      this.#addComposition(nested);
+    }
+    for (const definition of template.composition.#functions.values()) {
+      this.addFunction(definition);
+    }
   }
 
   #allocateNodeId(): number {
@@ -187,6 +223,13 @@ export class Composition {
 
   toJSON(): LumenComposition {
     return {
+      ...(this.#compositions.size > 0
+        ? {
+            compositions: Object.fromEntries(
+              [...this.#compositions.values()].map(({ name, template }) => [name, template]),
+            ),
+          }
+        : {}),
       connections: [...this.#connections],
       ...(this.#functions.size > 0
         ? {

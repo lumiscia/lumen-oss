@@ -1,8 +1,9 @@
 //! Reuse of render output across frames.
 //!
-//! A node instance is one node reached through one time-remap path. The compiler records which
-//! instance created each texture, buffer and pass, and which instances feed it. From that, a plan
-//! knows two kinds of output it can keep instead of rendering again:
+//! A node instance is one node reached through one path of time remaps and clips from the root,
+//! so each clip of a template has its own instances of the template's nodes. The compiler
+//! records which instance created each texture, buffer and pass, and which instances feed it.
+//! From that, a plan knows two kinds of output it can keep instead of rendering again:
 //!
 //! - Static instances: a node whose params hold no expression and that reads no media, built-in
 //!   time or other frame-dependent state, fed only by static instances, renders the same output
@@ -11,12 +12,12 @@
 //!   frame, in the order a full bind would, so the atlas evicts and drops exactly the glyphs it
 //!   would without kept output; kept text whose glyphs are dropped or placed again renders again,
 //!   along with what reads it.
-//! - Keyed memos: a `memo` whose `key` is an expression copies its source, with any bounds
-//!   published for it, into its own texture, and only when the key's value changes. While it
+//! - Keyed memos: a `memo` whose `key` is an expression copies its source, with the bounds
+//!   published for it or ones covering all of it, into its own texture, and only when the key's value changes. While it
 //!   holds, instances that only it reaches are neither bound nor dispatched.
 //!
 //! A memo's snapshot belongs to the renderer rather than to a plan: it is identified by the memo
-//! node and its time-remap path, and holds only across frames of the exact composition it was
+//! node and its path, and holds only across frames of the exact composition it was
 //! taken from, as fingerprinted by `composition_fingerprint`, and while the key keeps its value.
 //! A plan bound with a held key that does not have the snapshot yet copies it from a plan that
 //! does. Snapshots live in their plans' textures, so they count against the plan cache budget;
@@ -43,13 +44,14 @@ use crate::{
     node::{NodeId, NodeKind},
 };
 
-/// A memo node reached through one time-remap path.
+/// A memo node reached through one path of time remaps and clips.
 pub(crate) type MemoId = (NodeId, TimeRemapPath);
 
 /// What the compiler records for the cache while it builds a plan.
 #[derive(Debug, Default)]
 pub(crate) struct CacheRecorder {
-    node_ids: Vec<NodeId>,
+    /// Each instance's node and path.
+    instances: Vec<MemoId>,
     index: HashMap<NodeId, HashMap<TimeRemapPath, usize>>,
     inputs: Vec<Vec<usize>>,
     /// Instances being compiled, innermost last; new resources belong to the last.
@@ -82,8 +84,8 @@ impl CacheRecorder {
         {
             Some(&instance) => instance,
             None => {
-                let instance = self.node_ids.len();
-                self.node_ids.push(node_id);
+                let instance = self.instances.len();
+                self.instances.push((node_id, path.clone()));
                 self.inputs.push(Vec::new());
                 self.index
                     .entry(node_id)
@@ -122,19 +124,18 @@ impl CacheRecorder {
     }
 
     /// Records a keyed memo's texture, the bounds buffer copied with it and the pass that copies
-    /// its source into them, all created by the instance being compiled on `path`.
+    /// its source into them, all created by the instance being compiled.
     pub(crate) fn record_memo(
         &mut self,
-        path: &TimeRemapPath,
         texture: lumen_gpu::TextureId,
-        bounds: Option<lumen_gpu::BufferId>,
+        bounds: lumen_gpu::BufferId,
         copy_pass: lumen_gpu::PassId,
     ) {
         if let Some(&instance) = self.stack.last() {
             self.memos.push(MemoRecord {
                 instance,
                 memo: LayoutMemo {
-                    id: (self.node_ids[instance], path.clone()),
+                    id: self.instances[instance].clone(),
                     texture,
                     bounds,
                     copy_pass: copy_pass.0 as usize,
@@ -165,16 +166,22 @@ impl CacheRecorder {
         output: lumen_gpu::TextureId,
         text_atlas: Option<lumen_gpu::TextureId>,
     ) -> CacheLayout {
-        let count = self.node_ids.len();
-        let nodes = &composition.graph.nodes;
+        let count = self.instances.len();
+        let nodes = self
+            .instances
+            .iter()
+            .map(|(id, path)| {
+                crate::scope::Scope::graph_at(composition, path)
+                    .and_then(|graph| graph.nodes.get(id))
+            })
+            .collect::<Vec<_>>();
         let mut layout = CacheLayout {
             index: self.index,
             pass_owners: self.pass_owners,
             static_instances: vec![false; count],
-            reaches_text: self
-                .node_ids
+            reaches_text: nodes
                 .iter()
-                .map(|id| matches!(nodes.get(id), Some(NodeKind::Text(_))))
+                .map(|node| matches!(node, Some(NodeKind::Text(_))))
                 .collect(),
             guarded_textures: self
                 .memos
@@ -216,10 +223,9 @@ impl CacheRecorder {
             return layout;
         }
 
-        let mut candidate = self
-            .node_ids
+        let mut candidate = nodes
             .iter()
-            .map(|id| nodes.get(id).is_some_and(is_static_candidate))
+            .map(|node| node.is_some_and(is_static_candidate))
             .collect::<Vec<_>>();
         for (pass, access) in accesses.iter().enumerate() {
             if access.writes.contains(&Resource::Texture(output)) {
@@ -296,8 +302,8 @@ fn is_static_candidate(node: &NodeKind) -> bool {
     }
 }
 
-/// Identifies the exact content of a composition: its canvas, timeline, connections and every
-/// node's params, literal values and expression sources.
+/// Identifies the exact content of a composition and its templates: their canvases, timelines,
+/// props, connections and every node's params, literal values and expression sources.
 pub(crate) fn composition_fingerprint(composition: &Composition) -> u64 {
     use std::fmt::Write;
 
@@ -310,16 +316,29 @@ pub(crate) fn composition_fingerprint(composition: &Composition) -> u64 {
         }
     }
 
-    let mut nodes = composition.graph.nodes.iter().collect::<Vec<_>>();
-    nodes.sort_unstable_by_key(|(id, _)| id.0);
+    fn write_graph(out: &mut HashWriter, graph: &crate::graph::Graph) {
+        let mut nodes = graph.nodes.iter().collect::<Vec<_>>();
+        nodes.sort_unstable_by_key(|(id, _)| id.0);
+        let _ = write!(out, "{:?}", graph.connections);
+        for (id, node) in nodes {
+            let _ = write!(out, "{}{:?}", id.0, node);
+        }
+    }
+
     let mut out = HashWriter(std::hash::DefaultHasher::new());
     let _ = write!(
         out,
-        "{:?}{:?}{:?}",
-        composition.render_settings, composition.timeline, composition.graph.connections
+        "{:?}{:?}",
+        composition.render_settings, composition.timeline
     );
-    for (id, node) in nodes {
-        let _ = write!(out, "{}{:?}", id.0, node);
+    write_graph(&mut out, &composition.graph);
+    for (name, template) in &composition.compositions {
+        let _ = write!(
+            out,
+            "{name:?}{:?}{:?}{:?}",
+            template.render_settings, template.timeline, template.props
+        );
+        write_graph(&mut out, &template.graph);
     }
     out.0.finish()
 }
@@ -344,7 +363,7 @@ pub(crate) struct CacheLayout {
 pub(crate) struct LayoutMemo {
     pub(crate) id: MemoId,
     pub(crate) texture: lumen_gpu::TextureId,
-    pub(crate) bounds: Option<lumen_gpu::BufferId>,
+    pub(crate) bounds: lumen_gpu::BufferId,
     copy_pass: usize,
 }
 
