@@ -335,9 +335,25 @@ export const lerp = builtins.lerp as Interpolate;
 export const linear = builtins.linear as Interpolate;
 export const tween = builtins.tween as Tween;
 
-export const { frame, time, fps, width, height } = Object.fromEntries(
-  expressionGlobals.map((global) => [global.name, new Expr(global.name, "number")]),
-) as { readonly [N in ExpressionGlobalName]: Expr<number> };
+/**
+ * `glyph`, `word` and `line` index the glyph a text node is drawing, and the counts number
+ * them. They are only valid in the text node's `glyph_*` params.
+ */
+export const {
+  fps,
+  frame,
+  glyph,
+  glyphCount,
+  height,
+  line,
+  lineCount,
+  time,
+  width,
+  word,
+  wordCount,
+} = Object.fromEntries(
+  expressionGlobals.map((global) => [camelCase(global.name), new Expr(global.name, "number")]),
+) as { readonly [N in ExpressionGlobalName as CamelCase<N>]: Expr<number> };
 
 /** Easing names for `tween`, such as `ease.outExpo` for `'out_expo'`. */
 export const ease = Object.fromEntries(easingNames.map((name) => [camelCase(name), name])) as {

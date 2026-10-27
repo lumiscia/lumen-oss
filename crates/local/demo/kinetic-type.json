@@ -1,0 +1,93 @@
+{
+  "timeline": {
+    "fps": 30,
+    "duration_frames": 90
+  },
+  "render_settings": {
+    "width": 1280,
+    "height": 720,
+    "background_color": [11, 16, 32, 255]
+  },
+  "metadata": {
+    "title": "Kinetic Type",
+    "description": "Staggers glyphs, words and lines apart with the text node's glyph_offset, glyph_scale, glyph_rotation and glyph_opacity params, which read glyph, word and line."
+  },
+  "functions": {
+    "enter(start)": "tween(0, 1, start, 12)"
+  },
+  "nodes": [
+    {
+      "id": 6,
+      "type": "background",
+      "params": {
+        "paint": "#0b1020",
+        "width": 1280,
+        "height": 720
+      }
+    },
+    {
+      "id": 1,
+      "type": "text",
+      "params": {
+        "content": "Shaped by code",
+        "font_size": 120,
+        "font_weight": 700,
+        "render_mode": "msdf",
+        "position": [40, 140],
+        "max_width": 1200,
+        "alignment_horizontal": "center",
+        "glyph_offset": "=vec2(0, tween(80, 0, 4 + glyph * 2, 18, 'out_expo'))",
+        "glyph_scale": "=vec2(1, 1) * tween(0.6, 1, 4 + glyph * 2, 18, 'out_back')",
+        "glyph_opacity": "=enter(4 + glyph * 2)",
+        "color": "#f8fafc"
+      }
+    },
+    {
+      "id": 2,
+      "type": "text",
+      "params": {
+        "content": "Every word on its own beat",
+        "font_size": 56,
+        "position": [40, 330],
+        "max_width": 1200,
+        "alignment_horizontal": "center",
+        "glyph_rotation": "=tween(-20, 0, 24 + word * 6, 20, 'out_back')",
+        "glyph_offset": "=vec2(0, tween(-30, 0, 24 + word * 6, 20, 'out_back'))",
+        "glyph_opacity": "=enter(24 + word * 6)",
+        "color": "#22d3ee"
+      }
+    },
+    {
+      "id": 3,
+      "type": "text",
+      "params": {
+        "content": "per glyph\nper word\nper line",
+        "font_size": 44,
+        "position": [40, 450],
+        "max_width": 1200,
+        "alignment_horizontal": "center",
+        "glyph_offset": "=vec2(tween(-120 + 240 * (line % 2), 0, 48 + line * 8, 20, 'out_expo'), 0)",
+        "glyph_opacity": "=enter(48 + line * 8) * (1 - 0.25 * line / line_count)",
+        "color": "#f472b6"
+      }
+    },
+    {
+      "id": 4,
+      "type": "raster_multimerge",
+      "params": {
+        "opacity": 1.0
+      }
+    },
+    {
+      "id": 5,
+      "type": "media_output"
+    }
+  ],
+  "connections": [
+    { "from_node": 6, "from_port": "output", "to_node": 4, "to_port": "layers" },
+    { "from_node": 1, "from_port": "output", "to_node": 4, "to_port": "layers" },
+    { "from_node": 2, "from_port": "output", "to_node": 4, "to_port": "layers" },
+    { "from_node": 3, "from_port": "output", "to_node": 4, "to_port": "layers" },
+    { "from_node": 4, "from_port": "output", "to_node": 5, "to_port": "source" }
+  ]
+}

@@ -845,6 +845,7 @@ mod tests {
             path: Some("4.position".to_string()),
             graph: None,
             media: None,
+            glyph: None,
         }
     }
 

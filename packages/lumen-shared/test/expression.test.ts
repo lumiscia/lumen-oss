@@ -16,6 +16,7 @@ import {
   fps,
   fract,
   frame,
+  glyph,
   height,
   hex,
   inBack,
@@ -183,6 +184,9 @@ describe("expression helpers", () => {
     );
     expect(rise.signature).toBe("rise(start)");
     expect(rise.body).toBe("tween(vec2(0, 60), vec2(0, 0), start, 16, 'out_expo')");
+    expect(String(tween(0, 1, glyph.mul(2).add(10), 12))).toBe(
+      "=tween(0, 1, ((glyph * 2) + 10), 12)",
+    );
   });
 
   test("parenthesise every operation", () => {
@@ -267,7 +271,8 @@ describe("expression helpers", () => {
       expect(cases[name]?.expression.toString(), name).toMatch(new RegExp(`^=${name}\\(`));
     }
     for (const { name } of expressionGlobals) {
-      expect(String(exports[name]), name).toBe(`=${name}`);
+      const helper = name.replace(/_([a-z])/g, (_, char: string) => char.toUpperCase());
+      expect(String(exports[helper]), helper).toBe(`=${name}`);
     }
   });
 

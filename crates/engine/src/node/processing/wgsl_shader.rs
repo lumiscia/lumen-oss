@@ -824,6 +824,7 @@ mod tests {
             path: None,
             graph: None,
             media: None,
+            glyph: None,
         }
     }
 

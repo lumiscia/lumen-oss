@@ -108,6 +108,12 @@ pub(crate) fn evaluate_expr(
             GlobalVar::Fps => Ok(ExpressionValue::Number(f64::from(ctx.fps))),
             GlobalVar::Width => Ok(ExpressionValue::Number(f64::from(ctx.width))),
             GlobalVar::Height => Ok(ExpressionValue::Number(f64::from(ctx.height))),
+            GlobalVar::Glyph
+            | GlobalVar::Word
+            | GlobalVar::Line
+            | GlobalVar::GlyphCount
+            | GlobalVar::WordCount
+            | GlobalVar::LineCount => glyph_global(global, ctx),
             GlobalVar::Custom(name) => {
                 Err(LumenError::Expression(ExpressionError::UndefinedVariable {
                     path: ctx.path.clone(),
@@ -163,7 +169,7 @@ pub(crate) fn evaluate_expr(
                     })
                 })?;
             match &prop {
-                PropertyExpression::Expr(inner_expr) => inner_expr.evaluate(ctx),
+                PropertyExpression::Expr(inner_expr) => inner_expr.evaluate(&ctx.without_glyph()),
                 PropertyExpression::Value(value) => property_value_to_expression_value(value),
             }
         }
@@ -180,6 +186,28 @@ pub(crate) fn evaluate_expr(
             }
         }
     }
+}
+
+fn glyph_global(global: &GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
+    let (name, value) = match (global, ctx.glyph) {
+        (GlobalVar::Glyph, scope) => ("glyph", scope.map(|scope| scope.item.glyph)),
+        (GlobalVar::Word, scope) => ("word", scope.map(|scope| scope.item.word)),
+        (GlobalVar::Line, scope) => ("line", scope.map(|scope| scope.item.line)),
+        (GlobalVar::GlyphCount, scope) => ("glyph_count", scope.map(|scope| scope.counts.glyph)),
+        (GlobalVar::WordCount, scope) => ("word_count", scope.map(|scope| scope.counts.word)),
+        (_, scope) => ("line_count", scope.map(|scope| scope.counts.line)),
+    };
+    value
+        .map(|value| ExpressionValue::Number(f64::from(value)))
+        .ok_or_else(|| {
+            LumenError::Expression(ExpressionError::Evaluate {
+                path: ctx.path.clone(),
+                details: format!(
+                    "`{name}` is only available in a text node's glyph_offset, glyph_scale, \
+                 glyph_rotation and glyph_opacity params"
+                ),
+            })
+        })
 }
 
 /// Numbers combine as usual. Two vec2 values combine componentwise, and a vec2 can be
@@ -305,6 +333,7 @@ mod tests {
             path: Some("node.opacity".to_string()),
             graph: None,
             media: None,
+            glyph: None,
         }
     }
 
@@ -327,6 +356,25 @@ mod tests {
         assert_eq!(
             evaluate_expr(&ExprNode::Global(GlobalVar::Height), &ctx).unwrap(),
             ExpressionValue::Number(1080.0)
+        );
+    }
+
+    #[test]
+    fn glyph_globals_read_the_glyph_scope_and_fail_outside_it() {
+        let source = "glyph + word * 10 + line * 100 + glyph_count * 1000 + word_count * 10000 \
+                      + line_count * 100000";
+        let expression = Expression::parse(source).unwrap();
+        let mut ctx = test_context();
+        let error = expression.evaluate(&ctx).unwrap_err().to_string();
+        assert!(error.contains("`glyph` is only available"), "{error}");
+        let item = |glyph, word, line| lumen_text::TextItem { glyph, word, line };
+        ctx.glyph = Some(crate::expr::GlyphScope {
+            item: item(1, 2, 3),
+            counts: item(4, 5, 6),
+        });
+        assert_eq!(
+            expression.evaluate(&ctx).unwrap(),
+            ExpressionValue::Number(654_321.0)
         );
     }
 

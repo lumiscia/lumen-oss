@@ -36,6 +36,16 @@ pub struct ExpressionContext<'a> {
     pub path: Option<String>,
     pub graph: Option<&'a Graph>,
     pub media: Option<&'a dyn crate::media::MediaStore>,
+    /// The glyph being drawn, while a text node evaluates its per-glyph params.
+    pub glyph: Option<GlyphScope>,
+}
+
+/// A glyph and the text it is drawn in, read by the `glyph`, `word` and `line` globals and
+/// their counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphScope {
+    pub item: lumen_text::TextItem,
+    pub counts: lumen_text::TextItem,
 }
 
 impl Default for ExpressionContext<'_> {
@@ -49,6 +59,7 @@ impl Default for ExpressionContext<'_> {
             path: None,
             graph: None,
             media: None,
+            glyph: None,
         }
     }
 }
@@ -59,6 +70,15 @@ impl ExpressionContext<'_> {
             0.0
         } else {
             self.frame / self.fps as f64
+        }
+    }
+
+    /// This context outside any glyph scope, for evaluating another node's properties.
+    pub fn without_glyph(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            glyph: None,
+            ..*self
         }
     }
 

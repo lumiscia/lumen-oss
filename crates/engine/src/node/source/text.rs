@@ -8,6 +8,7 @@ use std::{
 use std::time::Instant;
 
 use crate::error::{LumenError, RenderError};
+use crate::expr::{ExprNode, ExpressionContext, GlobalVar, GlyphScope};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::media::MediaStore;
 use crate::node::vector::{
@@ -15,7 +16,7 @@ use crate::node::vector::{
     paint::Paint,
     renderer::TextStyleUniforms,
 };
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{Deferred, DeferredValue, NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
@@ -113,9 +114,23 @@ pub struct TextParams {
     #[meta(min = 0, max = 1, step = 0.01)]
     pub opacity: f64,
     /// Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
-    /// usual film look and 360 smears over the whole frame.
+    /// usual film look and 360 smears over the whole frame. Blurs the text's own movement,
+    /// not that of the `glyph_*` params.
     #[meta(min = 0, max = 360, step = 1)]
     pub motion_blur: f64,
+    /// Offset of each glyph in pixels. The `glyph_*` params are evaluated for every glyph,
+    /// and can read its `glyph`, `word` and `line` index and their counts.
+    #[meta()]
+    pub glyph_offset: (f64, f64),
+    /// Scale multiplier of each glyph per axis, about the middle of its advance and line.
+    #[meta()]
+    pub glyph_scale: (f64, f64),
+    /// Clockwise rotation of each glyph in degrees, about the middle of its advance and line.
+    #[meta(step = 1)]
+    pub glyph_rotation: f64,
+    /// Opacity multiplier of each glyph, applied before `opacity`.
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub glyph_opacity: f64,
     /// Text color.
     #[meta(role = "color")]
     pub color: Paint,
@@ -148,6 +163,10 @@ impl Default for TextParams {
             anchor: (0.0, 0.0),
             opacity: 1.0,
             motion_blur: 0.0,
+            glyph_offset: (0.0, 0.0),
+            glyph_scale: (1.0, 1.0),
+            glyph_rotation: 0.0,
+            glyph_opacity: 1.0,
             color: Paint::solid([255, 255, 255, 255]),
             alignment_horizontal: TextAlignmentHorizontal::Left,
             alignment_vertical: TextAlignmentVertical::Top,
@@ -187,7 +206,9 @@ impl GpuCompileNode for Text {
 #[derive(Debug)]
 pub(crate) struct CompiledText {
     pub(crate) node_id: NodeId,
+    /// The node's params, less the per-glyph ones in `glyph`.
     pub(crate) params: TextParamsDelegate,
+    pub(crate) glyph: GlyphParams,
     pub(crate) atlas_texture: lumen_gpu::TextureId,
     pub(crate) globals_buffer: lumen_gpu::BufferId,
     pub(crate) instances_buffer: lumen_gpu::BufferId,
@@ -206,7 +227,7 @@ impl GpuCompiledNode for CompiledText {
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let trace_started = crate::log_level_enabled(tracing::Level::TRACE).then(trace_now_ms);
-        let expr = ctx.expr_context(self.node_id, "params");
+        let mut expr = ctx.expr_context(self.node_id, "params");
         let evaluated = self.params.eval(&NodeParamEvalContext {
             node_id: self.node_id,
             expr: &expr,
@@ -310,7 +331,7 @@ impl GpuCompiledNode for CompiledText {
             .map_err(|_| RenderError::Gpu {
                 details: "text atlas lock was poisoned".to_string(),
             })?;
-        let prepared = text_system.prepare_glyphs(
+        let mut prepared = text_system.prepare_glyphs(
             &mut atlas,
             &layout,
             mode,
@@ -359,6 +380,13 @@ impl GpuCompiledNode for CompiledText {
                 height,
             );
         }
+        let ink_bounds = self.glyph.apply(
+            self.node_id,
+            &layout,
+            &mut prepared.instances,
+            &prepared.sources,
+            &mut expr,
+        )?;
         let globals = lumen_text::GpuTextGlobals {
             target_size: [self.layer_size.width as f32, self.layer_size.height as f32],
             px_range: lumen_text::MSDF_PX_RANGE,
@@ -367,7 +395,13 @@ impl GpuCompiledNode for CompiledText {
         };
         bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
         let [x, y, width, height] = layout.bounds;
-        let (min, max) = ([x, y], [x + width, y + height]);
+        let (min, max) =
+            ink_bounds.map_or(([x, y], [x + width, y + height]), |[x0, y0, x1, y1]| {
+                (
+                    [x0.min(x), y0.min(y)],
+                    [x1.max(x + width), y1.max(y + height)],
+                )
+            });
         let motion = DrawableMotion::new(shutter.as_ref(), min, max);
         let canvas = [self.size.width as f32, self.size.height as f32];
         let layer = [self.layer_size.width as f32, self.layer_size.height as f32];
@@ -396,6 +430,183 @@ impl GpuCompiledNode for CompiledText {
             );
         }
         Ok(())
+    }
+}
+
+/// The per-glyph params, which are evaluated for each glyph rather than with the others.
+#[derive(Debug, Clone)]
+pub(crate) struct GlyphParams {
+    offset: Deferred<(f64, f64)>,
+    scale: Deferred<(f64, f64)>,
+    rotation: Deferred<f64>,
+    opacity: Deferred<f64>,
+}
+
+impl GlyphParams {
+    /// Moves the per-glyph params out of `params`, leaving their defaults.
+    pub(crate) fn take(params: &mut TextParamsDelegate) -> Self {
+        let defaults = TextParamsDelegate::default();
+        Self {
+            offset: std::mem::replace(&mut params.glyph_offset, defaults.glyph_offset),
+            scale: std::mem::replace(&mut params.glyph_scale, defaults.glyph_scale),
+            rotation: std::mem::replace(&mut params.glyph_rotation, defaults.glyph_rotation),
+            opacity: std::mem::replace(&mut params.glyph_opacity, defaults.glyph_opacity),
+        }
+    }
+
+    fn is_identity(&self) -> bool {
+        matches!(self.offset, Deferred::Value(offset) if offset == (0.0, 0.0))
+            && matches!(self.scale, Deferred::Value(scale) if scale == (1.0, 1.0))
+            && matches!(self.rotation, Deferred::Value(rotation) if rotation == 0.0)
+            && matches!(self.opacity, Deferred::Value(opacity) if opacity >= 1.0)
+    }
+
+    /// Transforms and fades each glyph instance by its params, evaluated with `expr` scoped
+    /// to the instance's glyph. Returns the box `[min_x, min_y, max_x, max_y]` that the
+    /// transformed glyphs cover before the text's own transform, if any were transformed.
+    fn apply(
+        &self,
+        node_id: NodeId,
+        layout: &lumen_text::TextLayout,
+        instances: &mut [lumen_text::GpuGlyphInstance],
+        sources: &[usize],
+        expr: &mut ExpressionContext<'_>,
+    ) -> crate::Result<Option<[f32; 4]>> {
+        if self.is_identity() {
+            return Ok(None);
+        }
+        let mut offset = PerGlyph::new(&self.offset, "glyph_offset");
+        let mut scale = PerGlyph::new(&self.scale, "glyph_scale");
+        let mut rotation = PerGlyph::new(&self.rotation, "glyph_rotation");
+        let mut opacity = PerGlyph::new(&self.opacity, "glyph_opacity");
+        let mut bounds: Option<[f32; 4]> = None;
+        // The instance and cluster that the instances so far fade as one.
+        let mut fading: Option<(usize, (u32, u32))> = None;
+        for (index, &source) in sources.iter().enumerate() {
+            let glyph = &layout.glyphs[source];
+            expr.glyph = Some(GlyphScope {
+                item: glyph.item,
+                counts: layout.counts,
+            });
+            let [x, y] = glyph.pivot.map(f64::from);
+            let transform = DrawableTransform {
+                position: (x, y),
+                scale: scale.eval(node_id, expr)?,
+                rotation: rotation.eval(node_id, expr)?,
+                anchor: (0.0, 0.0),
+                opacity: opacity.eval(node_id, expr)?,
+            }
+            .to_gpu();
+            let (offset_x, offset_y) = offset.eval(node_id, expr)?;
+            let instance = &mut instances[index];
+            instance.color[3] *= transform.opacity;
+            if transform.flags != 0 || (offset_x, offset_y) != (0.0, 0.0) {
+                instance.flags |= lumen_text::GLYPH_TRANSFORMED;
+                instance.linear = transform.linear;
+                instance.offset = [
+                    transform.offset[0] + offset_x as f32,
+                    transform.offset[1] + offset_y as f32,
+                ];
+            }
+            // Fading each instance of a cluster separately would count their overlap more than
+            // once, so the cluster's first instance draws the others, composited at full alpha.
+            // The lead draws them with its own transform and colour, so only instances on the
+            // same line that match those join it.
+            let key = (glyph.item.glyph, glyph.item.line);
+            if transform.opacity < 1.0 {
+                match fading {
+                    Some((lead, lead_key))
+                        if lead_key == key && same_draw(&instances[lead], &instances[index]) =>
+                    {
+                        instances[lead].flags += 1 << lumen_text::GLYPH_CLUSTER_SHIFT;
+                        instances[index].flags |= lumen_text::GLYPH_CLUSTER_FOLLOWER;
+                    }
+                    _ => fading = Some((index, key)),
+                }
+            } else {
+                fading = None;
+            }
+            let instance = &instances[index];
+            if instance.flags & lumen_text::GLYPH_TRANSFORMED == 0 {
+                continue;
+            }
+            let [x, y, width, height] = instance.rect;
+            for [x, y] in [
+                [x, y],
+                [x + width, y],
+                [x, y + height],
+                [x + width, y + height],
+            ] {
+                let [column_x, column_y] = instance.linear;
+                let point = [
+                    column_x[0] * x + column_y[0] * y + instance.offset[0],
+                    column_x[1] * x + column_y[1] * y + instance.offset[1],
+                ];
+                let [x0, y0, x1, y1] =
+                    bounds.get_or_insert([point[0], point[1], point[0], point[1]]);
+                (*x0, *y0) = (x0.min(point[0]), y0.min(point[1]));
+                (*x1, *y1) = (x1.max(point[0]), y1.max(point[1]));
+            }
+        }
+        expr.glyph = None;
+        Ok(bounds)
+    }
+}
+
+/// Whether two glyph instances draw with the same transform and colour.
+fn same_draw(a: &lumen_text::GpuGlyphInstance, b: &lumen_text::GpuGlyphInstance) -> bool {
+    let transformed =
+        |glyph: &lumen_text::GpuGlyphInstance| glyph.flags & lumen_text::GLYPH_TRANSFORMED != 0;
+    transformed(a) == transformed(b)
+        && (!transformed(a) || (a.linear == b.linear && a.offset == b.offset))
+        && a.color == b.color
+}
+
+/// A per-glyph param, evaluated again only when an index it reads changes. A constant, or
+/// an expression that reads no index, is evaluated once.
+struct PerGlyph<'a, T> {
+    param: &'a Deferred<T>,
+    name: &'static str,
+    /// Whether the param reads the glyph, word and line index.
+    reads: [bool; 3],
+    last: Option<([u32; 3], T)>,
+}
+
+impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
+    fn new(param: &'a Deferred<T>, name: &'static str) -> Self {
+        let mut reads = [false; 3];
+        if let Deferred::Expr(expression) = param {
+            crate::expr::functions::visit(&expression.ast, &mut |node| match node {
+                ExprNode::Global(GlobalVar::Glyph) => reads[0] = true,
+                ExprNode::Global(GlobalVar::Word) => reads[1] = true,
+                ExprNode::Global(GlobalVar::Line) => reads[2] = true,
+                _ => {}
+            });
+        }
+        Self {
+            param,
+            name,
+            reads,
+            last: None,
+        }
+    }
+
+    fn eval(&mut self, node_id: NodeId, expr: &ExpressionContext<'_>) -> crate::Result<T> {
+        if let Deferred::Value(value) = self.param {
+            return Ok(*value);
+        }
+        let item = expr.glyph.map(|scope| scope.item).unwrap_or_default();
+        let key = [item.glyph, item.word, item.line];
+        let key: [u32; 3] =
+            std::array::from_fn(|index| if self.reads[index] { key[index] } else { 0 });
+        if let Some((last, value)) = self.last
+            && last == key
+        {
+            return Ok(value);
+        }
+        let value = self.param.eval(node_id, self.name, expr)?;
+        self.last = Some((key, value));
+        Ok(value)
     }
 }
 

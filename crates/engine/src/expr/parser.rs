@@ -704,6 +704,12 @@ impl<'a> Parser<'a> {
                 "fps" => GlobalVar::Fps,
                 "width" => GlobalVar::Width,
                 "height" => GlobalVar::Height,
+                "glyph" => GlobalVar::Glyph,
+                "word" => GlobalVar::Word,
+                "line" => GlobalVar::Line,
+                "glyph_count" => GlobalVar::GlyphCount,
+                "word_count" => GlobalVar::WordCount,
+                "line_count" => GlobalVar::LineCount,
                 _ => GlobalVar::Custom(identifier),
             }))
     }

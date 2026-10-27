@@ -3098,6 +3098,72 @@
                     },
                     "x-lumen-kind": "int"
                   },
+                  "glyph_offset": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0],
+                    "description": "Offset of each glyph in pixels. The `glyph_*` params are evaluated for every glyph,\nand can read its `glyph`, `word` and `line` index and their counts.",
+                    "title": "Glyph Offset",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "glyph_opacity": {
+                    "anyOf": [
+                      {
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Opacity multiplier of each glyph, applied before `opacity`.",
+                    "title": "Glyph Opacity",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "glyph_rotation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Clockwise rotation of each glyph in degrees, about the middle of its advance and line.",
+                    "title": "Glyph Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "glyph_scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0],
+                    "description": "Scale multiplier of each glyph per axis, about the middle of its advance and line.",
+                    "title": "Glyph Scale",
+                    "x-lumen-kind": "vec2"
+                  },
                   "letter_spacing": {
                     "anyOf": [
                       {
@@ -3165,7 +3231,7 @@
                       }
                     ],
                     "default": 0.0,
-                    "description": "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame.",
+                    "description": "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame. Blurs the text's own movement,\nnot that of the `glyph_*` params.",
                     "title": "Motion Blur",
                     "x-lumen-constraints": {
                       "max": 360.0,
@@ -4409,6 +4475,30 @@
       {
         "doc": "Render height in pixels.",
         "name": "height"
+      },
+      {
+        "doc": "Index of the glyph being drawn, counting spaces. Only in a text node's `glyph_*` params.",
+        "name": "glyph"
+      },
+      {
+        "doc": "Index of the word being drawn. Only in a text node's `glyph_*` params.",
+        "name": "word"
+      },
+      {
+        "doc": "Index of the line being drawn. Only in a text node's `glyph_*` params.",
+        "name": "line"
+      },
+      {
+        "doc": "Number of glyphs in the text. Only in a text node's `glyph_*` params.",
+        "name": "glyph_count"
+      },
+      {
+        "doc": "Number of words in the text. Only in a text node's `glyph_*` params.",
+        "name": "word_count"
+      },
+      {
+        "doc": "Number of lines in the text. Only in a text node's `glyph_*` params.",
+        "name": "line_count"
       }
     ]
   },

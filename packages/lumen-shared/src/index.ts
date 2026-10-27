@@ -12,6 +12,8 @@ export {
   fps,
   fract,
   frame,
+  glyph,
+  glyphCount,
   height,
   hex,
   inBack,
@@ -23,6 +25,8 @@ export {
   inOutQuad,
   inQuad,
   lerp,
+  line,
+  lineCount,
   linear,
   lowercase,
   max,
@@ -51,6 +55,8 @@ export {
   uppercase,
   vec2,
   width,
+  word,
+  wordCount,
 } from "./expression.js";
 export { wgslShader } from "./shader.js";
 export type * from "@lumiscia/lumen-types";

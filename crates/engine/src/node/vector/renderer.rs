@@ -5,7 +5,7 @@ use crate::{
     node::{Deferred, NodeId, PortRef},
 };
 
-use crate::node::source::text::{CompiledText, Text, TextState};
+use crate::node::source::text::{CompiledText, GlyphParams, Text, TextState};
 
 use super::{
     drawable::{GpuDrawableMotion, GpuDrawableTransform},
@@ -258,7 +258,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 lumen_gpu::BindingLayoutEntry::sampler(2, lumen_gpu::wgpu::ShaderStages::FRAGMENT),
                 lumen_gpu::BindingLayoutEntry::storage(
                     3,
-                    lumen_gpu::wgpu::ShaderStages::VERTEX,
+                    lumen_gpu::wgpu::ShaderStages::VERTEX_FRAGMENT,
                     true,
                 ),
                 lumen_gpu::BindingLayoutEntry::uniform(
@@ -387,9 +387,12 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 fullscreen,
             ));
         }
+        let mut params = text.params.clone();
+        let glyph = GlyphParams::take(&mut params);
         self.ctx.register_compiled_node(CompiledText {
             node_id: text.id,
-            params: text.params.clone(),
+            params,
+            glyph,
             atlas_texture,
             globals_buffer,
             instances_buffer,
