@@ -1,8 +1,25 @@
 {
   "composition": {
+    "compositions": {
+      "card": {
+        "props": {
+          "title": { "type": "string", "default": "Lumen" },
+          "offset": { "type": "vec2", "default": [0, 40] }
+        },
+        "nodes": [
+          {
+            "type": "text",
+            "params": { "content": "=uppercase(prop('title'))", "position": "=prop('offset')" },
+            "id": 0
+          },
+          { "type": "media_output", "id": 1 }
+        ],
+        "connections": [{ "from_node": 0, "to_node": 1, "to_port": "source" }]
+      }
+    },
     "connections": [
       { "from_node": 0, "to_node": 1, "to_port": "source" },
-      { "from_node": 1, "to_node": 2, "to_port": "source" }
+      { "from_node": 1, "to_node": 3, "to_port": "source" }
     ],
     "functions": {
       "rise(start)": "tween(vec2(0, 60), vec2(0, 0), start, 16, 'out_expo')",
@@ -24,7 +41,16 @@
         "params": { "opacity": "=tween(0, 1, 1.5s, 300ms, 'out_expo')" },
         "id": 1
       },
-      { "type": "media_output", "id": 2 }
+      {
+        "type": "clip",
+        "params": {
+          "composition": "card",
+          "start": "=1s",
+          "props": { "offset": "=vec2(frame, 0)" }
+        },
+        "id": 2
+      },
+      { "type": "media_output", "id": 3 }
     ],
     "render_settings": { "background_color": [0, 0, 0, 0], "height": 1080, "width": 1920 },
     "timeline": { "duration_frames": 120, "fps": 30 }
@@ -73,6 +99,7 @@
     "in_out_back": { "expression": "=in_out_back(0.5)", "expected": 0.5 },
     "cubic_bezier": { "expression": "=cubic_bezier(0, 0, 1, 1, 0.5)", "expected": 0.5 },
     "spring": { "expression": "=spring(0, 170, 26)", "expected": 0 },
+    "prop": { "expression": "=prop('title')", "expected": "Lumen" },
     "issue_position": { "expression": "=(vec2(160, 900) + rise(570))", "expected": [160, 960] },
     "issue_opacity": { "expression": "=tween(0, 1, 1.5s, 300ms, 'out_expo')", "expected": 0 },
     "nested_function": { "expression": "=bob(100, vec2(5, 0))", "expected": [5, 60] },

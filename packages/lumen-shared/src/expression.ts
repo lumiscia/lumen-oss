@@ -14,7 +14,7 @@ declare const valueType: unique symbol;
 /** A type an expression can evaluate to. */
 export type Value = number | Vec2 | Color | string;
 
-type Kind = "number" | "vec2" | "color" | "string";
+export type Kind = "number" | "vec2" | "color" | "string";
 
 export type Num = number | Expr<number>;
 
@@ -376,6 +376,11 @@ export function hex(color: `#${string}`): Expr<Color> {
     throw new TypeError(`Invalid colour \`${color}\`; use #rrggbb or #rrggbbaa.`);
   }
   return new Expr(color, "color");
+}
+
+/** Reads a template prop. Inside `defineComposition`, `build` gets typed reads of its props. */
+export function readProp<T extends Value = Value>(name: string, kind?: Kind): Expr<T> {
+  return new Expr(`prop(${quote(name)})`, kind);
 }
 
 export type FunctionSignature = `${string}(${string})`;

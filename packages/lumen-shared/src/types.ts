@@ -1,7 +1,9 @@
 import type {
+  ClipEnd,
   Color,
   CompositionNode,
   CompositionNodeInput,
+  CompositionTemplate,
   ExpressionString,
   HexColor,
   LumenComposition,
@@ -9,7 +11,8 @@ import type {
   Vec2,
 } from "@lumiscia/lumen-types";
 
-import type { Expr } from "./expression.js";
+import type { Composition } from "./composition.js";
+import type { Expr, Num } from "./expression.js";
 
 export interface LumenOptions {
   readonly apiKey: string;
@@ -176,6 +179,76 @@ export interface WgslShader<TUniforms extends WgslUniforms> {
   /** The full shader source: `shader`, then the generated `Uniforms` struct and binding. */
   readonly source: string;
   readonly node: (values?: WgslUniformValues<TUniforms>) => NodeInput<"wgsl_shader">;
+}
+
+/** The value types a template prop can declare. */
+export type PropType = "string" | "number" | "color" | "vec2";
+
+interface PropValueByType {
+  readonly string: string;
+  readonly number: number;
+  readonly color: Color;
+  readonly vec2: Vec2;
+}
+
+/** A template prop, declared with `prop.string(..)`, `prop.number(..)`, `prop.color(..)` or `prop.vec2(..)`. */
+export interface PropDeclaration<TType extends PropType = PropType> {
+  readonly type: TType;
+  readonly default?: PropValueByType[TType];
+}
+
+export type PropDeclarations = Readonly<
+  Record<string, { [TType in PropType]: PropDeclaration<TType> }[PropType]>
+>;
+
+/** A typed `prop('name')` read for each declared prop. */
+export type PropReads<TProps extends PropDeclarations> = {
+  readonly [TName in keyof TProps]: Expr<PropValueByType[TProps[TName]["type"]]>;
+};
+
+/** Prop values for a clip. Strings are literal text; pass an `Expr` for an expression. */
+export type ClipPropInputs<TProps extends PropDeclarations> = [keyof TProps] extends [never]
+  ? Readonly<Record<string, never>>
+  : {
+      readonly [TName in keyof TProps]?:
+        | PropValueByType[TProps[TName]["type"]]
+        | Expr<PropValueByType[TProps[TName]["type"]]>;
+    };
+
+export interface CompositionDefinitionOptions<TProps extends PropDeclarations> {
+  /** The template's key in `compositions`. */
+  readonly name: string;
+  /** Defaults to the size of the composition the template is used in. */
+  readonly size?: Size;
+  /** Defaults to the fps of the composition the template is used in. Needs a `duration`. */
+  readonly fps?: number;
+  /** In frames. Defaults to the timeline of the composition the template is used in. */
+  readonly duration?: number;
+  readonly props?: TProps;
+  /** Adds the template's nodes and returns the one it outputs. */
+  readonly build: (composition: Composition, props: PropReads<TProps>) => NodeReference;
+}
+
+/** Where a clip plays its template. `start` and `duration` count the parent's frames. */
+export interface ClipOptions<TProps extends PropDeclarations> {
+  readonly id?: number;
+  readonly start?: Num;
+  /** Defaults to the rest of the template. */
+  readonly duration?: Num;
+  /** Template frames skipped at the start. */
+  readonly offset?: Num;
+  readonly speed?: Num;
+  readonly end?: ClipEnd;
+  readonly props?: ClipPropInputs<TProps>;
+}
+
+export interface CompositionDefinition<TProps extends PropDeclarations = PropDeclarations> {
+  readonly name: string;
+  readonly template: CompositionTemplate;
+  /** The built template. Compositions that add its clips also take its functions and nested templates. */
+  readonly composition: Composition;
+  /** A `clip` node playing the template; adding it registers the template. */
+  readonly clip: (options?: ClipOptions<TProps>) => NodeInput<"clip">;
 }
 
 export interface RenderOptions {

@@ -59,6 +59,7 @@ export {
   wordCount,
 } from "./expression.js";
 export { wgslShader } from "./shader.js";
+export { defineComposition, prop } from "./template.js";
 export type * from "@lumiscia/lumen-types";
 export type {
   Arg,
@@ -76,10 +77,18 @@ export type {
   AudioClipOptions,
   AudioTrackInput,
   AudioTrackOptions,
+  ClipOptions,
+  ClipPropInputs,
+  CompositionDefinition,
+  CompositionDefinitionOptions,
   CompositionOptions,
   ConnectOptions,
   NodeInput,
   NodeReference,
+  PropDeclaration,
+  PropDeclarations,
+  PropReads,
+  PropType,
   RenderSettingsInput,
   Size,
   TimelineInput,
