@@ -107,6 +107,10 @@ pub(crate) struct BlurParams {
     pub(crate) values: [f32; 4],
     /// Whole-pixel offset applied to the source in `xy`.
     pub(crate) offset: [f32; 4],
+    /// Canvas pixel of the output's first texel in `xy`.
+    pub(crate) region: [i32; 4],
+    /// Canvas pixel of the source's first texel in `xy`, and the source's display size in `zw`.
+    pub(crate) source: [i32; 4],
 }
 
 #[repr(C)]
@@ -147,6 +151,10 @@ impl CurvesTable {
 pub(crate) struct ShadowParams {
     pub(crate) color: [f32; 4],
     pub(crate) values: [f32; 4],
+    /// Canvas pixel of the output's first texel in `xy`, and of the blurred shadow's in `zw`.
+    pub(crate) origins: [i32; 4],
+    /// Canvas pixel of the source's first texel in `xy`.
+    pub(crate) source_origin: [i32; 4],
 }
 
 #[repr(C)]

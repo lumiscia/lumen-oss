@@ -1,5 +1,5 @@
-use crate::gpu::{BoundFrame, CompileContext, compiler};
-use crate::node::NodeId;
+use crate::gpu::{BoundFrame, CompileContext, RasterHandle, compiler};
+use crate::node::{NodeId, motion::MAX_BOUNDED_MAGNITUDE};
 
 /// `radius` is the half-width of the discrete box blur it replaces. A box of
 /// `2r + 1` texels has variance `r(r + 1) / 3`, and the Gaussian matches it.
@@ -48,6 +48,69 @@ fn reduced_sigma(sigma: f64, factor: u32) -> f64 {
         .max(0.0)
         .sqrt()
         / factor
+}
+
+/// Whether `value` is a number small enough for bounds to be worked out from.
+fn within_limit(value: f64) -> bool {
+    value.abs() < MAX_BOUNDED_MAGNITUDE
+}
+
+/// Canvas pixels past the pixels a blur of `radius` reads that it can still write, at its
+/// widest across the levels it may blur on, or `None` when `radius` is too large or not a
+/// number to be bounded. A reduced level reaches its kernel and one block more on each side
+/// for the box reduction and one for the bilinear read back.
+fn blur_reach(radius: f64) -> Option<u32> {
+    if !within_limit(radius) {
+        return None;
+    }
+    let sigma = f64::from(sigma_for_radius(radius));
+    let level = |factor: u32| factor * (kernel_reach(reduced_sigma(sigma, factor)) + 2);
+    let mut reach = kernel_reach(sigma);
+    if sigma > QUARTER_BAND.0 {
+        reach = reach.max(level(QUARTER_FACTOR));
+    }
+    if sigma > SIXTEENTH_BAND.0 {
+        reach = reach.max(level(SIXTEENTH_FACTOR));
+    }
+    // One more pixel covers rounding in the sigma and positions the shader works from.
+    Some(reach + 1)
+}
+
+/// The canvas `[min_x, min_y, max_x, max_y]` that a blur of `radius` writes for a source whose
+/// pixels are within `data` and shifted by `offset` whole pixels. `None` when it cannot be
+/// bounded.
+pub(crate) fn blur_bounds(
+    data: lumen_gpu::RectI,
+    offset: [f64; 2],
+    radius: f64,
+) -> Option<[f32; 4]> {
+    if !offset.into_iter().all(within_limit) {
+        return None;
+    }
+    let reach = f64::from(blur_reach(radius)?);
+    let [dx, dy] = offset.map(f64::round);
+    let (x, y) = (f64::from(data.x) + dx, f64::from(data.y) + dy);
+    Some(
+        [
+            x - reach,
+            y - reach,
+            x + f64::from(data.width) + reach,
+            y + f64::from(data.height) + reach,
+        ]
+        .map(|value| value as f32),
+    )
+}
+
+/// The domain of a raster displayed at `display` that is written within `bounds`, or across
+/// the display without them.
+pub(crate) fn domain_within(
+    display: lumen_gpu::Size,
+    bounds: Option<lumen_gpu::RectI>,
+) -> lumen_gpu::TextureDomain {
+    match bounds {
+        Some(bounds) => lumen_gpu::TextureDomain::bounded(display, bounds),
+        None => lumen_gpu::TextureDomain::full_frame(display),
+    }
 }
 
 impl Padding {
@@ -108,6 +171,10 @@ pub(crate) struct GaussianPasses {
     pub(crate) output: lumen_gpu::TextureId,
     params: lumen_gpu::BufferId,
     shifted: bool,
+    /// Canvas pixel of the output's first texel.
+    region: [i32; 2],
+    /// Canvas pixel of the source's first texel, and the source's display size.
+    source: [i32; 4],
 }
 
 /// Per-frame inputs of a compiled Gaussian.
@@ -143,27 +210,33 @@ impl GaussianPasses {
                 0.0,
                 0.0,
             ],
+            region: [self.region[0], self.region[1], 0, 0],
+            source: self.source,
         };
         bound.write_buffer(self.params, 0, bytemuck::bytes_of(&params));
     }
 }
 
-/// Texture size of a level reduced by `factor` and padded on every side.
-fn padded(size: lumen_gpu::Size, factor: u32, pad: u32) -> lumen_gpu::Size {
+/// Texture size of the level reduced by `factor` that covers `region`, padded on every side.
+/// Blocks of the level stay aligned to the canvas, so it starts at the block `region` is in.
+fn padded(region: lumen_gpu::RectI, factor: u32, pad: u32) -> lumen_gpu::Size {
+    let blocks = |origin: i32, extent: u32| {
+        let origin = origin.max(0) as u32;
+        (origin + extent).div_ceil(factor) - origin / factor
+    };
     lumen_gpu::Size::new(
-        size.width.div_ceil(factor).max(1) + 2 * pad,
-        size.height.div_ceil(factor).max(1) + 2 * pad,
+        blocks(region.x, region.width).max(1) + 2 * pad,
+        blocks(region.y, region.height).max(1) + 2 * pad,
     )
 }
 
-/// Compiles a separable Gaussian from `source` into a new premultiplied
-/// `rgba8unorm` texture of the same size, using the node's param slot 0 and an
-/// unshifted source.
+/// Compiles a separable Gaussian from the full-frame `source` into a new premultiplied
+/// `rgba8unorm` texture of `size`, using the node's param slot 0 and an unshifted source.
 pub(crate) fn compile_passes(
     ctx: &mut CompileContext<'_>,
     node_id: NodeId,
     label: &str,
-    source: lumen_gpu::TextureId,
+    source: RasterHandle,
     size: lumen_gpu::Size,
 ) -> GaussianPasses {
     compile_passes_with(
@@ -171,12 +244,17 @@ pub(crate) fn compile_passes(
         node_id,
         label,
         source,
-        size,
+        lumen_gpu::TextureDomain::full_frame(size),
         GaussianOptions::default(),
     )
 }
 
-/// [`compile_passes`] with a caller-chosen param slot and optional source shift.
+/// [`compile_passes`] with a caller-chosen param slot and optional source shift, writing the
+/// pixels of `output`'s data and reading `source` through its domain.
+///
+/// `output` must cover everything the blur writes, which is the source's data spread by
+/// [`blur_bounds`]; the texels it leaves out are read as transparent, which they are only
+/// when no blur reaches them.
 ///
 /// Small radii blur at full resolution. Larger ones are box-reduced by 4 or 16,
 /// blurred there with a bounded kernel and sampled back bilinearly, so the cost
@@ -191,13 +269,18 @@ pub(crate) fn compile_passes_with(
     ctx: &mut CompileContext<'_>,
     node_id: NodeId,
     label: &str,
-    source: lumen_gpu::TextureId,
-    size: lumen_gpu::Size,
+    source: RasterHandle,
+    output: lumen_gpu::TextureDomain,
     options: GaussianOptions,
 ) -> GaussianPasses {
     use lumen_gpu::wgpu::{ShaderStages, StorageTextureAccess, TextureFormat};
 
     let owner = lumen_gpu::NodeKey(node_id.0);
+    let region = output.data_rect;
+    let size = output.storage_size;
+    let source_display = source.domain.display_size();
+    let source_origin = source.domain.data_rect;
+    let source = source.texture;
     let builder = ctx.builder_mut();
     let texture = |builder: &mut lumen_gpu::RenderPlanBuilder,
                    name: &str,
@@ -219,17 +302,21 @@ pub(crate) fn compile_passes_with(
         "horizontal",
         lumen_gpu::Size::new(size.width, size.height + 2 * padding.full),
     );
-    let quarter_size = padded(size, QUARTER_FACTOR, padding.quarter);
+    let quarter_size = padded(region, QUARTER_FACTOR, padding.quarter);
     let quarter = [
         float(builder, "quarter-a", quarter_size),
         float(builder, "quarter-b", quarter_size),
     ];
-    let sixteenth_size = padded(size, SIXTEENTH_FACTOR, padding.sixteenth);
+    let sixteenth_size = padded(region, SIXTEENTH_FACTOR, padding.sixteenth);
     let sixteenth = [
         float(builder, "sixteenth-a", sixteenth_size),
         float(builder, "sixteenth-b", sixteenth_size),
     ];
-    let output = texture(builder, "output", size, TextureFormat::Rgba8Unorm);
+    let output = builder.texture_for(
+        owner,
+        Some(format!("{label}:{}:output", node_id.0)),
+        lumen_gpu::TextureDesc::storage(size, TextureFormat::Rgba8Unorm).with_domain(output),
+    );
     let params = builder.buffer_for(
         owner,
         Some(format!("{label}:{}:params", node_id.0)),
@@ -325,5 +412,12 @@ pub(crate) fn compile_passes_with(
         output,
         params,
         shifted: options.shifted,
+        region: [region.x, region.y],
+        source: [
+            source_origin.x,
+            source_origin.y,
+            source_display.width as i32,
+            source_display.height as i32,
+        ],
     }
 }

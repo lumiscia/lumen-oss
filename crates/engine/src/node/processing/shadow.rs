@@ -77,15 +77,43 @@ impl GpuCompileNode for Shadow {
         }
 
         let source = ctx
-            .compile_port(&self.source)?
+            .compile_bounded_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
-        let size = source.domain.storage_size;
+        // The shadow is the source's data shifted by the offset and spread by the radius,
+        // at their largest over the timeline.
+        let params = &self.params;
+        let bounds = ctx.source_bounds(
+            self.id,
+            compiler::SourceMotion::of(
+                params.offset_x.is_expr() || params.offset_y.is_expr() || params.radius.is_expr(),
+                params,
+            ),
+            |expr| {
+                let evaluated = params.eval(&NodeParamEvalContext {
+                    node_id: self.id,
+                    expr,
+                })?;
+                Ok(gaussian::blur_bounds(
+                    source.domain.data_rect,
+                    [evaluated.offset_x, evaluated.offset_y],
+                    evaluated.radius,
+                ))
+            },
+        );
+        let display = source.domain.display_size();
+        let shadow_domain = gaussian::domain_within(display, bounds);
+        // The source is composited over its shadow, so both are written.
+        let domain = lumen_gpu::TextureDomain::bounded(
+            display,
+            source.domain.data_rect.union(shadow_domain.data_rect),
+        );
+        let size = domain.storage_size;
         let blurred = gaussian::compile_passes_with(
             ctx,
             self.id,
             "shadow",
-            source.texture,
-            size,
+            source,
+            shadow_domain,
             gaussian::GaussianOptions {
                 param_slot: 1,
                 shifted: true,
@@ -96,7 +124,8 @@ impl GpuCompileNode for Shadow {
         let output = builder.texture_for(
             owner,
             Some(format!("shadow:{}:output", self.id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
+                .with_domain(domain),
         );
         let params = builder.buffer_for(
             owner,
@@ -145,10 +174,17 @@ impl GpuCompileNode for Shadow {
             blurred,
             buffer: params,
             straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
+            origins: [
+                domain.data_rect.x,
+                domain.data_rect.y,
+                shadow_domain.data_rect.x,
+                shadow_domain.data_rect.y,
+            ],
+            source_origin: [source.domain.data_rect.x, source.domain.data_rect.y],
         });
         Ok(CompiledOutput::Raster(RasterHandle {
             texture: output,
-            domain: source.domain,
+            domain,
             metadata: RasterMetadata {
                 alpha_mode: AlphaMode::Premultiplied,
                 ..source.metadata
@@ -164,6 +200,10 @@ struct CompiledShadow {
     blurred: gaussian::GaussianPasses,
     buffer: lumen_gpu::BufferId,
     straight_source: bool,
+    /// Canvas pixel of the first texel of the output and of the blurred shadow.
+    origins: [i32; 4],
+    /// Canvas pixel of the source's first texel.
+    source_origin: [i32; 2],
 }
 
 impl GpuCompiledNode for CompiledShadow {
@@ -197,6 +237,8 @@ impl GpuCompiledNode for CompiledShadow {
                 if self.straight_source { 1.0 } else { 0.0 },
             ],
             values: [0.0, 0.0, 0.0, opacity],
+            origins: self.origins,
+            source_origin: [self.source_origin[0], self.source_origin[1], 0, 0],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
