@@ -10001,3 +10001,203 @@ fn kept_output_reaches_external_output_textures() {
         assert!(renderer.cached_pass_count() > 0);
     }
 }
+
+#[test]
+fn kept_text_keeps_its_glyphs_in_the_shared_atlas() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    let raster_text = |id: u64, content: &str, font_size: Deferred<f64>, x: f64| {
+        NodeKind::Text(Text {
+            id: NodeId::new(id),
+            params: TextParamsDelegate {
+                content: Deferred::value(content.to_string()),
+                font_size,
+                scale: Deferred::value((0.03, 0.03)),
+                position: Deferred::value((x, 0.0)),
+                render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
+                ..Default::default()
+            },
+        })
+    };
+    // Glyphs this large fill most of the atlas, so the static "W" and the "M" that grows on
+    // frame 1 cannot both fit; the "W" is drawn first, so it keeps its glyph.
+    let mut composition = cache_composition(vec![
+        raster_text(1, "W", Deferred::value(3800.0), 0.0),
+        raster_text(2, "M", expression("12 + 3788 * min(frame, 1)"), 120.0),
+        multimerge(NodeId::new(3), &[1, 2]),
+        output_node(NodeId::new(4), 3),
+    ]);
+    composition.render_settings.width = 256;
+    composition.render_settings.height = 128;
+    for frame in 0..3 {
+        let pixels = render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore);
+        let expected = uncached_rgba8(&mut reference, &composition, frame, &EmptyMediaStore);
+        assert!(
+            pixels == expected,
+            "frame {frame} differs from an uncached render"
+        );
+    }
+    assert!(renderer.cached_pass_count() > 0, "the static text is kept");
+}
+
+#[test]
+fn memo_snapshot_is_shared_by_the_plans_its_key_spans() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let at = |renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+              composition: &Composition,
+              frame: f64| {
+        let raster = renderer
+            .render_frame_at(composition, frame, &EmptyMediaStore)
+            .unwrap();
+        read_rgba8(renderer.gpu_renderer(), raster)
+    };
+    // A fractional frame binds another plan than whole frames do.
+    let memoized = memo_shader_composition(Some("floor(frame / 100)"));
+    let first = at(&mut renderer, &memoized, 0.0);
+    assert!(at(&mut renderer, &memoized, 0.5) == first, "frame 0.5");
+    assert!(at(&mut renderer, &memoized, 1.0) == first, "frame 1");
+    assert!(renderer.cached_plan_count() >= 2);
+
+    // Whole frames size a moving square to its bounds over the timeline; fractional ones don't.
+    renderer.release_resources();
+    let moving = cache_composition(vec![
+        square(
+            NodeId::new(1),
+            expression("vec2(frame * 4, 4)"),
+            4,
+            [255, 0, 0, 255],
+        ),
+        NodeKind::Memo(Memo {
+            id: NodeId::new(2),
+            params: MemoParamsDelegate {
+                key: expression("floor(frame / 100)"),
+            },
+            source: PortRef::new(NodeId::new(1), "output".to_string()),
+        }),
+        output_node(NodeId::new(3), 2),
+    ]);
+    let first = at(&mut renderer, &moving, 0.0);
+    assert!(at(&mut renderer, &moving, 0.5) == first, "moving frame 0.5");
+    assert!(at(&mut renderer, &moving, 1.0) == first, "moving frame 1");
+
+    // A switch upstream of the memo selects another plan every two frames.
+    renderer.release_resources();
+    let mut switched = memo_shader_composition(Some("floor(frame / 100)"));
+    switched.graph.nodes.insert(
+        NodeId::new(5),
+        canvas_background(NodeId::new(5), [0, 255, 0, 255]),
+    );
+    switched.graph.nodes.insert(
+        NodeId::new(6),
+        NodeKind::Switch(Switch {
+            id: NodeId::new(6),
+            params: SwitchParamsDelegate {
+                selected_layer: expression("floor(frame / 2) % 2"),
+            },
+            layers: vec![
+                PortRef::new(NodeId::new(1), "output".to_string()),
+                PortRef::new(NodeId::new(5), "output".to_string()),
+            ],
+        }),
+    );
+    let NodeKind::Memo(memo) = switched.graph.nodes.get_mut(&NodeId::new(2)).unwrap() else {
+        unreachable!();
+    };
+    memo.source = PortRef::new(NodeId::new(6), "output".to_string());
+    let first = render_rgba8(&mut renderer, &switched, 0, &EmptyMediaStore);
+    for frame in 1..6 {
+        let pixels = render_rgba8(&mut renderer, &switched, frame, &EmptyMediaStore);
+        assert!(pixels == first, "frame {frame} shows the memo's frame 0");
+    }
+    assert!(renderer.cached_plan_count() >= 2);
+}
+
+#[test]
+fn memo_holds_sources_that_publish_raster_bounds() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    // A crop moving with the frame, read directly and through a resize, which reads its bounds.
+    let composition = |memo: bool, resize: bool| {
+        let mut nodes = vec![
+            canvas_background(NodeId::new(1), [255, 0, 0, 255]),
+            square(
+                NodeId::new(2),
+                Deferred::value((6.0, 6.0)),
+                6,
+                [20, 40, 220, 255],
+            ),
+            multimerge(NodeId::new(3), &[1, 2]),
+            NodeKind::Crop(Crop {
+                id: NodeId::new(4),
+                params: CropParamsDelegate {
+                    x: expression("frame * 4"),
+                    width: Deferred::value(8),
+                    height: Deferred::value(8),
+                    ..Default::default()
+                },
+                source: PortRef::new(NodeId::new(3), "output".to_string()),
+            }),
+        ];
+        let mut last = 4;
+        if memo {
+            nodes.push(NodeKind::Memo(Memo {
+                id: NodeId::new(5),
+                params: MemoParamsDelegate {
+                    key: expression("floor(frame / 100)"),
+                },
+                source: PortRef::new(NodeId::new(last), "output".to_string()),
+            }));
+            last = 5;
+        }
+        if resize {
+            nodes.push(NodeKind::Resize(Resize {
+                id: NodeId::new(6),
+                params: ResizeParamsDelegate {
+                    width: Deferred::value(i64::from(CACHE_CANVAS.0)),
+                    height: Deferred::value(i64::from(CACHE_CANVAS.1)),
+                    mode: ResizeMode::Fit.into(),
+                    sampling: ResizeSampling::Nearest.into(),
+                    ..Default::default()
+                },
+                source: PortRef::new(NodeId::new(last), "output".to_string()),
+            }));
+            last = 6;
+        }
+        nodes.push(output_node(NodeId::new(7), last));
+        cache_composition(nodes)
+    };
+    for resize in [false, true] {
+        renderer.release_resources();
+        let memoized = composition(true, resize);
+        let expected = uncached_rgba8(
+            &mut reference,
+            &composition(false, resize),
+            0,
+            &EmptyMediaStore,
+        );
+        assert!(
+            expected
+                != uncached_rgba8(
+                    &mut reference,
+                    &composition(false, resize),
+                    1,
+                    &EmptyMediaStore
+                ),
+            "the crop moves"
+        );
+        for frame in 0..3 {
+            let pixels = render_rgba8(&mut renderer, &memoized, frame, &EmptyMediaStore);
+            assert!(
+                pixels == expected,
+                "frame {frame} (resized: {resize}) shows the crop at frame 0"
+            );
+        }
+    }
+}

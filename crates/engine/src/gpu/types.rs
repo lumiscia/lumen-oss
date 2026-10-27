@@ -83,6 +83,18 @@ pub trait GpuCompiledNode: std::fmt::Debug + Send + Sync {
         ctx: &crate::gpu::FrameBindContext<'_>,
         bound: &mut BoundFrame,
     ) -> crate::Result<()>;
+
+    /// Binds, for a node whose output is kept from an earlier frame, the shared state that nodes
+    /// bound after it see, as `bind` would, without writing the node's own resources. Returns
+    /// `true` when the kept output no longer matches what `bind` would render, having then bound
+    /// the node fully.
+    fn bind_kept(
+        &self,
+        _ctx: &crate::gpu::FrameBindContext<'_>,
+        _bound: &mut BoundFrame,
+    ) -> crate::Result<bool> {
+        Ok(false)
+    }
 }
 
 #[derive(Debug)]

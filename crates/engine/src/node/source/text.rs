@@ -226,6 +226,26 @@ impl GpuCompiledNode for CompiledText {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        self.bind_text(ctx, bound, false).map(drop)
+    }
+
+    /// Places the glyphs in the shared atlas as `bind` would, so text bound later in the frame
+    /// finds the atlas as it would without kept output.
+    fn bind_kept(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<bool> {
+        self.bind_text(ctx, bound, true)
+    }
+}
+
+impl CompiledText {
+    /// Binds the text, stopping once its glyphs are placed when `kept` and the output kept from
+    /// an earlier frame still matches: no glyph was dropped or placed again. Returns whether it
+    /// bound fully.
+    fn bind_text(
+        &self,
+        ctx: &FrameBindContext<'_>,
+        bound: &mut BoundFrame,
+        kept: bool,
+    ) -> crate::Result<bool> {
         let trace_started = crate::log_level_enabled(tracing::Level::TRACE).then(trace_now_ms);
         let mut expr = ctx.expr_context(self.node_id, "params");
         let evaluated = self.params.eval(&NodeParamEvalContext {
@@ -370,6 +390,9 @@ impl GpuCompiledNode for CompiledText {
         }
 
         let upload_count = prepared.uploads.len();
+        if kept && !dropping && upload_count == 0 {
+            return Ok(false);
+        }
         for upload in prepared.uploads {
             let [width, height] = upload.size;
             bound.write_texture_rgba8_region(
@@ -430,7 +453,7 @@ impl GpuCompiledNode for CompiledText {
                 trace_now_ms() - started,
             );
         }
-        Ok(())
+        Ok(true)
     }
 }
 

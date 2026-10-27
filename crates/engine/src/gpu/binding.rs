@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crate::{
     composition::Composition,
@@ -75,7 +75,7 @@ impl<'a> FrameBindContext<'a> {
             bound.text_atlas = Some(std::sync::Arc::clone(&compiled.text_atlas));
         }
         let output = media_output_port(self.composition)?;
-        let mut visited = HashSet::new();
+        let mut visited = HashMap::new();
         let mut time_remaps = TimeRemapPath::new();
         self.bind_port(
             compiled,
@@ -99,6 +99,8 @@ impl<'a> FrameBindContext<'a> {
         Ok(bound)
     }
 
+    /// Binds the node at `port` after its inputs, returning whether its output renders this
+    /// frame rather than staying as kept from an earlier one.
     #[allow(
         clippy::too_many_arguments,
         reason = "the traversal state is threaded through each recursive call"
@@ -109,13 +111,18 @@ impl<'a> FrameBindContext<'a> {
         port: &PortRef,
         frame: f64,
         time_remaps: &mut TimeRemapPath,
-        visited: &mut HashSet<(PortRef, TimeRemapPath)>,
+        visited: &mut HashMap<(PortRef, TimeRemapPath), bool>,
         bound: &mut BoundFrame,
         cache: &mut Option<BindCache<'_>>,
-    ) -> crate::Result<()> {
-        if port.is_empty() || !visited.insert((port.clone(), time_remaps.clone())) {
-            return Ok(());
+    ) -> crate::Result<bool> {
+        if port.is_empty() {
+            return Ok(false);
         }
+        let visit = (port.clone(), time_remaps.clone());
+        if let Some(renders) = visited.get(&visit) {
+            return Ok(*renders);
+        }
+        visited.insert(visit.clone(), false);
 
         let node = self
             .composition
@@ -128,17 +135,21 @@ impl<'a> FrameBindContext<'a> {
             })?;
 
         let frame_ctx = self.with_frame(frame);
+        let instance = cache
+            .as_ref()
+            .and_then(|cache| cache.layout.instance(port.id, time_remaps));
+        let mut kept = false;
         let mut holds = false;
         if let Some(cache) = cache.as_mut()
-            && let Some(instance) = cache.layout.instance(port.id, time_remaps)
+            && let Some(instance) = instance
         {
-            if cache
+            kept = cache
                 .state
-                .keeps_static(cache.layout, instance, cache.epoch)
-            {
-                return Ok(());
+                .keeps_static(cache.layout, instance, cache.epoch);
+            // Text under kept output still places its glyphs, as the atlas is shared.
+            if kept && !cache.layout.reaches_text(instance) {
+                return Ok(false);
             }
-            cache.mark_bound(instance);
             if let NodeKind::Memo(memo) = node
                 && cache.layout.is_keyed_memo(instance)
             {
@@ -148,10 +159,8 @@ impl<'a> FrameBindContext<'a> {
                     .key
                     .eval(memo.id, "key", &frame_ctx.expr_context(memo.id, "key"))?
                     .to_bits();
-                holds = cache.state.holds_memo(instance, key, cache.epoch);
-                if !holds {
-                    cache.mark_refreshed(instance, key);
-                }
+                // Without skipped passes the source is bound and dispatched as usual.
+                holds = cache.hold_memo(instance, key) && cache.layout.enabled();
             }
         }
         let is_time_remap = matches!(node, NodeKind::TimeRemap(_));
@@ -163,8 +172,9 @@ impl<'a> FrameBindContext<'a> {
         } else {
             frame_ctx.frame_inputs(node)?
         };
+        let mut inputs_render = false;
         for input in inputs {
-            self.bind_port(
+            inputs_render |= self.bind_port(
                 compiled,
                 &input.port,
                 input.frame,
@@ -178,22 +188,36 @@ impl<'a> FrameBindContext<'a> {
             time_remaps.pop();
         }
 
-        if let Some(compiled_node) = compiled
+        let compiled_node = compiled
             .compiled_nodes
             .get(&port.id)
-            .and_then(|instances| instances.get(time_remaps.as_slice()))
+            .and_then(|instances| instances.get(time_remaps.as_slice()));
+        let renders = if kept && !inputs_render {
+            match compiled_node {
+                Some(compiled_node) => compiled_node.bind_kept(&frame_ctx, bound)?,
+                None => false,
+            }
+        } else {
+            if let Some(compiled_node) = compiled_node {
+                tracing::trace!(
+                    target: "lumen_bind",
+                    frame = self.frame,
+                    binding_frame = frame,
+                    node_id = port.id.0,
+                    "bind compiled node"
+                );
+                compiled_node.bind(&frame_ctx, bound)?;
+            }
+            true
+        };
+        if renders
+            && let Some(cache) = cache.as_mut()
+            && let Some(instance) = instance
         {
-            tracing::trace!(
-                target: "lumen_bind",
-                frame = self.frame,
-                binding_frame = frame,
-                node_id = port.id.0,
-                "bind compiled node"
-            );
-            compiled_node.bind(&frame_ctx, bound)?;
+            cache.mark_bound(instance);
         }
-
-        Ok(())
+        visited.insert(visit, renders);
+        Ok(renders)
     }
 
     fn with_frame(&self, frame: f64) -> Self {

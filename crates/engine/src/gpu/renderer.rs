@@ -9,7 +9,7 @@ use crate::{
     gpu::{
         BoundFrame, CompileContext, CompiledComposition, FrameBindContext, MediaTextureKey,
         RasterHandle, TimeRemapPath,
-        cache::{BindCache, CacheState, skipped_count},
+        cache::{BindCache, CacheState, LayoutMemo, MemoSnapshots, skipped_count},
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
@@ -115,6 +115,10 @@ pub struct GpuCompositionRenderer {
     plan_compile_count: u64,
     submitted_pass_count: u64,
     cached_pass_count: u64,
+    /// Memo snapshots, which outlive the plan that took them while another plan holds a copy.
+    memo_snapshots: MemoSnapshots,
+    /// Prepared plans so far, which identifies each among the cached plans.
+    prepared_plan_count: u64,
     bind_sequence: u64,
     text_atlas: Arc<Mutex<lumen_text::GlyphAtlas>>,
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
@@ -153,6 +157,8 @@ impl GpuCompositionRenderer {
             plan_compile_count: 0,
             submitted_pass_count: 0,
             cached_pass_count: 0,
+            memo_snapshots: MemoSnapshots::default(),
+            prepared_plan_count: 0,
             bind_sequence: 0,
             text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
                 super::types::TEXT_ATLAS_SIZE,
@@ -257,6 +263,7 @@ impl GpuCompositionRenderer {
         }
         self.media_texture_cache.clear();
         self.compiled_plans.clear();
+        self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
         self.rejected_plan_bytes.clear();
         self.active_key = None;
@@ -284,6 +291,7 @@ impl GpuCompositionRenderer {
         self.bind_sequence += 1;
         self.output_format = output_format;
         self.compiled_plans.clear();
+        self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
         self.pruned_signature = None;
         self.rejected_plan_bytes.clear();
@@ -330,12 +338,13 @@ impl GpuCompositionRenderer {
         let estimated_bytes = estimated_plan_bytes(&compiled);
         self.plan_cache_bytes += estimated_bytes;
         self.plan_use_clock += 1;
+        self.prepared_plan_count += 1;
         if let Some(replaced) = self.compiled_plans.insert(
             key.clone(),
             PreparedComposition {
                 renderer,
                 compiled,
-                cache: CacheState::default(),
+                cache: CacheState::new(self.prepared_plan_count),
                 current_media_textures: HashMap::new(),
                 estimated_bytes,
                 last_used: self.plan_use_clock,
@@ -554,10 +563,16 @@ impl GpuCompositionRenderer {
             let prepared = self.active_prepared()?;
             let layout = &prepared.compiled.cache;
             let epoch = layout.epoch(&prepared.renderer);
+            let held =
+                self.memo_snapshots
+                    .held(layout, prepared.cache.plan(), epoch, |plan, at, memo| {
+                        self.memo_source(prepared, plan, memo)
+                            .is_some_and(|(epoch, ..)| epoch == at)
+                    });
             let bound = FrameBindContext::with_media_at(composition, frame, media)
                 .bind_with_cache(
                     &prepared.compiled,
-                    Some(BindCache::new(layout, &prepared.cache, epoch)),
+                    Some(BindCache::new(layout, &prepared.cache, epoch, held)),
                 )?;
             if text_font_generation() == generation {
                 break bound;
@@ -622,6 +637,83 @@ impl GpuCompositionRenderer {
         prepared
             .cache
             .upload(&prepared.compiled.cache, bound.cache.as_ref());
+        self.copy_memo_snapshots(bound)
+    }
+
+    /// The epoch of plan `plan` and the texture and bounds buffer holding its snapshot of `to`'s
+    /// memo `memo`, if `to` can copy them.
+    fn memo_source<'a>(
+        &'a self,
+        to: &PreparedComposition,
+        plan: u64,
+        memo: &LayoutMemo,
+    ) -> Option<(
+        u64,
+        &'a lumen_gpu::wgpu::Texture,
+        Option<&'a lumen_gpu::wgpu::Buffer>,
+    )> {
+        let from = self
+            .compiled_plans
+            .values()
+            .find(|prepared| prepared.cache.plan() == plan)?;
+        let source = from.compiled.cache.memo_by_id(&memo.id)?;
+        let desc = from.renderer.texture_desc(source.texture)?;
+        if source.signature != memo.signature
+            || Some(desc) != to.renderer.texture_desc(memo.texture)
+            || source.bounds.is_some() != memo.bounds.is_some()
+        {
+            return None;
+        }
+        let bounds = match source.bounds {
+            Some(bounds) => Some(from.renderer.buffer(bounds)?),
+            None => None,
+        };
+        Some((
+            from.compiled.cache.epoch(&from.renderer),
+            from.renderer.texture(source.texture)?,
+            bounds,
+        ))
+    }
+
+    /// Copies the memo snapshots `bound` shows from the plans holding them into the active plan.
+    fn copy_memo_snapshots(&self, bound: &BoundFrame) -> crate::Result<()> {
+        let Some(cache) = bound
+            .cache
+            .as_ref()
+            .filter(|cache| !cache.adopted().is_empty())
+        else {
+            return Ok(());
+        };
+        let to = self.active_prepared()?;
+        let mut encoder =
+            to.renderer
+                .device
+                .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
+                    label: Some("lumen memo snapshot copy"),
+                });
+        for (instance, plan) in cache.adopted() {
+            let memo = to.compiled.cache.memo(*instance).expect("keyed memo");
+            let missing = || RenderError::Gpu {
+                details: format!(
+                    "memo {} snapshot is no longer held by the plan it was bound to copy from",
+                    memo.id.0
+                ),
+            };
+            let (_, texture, bounds) = self.memo_source(to, *plan, memo).ok_or_else(missing)?;
+            let destination = to.renderer.texture(memo.texture).ok_or_else(missing)?;
+            encoder.copy_texture_to_texture(
+                texture.as_image_copy(),
+                destination.as_image_copy(),
+                texture.size(),
+            );
+            if let (Some(source), Some(destination)) = (
+                bounds,
+                memo.bounds.and_then(|bounds| to.renderer.buffer(bounds)),
+            ) {
+                encoder.copy_buffer_to_buffer(source, 0, destination, 0, source.size());
+            }
+        }
+        to.renderer.queue.submit([encoder.finish()]);
         Ok(())
     }
 
@@ -841,12 +933,18 @@ impl GpuCompositionRenderer {
 
     /// Keeps what the active plan's submitted frame rendered and counts its passes.
     fn count_submitted(&mut self) {
-        let Ok(prepared) = self.active_prepared_mut() else {
+        let Some(prepared) = self
+            .active_key
+            .as_ref()
+            .and_then(|key| self.compiled_plans.get_mut(key))
+        else {
             return;
         };
         let passes = prepared.compiled.plan.passes().len() as u64;
         let skipped = skipped_count(prepared.cache.skip()) as u64;
-        prepared.cache.submitted(&prepared.compiled.cache);
+        prepared
+            .cache
+            .submitted(&prepared.compiled.cache, &mut self.memo_snapshots);
         self.submitted_pass_count += passes;
         self.cached_pass_count += skipped;
     }
