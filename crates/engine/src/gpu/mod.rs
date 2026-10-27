@@ -4,6 +4,7 @@
 //! values bind through uniform/uploads without rebuilding the render graph.
 
 mod binding;
+mod cache;
 pub(crate) mod compiler;
 #[cfg(feature = "ffmpeg")]
 mod media;

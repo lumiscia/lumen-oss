@@ -129,6 +129,7 @@ pub(crate) fn expand_struct_delegate(
         }
     });
     let has_vec_fields = metas.iter().any(|meta| is_vec_type(&meta.ty));
+    let field_idents = metas.iter().map(|meta| &meta.ident).collect::<Vec<_>>();
     let assert_field_types = metas
         .iter()
         .map(|meta| {
@@ -221,6 +222,10 @@ pub(crate) fn expand_struct_delegate(
                 Ok(#ident {
                     #(#evaluated_fields,)*
                 })
+            }
+
+            fn has_expressions(&self) -> bool {
+                false #(|| ::lumen_engine::node::DelegateEvaluable::has_expressions(&self.#field_idents))*
             }
         }
 

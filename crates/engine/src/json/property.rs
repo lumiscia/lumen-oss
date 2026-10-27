@@ -171,11 +171,23 @@ pub(crate) fn integer_mismatch(value: &Value) -> String {
 
 /// Params that were renamed or removed, with the hint shown when a composition
 /// still uses them: `(node kind, param, hint)`.
-const RETIRED_PARAMS: &[(&str, &str, &str)] = &[(
-    "wgsl_shader",
-    "bindings",
-    "`wgsl_shader` takes a `uniforms` object instead",
-)];
+const RETIRED_PARAMS: &[(&str, &str, &str)] = &[
+    (
+        "wgsl_shader",
+        "bindings",
+        "`wgsl_shader` takes a `uniforms` object instead",
+    ),
+    (
+        "memo",
+        "cache_id",
+        "`memo` takes a `key` expression, and renders its source again when the key changes",
+    ),
+    (
+        "memo",
+        "allow_expressions",
+        "`memo` takes a `key` expression, and renders its source again when the key changes",
+    ),
+];
 
 /// The error for a param a node does not have, with a hint for retired params.
 pub fn unknown_param_error(kind: &str, key: &str, id: NodeId) -> anyhow::Error {

@@ -365,6 +365,13 @@ impl Renderer {
         self.textures.get(id.0 as usize).map(|texture| texture.desc)
     }
 
+    /// Changes whenever the texture is replaced.
+    pub fn texture_generation(&self, id: TextureId) -> Option<u64> {
+        self.textures
+            .get(id.0 as usize)
+            .map(|texture| texture.generation)
+    }
+
     pub fn replace_texture(
         &mut self,
         id: TextureId,
@@ -447,6 +454,18 @@ impl Renderer {
         texture_id: TextureId,
         external: ExternalTexture,
     ) -> Result<SubmittedExternalTexture> {
+        self.submit_plan_with_external_texture_skipping(plan, texture_id, external, &[])
+    }
+
+    /// `submit_plan_with_external_texture` without the passes `skip` marks; see
+    /// `submit_plan_skipping`.
+    pub fn submit_plan_with_external_texture_skipping(
+        &mut self,
+        plan: &RenderPlan,
+        texture_id: TextureId,
+        external: ExternalTexture,
+        skip: &[bool],
+    ) -> Result<SubmittedExternalTexture> {
         self.validate_external_texture(texture_id, external.desc())?;
         let old_desc = self
             .texture_desc(texture_id)
@@ -454,7 +473,7 @@ impl Renderer {
         let retained = external.texture_arc();
         let old_texture =
             self.replace_texture_arc(texture_id, retained.clone(), external.desc())?;
-        let submission = match self.submit_plan(plan) {
+        let submission = match self.submit_plan_skipping(plan, skip) {
             Ok(submission) => submission,
             Err(error) => {
                 let _ = self.replace_texture_arc(texture_id, old_texture, old_desc);
@@ -499,22 +518,36 @@ impl Renderer {
     }
 
     pub fn submit_plan(&mut self, plan: &RenderPlan) -> Result<wgpu::SubmissionIndex> {
+        self.submit_plan_skipping(plan, &[])
+    }
+
+    /// Submits the plan without the passes whose index `skip` marks, leaving what they would
+    /// write as it is. Passes past the end of `skip` run.
+    pub fn submit_plan_skipping(
+        &mut self,
+        plan: &RenderPlan,
+        skip: &[bool],
+    ) -> Result<wgpu::SubmissionIndex> {
         self.validate_prepared(plan)?;
         tracing::trace!(
             target: "lumen_gpu",
             passes = plan.passes.len(),
+            skipped = skip.iter().filter(|skipped| **skipped).count(),
             "submit render plan"
         );
 
         let scope = ValidationScope::push(&self.device);
-        self.refresh_bind_groups(plan)?;
+        self.refresh_bind_groups(plan, skip)?;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("lumen-gpu render-plan encoder"),
             });
 
-        for (pass, cached) in plan.passes.iter().zip(&self.bind_groups) {
+        for (index, (pass, cached)) in plan.passes.iter().zip(&self.bind_groups).enumerate() {
+            if skip.get(index).copied().unwrap_or(false) {
+                continue;
+            }
             let bind_groups = cached.as_ref().map_or(&[][..], |cached| &cached.groups);
             match &pass.desc {
                 PassDesc::Render(desc) => {
@@ -1002,11 +1035,14 @@ impl Renderer {
         Ok(())
     }
 
-    /// Rebuilds the bind groups of passes whose program, bindings, or bound textures changed since
-    /// they were last built.
-    fn refresh_bind_groups(&mut self, plan: &RenderPlan) -> Result<()> {
+    /// Rebuilds the bind groups of passes not skipped whose program, bindings, or bound textures
+    /// changed since they were last built.
+    fn refresh_bind_groups(&mut self, plan: &RenderPlan, skip: &[bool]) -> Result<()> {
         self.bind_groups.resize_with(plan.passes.len(), || None);
         for (index, pass) in plan.passes.iter().enumerate() {
+            if skip.get(index).copied().unwrap_or(false) {
+                continue;
+            }
             let (program, bindings) = match &pass.desc {
                 PassDesc::Render(desc) => (desc.program, &desc.bindings),
                 PassDesc::Compute(desc) => (desc.program, &desc.bindings),

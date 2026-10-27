@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { AudioTrack } from "../src/audio.js";
 import { Composition } from "../src/composition.js";
+import { floor, frame } from "../src/expression.js";
 
 describe("Composition node IDs", () => {
   test("assigns sequential IDs when none are provided", () => {
@@ -168,5 +169,15 @@ describe("Composition timeline defaults", () => {
 
     expect(composition.toJSON().timeline.fps).toBe(30);
     expect(composition.setDurationSeconds(2).toJSON().timeline.duration_frames).toBe(60);
+  });
+});
+
+describe("Composition memo nodes", () => {
+  test("lowers a typed memo key to an expression", () => {
+    const composition = new Composition();
+
+    const memo = composition.addNode({ params: { key: floor(frame.div(4)) }, type: "memo" });
+
+    expect(memo.params).toEqual({ key: "=floor((frame / 4))" });
   });
 });

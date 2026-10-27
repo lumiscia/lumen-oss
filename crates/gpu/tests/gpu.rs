@@ -224,6 +224,66 @@ fn uniform_upload_updates_compute_shader_output_without_replanning() {
 }
 
 #[test]
+fn skipped_passes_leave_their_targets_as_last_written() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let size = Size::new(1, 1);
+    let mut builder = RenderPlan::builder();
+    let uniforms = builder.buffer(Some("color".to_string()), BufferDesc::uniform(16));
+    let output = builder.texture(
+        Some("output".to_string()),
+        TextureDesc::storage(size, wgpu::TextureFormat::Rgba8Unorm),
+    );
+    let program = builder.program(ProgramDesc::Compute(ComputeProgramDesc {
+        label: Some("uniform color".to_string()),
+        shader: UNIFORM_COMPUTE_SHADER.to_string(),
+        entry: "cs_main".to_string(),
+        bind_groups: BindGroupLayoutSpec::single(vec![
+            BindingLayoutEntry::uniform(0, wgpu::ShaderStages::COMPUTE),
+            BindingLayoutEntry::storage_texture(
+                1,
+                wgpu::ShaderStages::COMPUTE,
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::StorageTextureAccess::WriteOnly,
+            ),
+        ]),
+    }));
+    builder.compute_pass(ComputePassDesc {
+        label: Some("write color".to_string()),
+        owner: Some(NodeKey(1)),
+        program,
+        bindings: vec![
+            Binding::uniform(0, 0, uniforms),
+            Binding::storage_texture(0, 1, output),
+        ],
+        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
+    });
+    let plan = builder.build();
+    renderer.prepare_plan(&plan).unwrap();
+    let write = |renderer: &mut Renderer, color: [f32; 4], skip: &[bool]| {
+        let mut update = FrameUpdate::new();
+        update.write_buffer(uniforms, 0, bytemuck::cast_slice(&color));
+        renderer.apply_frame_update(&plan, &update).unwrap();
+        renderer.submit_plan_skipping(&plan, skip).unwrap();
+        read_texture_rgba8(renderer, output, size)[0..4].to_vec()
+    };
+
+    assert_eq!(
+        write(&mut renderer, [0.0, 1.0, 0.0, 1.0], &[]),
+        [0, 255, 0, 255]
+    );
+    assert_eq!(
+        write(&mut renderer, [1.0, 0.0, 0.0, 1.0], &[true]),
+        [0, 255, 0, 255]
+    );
+    assert_eq!(
+        write(&mut renderer, [1.0, 0.0, 0.0, 1.0], &[false]),
+        [255, 0, 0, 255]
+    );
+}
+
+#[test]
 fn sibling_renderers_never_accept_an_invalid_program() {
     let Some(root) = renderer() else {
         return;

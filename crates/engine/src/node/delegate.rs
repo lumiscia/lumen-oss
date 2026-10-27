@@ -24,6 +24,9 @@ pub trait DelegateEvaluable: Clone {
     type Evaluated;
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated>;
+
+    /// Whether any part of this value is an expression.
+    fn has_expressions(&self) -> bool;
 }
 
 pub trait DelegateValue: DelegateEvaluable {
@@ -119,6 +122,10 @@ where
                 value.eval(&ctx.child(&path))
             })
             .collect()
+    }
+
+    fn has_expressions(&self) -> bool {
+        self.items.iter().any(DelegateEvaluable::has_expressions)
     }
 }
 
