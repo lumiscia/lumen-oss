@@ -112,8 +112,10 @@ pub struct ClipWindow {
     pub start: f64,
     pub duration: f64,
     pub offset: f64,
-    /// Content frames per frame of the composition the clip is in.
-    pub rate: f64,
+    pub speed: f64,
+    /// Frames per second of the content and of the composition the clip is in.
+    pub content_fps: f64,
+    pub fps: f64,
     pub end: ClipEnd,
 }
 
@@ -136,14 +138,19 @@ impl ClipWindow {
                 ClipEnd::Loop => elapsed.rem_euclid(self.duration),
             }
         };
-        // Matching rates keep the frame as given, which may be just below a whole frame on
-        // purpose, as a looped `time_remap` target is.
-        let local = elapsed * self.rate + self.offset;
-        Some(if self.rate == 1.0 {
-            local
+        // The frame rates apply last, in one division, so whole frames convert with a single
+        // rounding. Matching rates skip it, which keeps a frame just below a whole one, as a
+        // looped `time_remap` target is.
+        Some(if self.content_fps == self.fps {
+            elapsed * self.speed + self.offset
         } else {
-            crate::scope::snap_to_whole_frame(local)
+            (elapsed * self.speed * self.content_fps + self.offset * self.fps) / self.fps
         })
+    }
+
+    /// Content frames per frame of the composition the clip is in.
+    pub fn rate(&self) -> f64 {
+        self.speed * self.content_fps / self.fps
     }
 }
 
@@ -205,26 +212,30 @@ impl Clip {
         }
         let template = self.template(scope)?;
         let content_fps = template.map_or(scope.timeline.fps, |template| template.timeline.fps);
-        let rate = speed * f64::from(content_fps) / f64::from(scope.timeline.fps);
-        let duration = if !plays_to_end {
-            duration
-        } else {
-            match template {
-                Some(template) => (f64::from(template.timeline.duration_frames) - offset) / rate,
-                None => f64::from(scope.timeline.duration_frames) - start,
-            }
-        };
-        Ok(ClipWindow {
+        let window = ClipWindow {
             start,
-            duration,
+            duration: 0.0,
             offset,
-            rate,
+            speed,
+            content_fps: f64::from(content_fps),
+            fps: f64::from(scope.timeline.fps),
             end: self.params.end.eval(&DelegateEvalContext {
                 node_id: self.id,
                 property_path: "end",
                 expr: ctx,
             })?,
-        })
+        };
+        let duration = if !plays_to_end {
+            duration
+        } else {
+            match template {
+                Some(template) => {
+                    (f64::from(template.timeline.duration_frames) - offset) / window.rate()
+                }
+                None => f64::from(scope.timeline.duration_frames) - start,
+            }
+        };
+        Ok(ClipWindow { duration, ..window })
     }
 
     /// What the clip shows at `frame` in `scope`: its content's output in the content's own
@@ -311,13 +322,16 @@ impl GpuCompileNode for Clip {
 #[cfg(test)]
 mod tests {
     use super::{ClipEnd, ClipWindow};
+    use crate::node::source::media_in::{LoopMode, map_to_source_frame};
 
     fn window(end: ClipEnd) -> ClipWindow {
         ClipWindow {
             start: 10.0,
             duration: 4.0,
             offset: 2.0,
-            rate: 0.5,
+            speed: 0.5,
+            content_fps: 30.0,
+            fps: 30.0,
             end,
         }
     }
@@ -342,5 +356,38 @@ mod tests {
             ..window(ClipEnd::Hold)
         };
         assert_eq!(fractional.local_frame(100.0), Some(66.0 * 0.5 + 2.0));
+    }
+
+    #[test]
+    fn whole_frames_survive_a_template_at_another_frame_rate() {
+        let clip = ClipWindow {
+            start: 3.0,
+            duration: 1000.0,
+            offset: 4.0,
+            speed: 1.0,
+            content_fps: 24.0,
+            fps: 30.0,
+            end: ClipEnd::Hide,
+        };
+        for frame in 3..250 {
+            let local = clip.local_frame(frame.into()).unwrap();
+            let source = map_to_source_frame(local, 24.0, 30.0, 1000, None, 1.0, LoopMode::Clamp);
+            assert_eq!(source, Some(frame - 3 + 5), "at {frame}");
+        }
+    }
+
+    #[test]
+    fn matching_rates_keep_frames_just_below_a_whole_one() {
+        let clip = ClipWindow {
+            speed: 2.0,
+            content_fps: 30.0,
+            fps: 30.0,
+            start: 0.0,
+            offset: 0.0,
+            ..window(ClipEnd::Hide)
+        };
+        let below = 2.0_f64.next_down();
+        assert_eq!(clip.local_frame(below), Some(2.0 * below));
+        assert!(2.0 * below < 4.0);
     }
 }

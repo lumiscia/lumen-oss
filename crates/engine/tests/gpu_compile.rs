@@ -9982,3 +9982,72 @@ fn clip_frame_rate_round_trips_land_on_the_source_frame() {
         assert_eq!(pixels[0], frame as u8, "rendered at {frame}");
     }
 }
+
+#[test]
+fn clip_props_reading_other_nodes_do_not_bound_the_template() {
+    let mut composition = small_template_composition(json!([
+        { "id": 1, "type": "shape", "params": {
+            "width": 2, "height": 2, "position": "=vec2(prop('x'), 1)",
+            "fill_paint": "#ffffff", "edge_antialias": false
+        } },
+        { "id": 2, "type": "media_output" }
+    ]));
+    composition["compositions"]["small"]["render_settings"] = json!({ "width": 32, "height": 8 });
+    composition["compositions"]["small"]["props"] = json!({ "x": { "type": "number" } });
+    composition["nodes"][0]["params"] =
+        json!({ "composition": "small", "props": { "x": "=node(99, 'width')" } });
+    composition["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": 99, "type": "shape", "params": { "width": 2 } }));
+    let mut composition = lumen_engine::json::parse_value(&composition).unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let Some(NodeKind::Shape(shape)) = composition.graph.nodes.get_mut(&NodeId::new(99)) else {
+        unreachable!("node 99 is the shape");
+    };
+    shape.params.width = Deferred::value(20);
+    let edited = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let expected = render_rgba8(
+        &mut gpu_composition_renderer().unwrap(),
+        &composition,
+        0,
+        &EmptyMediaStore,
+    );
+    assert!(expected.iter().any(|value| *value > 0));
+    assert!(
+        edited == expected,
+        "the template was bounded before node 99 changed"
+    );
+}
+
+#[test]
+fn looped_time_remap_targets_stay_inside_nested_clip_windows() {
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 30, "duration_frames": 30 },
+        "render_settings": { "width": 1, "height": 1 },
+        "nodes": [
+            { "id": 1, "type": "background", "params": { "paint": "#ff0000" } },
+            { "id": 2, "type": "clip", "params": { "duration": 4 } },
+            { "id": 3, "type": "clip", "params": { "duration": 2, "speed": 2 } },
+            { "id": 4, "type": "time_remap", "params": {
+                "frame": "=1 / 49 * 49", "loop_enabled": true, "loop_start": 1, "loop_end": 2
+            } },
+            { "id": 5, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 2, "to_port": "source" },
+            { "from_node": 2, "to_node": 3, "to_port": "source" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" },
+            { "from_node": 4, "to_node": 5, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    assert_eq!(pixels, [255, 0, 0, 255]);
+}

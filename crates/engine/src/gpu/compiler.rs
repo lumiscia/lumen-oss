@@ -9,7 +9,10 @@ use crate::{
         RasterHandle, RasterMetadata, TimeRemapPath,
     },
     media::MediaStore,
-    node::{NodeId, NodeKind, NodeParams, PortRef, PropertyExpression, compositing::clip::Clip},
+    node::{
+        ClipPropValue, NodeId, NodeKind, NodeParams, PortRef, PropertyExpression,
+        compositing::clip::Clip,
+    },
     scope::{PropValues, Routed, Scope},
 };
 
@@ -72,21 +75,34 @@ impl SourceMotion {
 /// outside of the node and its plan.
 fn reads_outside_node<P: NodeParams>(params: &P) -> bool {
     P::property_defs().iter().any(|def| {
-        let Some(PropertyExpression::Expr(expr)) = params.get_property(def.id) else {
-            return false;
-        };
-        let mut measures_text = false;
-        crate::expr::functions::visit(&expr.ast, &mut |node| {
-            measures_text |= matches!(
-                node,
-                crate::expr::ExprNode::Builtin(
-                    crate::expr::BuiltinFn::TextWidth | crate::expr::BuiltinFn::TextHeight,
-                    _
-                )
-            );
-        });
-        measures_text || !expr.references.is_empty()
+        matches!(
+            params.get_property(def.id),
+            Some(PropertyExpression::Expr(expr)) if expr_reads_outside_node(&expr)
+        )
     })
+}
+
+fn expr_reads_outside_node(expr: &crate::expr::Expression) -> bool {
+    let mut measures_text = false;
+    crate::expr::functions::visit(&expr.ast, &mut |node| {
+        measures_text |= matches!(
+            node,
+            crate::expr::ExprNode::Builtin(
+                crate::expr::BuiltinFn::TextWidth | crate::expr::BuiltinFn::TextHeight,
+                _
+            )
+        );
+    });
+    measures_text || !expr.references.is_empty()
+}
+
+/// Whether a clip's timing or prop expressions read state outside the node, which edits can
+/// change without changing its definition.
+fn clip_reads_outside_node(clip: &Clip) -> bool {
+    reads_outside_node(&clip.params)
+        || clip.props().0.values().any(
+            |value| matches!(value, ClipPropValue::Expr(expr) if expr_reads_outside_node(expr)),
+        )
 }
 
 /// Copies the visible part of a clip's raster into a texture of the parent canvas.
@@ -439,8 +455,12 @@ impl<'a> CompileContext<'a> {
     }
 
     /// The frames a clip's content may be bound at in this plan: each frame the plan may bind
-    /// this scope at where the clip shows, in the content's time and with its props.
+    /// this scope at where the clip shows, in the content's time and with its props. `None`
+    /// when they are unknown, as when the clip's expressions read state outside of it.
     fn clip_bound_frames(&self, clip: &Clip) -> Option<Arc<[PlanFrame]>> {
+        if clip_reads_outside_node(clip) {
+            return None;
+        }
         let frames = self.bound_frames.as_ref()?;
         let mut scope = self.scope.clone();
         let mut local = Vec::new();

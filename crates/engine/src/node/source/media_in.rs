@@ -133,6 +133,14 @@ pub fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
     Some(start.max(0) as u32..end.max(0) as u32)
 }
 
+/// The whole source frame `frame` is the rounded conversion of, if it is. A clip at another
+/// frame rate converts whole frames with one rounding, which this repeats to tell them from
+/// the frames just below a whole one that are meant to stay there.
+fn whole_source_frame(frame: f64, comp_fps: f32, media_fps: f32) -> Option<f64> {
+    let whole = ((frame / comp_fps as f64) * media_fps as f64).round();
+    (whole * comp_fps as f64 / media_fps as f64 == frame).then_some(whole)
+}
+
 /// Maps a (possibly fractional) composition frame to the source frame shown at that instant.
 /// The source position is floored, so a frame stays on screen until the next one starts.
 pub fn map_to_source_frame(
@@ -163,12 +171,12 @@ pub fn map_to_source_frame(
         comp_fps
     };
     // Matching rates skip the divide-then-multiply, which can round a frame just below an
-    // integer (e.g. a looped `time_remap` target) up onto the next one. Other rates snap to a
-    // source frame they land a rounding error from.
+    // integer (e.g. a looped `time_remap` target) up onto the next one.
     let media_frame = if media_fps == comp_fps {
         frame
     } else {
-        crate::scope::snap_to_whole_frame((frame / comp_fps as f64) * media_fps as f64)
+        let media_frame = (frame / comp_fps as f64) * media_fps as f64;
+        whole_source_frame(frame, comp_fps, media_fps).unwrap_or(media_frame)
     };
     let relative = (media_frame * speed.abs() as f64).floor() as u32;
     let forward = speed >= 0.0;
@@ -201,6 +209,13 @@ pub fn map_to_source_frame(
 #[cfg(test)]
 mod frame_mapping_tests {
     use super::{LoopMode, map_to_source_frame};
+
+    #[test]
+    fn frames_just_below_a_source_frame_stay_on_the_one_before() {
+        let below = 6.0_f64.next_down();
+        let mapped = map_to_source_frame(below, 30.0, 15.0, 100, None, 1.0, LoopMode::Clamp);
+        assert_eq!(mapped, Some(2));
+    }
 
     #[test]
     fn lower_fps_media_repeats_frames_at_composition_rate() {
