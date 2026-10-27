@@ -288,11 +288,7 @@ impl GpuCompositionRenderer {
             estimated_bytes = estimated_plan_bytes(&compiled),
             "prepare compiled render plan"
         );
-        let mut renderer = lumen_gpu::Renderer::from_device_with_adapter_info(
-            self.renderer.device.clone(),
-            self.renderer.queue.clone(),
-            self.renderer.adapter_info().clone(),
-        );
+        let mut renderer = self.renderer.sibling();
         renderer
             .prepare_plan(&compiled.plan)
             .map_err(|error| RenderError::Gpu {

@@ -103,6 +103,56 @@ fn compute_pass_writes_storage_texture() {
 }
 
 #[test]
+fn replaced_texture_is_bound_on_next_submit() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let size = Size::new(4, 4);
+    let desc = TextureDesc::storage(size, wgpu::TextureFormat::Rgba8Unorm);
+    let mut builder = RenderPlan::builder();
+    let output = builder.texture(Some("output".to_string()), desc);
+    let program = builder.program(ProgramDesc::Compute(ComputeProgramDesc {
+        label: Some("fill texture".to_string()),
+        shader: COMPUTE_TEXTURE_SHADER.to_string(),
+        entry: "cs_main".to_string(),
+        bind_groups: BindGroupLayoutSpec::single(vec![BindingLayoutEntry::storage_texture(
+            0,
+            wgpu::ShaderStages::COMPUTE,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::StorageTextureAccess::WriteOnly,
+        )]),
+    }));
+    builder.compute_pass(ComputePassDesc {
+        label: Some("fill".to_string()),
+        owner: None,
+        program,
+        bindings: vec![Binding::storage_texture(0, 0, output)],
+        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
+    });
+    let plan = builder.build();
+    renderer.prepare_plan(&plan).unwrap();
+    renderer.execute(&plan, &FrameUpdate::new()).unwrap();
+
+    let replacement = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("replacement output"),
+        size: size.as_extent(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: desc.usage,
+        view_formats: &[],
+    });
+    renderer
+        .replace_texture_discard_old(output, replacement, desc)
+        .unwrap();
+    renderer.execute(&plan, &FrameUpdate::new()).unwrap();
+
+    let bytes = read_texture_rgba8(&renderer, output, size);
+    assert_rgba8_near(&bytes[0..4], [64, 128, 191, 255]);
+}
+
+#[test]
 fn uniform_upload_updates_compute_shader_output_without_replanning() {
     let Some(mut renderer) = renderer() else {
         return;
