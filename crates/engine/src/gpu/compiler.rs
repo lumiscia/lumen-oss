@@ -134,6 +134,7 @@ pub struct CompileContext<'a> {
     timeline_bounds: bool,
     /// Full-frame copies of bounded rasters, by the bounded texture.
     full_frames: HashMap<lumen_gpu::TextureId, RasterHandle>,
+    cache: super::cache::CacheRecorder,
 }
 
 impl<'a> CompileContext<'a> {
@@ -202,6 +203,7 @@ impl<'a> CompileContext<'a> {
             raster_bounds: HashMap::new(),
             timeline_bounds,
             full_frames: HashMap::new(),
+            cache: super::cache::CacheRecorder::default(),
         }
     }
 
@@ -217,8 +219,16 @@ impl<'a> CompileContext<'a> {
         let output = self
             .compile_port(&output_ref)?
             .into_raster(output_node, "output")?;
+        let plan = self.builder.build();
+        let cache = self.cache.finish(
+            self.composition,
+            &plan,
+            output.texture,
+            self.text_atlas_texture,
+        );
         Ok(CompiledComposition {
-            plan: self.builder.build(),
+            plan,
+            cache,
             output,
             node_outputs: self.public_outputs,
             compiled_nodes: self.compiled_nodes,
@@ -278,6 +288,23 @@ impl<'a> CompileContext<'a> {
         &mut self.builder
     }
 
+    /// Records a keyed memo: its texture, the bounds buffer copied with it and the pass copying
+    /// its source into them.
+    pub(crate) fn record_memo(
+        &mut self,
+        texture: lumen_gpu::TextureId,
+        bounds: Option<lumen_gpu::BufferId>,
+        copy: lumen_gpu::PassId,
+    ) {
+        self.cache
+            .record_memo(&self.time_remaps, texture, bounds, copy);
+    }
+
+    /// Whether `texture` holds a keyed memo's copy, which only its memo may write.
+    pub(crate) fn is_memo_texture(&self, texture: lumen_gpu::TextureId) -> bool {
+        self.cache.is_memo_texture(texture)
+    }
+
     pub(crate) fn register_compiled_node<N>(&mut self, node: N)
     where
         N: GpuCompiledNode + 'static,
@@ -303,10 +330,21 @@ impl<'a> CompileContext<'a> {
             port: port.clone(),
             time_remaps: self.time_remaps.clone(),
         };
-        if let Some(output) = self.outputs.get(&key) {
-            return Ok(output.clone());
-        }
+        self.cache.enter(&self.builder, port.id, &self.time_remaps);
+        let output = match self.outputs.get(&key) {
+            Some(output) => Ok(output.clone()),
+            None => self.compile_node(port),
+        };
+        self.cache.pop(&self.builder);
+        let output = output?;
+        self.outputs.insert(key, output.clone());
+        self.public_outputs
+            .entry(port.clone())
+            .or_insert_with(|| output.clone());
+        Ok(output)
+    }
 
+    fn compile_node(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
         let node = self
             .composition
             .graph
@@ -316,7 +354,7 @@ impl<'a> CompileContext<'a> {
                 frame: 0,
                 node_id: port.id,
             })?;
-        let output = match node {
+        Ok(match node {
             NodeKind::MediaIn(node) => node.compile_gpu(self, port)?,
             NodeKind::Background(node) => node.compile_gpu(self, port)?,
             NodeKind::Text(node) => node.compile_gpu(self, port)?,
@@ -343,13 +381,7 @@ impl<'a> CompileContext<'a> {
             NodeKind::WgslShader(node) => node.compile_gpu(self, port)?,
             NodeKind::Switch(node) => node.compile_gpu(self, port)?,
             NodeKind::MediaOutput(node) => node.compile_gpu(self, port)?,
-        };
-
-        self.outputs.insert(key, output.clone());
-        self.public_outputs
-            .entry(port.clone())
-            .or_insert_with(|| output.clone());
-        Ok(output)
+        })
     }
 
     /// `raster` stored at its full display size, copied there when it is bounded. The copy's
@@ -360,6 +392,11 @@ impl<'a> CompileContext<'a> {
         }
         if let Some(full) = self.full_frames.get(&raster.texture) {
             return *full;
+        }
+        // The copy belongs to the raster's node, so it is kept and dispatched with the raster.
+        let owner = self.cache.texture_owner(raster.texture);
+        if let Some(owner) = owner {
+            self.cache.push(&self.builder, owner);
         }
         let size = raster.domain.display_size();
         let data = raster.domain.data_rect;
@@ -378,6 +415,9 @@ impl<'a> CompileContext<'a> {
             },
             size: raster.domain.storage_size,
         });
+        if owner.is_some() {
+            self.cache.pop(&self.builder);
+        }
         let full = RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),

@@ -9,6 +9,10 @@ use crate::{
     gpu::{
         BoundFrame, CompileContext, CompiledComposition, FrameBindContext, MediaTextureKey,
         RasterHandle, TimeRemapPath,
+        cache::{
+            BindCache, CacheState, LayoutMemo, MemoSnapshots, composition_fingerprint,
+            skipped_count,
+        },
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
@@ -91,6 +95,8 @@ const MAX_REJECTED_PLANS: usize = 256;
 struct PreparedComposition {
     renderer: lumen_gpu::Renderer,
     compiled: CompiledComposition,
+    /// Output kept from frames submitted to this plan.
+    cache: CacheState,
     current_media_textures: HashMap<lumen_gpu::TextureId, MediaTextureKey>,
     estimated_bytes: u64,
     last_used: u64,
@@ -110,6 +116,15 @@ pub struct GpuCompositionRenderer {
     rejected_plan_bytes: HashMap<CompiledPlanKey, u64>,
     rejected_signature: Option<u64>,
     plan_compile_count: u64,
+    submitted_pass_count: u64,
+    cached_pass_count: u64,
+    /// Memo snapshots, which outlive the plan that took them while another plan holds a copy.
+    memo_snapshots: MemoSnapshots,
+    /// Plans the latest bound frame copies memo snapshots from, which stay cached until it is
+    /// submitted or another frame is bound.
+    pinned_plans: Vec<u64>,
+    /// Prepared plans so far, which identifies each among the cached plans.
+    prepared_plan_count: u64,
     bind_sequence: u64,
     text_atlas: Arc<Mutex<lumen_text::GlyphAtlas>>,
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
@@ -146,6 +161,11 @@ impl GpuCompositionRenderer {
             rejected_plan_bytes: HashMap::new(),
             rejected_signature: None,
             plan_compile_count: 0,
+            submitted_pass_count: 0,
+            cached_pass_count: 0,
+            memo_snapshots: MemoSnapshots::default(),
+            pinned_plans: Vec::new(),
+            prepared_plan_count: 0,
             bind_sequence: 0,
             text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
                 super::types::TEXT_ATLAS_SIZE,
@@ -197,6 +217,18 @@ impl GpuCompositionRenderer {
         self.plan_compile_count
     }
 
+    /// Number of passes in the plans of submitted frames, whether they ran or not.
+    pub fn submitted_pass_count(&self) -> u64 {
+        self.submitted_pass_count
+    }
+
+    /// Number of passes submitted frames skipped because the output they would write was kept
+    /// from an earlier frame: that of nodes without frame-dependent params and of what a holding
+    /// `memo` reads.
+    pub fn cached_pass_count(&self) -> u64 {
+        self.cached_pass_count
+    }
+
     /// Number of rejected lookahead plans whose estimated size is remembered.
     #[doc(hidden)]
     pub fn rejected_plan_count(&self) -> usize {
@@ -238,6 +270,7 @@ impl GpuCompositionRenderer {
         }
         self.media_texture_cache.clear();
         self.compiled_plans.clear();
+        self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
         self.rejected_plan_bytes.clear();
         self.active_key = None;
@@ -265,6 +298,7 @@ impl GpuCompositionRenderer {
         self.bind_sequence += 1;
         self.output_format = output_format;
         self.compiled_plans.clear();
+        self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
         self.pruned_signature = None;
         self.rejected_plan_bytes.clear();
@@ -311,11 +345,13 @@ impl GpuCompositionRenderer {
         let estimated_bytes = estimated_plan_bytes(&compiled);
         self.plan_cache_bytes += estimated_bytes;
         self.plan_use_clock += 1;
+        self.prepared_plan_count += 1;
         if let Some(replaced) = self.compiled_plans.insert(
             key.clone(),
             PreparedComposition {
                 renderer,
                 compiled,
+                cache: CacheState::new(self.prepared_plan_count),
                 current_media_textures: HashMap::new(),
                 estimated_bytes,
                 last_used: self.plan_use_clock,
@@ -367,7 +403,10 @@ impl GpuCompositionRenderer {
             let Some(key) = self
                 .compiled_plans
                 .iter()
-                .filter(|(key, _)| !pinned.contains(&Some(*key)))
+                .filter(|(key, prepared)| {
+                    !pinned.contains(&Some(*key))
+                        && !self.pinned_plans.contains(&prepared.cache.plan())
+                })
                 .min_by_key(|(_, prepared)| prepared.last_used)
                 .map(|(key, _)| key.clone())
             else {
@@ -484,17 +523,19 @@ impl GpuCompositionRenderer {
         let bound = self.bind_frame(composition, frame, media)?;
         self.upload_bound_frame(&bound)?;
         let prepared = self.active_prepared_mut()?;
-        prepared
+        let submitted = prepared
             .renderer
-            .submit_plan_with_external_texture(
+            .submit_plan_with_external_texture_skipping(
                 &prepared.compiled.plan,
                 prepared.compiled.output.texture,
                 external,
+                prepared.cache.skip(),
             )
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
-            })
-            .map_err(Into::into)
+            })?;
+        self.count_submitted();
+        Ok(submitted)
     }
 
     pub fn bind_frame<M: MediaStore>(
@@ -529,9 +570,34 @@ impl GpuCompositionRenderer {
         let mut bound = loop {
             let generation = text_font_generation();
             self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
-            let compiled = self.active_compiled()?;
-            let bound =
-                FrameBindContext::with_media_at(composition, frame, media).bind(compiled)?;
+            let fingerprint = if self.active_prepared()?.compiled.cache.has_memos()
+                || !self.memo_snapshots.is_empty()
+            {
+                composition_fingerprint(composition)
+            } else {
+                0
+            };
+            self.memo_snapshots.retain_composition(fingerprint);
+            let prepared = self.active_prepared()?;
+            let layout = &prepared.compiled.cache;
+            let epoch = layout.epoch(&prepared.renderer);
+            let held =
+                self.memo_snapshots
+                    .held(layout, prepared.cache.plan(), epoch, |plan, at, memo| {
+                        self.memo_source(prepared, plan, memo)
+                            .is_some_and(|(epoch, ..)| epoch == at)
+                    });
+            let bound = FrameBindContext::with_media_at(composition, frame, media)
+                .bind_with_cache(
+                    &prepared.compiled,
+                    Some(BindCache::new(
+                        layout,
+                        &prepared.cache,
+                        epoch,
+                        fingerprint,
+                        held,
+                    )),
+                )?;
             if text_font_generation() == generation {
                 break bound;
             }
@@ -546,6 +612,11 @@ impl GpuCompositionRenderer {
             rebinds += 1;
         };
         bound.renderer_binding = self.active_key.clone().map(|key| (self.bind_sequence, key));
+        self.pinned_plans = bound
+            .cache
+            .iter()
+            .flat_map(|cache| cache.adopted().iter().map(|(_, plan)| *plan))
+            .collect();
         Ok(bound)
     }
 
@@ -577,6 +648,8 @@ impl GpuCompositionRenderer {
             }
             .into());
         }
+        let prepared = self.active_prepared_mut()?;
+        prepared.cache.upload(&prepared.compiled.cache, None);
         if bound.text_atlas.is_some() {
             self.ensure_text_atlas_texture()?;
         }
@@ -590,6 +663,85 @@ impl GpuCompositionRenderer {
                 details: error.to_string(),
             })?;
         bound.mark_uploaded()?;
+        prepared
+            .cache
+            .upload(&prepared.compiled.cache, bound.cache.as_ref());
+        self.copy_memo_snapshots(bound)
+    }
+
+    /// The epoch of plan `plan` and the texture and bounds buffer holding its snapshot of `to`'s
+    /// memo `memo`, if `to` can copy them.
+    fn memo_source<'a>(
+        &'a self,
+        to: &PreparedComposition,
+        plan: u64,
+        memo: &LayoutMemo,
+    ) -> Option<(
+        u64,
+        &'a lumen_gpu::wgpu::Texture,
+        Option<&'a lumen_gpu::wgpu::Buffer>,
+    )> {
+        let from = self
+            .compiled_plans
+            .values()
+            .find(|prepared| prepared.cache.plan() == plan)?;
+        let source = from.compiled.cache.memo_by_id(&memo.id)?;
+        let desc = from.renderer.texture_desc(source.texture)?;
+        if Some(desc) != to.renderer.texture_desc(memo.texture)
+            || source.bounds.is_some() != memo.bounds.is_some()
+        {
+            return None;
+        }
+        let bounds = match source.bounds {
+            Some(bounds) => Some(from.renderer.buffer(bounds)?),
+            None => None,
+        };
+        Some((
+            from.compiled.cache.epoch(&from.renderer),
+            from.renderer.texture(source.texture)?,
+            bounds,
+        ))
+    }
+
+    /// Copies the memo snapshots `bound` shows from the plans holding them into the active plan.
+    fn copy_memo_snapshots(&self, bound: &BoundFrame) -> crate::Result<()> {
+        let Some(cache) = bound
+            .cache
+            .as_ref()
+            .filter(|cache| !cache.adopted().is_empty())
+        else {
+            return Ok(());
+        };
+        let to = self.active_prepared()?;
+        let mut encoder =
+            to.renderer
+                .device
+                .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
+                    label: Some("lumen memo snapshot copy"),
+                });
+        for (instance, plan) in cache.adopted() {
+            let memo = to.compiled.cache.memo(*instance).expect("keyed memo");
+            let missing = || RenderError::Gpu {
+                details: format!(
+                    "memo {} snapshot is no longer held by the plan it was bound to copy from",
+                    memo.id.0
+                ),
+            };
+            let (_, texture, bounds) = self.memo_source(to, *plan, memo).ok_or_else(missing)?;
+            let destination = to.renderer.texture(memo.texture).ok_or_else(missing)?;
+            encoder.copy_texture_to_texture(
+                texture.as_image_copy(),
+                destination.as_image_copy(),
+                texture.size(),
+            );
+            if let (Some(source), Some(destination)) = (
+                bounds,
+                memo.bounds.and_then(|bounds| to.renderer.buffer(bounds)),
+            ) {
+                encoder.copy_buffer_to_buffer(source, 0, destination, 0, source.size());
+            }
+        }
+        to.renderer.queue.submit([encoder.finish()]);
         Ok(())
     }
 
@@ -798,11 +950,35 @@ impl GpuCompositionRenderer {
         );
         let submission = prepared
             .renderer
-            .submit_plan(&prepared.compiled.plan)
+            .submit_plan_skipping(&prepared.compiled.plan, prepared.cache.skip())
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        Ok((prepared.compiled.output, submission))
+        let output = prepared.compiled.output;
+        self.count_submitted();
+        Ok((output, submission))
+    }
+
+    /// Keeps what the active plan's submitted frame rendered and counts its passes.
+    fn count_submitted(&mut self) {
+        let Some(prepared) = self
+            .active_key
+            .as_ref()
+            .and_then(|key| self.compiled_plans.get_mut(key))
+        else {
+            return;
+        };
+        let passes = prepared.compiled.plan.passes().len() as u64;
+        let skipped = skipped_count(prepared.cache.skip()) as u64;
+        prepared
+            .cache
+            .submitted(&prepared.compiled.cache, &mut self.memo_snapshots);
+        self.submitted_pass_count += passes;
+        self.cached_pass_count += skipped;
+        if !std::mem::take(&mut self.pinned_plans).is_empty() {
+            let active = self.active_key.clone();
+            self.evict_over_budget(&[active.as_ref()]);
+        }
     }
 
     pub fn gpu_renderer(&self) -> &lumen_gpu::Renderer {
@@ -830,13 +1006,16 @@ impl GpuCompositionRenderer {
             .map(|prepared| &prepared.compiled)
     }
 
-    fn active_compiled(&self) -> crate::Result<&CompiledComposition> {
-        self.compiled().ok_or_else(|| {
-            RenderError::Gpu {
-                details: "composition has not been compiled".to_string(),
-            }
-            .into()
-        })
+    fn active_prepared(&self) -> crate::Result<&PreparedComposition> {
+        self.active_key
+            .as_ref()
+            .and_then(|key| self.compiled_plans.get(key))
+            .ok_or_else(|| {
+                RenderError::Gpu {
+                    details: "composition has not been compiled".to_string(),
+                }
+                .into()
+            })
     }
 
     fn active_prepared_mut(&mut self) -> crate::Result<&mut PreparedComposition> {

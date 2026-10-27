@@ -967,8 +967,7 @@ export interface MediaOutputNode extends CompositionNodeBase<"media_output"> {
 
 export interface MemoNode extends CompositionNodeBase<"memo"> {
   readonly params?: {
-    readonly "allow_expressions"?: ExpressionValue<boolean>;
-    readonly "cache_id"?: ExpressionValue<string>;
+    readonly "key"?: ExpressionValue<number>;
   };
 }
 

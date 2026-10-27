@@ -86,6 +86,33 @@ fn enum_eval_match_tokens(
     })
 }
 
+fn enum_has_expressions_match_tokens(variant: &Variant) -> proc_macro2::TokenStream {
+    let ident = &variant.ident;
+    match &variant.fields {
+        Fields::Unit => quote!(Self::#ident => false),
+        Fields::Unnamed(fields) => {
+            let vars = (0..fields.unnamed.len())
+                .map(|index| format_ident!("field_{index}"))
+                .collect::<Vec<_>>();
+            quote!(
+                Self::#ident(#(#vars),*) => false
+                    #(|| ::lumen_engine::node::DelegateEvaluable::has_expressions(#vars))*
+            )
+        }
+        Fields::Named(fields) => {
+            let vars = fields
+                .named
+                .iter()
+                .map(|field| field.ident.clone().expect("named field"))
+                .collect::<Vec<_>>();
+            quote!(
+                Self::#ident { #(#vars),* } => false
+                    #(|| ::lumen_engine::node::DelegateEvaluable::has_expressions(#vars))*
+            )
+        }
+    }
+}
+
 fn enum_to_int_match_tokens(variant: &Variant) -> Result<proc_macro2::TokenStream> {
     let ident = &variant.ident;
     Ok(quote!(Self::#ident => Self::#ident as i64))
@@ -170,7 +197,14 @@ pub(crate) fn expand_enum_delegate(
         .iter()
         .map(|variant| enum_eval_match_tokens(ident, variant))
         .collect::<Result<Vec<_>>>()?;
+    let mut has_expressions_matches = variants
+        .iter()
+        .map(enum_has_expressions_match_tokens)
+        .collect::<Vec<_>>();
     if expressions {
+        has_expressions_matches.push(quote!(
+            Self::Expr(deferred) => ::lumen_engine::node::DelegateEvaluable::has_expressions(deferred)
+        ));
         delegate_variants.push(quote!(Expr(::lumen_engine::node::Deferred<#ident>)));
         eval_matches.push(quote!(
             Self::Expr(deferred) => deferred.eval(ctx.node_id, ctx.property_path, ctx.expr)
@@ -409,6 +443,12 @@ pub(crate) fn expand_enum_delegate(
                 ctx: &::lumen_engine::node::DelegateEvalContext<'_>,
             ) -> ::core::result::Result<Self::Evaluated, ::lumen_engine::error::LumenError> {
                 self.try_into_evaluated(ctx)
+            }
+
+            fn has_expressions(&self) -> bool {
+                match self {
+                    #(#has_expressions_matches,)*
+                }
             }
         }
 

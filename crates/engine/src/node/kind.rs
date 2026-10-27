@@ -1,8 +1,8 @@
 #[cfg(feature = "metadata")]
 use super::schema::NodeSchema;
 use super::{
-    Node, OutputPortDef, PortRef, PropertyEval, PropertyExpression, compositing, ids::NodeId,
-    media_output, ports::SINGLE_RASTER_OUTPUT, processing, source, vector,
+    DelegateEvaluable, Node, OutputPortDef, PortRef, PropertyEval, PropertyExpression, compositing,
+    ids::NodeId, media_output, ports::SINGLE_RASTER_OUTPUT, processing, source, vector,
 };
 
 #[derive(Debug)]
@@ -96,6 +96,38 @@ impl NodeKind {
             Self::WgslShader(node) => node.input_ports(),
             Self::Switch(node) => node.input_ports(),
             Self::MediaOutput(node) => node.input_ports(),
+        }
+    }
+
+    /// Whether any of the node's params is an expression.
+    pub fn has_expressions(&self) -> bool {
+        match self {
+            Self::MediaIn(node) => node.params.has_expressions(),
+            Self::Background(node) => node.params.has_expressions(),
+            Self::Text(node) => node.params.has_expressions(),
+            Self::Path(node) => node.params.has_expressions(),
+            Self::Shape(node) => node.params.has_expressions(),
+            Self::Boolean(node) => node.params.has_expressions(),
+            Self::Merge(node) => node.params.has_expressions(),
+            Self::RasterMultiMerge(node) => node.params.has_expressions(),
+            Self::AlphaPremultiply(node) => node.params.has_expressions(),
+            Self::Blur(node) => node.params.has_expressions(),
+            Self::ChannelShuffle(node) => node.params.has_expressions(),
+            Self::ColorGrade(node) => node.params.has_expressions(),
+            Self::Curves(node) => node.params.has_expressions(),
+            Self::Exposure(node) => node.params.has_expressions(),
+            Self::HueSaturation(node) => node.params.has_expressions(),
+            Self::Levels(node) => node.params.has_expressions(),
+            Self::Memo(node) => node.params.has_expressions(),
+            Self::Opacity(node) => node.params.has_expressions(),
+            Self::TimeRemap(node) => node.params.has_expressions(),
+            Self::Transform(node) => node.params.has_expressions(),
+            Self::Crop(node) => node.params.has_expressions(),
+            Self::Resize(node) => node.params.has_expressions(),
+            Self::Shadow(node) => node.params.has_expressions(),
+            Self::WgslShader(node) => node.params.has_expressions(),
+            Self::Switch(node) => node.params.has_expressions(),
+            Self::MediaOutput(_) => false,
         }
     }
 

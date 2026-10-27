@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crate::{
     composition::Composition,
@@ -8,7 +8,7 @@ use crate::{
     node::{NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
 };
 
-use super::{BoundFrame, CompiledComposition, FramePortRef, TimeRemapPath};
+use super::{BoundFrame, CompiledComposition, FramePortRef, TimeRemapPath, cache::BindCache};
 
 #[derive(Debug)]
 pub struct FrameBindContext<'a> {
@@ -48,6 +48,15 @@ impl<'a> FrameBindContext<'a> {
     }
 
     pub fn bind(&self, compiled: &CompiledComposition) -> crate::Result<BoundFrame> {
+        self.bind_with_cache(compiled, None)
+    }
+
+    /// Binds every node, except those whose output `cache` keeps from earlier frames.
+    pub(crate) fn bind_with_cache(
+        &self,
+        compiled: &CompiledComposition,
+        mut cache: Option<BindCache<'_>>,
+    ) -> crate::Result<BoundFrame> {
         tracing::trace!(
             target: "lumen_bind",
             frame = self.frame,
@@ -66,7 +75,7 @@ impl<'a> FrameBindContext<'a> {
             bound.text_atlas = Some(std::sync::Arc::clone(&compiled.text_atlas));
         }
         let output = media_output_port(self.composition)?;
-        let mut visited = HashSet::new();
+        let mut visited = HashMap::new();
         let mut time_remaps = TimeRemapPath::new();
         self.bind_port(
             compiled,
@@ -75,25 +84,45 @@ impl<'a> FrameBindContext<'a> {
             &mut time_remaps,
             &mut visited,
             &mut bound,
+            &mut cache,
         )?;
+        bound.cache = cache.map(|cache| {
+            let mut kept = cache.bound;
+            if bound.text_dropped_glyphs {
+                kept.keep_nothing();
+            }
+            kept
+        });
         if bound.text_generation_count > 0 && bound.text_generation_ms > 3.0 {
             tracing::debug!(target: "lumen_text", glyphs = bound.text_generation_count, generation_ms = bound.text_generation_ms, "cold text glyph generation");
         }
         Ok(bound)
     }
 
+    /// Binds the node at `port` after its inputs, returning whether its output renders this
+    /// frame rather than staying as kept from an earlier one.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the traversal state is threaded through each recursive call"
+    )]
     fn bind_port(
         &self,
         compiled: &CompiledComposition,
         port: &PortRef,
         frame: f64,
         time_remaps: &mut TimeRemapPath,
-        visited: &mut HashSet<(PortRef, TimeRemapPath)>,
+        visited: &mut HashMap<(PortRef, TimeRemapPath), bool>,
         bound: &mut BoundFrame,
-    ) -> crate::Result<()> {
-        if port.is_empty() || !visited.insert((port.clone(), time_remaps.clone())) {
-            return Ok(());
+        cache: &mut Option<BindCache<'_>>,
+    ) -> crate::Result<bool> {
+        if port.is_empty() {
+            return Ok(false);
         }
+        let visit = (port.clone(), time_remaps.clone());
+        if let Some(renders) = visited.get(&visit) {
+            return Ok(*renders);
+        }
+        visited.insert(visit.clone(), false);
 
         let node = self
             .composition
@@ -106,40 +135,89 @@ impl<'a> FrameBindContext<'a> {
             })?;
 
         let frame_ctx = self.with_frame(frame);
+        let instance = cache
+            .as_ref()
+            .and_then(|cache| cache.layout.instance(port.id, time_remaps));
+        let mut kept = false;
+        let mut holds = false;
+        if let Some(cache) = cache.as_mut()
+            && let Some(instance) = instance
+        {
+            kept = cache
+                .state
+                .keeps_static(cache.layout, instance, cache.epoch);
+            // Text under kept output still places its glyphs, as the atlas is shared.
+            if kept && !cache.layout.reaches_text(instance) {
+                return Ok(false);
+            }
+            if let NodeKind::Memo(memo) = node
+                && cache.layout.is_keyed_memo(instance)
+            {
+                // Keys compare by bits, so a key that is NaN on consecutive frames still holds.
+                let key = memo
+                    .params
+                    .key
+                    .eval(memo.id, "key", &frame_ctx.expr_context(memo.id, "key"))?
+                    .to_bits();
+                // Without skipped passes the source is bound and dispatched as usual.
+                holds = cache.hold_memo(instance, key) && cache.layout.enabled();
+            }
+        }
         let is_time_remap = matches!(node, NodeKind::TimeRemap(_));
         if is_time_remap {
             time_remaps.push(port.id);
         }
-        for input in frame_ctx.frame_inputs(node)? {
-            self.bind_port(
+        let inputs = if holds {
+            Vec::new()
+        } else {
+            frame_ctx.frame_inputs(node)?
+        };
+        let mut inputs_render = false;
+        for input in inputs {
+            inputs_render |= self.bind_port(
                 compiled,
                 &input.port,
                 input.frame,
                 time_remaps,
                 visited,
                 bound,
+                cache,
             )?;
         }
         if is_time_remap {
             time_remaps.pop();
         }
 
-        if let Some(compiled_node) = compiled
+        let compiled_node = compiled
             .compiled_nodes
             .get(&port.id)
-            .and_then(|instances| instances.get(time_remaps.as_slice()))
+            .and_then(|instances| instances.get(time_remaps.as_slice()));
+        let renders = if kept && !inputs_render {
+            match compiled_node {
+                Some(compiled_node) => compiled_node.bind_kept(&frame_ctx, bound)?,
+                None => false,
+            }
+        } else {
+            if let Some(compiled_node) = compiled_node {
+                tracing::trace!(
+                    target: "lumen_bind",
+                    frame = self.frame,
+                    binding_frame = frame,
+                    node_id = port.id.0,
+                    "bind compiled node"
+                );
+                compiled_node.bind(&frame_ctx, bound)?;
+            }
+            true
+        };
+        if renders
+            && let Some(cache) = cache.as_mut()
+            && let Some(instance) = instance
         {
-            tracing::trace!(
-                target: "lumen_bind",
-                frame = self.frame,
-                binding_frame = frame,
-                node_id = port.id.0,
-                "bind compiled node"
-            );
-            compiled_node.bind(&frame_ctx, bound)?;
+            cache.mark_bound(instance);
         }
-
-        Ok(())
+        visited.insert(visit, renders);
+        Ok(renders)
     }
 
     fn with_frame(&self, frame: f64) -> Self {

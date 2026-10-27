@@ -141,6 +141,22 @@ impl RenderPlanBuilder {
         self.pass(PassDesc::CopyTexture(desc))
     }
 
+    pub fn texture_count(&self) -> usize {
+        self.textures.len()
+    }
+
+    pub fn buffer_count(&self) -> usize {
+        self.buffers.len()
+    }
+
+    pub fn pass_count(&self) -> usize {
+        self.passes.len()
+    }
+
+    pub fn texture_desc(&self, id: TextureId) -> Option<TextureDesc> {
+        self.textures.get(id.0 as usize).map(|texture| texture.desc)
+    }
+
     pub fn param(&mut self, key: ParamKey, target: ParamTarget) -> &mut Self {
         self.params.push(ParamSlot { key, target });
         self

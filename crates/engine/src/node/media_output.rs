@@ -41,8 +41,10 @@ impl GpuCompileNode for MediaOutput {
             ctx.composition().render_settings.height.max(1),
         );
         let output_format = ctx.output_format();
+        // A memo's copy stays its own, since external output textures stand in for the output.
         if output_format == lumen_gpu::wgpu::TextureFormat::Rgba8Unorm
             && source.domain == lumen_gpu::TextureDomain::full_frame(size)
+            && !ctx.is_memo_texture(source.texture)
         {
             return Ok(CompiledOutput::Raster(source));
         }
