@@ -224,6 +224,41 @@ fn uniform_upload_updates_compute_shader_output_without_replanning() {
 }
 
 #[test]
+fn sibling_renderers_never_accept_an_invalid_program() {
+    let Some(root) = renderer() else {
+        return;
+    };
+    let mut builder = RenderPlan::builder();
+    builder.program(ProgramDesc::Compute(ComputeProgramDesc {
+        label: Some("invalid".to_string()),
+        shader: "@compute @workgroup_size(1) fn cs_main() { missing(); }".to_string(),
+        entry: "cs_main".to_string(),
+        bind_groups: vec![],
+    }));
+    let plan = std::sync::Arc::new(builder.build());
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let threads: Vec<_> = (0..3)
+        .map(|_| {
+            let mut renderer = root.sibling();
+            let (plan, barrier) = (plan.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                (0..200)
+                    .filter(|_| {
+                        barrier.wait();
+                        renderer.prepare_plan(&plan).is_ok()
+                    })
+                    .count()
+            })
+        })
+        .collect();
+    let accepted: usize = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .sum();
+    assert_eq!(accepted, 0);
+}
+
+#[test]
 fn invalid_program_is_rejected_on_every_prepare() {
     let Some(mut renderer) = renderer() else {
         return;

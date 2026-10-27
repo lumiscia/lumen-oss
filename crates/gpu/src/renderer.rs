@@ -330,21 +330,16 @@ impl Renderer {
             }
         };
         self.programs = programs;
-        cache.retain(|_, runtime| runtime.strong_count() > 0);
-        drop(cache);
+        // The cache stays locked until validation, so no sibling picks up a program that fails it.
         let result = scope.finish();
         if result.is_err() {
-            // Programs that failed validation must not satisfy a later lookup.
             self.programs.clear();
-            let mut cache = self
-                .program_cache
-                .0
-                .lock()
-                .map_err(|_| anyhow!("program cache lock was poisoned"))?;
             for desc in created {
                 cache.remove(desc);
             }
         }
+        cache.retain(|_, runtime| runtime.strong_count() > 0);
+        drop(cache);
         result
     }
 
