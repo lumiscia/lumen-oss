@@ -12,8 +12,8 @@
 //!   frame, in the order a full bind would, so the atlas evicts and drops exactly the glyphs it
 //!   would without kept output; kept text whose glyphs are dropped or placed again renders again,
 //!   along with what reads it.
-//! - Keyed memos: a `memo` whose `key` is an expression copies its source, with any bounds
-//!   published for it, into its own texture, and only when the key's value changes. While it
+//! - Keyed memos: a `memo` whose `key` is an expression copies its source, with the bounds
+//!   published for it or ones covering all of it, into its own texture, and only when the key's value changes. While it
 //!   holds, instances that only it reaches are neither bound nor dispatched.
 //!
 //! A memo's snapshot belongs to the renderer rather than to a plan: it is identified by the memo
@@ -128,7 +128,7 @@ impl CacheRecorder {
     pub(crate) fn record_memo(
         &mut self,
         texture: lumen_gpu::TextureId,
-        bounds: Option<lumen_gpu::BufferId>,
+        bounds: lumen_gpu::BufferId,
         copy_pass: lumen_gpu::PassId,
     ) {
         if let Some(&instance) = self.stack.last() {
@@ -363,7 +363,7 @@ pub(crate) struct CacheLayout {
 pub(crate) struct LayoutMemo {
     pub(crate) id: MemoId,
     pub(crate) texture: lumen_gpu::TextureId,
-    pub(crate) bounds: Option<lumen_gpu::BufferId>,
+    pub(crate) bounds: lumen_gpu::BufferId,
     copy_pass: usize,
 }
 

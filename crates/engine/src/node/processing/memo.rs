@@ -4,6 +4,7 @@ use crate::node::{Deferred, NodeId, NodeParams, PortRef};
 use crate::gpu::{CompiledOutput, GpuCompileNode, RasterHandle, compiler};
 
 const SHADER: &str = include_str!("memo.wgsl");
+const UNBOUNDED_SHADER: &str = include_str!("memo_unbounded.wgsl");
 
 /// Renders its source again only when `key` changes.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -89,42 +90,41 @@ impl GpuCompileNode for Memo {
             lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
             lumen_gpu::Binding::storage_texture(0, 1, texture),
         ];
-        // Bounds published for the source's texels may move while the memo holds, so the copy
-        // keeps them too and publishes them for its own texels.
-        let bounds = ctx.raster_bounds(source.texture).map(|source_bounds| {
-            let bounds = ctx.builder_mut().buffer_for(
-                lumen_gpu::NodeKey(self.id.0),
-                Some(format!("memo:{}:bounds", self.id.0)),
-                lumen_gpu::BufferDesc {
-                    size: std::mem::size_of::<compiler::CropParams>() as u64,
-                    usage: lumen_gpu::wgpu::BufferUsages::UNIFORM
-                        | lumen_gpu::wgpu::BufferUsages::STORAGE
-                        | lumen_gpu::wgpu::BufferUsages::COPY_SRC
-                        | lumen_gpu::wgpu::BufferUsages::COPY_DST,
-                },
-            );
-            layout.extend([
-                lumen_gpu::BindingLayoutEntry::uniform(2, lumen_gpu::wgpu::ShaderStages::COMPUTE),
-                lumen_gpu::BindingLayoutEntry::storage(
-                    3,
-                    lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    false,
-                ),
-            ]);
-            bindings.extend([
-                lumen_gpu::Binding::uniform(0, 2, source_bounds),
-                lumen_gpu::Binding::storage_buffer(0, 3, bounds),
-            ]);
-            bounds
-        });
+        // Every snapshot carries bounds, so plans whose sources differ in publishing them can
+        // share it. They are the source's when it publishes any and cover all texels otherwise.
+        let source_bounds = ctx.raster_bounds(source.texture);
+        let bounds = ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(self.id.0),
+            Some(format!("memo:{}:bounds", self.id.0)),
+            lumen_gpu::BufferDesc {
+                size: std::mem::size_of::<compiler::CropParams>() as u64,
+                usage: lumen_gpu::wgpu::BufferUsages::UNIFORM
+                    | lumen_gpu::wgpu::BufferUsages::STORAGE
+                    | lumen_gpu::wgpu::BufferUsages::COPY_SRC
+                    | lumen_gpu::wgpu::BufferUsages::COPY_DST,
+            },
+        );
+        if let Some(source_bounds) = source_bounds {
+            layout.push(lumen_gpu::BindingLayoutEntry::uniform(
+                2,
+                lumen_gpu::wgpu::ShaderStages::COMPUTE,
+            ));
+            bindings.push(lumen_gpu::Binding::uniform(0, 2, source_bounds));
+        }
+        layout.push(lumen_gpu::BindingLayoutEntry::storage(
+            3,
+            lumen_gpu::wgpu::ShaderStages::COMPUTE,
+            false,
+        ));
+        bindings.push(lumen_gpu::Binding::storage_buffer(0, 3, bounds));
         let program = ctx.builder_mut().program_for(
             lumen_gpu::NodeKey(self.id.0),
             lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
                 label: Some("memo".to_string()),
-                shader: if bounds.is_some() {
+                shader: if source_bounds.is_some() {
                     SHADER
                 } else {
-                    crate::node::media_output::SHADER
+                    UNBOUNDED_SHADER
                 }
                 .to_string(),
                 entry: "cs_main".to_string(),
@@ -140,9 +140,7 @@ impl GpuCompileNode for Memo {
             bindings,
             dispatch: compiler::dispatch_for(size).into(),
         });
-        if let Some(bounds) = bounds {
-            ctx.publish_raster_bounds(texture, bounds);
-        }
+        ctx.publish_raster_bounds(texture, bounds);
         ctx.record_memo(texture, bounds, copy);
         Ok(CompiledOutput::Raster(RasterHandle { texture, ..source }))
     }

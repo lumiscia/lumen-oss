@@ -11057,3 +11057,122 @@ fn keyed_memo_in_a_template_holds_per_clip_instance() {
     }
     assert!(skipped > 0, "held memos skip their sources");
 }
+
+fn render_held_memo_frames(
+    composition: &serde_json::Value,
+    frames: &[u32],
+) -> Option<Vec<Vec<u8>>> {
+    let composition = lumen_engine::json::parse_value(composition).unwrap();
+    let mut renderer = gpu_composition_renderer()?;
+    Some(
+        frames
+            .iter()
+            .map(|frame| render_rgba8(&mut renderer, &composition, *frame, &EmptyMediaStore))
+            .collect(),
+    )
+}
+
+#[test]
+fn memo_holds_cropped_source_when_its_clip_hides() {
+    let composition = json!({
+        "timeline": {"fps": 10, "duration_frames": 10},
+        "render_settings": {"width": 4, "height": 4},
+        "nodes": [
+            {"id":1,"type":"background","params":{"paint":"#ff0000"}},
+            {"id":2,"type":"crop","params":{"width":2,"height":2}},
+            {"id":3,"type":"clip","params":{"duration":2}},
+            {"id":4,"type":"memo","params":{"key":"=frame * 0"}},
+            {"id":5,"type":"media_output"}
+        ],
+        "connections": [
+            {"from_node":1,"to_node":2,"to_port":"source"},
+            {"from_node":2,"to_node":3,"to_port":"source"},
+            {"from_node":3,"to_node":4,"to_port":"source"},
+            {"from_node":4,"to_node":5,"to_port":"source"}
+        ]
+    });
+    let Some(frames) = render_held_memo_frames(&composition, &[0, 2]) else {
+        return;
+    };
+    assert_eq!(&frames[0][..4], &[255, 0, 0, 255]);
+    assert_eq!(
+        frames[1], frames[0],
+        "the unchanged key holds the cropped source"
+    );
+}
+
+#[test]
+fn memo_holds_cropped_template_when_its_clip_hides() {
+    let composition = json!({
+        "timeline": {"fps": 10, "duration_frames": 10},
+        "render_settings": {"width": 4, "height": 4},
+        "compositions": {
+            "cropped": {
+                "timeline": {"fps": 10, "duration_frames": 10},
+                "render_settings": {"width": 4, "height": 4},
+                "nodes": [
+                    {"id":1,"type":"background","params":{"paint":"#ff0000"}},
+                    {"id":2,"type":"crop","params":{"width":2,"height":2}},
+                    {"id":5,"type":"media_output"}
+                ],
+                "connections": [
+                    {"from_node":1,"to_node":2,"to_port":"source"},
+                    {"from_node":2,"to_node":5,"to_port":"source"}
+                ]
+            }
+        },
+        "nodes": [
+            {"id":3,"type":"clip","params":{"composition":"cropped","duration":2}},
+            {"id":4,"type":"memo","params":{"key":"=frame * 0"}},
+            {"id":5,"type":"media_output"}
+        ],
+        "connections": [
+            {"from_node":3,"to_node":4,"to_port":"source"},
+            {"from_node":4,"to_node":5,"to_port":"source"}
+        ]
+    });
+    let Some(frames) = render_held_memo_frames(&composition, &[0, 2]) else {
+        return;
+    };
+    assert_eq!(&frames[0][..4], &[255, 0, 0, 255]);
+    assert_eq!(
+        frames[1], frames[0],
+        "the unchanged key holds the cropped template"
+    );
+}
+
+#[test]
+fn memo_holds_snapshot_across_switch_between_uncropped_and_cropped_layers() {
+    let composition = json!({
+        "timeline": {"fps": 10, "duration_frames": 10},
+        "render_settings": {"width": 4, "height": 4},
+        "nodes": [
+            {"id":1,"type":"background","params":{"paint":"#ff0000"}},
+            {"id":2,"type":"crop","params":{"width":2,"height":2}},
+            {"id":3,"type":"switch","params":{"selected_layer":"=floor(frame / 2) % 2"}},
+            {"id":4,"type":"memo","params":{"key":"=frame * 0"}},
+            {"id":5,"type":"media_output"}
+        ],
+        "connections": [
+            {"from_node":1,"to_node":3,"to_port":"layers"},
+            {"from_node":2,"to_node":3,"to_port":"layers"},
+            {"from_node":1,"to_node":2,"to_port":"source"},
+            {"from_node":3,"to_node":4,"to_port":"source"},
+            {"from_node":4,"to_node":5,"to_port":"source"}
+        ]
+    });
+    // The uncropped layer is selected first and the cropped one next, and each plan then
+    // adopts the snapshot from the other.
+    let Some(frames) = render_held_memo_frames(&composition, &[0, 2, 4, 6]) else {
+        return;
+    };
+    assert_eq!(&frames[0][..4], &[255, 0, 0, 255]);
+    for (index, frame) in frames.iter().enumerate() {
+        assert_eq!(
+            frame,
+            &frames[0],
+            "frame {} holds the first snapshot",
+            index * 2
+        );
+    }
+}

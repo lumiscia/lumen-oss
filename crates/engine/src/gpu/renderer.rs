@@ -691,7 +691,7 @@ impl GpuCompositionRenderer {
     ) -> Option<(
         u64,
         &'a lumen_gpu::wgpu::Texture,
-        Option<&'a lumen_gpu::wgpu::Buffer>,
+        &'a lumen_gpu::wgpu::Buffer,
     )> {
         let from = self
             .compiled_plans
@@ -699,19 +699,13 @@ impl GpuCompositionRenderer {
             .find(|prepared| prepared.cache.plan() == plan)?;
         let source = from.compiled.cache.memo_by_id(&memo.id)?;
         let desc = from.renderer.texture_desc(source.texture)?;
-        if Some(desc) != to.renderer.texture_desc(memo.texture)
-            || source.bounds.is_some() != memo.bounds.is_some()
-        {
+        if Some(desc) != to.renderer.texture_desc(memo.texture) {
             return None;
         }
-        let bounds = match source.bounds {
-            Some(bounds) => Some(from.renderer.buffer(bounds)?),
-            None => None,
-        };
         Some((
             from.compiled.cache.epoch(&from.renderer),
             from.renderer.texture(source.texture)?,
-            bounds,
+            from.renderer.buffer(source.bounds)?,
         ))
     }
 
@@ -746,12 +740,8 @@ impl GpuCompositionRenderer {
                 destination.as_image_copy(),
                 texture.size(),
             );
-            if let (Some(source), Some(destination)) = (
-                bounds,
-                memo.bounds.and_then(|bounds| to.renderer.buffer(bounds)),
-            ) {
-                encoder.copy_buffer_to_buffer(source, 0, destination, 0, source.size());
-            }
+            let destination = to.renderer.buffer(memo.bounds).ok_or_else(missing)?;
+            encoder.copy_buffer_to_buffer(bounds, 0, destination, 0, bounds.size());
         }
         to.renderer.queue.submit([encoder.finish()]);
         Ok(())

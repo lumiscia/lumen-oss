@@ -350,7 +350,7 @@ impl<'a> CompileContext<'a> {
     pub(crate) fn record_memo(
         &mut self,
         texture: lumen_gpu::TextureId,
-        bounds: Option<lumen_gpu::BufferId>,
+        bounds: lumen_gpu::BufferId,
         copy: lumen_gpu::PassId,
     ) {
         self.cache.record_memo(texture, bounds, copy);
