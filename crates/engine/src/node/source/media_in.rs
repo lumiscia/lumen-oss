@@ -163,11 +163,12 @@ pub fn map_to_source_frame(
         comp_fps
     };
     // Matching rates skip the divide-then-multiply, which can round a frame just below an
-    // integer (e.g. a looped `time_remap` target) up onto the next one.
+    // integer (e.g. a looped `time_remap` target) up onto the next one. Other rates snap to a
+    // source frame they land a rounding error from.
     let media_frame = if media_fps == comp_fps {
         frame
     } else {
-        (frame / comp_fps as f64) * media_fps as f64
+        crate::scope::snap_to_whole_frame((frame / comp_fps as f64) * media_fps as f64)
     };
     let relative = (media_frame * speed.abs() as f64).floor() as u32;
     let forward = speed >= 0.0;

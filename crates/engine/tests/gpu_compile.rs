@@ -9,9 +9,10 @@ use lumen_engine::{
         VideoMetadata, collect_frame_requirements,
     },
     node::{
-        Deferred, NodeId, NodeKind, PortRef, ShaderUniforms,
+        ClipProps, Deferred, NodeId, NodeKind, PortRef, ShaderUniforms,
         compositing::{
             boolean::{Boolean, BooleanOperation, BooleanParamsDelegate},
+            clip::ClipParamsDelegate,
             merge::{MaskMode, Merge, MergeParamsDelegate},
             raster_multimerge::{RasterMultiMerge, RasterMultiMergeParamsDelegate},
             switch::{Switch, SwitchParamsDelegate},
@@ -9827,4 +9828,157 @@ fn render_shape_like(x: usize) -> Vec<u8> {
         }
     }
     pixels
+}
+
+/// A 32 × 8 root playing the template `small` with `clip` params, where `small` draws `nodes`
+/// (ids 1 and 2) on an 8 × 8 canvas.
+fn small_template_composition(nodes: serde_json::Value) -> serde_json::Value {
+    json!({
+        "timeline": { "fps": 30, "duration_frames": 30 },
+        "render_settings": { "width": 32, "height": 8 },
+        "compositions": {
+            "small": {
+                "render_settings": { "width": 8, "height": 8 },
+                "nodes": nodes,
+                "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+            }
+        },
+        "nodes": [
+            { "id": 1, "type": "clip", "params": { "composition": "small" } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+    })
+}
+
+#[test]
+fn template_output_is_cropped_to_its_own_canvas() {
+    let composition = lumen_engine::json::parse_value(&small_template_composition(json!([
+        { "id": 1, "type": "background", "params": { "width": 16, "height": 8, "paint": "#ff0000" } },
+        { "id": 2, "type": "media_output" }
+    ])))
+    .unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    assert_eq!(&pixels[7 * 4..8 * 4], [255, 0, 0, 255]);
+    assert_eq!(
+        &pixels[8 * 4..9 * 4],
+        CLEAR,
+        "drawn past the template's canvas"
+    );
+}
+
+#[test]
+fn clip_definition_edits_rebuild_the_plan() {
+    let mut mover = small_template_composition(json!([
+        { "id": 1, "type": "shape", "params": {
+            "width": 2, "height": 2, "position": "=vec2(prop('x') + frame, 1)",
+            "fill_paint": "#ffffff", "edge_antialias": false
+        } },
+        { "id": 2, "type": "media_output" }
+    ]));
+    mover["compositions"]["small"]["render_settings"] = json!({ "width": 32, "height": 8 });
+    mover["compositions"]["small"]["props"] = json!({ "x": { "type": "number" } });
+    mover["nodes"][0]["params"] =
+        json!({ "composition": "small", "duration": 3, "props": { "x": 2 } });
+    let mut colors = small_template_composition(json!([
+        { "id": 1, "type": "background", "params": { "paint": "#ff0000" } },
+        { "id": 2, "type": "media_output" }
+    ]));
+    colors["compositions"]["blue"] = colors["compositions"]["small"].clone();
+    colors["compositions"]["blue"]["nodes"][0]["params"]["paint"] = json!("#0000ff");
+
+    let edits: [(serde_json::Value, fn(&mut ClipParamsDelegate)); 3] = [
+        (mover.clone(), |params| {
+            params.props =
+                Deferred::value(ClipProps::from_json_value(&json!({ "x": 20 }), "props").unwrap());
+        }),
+        (mover, |params| params.offset = Deferred::value(20.0)),
+        (colors, |params| {
+            params.composition = Deferred::value("blue".into())
+        }),
+    ];
+    for (composition, edit) in edits {
+        let mut composition = lumen_engine::json::parse_value(&composition).unwrap();
+        let Some(mut renderer) = gpu_composition_renderer() else {
+            return;
+        };
+        render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+        let Some(NodeKind::Clip(clip)) = composition.graph.nodes.get_mut(&NodeId::new(1)) else {
+            unreachable!("node 1 is the clip");
+        };
+        edit(&mut clip.params);
+        let edited = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+        let mut fresh = gpu_composition_renderer().unwrap();
+        let expected = render_rgba8(&mut fresh, &composition, 0, &EmptyMediaStore);
+        assert!(expected.iter().any(|value| *value > 0));
+        assert!(
+            edited == expected,
+            "an edited clip rendered with a stale plan"
+        );
+        assert_eq!(renderer.plan_compile_count(), 2);
+    }
+}
+
+/// A video whose frame `n` is a 1 × 1 pixel with red `n`.
+#[derive(Debug)]
+struct NumberedVideo;
+
+impl MediaStore for NumberedVideo {
+    fn get_image_resolver(&self, _source: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        Some(Box::new(NumberedVideo))
+    }
+}
+
+impl VideoFrameResolver for NumberedVideo {
+    fn id(&self) -> &str {
+        "video"
+    }
+
+    fn metadata(&self) -> VideoMetadata {
+        VideoMetadata {
+            width: 1,
+            height: 1,
+            frame_count: 300,
+            fps: 30.0,
+        }
+    }
+
+    fn frame(&self, frame: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+        Ok(MediaFrame::CpuRgba(Arc::new(CpuMediaFrame {
+            rgba: Arc::new(vec![frame as u8, 0, 0, 255]),
+            width: 1,
+            height: 1,
+            row_bytes: 4,
+        })))
+    }
+}
+
+#[test]
+fn clip_frame_rate_round_trips_land_on_the_source_frame() {
+    // 30 fps root -> 24 fps template -> 30 fps video, so root frame n shows video frame n.
+    let mut composition = small_template_composition(json!([
+        { "id": 1, "type": "media_in", "params": { "kind": "video", "source": "video" } },
+        { "id": 2, "type": "media_output" }
+    ]));
+    composition["timeline"]["duration_frames"] = json!(300);
+    composition["render_settings"] = json!({ "width": 1, "height": 1 });
+    composition["compositions"]["small"]["render_settings"] = json!({ "width": 1, "height": 1 });
+    composition["compositions"]["small"]["timeline"] = json!({ "fps": 24, "duration_frames": 240 });
+    let composition = lumen_engine::json::parse_value(&composition).unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    for frame in 0..250 {
+        let required = collect_frame_requirements(&composition, &NumberedVideo, frame).unwrap();
+        assert_eq!(required.videos[0].frames, [frame], "predicted at {frame}");
+        let pixels = render_rgba8(&mut renderer, &composition, frame, &NumberedVideo);
+        assert_eq!(pixels[0], frame as u8, "rendered at {frame}");
+    }
 }

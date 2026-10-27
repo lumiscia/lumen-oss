@@ -958,18 +958,18 @@
                   "duration": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
+                        "minimum": -1.0,
                         "type": "number"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
-                    "default": 0.0,
-                    "description": "Frames the clip plays for; 0 plays the template to its end, or a source to the end of\nthis composition.",
+                    "default": -1.0,
+                    "description": "Frames the clip plays for; -1 plays the template to its end, or a source to the end of\nthis composition.",
                     "title": "Duration",
                     "x-lumen-constraints": {
-                      "min": 0.0,
+                      "min": -1.0,
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"

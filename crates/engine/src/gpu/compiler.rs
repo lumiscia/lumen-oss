@@ -422,18 +422,20 @@ impl<'a> CompileContext<'a> {
         self.compile_routed(routed, None)
     }
 
-    /// Compiles what a clip shows at this frame, placed on this composition's canvas, or a
-    /// transparent raster while it is hidden.
+    /// Compiles what a clip shows at this frame, cropped to its content's canvas and placed on
+    /// this composition's, or a transparent raster while it is hidden.
     pub(crate) fn compile_clip(&mut self, clip: &Clip) -> crate::Result<CompiledOutput> {
         let routed = clip.route(&self.scope, self.frame, self.media)?;
         let Some(routed) = routed.filter(|routed| !routed.port.is_empty()) else {
             return Ok(self.compile_transparent(clip.id));
         };
+        let settings = routed.scope.render_settings;
+        let content = lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1));
         let bound_frames = self.clip_bound_frames(clip);
         let raster = self
             .compile_routed(routed, bound_frames)?
             .into_raster(clip.id, "output")?;
-        Ok(self.place_on_canvas(clip.id, raster))
+        Ok(self.place_on_canvas(clip.id, raster, content))
     }
 
     /// The frames a clip's content may be bound at in this plan: each frame the plan may bind
@@ -455,18 +457,26 @@ impl<'a> CompileContext<'a> {
         Some(local.into())
     }
 
-    /// `raster`, drawn on another canvas from its top-left corner, as a raster of this canvas.
-    /// It keeps its texture when all of it is on this canvas, and is cropped to it otherwise.
-    fn place_on_canvas(&mut self, node_id: NodeId, raster: RasterHandle) -> CompiledOutput {
+    /// `raster`, drawn on a canvas of size `content` from its top-left corner, as a raster of
+    /// this canvas. It keeps its texture when all of its data is on both canvases, and is
+    /// cropped to them otherwise.
+    fn place_on_canvas(
+        &mut self,
+        node_id: NodeId,
+        raster: RasterHandle,
+        content: lumen_gpu::Size,
+    ) -> CompiledOutput {
         let canvas = self.canvas_size();
-        if raster.domain.display_size() == canvas {
-            return CompiledOutput::Raster(raster);
-        }
         let canvas_rect = lumen_gpu::RectI::from_size(canvas);
         let data = raster.domain.data_rect;
-        let visible = canvas_rect.intersection(data);
+        let visible = canvas_rect
+            .intersection(lumen_gpu::RectI::from_size(content))
+            .intersection(data);
         if visible.is_empty() {
             return self.compile_transparent(node_id);
+        }
+        if visible == data && raster.domain.display_size() == canvas {
+            return CompiledOutput::Raster(raster);
         }
         if visible == data {
             return CompiledOutput::Raster(RasterHandle {

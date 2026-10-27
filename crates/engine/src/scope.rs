@@ -161,6 +161,18 @@ pub fn route<'a>(
     })
 }
 
+/// `frame`, or the whole frame it is a rounding error away from. Converting a whole frame to
+/// another frame rate and back, as a template at another rate does, can land just below it,
+/// where flooring would drop to the frame before.
+pub(crate) fn snap_to_whole_frame(frame: f64) -> f64 {
+    let whole = frame.round();
+    if (frame - whole).abs() <= 1e-9 {
+        whole
+    } else {
+        frame
+    }
+}
+
 /// A time remap's source at the frame it maps `frame` to.
 pub(crate) fn route_time_remap<'a>(
     scope: &Scope<'a>,

@@ -50,7 +50,9 @@ impl CompiledPlanKey {
             };
             match (&entry.choice, graph.nodes.get(&entry.node_id)) {
                 (PlanChoice::SwitchSelection(_), Some(NodeKind::Switch(_))) => true,
-                (PlanChoice::ClipShown(_), Some(NodeKind::Clip(_))) => true,
+                (PlanChoice::Clip { definition, .. }, Some(NodeKind::Clip(clip))) => {
+                    clip_definition_hash(composition, clip) == *definition
+                }
                 (PlanChoice::TextFont(_), Some(NodeKind::Text(_))) => true,
                 (PlanChoice::TextFontGeneration(_), Some(NodeKind::Text(_))) => true,
                 (PlanChoice::ShaderSource(hash), Some(NodeKind::WgslShader(shader))) => {
@@ -77,8 +79,12 @@ struct PlanKeyEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum PlanChoice {
     SwitchSelection(Option<usize>),
-    /// Whether a clip shows, which decides whether anything upstream of it is compiled.
-    ClipShown(bool),
+    /// Whether a clip shows, which decides whether anything upstream of it is compiled, and
+    /// the hash of its definition, which the bounds of its content were taken over.
+    Clip {
+        shown: bool,
+        definition: u64,
+    },
     /// The resolver the media store gave a text node's font family, which its bounds were
     /// measured with.
     TextFont(String),
@@ -1040,7 +1046,8 @@ impl<'a> PlanKeyCollector<'a> {
             }
             NodeKind::Clip(clip) => {
                 let shown = routes.first().is_some_and(|routed| !routed.port.is_empty());
-                self.push_entry(clip.id, PlanChoice::ClipShown(shown));
+                let definition = clip_definition_hash(scope.root, clip);
+                self.push_entry(clip.id, PlanChoice::Clip { shown, definition });
             }
             NodeKind::Text(text) => {
                 if let Deferred::Value(family) = &text.params.font_family
@@ -1192,9 +1199,7 @@ fn plan_node_signature(composition: &Composition) -> u64 {
                         Deferred::Value(source) => (id, 2, source_hash(source)),
                         Deferred::Expr(_) => (id, 3, 0),
                     },
-                    NodeKind::Clip(clip) => {
-                        (id, 4, source_hash(clip.template_name().unwrap_or("")))
-                    }
+                    NodeKind::Clip(clip) => (id, 4, clip_definition_hash(composition, clip)),
                     _ => return signature,
                 };
                 let mut hasher = std::hash::DefaultHasher::new();
@@ -1202,6 +1207,48 @@ fn plan_node_signature(composition: &Composition) -> u64 {
                 signature.wrapping_add(std::hash::Hasher::finish(&hasher))
             })
     })
+}
+
+/// Hash of a clip's template, the props that template declares, and the literals and expression
+/// sources of the clip's params, which decide where its content draws over the frames a plan
+/// may bind it at.
+fn clip_definition_hash(
+    composition: &Composition,
+    clip: &crate::node::compositing::clip::Clip,
+) -> u64 {
+    fn param<T: std::fmt::Debug>(value: &Deferred<T>) -> String {
+        match value {
+            Deferred::Value(value) => format!("{value:?}"),
+            Deferred::Expr(expr) => format!("={}", expr.source),
+        }
+    }
+    let params = &clip.params;
+    let props = match &params.props {
+        Deferred::Value(props) => props.to_json_value().to_string(),
+        Deferred::Expr(expr) => format!("={}", expr.source),
+    };
+    let declared = clip
+        .template_name()
+        .and_then(|name| composition.compositions.get(name))
+        .map(|template| format!("{:?}", template.props));
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(
+        &(
+            param(&params.composition),
+            [
+                &params.start,
+                &params.duration,
+                &params.offset,
+                &params.speed,
+            ]
+            .map(param),
+            format!("{:?}", params.end),
+            props,
+            declared,
+        ),
+        &mut hasher,
+    );
+    std::hash::Hasher::finish(&hasher)
 }
 
 fn source_hash(source: &str) -> u64 {

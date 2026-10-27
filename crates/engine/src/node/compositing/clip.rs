@@ -26,6 +26,10 @@ use crate::{
     scope::{PropValues, Routed, Scope},
 };
 
+/// The literal `duration` that plays the content to its end. Other negative literals are
+/// rejected, and a negative expression shows nothing.
+pub const PLAY_TO_END: f64 = -1.0;
+
 /// What a clip shows after its window ends.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
@@ -48,9 +52,9 @@ pub struct ClipParams {
     /// Frame the clip starts at, in this composition's frames.
     #[meta(name = "Start", step = 1)]
     pub start: f64,
-    /// Frames the clip plays for; 0 plays the template to its end, or a source to the end of
+    /// Frames the clip plays for; -1 plays the template to its end, or a source to the end of
     /// this composition.
-    #[meta(name = "Duration", min = 0, step = 1)]
+    #[meta(name = "Duration", min = -1, step = 1)]
     pub duration: f64,
     /// Frames of the content skipped at the start, in the content's frames.
     #[meta(name = "Offset", step = 1)]
@@ -71,7 +75,7 @@ impl Default for ClipParams {
         Self {
             composition: String::new(),
             start: 0.0,
-            duration: 0.0,
+            duration: PLAY_TO_END,
             offset: 0.0,
             speed: 1.0,
             end: ClipEnd::Hide,
@@ -132,7 +136,14 @@ impl ClipWindow {
                 ClipEnd::Loop => elapsed.rem_euclid(self.duration),
             }
         };
-        Some(elapsed * self.rate + self.offset)
+        // Matching rates keep the frame as given, which may be just below a whole frame on
+        // purpose, as a looped `time_remap` target is.
+        let local = elapsed * self.rate + self.offset;
+        Some(if self.rate == 1.0 {
+            local
+        } else {
+            crate::scope::snap_to_whole_frame(local)
+        })
     }
 }
 
@@ -182,7 +193,8 @@ impl Clip {
             }
         };
         let start = number(&self.params.start, "start")?;
-        let duration = number(&self.params.duration, "duration")?;
+        let plays_to_end = matches!(self.params.duration, Deferred::Value(PLAY_TO_END));
+        let duration = number(&self.params.duration, "duration")?.max(0.0);
         let offset = number(&self.params.offset, "offset")?;
         let speed = number(&self.params.speed, "speed")?;
         if speed <= 0.0 {
@@ -194,7 +206,7 @@ impl Clip {
         let template = self.template(scope)?;
         let content_fps = template.map_or(scope.timeline.fps, |template| template.timeline.fps);
         let rate = speed * f64::from(content_fps) / f64::from(scope.timeline.fps);
-        let duration = if duration > 0.0 {
+        let duration = if !plays_to_end {
             duration
         } else {
             match template {

@@ -21,11 +21,11 @@ use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack},
     composition::{
         Composition, CompositionMetadata, CompositionTemplate, PropDef, PropKind, RenderSettings,
-        TimelineSettings,
+        TimelineSettings, declared_props,
     },
     expr::{BuiltinFn, ExprNode, Expression, ExpressionValue, FunctionScope},
     graph::{Connection, Graph},
-    node::{ClipPropValue, NodeId, NodeKind},
+    node::NodeId,
 };
 
 pub(crate) use property::{
@@ -75,7 +75,6 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
         .get("audio")
         .map(|audio| parse_audio_timeline(audio, comp.timeline.fps))
         .transpose()?;
-    validate_clips(&comp)?;
     if let Err(errors) = comp.validate_structure() {
         let details = errors
             .iter()
@@ -208,18 +207,6 @@ fn check_prop_reads(value: &Value, props: Option<&BTreeMap<String, PropDef>>) ->
     }
 }
 
-fn declared_props(props: &BTreeMap<String, PropDef>) -> String {
-    if props.is_empty() {
-        return "the template declares no props".to_string();
-    }
-    let names = props
-        .keys()
-        .map(|name| format!("`{name}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("the template declares {names}")
-}
-
 /// Parses the `compositions` templates. A template without `render_settings` takes the root's
 /// size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's
 /// fps.
@@ -321,114 +308,6 @@ fn parse_prop_defs(val: &Value) -> Result<BTreeMap<String, PropDef>> {
             Ok((name.clone(), PropDef { kind, default }))
         })
         .collect()
-}
-
-/// Checks each clip against the template it names: the template exists, the clip doesn't also
-/// take a source, its props are declared with literals of the right kind, and no template
-/// instantiates itself.
-fn validate_clips(comp: &Composition) -> Result<()> {
-    let graphs = std::iter::once((None, &comp.graph)).chain(
-        comp.compositions
-            .iter()
-            .map(|(name, template)| (Some(name.as_str()), &template.graph)),
-    );
-    for (owner, graph) in graphs {
-        let mut clips = graph
-            .nodes
-            .values()
-            .filter_map(|node| match node {
-                NodeKind::Clip(clip) => Some(clip),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        clips.sort_by_key(|clip| clip.id);
-        for clip in clips {
-            let context = || match owner {
-                Some(owner) => format!("composition `{owner}`: node {}", clip.id),
-                None => format!("node {}", clip.id),
-            };
-            validate_clip(comp, clip).with_context(context)?;
-        }
-    }
-    for name in comp.compositions.keys() {
-        let mut path = vec![name.as_str()];
-        check_template_cycle(comp, &mut path)?;
-    }
-    Ok(())
-}
-
-fn validate_clip(comp: &Composition, clip: &crate::node::compositing::clip::Clip) -> Result<()> {
-    let Some(name) = clip.template_name() else {
-        if let Some(prop) = clip.props().0.keys().next() {
-            bail!(
-                "prop `{prop}` is set, but the clip plays its `source` rather than a composition"
-            );
-        }
-        return Ok(());
-    };
-    let Some(template) = comp.compositions.get(name) else {
-        let defined = comp
-            .compositions
-            .keys()
-            .map(|name| format!("`{name}`"))
-            .collect::<Vec<_>>();
-        bail!(
-            "composition `{name}` is not defined; `compositions` has {}",
-            if defined.is_empty() {
-                "none".to_string()
-            } else {
-                defined.join(", ")
-            }
-        );
-    };
-    if !clip.source.is_empty() {
-        bail!("a clip plays either a `composition` or its `source` input, not both");
-    }
-    for (prop, value) in &clip.props().0 {
-        let Some(def) = template.props.get(prop) else {
-            bail!(
-                "composition `{name}` has no prop `{prop}`; {}",
-                declared_props(&template.props)
-            );
-        };
-        if let ClipPropValue::Literal(value) = value {
-            def.kind
-                .literal(value)
-                .map_err(|error| anyhow::anyhow!("prop `{prop}` of `{name}`: {error}"))?;
-        }
-    }
-    Ok(())
-}
-
-/// Fails when the template at the end of `path` instantiates one already on it.
-fn check_template_cycle<'a>(comp: &'a Composition, path: &mut Vec<&'a str>) -> Result<()> {
-    let name = *path.last().expect("path starts with a template");
-    let mut used = comp.compositions[name]
-        .graph
-        .nodes
-        .values()
-        .filter_map(|node| match node {
-            NodeKind::Clip(clip) => clip.template_name(),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    used.sort_unstable();
-    used.dedup();
-    for next in used {
-        if let Some(start) = path.iter().position(|name| *name == next) {
-            let cycle = path[start..]
-                .iter()
-                .chain([&next])
-                .map(|name| format!("`{name}`"))
-                .collect::<Vec<_>>()
-                .join(" -> ");
-            bail!("compositions instantiate themselves: {cycle}");
-        }
-        path.push(next);
-        check_template_cycle(comp, path)?;
-        path.pop();
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -614,6 +493,7 @@ fn parse_node_id(val: &Value) -> Result<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node::NodeKind;
 
     #[test]
     fn parses_the_expression_animation_demo() {
@@ -1304,6 +1184,82 @@ mod tests {
         comp["compositions"] = serde_json::json!({ "a": template("a") });
         let error = format!("{:#}", parse_value(&comp).unwrap_err());
         assert!(error.contains("`a` -> `a`"), "{error}");
+    }
+
+    #[test]
+    fn validate_structure_rejects_templates_that_instantiate_themselves() {
+        let mut comp = parse_value(&clip_composition(
+            serde_json::json!({ "composition": "card" }),
+            card_nodes("#000000"),
+        ))
+        .unwrap();
+        let NodeKind::Clip(clip) = &comp.graph.nodes[&NodeId::new(1)] else {
+            unreachable!("node 1 is the clip");
+        };
+        let clip = NodeKind::Clip(clip.clone());
+        let card = comp.compositions.get_mut("card").unwrap();
+        card.graph.nodes.insert(NodeId::new(1), clip);
+        let errors = comp.validate_structure().unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("`card` -> `card`")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn template_cycle_checks_visit_each_template_once() {
+        // Template i plays i + 1 and i + 2, so following every path visits 2^(n/2) or more.
+        let count = 40;
+        let mut comp = clip_composition(
+            serde_json::json!({ "composition": "t0" }),
+            card_nodes("#000000"),
+        );
+        for index in 0..count {
+            let plays = (index + 1..count.min(index + 3)).map(|next| format!("t{next}"));
+            let mut nodes = vec![serde_json::json!({ "id": 1, "type": "background" })];
+            nodes.extend(plays.enumerate().map(|(clip, name)| {
+                serde_json::json!({ "id": clip + 3, "type": "clip", "params": { "composition": name } })
+            }));
+            nodes.push(serde_json::json!({ "id": 2, "type": "media_output" }));
+            comp["compositions"][format!("t{index}")] = serde_json::json!({
+                "nodes": nodes,
+                "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+            });
+        }
+        let started = std::time::Instant::now();
+        parse_value(&comp).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn explicit_zero_duration_hides_the_clip_and_negative_literals_are_rejected() {
+        let shown_at = |duration: Value, frame: f64| {
+            let comp = parse_value(&clip_composition(
+                serde_json::json!({ "composition": "card", "duration": duration }),
+                card_nodes("#000000"),
+            ))
+            .unwrap();
+            let scope = crate::scope::Scope::root(&comp);
+            let NodeKind::Clip(clip) = &comp.graph.nodes[&NodeId::new(1)] else {
+                unreachable!("node 1 is the clip");
+            };
+            clip.route(&scope, frame, None).unwrap().is_some()
+        };
+        assert!(!shown_at(serde_json::json!(0), 0.0));
+        assert!(shown_at(serde_json::json!(-1), 59.0));
+        assert!(shown_at(serde_json::json!("=20 - frame"), 9.0));
+        assert!(!shown_at(serde_json::json!("=20 - frame"), 30.0));
+
+        let error = clip_error(
+            serde_json::json!({ "composition": "card", "duration": -2 }),
+            "#000000",
+        );
+        assert!(
+            error.contains("`duration` must be at least 0, or -1 to play to the end, got -2"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -1,6 +1,12 @@
 use std::collections::BTreeMap;
 
-use crate::{audio::AudioTimeline, error::LumenError, expr::ExpressionValue, graph::Graph};
+use crate::{
+    audio::AudioTimeline,
+    error::{GraphValidationError, LumenError},
+    expr::ExpressionValue,
+    graph::Graph,
+    node::{ClipPropValue, NodeKind, compositing::clip::Clip},
+};
 
 #[derive(Debug, Clone)]
 pub struct TimelineSettings {
@@ -192,6 +198,30 @@ impl Composition {
                 errors.extend(graph_errors);
             }
         }
+        let graphs = std::iter::once((None, &self.graph)).chain(
+            self.compositions
+                .iter()
+                .map(|(name, template)| (Some(name), &template.graph)),
+        );
+        for (template, graph) in graphs {
+            let mut clips = graph.nodes.values().filter_map(as_clip).collect::<Vec<_>>();
+            clips.sort_by_key(|clip| clip.id);
+            for clip in clips {
+                if let Err(details) = self.check_clip(clip) {
+                    errors.push(
+                        GraphValidationError::InvalidClip {
+                            template: template.cloned(),
+                            node_id: clip.id,
+                            details,
+                        }
+                        .into(),
+                    );
+                }
+            }
+        }
+        if let Some(templates) = self.template_cycle() {
+            errors.push(GraphValidationError::TemplateCycle { templates }.into());
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -199,4 +229,127 @@ impl Composition {
             Err(errors)
         }
     }
+
+    /// Checks a clip against the template it names: the template exists, the clip doesn't also
+    /// take a source, its props are declared with literals of the right kind, and a literal
+    /// `duration` is not negative other than -1.
+    fn check_clip(&self, clip: &Clip) -> Result<(), String> {
+        if let crate::node::Deferred::Value(duration) = clip.params.duration
+            && duration < 0.0
+            && duration != crate::node::compositing::clip::PLAY_TO_END
+        {
+            return Err(format!(
+                "`duration` must be at least 0, or -1 to play to the end, got {duration}"
+            ));
+        }
+        let Some(name) = clip.template_name() else {
+            return match clip.props().0.keys().next() {
+                Some(prop) => Err(format!(
+                    "prop `{prop}` is set, but the clip plays its `source` rather than a composition"
+                )),
+                None => Ok(()),
+            };
+        };
+        let Some(template) = self.compositions.get(name) else {
+            let defined = self
+                .compositions
+                .keys()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "composition `{name}` is not defined; `compositions` has {}",
+                if defined.is_empty() {
+                    "none".to_string()
+                } else {
+                    defined.join(", ")
+                }
+            ));
+        };
+        if !clip.source.is_empty() {
+            return Err(
+                "a clip plays either a `composition` or its `source` input, not both".to_string(),
+            );
+        }
+        for (prop, value) in &clip.props().0 {
+            let Some(def) = template.props.get(prop) else {
+                return Err(format!(
+                    "composition `{name}` has no prop `{prop}`; {}",
+                    declared_props(&template.props)
+                ));
+            };
+            if let ClipPropValue::Literal(value) = value {
+                def.kind
+                    .literal(value)
+                    .map_err(|error| format!("prop `{prop}` of `{name}`: {error}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A chain of templates that instantiates itself, ending with the template it returns to.
+    /// Each template is searched once.
+    fn template_cycle(&self) -> Option<Vec<String>> {
+        let mut path = Vec::new();
+        let mut done = std::collections::BTreeSet::new();
+        self.compositions
+            .keys()
+            .find_map(|name| self.cycle_from(name, &mut path, &mut done))
+    }
+
+    fn cycle_from<'a>(
+        &'a self,
+        name: &'a str,
+        path: &mut Vec<&'a str>,
+        done: &mut std::collections::BTreeSet<&'a str>,
+    ) -> Option<Vec<String>> {
+        if let Some(start) = path.iter().position(|visiting| *visiting == name) {
+            return Some(
+                path[start..]
+                    .iter()
+                    .chain([&name])
+                    .map(|name| name.to_string())
+                    .collect(),
+            );
+        }
+        if done.contains(name) {
+            return None;
+        }
+        // An undefined template is reported by `check_clip`.
+        let template = self.compositions.get(name)?;
+        let mut used = template
+            .graph
+            .nodes
+            .values()
+            .filter_map(|node| as_clip(node)?.template_name())
+            .collect::<Vec<_>>();
+        used.sort_unstable();
+        used.dedup();
+        path.push(name);
+        let cycle = used
+            .into_iter()
+            .find_map(|next| self.cycle_from(next, path, done));
+        path.pop();
+        done.insert(name);
+        cycle
+    }
+}
+
+fn as_clip(node: &NodeKind) -> Option<&Clip> {
+    match node {
+        NodeKind::Clip(clip) => Some(clip),
+        _ => None,
+    }
+}
+
+/// The props a template declares, for error messages.
+pub(crate) fn declared_props(props: &BTreeMap<String, PropDef>) -> String {
+    if props.is_empty() {
+        return "the template declares no props".to_string();
+    }
+    let names = props
+        .keys()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("the template declares {names}")
 }
