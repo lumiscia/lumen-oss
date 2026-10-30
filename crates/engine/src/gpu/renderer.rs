@@ -190,6 +190,11 @@ impl GpuCompositionRenderer {
         self.plan_compile_count
     }
 
+    /// Number of programs built for prepared plans, rather than reused from another plan.
+    pub fn created_program_count(&self) -> u64 {
+        self.renderer.created_program_count()
+    }
+
     /// Number of passes in the plans of submitted frames, whether they ran or not.
     pub fn submitted_pass_count(&self) -> u64 {
         self.submitted_pass_count
@@ -344,7 +349,8 @@ impl GpuCompositionRenderer {
 
     /// Drops plans compiled from a composition other than the one with `fingerprint`, scanning
     /// the cache only when it changed since the last prune. Their GPU resources are freed once
-    /// nothing else holds them.
+    /// nothing else holds them. Rendering prunes after preparing the current plan, so it reuses
+    /// the programs of the plans it replaces.
     fn prune_stale_plans(&mut self, fingerprint: u64) {
         if self.pruned_fingerprint.replace(fingerprint) == Some(fingerprint) {
             return;
@@ -1019,9 +1025,6 @@ impl GpuCompositionRenderer {
             media.map(|store| store as &dyn MediaStore),
         )?;
         self.plan_use_clock += 1;
-        if plan_use == PlanUse::Render {
-            self.prune_stale_plans(fingerprint);
-        }
         if let Some(prepared) = self.compiled_plans.get_mut(&key) {
             prepared.last_used = self.plan_use_clock;
             if plan_use == PlanUse::Lookahead {
@@ -1038,6 +1041,7 @@ impl GpuCompositionRenderer {
                 );
                 self.active_key = Some(key);
             }
+            self.prune_stale_plans(fingerprint);
             return Ok(true);
         }
         if plan_use == PlanUse::Lookahead {
@@ -1058,14 +1062,23 @@ impl GpuCompositionRenderer {
             "compile render plan for frame"
         );
         self.plan_compile_count += 1;
-        let compiled = CompileContext::with_options(
+        let compiled = match CompileContext::with_options(
             composition,
             frame,
             media.map(|store| store as &dyn MediaStore),
             self.output_format,
             true,
         )
-        .compile()?;
+        .compile()
+        {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                if plan_use == PlanUse::Render {
+                    self.prune_stale_plans(fingerprint);
+                }
+                return Err(error);
+            }
+        };
         self.rejected_plan_bytes.remove(&key);
         if plan_use == PlanUse::Lookahead {
             let estimated_bytes = estimated_plan_bytes(&compiled);
@@ -1090,7 +1103,9 @@ impl GpuCompositionRenderer {
             return prepared.map(|()| true);
         }
         let previous = self.active_key.clone();
-        self.prepare_compiled(key, compiled)?;
+        let prepared = self.prepare_compiled(key, compiled);
+        self.prune_stale_plans(fingerprint);
+        prepared?;
         let current = self.active_key.clone();
         self.evict_over_budget(&[previous.as_ref(), current.as_ref()]);
         Ok(true)

@@ -10915,6 +10915,39 @@ fn literal_param_edits_rebuild_the_plan() {
 }
 
 #[test]
+fn literal_param_edits_reuse_programs() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut composition = cache_composition(vec![
+        square(
+            NodeId::new(1),
+            Deferred::value((2.0, 2.0)),
+            4,
+            [255, 0, 0, 255],
+        ),
+        NodeKind::Blur(Blur {
+            id: NodeId::new(2),
+            params: BlurParamsDelegate {
+                radius: Deferred::value(1.0),
+            },
+            source: PortRef::new(NodeId::new(1), "output".to_string()),
+        }),
+        output_node(NodeId::new(3), 2),
+    ]);
+    render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let created = renderer.created_program_count();
+    assert!(created > 0);
+    let Some(NodeKind::Blur(blur)) = composition.graph.nodes.get_mut(&NodeId::new(2)) else {
+        unreachable!("node 2 is the blur");
+    };
+    blur.params.radius = Deferred::value(4.0);
+    render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    assert_eq!(renderer.plan_compile_count(), 2);
+    assert_eq!(renderer.created_program_count(), created);
+}
+
+#[test]
 fn memo_snapshot_dropped_with_its_key_change_is_not_shown_again() {
     let _guard = TEXT_TEST_LOCK.lock().unwrap();
     let Some(mut renderer) = gpu_composition_renderer() else {
