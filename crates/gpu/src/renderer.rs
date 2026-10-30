@@ -3,7 +3,7 @@ use std::{
     env,
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -57,7 +57,10 @@ enum RuntimeProgram {
 /// Programs compiled by a renderer and its siblings, so plans built from the same shaders compile
 /// each once. Holds only programs some renderer still uses.
 #[derive(Clone, Default)]
-struct ProgramCache(Arc<Mutex<HashMap<ProgramDesc, Weak<RuntimeProgram>>>>);
+struct ProgramCache {
+    programs: Arc<Mutex<HashMap<ProgramDesc, Weak<RuntimeProgram>>>>,
+    created: Arc<AtomicU64>,
+}
 
 /// A pass's bind groups and the bindings and texture generations they were built from.
 struct CachedBindGroups {
@@ -268,6 +271,11 @@ impl Renderer {
         }
     }
 
+    /// Number of programs this renderer and its siblings have built, rather than reused.
+    pub fn created_program_count(&self) -> u64 {
+        self.program_cache.created.load(Ordering::Relaxed)
+    }
+
     pub fn adapter_info(&self) -> &GpuAdapterInfo {
         &self.adapter_info
     }
@@ -303,7 +311,7 @@ impl Renderer {
         self.bind_groups.clear();
         let mut cache = self
             .program_cache
-            .0
+            .programs
             .lock()
             .map_err(|_| anyhow!("program cache lock was poisoned"))?;
         let mut created = Vec::new();
@@ -315,6 +323,7 @@ impl Renderer {
                     return Ok(runtime);
                 }
                 let runtime = Arc::new(self.create_program(&program.desc)?);
+                self.program_cache.created.fetch_add(1, Ordering::Relaxed);
                 cache.insert(program.desc.clone(), Arc::downgrade(&runtime));
                 created.push(&program.desc);
                 Ok(runtime)

@@ -22,53 +22,17 @@ use crate::{
 #[cfg(feature = "ffmpeg")]
 use super::media::GpuMediaFrameImporter;
 
-/// Everything a frame can change that alters the compiled plan's structure, plus the canvas size
-/// its textures were allocated for.
+/// Everything a frame can change that alters the compiled plan's structure, plus the composition
+/// it was compiled from, whose params the plan binds.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CompiledPlanKey {
-    size: (u32, u32),
+    /// `composition_fingerprint` of the composition, covering every node's literal params and
+    /// expression sources along with the canvases and timelines textures were sized for.
+    composition: u64,
     /// Whether the frame is a whole frame of the timeline, so animated sources may be sized to
     /// their bounds over it.
     on_timeline: bool,
-    /// Frame count and fps bits of the timeline that bounds over it were taken from.
-    timeline: (u32, u32),
-    /// Hash of the templates' canvases and timelines, which their textures were sized for.
-    templates: u64,
     entries: Vec<PlanKeyEntry>,
-}
-
-impl CompiledPlanKey {
-    /// Whether the canvas size and timeline are unchanged and the nodes this key chose between
-    /// still exist with the same kind and, for literal shader sources, the same source.
-    fn matches(&self, composition: &Composition) -> bool {
-        let settings = &composition.render_settings;
-        if self.size != (settings.width, settings.height)
-            || self.timeline != timeline_key(composition)
-            || self.templates != templates_key(composition)
-        {
-            return false;
-        }
-        self.entries.iter().all(|entry| {
-            let Some(graph) = Scope::graph_at(composition, &entry.time_remaps) else {
-                return false;
-            };
-            match (&entry.choice, graph.nodes.get(&entry.node_id)) {
-                (PlanChoice::SwitchSelection(_), Some(NodeKind::Switch(_))) => true,
-                (PlanChoice::Clip { definition, .. }, Some(NodeKind::Clip(clip))) => {
-                    clip_definition_hash(composition, clip) == *definition
-                }
-                (PlanChoice::TextFont(_), Some(NodeKind::Text(_))) => true,
-                (PlanChoice::TextFontGeneration(_), Some(NodeKind::Text(_))) => true,
-                (PlanChoice::ShaderSource(hash), Some(NodeKind::WgslShader(shader))) => {
-                    match &shader.params.shader {
-                        Deferred::Value(source) => source_hash(source) == *hash,
-                        Deferred::Expr(_) => true,
-                    }
-                }
-                _ => false,
-            }
-        })
-    }
 }
 
 /// A node instance's structural choice; the compiler builds one instance per path of time remaps
@@ -83,12 +47,8 @@ struct PlanKeyEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum PlanChoice {
     SwitchSelection(Option<usize>),
-    /// Whether a clip shows, which decides whether anything upstream of it is compiled, and
-    /// the hash of its definition, which the bounds of its content were taken over.
-    Clip {
-        shown: bool,
-        definition: u64,
-    },
+    /// Whether a clip shows, which decides whether anything upstream of it is compiled.
+    ClipShown(bool),
     /// The resolver the media store gave a text node's font family, which its bounds were
     /// measured with.
     TextFont(String),
@@ -121,12 +81,12 @@ pub struct GpuCompositionRenderer {
     plan_cache_bytes: u64,
     plan_cache_budget: u64,
     plan_use_clock: u64,
-    /// Signature of the plan-key nodes and canvas size the cache was last pruned against.
-    pruned_signature: Option<u64>,
+    /// Fingerprint of the composition the cache was last pruned against.
+    pruned_fingerprint: Option<u64>,
     /// Estimated sizes of lookahead plans that did not fit the budget, so later windows can skip
-    /// them without compiling. Valid only for the composition inputs with this signature.
+    /// them without compiling. Valid only for the composition with this fingerprint.
     rejected_plan_bytes: HashMap<CompiledPlanKey, u64>,
-    rejected_signature: Option<u64>,
+    rejected_fingerprint: Option<u64>,
     plan_compile_count: u64,
     submitted_pass_count: u64,
     cached_pass_count: u64,
@@ -169,9 +129,9 @@ impl GpuCompositionRenderer {
             plan_cache_bytes: 0,
             plan_cache_budget: DEFAULT_PLAN_CACHE_BUDGET_BYTES,
             plan_use_clock: 0,
-            pruned_signature: None,
+            pruned_fingerprint: None,
             rejected_plan_bytes: HashMap::new(),
-            rejected_signature: None,
+            rejected_fingerprint: None,
             plan_compile_count: 0,
             submitted_pass_count: 0,
             cached_pass_count: 0,
@@ -200,7 +160,8 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        let key = self.compiled_plan_key(composition, 0.0, None)?;
+        let key =
+            self.compiled_plan_key(composition, composition_fingerprint(composition), 0.0, None)?;
         self.plan_compile_count += 1;
         let compiled =
             CompileContext::with_options(composition, 0.0, None, output_format, true).compile()?;
@@ -229,6 +190,11 @@ impl GpuCompositionRenderer {
         self.plan_compile_count
     }
 
+    /// Number of programs built for prepared plans, rather than reused from another plan.
+    pub fn created_program_count(&self) -> u64 {
+        self.renderer.created_program_count()
+    }
+
     /// Number of passes in the plans of submitted frames, whether they ran or not.
     pub fn submitted_pass_count(&self) -> u64 {
         self.submitted_pass_count
@@ -254,8 +220,14 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        self.ensure_compiled_for_frame(composition, 0.0, Some(media), PlanUse::Render)
-            .map(drop)
+        self.ensure_compiled_for_frame(
+            composition,
+            composition_fingerprint(composition),
+            0.0,
+            Some(media),
+            PlanUse::Render,
+        )
+        .map(drop)
     }
 
     /// Drops every compiled plan and cached media texture, destroying the GPU textures and
@@ -312,9 +284,9 @@ impl GpuCompositionRenderer {
         self.compiled_plans.clear();
         self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
-        self.pruned_signature = None;
+        self.pruned_fingerprint = None;
         self.rejected_plan_bytes.clear();
-        self.rejected_signature = None;
+        self.rejected_fingerprint = None;
         self.active_key = None;
     }
 
@@ -375,18 +347,18 @@ impl GpuCompositionRenderer {
         Ok(())
     }
 
-    /// Drops plans built from nodes or shader sources the composition no longer has, scanning the
-    /// cache only when those nodes changed since the last prune. Their GPU resources are freed
-    /// once nothing else holds them.
-    fn prune_stale_plans(&mut self, composition: &Composition) {
-        let signature = plan_node_signature(composition);
-        if self.pruned_signature.replace(signature) == Some(signature) {
+    /// Drops plans compiled from a composition other than the one with `fingerprint`, scanning
+    /// the cache only when it changed since the last prune. Their GPU resources are freed once
+    /// nothing else holds them. Rendering prunes after preparing the current plan, so it reuses
+    /// the programs of the plans it replaces.
+    fn prune_stale_plans(&mut self, fingerprint: u64) {
+        if self.pruned_fingerprint.replace(fingerprint) == Some(fingerprint) {
             return;
         }
         let cached_plans = self.compiled_plans.len();
         let plan_cache_bytes = &mut self.plan_cache_bytes;
         self.compiled_plans.retain(|key, prepared| {
-            let keep = key.matches(composition);
+            let keep = key.composition == fingerprint;
             if !keep {
                 *plan_cache_bytes -= prepared.estimated_bytes;
             }
@@ -446,6 +418,7 @@ impl GpuCompositionRenderer {
     ) -> crate::Result<()> {
         self.ensure_compiled_for_frame(
             composition,
+            composition_fingerprint(composition),
             f64::from(frame),
             Some(media),
             PlanUse::Lookahead,
@@ -466,11 +439,13 @@ impl GpuCompositionRenderer {
             frame_count,
             "precompile frame window"
         );
+        let fingerprint = composition_fingerprint(composition);
         for offset in 0..frame_count {
             let frame = start_frame.saturating_add(offset);
             // Later frames are unlikely to fit either, so stop rather than compile and discard them.
             if !self.ensure_compiled_for_frame(
                 composition,
+                fingerprint,
                 f64::from(frame),
                 Some(media),
                 PlanUse::Lookahead,
@@ -581,14 +556,14 @@ impl GpuCompositionRenderer {
         let mut rebinds = 0;
         let mut bound = loop {
             let generation = text_font_generation();
-            self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
-            let fingerprint = if self.active_prepared()?.compiled.cache.has_memos()
-                || !self.memo_snapshots.is_empty()
-            {
-                composition_fingerprint(composition)
-            } else {
-                0
-            };
+            let fingerprint = composition_fingerprint(composition);
+            self.ensure_compiled_for_frame(
+                composition,
+                fingerprint,
+                frame,
+                Some(media),
+                PlanUse::Render,
+            )?;
             self.memo_snapshots.retain_composition(fingerprint);
             let prepared = self.active_prepared()?;
             let layout = &prepared.compiled.cache;
@@ -1034,22 +1009,22 @@ impl GpuCompositionRenderer {
 
     /// Makes the plan for `frame` resident and, when rendering, current. Returns false when
     /// lookahead skipped a plan that would not fit the budget.
+    /// `fingerprint` is the composition's `composition_fingerprint`.
     fn ensure_compiled_for_frame<M: MediaStore>(
         &mut self,
         composition: &Composition,
+        fingerprint: u64,
         frame: f64,
         media: Option<&M>,
         plan_use: PlanUse,
     ) -> crate::Result<bool> {
         let key = self.compiled_plan_key(
             composition,
+            fingerprint,
             frame,
             media.map(|store| store as &dyn MediaStore),
         )?;
         self.plan_use_clock += 1;
-        if plan_use == PlanUse::Render {
-            self.prune_stale_plans(composition);
-        }
         if let Some(prepared) = self.compiled_plans.get_mut(&key) {
             prepared.last_used = self.plan_use_clock;
             if plan_use == PlanUse::Lookahead {
@@ -1066,11 +1041,11 @@ impl GpuCompositionRenderer {
                 );
                 self.active_key = Some(key);
             }
+            self.prune_stale_plans(fingerprint);
             return Ok(true);
         }
         if plan_use == PlanUse::Lookahead {
-            let signature = plan_node_signature(composition);
-            if self.rejected_signature.replace(signature) != Some(signature) {
+            if self.rejected_fingerprint.replace(fingerprint) != Some(fingerprint) {
                 self.rejected_plan_bytes.clear();
             }
             if let Some(&bytes) = self.rejected_plan_bytes.get(&key)
@@ -1087,14 +1062,23 @@ impl GpuCompositionRenderer {
             "compile render plan for frame"
         );
         self.plan_compile_count += 1;
-        let compiled = CompileContext::with_options(
+        let compiled = match CompileContext::with_options(
             composition,
             frame,
             media.map(|store| store as &dyn MediaStore),
             self.output_format,
             true,
         )
-        .compile()?;
+        .compile()
+        {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                if plan_use == PlanUse::Render {
+                    self.prune_stale_plans(fingerprint);
+                }
+                return Err(error);
+            }
+        };
         self.rejected_plan_bytes.remove(&key);
         if plan_use == PlanUse::Lookahead {
             let estimated_bytes = estimated_plan_bytes(&compiled);
@@ -1119,7 +1103,9 @@ impl GpuCompositionRenderer {
             return prepared.map(|()| true);
         }
         let previous = self.active_key.clone();
-        self.prepare_compiled(key, compiled)?;
+        let prepared = self.prepare_compiled(key, compiled);
+        self.prune_stale_plans(fingerprint);
+        prepared?;
         let current = self.active_key.clone();
         self.evict_over_budget(&[previous.as_ref(), current.as_ref()]);
         Ok(true)
@@ -1128,6 +1114,7 @@ impl GpuCompositionRenderer {
     fn compiled_plan_key(
         &self,
         composition: &Composition,
+        fingerprint: u64,
         frame: f64,
         media: Option<&dyn MediaStore>,
     ) -> crate::Result<CompiledPlanKey> {
@@ -1144,12 +1131,9 @@ impl GpuCompositionRenderer {
         let mut entries = collector.entries;
         entries.sort();
         entries.dedup();
-        let settings = &composition.render_settings;
         Ok(CompiledPlanKey {
-            size: (settings.width, settings.height),
+            composition: fingerprint,
             on_timeline: super::compiler::on_timeline(composition, frame),
-            timeline: timeline_key(composition),
-            templates: templates_key(composition),
             entries,
         })
     }
@@ -1220,8 +1204,7 @@ impl<'a> PlanKeyCollector<'a> {
             }
             NodeKind::Clip(clip) => {
                 let shown = routes.first().is_some_and(|routed| !routed.port.is_empty());
-                let definition = clip_definition_hash(scope.root, clip);
-                self.push_entry(clip.id, PlanChoice::Clip { shown, definition });
+                self.push_entry(clip.id, PlanChoice::ClipShown(shown));
             }
             NodeKind::Text(text) => {
                 if let Deferred::Value(family) = &text.params.font_family
@@ -1314,115 +1297,6 @@ fn text_font_generation() -> Option<u64> {
     crate::node::source::text::text_system()
         .ok()
         .map(|text_system| text_system.font_generation())
-}
-
-fn timeline_key(composition: &Composition) -> (u32, u32) {
-    let timeline = &composition.timeline;
-    (timeline.duration_frames, timeline.fps.to_bits())
-}
-
-fn templates_key(composition: &Composition) -> u64 {
-    let mut hasher = std::hash::DefaultHasher::new();
-    for (name, template) in &composition.compositions {
-        let settings = &template.render_settings;
-        let timeline = &template.timeline;
-        std::hash::Hash::hash(
-            &(
-                name,
-                settings.width,
-                settings.height,
-                timeline.duration_frames,
-                timeline.fps.to_bits(),
-            ),
-            &mut hasher,
-        );
-    }
-    std::hash::Hasher::finish(&hasher)
-}
-
-/// Order-independent hash of everything `CompiledPlanKey::matches` reads from a composition, plus
-/// the canvas size and timeline that plan estimates depend on.
-fn plan_node_signature(composition: &Composition) -> u64 {
-    let settings = &composition.render_settings;
-    let mut hasher = std::hash::DefaultHasher::new();
-    std::hash::Hash::hash(
-        &(
-            settings.width,
-            settings.height,
-            timeline_key(composition),
-            templates_key(composition),
-        ),
-        &mut hasher,
-    );
-    let initial = std::hash::Hasher::finish(&hasher);
-    let graphs = std::iter::once((None, &composition.graph)).chain(
-        composition
-            .compositions
-            .iter()
-            .map(|(name, template)| (Some(name), &template.graph)),
-    );
-    graphs.fold(initial, |signature, (template, graph)| {
-        graph
-            .nodes
-            .iter()
-            .fold(signature, |signature: u64, (id, node)| {
-                let entry = match node {
-                    NodeKind::TimeRemap(_) => (id, 0, 0),
-                    NodeKind::Switch(_) => (id, 1, 0),
-                    NodeKind::WgslShader(shader) => match &shader.params.shader {
-                        Deferred::Value(source) => (id, 2, source_hash(source)),
-                        Deferred::Expr(_) => (id, 3, 0),
-                    },
-                    NodeKind::Clip(clip) => (id, 4, clip_definition_hash(composition, clip)),
-                    _ => return signature,
-                };
-                let mut hasher = std::hash::DefaultHasher::new();
-                std::hash::Hash::hash(&(template, entry), &mut hasher);
-                signature.wrapping_add(std::hash::Hasher::finish(&hasher))
-            })
-    })
-}
-
-/// Hash of a clip's template, the props that template declares, and the literals and expression
-/// sources of the clip's params, which decide where its content draws over the frames a plan
-/// may bind it at.
-fn clip_definition_hash(
-    composition: &Composition,
-    clip: &crate::node::compositing::clip::Clip,
-) -> u64 {
-    fn param<T: std::fmt::Debug>(value: &Deferred<T>) -> String {
-        match value {
-            Deferred::Value(value) => format!("{value:?}"),
-            Deferred::Expr(expr) => format!("={}", expr.source),
-        }
-    }
-    let params = &clip.params;
-    let props = match &params.props {
-        Deferred::Value(props) => props.to_json_value().to_string(),
-        Deferred::Expr(expr) => format!("={}", expr.source),
-    };
-    let declared = clip
-        .template_name()
-        .and_then(|name| composition.compositions.get(name))
-        .map(|template| format!("{:?}", template.props));
-    let mut hasher = std::hash::DefaultHasher::new();
-    std::hash::Hash::hash(
-        &(
-            param(&params.composition),
-            [
-                &params.start,
-                &params.duration,
-                &params.offset,
-                &params.speed,
-            ]
-            .map(param),
-            format!("{:?}", params.end),
-            props,
-            declared,
-        ),
-        &mut hasher,
-    );
-    std::hash::Hasher::finish(&hasher)
 }
 
 fn source_hash(source: &str) -> u64 {

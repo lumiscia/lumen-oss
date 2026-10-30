@@ -166,18 +166,30 @@ export class LumenAudioEngine {
   #queuedChunkStarts = new Set<number>();
   #workerSourceIds = new Set<string>();
   #sources = new Map<string, Float32Array>();
+  #sourceSync: Promise<void> = Promise.resolve();
+  #disposed = false;
   readonly #options: LumenAudioEngineOptions;
 
   constructor(options: LumenAudioEngineOptions = {}) {
     this.#options = options;
   }
 
-  async syncAudioSources(registrations: Iterable<AudioSourceRegistration>): Promise<void> {
+  syncAudioSources(registrations: Iterable<AudioSourceRegistration>): Promise<void> {
     const desired = new Map<string, AudioSourceRegistration>();
     for (const registration of registrations) {
       desired.set(registration.id, registration);
     }
 
+    // Serialized so overlapping syncs never decode the same source twice. Syncs still queued at
+    // dispose are skipped so they don't recreate the audio context.
+    const sync = this.#sourceSync
+      .catch(() => {})
+      .then(() => (this.#disposed ? undefined : this.#syncAudioSources(desired)));
+    this.#sourceSync = sync;
+    return sync;
+  }
+
+  async #syncAudioSources(desired: Map<string, AudioSourceRegistration>): Promise<void> {
     const worker = this.#ensureAudioWorker();
     if (desired.size === 0 && !this.#node && !worker) {
       this.#sources.clear();
@@ -202,7 +214,7 @@ export class LumenAudioEngine {
       ) {
         continue;
       }
-      const samples = await this.#decodeSource(registration.source);
+      const samples = await this.#decodeSource(registration);
       if (worker) {
         this.#workerSourceIds.add(registration.id);
         this.#postWorker(
@@ -326,6 +338,7 @@ export class LumenAudioEngine {
   }
 
   dispose(): void {
+    this.#disposed = true;
     this.#playback = null;
     const node = this.#node;
     if (node) {
@@ -343,10 +356,20 @@ export class LumenAudioEngine {
     this.#initialization = null;
   }
 
-  async #decodeSource(source: MediaSourceInput): Promise<Float32Array> {
+  async #decodeSource({ id, source }: AudioSourceRegistration): Promise<Float32Array> {
     const blob = await sourceInputToBlob(source);
     const bytes = await blob.arrayBuffer();
-    const decoded = await this.#getContext().decodeAudioData(bytes);
+    let decoded: AudioBuffer;
+    try {
+      decoded = await this.#getContext().decodeAudioData(bytes);
+    } catch (error) {
+      // An empty buffer mixes as silence and stays registered, so the decode is not retried.
+      console.warn(
+        `[LumenAudioEngine] audio source "${id}" could not be decoded; playing silence`,
+        error,
+      );
+      return new Float32Array(0);
+    }
     const resampled =
       decoded.sampleRate === LUMEN_AUDIO_SAMPLE_RATE
         ? decoded
