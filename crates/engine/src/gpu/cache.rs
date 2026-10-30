@@ -381,10 +381,6 @@ impl CacheLayout {
         !self.pass_owners.is_empty()
     }
 
-    pub(crate) fn has_memos(&self) -> bool {
-        !self.memos.is_empty()
-    }
-
     pub(crate) fn is_keyed_memo(&self, instance: usize) -> bool {
         self.memos.contains_key(&instance)
     }
@@ -467,10 +463,6 @@ impl MemoSnapshots {
 
     pub(crate) fn clear(&mut self) {
         self.0.clear();
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
     }
 
     /// Drops the snapshots taken from any composition but the one with `fingerprint`.

@@ -10863,6 +10863,58 @@ fn memo_snapshots_do_not_survive_composition_edits() {
 }
 
 #[test]
+fn literal_param_edits_rebuild_the_plan() {
+    let edits: [fn(&mut Composition); 2] = [
+        |composition| {
+            let Some(NodeKind::Shape(shape)) = composition.graph.nodes.get_mut(&NodeId::new(1))
+            else {
+                unreachable!("node 1 is the square");
+            };
+            shape.params.position = Deferred::value((20.0, 2.0));
+        },
+        |composition| {
+            let Some(NodeKind::Blur(blur)) = composition.graph.nodes.get_mut(&NodeId::new(2))
+            else {
+                unreachable!("node 2 is the blur");
+            };
+            blur.params.radius = Deferred::value(4.0);
+        },
+    ];
+    for edit in edits {
+        let Some(mut renderer) = gpu_composition_renderer() else {
+            return;
+        };
+        let mut composition = cache_composition(vec![
+            square(
+                NodeId::new(1),
+                Deferred::value((2.0, 2.0)),
+                4,
+                [255, 0, 0, 255],
+            ),
+            NodeKind::Blur(Blur {
+                id: NodeId::new(2),
+                params: BlurParamsDelegate {
+                    radius: Deferred::value(1.0),
+                },
+                source: PortRef::new(NodeId::new(1), "output".to_string()),
+            }),
+            output_node(NodeId::new(3), 2),
+        ]);
+        let before = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+        edit(&mut composition);
+        let edited = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+        let mut fresh = gpu_composition_renderer().unwrap();
+        let expected = render_rgba8(&mut fresh, &composition, 0, &EmptyMediaStore);
+        assert!(expected != before, "the edit changes the frame");
+        assert!(
+            edited == expected,
+            "an edited node rendered with a stale plan"
+        );
+        assert_eq!(renderer.cached_plan_count(), 1);
+    }
+}
+
+#[test]
 fn memo_snapshot_dropped_with_its_key_change_is_not_shown_again() {
     let _guard = TEXT_TEST_LOCK.lock().unwrap();
     let Some(mut renderer) = gpu_composition_renderer() else {
