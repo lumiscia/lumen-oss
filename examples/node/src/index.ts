@@ -3,13 +3,13 @@ import { Composition, Lumen, mediaReference } from "@lumiscia/lumen-sdk";
 const mediaUrl =
   process.env.LUMEN_EXAMPLE_MEDIA_URL ??
   "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=1280&h=720&fit=crop";
-const baseUrl = process.env.LUMEN_BASE_URL ?? "https://api.lumiscia.com/v1";
+const baseUrl = process.env.LUMISCIA_BASE_URL ?? "https://api.lumiscia.com/v1";
 const mode = process.env.LUMEN_EXAMPLE_MODE ?? (baseUrl.includes("localhost") ? "local" : "cloud");
 const textContent = process.env.LUMEN_EXAMPLE_TEXT ?? "Hello from Lumen";
 const fontFamily = process.env.LUMEN_EXAMPLE_FONT_FAMILY ?? "Inter";
 
 const lumen = new Lumen({
-  apiKey: process.env.LUMEN_API_KEY ?? "dev-api-key",
+  apiKey: process.env.LUMISCIA_API_KEY ?? "dev-api-key",
   baseUrl,
 });
 
@@ -71,19 +71,18 @@ const image = composition.addNode({
   },
 });
 
-const merge = composition.addNode({
-  type: "merge",
+const layers = composition.addNode({
+  type: "raster_multimerge",
   params: {
-    opacity: 0.9,
     blend_mode: "normal",
   },
 });
 
-composition.connect(background, merge, { toPort: "base" });
-composition.connect(image, merge, { toPort: "overlay" });
-composition.connect(title, merge, { toPort: "overlay" });
+composition.connect(background, layers, { toPort: "layers" });
+composition.connect(image, layers, { toPort: "layers" });
+composition.connect(title, layers, { toPort: "layers" });
 const output = composition.addNode({ type: "media_output" });
-composition.connect(merge, output, { toPort: "source" });
+composition.connect(layers, output, { toPort: "source" });
 
 console.log(JSON.stringify(composition.toJSON(), null, 2));
 

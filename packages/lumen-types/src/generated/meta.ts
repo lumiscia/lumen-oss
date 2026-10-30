@@ -1266,5 +1266,37 @@ export interface CompositionNodeInputByKind {
   };
 }
 
+export interface NodeInputPortNameByKind {
+  readonly "alpha_premultiply": "source";
+  readonly "background": never;
+  readonly "blur": "source";
+  readonly "boolean": "a" | "b";
+  readonly "channel_shuffle": "source";
+  readonly "clip": "source";
+  readonly "color_grade": "source";
+  readonly "crop": "source";
+  readonly "curves": "source";
+  readonly "exposure": "source";
+  readonly "hue_saturation": "source";
+  readonly "levels": "source";
+  readonly "media_in": never;
+  readonly "media_output": "source";
+  readonly "memo": "source";
+  readonly "merge": "base" | "mask" | "overlay";
+  readonly "opacity": "source";
+  readonly "path": never;
+  readonly "raster_multimerge": "layers";
+  readonly "resize": "source";
+  readonly "shadow": "source";
+  readonly "shape": never;
+  readonly "switch": "layers";
+  readonly "text": never;
+  readonly "time_remap": "source";
+  readonly "transform": "source";
+  readonly "wgsl_shader": "source";
+}
+
 export type CompositionNode<TKind extends NodeKind = NodeKind> = CompositionNodeByKind[TKind];
 export type CompositionNodeInput<TKind extends NodeKind = NodeKind> = CompositionNodeInputByKind[TKind];
+/** The input port names of a node kind, which a connection's `to_port` names. */
+export type NodeInputPortName<TKind extends NodeKind = NodeKind> = NodeInputPortNameByKind[TKind];

@@ -7,6 +7,7 @@ import type {
   ExpressionString,
   HexColor,
   LumenComposition,
+  NodeInputPortName,
   NodeKind,
   Vec2,
 } from "@lumiscia/lumen-types";
@@ -59,9 +60,10 @@ type ParamExpr<T> = [T] extends [boolean]
 
 export type NodeReference = number | Pick<CompositionNode, "id">;
 
-export interface ConnectOptions {
+/** `toPort` is checked against the target's input ports when `connect` is given the node itself. */
+export interface ConnectOptions<TKind extends NodeKind = NodeKind> {
   readonly fromPort?: string;
-  readonly toPort?: string;
+  readonly toPort: NodeInputPortName<TKind>;
 }
 
 export interface Size {
