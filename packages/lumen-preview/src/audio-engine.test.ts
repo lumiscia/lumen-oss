@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   audioTimelineFromCompositionJson,
+  LUMEN_AUDIO_CHANNELS,
   LUMEN_AUDIO_CLIP_EDGE_FADE_SAMPLES,
+  LUMEN_AUDIO_SAMPLE_RATE,
+  LumenAudioEngine,
   createLumenAudioSchedule,
   msToLumenAudioSample,
+  type AudioSourceRegistration,
 } from "./audio-engine.js";
 
 describe("createLumenAudioSchedule", () => {
@@ -102,6 +106,71 @@ describe("audioTimelineFromCompositionJson", () => {
         },
       ],
     });
+  });
+});
+
+describe("LumenAudioEngine", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("plays sources without decodable audio as silence and keeps mixing other clips", async () => {
+    const posted: Array<{ type: string; samples?: Float32Array; startSample?: number }> = [];
+    const decodeAudioData = vi.fn(async (bytes: ArrayBuffer) => {
+      if (new Uint8Array(bytes)[0] === 0) {
+        throw new DOMException("Unable to decode audio data", "EncodingError");
+      }
+      const channel = new Float32Array(LUMEN_AUDIO_SAMPLE_RATE).fill(0.5);
+      return {
+        length: channel.length,
+        numberOfChannels: 1,
+        sampleRate: LUMEN_AUDIO_SAMPLE_RATE,
+        getChannelData: () => channel,
+      };
+    });
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        audioWorklet = { addModule: async () => {} };
+        currentTime = 0;
+        decodeAudioData = decodeAudioData;
+        destination = {};
+        resume = async () => {};
+      },
+    );
+    vi.stubGlobal(
+      "AudioWorkletNode",
+      class {
+        port = { postMessage: (message: (typeof posted)[number]) => posted.push(message) };
+        connect() {}
+      },
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const engine = new LumenAudioEngine({ workerModuleUrl: "", workletModuleUrl: "worklet.js" });
+    engine.setAudioTimeline({
+      durationFrames: 24,
+      fps: 24,
+      tracks: [{ id: "track", muted: false, solo: false, volume: 1 }],
+      clips: [clip("muted-video", "track"), clip("music", "track")],
+    });
+    const sources: AudioSourceRegistration[] = [
+      { id: "muted-video", kind: "audio", source: new Uint8Array([0]) },
+      { id: "music", kind: "audio", source: new Uint8Array([1]) },
+    ];
+    await Promise.all([engine.syncAudioSources(sources), engine.syncAudioSources(sources)]);
+    await engine.syncAudioSources(sources);
+
+    expect(decodeAudioData).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledOnce();
+    const chunk = posted
+      .filter((message) => message.type === "chunk" && message.startSample === 0)
+      .at(-1);
+    expect(chunk?.samples?.[LUMEN_AUDIO_CLIP_EDGE_FADE_SAMPLES * LUMEN_AUDIO_CHANNELS]).toBe(0.5);
+
+    engine.play(0);
+    await vi.waitFor(() => expect(posted.at(-1)).toMatchObject({ type: "play" }));
   });
 });
 
