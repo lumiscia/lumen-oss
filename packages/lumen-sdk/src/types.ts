@@ -46,6 +46,8 @@ export interface RenderJob {
   readonly id: string;
   readonly inputHash: string;
   readonly organizationId: string;
+  readonly outputExpiresAt?: string | null;
+  readonly outputUrl?: string | null;
   readonly status: "failed" | "processing" | "queued" | "succeeded";
 }
 
