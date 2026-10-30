@@ -3,7 +3,7 @@ import { Composition, Lumen, mediaReference } from "@lumiscia/lumen-sdk";
 const mediaUrl =
   process.env.LUMEN_EXAMPLE_MEDIA_URL ??
   "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=1280&h=720&fit=crop";
-const baseUrl = process.env.LUMEN_BASE_URL ?? "https://lumiscia.com/api/v1";
+const baseUrl = process.env.LUMEN_BASE_URL ?? "https://api.lumiscia.com/v1";
 const mode = process.env.LUMEN_EXAMPLE_MODE ?? (baseUrl.includes("localhost") ? "local" : "cloud");
 const textContent = process.env.LUMEN_EXAMPLE_TEXT ?? "Hello from Lumen";
 const fontFamily = process.env.LUMEN_EXAMPLE_FONT_FAMILY ?? "Inter";

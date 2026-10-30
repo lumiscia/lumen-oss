@@ -48,7 +48,7 @@ pub(super) async fn create_render(
     }
     let id = input.job_id.clone().unwrap_or_else(new_render_id);
     let render = ApiRenderJob {
-        cost_cents: 0,
+        cost_micros: 0,
         created_at: current_timestamp(),
         id: id.clone(),
         input_hash: input_hash(&input.composition, &input.media),

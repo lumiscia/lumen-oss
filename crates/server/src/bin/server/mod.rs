@@ -117,7 +117,7 @@ where
         total_frames: total_frames as u64,
     };
     let render = ApiRenderJob {
-        cost_cents: 0,
+        cost_micros: 0,
         created_at: current_timestamp(),
         id: job_id,
         input_hash,

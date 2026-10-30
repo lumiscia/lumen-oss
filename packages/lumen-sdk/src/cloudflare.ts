@@ -27,6 +27,7 @@ export class Lumen extends BaseLumen {
 }
 
 export { mediaReference };
+export { LumenRenderError } from "./events.js";
 export { AudioTrack, Composition } from "@lumiscia/lumen-shared";
 export type * from "@lumiscia/lumen-shared";
 export type {

@@ -1,4 +1,5 @@
 export { Lumen, mediaReference } from "./node.js";
+export { LumenRenderError } from "./events.js";
 export { AudioTrack, Composition } from "@lumiscia/lumen-shared";
 export type * from "@lumiscia/lumen-shared";
 export type {

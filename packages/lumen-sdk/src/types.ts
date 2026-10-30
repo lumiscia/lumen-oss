@@ -1,5 +1,6 @@
 export interface LumenOptions {
   readonly apiKey: string;
+  /** API base URL. Defaults to the hosted Lumiscia API, `https://api.lumiscia.com/v1`. */
   readonly baseUrl?: string;
   readonly fetch?: typeof fetch;
   readonly websocket?: LumenWebSocketFactory;
@@ -39,8 +40,9 @@ export interface RenderResult {
 
 export interface RenderJob {
   readonly apiKeyId?: string;
-  readonly costCents: number;
   readonly createdAt: string;
+  /** Render cost in millionths of a US dollar. */
+  readonly costMicros: number;
   readonly id: string;
   readonly inputHash: string;
   readonly organizationId: string;
