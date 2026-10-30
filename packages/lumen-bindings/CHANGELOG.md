@@ -1,5 +1,14 @@
 # @lumiscia/lumen-bindings
 
+## 0.3.1
+
+### Patch Changes
+
+- ea6e7da: Editing a node's params in place and rendering again with the same renderer now draws the edit instead of reusing the plan compiled before it. Any change to the composition, whether a literal param, an expression source, a connection, the canvas or a template, compiles a fresh plan and drops the cached ones.
+- Updated dependencies [c44cca1]
+- Updated dependencies [b506afc]
+  - @lumiscia/lumen-preview@0.3.1
+
 ## 0.3.0
 
 ### Minor Changes

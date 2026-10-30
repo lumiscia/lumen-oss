@@ -1,5 +1,11 @@
 # @lumiscia/lumen-shared
 
+## 0.3.1
+
+### Patch Changes
+
+- @lumiscia/lumen-types@0.3.1
+
 ## 0.3.0
 
 ### Minor Changes
