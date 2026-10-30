@@ -50,8 +50,8 @@ pub struct RenderJobError {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiRenderJob {
-    #[serde(rename = "costCents")]
-    pub cost_cents: u32,
+    #[serde(rename = "costMicros")]
+    pub cost_micros: u64,
     #[serde(rename = "createdAt")]
     pub created_at: String,
     pub id: String,

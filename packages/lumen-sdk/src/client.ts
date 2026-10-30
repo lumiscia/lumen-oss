@@ -1,6 +1,7 @@
 import { Composition, type LumenComposition } from "@lumiscia/lumen-shared";
 
 import { normalizeApiError } from "./errors.js";
+import { LumenRenderError, normalizeRenderEvent } from "./events.js";
 import type {
   CompleteMultipartUploadOptions,
   CreateMediaUploadOptions,
@@ -21,7 +22,7 @@ import type {
 } from "./types.js";
 
 const defaultMultipartPartSizeBytes = 8 * 1024 * 1024;
-const defaultBaseUrl = "https://lumiscia.com/api/v1";
+const defaultBaseUrl = "https://api.lumiscia.com/v1";
 
 export class Lumen {
   readonly #apiKey: string;
@@ -258,8 +259,10 @@ export class Lumen {
 
     socket.addEventListener("message", (message) => {
       try {
-        const event = JSON.parse(String(message.data)) as RenderEvent;
-        handlers.onEvent?.(event);
+        const event = normalizeRenderEvent(JSON.parse(String(message.data)));
+        if (event !== undefined) {
+          handlers.onEvent?.(event);
+        }
       } catch (error) {
         handlers.onError?.(error);
       }
@@ -318,7 +321,7 @@ export class Lumen {
             resolve(event);
           }
           if (event.type === "render.failed") {
-            fail(event.error);
+            fail(new LumenRenderError(event.renderId, event.error));
           }
         },
         onError: fail,
