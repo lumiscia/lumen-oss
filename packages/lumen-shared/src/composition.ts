@@ -63,7 +63,9 @@ export class Composition {
     this.#timeline = timeline(options.timeline);
   }
 
-  addNode<TKind extends NodeKind>(node: NodeInput<TKind>): CompositionNode<TKind> {
+  addNode<TKind extends NodeKind>(
+    node: NodeInput<TKind> & { readonly type: TKind },
+  ): CompositionNode<TKind> {
     const { [clipTemplate]: template, ...rest } = node as NodeInput<TKind> & {
       readonly [clipTemplate]?: ClipTemplate;
     };
@@ -138,11 +140,15 @@ export class Composition {
     return this;
   }
 
-  connect(from: NodeReference, to: NodeReference, options: ConnectOptions = {}): this {
+  connect<TKind extends NodeKind>(
+    from: NodeReference,
+    to: number | { readonly id: number; readonly type?: TKind },
+    options: ConnectOptions<TKind>,
+  ): this {
     const connection: Connection = {
       from_node: nodeId(from),
       to_node: nodeId(to),
-      to_port: options.toPort ?? "input",
+      to_port: options.toPort,
     };
 
     this.#connections.push(

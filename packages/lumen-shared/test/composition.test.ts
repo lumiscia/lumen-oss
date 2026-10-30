@@ -44,6 +44,22 @@ describe("Composition node IDs", () => {
   });
 });
 
+describe("Composition connections", () => {
+  test("connects to the named target port", () => {
+    const composition = new Composition();
+    const background = composition.addNode({ type: "background" });
+    const output = composition.addNode({ type: "media_output" });
+
+    composition.connect(background, output, { toPort: "source" });
+    composition.connect(background.id, output.id, { fromPort: "output", toPort: "source" });
+
+    expect(composition.toJSON().connections).toEqual([
+      { from_node: 0, to_node: 1, to_port: "source" },
+      { from_node: 0, from_port: "output", to_node: 1, to_port: "source" },
+    ]);
+  });
+});
+
 describe("Composition audio helpers", () => {
   test("adds audio tracks with their clips using canonical JSON fields", () => {
     const composition = new Composition();

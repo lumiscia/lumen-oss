@@ -51,11 +51,13 @@ See [`crates/server`](crates/server/README.md) for the current self-hosted HTTP 
 - `crates/text`: text layout and glyph data helpers
 - `definitions`: generated node metadata and JSON schemas
 - `packages/lumen-types`: generated TypeScript types for schemas and metadata
-- `packages/lumen-shared`: dependency-light composition helpers
+- `packages/lumen-shared`: dependency-light composition builder
+- `packages/lumen-sdk`: Node client for the hosted Lumiscia API, re-exporting the composition builder
 - `packages/lumen-preview`: browser preview engine and media bridge
 - `packages/lumen-bindings`: generated WASM binding package with compiled WASM included
 - `packages/lumen-react` and `packages/lumen-svelte`: framework preview wrappers
 - `examples/vite-react` and `examples/vite-svelte`: local preview examples
+- `examples/node`: builds a composition and renders it through the hosted API (`LUMISCIA_API_KEY`)
 
 Product application code, hosted-service API code, billing/auth flows, and private frontend work live outside this open-source renderer repository. Project documentation lives in the public [lumiscia/docs](https://github.com/lumiscia/docs) repository.
 
