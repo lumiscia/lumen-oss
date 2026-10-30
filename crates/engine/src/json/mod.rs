@@ -511,6 +511,7 @@ mod tests {
     #[test]
     fn parse_minimal_composition() {
         let json = r#"{
+            "$schema": "https://lumiscia.com/schema/composition.json",
             "lumenSchemaVersion": "0.1.0",
             "timeline": { "fps": 30, "duration_frames": 90 },
             "render_settings": { "width": 1920, "height": 1080 },
