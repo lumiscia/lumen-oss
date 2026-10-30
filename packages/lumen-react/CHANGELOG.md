@@ -1,5 +1,13 @@
 # @lumiscia/lumen-react
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [c44cca1]
+- Updated dependencies [b506afc]
+  - @lumiscia/lumen-preview@0.3.1
+
 ## 0.3.0
 
 ### Patch Changes
