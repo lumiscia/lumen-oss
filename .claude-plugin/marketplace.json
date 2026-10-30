@@ -1,0 +1,20 @@
+{
+  "name": "lumiscia",
+  "description": "Agent skills for building video apps with Lumiscia and Lumen.",
+  "owner": {
+    "name": "Lumiscia",
+    "url": "https://lumiscia.com"
+  },
+  "plugins": [
+    {
+      "name": "lumen",
+      "source": "./",
+      "description": "Build, preview, and render videos with Lumiscia's hosted GPU API or self-hosted Lumen: compositions, expressions, media, renders, and webhooks.",
+      "category": "development",
+      "homepage": "https://docs.lumiscia.com",
+      "repository": "https://github.com/lumiscia/lumen-oss",
+      "license": "Apache-2.0",
+      "keywords": ["lumiscia", "lumen", "video", "rendering", "composition"]
+    }
+  ]
+}
