@@ -1,6 +1,6 @@
 # Composition structure
 
-The canonical definition is the JSON Schema at https://lumiscia.com/schema/composition.json (also `LumenComposition` in `@lumiscia/lumen-types`, re-exported by the SDK). Full prose: https://docs.lumiscia.com/composition-format.md. Check exact params and defaults per node in the schema or the node pages linked below rather than guessing.
+The canonical definition is the JSON Schema at https://lumiscia.com/schema/composition.json (also `LumenComposition` in `@lumiscia/lumen-types`, re-exported by the SDK). Docs: https://docs.lumiscia.com/composition-format.md. Check exact params and defaults per node in the schema or the node pages linked below rather than guessing.
 
 ## Document
 
@@ -39,7 +39,7 @@ The canonical definition is the JSON Schema at https://lumiscia.com/schema/compo
 | `audio`           | No       | `{ tracks, clips }`.                                                                 |
 | `metadata`        | No       | Your data. Lumen reads `metadata.name`.                                              |
 
-Unknown top-level fields (including `$schema`) are allowed, so editors can store state. Nodes are strict: unknown node types or params fail validation. Param names are snake_case, enums are string names (`"blend_mode": "screen"`).
+Unknown top-level fields (including `$schema`) are allowed, so editors can store state. Nodes are strict: unknown node types or params fail validation. Param names are snake_case; enums are string names (`"blend_mode": "screen"`).
 
 Colors are `[r, g, b]` / `[r, g, b, a]` integers 0–255 or `"#rrggbb"` / `"#rrggbbaa"`. Paint params (`paint`, `fill_paint`, `stroke_paint`) also take linear/radial/conic gradient objects; see the schema's `paint` definition.
 
@@ -76,7 +76,7 @@ Frequently used params:
 
 ## Media
 
-`media_in.source` and audio clip `source_id` hold a manifest alias (up to 128 of letters, digits, `.`, `_`, `-`). The render request maps aliases to media:
+`media_in.source` and audio clip `source_id` hold a manifest alias (up to 128 characters: letters, digits, `.`, `_`, `-`). The render request maps aliases to media:
 
 ```json
 { "composition": { "...": "..." }, "media": { "hero": "lumen:media_3f9a1c2b7d4e5f60" } }

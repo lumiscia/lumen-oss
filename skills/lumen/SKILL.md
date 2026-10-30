@@ -10,7 +10,7 @@ Lumiscia renders video from JSON compositions on hosted GPUs. Lumen is the open-
 ## Mental model
 
 - A **composition** is a node graph plus a timeline: `timeline` (`fps`, `duration_frames`), `render_settings` (`width`, `height`), `nodes`, and `connections`. Frames start at source nodes (`background`, `text`, `shape`, `media_in`, ...), flow through processing and compositing nodes, and end at exactly one `media_output`.
-- Params can be literals or **expressions**: strings starting with `=` that are evaluated every frame (`"=progress(0, 30)"`). That is how you animate.
+- Params can be literals or **expressions**: strings starting with `=` that are evaluated every frame (`"=progress(0, 30)"`), which is how you animate.
 - Media is never inlined. Nodes name an **alias** (`"source": "hero"`), and each render request carries a `media` manifest mapping alias to `lumen:<media_id>`.
 - **Preview** runs the same engine in the browser via WebAssembly (`@lumiscia/lumen-react`, `@lumiscia/lumen-svelte`, or `@lumiscia/lumen-preview` directly). It is free and needs no API key.
 - **Render** happens server-side through `@lumiscia/lumen-sdk`: upload media, `render()`, then wait (WebSocket, webhook, or polling) and download the MP4.
@@ -143,7 +143,7 @@ export async function handleLumisciaWebhook(request: Request): Promise<Response>
 
 ## Browser preview
 
-Build the composition in the browser and preview it without uploads. Register local files under the same aliases the `media_in` nodes use. Send the composition JSON and files to your backend for the real render.
+Build the composition in the browser and preview it without uploads. Register local files under the same aliases the `media_in` nodes use. Send the composition JSON and files to your backend for the final render.
 
 ```tsx
 import { LumenCanvas, createLumenPreview, useLumenPreview } from "@lumiscia/lumen-react";
@@ -169,7 +169,7 @@ Needs Vite with `vite-plugin-wasm` and `vite-plugin-top-level-await`. Control pl
 
 ## Self-hosted Lumen
 
-`lumen-server` (in `crates/server` of github.com/lumiscia/lumen-oss) is a single-machine HTTP server with the same render payload. It needs a GPU (Linux + Vulkan or macOS + Metal). Point the same SDK at it:
+`lumen-server` (in `crates/server` of github.com/lumiscia/lumen-oss) is a single-machine HTTP server that takes the same render payload as the hosted API. It needs a GPU (Linux + Vulkan or macOS + Metal). Point the same SDK at it:
 
 ```ts
 const lumen = new Lumen({
@@ -200,7 +200,7 @@ When you write composition JSON by hand, add the schema for editor and agent val
 
 ## Common mistakes
 
-- **An old 0.3.x SDK.** If `verifyWebhook` or `LumenRenderError` aren't exported, the installed SDK predates the current API surface: its default `baseUrl` is the dashboard proxy (which rejects API keys), `waitForRender` rejects with `undefined` on failure, and `render.costCents` is always `undefined` (the API sends `costMicros`). Upgrade, or at least set `baseUrl: "https://api.lumiscia.com/v1"`.
+- **An old 0.3.x SDK.** If `verifyWebhook` or `LumenRenderError` aren't exported, the installed SDK is a 0.3.x release: its default `baseUrl` is the dashboard proxy (which rejects API keys), `waitForRender` rejects with `undefined` on failure, and `render.costCents` is always `undefined` (the API sends `costMicros`). Upgrade, or at least set `baseUrl: "https://api.lumiscia.com/v1"`.
 - **Wrong `toPort` in `connect()`.** `toPort` is required. When you pass node objects (not bare ids), it is type-checked against the target's inputs: `source` (processing nodes, `media_output`, `clip`), `base`/`overlay`/`mask` (`merge`), `a`/`b` (`boolean`), or `layers` (`raster_multimerge`, `switch`).
 - **Stacking several layers into `merge.overlay`.** `merge` takes one base and one overlay. Use `raster_multimerge` with `layers` (first connection at the bottom) for stacks.
 - **No duration.** A `Composition` without a timeline is 1 frame long. Set `durationSeconds` or `duration_frames`.
