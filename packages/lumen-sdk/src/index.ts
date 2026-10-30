@@ -1,5 +1,12 @@
 export { Lumen, mediaReference } from "./node.js";
 export { LumenRenderError } from "./events.js";
+export { LumenWebhookError, verifyWebhook } from "./webhooks.js";
+export type {
+  LumenWebhookErrorCode,
+  RenderWebhookEvent,
+  VerifyWebhookOptions,
+  WebhookHeaders,
+} from "./webhooks.js";
 export { AudioTrack, Composition } from "@lumiscia/lumen-shared";
 export type * from "@lumiscia/lumen-shared";
 export type {

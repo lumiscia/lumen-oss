@@ -15,6 +15,7 @@ catalog:
   oxlint: ^1.89.0
   react: ^19.3.1
   react-dom: ^19.3.1
+  standardwebhooks: ^1.1.1
   svelte: ^5.57.2
   typescript: ^6.0.3
   vite: ^8.3.5
