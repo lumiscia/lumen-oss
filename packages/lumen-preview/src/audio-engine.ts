@@ -166,18 +166,30 @@ export class LumenAudioEngine {
   #queuedChunkStarts = new Set<number>();
   #workerSourceIds = new Set<string>();
   #sources = new Map<string, Float32Array>();
+  #sourceSync: Promise<void> = Promise.resolve();
+  #disposed = false;
   readonly #options: LumenAudioEngineOptions;
 
   constructor(options: LumenAudioEngineOptions = {}) {
     this.#options = options;
   }
 
-  async syncAudioSources(registrations: Iterable<AudioSourceRegistration>): Promise<void> {
+  syncAudioSources(registrations: Iterable<AudioSourceRegistration>): Promise<void> {
     const desired = new Map<string, AudioSourceRegistration>();
     for (const registration of registrations) {
       desired.set(registration.id, registration);
     }
 
+    // Serialized so overlapping syncs never decode the same source twice. Syncs still queued at
+    // dispose are skipped so they don't recreate the audio context.
+    const sync = this.#sourceSync
+      .catch(() => {})
+      .then(() => (this.#disposed ? undefined : this.#syncAudioSources(desired)));
+    this.#sourceSync = sync;
+    return sync;
+  }
+
+  async #syncAudioSources(desired: Map<string, AudioSourceRegistration>): Promise<void> {
     const worker = this.#ensureAudioWorker();
     if (desired.size === 0 && !this.#node && !worker) {
       this.#sources.clear();
@@ -330,6 +342,7 @@ export class LumenAudioEngine {
   }
 
   dispose(): void {
+    this.#disposed = true;
     this.#playback = null;
     const node = this.#node;
     if (node) {

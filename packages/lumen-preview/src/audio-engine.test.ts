@@ -159,7 +159,7 @@ describe("LumenAudioEngine", () => {
       { id: "muted-video", kind: "audio", source: new Uint8Array([0]) },
       { id: "music", kind: "audio", source: new Uint8Array([1]) },
     ];
-    await engine.syncAudioSources(sources);
+    await Promise.all([engine.syncAudioSources(sources), engine.syncAudioSources(sources)]);
     await engine.syncAudioSources(sources);
 
     expect(decodeAudioData).toHaveBeenCalledTimes(2);
