@@ -202,7 +202,7 @@ export class LumenAudioEngine {
       ) {
         continue;
       }
-      const samples = await this.#decodeSource(registration.source);
+      const samples = await this.#decodeSource(registration);
       if (worker) {
         this.#workerSourceIds.add(registration.id);
         this.#postWorker(
@@ -347,10 +347,20 @@ export class LumenAudioEngine {
     this.#initialization = null;
   }
 
-  async #decodeSource(source: MediaSourceInput): Promise<Float32Array> {
+  async #decodeSource({ id, source }: AudioSourceRegistration): Promise<Float32Array> {
     const blob = await sourceInputToBlob(source);
     const bytes = await blob.arrayBuffer();
-    const decoded = await this.#getContext().decodeAudioData(bytes);
+    let decoded: AudioBuffer;
+    try {
+      decoded = await this.#getContext().decodeAudioData(bytes);
+    } catch (error) {
+      // An empty buffer mixes as silence and stays registered, so the decode is not retried.
+      console.warn(
+        `[LumenAudioEngine] audio source "${id}" could not be decoded; playing silence`,
+        error,
+      );
+      return new Float32Array(0);
+    }
     const resampled =
       decoded.sampleRate === LUMEN_AUDIO_SAMPLE_RATE
         ? decoded
