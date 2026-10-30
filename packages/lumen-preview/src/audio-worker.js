@@ -53,9 +53,42 @@ function queueChunks(message) {
 
 function mixTimelineChunk(nextTimeline, nextSources, startSample, frames) {
   const output = new Float32Array(frames * CHANNELS);
+  const durationMs = (nextTimeline.durationFrames / Math.max(nextTimeline.fps, 1)) * 1_000;
+  const loopSamples =
+    Number.isFinite(durationMs) && durationMs > 0
+      ? (durationMs * SAMPLE_RATE) / 1_000
+      : Number.POSITIVE_INFINITY;
+
+  let outputFrame = 0;
+  while (outputFrame < frames) {
+    const sample = startSample + outputFrame;
+    const [loopStart, loopEnd] = loopBounds(sample, loopSamples);
+    const timelineStart = sample - loopStart;
+    const segmentFrames = Math.min(frames - outputFrame, loopEnd - sample);
+    mixTimelineRange(
+      nextTimeline,
+      nextSources,
+      output,
+      outputFrame,
+      timelineStart,
+      timelineStart + segmentFrames,
+    );
+    outputFrame += segmentFrames;
+  }
+
+  return output;
+}
+
+function mixTimelineRange(
+  nextTimeline,
+  nextSources,
+  output,
+  outputStartFrame,
+  startSample,
+  endSample,
+) {
   const hasSolo = nextTimeline.tracks.some((track) => track.solo);
   const tracks = new Map(nextTimeline.tracks.map((track) => [track.id, track]));
-  const endSample = startSample + frames;
 
   for (const clip of nextTimeline.clips) {
     const track = tracks.get(clip.trackId);
@@ -97,7 +130,7 @@ function mixTimelineChunk(nextTimeline, nextSources, startSample, frames) {
       }
 
       const gain = baseGain * edgeFadeGain(clipOffset, clipDurationSamples, fadeSamples);
-      const outputFrame = sample - startSample;
+      const outputFrame = outputStartFrame + sample - startSample;
       for (let channel = 0; channel < CHANNELS; channel += 1) {
         const outputIndex = outputFrame * CHANNELS + channel;
         const sourceIndex = sourceFrame * CHANNELS + channel;
@@ -107,8 +140,17 @@ function mixTimelineChunk(nextTimeline, nextSources, startSample, frames) {
       }
     }
   }
+}
 
-  return output;
+function loopBounds(sample, loopSamples) {
+  if (!Number.isFinite(loopSamples)) {
+    return [0, Number.POSITIVE_INFINITY];
+  }
+  let loop = Math.floor(sample / loopSamples);
+  if (sample >= Math.floor((loop + 1) * loopSamples)) {
+    loop += 1;
+  }
+  return [Math.floor(loop * loopSamples), Math.floor((loop + 1) * loopSamples)];
 }
 
 function msToSample(ms) {

@@ -249,10 +249,10 @@ export class LumenAudioEngine {
   play(fromMs = this.#pausedMs): void {
     this.stop();
     if (!this.#timeline || this.#timeline.clips.length === 0) {
-      this.#pausedMs = Math.max(0, fromMs);
+      this.#pausedMs = this.#wrapMs(fromMs);
       return;
     }
-    this.#pausedMs = Math.max(0, fromMs);
+    this.#pausedMs = this.#wrapMs(fromMs);
     const startSample = msToLumenAudioSample(this.#pausedMs);
     void this.#ensureWorklet()
       .then((node) => {
@@ -286,7 +286,7 @@ export class LumenAudioEngine {
 
   seekMs(ms: number): void {
     const wasPlaying = this.#playback !== null;
-    this.#pausedMs = Math.max(0, ms);
+    this.#pausedMs = this.#wrapMs(ms);
     const startSample = msToLumenAudioSample(this.#pausedMs);
     this.#playback = null;
     if (!this.#node) {
@@ -312,11 +312,7 @@ export class LumenAudioEngine {
       return this.#pausedMs;
     }
 
-    const durationMs = this.#timeline
-      ? (this.#timeline.durationFrames / Math.max(this.#timeline.fps, 1)) * MS_PER_SECOND
-      : Number.POSITIVE_INFINITY;
-    return Math.min(
-      durationMs,
+    return this.#wrapMs(
       playback.startMs + (context.currentTime - playback.startContextTime) * MS_PER_SECOND,
     );
   }
@@ -443,6 +439,10 @@ export class LumenAudioEngine {
 
   #postWorker(message: AudioWorkerMessage, transfer: Transferable[] = []): void {
     this.#worker?.postMessage(message, transfer);
+  }
+
+  #wrapMs(ms: number): number {
+    return wrapTimelineMs(this.#timeline, ms);
   }
 
   #currentSample(): number {
@@ -657,6 +657,30 @@ export function defaultAudioWorkletUrl(): URL {
   return new URL("./audio-worklet.js", import.meta.url);
 }
 
+function timelineDurationMs(timeline: AudioEngineTimeline | null): number {
+  const durationMs = timeline
+    ? (timeline.durationFrames / Math.max(timeline.fps, 1)) * MS_PER_SECOND
+    : Number.NaN;
+  return Number.isFinite(durationMs) && durationMs > 0 ? durationMs : Number.POSITIVE_INFINITY;
+}
+
+function wrapTimelineMs(timeline: AudioEngineTimeline | null, ms: number): number {
+  return Math.max(0, ms) % timelineDurationMs(timeline);
+}
+
+// Loop k covers playback samples [floor(k * loopSamples), floor((k + 1) * loopSamples)), so a
+// fractional loop length stays in phase with the millisecond clock across repetitions.
+function loopBounds(sample: number, loopSamples: number): [number, number] {
+  if (!Number.isFinite(loopSamples)) {
+    return [0, Number.POSITIVE_INFINITY];
+  }
+  let loop = Math.floor(sample / loopSamples);
+  if (sample >= Math.floor((loop + 1) * loopSamples)) {
+    loop += 1;
+  }
+  return [Math.floor(loop * loopSamples), Math.floor((loop + 1) * loopSamples)];
+}
+
 export function mixTimelineChunk(
   timeline: AudioEngineTimeline,
   sources: ReadonlyMap<string, Float32Array>,
@@ -664,9 +688,38 @@ export function mixTimelineChunk(
   frames: number,
 ): Float32Array {
   const output = new Float32Array(frames * LUMEN_AUDIO_CHANNELS);
+  const loopSamples = (timelineDurationMs(timeline) * LUMEN_AUDIO_SAMPLE_RATE) / MS_PER_SECOND;
+
+  let outputFrame = 0;
+  while (outputFrame < frames) {
+    const sample = startSample + outputFrame;
+    const [loopStart, loopEnd] = loopBounds(sample, loopSamples);
+    const timelineStart = sample - loopStart;
+    const segmentFrames = Math.min(frames - outputFrame, loopEnd - sample);
+    mixTimelineRange(
+      timeline,
+      sources,
+      output,
+      outputFrame,
+      timelineStart,
+      timelineStart + segmentFrames,
+    );
+    outputFrame += segmentFrames;
+  }
+
+  return output;
+}
+
+function mixTimelineRange(
+  timeline: AudioEngineTimeline,
+  sources: ReadonlyMap<string, Float32Array>,
+  output: Float32Array,
+  outputStartFrame: number,
+  startSample: number,
+  endSample: number,
+): void {
   const hasSolo = timeline.tracks.some((track) => track.solo);
   const tracks = new Map(timeline.tracks.map((track) => [track.id, track]));
-  const endSample = startSample + frames;
 
   for (const clip of timeline.clips) {
     const track = tracks.get(clip.trackId);
@@ -708,7 +761,7 @@ export function mixTimelineChunk(
       }
 
       const gain = baseGain * edgeFadeGain(clipOffset, clipDurationSamples, fadeSamples);
-      const outputFrame = sample - startSample;
+      const outputFrame = outputStartFrame + sample - startSample;
       for (let channel = 0; channel < LUMEN_AUDIO_CHANNELS; channel += 1) {
         const outputIndex = outputFrame * LUMEN_AUDIO_CHANNELS + channel;
         const sourceIndex = sourceFrame * LUMEN_AUDIO_CHANNELS + channel;
@@ -718,8 +771,6 @@ export function mixTimelineChunk(
       }
     }
   }
-
-  return output;
 }
 
 function interleaveAudioBuffer(buffer: AudioBuffer, channelCount: number): Float32Array {
