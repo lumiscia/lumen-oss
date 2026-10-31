@@ -553,21 +553,35 @@ impl Renderer {
                 label: Some("lumen-gpu render-plan encoder"),
             });
 
+        let mut compute: Option<wgpu::ComputePass<'static>> = None;
         for (index, (pass, cached)) in plan.passes.iter().zip(&self.bind_groups).enumerate() {
             if skip.get(index).copied().unwrap_or(false) {
                 continue;
             }
             let bind_groups = cached.as_ref().map_or(&[][..], |cached| &cached.groups);
             match &pass.desc {
+                PassDesc::Compute(desc) => {
+                    let pass = compute.get_or_insert_with(|| {
+                        encoder
+                            .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                label: Some("lumen-gpu compute run"),
+                                timestamp_writes: None,
+                            })
+                            .forget_lifetime()
+                    });
+                    self.encode_compute(desc, bind_groups, pass)?
+                }
                 PassDesc::Render(desc) => {
+                    compute = None;
                     self.execute_render_pass(desc, bind_groups, &mut encoder)?
                 }
-                PassDesc::Compute(desc) => {
-                    self.execute_compute_pass(desc, bind_groups, &mut encoder)?
+                PassDesc::CopyTexture(desc) => {
+                    compute = None;
+                    self.execute_copy_texture(desc, &mut encoder)?
                 }
-                PassDesc::CopyTexture(desc) => self.execute_copy_texture(desc, &mut encoder)?,
             }
         }
+        drop(compute);
 
         let submission = self.queue.submit([encoder.finish()]);
         scope.finish()?;
@@ -970,11 +984,14 @@ impl Renderer {
         Ok(())
     }
 
-    fn execute_compute_pass(
+    /// Records `desc` into `pass`, which consecutive compute passes of a plan share, inside a
+    /// debug group named after its label. wgpu synchronizes the dispatches of one compute pass,
+    /// each of which is its own usage scope.
+    fn encode_compute(
         &self,
         desc: &ComputePassDesc,
         bind_groups: &[wgpu::BindGroup],
-        encoder: &mut wgpu::CommandEncoder,
+        pass: &mut wgpu::ComputePass<'static>,
     ) -> Result<()> {
         match desc.dispatch {
             ComputeDispatch::Direct(dispatch) => tracing::trace!(
@@ -996,10 +1013,13 @@ impl Renderer {
         let RuntimeProgram::Compute(program) = self.runtime_program(desc.program)? else {
             bail!("program {:?} is not a compute program", desc.program);
         };
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: desc.label.as_deref(),
-            timestamp_writes: None,
-        });
+        // Fails before the debug group opens, so an error cannot leave it unbalanced.
+        if let ComputeDispatch::Indirect { buffer, .. } = desc.dispatch {
+            self.runtime_buffer(buffer)?;
+        }
+        if let Some(label) = &desc.label {
+            pass.push_debug_group(label);
+        }
         pass.set_pipeline(&program.pipeline);
         for (group, bind_group) in bind_groups.iter().enumerate() {
             pass.set_bind_group(group as u32, bind_group, &[]);
@@ -1012,6 +1032,9 @@ impl Renderer {
                 let buffer = &self.runtime_buffer(buffer)?.buffer;
                 pass.dispatch_workgroups_indirect(buffer, offset);
             }
+        }
+        if desc.label.is_some() {
+            pass.pop_debug_group();
         }
         Ok(())
     }
