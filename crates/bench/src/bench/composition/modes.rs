@@ -1,5 +1,6 @@
 use std::{
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -29,6 +30,14 @@ use super::{
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
 const GPU_ENCODER_FRAMES_IN_FLIGHT: usize = 3;
+
+static FULL_RENDER: AtomicBool = AtomicBool::new(false);
+
+/// Disables the automatic reuse of static node output in every benchmark renderer. Memos whose
+/// key is unchanged still hold.
+pub fn set_full_render(enabled: bool) {
+    FULL_RENDER.store(enabled, Ordering::Relaxed);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -680,6 +689,7 @@ pub(crate) async fn renderer_with_format(
     format: lumen_gpu::wgpu::TextureFormat,
 ) -> anyhow::Result<lumen_engine::gpu::GpuCompositionRenderer> {
     let mut renderer = lumen_engine::gpu::GpuCompositionRenderer::new().await?;
+    renderer.set_static_output_reuse(!FULL_RENDER.load(Ordering::Relaxed));
     renderer.compile_with_media(composition, media, format)?;
     Ok(renderer)
 }

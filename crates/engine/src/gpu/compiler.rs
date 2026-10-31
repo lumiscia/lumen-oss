@@ -225,6 +225,13 @@ impl<'a> CompileContext<'a> {
         )
     }
 
+    /// Disables automatic reuse of static node output from earlier frames; memos with an
+    /// unchanged key still hold.
+    pub(crate) fn render_static(mut self, render_static: bool) -> Self {
+        self.cache.render_static = render_static;
+        self
+    }
+
     /// `timeline_bounds` sizes animated sources to their bounds over the timeline, which holds
     /// only for plans the caller keeps to whole frames of it.
     pub(crate) fn with_options(

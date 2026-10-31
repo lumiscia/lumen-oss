@@ -4,7 +4,8 @@ mod profile;
 mod readback;
 
 pub use modes::{
-    Mode, output_path, requires_unsupported_platform, run_mode, selected_modes, temp_path,
+    Mode, output_path, requires_unsupported_platform, run_mode, selected_modes, set_full_render,
+    temp_path,
 };
 
 use anyhow::anyhow;
@@ -37,10 +38,12 @@ struct Args {
     modes: Vec<Mode>,
     frames: Option<u32>,
     save: Option<PathBuf>,
+    full_render: bool,
 }
 
 async fn run_async() -> anyhow::Result<()> {
     let args = parse_args()?;
+    set_full_render(args.full_render);
     let fixtures = selected_fixtures(&args.composition)?;
     let mut summary = SummaryReport::new(
         "Composition benchmark summary",
@@ -124,6 +127,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut modes = Vec::new();
     let mut frames = None;
     let mut save = None;
+    let mut full_render = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -156,6 +160,7 @@ fn parse_args() -> anyhow::Result<Args> {
                         .ok_or_else(|| anyhow!("--save requires a path"))?,
                 ));
             }
+            "--full-render" => full_render = true,
             "--list" => {
                 let names: Vec<_> = compositions::all()
                     .iter()
@@ -179,12 +184,13 @@ fn parse_args() -> anyhow::Result<Args> {
         modes,
         frames,
         save,
+        full_render,
     })
 }
 
 fn print_help() {
     println!(
-        "usage: lumen-bench-composition [--composition all|simple_pipeline|small_media_transform|small_media_transform_exposure|vector_showcase|animated_showcase|antialiasing_stress_aa|antialiasing_stress_noaa|many_elements] [--mode MODE] [--frames N] [--save PATH]"
+        "usage: lumen-bench-composition [--composition all|simple_pipeline|small_media_transform|small_media_transform_exposure|vector_showcase|animated_showcase|antialiasing_stress_aa|antialiasing_stress_noaa|many_elements] [--mode MODE] [--frames N] [--save PATH] [--full-render]"
     );
 }
 

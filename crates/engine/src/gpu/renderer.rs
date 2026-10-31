@@ -101,6 +101,7 @@ pub struct GpuCompositionRenderer {
     text_atlas: Arc<Mutex<lumen_text::GlyphAtlas>>,
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
+    reuse_static_output: bool,
     media_texture_cache: HashMap<MediaTextureKey, Arc<lumen_gpu::wgpu::Texture>>,
     #[cfg(feature = "ffmpeg")]
     gpu_media_importer: GpuMediaFrameImporter,
@@ -144,6 +145,7 @@ impl GpuCompositionRenderer {
             ))),
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            reuse_static_output: true,
             media_texture_cache: HashMap::new(),
             #[cfg(feature = "ffmpeg")]
             gpu_media_importer: GpuMediaFrameImporter::default(),
@@ -163,9 +165,21 @@ impl GpuCompositionRenderer {
         let key =
             self.compiled_plan_key(composition, composition_fingerprint(composition), 0.0, None)?;
         self.plan_compile_count += 1;
-        let compiled =
-            CompileContext::with_options(composition, 0.0, None, output_format, true).compile()?;
+        let compiled = CompileContext::with_options(composition, 0.0, None, output_format, true)
+            .render_static(!self.reuse_static_output)
+            .compile()?;
         self.prepare_compiled(key, compiled)
+    }
+
+    /// Sets whether nodes without expressions or media keep their output from earlier frames
+    /// instead of rendering it again, which is on by default. Turning it off disables that
+    /// automatic reuse, as when measuring render cost; memos whose key is unchanged still hold.
+    /// Drops the compiled plans when it changes.
+    pub fn set_static_output_reuse(&mut self, enabled: bool) {
+        if self.reuse_static_output != enabled {
+            self.reuse_static_output = enabled;
+            self.reset_compiled(self.output_format);
+        }
     }
 
     /// Sets the estimated GPU memory compiled plans may hold. Rendering drops least recently used
@@ -1069,6 +1083,7 @@ impl GpuCompositionRenderer {
             self.output_format,
             true,
         )
+        .render_static(!self.reuse_static_output)
         .compile()
         {
             Ok(compiled) => compiled,

@@ -60,6 +60,8 @@ pub(crate) struct CacheRecorder {
     buffer_owners: Vec<Option<usize>>,
     pass_owners: Vec<Option<usize>>,
     memos: Vec<MemoRecord>,
+    /// Disables automatic reuse of static node output; memos with an unchanged key still hold.
+    pub(crate) render_static: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -225,7 +227,7 @@ impl CacheRecorder {
 
         let mut candidate = nodes
             .iter()
-            .map(|node| node.is_some_and(is_static_candidate))
+            .map(|node| !self.render_static && node.is_some_and(is_static_candidate))
             .collect::<Vec<_>>();
         for (pass, access) in accesses.iter().enumerate() {
             if access.writes.contains(&Resource::Texture(output)) {
