@@ -52,7 +52,7 @@ pub(crate) type MemoId = (NodeId, TimeRemapPath);
 pub(crate) struct CacheRecorder {
     /// Each instance's node and path.
     instances: Vec<MemoId>,
-    index: HashMap<NodeId, HashMap<TimeRemapPath, usize>>,
+    index: foldhash::HashMap<NodeId, foldhash::HashMap<TimeRemapPath, usize>>,
     inputs: Vec<Vec<usize>>,
     /// Instances being compiled, innermost last; new resources belong to the last.
     stack: Vec<usize>,
@@ -348,7 +348,7 @@ pub(crate) fn composition_fingerprint(composition: &Composition) -> u64 {
 /// A plan's instances and which of their output can be kept across frames.
 #[derive(Debug, Default)]
 pub(crate) struct CacheLayout {
-    index: HashMap<NodeId, HashMap<TimeRemapPath, usize>>,
+    index: foldhash::HashMap<NodeId, foldhash::HashMap<TimeRemapPath, usize>>,
     /// The instance that created each pass; empty when no output but memo snapshots may be kept.
     pass_owners: Vec<Option<usize>>,
     static_instances: Vec<bool>,
