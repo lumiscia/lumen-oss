@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
@@ -76,7 +76,7 @@ struct PreparedComposition {
 
 pub struct GpuCompositionRenderer {
     renderer: lumen_gpu::Renderer,
-    compiled_plans: HashMap<CompiledPlanKey, PreparedComposition>,
+    compiled_plans: foldhash::HashMap<CompiledPlanKey, PreparedComposition>,
     active_key: Option<CompiledPlanKey>,
     plan_cache_bytes: u64,
     plan_cache_budget: u64,
@@ -85,7 +85,7 @@ pub struct GpuCompositionRenderer {
     pruned_fingerprint: Option<u64>,
     /// Estimated sizes of lookahead plans that did not fit the budget, so later windows can skip
     /// them without compiling. Valid only for the composition with this fingerprint.
-    rejected_plan_bytes: HashMap<CompiledPlanKey, u64>,
+    rejected_plan_bytes: foldhash::HashMap<CompiledPlanKey, u64>,
     rejected_fingerprint: Option<u64>,
     plan_compile_count: u64,
     submitted_pass_count: u64,
@@ -125,13 +125,13 @@ impl GpuCompositionRenderer {
     pub fn from_renderer(renderer: lumen_gpu::Renderer) -> Self {
         Self {
             renderer,
-            compiled_plans: HashMap::new(),
+            compiled_plans: foldhash::HashMap::default(),
             active_key: None,
             plan_cache_bytes: 0,
             plan_cache_budget: DEFAULT_PLAN_CACHE_BUDGET_BYTES,
             plan_use_clock: 0,
             pruned_fingerprint: None,
-            rejected_plan_bytes: HashMap::new(),
+            rejected_plan_bytes: foldhash::HashMap::default(),
             rejected_fingerprint: None,
             plan_compile_count: 0,
             submitted_pass_count: 0,
@@ -1138,7 +1138,7 @@ impl GpuCompositionRenderer {
         let mut collector = PlanKeyCollector {
             media,
             time_remaps: TimeRemapPath::new(),
-            visited: HashSet::new(),
+            visited: foldhash::HashSet::default(),
             stack: Vec::new(),
             entries: Vec::new(),
         };
@@ -1165,7 +1165,7 @@ enum PlanUse {
 struct PlanKeyCollector<'a> {
     media: Option<&'a dyn MediaStore>,
     time_remaps: TimeRemapPath,
-    visited: HashSet<(NodeId, TimeRemapPath)>,
+    visited: foldhash::HashSet<(NodeId, TimeRemapPath)>,
     /// Nodes on the current traversal path, with the graph they are in; time remaps and clips
     /// extend the instance path, so `visited` alone never sees a cycle through one repeat.
     stack: Vec<(NodeId, *const crate::graph::Graph)>,

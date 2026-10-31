@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use foldhash::HashMap;
 
 use crate::{
     composition::Composition,
@@ -77,7 +77,10 @@ impl<'a> FrameBindContext<'a> {
             bound.text_atlas = Some(std::sync::Arc::clone(&compiled.text_atlas));
         }
         let output = PortRef::new(self.scope.media_output()?, "output".to_string());
-        let mut visited = HashMap::new();
+        let mut visited = HashMap::with_capacity_and_hasher(
+            compiled.compiled_nodes.len() * 2,
+            Default::default(),
+        );
         let mut time_remaps = TimeRemapPath::new();
         self.bind_port(
             compiled,

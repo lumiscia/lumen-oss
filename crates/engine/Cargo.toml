@@ -40,6 +40,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }
 serde_path_to_error = { version = "0.1.20", optional = true }
 anyhow = { version = "1.0.101", optional = true }
+foldhash = "0.2.0"
 smallvec = "1.15.1"
 lyon_path = "1.0.19"
 svgtypes = "0.16.1"
