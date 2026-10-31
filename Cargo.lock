@@ -1694,6 +1694,7 @@ dependencies = [
  "cosmic-text",
  "etagere",
  "fdsm",
+ "foldhash",
  "image",
  "kurbo",
  "swash",

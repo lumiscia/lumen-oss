@@ -4,7 +4,7 @@
 //! and WGSL-facing buffer formats. Lumen nodes should depend on this layer
 //! rather than coupling directly to a specific renderer such as glyphon.
 
-use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
+use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 
 use cosmic_text::{
@@ -366,20 +366,18 @@ impl TextSystem {
         overfull: &mut Option<u64>,
     ) -> PreparedGlyphs {
         let visible = &layout.glyphs[..layout.glyphs.len().min(max_glyphs)];
-        let working_set = {
+        let overflow_key = |availability: u64| {
             let mut keys: Vec<GlyphKey> = visible.iter().map(|glyph| glyph.key).collect();
             keys.sort_unstable();
             keys.dedup();
             let mut hasher = DefaultHasher::new();
             (keys, mode).hash(&mut hasher);
-            hasher.finish()
-        };
-        let overflow_key = |availability| {
+            let working_set = hasher.finish();
             let mut hasher = DefaultHasher::new();
             (working_set, availability).hash(&mut hasher);
             hasher.finish()
         };
-        let retry_new = *overfull != Some(overflow_key(atlas.availability));
+        let retry_new = overfull.is_none_or(|key| key != overflow_key(atlas.availability));
         let mut uploads = Vec::new();
         let compacted = !self.place_glyphs(atlas, visible, mode, retry_new, &mut uploads)
             && atlas.layouts_this_frame == 0;
@@ -436,10 +434,11 @@ impl TextSystem {
             let keys = atlas.keys_for(glyphs, mode);
             atlas.touch(&keys);
             atlas.touch_oversized(glyphs);
+            let markers = atlas.markers;
             if !self.place_missing(atlas, &keys, retry_new, uploads) {
                 return false;
             }
-            if atlas.keys_for(glyphs, mode) == keys {
+            if atlas.markers == markers || atlas.keys_for(glyphs, mode) == keys {
                 return true;
             }
         }
@@ -816,11 +815,13 @@ pub struct GlyphAtlas {
     allocations: usize,
     size: u32,
     availability: u64,
-    glyphs: HashMap<AtlasKey, AtlasGlyph>,
+    glyphs: foldhash::HashMap<AtlasKey, AtlasGlyph>,
     frame: u64,
     layouts_this_frame: usize,
     /// Eviction candidates for this frame, most recently used first.
     stale: Option<Vec<AtlasKey>>,
+    /// Counts inserted `Oversized` and `RasterOnly` markers, which change [`Self::key_for`].
+    markers: u64,
 }
 
 /// Raster glyphs are keyed by size and subpixel bin; distance fields only by
@@ -879,10 +880,11 @@ impl GlyphAtlas {
             allocations: 0,
             size,
             availability: 0,
-            glyphs: HashMap::new(),
+            glyphs: foldhash::HashMap::default(),
             frame: 0,
             layouts_this_frame: 0,
             stale: None,
+            markers: 0,
         }
     }
 
@@ -959,7 +961,7 @@ impl GlyphAtlas {
 
     /// Unique atlas keys of `glyphs`, in order.
     fn keys_for(&self, glyphs: &[TextGlyph], mode: TextRenderMode) -> Vec<AtlasKey> {
-        let mut seen = HashSet::new();
+        let mut seen = foldhash::HashSet::default();
         glyphs
             .iter()
             .map(|glyph| self.key_for(glyph.key, mode))
@@ -995,6 +997,9 @@ impl GlyphAtlas {
     }
 
     fn insert(&mut self, key: AtlasKey, image: AtlasImage) {
+        if matches!(image, AtlasImage::Oversized | AtlasImage::RasterOnly) {
+            self.markers += 1;
+        }
         self.glyphs.insert(
             key,
             AtlasGlyph {
@@ -1187,6 +1192,7 @@ struct AtlasRender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     fn prepare(
         system: &mut TextSystem,
