@@ -10219,6 +10219,25 @@ fn static_subgraph_dispatches_once_and_matches_uncached_frames() {
     assert!(frames[0] != frames[3], "the animated square still moves");
 }
 
+#[test]
+fn static_output_reuse_off_keeps_no_static_output() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    renderer.set_static_output_reuse(false);
+    let mut reference = gpu_composition_renderer().unwrap();
+    let composition = static_under_animated([200, 30, 30, 255]);
+    for frame in 0..3 {
+        let pixels = render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore);
+        let expected = render_rgba8(&mut reference, &composition, frame, &EmptyMediaStore);
+        assert!(
+            pixels == expected,
+            "frame {frame} differs from a cached render"
+        );
+    }
+    assert_eq!(renderer.cached_pass_count(), 0);
+}
+
 const MEMO_FRAME_SHADER: &str = "
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {

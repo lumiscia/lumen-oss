@@ -52,7 +52,9 @@ for composition in small_media_transform small_media_transform_exposure; do
 done
 ```
 
-Use `--mode render-profile` for the bind/upload/submit/poll breakdown. Compare the reported `elapsed_ms` and `fps` on the same machine after a warm-up run.
+Use `--mode render-profile` for the bind/upload/submit/poll breakdown.
+
+Nodes without expressions or media keep their output after the first frame, so `simple_pipeline`, `vector_showcase` and the antialiasing fixtures run almost no passes after it. Add `--full-render` to disable that automatic reuse of static node output when measuring shader or pass cost; memos whose key is unchanged still hold. Compare the reported `elapsed_ms` and `fps` on the same machine after a warm-up run.
 
 ## Development
 
