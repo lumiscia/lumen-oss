@@ -36,7 +36,7 @@
 //! frame.
 
 use std::collections::HashMap;
-use std::hash::Hasher;
+use std::hash::{BuildHasher, Hasher};
 
 use crate::{
     composition::Composition,
@@ -309,8 +309,9 @@ fn is_static_candidate(node: &NodeKind) -> bool {
 pub(crate) fn composition_fingerprint(composition: &Composition) -> u64 {
     use std::fmt::Write;
 
-    // Debug output spells out every param, expression and input.
-    struct HashWriter(std::hash::DefaultHasher);
+    // Debug output spells out every param, expression and input. A fixed seed keeps fingerprints
+    // comparable across calls.
+    struct HashWriter(foldhash::quality::FoldHasher<'static>);
     impl Write for HashWriter {
         fn write_str(&mut self, text: &str) -> std::fmt::Result {
             self.0.write(text.as_bytes());
@@ -327,7 +328,7 @@ pub(crate) fn composition_fingerprint(composition: &Composition) -> u64 {
         }
     }
 
-    let mut out = HashWriter(std::hash::DefaultHasher::new());
+    let mut out = HashWriter(foldhash::quality::FixedState::with_seed(0).build_hasher());
     let _ = write!(
         out,
         "{:?}{:?}",
