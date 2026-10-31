@@ -28,6 +28,40 @@ fn cs_main() {
 }
 "#;
 
+const STAGE_WRITE_SHADER: &str = r#"
+@group(0) @binding(0) var tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(1) var<storage, read_write> data: array<u32, 4>;
+
+@compute @workgroup_size(1, 1, 1)
+fn cs_main() {
+    textureStore(tex, vec2<i32>(0, 0), vec4<f32>(0.0, 1.0, 0.0, 1.0));
+    data[0] = 7u;
+}
+"#;
+
+const STAGE_READ_SHADER: &str = r#"
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var<storage, read> data: array<u32, 4>;
+@group(0) @binding(2) var<storage, read_write> result: array<u32, 4>;
+@group(0) @binding(3) var<storage, read_write> args: array<u32, 3>;
+
+@compute @workgroup_size(1, 1, 1)
+fn cs_main() {
+    result[0] = u32(round(textureLoad(tex, vec2<i32>(0, 0), 0).g * 255.0));
+    result[1] = data[0] * 2u;
+    args = array<u32, 3>(3u, 1u, 1u);
+}
+"#;
+
+const STAGE_INDIRECT_SHADER: &str = r#"
+@group(0) @binding(0) var<storage, read_write> out: array<u32, 4>;
+
+@compute @workgroup_size(1, 1, 1)
+fn cs_main(@builtin(workgroup_id) id: vec3<u32>) {
+    out[id.x] = 100u + id.x;
+}
+"#;
+
 const RENDER_SHADER: &str = r#"
 @vertex
 fn vs_main(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
@@ -281,6 +315,147 @@ fn skipped_passes_leave_their_targets_as_last_written() {
         write(&mut renderer, [1.0, 0.0, 0.0, 1.0], &[false]),
         [255, 0, 0, 255]
     );
+}
+
+#[test]
+fn consecutive_compute_passes_share_one_pass_across_skipped_passes() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let size = Size::new(1, 1);
+    let compute = wgpu::ShaderStages::COMPUTE;
+    let storage =
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+    let mut builder = RenderPlan::builder();
+    let texture = builder.texture(
+        Some("stage".to_string()),
+        TextureDesc::storage(size, wgpu::TextureFormat::Rgba8Unorm),
+    );
+    let copied = builder.texture(
+        Some("copied".to_string()),
+        TextureDesc::sampled(size, wgpu::TextureFormat::Rgba8Unorm),
+    );
+    let buffer = |builder: &mut RenderPlanBuilder, label: &str, size, usage| {
+        builder.buffer(Some(label.to_string()), BufferDesc { size, usage })
+    };
+    let data = buffer(&mut builder, "data", 16, storage);
+    let result = buffer(&mut builder, "result", 16, storage);
+    let args = buffer(
+        &mut builder,
+        "args",
+        12,
+        storage | wgpu::BufferUsages::INDIRECT,
+    );
+    let out = buffer(&mut builder, "out", 16, storage);
+    let program = |builder: &mut RenderPlanBuilder, shader: &str, entries| {
+        builder.program(ProgramDesc::Compute(ComputeProgramDesc {
+            label: None,
+            shader: shader.to_string(),
+            entry: "cs_main".to_string(),
+            bind_groups: BindGroupLayoutSpec::single(entries),
+        }))
+    };
+    let write = program(
+        &mut builder,
+        STAGE_WRITE_SHADER,
+        vec![
+            BindingLayoutEntry::storage_texture(
+                0,
+                compute,
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::StorageTextureAccess::WriteOnly,
+            ),
+            BindingLayoutEntry::storage(1, compute, false),
+        ],
+    );
+    let read = program(
+        &mut builder,
+        STAGE_READ_SHADER,
+        vec![
+            BindingLayoutEntry::texture(0, compute),
+            BindingLayoutEntry::storage(1, compute, true),
+            BindingLayoutEntry::storage(2, compute, false),
+            BindingLayoutEntry::storage(3, compute, false),
+        ],
+    );
+    let indirect = program(
+        &mut builder,
+        STAGE_INDIRECT_SHADER,
+        vec![BindingLayoutEntry::storage(0, compute, false)],
+    );
+    let dispatch = |label: &str, program, bindings, dispatch| ComputePassDesc {
+        label: Some(label.to_string()),
+        owner: None,
+        program,
+        bindings,
+        dispatch,
+    };
+    let one = ComputeDispatch::from(Dispatch { x: 1, y: 1, z: 1 });
+    builder.compute_pass(dispatch(
+        "write",
+        write,
+        vec![
+            Binding::storage_texture(0, 0, texture),
+            Binding::storage_buffer(0, 1, data),
+        ],
+        one,
+    ));
+    builder.compute_pass(dispatch(
+        "read",
+        read,
+        vec![
+            Binding::sampled_texture(0, 0, texture),
+            Binding::storage_buffer(0, 1, data),
+            Binding::storage_buffer(0, 2, result),
+            Binding::storage_buffer(0, 3, args),
+        ],
+        one,
+    ));
+    builder.copy_texture(CopyTextureDesc {
+        label: Some("copy".to_string()),
+        source: texture,
+        destination: copied,
+        origin: wgpu::Origin3d::ZERO,
+        size,
+    });
+    builder.compute_pass(dispatch(
+        "indirect",
+        indirect,
+        vec![Binding::storage_buffer(0, 0, out)],
+        ComputeDispatch::Indirect {
+            buffer: args,
+            offset: 0,
+        },
+    ));
+    let plan = builder.build();
+    renderer.prepare_plan(&plan).unwrap();
+
+    let check = |renderer: &Renderer, copied_texel: [u8; 4]| {
+        assert_eq!(read_buffer_u32(renderer, data, 4), [7, 0, 0, 0]);
+        assert_eq!(read_buffer_u32(renderer, result, 4), [255, 14, 0, 0]);
+        assert_eq!(read_buffer_u32(renderer, args, 3), [3, 1, 1]);
+        assert_eq!(read_buffer_u32(renderer, out, 4), [100, 101, 102, 0]);
+        assert_eq!(
+            read_texture_rgba8(renderer, copied, size)[0..4],
+            copied_texel
+        );
+    };
+
+    renderer.submit_plan(&plan).unwrap();
+    check(&renderer, [0, 255, 0, 255]);
+
+    let zeros = [0_u8; 16];
+    let mut clear = FrameUpdate::new();
+    for id in [data, result, out] {
+        clear.write_buffer(id, 0, &zeros);
+    }
+    clear.write_buffer(args, 0, &zeros[..12]);
+    clear.write_texture_rgba8(copied, &zeros[..4], 4, 1);
+    renderer.apply_frame_update(&plan, &clear).unwrap();
+    renderer
+        .submit_plan_skipping(&plan, &[false, false, true, false])
+        .unwrap();
+    check(&renderer, [0, 0, 0, 0]);
 }
 
 #[test]
@@ -548,6 +723,35 @@ fn renderer() -> Option<Renderer> {
             None
         }
     }
+}
+
+fn read_buffer_u32(renderer: &Renderer, id: BufferId, count: usize) -> Vec<u32> {
+    let size = (count * 4) as u64;
+    let output = renderer.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("lumen-gpu test buffer readback"),
+        size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = renderer
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("lumen-gpu test buffer readback encoder"),
+        });
+    encoder.copy_buffer_to_buffer(renderer.buffer(id).unwrap(), 0, &output, 0, size);
+    renderer.queue.submit([encoder.finish()]);
+
+    let slice = output.slice(..);
+    let (tx, rx) = mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+    renderer
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let words = bytemuck::cast_slice(&slice.get_mapped_range().unwrap()).to_vec();
+    output.unmap();
+    words
 }
 
 fn read_texture_rgba8(renderer: &Renderer, id: TextureId, size: Size) -> Vec<u8> {
