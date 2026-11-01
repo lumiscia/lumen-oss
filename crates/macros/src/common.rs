@@ -130,6 +130,7 @@ pub(crate) fn property_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
         "text_highlight" | "TextHighlight" => {
             quote!(::lumen_engine::node::PropertyKind::TextHighlight)
         }
+        "text_stroke" | "TextStroke" => quote!(::lumen_engine::node::PropertyKind::TextStroke),
         _ => {
             let span = kind.span();
             quote::quote_spanned!(span=> compile_error!("unknown param kind"))

@@ -21,7 +21,9 @@ pub(crate) struct GpuPaint {
     pub(crate) interpolation: u32,
     pub(crate) stop_count: u32,
     pub(crate) paint_supersample: u32,
-    pub(crate) _pad: u32,
+    /// The bits of the half width of the stroke a text paint draws along distance field
+    /// glyphs, or 0 for every other paint.
+    pub(crate) stroke: u32,
 }
 
 impl GpuPaint {

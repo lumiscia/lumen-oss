@@ -30,6 +30,11 @@ pub const GLYPH_TRANSFORMED: u32 = 1;
 /// Bit of [`GpuGlyphInstance::flags`] set on an instance that the preceding lead instance of
 /// its cluster draws.
 pub const GLYPH_CLUSTER_FOLLOWER: u32 = 2;
+/// The bits of a distance-field stroke instance's [`GpuGlyphInstance::flags`] from here, under
+/// [`GLYPH_RANGE_MASK`], hold the power of two that its field's distance range is twice
+/// [`MSDF_PX_RANGE`](crate::MSDF_PX_RANGE) times.
+pub const GLYPH_RANGE_SHIFT: u32 = 2;
+pub const GLYPH_RANGE_MASK: u32 = 0x3f;
 /// The bits of [`GpuGlyphInstance::flags`] from here up count the follower instances after a
 /// cluster's lead, which draws the cluster's instances as one.
 pub const GLYPH_CLUSTER_SHIFT: u32 = 8;

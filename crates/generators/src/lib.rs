@@ -65,6 +65,7 @@ pub enum NodeParamKind {
     TextLine,
     TextHighlight,
     FontFeatures,
+    TextStroke,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -83,6 +84,7 @@ pub enum NodeLiteralValue {
     TextLine(Value),
     TextHighlight(Value),
     FontFeatures(Value),
+    TextStroke(Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -474,7 +476,9 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
 /// type name `x-lumen-type`.
 fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
     use lumen_engine::node::{
-        source::text_content::{TextHighlightDelegate, TextLineDelegate, TextSpanDelegate},
+        source::text_content::{
+            TextHighlightDelegate, TextLineDelegate, TextSpanDelegate, TextStrokeDelegate,
+        },
         vector::paint::{GradientPaintDelegate, GradientStopDelegate},
     };
 
@@ -482,6 +486,7 @@ fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
     insert_object_def::<TextSpanDelegate>(&mut defs, "TextSpan", &[])?;
     insert_object_def::<TextLineDelegate>(&mut defs, "TextLine", &[])?;
     insert_object_def::<TextHighlightDelegate>(&mut defs, "TextHighlight", &[])?;
+    insert_object_def::<TextStrokeDelegate>(&mut defs, "TextStroke", &[])?;
     insert_def(
         &mut defs,
         "TextContent",
@@ -766,6 +771,7 @@ fn value_schema_json(property: &NodeParamSpec) -> Value {
         NodeParamKind::TextLine => json!({ "$ref": "#/$defs/textLine" }),
         NodeParamKind::TextHighlight => json!({ "$ref": "#/$defs/textHighlight" }),
         NodeParamKind::FontFeatures => json!({ "$ref": "#/$defs/fontFeatures" }),
+        NodeParamKind::TextStroke => json!({ "$ref": "#/$defs/textStroke" }),
         NodeParamKind::Enum => enum_schema_json(property),
     }
 }
@@ -946,6 +952,7 @@ fn property_kind_from_schema(kind: lumen_engine::node::PropertyKind) -> NodePara
         lumen_engine::node::PropertyKind::TextLine => NodeParamKind::TextLine,
         lumen_engine::node::PropertyKind::TextHighlight => NodeParamKind::TextHighlight,
         lumen_engine::node::PropertyKind::FontFeatures => NodeParamKind::FontFeatures,
+        lumen_engine::node::PropertyKind::TextStroke => NodeParamKind::TextStroke,
     }
 }
 
@@ -1008,6 +1015,9 @@ fn literal_from_property_value(
         ),
         lumen_engine::node::PropertyValue::FontFeatures(value) => {
             Ok(NodeLiteralValue::FontFeatures(value.to_json_value()))
+        }
+        lumen_engine::node::PropertyValue::TextStroke(value) => {
+            Ok(NodeLiteralValue::TextStroke(Value::Object(value.to_json())))
         }
         other => bail!("unsupported default param literal: {other:?}"),
     }
@@ -1104,7 +1114,7 @@ mod tests {
             Delegated,
             source::text_content::{
                 TextContent, TextContentDelegate, TextHighlightDelegate, TextLineDelegate,
-                TextSpanDelegate,
+                TextSpanDelegate, TextStrokeDelegate,
             },
         };
 
@@ -1136,6 +1146,10 @@ mod tests {
                 "textHighlight",
                 Value::Object(TextHighlightDelegate::default().to_json()),
             ),
+            (
+                "textStroke",
+                Value::Object(TextStrokeDelegate::default().to_json()),
+            ),
         ] {
             assert!(validator(def).is_valid(&value), "{def} default: {value}");
         }
@@ -1164,7 +1178,8 @@ mod tests {
                     "padding": [4.0, 2.0],
                     "radius": 3.0,
                     "extent": [0.0, 1.0]
-                }
+                },
+                "stroke": { "paint": [0, 0, 0, 255], "width": "=frame / 4", "align": "center" }
             }
         ]);
         let parsed = TextContentDelegate::from_json_value(&example).unwrap();
@@ -1193,6 +1208,7 @@ mod tests {
             json!([{ "text": "a", "font_features": { "tnum": 1.5 } }]),
             json!([{ "text": "a", "font_features": { "tnum": 4294967296u64 } }]),
             json!([{ "text": "a", "font_features": { "liga\n": 1 } }]),
+            json!([{ "text": "a", "stroke": { "align": "inside" } }]),
         ] {
             assert!(!content.is_valid(&invalid), "{invalid}");
             assert!(

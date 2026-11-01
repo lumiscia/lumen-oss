@@ -946,56 +946,136 @@ impl TextSystem {
         max_glyphs: usize,
         overfull: &mut Option<u64>,
     ) -> PreparedGlyphs {
-        let visible = &layout.glyphs[..layout.glyphs.len().min(max_glyphs)];
-        let overflow_key = |availability: u64| {
+        self.prepare_stroked_glyphs(atlas, layout, mode, max_glyphs, &[], overfull)
+    }
+
+    /// [`Self::prepare_glyphs`], also stroking the outline glyphs of each span `strokes` gives
+    /// a positive half width, by that many pixels to each side. A stroke follows the path its
+    /// glyph takes: a true distance field where the glyph draws one, else the stroked raster
+    /// outline, or a true distance field where that is too large for the atlas. A field's range
+    /// doubles as often as the stroke needs, and a stroke whose field is too large for the
+    /// atlas is dropped. Each stroke of an outline glyph counts toward `max_glyphs`.
+    pub fn prepare_stroked_glyphs(
+        &mut self,
+        atlas: &mut GlyphAtlas,
+        layout: &TextLayout,
+        mode: TextRenderMode,
+        max_glyphs: usize,
+        strokes: &[f32],
+        overfull: &mut Option<u64>,
+    ) -> PreparedGlyphs {
+        // The instances past `max_glyphs`: those of the glyphs after the last that fits.
+        let (visible_len, past_budget) = if strokes.is_empty() {
+            let visible = layout.glyphs.len().min(max_glyphs);
+            (visible, layout.glyphs.len() - visible)
+        } else {
+            let (mut visible, mut past_budget, mut budget) = (layout.glyphs.len(), 0, max_glyphs);
+            // Colour and bitmap glyphs have no stroke, so only outlines' strokes are counted.
+            let mut plain = None;
+            for (index, glyph) in layout.glyphs.iter().enumerate() {
+                let stroked = glyph_stroke(strokes, glyph).is_some() && {
+                    let font = (glyph.key.0.font_id, glyph.key.0.font_weight);
+                    match plain {
+                        Some((last, outline)) if last == font => outline,
+                        _ => plain.insert((font, self.is_plain_outline(glyph.key.0))).1,
+                    }
+                };
+                let cost = 1 + usize::from(stroked);
+                if past_budget == 0 && cost <= budget {
+                    budget -= cost;
+                    continue;
+                }
+                if past_budget == 0 {
+                    visible = index;
+                }
+                past_budget += cost;
+            }
+            (visible, past_budget)
+        };
+        let visible = &layout.glyphs[..visible_len];
+        let overflow_key = |atlas: &GlyphAtlas| {
             let mut keys: Vec<GlyphKey> = visible.iter().map(|glyph| glyph.key).collect();
             keys.sort_unstable();
             keys.dedup();
             let mut hasher = DefaultHasher::new();
             (keys, mode).hash(&mut hasher);
+            if !strokes.is_empty() {
+                let mut stroke_keys: Vec<AtlasKey> = visible
+                    .iter()
+                    .filter_map(|glyph| {
+                        let half_width = glyph_stroke(strokes, glyph)?;
+                        Some(atlas.stroke_key_for(glyph.key, mode, half_width))
+                    })
+                    .collect();
+                stroke_keys.sort_unstable();
+                stroke_keys.dedup();
+                stroke_keys.hash(&mut hasher);
+            }
             let working_set = hasher.finish();
             let mut hasher = DefaultHasher::new();
-            (working_set, availability).hash(&mut hasher);
+            (working_set, atlas.availability).hash(&mut hasher);
             hasher.finish()
         };
-        let retry_new = overfull.is_none_or(|key| key != overflow_key(atlas.availability));
+        let retry_new = overfull.is_none_or(|key| key != overflow_key(atlas));
         let mut uploads = Vec::new();
-        let compacted = !self.place_glyphs(atlas, visible, mode, retry_new, &mut uploads)
+        let compacted = !self.place_glyphs(atlas, visible, mode, strokes, retry_new, &mut uploads)
             && atlas.layouts_this_frame == 0;
         if compacted {
             atlas.clear();
             uploads.clear();
-            self.place_glyphs(atlas, visible, mode, true, &mut uploads);
+            self.place_glyphs(atlas, visible, mode, strokes, true, &mut uploads);
         }
 
         let mut instances = Vec::with_capacity(visible.len());
         let mut sources = Vec::with_capacity(visible.len());
+        let mut stroke_instances = Vec::new();
+        let mut stroke_glyphs = Vec::new();
         let mut capacity_dropped = 0;
         for (index, glyph) in visible.iter().enumerate() {
-            match atlas.glyphs.get(&atlas.key_for(glyph.key, mode)) {
+            let key = atlas.key_for(glyph.key, mode);
+            match atlas.glyphs.get(&key) {
                 Some(AtlasGlyph {
                     image: AtlasImage::Placed(placed),
                     ..
                 }) => {
-                    instances.push(placed.instance(glyph));
+                    instances.push(placed.instance(glyph, key));
                     sources.push(index);
+                    let Some(half_width) = glyph_stroke(strokes, glyph) else {
+                        continue;
+                    };
+                    let key = atlas.stroke_key_for(glyph.key, mode, half_width);
+                    match atlas.glyphs.get(&key).map(|stroke| stroke.image) {
+                        Some(AtlasImage::Placed(stroke)) => {
+                            stroke_instances.push(stroke.instance(glyph, key));
+                            stroke_glyphs.push(instances.len() - 1);
+                        }
+                        Some(AtlasImage::Empty) => {}
+                        _ => capacity_dropped += 1,
+                    }
                 }
                 Some(AtlasGlyph {
                     image: AtlasImage::Empty,
                     ..
                 }) => {}
-                _ => capacity_dropped += 1,
+                _ => {
+                    // The stroke is omitted along with its glyph.
+                    let stroked = glyph_stroke(strokes, glyph).is_some()
+                        && self.is_plain_outline(glyph.key.0);
+                    capacity_dropped += 1 + usize::from(stroked);
+                }
             }
         }
-        *overfull = (capacity_dropped > 0).then(|| overflow_key(atlas.availability));
+        *overfull = (capacity_dropped > 0).then(|| overflow_key(atlas));
 
         atlas.layouts_this_frame += 1;
         PreparedGlyphs {
             frame: atlas.frame,
             instances,
             sources,
+            strokes: stroke_instances,
+            stroke_glyphs,
             uploads,
-            dropped_glyphs: layout.glyphs.len() - visible.len() + capacity_dropped,
+            dropped_glyphs: past_budget + capacity_dropped,
             compacted,
         }
     }
@@ -1006,20 +1086,21 @@ impl TextSystem {
         atlas: &mut GlyphAtlas,
         glyphs: &[TextGlyph],
         mode: TextRenderMode,
+        strokes: &[f32],
         retry_new: bool,
         uploads: &mut Vec<GlyphUpload>,
     ) -> bool {
         // A second pass places raster glyphs for distance fields that turned
         // out to be raster-only.
         loop {
-            let keys = atlas.keys_for(glyphs, mode);
+            let keys = atlas.keys_for(glyphs, mode, strokes);
             atlas.touch(&keys);
-            atlas.touch_oversized(glyphs);
+            atlas.touch_oversized(glyphs, strokes);
             let markers = atlas.markers;
             if !self.place_missing(atlas, &keys, retry_new, uploads) {
                 return false;
             }
-            if atlas.markers == markers || atlas.keys_for(glyphs, mode) == keys {
+            if atlas.markers == markers || atlas.keys_for(glyphs, mode, strokes) == keys {
                 return true;
             }
         }
@@ -1121,11 +1202,98 @@ impl TextSystem {
                         RenderedGlyph::Pixels(raster_pixels(&image, key))
                     })
             }
-            #[cfg(feature = "msdf")]
-            AtlasKey::Msdf(key) => {
-                msdf::render_msdf_glyph(&mut self.font_system, &mut self.swash_cache, key)
+            AtlasKey::RasterStroke(key, half_width) => {
+                self.render_stroke(key, f32::from_bits(half_width), max_size)
             }
+            #[cfg(feature = "msdf")]
+            AtlasKey::Msdf(key) => msdf::render_msdf_glyph(
+                &mut self.font_system,
+                &mut self.swash_cache,
+                key,
+                None,
+                max_size,
+            ),
+            #[cfg(feature = "msdf")]
+            AtlasKey::Sdf(key, tier) => msdf::render_msdf_glyph(
+                &mut self.font_system,
+                &mut self.swash_cache,
+                key,
+                Some(tier),
+                max_size,
+            ),
         }
+    }
+
+    /// A plain outline stroked `half_width` pixels to each side with round joins, placed as
+    /// Swash places its fill.
+    fn render_stroke(&mut self, key: CacheKey, half_width: f32, max_size: u32) -> RenderedGlyph {
+        use swash::zeno::{Join, Mask, Origin, Stroke, Vector};
+        if half_width == 0.0 || !self.is_plain_outline(key) {
+            return RenderedGlyph::Empty;
+        }
+        let Some(commands) = self
+            .swash_cache
+            .get_outline_commands_uncached(&mut self.font_system, key)
+        else {
+            return RenderedGlyph::Empty;
+        };
+        let offset = Vector::new(key.x_bin.as_float(), key.y_bin.as_float());
+        let mut stroke = Stroke::new(2.0 * half_width);
+        stroke.join(Join::Round);
+        let mut mask = Mask::new(&commands[..]);
+        let mut size = [0; 2];
+        mask.style(stroke)
+            .origin(Origin::BottomLeft)
+            .offset(offset)
+            .render_offset(offset)
+            .inspect(|_, width, height| size = [width, height]);
+        if size.iter().any(|side| *side > max_size) {
+            return RenderedGlyph::Oversized;
+        }
+        if size.contains(&0) {
+            return RenderedGlyph::Empty;
+        }
+        let (alpha, placement) = mask.render();
+        RenderedGlyph::Pixels(GlyphPixels {
+            size: [placement.width, placement.height],
+            left: placement.left as f32,
+            top: placement.top as f32,
+            mode: GLYPH_MODE_RASTER_MASK,
+            pixels: alpha.into_iter().flat_map(|alpha| [alpha; 4]).collect(),
+        })
+    }
+}
+
+/// The half width below which a raster stroke's coverage at the outline, twice its half
+/// width, rounds to nothing in 8-bit alpha. Distance-field strokes fade out continuously
+/// instead, as they may be magnified.
+const MIN_STROKE_HALF_WIDTH: f32 = 1.0 / 512.0;
+
+/// The half width of the stroke `strokes` gives `glyph`'s span, if it has one.
+fn glyph_stroke(strokes: &[f32], glyph: &TextGlyph) -> Option<f32> {
+    strokes
+        .get(glyph.item.span as usize)
+        .copied()
+        .filter(|half_width| *half_width > 0.0)
+}
+
+/// How far past the outline a stroke `half_width` pixels to each side may draw: further than
+/// `half_width` where its raster stroke rounds it up.
+pub fn stroke_reach(half_width: f32) -> f32 {
+    half_width.max(f32::from_bits(stroke_width_key(half_width)))
+}
+
+/// The bits of `half_width` rounded for a raster stroke's key: to quarter pixels from 0.25 px
+/// to 4 px, and otherwise to a sixteenth of its power of two, so animated widths reuse
+/// strokes. Below a quarter pixel a stroke's coverage follows its width, which the relative
+/// rounding keeps from jumping, down to [`MIN_STROKE_HALF_WIDTH`], below which it is 0.
+fn stroke_width_key(half_width: f32) -> u32 {
+    if half_width < MIN_STROKE_HALF_WIDTH {
+        0
+    } else if (0.25..4.0).contains(&half_width) {
+        ((half_width * 4.0).round() / 4.0).to_bits()
+    } else {
+        (half_width.to_bits() + (1 << 18)) & !((1 << 19) - 1)
     }
 }
 
@@ -1911,11 +2079,29 @@ pub struct GlyphAtlas {
 
 /// Raster glyphs are keyed by size and subpixel bin; distance fields only by
 /// font, glyph, weight and fake italic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum AtlasKey {
     Raster(CacheKey),
+    /// A raster glyph's outline stroked to each side by the half width whose bits
+    /// [`stroke_width_key`] gives.
+    RasterStroke(CacheKey, u32),
     #[cfg(feature = "msdf")]
     Msdf(CacheKey),
+    /// A true distance field, which strokes are drawn from, with the range tier from
+    /// `msdf::stroke_key`.
+    #[cfg(feature = "msdf")]
+    Sdf(CacheKey, u32),
+}
+
+impl AtlasKey {
+    /// The glyph key; a distance field's holds the field's texels per em as its font size.
+    fn cache_key(self) -> CacheKey {
+        match self {
+            Self::Raster(key) | Self::RasterStroke(key, _) => key,
+            #[cfg(feature = "msdf")]
+            Self::Msdf(key) | Self::Sdf(key, _) => key,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1993,7 +2179,7 @@ impl GlyphAtlas {
                 || !matches!(
                     (key, glyph.image),
                     (
-                        AtlasKey::Raster(_),
+                        AtlasKey::Raster(_) | AtlasKey::RasterStroke(..),
                         AtlasImage::Empty | AtlasImage::Oversized
                     )
                 )
@@ -2044,12 +2230,43 @@ impl GlyphAtlas {
         raster
     }
 
-    /// Unique atlas keys of `glyphs`, in order.
-    fn keys_for(&self, glyphs: &[TextGlyph], mode: TextRenderMode) -> Vec<AtlasKey> {
+    /// The key of the stroke `half_width` pixels to each side of `key`'s outline: a field
+    /// where the glyph draws one, or where its stroked raster outline is too large for the
+    /// atlas, unless the outline can only be rasterized.
+    fn stroke_key_for(&self, key: GlyphKey, mode: TextRenderMode, half_width: f32) -> AtlasKey {
+        let raster = AtlasKey::RasterStroke(key.0, stroke_width_key(half_width));
+        #[cfg(feature = "msdf")]
+        {
+            let (field, tier) = msdf::stroke_key(key.0, half_width);
+            let field = AtlasKey::Sdf(field, tier);
+            let image = |key| self.glyphs.get(key).map(|glyph| glyph.image);
+            let wanted = matches!(self.key_for(key, mode), AtlasKey::Msdf(_))
+                || matches!(image(&raster), Some(AtlasImage::Oversized));
+            if wanted && !matches!(image(&field), Some(AtlasImage::RasterOnly)) {
+                return field;
+            }
+        }
+        #[cfg(not(feature = "msdf"))]
+        let _ = mode;
+        raster
+    }
+
+    /// Unique atlas keys of `glyphs` and their `strokes`, in order.
+    fn keys_for(
+        &self,
+        glyphs: &[TextGlyph],
+        mode: TextRenderMode,
+        strokes: &[f32],
+    ) -> Vec<AtlasKey> {
         let mut seen = foldhash::HashSet::default();
         glyphs
             .iter()
-            .map(|glyph| self.key_for(glyph.key, mode))
+            .flat_map(|glyph| {
+                let stroke = glyph_stroke(strokes, glyph)
+                    .map(|half_width| self.stroke_key_for(glyph.key, mode, half_width));
+                [Some(self.key_for(glyph.key, mode)), stroke]
+            })
+            .flatten()
             .filter(|key| seen.insert(*key))
             .collect()
     }
@@ -2062,13 +2279,21 @@ impl GlyphAtlas {
         }
     }
 
-    /// Keeps the oversized markers that route `glyphs` to distance fields.
-    fn touch_oversized(&mut self, glyphs: &[TextGlyph]) {
+    /// Keeps the oversized markers that route `glyphs` and their `strokes` to distance fields.
+    fn touch_oversized(&mut self, glyphs: &[TextGlyph], strokes: &[f32]) {
         for glyph in glyphs {
-            if let Some(marker) = self.glyphs.get_mut(&AtlasKey::Raster(glyph.key.0))
-                && matches!(marker.image, AtlasImage::Oversized)
+            let stroke = glyph_stroke(strokes, glyph).map(|half_width| {
+                AtlasKey::RasterStroke(glyph.key.0, stroke_width_key(half_width))
+            });
+            for key in [Some(AtlasKey::Raster(glyph.key.0)), stroke]
+                .into_iter()
+                .flatten()
             {
-                marker.last_used = self.frame;
+                if let Some(marker) = self.glyphs.get_mut(&key)
+                    && matches!(marker.image, AtlasImage::Oversized)
+                {
+                    marker.last_used = self.frame;
+                }
             }
         }
     }
@@ -2144,14 +2369,15 @@ impl GlyphAtlas {
 }
 
 impl PlacedGlyph {
-    fn instance(&self, glyph: &TextGlyph) -> GpuGlyphInstance {
+    /// The instance that draws `glyph` with this image, placed under `key`.
+    fn instance(&self, glyph: &TextGlyph, key: AtlasKey) -> GpuGlyphInstance {
         let [width, height] = self.size.map(|side| side as f32);
         let [x, y] = self.origin.map(|texel| texel as f32);
         let (rect, uv_rect) = if self.mode == GLYPH_MODE_MSDF {
             // Fields are scaled to the glyph's size at its exact position, and
             // inset by half a texel so filtering stays inside the slot.
             let font_size = f32::from_bits(glyph.key.0.font_size_bits);
-            let scale = font_size / msdf_em_size(font_size);
+            let scale = font_size / f32::from_bits(key.cache_key().font_size_bits);
             (
                 [
                     glyph.position[0] + (self.left + 0.5) * scale,
@@ -2167,12 +2393,17 @@ impl PlacedGlyph {
                 [x, y, x + width, y + height],
             )
         };
+        let flags = match key {
+            #[cfg(feature = "msdf")]
+            AtlasKey::Sdf(_, tier) => tier << GLYPH_RANGE_SHIFT,
+            _ => 0,
+        };
         GpuGlyphInstance {
             rect,
             uv_rect,
             color: glyph.color,
             mode: self.mode,
-            flags: 0,
+            flags,
             offset: [0.0; 2],
             linear: [[1.0, 0.0], [0.0, 1.0]],
         }
@@ -2260,8 +2491,12 @@ pub struct PreparedGlyphs {
     pub instances: Vec<GpuGlyphInstance>,
     /// Index in the layout's glyphs of each instance.
     pub sources: Vec<usize>,
+    /// Instances that stroke glyph outlines.
+    pub strokes: Vec<GpuGlyphInstance>,
+    /// Index in `instances` of the glyph each of `strokes` strokes.
+    pub stroke_glyphs: Vec<usize>,
     pub uploads: Vec<GlyphUpload>,
-    /// Glyphs not drawn because of `max_glyphs` or atlas capacity.
+    /// Glyph and stroke instances not drawn because of `max_glyphs` or atlas capacity.
     pub dropped_glyphs: usize,
     /// The atlas was cleared and repacked this frame.
     pub compacted: bool,
@@ -2389,7 +2624,8 @@ mod tests {
                     top: pixels.top,
                     mode: pixels.mode,
                 };
-                let rendered_y = placed.instance(glyph).rect[1] + 8.0;
+                let rendered_y =
+                    placed.instance(glyph, AtlasKey::Raster(glyph.key.0)).rect[1] + 8.0;
                 let pen_y = glyph.position[1];
                 // Half a pixel of snapping plus cosmic-text's quarter-pixel bins.
                 assert!(
@@ -2825,7 +3061,7 @@ mod tests {
 
             assert_eq!((a.dropped_glyphs, b.dropped_glyphs), (0, 0), "{mode:?}");
             assert!(!a.compacted && !b.compacted, "{mode:?}");
-            let first_glyphs = atlas.keys_for(&first.glyphs, mode);
+            let first_glyphs = atlas.keys_for(&first.glyphs, mode, &[]);
             assert!(
                 first_glyphs
                     .iter()
@@ -2967,6 +3203,115 @@ mod tests {
             let colour = prepare(&mut system, &mut atlas, &colour, TextRenderMode::Raster);
             assert_eq!(colour.instances.len(), 0);
             assert_eq!(colour.dropped_glyphs, 1);
+        }
+
+        #[test]
+        fn only_outline_strokes_count_toward_the_glyph_limit() {
+            let mut system = TextSystem::new();
+            let layout = system.layout(&TextLayoutRequest::new("HI"));
+            let mut atlas = GlyphAtlas::new(1024);
+            atlas.begin_frame();
+            let mode = TextRenderMode::Raster;
+            let outline =
+                system.prepare_stroked_glyphs(&mut atlas, &layout, mode, 2, &[1.0], &mut None);
+            assert_eq!((outline.instances.len(), outline.strokes.len()), (1, 1));
+            // The second glyph and its stroke.
+            assert_eq!(outline.dropped_glyphs, 2);
+            atlas.commit(outline.frame);
+
+            system.load_font_data(COLR_FONT.to_vec());
+            let mut colour = TextLayoutRequest::new("AA");
+            colour.spans[0].font_family = "Roboto COLR Test".to_string();
+            let colour = system.layout(&colour);
+            atlas.begin_frame();
+            let colour =
+                system.prepare_stroked_glyphs(&mut atlas, &colour, mode, 2, &[1.0], &mut None);
+            assert_eq!(colour.instances.len(), 2);
+            assert_eq!((colour.strokes.len(), colour.dropped_glyphs), (0, 0));
+        }
+
+        #[test]
+        fn wide_strokes_widen_the_field_range_until_it_outgrows_the_atlas() {
+            let mut system = TextSystem::new();
+            let mut request = TextLayoutRequest::new("I");
+            request.spans[0].font_size = 192.0;
+            let layout = system.layout(&request);
+            let mut atlas = GlyphAtlas::new(256);
+            for mode in [TextRenderMode::Msdf, TextRenderMode::Raster] {
+                atlas.begin_frame();
+                let prepared =
+                    system.prepare_stroked_glyphs(&mut atlas, &layout, mode, 4, &[64.0], &mut None);
+                atlas.commit(prepared.frame);
+                let [stroke] = prepared.strokes[..] else {
+                    panic!("{mode:?}: expected one stroke");
+                };
+                assert_eq!(stroke.render_mode(), GLYPH_MODE_MSDF, "{mode:?}");
+                // 48 texels per em, where the stroke reaches 16 texels.
+                let tier = (stroke.flags >> GLYPH_RANGE_SHIFT) & GLYPH_RANGE_MASK;
+                assert!(
+                    MSDF_PX_RANGE * (1 << tier) as f32 - MSDF_PX_RANGE / 2.0 - 1.5 >= 16.0,
+                    "{mode:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn fields_too_large_for_the_atlas_are_dropped_before_they_are_generated() {
+            let mut system = TextSystem::new();
+            let mut request = TextLayoutRequest::new("I");
+            request.spans[0].font_size = 48.0;
+            let layout = system.layout(&request);
+            let mut atlas = GlyphAtlas::new(128);
+            let mode = TextRenderMode::Msdf;
+            for half_width in [1000.0, 7000.0] {
+                let start = std::time::Instant::now();
+                atlas.begin_frame();
+                let prepared = system.prepare_stroked_glyphs(
+                    &mut atlas,
+                    &layout,
+                    mode,
+                    4,
+                    &[half_width],
+                    &mut None,
+                );
+                assert_eq!(prepared.instances.len(), 1, "{half_width}");
+                assert_eq!(
+                    (prepared.strokes.len(), prepared.dropped_glyphs),
+                    (0, 1),
+                    "{half_width}"
+                );
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(1),
+                    "{half_width}"
+                );
+            }
+        }
+
+        #[test]
+        fn animated_widths_keep_an_overfull_field_working_set() {
+            let mut system = TextSystem::new();
+            let mut request = TextLayoutRequest::new("IOH");
+            request.spans[0].font_size = 48.0;
+            let layout = system.layout(&request);
+            let mut atlas = GlyphAtlas::new(64);
+            let mut overfull = None;
+            for (frame, half_width) in [0.25, 0.25, 0.4, 0.7, 0.9].into_iter().enumerate() {
+                atlas.begin_frame();
+                let prepared = system.prepare_stroked_glyphs(
+                    &mut atlas,
+                    &layout,
+                    TextRenderMode::Msdf,
+                    usize::MAX,
+                    &[half_width],
+                    &mut overfull,
+                );
+                atlas.commit(prepared.frame);
+                assert!(prepared.dropped_glyphs > 0, "frame {frame}");
+                if frame > 0 {
+                    assert!(!prepared.compacted, "frame {frame} compacted");
+                    assert!(prepared.uploads.is_empty(), "frame {frame} uploaded");
+                }
+            }
         }
 
         #[test]

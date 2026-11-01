@@ -149,6 +149,9 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
         PropertyKind::FontFeatures => FontFeaturesDelegate::from_json_value(val)
             .map_err(|error| anyhow!("`{name}`: {error}"))
             .map(|features| PropertyValue::FontFeatures(Box::new(features))),
+        PropertyKind::TextStroke => nested_from_json(val)
+            .map_err(|error| anyhow!("`{name}`: {error}"))
+            .map(|stroke| PropertyValue::TextStroke(Box::new(stroke))),
         PropertyKind::Enum => {
             let enum_def = def
                 .enum_def
@@ -228,6 +231,7 @@ pub(crate) fn property_to_json(property: &PropertyExpression, enum_def: Option<&
         PropertyValue::TextLine(line) => Value::Object(line.to_json()),
         PropertyValue::TextHighlight(highlight) => Value::Object(highlight.to_json()),
         PropertyValue::FontFeatures(features) => features.to_json_value(),
+        PropertyValue::TextStroke(stroke) => Value::Object(stroke.to_json()),
         PropertyValue::FloatVec(values) => Value::from(values.clone()),
         PropertyValue::IntVec(values) => Value::from(values.clone()),
         PropertyValue::StringVec(values) => Value::from(values.clone()),

@@ -12177,3 +12177,379 @@ fn typography_params_move_ink_and_keep_bounded_text_whole() {
     assert_eq!(spaced[0], tight[0]);
     assert_eq!(spaced[1].start, tight[1].start + 10);
 }
+
+#[test]
+fn stroke_rings_glyphs_outside_under_their_fill_or_centred_over_it() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let near = |pixel: [u8; 4], expected: [u8; 4]| {
+        pixel
+            .iter()
+            .zip(expected)
+            .all(|(&channel, expected)| channel.abs_diff(expected) <= 8)
+    };
+    for render_mode in ["raster", "msdf"] {
+        let base = json!({ "font_size": 64, "position": [40, 20], "render_mode": render_mode });
+        let stroked = |stroke: serde_json::Value| {
+            let mut extra = base.clone();
+            extra["stroke"] = stroke;
+            decorated_text(json!("I"), extra)
+        };
+        let plain = render_text_params(
+            &mut renderer,
+            decorated_text(json!("I"), base.clone()),
+            size,
+        );
+        let [x0, y0, x1, y1] = ink_box(&plain, size, 0..size as usize);
+        let (stem, middle) = ((x0 + x1) / 2, (y0 + y1) / 2);
+        for (align, reach, edge) in [
+            ("outside", 4, [255, 0, 0, 255]),
+            ("center", 2, [255, 0, 0, 255]),
+        ] {
+            let pixels = render_text_params(
+                &mut renderer,
+                stroked(json!({ "paint": [255, 0, 0, 255], "width": 4, "align": align })),
+                size,
+            );
+            let [sx0, sy0, sx1, sy1] = ink_box(&pixels, size, 0..size as usize);
+            for grown in [x0 - sx0, y0 - sy0, sx1 - x1, sy1 - y1] {
+                assert!(
+                    grown.abs_diff(reach) <= 1,
+                    "{render_mode} {align}: {:?} around {:?}",
+                    [sx0, sy0, sx1, sy1],
+                    [x0, y0, x1, y1]
+                );
+            }
+            // An outside stroke shows past the edge and the fill covers its inner half; a
+            // centred one covers the glyph's edge.
+            let at = if align == "outside" { x0 - 2 } else { x0 };
+            let pixel = rgba_at(&pixels, size, at, middle);
+            assert!(
+                near(pixel, edge),
+                "{render_mode} {align}: {pixel:?} at the edge"
+            );
+            let pixel = rgba_at(&pixels, size, stem, middle);
+            assert!(
+                near(pixel, [255; 4]),
+                "{render_mode} {align}: {pixel:?} on the stem"
+            );
+        }
+    }
+}
+
+#[test]
+fn span_null_clears_the_node_stroke() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let cleared = render_text_params(
+        &mut renderer,
+        decorated_text(
+            json!([{ "text": "II" }, { "text": "II", "stroke": null }, { "text": "II" }]),
+            json!({ "stroke": {} }),
+        ),
+        size,
+    );
+    let own = render_text_params(
+        &mut renderer,
+        decorated_text(
+            json!([
+                { "text": "II", "stroke": {} },
+                { "text": "II" },
+                { "text": "II", "stroke": {} }
+            ]),
+            json!({}),
+        ),
+        size,
+    );
+    let all = render_text_params(
+        &mut renderer,
+        decorated_text(json!("IIIIII"), json!({ "stroke": {} })),
+        size,
+    );
+    assert!(cleared == own);
+    assert!(cleared != all);
+}
+
+#[test]
+fn bounded_text_holds_its_stroke() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let extra = json!({
+        "position": [32, 32],
+        "stroke": { "paint": [255, 0, 0, 255], "width": 12 }
+    });
+    let bounded = render_text_params(
+        &mut renderer,
+        decorated_text(json!("II"), extra.clone()),
+        size,
+    );
+    let text = PortRef::new(NodeId::new(1), "output".to_string());
+    let domain = renderer.compiled().unwrap().node_outputs[&text]
+        .clone()
+        .into_raster(text.id, "output")
+        .unwrap()
+        .domain;
+    assert!(!domain.is_full_frame());
+    // Content with an expression is not bounded.
+    let full = render_text_params(&mut renderer, decorated_text(json!("=\"II\""), extra), size);
+    assert!(bounded == full);
+}
+
+#[test]
+fn minified_distance_field_stroke_stays_off_padding_and_counters() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 64;
+    // At 48 texels per em the stroke reaches as far as its field holds, and once scaled down a
+    // pixel spans more texels than the widest antialiasing.
+    let params = json!({
+        "font_size": 120,
+        "position": [20, 20],
+        "scale": [0.1, 0.1],
+        "render_mode": "msdf"
+    });
+    let plain = render_text_params(
+        &mut renderer,
+        decorated_text(json!("O"), params.clone()),
+        size,
+    );
+    let mut stroked = params;
+    stroked["stroke"] = json!({ "paint": [255, 0, 0, 255], "width": 18.75 });
+    let pixels = render_text_params(&mut renderer, decorated_text(json!("O"), stroked), size);
+    assert!(
+        pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel[0] > 100 && pixel[1] == 0),
+        "no stroke drawn"
+    );
+    // The glyph quad's padding past the ink's corner, and the middle of the counter, which
+    // read saturated texels.
+    let [x0, y0, x1, y1] = ink_box(&plain, size, 0..size as usize);
+    for (x, y) in [(x0 - 2, y0 - 2), ((x0 + x1) / 2, (y0 + y1) / 2)] {
+        assert_eq!(rgba_at(&pixels, size, x, y), [0; 4], "at {x}, {y}");
+    }
+}
+
+#[test]
+fn hairline_stroke_draws_almost_nothing_at_the_contour() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    for render_mode in ["raster", "msdf"] {
+        let base = json!({ "font_size": 64, "position": [40, 20], "render_mode": render_mode });
+        let plain = render_text_params(
+            &mut renderer,
+            decorated_text(json!("I"), base.clone()),
+            size,
+        );
+        let mut extra = base;
+        extra["stroke"] = json!({ "paint": [255, 0, 0, 255], "width": 0.01, "align": "center" });
+        let stroked = render_text_params(&mut renderer, decorated_text(json!("I"), extra), size);
+        let most = plain
+            .iter()
+            .zip(&stroked)
+            .map(|(plain, stroked)| plain.abs_diff(*stroked))
+            .max()
+            .unwrap();
+        assert!(
+            most <= 4,
+            "{render_mode}: a hairline changed a channel by {most}"
+        );
+    }
+}
+
+#[test]
+fn wide_distance_field_strokes_keep_widening() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let mut ink = |width: u32| {
+        let params = decorated_text(
+            json!("I"),
+            json!({
+                "font_size": 24,
+                "position": [40, 40],
+                "render_mode": "msdf",
+                "stroke": { "paint": [255, 0, 0, 255], "width": width }
+            }),
+        );
+        let pixels = render_text_params(&mut renderer, params, size);
+        ink_box(&pixels, size, 0..size as usize)
+    };
+    let (narrow, wide) = (ink(4), ink(8));
+    for (narrow, wide, side) in [
+        (narrow[0], wide[0], 0),
+        (narrow[1], wide[1], 1),
+        (wide[2], narrow[2], 2),
+        (wide[3], narrow[3], 3),
+    ] {
+        assert!(
+            narrow.abs_diff(wide) >= 3,
+            "side {side}: {narrow:?} and {wide:?} from widths 4 and 8"
+        );
+    }
+}
+
+/// The number of pixels where `a` and `b` differ, and the largest difference in a channel.
+fn pixel_changes(a: &[u8], b: &[u8]) -> (usize, u8) {
+    a.chunks_exact(4)
+        .zip(b.chunks_exact(4))
+        .map(|(a, b)| a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).max().unwrap())
+        .filter(|&change| change > 0)
+        .fold((0, 0), |(count, most), change| {
+            (count + 1, most.max(change))
+        })
+}
+
+#[test]
+fn distance_field_stroke_widens_smoothly_into_wider_ranges() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // At 240 px a stroke's field has 96 texels per em whatever its width, and these widths fill
+    // each range tier, so a wider stroke takes a field with twice the range. Minified a hundred
+    // times, moving the text 1/512 px changes pixels by up to 7 levels, so crossing a tier may
+    // change them by a few.
+    for (position, scale, size, most_allowed) in
+        [([100.3, 70.3], 1.0, 448, 2), ([32.3, 32.3], 0.01, 64, 4)]
+    {
+        let mut render = |width: f32| {
+            let params = decorated_text(
+                json!("O"),
+                json!({
+                    "font_size": 240,
+                    "position": position,
+                    "scale": [scale, scale],
+                    "render_mode": "msdf",
+                    "stroke": { "paint": [255, 0, 0, 255], "width": width }
+                }),
+            );
+            render_text_params(&mut renderer, params, size)
+        };
+        for limit in [3.75, 18.75, 48.75, 108.75] {
+            let (narrower, narrow, wide) =
+                (render(limit - 0.001), render(limit), render(limit + 0.001));
+            // Widening by 0.001 px rounds the contour's pixels by a level within a field;
+            // crossing into the wider range should change no more.
+            let within = pixel_changes(&narrower, &narrow).0;
+            let (changed, most) = pixel_changes(&narrow, &wide);
+            assert!(
+                changed <= 2 * within.max(1) && most <= most_allowed,
+                "scale {scale}, width {limit}: {changed} pixels changed by up to {most}, \
+                 against {within} within a field"
+            );
+        }
+    }
+}
+
+#[test]
+fn distance_field_stroke_follows_its_fill_across_font_sizes() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 192;
+    // Growing small text by 0.001 px moves its stroke about as much as its fill. Software
+    // rasterizers sample a few levels apart, and a stroke field coarser than the fill's would
+    // change by tens.
+    let mut render = |font_size: f32, stroke: bool| {
+        let mut params = json!({
+            "font_size": font_size,
+            "position": [30.3, 30.3],
+            "render_mode": "msdf",
+        });
+        if stroke {
+            params["stroke"] = json!({ "paint": [255, 0, 0, 255], "width": 1, "align": "center" });
+        }
+        render_text_params(&mut renderer, decorated_text(json!("O"), params), size)
+    };
+    for font_size in [12.0, 24.0, 48.0] {
+        let fill = pixel_changes(&render(font_size - 0.001, false), &render(font_size, false)).1;
+        let (changed, most) =
+            pixel_changes(&render(font_size - 0.001, true), &render(font_size, true));
+        assert!(
+            most <= fill + 8,
+            "font size {font_size}: {changed} pixels changed by up to {most}, against {fill} for the fill"
+        );
+    }
+}
+
+#[test]
+fn magnified_hairline_strokes_fade_in_continuously() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    // Centred strokes on either side of a 1/512 px half width, magnified 50 times, show and
+    // fade with their width.
+    let mut render = |width: f32| {
+        let params = decorated_text(
+            json!("I"),
+            json!({
+                "font_size": 2,
+                "position": [48, 24],
+                "scale": [50, 50],
+                "render_mode": "msdf",
+                "stroke": { "paint": [255, 0, 0, 255], "width": width, "align": "center" }
+            }),
+        );
+        render_text_params(&mut renderer, params, size)
+    };
+    let plain = render(0.0);
+    let (thinner, thicker) = (render(0.0039062), render(0.0039063));
+    let shown = pixel_changes(&plain, &thinner).1;
+    let (changed, most) = pixel_changes(&thinner, &thicker);
+    assert!(
+        shown >= 8,
+        "the thinner stroke changed a channel by {shown}"
+    );
+    assert!(most <= 1, "{changed} pixels changed by up to {most}");
+}
+
+#[test]
+fn shrink_to_fit_narrows_the_stroke_with_the_text() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let fit = json!({ "max_width": 16, "max_lines": 1, "fit": "shrink", "min_font_size": 4 });
+    let mut ink = |fit: Option<&serde_json::Value>, stroke: bool| {
+        let mut params = json!({ "font_size": 64, "position": [20, 20] });
+        for (key, value) in fit.and_then(|fit| fit.as_object()).into_iter().flatten() {
+            params[key] = value.clone();
+        }
+        if stroke {
+            params["stroke"] = json!({ "paint": [255, 0, 0, 255], "width": 8 });
+        }
+        let pixels = render_text_params(&mut renderer, decorated_text(json!("II"), params), size);
+        ink_box(&pixels, size, 0..size as usize)
+    };
+    let (plain, stroked) = (ink(None, false), ink(None, true));
+    let (fitted, fitted_stroked) = (ink(Some(&fit), false), ink(Some(&fit), true));
+    let scale = (fitted[3] - fitted[1]) as f32 / (plain[3] - plain[1]) as f32;
+    assert!(scale < 0.6, "{scale}");
+    assert!((plain[1] - stroked[1]).abs_diff(8) <= 1);
+    let reach = (fitted[1] - fitted_stroked[1]) as f32;
+    assert!(
+        (reach - 8.0 * scale).abs() <= 1.5,
+        "{reach} at scale {scale}"
+    );
+}

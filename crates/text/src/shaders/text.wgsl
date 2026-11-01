@@ -22,6 +22,9 @@ const GLYPH_TRANSFORMED: u32 = 1u;
 // Keep in sync with `GLYPH_CLUSTER_FOLLOWER` and `GLYPH_CLUSTER_SHIFT` in `gpu.rs`.
 const GLYPH_CLUSTER_FOLLOWER: u32 = 2u;
 const GLYPH_CLUSTER_SHIFT: u32 = 8u;
+// Keep in sync with `GLYPH_RANGE_SHIFT` and `GLYPH_RANGE_MASK` in `gpu.rs`.
+const GLYPH_RANGE_SHIFT: u32 = 2u;
+const GLYPH_RANGE_MASK: u32 = 0x3fu;
 // Keep in sync with `GLYPH_MODE_MASK` and `GLYPH_PAINT_SHIFT` in `gpu.rs`.
 const GLYPH_MODE_MASK: u32 = 0xffu;
 const GLYPH_PAINT_SHIFT: u32 = 8u;
@@ -312,6 +315,28 @@ fn raster_bilinear(texel: vec2<f32>, uv_rect: vec4<f32>) -> vec4<f32> {
     return mix(mix(c00, c10, frac.x), mix(c01, c11, frac.x), frac.y);
 }
 
+// A stroke field's 16-bit distance at `coord`, from 0 to 1. Coordinates past the glyph's slot,
+// which `uv_rect` insets by half a texel, repeat its edge, which saturates.
+fn stroke_texel(coord: vec2<i32>, uv_rect: vec4<f32>) -> f32 {
+    let slot_min = vec2<i32>(floor(uv_rect.xy));
+    let slot_max = vec2<i32>(floor(uv_rect.zw));
+    let texel = textureLoad(atlas_texture, clamp(coord, slot_min, slot_max), 0);
+    return dot(texel.rg, vec2<f32>(65280.0, 255.0) / 65535.0);
+}
+
+// A stroke field's distance at `texel`, filtered after decoding each texel, since a sampler may
+// filter red and green with only their own 8 bits of precision.
+fn stroke_field(texel: vec2<f32>, uv_rect: vec4<f32>) -> f32 {
+    let base = floor(texel - vec2<f32>(0.5));
+    let frac = texel - vec2<f32>(0.5) - base;
+    let p0 = vec2<i32>(base);
+    let d00 = stroke_texel(p0, uv_rect);
+    let d10 = stroke_texel(p0 + vec2<i32>(1, 0), uv_rect);
+    let d01 = stroke_texel(p0 + vec2<i32>(0, 1), uv_rect);
+    let d11 = stroke_texel(p0 + vec2<i32>(1, 1), uv_rect);
+    return mix(mix(d00, d10, frac.x), mix(d01, d11, frac.x), frac.y);
+}
+
 fn median3(value: vec3<f32>) -> f32 {
     return max(min(value.r, value.g), min(max(value.r, value.g), value.b));
 }
@@ -397,6 +422,25 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     var coverage = raster.a;
     if (in.mode == 2u) {
         coverage = clamp(screen_px_range * (median3(field.rgb) - 0.5) + 0.5, 0.0, 1.0);
+        let half_width = bitcast<f32>(paints[fill].paint.stroke);
+        if (half_width > 0.0) {
+            // A stroke's field holds the true distance to the outline in texels in 16 bits split
+            // across red and green, saturating at half its range, which is twice `px_range`
+            // times the power of two in the instance's flags. The stroke reaches at most that
+            // less the widest antialiasing and a texel and a half, keeping in sync with
+            // `field_reach` in `msdf.rs`, so texels that saturate stay uncovered. Antialiasing
+            // follows the fill's and depends on the texel and pixel size alone, so crossing into
+            // a wider range changes nothing else. A band narrower than its antialiasing fades
+            // out with its width rather than keeping the half coverage at its centre.
+            let tier = (glyphs[in.instance].flags >> GLYPH_RANGE_SHIFT) & GLYPH_RANGE_MASK;
+            let range = 2.0 * globals.px_range * exp2(f32(tier));
+            let texels_per_pixel = (in.uv_rect.z - in.uv_rect.x) / glyphs[in.instance].rect.z;
+            let reach = min(half_width * texels_per_pixel, 0.5 * (range - globals.px_range) - 1.5);
+            let aa = 0.5 * globals.px_range / screen_px_range;
+            let encoded = stroke_field(in.texel, in.uv_rect);
+            let distance = abs(range * (encoded - 0.5));
+            coverage = clamp((reach + aa - distance) / (2.0 * aa), 0.0, 1.0) * min(reach / aa, 1.0);
+        }
     }
     return text_paint * (coverage * in.color.a);
 }

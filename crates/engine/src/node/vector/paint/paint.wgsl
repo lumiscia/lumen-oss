@@ -16,7 +16,9 @@ struct Paint {
     interpolation: u32,
     stop_count: u32,
     paint_supersample: u32,
-    _pad: u32,
+    // The bits of the half width of the stroke a text paint draws along distance field glyphs,
+    // or 0 for every other paint.
+    stroke: u32,
 }
 
 fn spread_t(paint: Paint, value: f32) -> f32 {

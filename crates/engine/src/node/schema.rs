@@ -19,6 +19,7 @@ pub enum PropertyKind {
     TextLine = 11,
     TextHighlight = 12,
     FontFeatures = 13,
+    TextStroke = 14,
 }
 
 #[cfg(any(feature = "json", feature = "metadata"))]

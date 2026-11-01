@@ -1,5 +1,6 @@
 //! Rich text params: content as a string or styled spans, the underline, strikethrough and
-//! highlight decorations spans draw, and OpenType font features.
+//! highlight decorations spans draw, the stroke along their glyphs, and OpenType font
+//! features.
 
 use std::collections::BTreeMap;
 
@@ -73,6 +74,10 @@ pub struct TextSpan {
     /// lines around it.
     #[meta(step = 0.5)]
     pub baseline_shift: Option<f64>,
+    /// Outline along the glyphs. `null` turns off the node's stroke. Its fields take literals or
+    /// expressions, but the whole stroke cannot be an expression.
+    #[meta()]
+    pub stroke: Override<TextStroke>,
 }
 
 /// OpenType features by four-character tag. A value of 0 turns a feature off, 1 turns it on and
@@ -272,6 +277,61 @@ impl<'de> serde::Deserialize<'de> for FontFeaturesDelegate {
     }
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum", expressions)]
+pub enum TextStrokeAlign {
+    /// Behind the glyphs, reaching `width` beyond their edge.
+    #[default]
+    Outside = 0,
+    /// Over the glyphs, centred on their edge.
+    Center = 1,
+}
+
+/// An outline along glyphs. Decorations are not stroked. Its fields take literals or
+/// expressions, but the whole stroke cannot be an expression.
+///
+/// `glyph_opacity` fades a glyph's stroke and fill separately, and strokes are outside the
+/// cluster fade grouping. A faded glyph's outside stroke shows through its fill, and where
+/// the two overlap they add up to more than the glyph's opacity: at 0.5 their overlap is
+/// 0.75 opaque.
+#[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
+#[delegate(properties)]
+pub struct TextStroke {
+    /// Outline color.
+    #[meta(role = "color")]
+    pub paint: Paint,
+    /// Outline width in pixels.
+    #[meta(min = 0, step = 0.5)]
+    pub width: f64,
+    /// Where the outline lies: behind the glyphs and outside their edge, or over them and
+    /// centred on it.
+    #[meta()]
+    pub align: TextStrokeAlign,
+}
+
+impl Default for TextStroke {
+    fn default() -> Self {
+        Self {
+            paint: Paint::default(),
+            width: 2.0,
+            align: TextStrokeAlign::Outside,
+        }
+    }
+}
+
+impl TextStroke {
+    /// How far the outline reaches to each side of the glyph edge, in pixels.
+    pub(crate) fn half_width(&self) -> f64 {
+        match self.align {
+            TextStrokeAlign::Outside => self.width,
+            TextStrokeAlign::Center => self.width * 0.5,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TextContentDelegate {
     Text(Deferred<String>),
@@ -345,6 +405,7 @@ impl TextContentDelegate {
                     underline: Override::Inherit,
                     strikethrough: Override::Inherit,
                     highlight: Override::Inherit,
+                    stroke: Override::Inherit,
                 }
                 .eval(&ctx.child(&path))
             })
@@ -471,6 +532,7 @@ macro_rules! impl_struct_kind_value {
 impl_struct_kind_value!(TextLineDelegate, TextLine);
 impl_struct_kind_value!(TextHighlightDelegate, TextHighlight);
 impl_struct_kind_value!(FontFeaturesDelegate, FontFeatures);
+impl_struct_kind_value!(TextStrokeDelegate, TextStroke);
 
 #[cfg(all(test, feature = "json"))]
 mod tests {

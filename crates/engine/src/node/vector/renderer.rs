@@ -550,6 +550,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             decorations,
             font_features,
             decorated: decoration_paints.is_some(),
+            stroked: crate::node::source::text::stroked(&text.params),
             atlas_texture,
             globals_buffer,
             instances_buffer,
@@ -573,8 +574,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
     /// canvas: the ink of its glyphs, as the font that will draw it measures them, and its
     /// decorations.
     ///
-    /// Only text whose layout and decorations are constant and whose paints are solid colours
-    /// is bounded: its paint is evaluated at the pixel it is drawn to, which a viewport offset
+    /// Only text whose layout, decorations and strokes are constant and whose paints are solid
+    /// colours is bounded: its paint is evaluated at the pixel it is drawn to, which a viewport offset
     /// moves. Text in a font that the media store has not resolved is not bounded either, since
     /// the font drawn later may be wider than the one measured here, nor text with `glyph_*`
     /// params, which move glyphs off the layout and fade clusters across their union.
@@ -590,6 +591,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                     .into_iter()
                     .all(|line| !matches!(line, Override::Set(line) if !solid_line(line)))
                 && !matches!(&span.highlight, Override::Set(highlight) if !solid(&highlight.paint))
+                && !matches!(&span.stroke, Override::Set(stroke) if !solid(&stroke.paint))
         };
         if GlyphParams::any(params)
             || !solid(&params.color)
@@ -599,6 +601,11 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             || crate::node::DelegateEvaluable::has_expressions(&params.underline)
             || crate::node::DelegateEvaluable::has_expressions(&params.strikethrough)
             || crate::node::DelegateEvaluable::has_expressions(&params.highlight)
+            || crate::node::DelegateEvaluable::has_expressions(&params.stroke)
+            || !params
+                .stroke
+                .as_ref()
+                .is_none_or(|stroke| solid(&stroke.paint))
             || !params
                 .underline
                 .iter()
@@ -664,6 +671,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             underline: evaluated.underline.take(),
             strikethrough: evaluated.strikethrough.take(),
             highlight: evaluated.highlight.take(),
+            stroke: evaluated.stroke.take(),
         };
         let spans = match &evaluated.content {
             TextContent::Spans(spans) => &spans[..],
@@ -679,6 +687,25 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             |_, _| 0,
             &mut rects,
         );
+        let mut strokes = Vec::new();
+        crate::node::source::text::span_strokes(
+            decorations.stroke.as_ref(),
+            spans,
+            &shaped,
+            |_, _, _| 0,
+            &mut strokes,
+        );
+        let reach = strokes
+            .iter()
+            .flatten()
+            .map(|stroke| lumen_text::stroke_reach(stroke.half_width))
+            .fold(0.0, f32::max);
+        let ink = [
+            ink[0] - reach,
+            ink[1] - reach,
+            ink[2] + reach,
+            ink[3] + reach,
+        ];
         let ink = rects.iter().fold(ink, |[x0, y0, x1, y1], rect| {
             let [min_x, min_y, max_x, max_y] = rect.rect_bounds();
             [x0.min(min_x), y0.min(min_y), x1.max(max_x), y1.max(max_y)]
