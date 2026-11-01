@@ -25,9 +25,23 @@ const GLYPH_CLUSTER_SHIFT: u32 = 8u;
 // Keep in sync with `GLYPH_MODE_MASK` and `GLYPH_PAINT_SHIFT` in `gpu.rs`.
 const GLYPH_MODE_MASK: u32 = 0xffu;
 const GLYPH_PAINT_SHIFT: u32 = 8u;
+// Keep in sync with `GLYPH_MODE_RECT`, the `RECT_*` constants and `RECT_WAVY_AMPLITUDE` in
+// `gpu.rs`.
+const GLYPH_MODE_RECT: u32 = 3u;
+const RECT_SHAPE_SHIFT: u32 = 8u;
+const RECT_BOX: u32 = 0u;
+const RECT_DOUBLE: u32 = 2u;
+const RECT_DOTTED: u32 = 3u;
+const RECT_DASHED: u32 = 4u;
+const RECT_WAVY: u32 = 5u;
+const RECT_JOINED_LEFT: u32 = 4u;
+const RECT_JOINED_RIGHT: u32 = 8u;
+const RECT_WAVY_AMPLITUDE: f32 = 1.5;
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
+    // The atlas texel, or a rect's untransformed position, which the target's viewport offset
+    // does not move.
     @location(0) texel: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) mode: u32,
@@ -127,6 +141,9 @@ fn vs_main(
         vec2<f32>(1.0, 1.0),
     );
     let corner = corners[vertex_index];
+    if ((glyph.mode & GLYPH_MODE_MASK) == GLYPH_MODE_RECT) {
+        return rect_vertex(glyph, corner, instance_index);
+    }
     // Scaled, rotated or moved raster glyphs are filtered, so their quads grow by a texel
     // to fit the filter's falloff; raster texels are one layout pixel.
     let filtered = drawable_is_linear(style.transform) || transformed;
@@ -167,6 +184,112 @@ fn vs_main(
     out.transformed = select(0u, 1u, transformed);
     out.instance = instance_index;
     return out;
+}
+
+// How far a rect's line pattern reaches beyond its stroke, which is `thickness` tall.
+fn rect_reach(shape: u32, thickness: f32) -> f32 {
+    if (shape == RECT_DOUBLE) {
+        return thickness;
+    }
+    if (shape == RECT_WAVY) {
+        return thickness * RECT_WAVY_AMPLITUDE;
+    }
+    return 0.0;
+}
+
+// A corner of a rect instance's quad, grown by its pattern's reach and a canvas pixel of
+// antialiasing.
+fn rect_vertex(rect: GlyphInstance, corner: vec2<f32>, instance_index: u32) -> VertexOut {
+    let canvas_pixel = 1.0 / max(drawable_axis_scale(style.transform), vec2<f32>(0.001));
+    let grow = canvas_pixel + vec2<f32>(0.0, rect_reach(rect.flags >> RECT_SHAPE_SHIFT, rect.rect.w));
+    let local = rect.rect.xy - grow + corner * (rect.rect.zw + 2.0 * grow);
+    let pixel = drawable_to_canvas(style.transform, local);
+    var out: VertexOut;
+    out.position = vec4<f32>(
+        (pixel.x / globals.target_size.x) * 2.0 - 1.0,
+        1.0 - (pixel.y / globals.target_size.y) * 2.0,
+        0.0,
+        1.0,
+    );
+    out.texel = local;
+    out.color = rect.color;
+    out.mode = GLYPH_MODE_RECT;
+    out.uv_rect = vec4<f32>(0.0);
+    out.inverse_linear = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    out.inverse_offset = vec2<f32>(0.0);
+    out.transformed = 0u;
+    out.instance = instance_index;
+    return out;
+}
+
+// Signed distance from `p` to a box of half size `half` centred on the origin.
+fn box_distance(p: vec2<f32>, half: vec2<f32>) -> f32 {
+    let q = abs(p) - half;
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
+}
+
+// Direction in which `box_distance` grows at `p`.
+fn box_gradient(p: vec2<f32>, half: vec2<f32>) -> vec2<f32> {
+    let q = abs(p) - half;
+    let outside = max(q, vec2<f32>(0.0));
+    let direction = select(
+        select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), q.x > q.y),
+        outside / max(length(outside), 0.000001),
+        any(q > vec2<f32>(0.0)),
+    );
+    return direction * select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+}
+
+// Coverage of a rect instance at the untransformed position `local`. Each shape is measured in
+// untransformed pixels, then scaled to canvas pixels across its edge, so it keeps its shape
+// under any transform. A line's stroke runs along `rect`'s width, and its pattern repeats from
+// `uv_rect.y`.
+fn rect_coverage(rect: GlyphInstance, local: vec2<f32>) -> f32 {
+    let shape = rect.flags >> RECT_SHAPE_SHIFT;
+    let half = rect.rect.zw * 0.5;
+    let p = local - rect.rect.xy - half;
+    if (shape == RECT_BOX) {
+        let radius = min(rect.uv_rect.x, min(half.x, half.y));
+        let distance = box_distance(p, half - radius) - radius;
+        let scale = drawable_distance_scale(style.transform, box_gradient(p, half - radius));
+        return clamp(0.5 - distance * scale, 0.0, 1.0);
+    }
+    let thickness = rect.rect.w;
+    let u = local.x - rect.uv_rect.y;
+    let v = p.y;
+    // Distance in untransformed pixels, and the direction in which it grows.
+    var normal = vec2<f32>(0.0, 1.0);
+    var distance = abs(v) - half.y;
+    if (shape == RECT_DOUBLE) {
+        distance = abs(abs(v) - thickness) - half.y;
+    } else if (shape == RECT_DOTTED) {
+        let period = 2.0 * thickness;
+        let along = vec2<f32>(u - (round((u - half.y) / period) * period + half.y), v);
+        distance = length(along) - half.y;
+        normal = select(vec2<f32>(0.0, 1.0), normalize(along), dot(along, along) > 0.000001);
+    } else if (shape == RECT_DASHED) {
+        let dash = 3.0 * thickness;
+        let period = 5.0 * thickness;
+        let along = vec2<f32>(u - (round((u - 0.5 * dash) / period) * period + 0.5 * dash), v);
+        distance = box_distance(along, vec2<f32>(0.5 * dash, half.y));
+        normal = box_gradient(along, vec2<f32>(0.5 * dash, half.y));
+    } else if (shape == RECT_WAVY) {
+        let amplitude = RECT_WAVY_AMPLITUDE * thickness;
+        let frequency = 6.2831853 / (4.0 * amplitude);
+        let slope = amplitude * frequency * cos(frequency * u);
+        distance = abs(v - amplitude * sin(frequency * u)) / sqrt(1.0 + slope * slope) - half.y;
+        normal = normalize(vec2<f32>(-slope, 1.0));
+    }
+    distance = distance * drawable_distance_scale(style.transform, normal);
+    // The ends are antialiased, except where they join another rect.
+    let end_scale = drawable_distance_scale(style.transform, vec2<f32>(1.0, 0.0));
+    let outside = vec2<f32>(-p.x - half.x, p.x - half.x) * end_scale;
+    let joined = vec2<bool>(
+        (rect.flags & RECT_JOINED_LEFT) != 0u,
+        (rect.flags & RECT_JOINED_RIGHT) != 0u,
+    );
+    let ends = select(outside, select(vec2<f32>(-1.0e9), vec2<f32>(1.0e9), outside > vec2<f32>(0.0)), joined);
+    return clamp(0.5 - max(distance, max(ends.x, ends.y)), 0.0, 1.0);
 }
 
 // Raster texel, transparent outside the glyph's atlas slot.
@@ -259,6 +382,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         if (paints[fill].paint.paint_supersample != 0u) {
             text_paint = text_paint_aa(in, fill);
         }
+    }
+    if (in.mode == GLYPH_MODE_RECT) {
+        return text_paint * (rect_coverage(glyphs[in.instance], in.texel) * in.color.a);
     }
     if ((glyphs[in.instance].flags >> GLYPH_CLUSTER_SHIFT) != 0u) {
         return cluster_color(in, local, texel_width, text_paint);

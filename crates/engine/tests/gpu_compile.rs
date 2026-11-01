@@ -11722,3 +11722,315 @@ fn plain_string_content_matches_its_span_and_expression_forms() {
         assert!(pixels == plain, "{content}");
     }
 }
+
+/// Text params in Inter at 32 px, with `extra` params added.
+fn decorated_text(content: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+    let mut params = json!({
+        "content": content,
+        "font_family": "Inter",
+        "font_size": 32,
+        "position": [8, 20]
+    });
+    for (key, value) in extra.as_object().unwrap() {
+        params[key] = value.clone();
+    }
+    params
+}
+
+/// `[min_x, min_y, max_x, max_y]` of the pixels where `a` and `b` differ.
+fn diff_box(a: &[u8], b: &[u8], size: u32) -> Option<[usize; 4]> {
+    let size = size as usize;
+    let mut bounds: Option<[usize; 4]> = None;
+    for y in 0..size {
+        for x in 0..size {
+            let index = (y * size + x) * 4;
+            if a[index..index + 4] != b[index..index + 4] {
+                let [x0, y0, x1, y1] = bounds.get_or_insert([x, y, x, y]);
+                (*x0, *y0, *x1, *y1) = ((*x0).min(x), (*y0).min(y), (*x1).max(x), (*y1).max(y));
+            }
+        }
+    }
+    bounds
+}
+
+/// Runs of rows that hold any ink, top to bottom.
+fn inked_rows(pixels: &[u8], size: u32) -> Vec<std::ops::Range<usize>> {
+    let inked = |y: usize| (0..size as usize).any(|x| alpha_of(pixels, size, x, y) > 0);
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for y in (0..size as usize).filter(|&y| inked(y)) {
+        match runs.last_mut() {
+            Some(run) if run.end == y => run.end = y + 1,
+            _ => runs.push(y..y + 1),
+        }
+    }
+    runs
+}
+
+fn rgba_at(pixels: &[u8], size: u32, x: usize, y: usize) -> [u8; 4] {
+    pixels[(y * size as usize + x) * 4..][..4]
+        .try_into()
+        .unwrap()
+}
+
+#[test]
+fn span_underline_draws_under_that_span_alone() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let plain = render_text_params(
+        &mut renderer,
+        decorated_text(json!([{ "text": "II" }, { "text": "II" }]), json!({})),
+        size,
+    );
+    let underlined = render_text_params(
+        &mut renderer,
+        decorated_text(
+            json!([{ "text": "II" }, { "text": "II", "underline": {} }]),
+            json!({}),
+        ),
+        size,
+    );
+    let runs = inked_columns(&plain, size);
+    assert_eq!(runs.len(), 4, "{runs:?}");
+    let baseline = ink_box(&plain, size, runs[0].clone())[3];
+    let [x0, y0, x1, y1] = diff_box(&plain, &underlined, size).expect("an underline");
+    assert!(
+        x0 + 1 >= runs[1].end && x1 <= runs[3].end + 2,
+        "{x0}..{x1} is not under {runs:?}"
+    );
+    assert!(y0 > baseline && y1 < baseline + 12, "{y0}..{y1}");
+    let middle = (y0 + y1) / 2;
+    assert_eq!(rgba_at(&underlined, size, (x0 + x1) / 2, middle), [255; 4]);
+}
+
+#[test]
+fn decoration_dots_stretch_with_a_nonuniform_scale() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 256;
+    // Clear glyphs leave only the underline.
+    let pixels = render_text_params(
+        &mut renderer,
+        decorated_text(
+            json!("IIIIII"),
+            json!({
+                "color": [0, 0, 0, 0],
+                "scale": [4, 1],
+                "underline": {
+                    "style": "dotted",
+                    "thickness": 4,
+                    "paint": [255, 0, 0, 255]
+                }
+            }),
+        ),
+        size,
+    );
+    let dots = inked_columns(&pixels, size);
+    assert!(dots.len() >= 3, "{dots:?}");
+    // Circles of 4 px, stretched to 16 px along x.
+    for dot in &dots[1..dots.len() - 1] {
+        assert!((14..=19).contains(&dot.len()), "{dots:?}");
+    }
+    let rows = inked_rows(&pixels, size);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!((4..=6).contains(&rows[0].len()), "{rows:?}");
+}
+
+#[test]
+fn decoration_highlights_break_into_a_padded_box_per_line() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    // Clear glyphs leave only the highlight.
+    let pixels = render_text_params(
+        &mut renderer,
+        decorated_text(
+            json!("II II"),
+            json!({
+                "color": [0, 0, 0, 0],
+                "position": [8, 8],
+                "max_width": 40,
+                "line_height": 48,
+                "highlight": { "paint": [255, 0, 0, 255], "padding": [4, 2], "radius": 2 }
+            }),
+        ),
+        size,
+    );
+    let rows = inked_rows(&pixels, size);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let boxes = [&rows[0], &rows[1]].map(|rows| {
+        let middle = (rows.start + rows.end) / 2;
+        let inked: Vec<usize> = (0..size as usize)
+            .filter(|&x| alpha_of(&pixels, size, x, middle) > 128)
+            .collect();
+        [inked[0], *inked.last().unwrap(), rows.len()]
+    });
+    // Each line's box starts at the text's left edge less its padding.
+    assert!(boxes[0][0].abs_diff(4) <= 1, "{boxes:?}");
+    assert_eq!(boxes[0], boxes[1]);
+    assert_eq!(
+        rgba_at(&pixels, size, boxes[0][0] + 4, rows[0].start + 4),
+        [255, 0, 0, 255]
+    );
+}
+
+#[test]
+fn decoration_strikethroughs_draw_over_glyphs_and_highlights_under_them() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let text = |extra: serde_json::Value| decorated_text(json!("IIII"), extra);
+    let plain = render_text_params(&mut renderer, text(json!({ "font_size": 48 })), size);
+    let pixels = render_text_params(
+        &mut renderer,
+        text(json!({
+            "font_size": 48,
+            "highlight": { "paint": [0, 0, 255, 255] },
+            "strikethrough": { "paint": [255, 0, 0, 255], "thickness": 4 }
+        })),
+        size,
+    );
+    let runs = inked_columns(&plain, size);
+    assert_eq!(runs.len(), 4, "{runs:?}");
+    let pixels = &pixels;
+    let column = |x: usize| (0..size as usize).map(move |y| rgba_at(pixels, size, x, y));
+    let stem = (runs[0].start + runs[0].end) / 2;
+    let gap = runs[0].end + 1;
+    assert!(gap < runs[1].start, "{runs:?}");
+    let red = [255, 0, 0, 255];
+    assert!(
+        column(stem).any(|pixel| pixel == red),
+        "no strikethrough over the glyph"
+    );
+    assert!(
+        column(stem).any(|pixel| pixel == [255; 4]),
+        "no glyph over the highlight"
+    );
+    assert!(column(gap).any(|pixel| pixel == red));
+    assert!(column(gap).any(|pixel| pixel == [0, 0, 255, 255]));
+}
+
+#[test]
+fn decoration_extent_runs_on_across_a_line_break() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let text = |extent: serde_json::Value| {
+        decorated_text(
+            json!("IIII\nIIII"),
+            json!({
+                "color": [0, 0, 0, 0],
+                "line_height": 48,
+                "underline": { "paint": [255, 0, 0, 255], "thickness": 3, "extent": extent }
+            }),
+        )
+    };
+    let full = render_text_params(&mut renderer, text(json!([0, 1])), size);
+    let partial = render_text_params(&mut renderer, text(json!([0, 0.75])), size);
+    // 6.75 of the 9 bytes: the first line and 1.75 of the second line's 4.
+    let rows = inked_rows(&full, size);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(inked_rows(&partial, size), rows);
+    let widths = [&full, &partial].map(|pixels| {
+        [&rows[0], &rows[1]].map(|rows| {
+            let y = (rows.start + rows.end) / 2;
+            (0..size as usize)
+                .filter(|&x| alpha_of(pixels, size, x, y) > 128)
+                .count() as f64
+        })
+    });
+    let [[first, second], [first_partial, second_partial]] =
+        widths.map(|widths| [widths[0], widths[1]]);
+    assert_eq!(first, second);
+    assert_eq!(first_partial, first);
+    assert!(
+        (second_partial / second - 1.75 / 4.0).abs() < 0.05,
+        "{second_partial} of {second}"
+    );
+    let animated = render_text_frames(
+        &mut renderer,
+        text(json!("=vec2(0, frame / 4)")),
+        size,
+        &[3],
+    );
+    assert!(animated[0] == partial);
+}
+
+#[test]
+fn span_null_clears_the_node_underline() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let cleared = render_text_params(
+        &mut renderer,
+        decorated_text(
+            json!([{ "text": "II" }, { "text": "II", "underline": null }, { "text": "II" }]),
+            json!({ "underline": {} }),
+        ),
+        size,
+    );
+    let own = render_text_params(
+        &mut renderer,
+        decorated_text(
+            json!([
+                { "text": "II", "underline": {} },
+                { "text": "II" },
+                { "text": "II", "underline": {} }
+            ]),
+            json!({}),
+        ),
+        size,
+    );
+    let all = render_text_params(
+        &mut renderer,
+        decorated_text(json!("IIIIII"), json!({ "underline": {} })),
+        size,
+    );
+    assert!(cleared == own);
+    assert!(cleared != all);
+}
+
+#[test]
+fn bounded_text_holds_wavy_lines_and_highlight_padding() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    for decoration in [
+        json!({ "underline": { "style": "wavy", "thickness": 4, "offset": 20 } }),
+        json!({ "highlight": { "paint": [255, 0, 0, 255], "padding": [12, 16] } }),
+    ] {
+        let bounded = render_text_params(
+            &mut renderer,
+            decorated_text(json!("II"), decoration.clone()),
+            size,
+        );
+        let text = PortRef::new(NodeId::new(1), "output".to_string());
+        let domain = renderer.compiled().unwrap().node_outputs[&text]
+            .clone()
+            .into_raster(text.id, "output")
+            .unwrap()
+            .domain;
+        assert!(!domain.is_full_frame(), "{decoration}");
+        // Content with an expression is not bounded.
+        let full = render_text_params(
+            &mut renderer,
+            decorated_text(json!("=\"II\""), decoration.clone()),
+            size,
+        );
+        assert!(bounded == full, "{decoration}");
+    }
+}

@@ -3,6 +3,22 @@ use bytemuck::{Pod, Zeroable};
 pub const GLYPH_MODE_RASTER_MASK: u32 = 0;
 pub const GLYPH_MODE_RASTER_COLOR: u32 = 1;
 pub const GLYPH_MODE_MSDF: u32 = 2;
+/// An instance that draws a decoration rect rather than a glyph. Its `rect` is a highlight's
+/// box or a line's stroke, `uv_rect` holds the box's corner radius and the x the line's pattern
+/// starts at, and `flags` holds its `RECT_*` shape and joins.
+pub const GLYPH_MODE_RECT: u32 = 3;
+/// The bits of a rect instance's `flags` from here up hold its `RECT_*` shape.
+pub const RECT_SHAPE_SHIFT: u32 = 8;
+pub const RECT_BOX: u32 = 0;
+pub const RECT_SOLID: u32 = 1;
+pub const RECT_DOUBLE: u32 = 2;
+pub const RECT_DOTTED: u32 = 3;
+pub const RECT_DASHED: u32 = 4;
+pub const RECT_WAVY: u32 = 5;
+/// Bits of a rect instance's `flags` set when its left or right edge meets another rect, so
+/// the edge is drawn without antialiasing and leaves no seam.
+pub const RECT_JOINED_LEFT: u32 = 4;
+pub const RECT_JOINED_RIGHT: u32 = 8;
 /// The bits of [`GpuGlyphInstance::mode`] that hold the glyph's `GLYPH_MODE_*` value.
 pub const GLYPH_MODE_MASK: u32 = 0xff;
 /// The bits of [`GpuGlyphInstance::mode`] from here up hold the index of the glyph's paint.
@@ -63,7 +79,46 @@ impl GpuGlyphInstance {
         debug_assert!(index < GLYPH_MAX_PAINTS);
         self.mode = self.render_mode() | index << GLYPH_PAINT_SHIFT;
     }
+
+    /// A rect instance of the `RECT_*` `shape` with `flags`' joins, filled with the paint at
+    /// `paint`. A box's corners are rounded by `radius`; a line's pattern starts at `phase`.
+    pub fn rect(
+        rect: [f32; 4],
+        shape: u32,
+        flags: u32,
+        radius: f32,
+        phase: f32,
+        paint: u32,
+    ) -> Self {
+        let mut instance = Self {
+            rect,
+            uv_rect: [radius, phase, 0.0, 0.0],
+            color: [1.0; 4],
+            mode: GLYPH_MODE_RECT,
+            flags: flags | shape << RECT_SHAPE_SHIFT,
+            offset: [0.0; 2],
+            linear: [[1.0, 0.0], [0.0, 1.0]],
+        };
+        instance.set_paint(paint);
+        instance
+    }
+
+    /// The `[min_x, min_y, max_x, max_y]` a rect instance may draw to: its rect, the reach of
+    /// its line's pattern beyond the stroke, and a pixel of antialiasing.
+    pub fn rect_bounds(&self) -> [f32; 4] {
+        let [x, y, width, height] = self.rect;
+        let reach = match self.flags >> RECT_SHAPE_SHIFT {
+            RECT_DOUBLE => height,
+            RECT_WAVY => height * RECT_WAVY_AMPLITUDE,
+            _ => 0.0,
+        } + 1.0;
+        [x - 1.0, y - reach, x + width + 1.0, y + height + reach]
+    }
 }
+
+/// Peak displacement of a wavy line from its stroke, in thicknesses; keep in sync with
+/// `text.wgsl`.
+const RECT_WAVY_AMPLITUDE: f32 = 1.5;
 
 #[cfg(test)]
 mod tests {

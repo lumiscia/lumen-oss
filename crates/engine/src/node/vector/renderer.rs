@@ -2,12 +2,15 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::{
     gpu::{CompiledOutput, RasterHandle, RasterMetadata, compiler},
-    node::{Deferred, NodeId, NodeParams, PortRef},
+    node::{Deferred, NodeId, NodeParams, Override, PortRef},
 };
 
 use crate::node::source::{
-    text::{CompiledText, GlyphParams, Text, TextLayoutStyle, TextState},
-    text_content::TextContentDelegate,
+    text::{
+        CompiledText, DecorationParams, GlyphParams, NodeDecorations, Text, TextDecorations,
+        TextLayoutStyle, TextState,
+    },
+    text_content::{TextContent, TextContentDelegate, TextLineDelegate, TextSpanDelegate},
 };
 
 use super::{
@@ -320,13 +323,16 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             TextContentDelegate::Spans(spans) => spans.items.len().max(1),
             TextContentDelegate::Text(_) => 1,
         };
-        if paint_count > lumen_text::GLYPH_MAX_PAINTS as usize {
+        let decoration_paints = crate::node::source::text::decoration_paints(params);
+        let paints = paint_count + decoration_paints.unwrap_or(0);
+        if paints > lumen_text::GLYPH_MAX_PAINTS as usize {
             return Err(crate::error::RenderError::NodeEvaluation {
                 frame: 0,
                 node_id: text.id,
                 node_kind: "Text",
                 details: format!(
-                    "text has {paint_count} spans, more than the {} that can be painted",
+                    "text has {paints} span and decoration paints, more than the {} that can be \
+                     painted",
                     lumen_text::GLYPH_MAX_PAINTS
                 ),
             }
@@ -335,9 +341,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         let paints_buffer = self.ctx.builder_mut().buffer_for(
             lumen_gpu::NodeKey(text.id.0),
             Some(format!("text:{}:paints", text.id.0)),
-            lumen_gpu::BufferDesc::storage(
-                (paint_count * std::mem::size_of::<GpuTextPaint>()) as u64,
-            ),
+            lumen_gpu::BufferDesc::storage((paints * std::mem::size_of::<GpuTextPaint>()) as u64),
         );
         let atlas_sampler = self.ctx.builder_mut().sampler(
             Some(format!("text:{}:atlas-sampler", text.id.0)),
@@ -504,6 +508,13 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         }
         let mut params = text.params.clone();
         let glyph = GlyphParams::take(&mut params);
+        let expr = self.ctx.expr_context(text.id, "params");
+        let decorations = DecorationParams::take(&mut params);
+        let decorations = if decorations.has_expressions() {
+            NodeDecorations::Animated(decorations)
+        } else {
+            NodeDecorations::Constant(decorations.eval(text.id, &expr)?)
+        };
         let content = if crate::node::DelegateEvaluable::has_expressions(&params.content) {
             None
         } else {
@@ -513,7 +524,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 &crate::node::DelegateEvalContext {
                     node_id: text.id,
                     property_path: "content",
-                    expr: &self.ctx.expr_context(text.id, "params"),
+                    expr: &expr,
                 },
             )?)
         };
@@ -522,6 +533,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             params,
             glyph,
             content,
+            decorations,
+            decorated: decoration_paints.is_some(),
             atlas_texture,
             globals_buffer,
             instances_buffer,
@@ -542,23 +555,44 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
     }
 
     /// The canvas pixels unblurred text may draw to, or `None` when it should fill the
-    /// canvas: the ink of its glyphs, as the font that will draw it measures them.
+    /// canvas: the ink of its glyphs, as the font that will draw it measures them, and its
+    /// decorations.
     ///
-    /// Only text whose layout is constant and whose paints are solid colours is bounded: its
-    /// paint is evaluated at the pixel it is drawn to, which a viewport offset moves. Text in a
-    /// font that the media store has not resolved is not bounded either, since the font drawn
-    /// later may be wider than the one measured here, nor text with `glyph_*` params, which
-    /// move glyphs off the layout and fade clusters across their union.
+    /// Only text whose layout and decorations are constant and whose paints are solid colours
+    /// is bounded: its paint is evaluated at the pixel it is drawn to, which a viewport offset
+    /// moves. Text in a font that the media store has not resolved is not bounded either, since
+    /// the font drawn later may be wider than the one measured here, nor text with `glyph_*`
+    /// params, which move glyphs off the layout and fade clusters across their union.
     fn text_bounds(&self, text: &Text) -> Option<lumen_gpu::RectI> {
         let params = &text.params;
         let solid = |paint: &super::paint::PaintDelegate| {
             matches!(paint, super::paint::PaintDelegate::SolidColor(..))
         };
+        let solid_line = |line: &TextLineDelegate| line.paint.as_ref().is_none_or(solid);
+        let solid_span = |span: &TextSpanDelegate| {
+            span.color.as_ref().is_none_or(solid)
+                && [&span.underline, &span.strikethrough]
+                    .into_iter()
+                    .all(|line| !matches!(line, Override::Set(line) if !solid_line(line)))
+                && !matches!(&span.highlight, Override::Set(highlight) if !solid(&highlight.paint))
+        };
         if GlyphParams::any(params)
             || !solid(&params.color)
             || crate::node::DelegateEvaluable::has_expressions(&params.content)
             || matches!(&params.content, TextContentDelegate::Spans(spans)
-                if spans.items.iter().any(|span| span.color.as_ref().is_some_and(|paint| !solid(paint))))
+                if !spans.items.iter().all(solid_span))
+            || crate::node::DelegateEvaluable::has_expressions(&params.underline)
+            || crate::node::DelegateEvaluable::has_expressions(&params.strikethrough)
+            || crate::node::DelegateEvaluable::has_expressions(&params.highlight)
+            || !params
+                .underline
+                .iter()
+                .chain(&params.strikethrough)
+                .all(solid_line)
+            || !params
+                .highlight
+                .as_ref()
+                .is_none_or(|highlight| solid(&highlight.paint))
             || params.font_family.is_expr()
             || params.font_size.is_expr()
             || params.font_weight.is_expr()
@@ -603,6 +637,29 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             let ink = text_system.ink_bounds(&shaped)?;
             (shaped, ink)
         };
+        let decorations = TextDecorations {
+            underline: evaluated.underline.take(),
+            strikethrough: evaluated.strikethrough.take(),
+            highlight: evaluated.highlight.take(),
+        };
+        let spans = match &evaluated.content {
+            TextContent::Spans(spans) => &spans[..],
+            TextContent::Text(_) => &[],
+        };
+        let mut rects = Vec::new();
+        crate::node::source::text::decorate(
+            &shaped,
+            &decorations,
+            spans,
+            [0.0; 2],
+            |_| 0,
+            |_, _| 0,
+            &mut rects,
+        );
+        let ink = rects.iter().fold(ink, |[x0, y0, x1, y1], rect| {
+            let [min_x, min_y, max_x, max_y] = rect.rect_bounds();
+            [x0.min(min_x), y0.min(min_y), x1.max(max_x), y1.max(max_y)]
+        });
         let line_height = shaped.measurement.height;
         let alignment = evaluated.alignment_vertical;
         let animated = params.position.is_expr()

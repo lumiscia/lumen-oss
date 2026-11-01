@@ -17,10 +17,14 @@ use crate::node::vector::{
     renderer::{GpuTextPaint, TextStyleUniforms},
 };
 use crate::node::{
-    Deferred, DeferredValue, NodeId, NodeParamEvalContext, NodeParams, Override, PortRef,
+    Deferred, DeferredValue, DelegateEvalContext, NodeId, NodeParamEvalContext, NodeParams,
+    Override, PortRef,
 };
 
-use super::text_content::{TextContent, TextSpan};
+use super::text_content::{
+    TextContent, TextContentDelegate, TextHighlight, TextHighlightDelegate, TextLine,
+    TextLineDelegate, TextLineStyle, TextSpan,
+};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
@@ -153,6 +157,17 @@ pub struct TextParams {
     /// node's `color` always spans the whole text.
     #[meta(kind = "enum", enum_type = TextPaintSpace)]
     pub paint_space: TextPaintSpace,
+    /// Line under the text, and under spans that leave theirs unset. Off when absent. Its
+    /// fields take literals or expressions, but the whole line cannot be an expression.
+    #[meta()]
+    pub underline: Option<TextLine>,
+    /// Line through the text, and through spans that leave theirs unset. Off when absent.
+    #[meta()]
+    pub strikethrough: Option<TextLine>,
+    /// Box behind each line of the text, and of spans that leave theirs unset. Off when
+    /// absent.
+    #[meta()]
+    pub highlight: Option<TextHighlight>,
     /// Horizontal text alignment.
     #[meta(kind = "enum", enum_type = TextAlignmentHorizontal)]
     pub alignment_horizontal: TextAlignmentHorizontal,
@@ -188,6 +203,9 @@ impl Default for TextParams {
             glyph_opacity: 1.0,
             color: Paint::solid([255, 255, 255, 255]),
             paint_space: TextPaintSpace::Span,
+            underline: None,
+            strikethrough: None,
+            highlight: None,
             alignment_horizontal: TextAlignmentHorizontal::Left,
             alignment_vertical: TextAlignmentVertical::Top,
             paint_supersample: true,
@@ -231,12 +249,17 @@ pub(crate) struct CompiledText {
     pub(crate) glyph: GlyphParams,
     /// The content, evaluated at compile when it has no expressions.
     pub(crate) content: Option<TextContent>,
+    pub(crate) decorations: NodeDecorations,
+    /// Whether the node or any span has a decoration.
+    pub(crate) decorated: bool,
     pub(crate) atlas_texture: lumen_gpu::TextureId,
     pub(crate) globals_buffer: lumen_gpu::BufferId,
     pub(crate) instances_buffer: lumen_gpu::BufferId,
     pub(crate) style_buffer: lumen_gpu::BufferId,
-    /// A paint for each span, or the one paint of string content.
+    /// A paint for each span, or the one paint of string content, and then those of the
+    /// decorations with their own.
     pub(crate) paints_buffer: lumen_gpu::BufferId,
+    /// The number of span paints.
     pub(crate) paint_count: usize,
     pub(crate) max_glyphs: usize,
     pub(crate) size: lumen_gpu::Size,
@@ -297,7 +320,18 @@ impl CompiledText {
             .content
             .is_none()
             .then(|| std::mem::take(&mut evaluated.content));
-        let span_paints = content.as_mut().map(take_span_paints).unwrap_or_default();
+        // Undecorated text only needs the span colors.
+        let (span_paints, span_styles) = match content.as_mut() {
+            Some(content) if self.decorated => (Vec::new(), take_span_styles(content)),
+            Some(content) => (take_span_paints(content), Vec::new()),
+            None => Default::default(),
+        };
+        let decorations = match &self.decorations {
+            NodeDecorations::Constant(decorations) => std::borrow::Cow::Borrowed(decorations),
+            NodeDecorations::Animated(params) => {
+                std::borrow::Cow::Owned(params.eval(self.node_id, &expr)?)
+            }
+        };
 
         let mut text_system = text_system()?;
         load_font_families(
@@ -349,6 +383,62 @@ impl CompiledText {
             },
         ];
         let layout = shaped.place(origin, [1.0; 4]);
+        let spans: &[TextSpan] = match &self.content {
+            Some(TextContent::Spans(spans)) => spans,
+            Some(TextContent::Text(_)) => &[],
+            None => &span_styles,
+        };
+        let span_color = |span: usize| match &self.content {
+            None if !self.decorated => span_paints.get(span).and_then(Option::as_ref),
+            _ => spans.get(span).and_then(|span| span.color.as_ref()),
+        };
+        // A span's own gradient spans its box under `TextPaintSpace::Span`, and other paints
+        // the whole text.
+        let text_paint = |paint: &Paint, span: Option<usize>| {
+            let mut gpu = paint.to_gpu([255, 255, 255, 255]);
+            gpu.paint_supersample = u32::from(evaluated.paint_supersample);
+            let own_box = span
+                .filter(|_| {
+                    evaluated.paint_space == TextPaintSpace::Span
+                        && !matches!(paint, Paint::SolidColor(..))
+                })
+                .and_then(|span| shaped.span_boxes.get(span).copied().flatten());
+            let bounds = own_box.map_or(layout.bounds, |[x, y, width, height]| {
+                [origin[0] + x, origin[1] + y, width, height]
+            });
+            GpuTextPaint { paint: gpu, bounds }
+        };
+        state.decorations.clear();
+        // The decorations' own paints, which follow the span paints.
+        let mut decoration_paints = Vec::new();
+        let mut before_glyphs = 0;
+        let mut dropped_decorations = 0;
+        if self.decorated {
+            // Spans without a color of their own share the first one's paint, so a line
+            // runs along them as one rect.
+            let plain = spans
+                .iter()
+                .position(|span| span.color.is_none())
+                .unwrap_or(0) as u32;
+            before_glyphs = decorate(
+                shaped,
+                &decorations,
+                spans,
+                origin,
+                |span| match spans.get(span) {
+                    Some(TextSpan { color: Some(_), .. }) => span as u32,
+                    _ => plain,
+                },
+                |paint, span| {
+                    decoration_paints.push((paint, span));
+                    (self.paint_count + decoration_paints.len() - 1) as u32
+                },
+                &mut state.decorations,
+            );
+            dropped_decorations = state.decorations.len().saturating_sub(self.max_glyphs);
+            state.decorations.truncate(self.max_glyphs);
+            before_glyphs = before_glyphs.min(state.decorations.len());
+        }
         let mode = match evaluated.render_mode {
             TextRenderMode::Raster => lumen_text::TextRenderMode::Raster,
             TextRenderMode::Msdf => {
@@ -373,7 +463,7 @@ impl CompiledText {
             &mut atlas,
             &layout,
             mode,
-            self.max_glyphs,
+            self.max_glyphs - state.decorations.len(),
             &mut state.overfull,
         );
         let atlas_size = atlas.size();
@@ -385,14 +475,15 @@ impl CompiledText {
             bound.text_generation_ms += atlas_ms;
         }
 
-        let dropping = prepared.dropped_glyphs > 0;
+        let dropped_glyphs = prepared.dropped_glyphs + dropped_decorations;
+        let dropping = dropped_glyphs > 0;
         bound.text_dropped_glyphs |= dropping;
         if dropping != state.dropping_glyphs {
             if dropping {
                 tracing::warn!(
                     target: "lumen_text",
                     node_id = self.node_id.0,
-                    dropped_glyphs = prepared.dropped_glyphs,
+                    dropped_glyphs,
                     max_glyphs = self.max_glyphs,
                     atlas_size,
                     "text glyphs dropped: too many glyphs or glyph atlas full"
@@ -410,6 +501,17 @@ impl CompiledText {
         let upload_count = prepared.uploads.len();
         if kept && !dropping && upload_count == 0 {
             return Ok(false);
+        }
+        state.paints.clear();
+        for span in 0..self.paint_count {
+            let own = span_color(span);
+            state.paints.push(text_paint(
+                own.unwrap_or(&evaluated.color),
+                own.and(Some(span)),
+            ));
+        }
+        for (paint, span) in decoration_paints {
+            state.paints.push(text_paint(paint, span));
         }
         for upload in prepared.uploads {
             let [width, height] = upload.size;
@@ -437,40 +539,23 @@ impl CompiledText {
         let globals = lumen_text::GpuTextGlobals {
             target_size: [self.layer_size.width as f32, self.layer_size.height as f32],
             px_range: lumen_text::MSDF_PX_RANGE,
-            glyph_count: prepared.instances.len() as u32,
+            glyph_count: (state.decorations.len() + prepared.instances.len()) as u32,
         };
         bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
-        state.paints.clear();
-        for span in 0..self.paint_count {
-            let own = match &self.content {
-                Some(TextContent::Spans(spans)) => {
-                    spans.get(span).and_then(|span| span.color.as_ref())
-                }
-                Some(TextContent::Text(_)) => None,
-                None => span_paints.get(span).and_then(Option::as_ref),
-            };
-            let paint = own.unwrap_or(&evaluated.color);
-            let mut gpu = paint.to_gpu([255, 255, 255, 255]);
-            gpu.paint_supersample = u32::from(evaluated.paint_supersample);
-            let own_box = (own.is_some()
-                && evaluated.paint_space == TextPaintSpace::Span
-                && !matches!(paint, Paint::SolidColor(..)))
-            .then(|| shaped.span_boxes.get(span).copied().flatten())
-            .flatten();
-            let bounds = own_box.map_or(layout.bounds, |[x, y, width, height]| {
-                [origin[0] + x, origin[1] + y, width, height]
-            });
-            state.paints.push(GpuTextPaint { paint: gpu, bounds });
-        }
         bound.write_buffer(self.paints_buffer, 0, bytemuck::cast_slice(&state.paints));
         let [x, y, width, height] = layout.bounds;
-        let (min, max) =
+        let (mut min, mut max) =
             ink_bounds.map_or(([x, y], [x + width, y + height]), |[x0, y0, x1, y1]| {
                 (
                     [x0.min(x), y0.min(y)],
                     [x1.max(x + width), y1.max(y + height)],
                 )
             });
+        for decoration in &state.decorations {
+            let [x0, y0, x1, y1] = decoration.rect_bounds();
+            min = [min[0].min(x0), min[1].min(y0)];
+            max = [max[0].max(x1), max[1].max(y1)];
+        }
         let motion = DrawableMotion::new(shutter.as_ref(), min, max);
         let canvas = [self.size.width as f32, self.size.height as f32];
         let layer = [self.layer_size.width as f32, self.layer_size.height as f32];
@@ -479,19 +564,25 @@ impl CompiledText {
             motion: motion.to_gpu(),
         };
         bound.write_buffer(self.style_buffer, 0, bytemuck::bytes_of(&style));
-        if !prepared.instances.is_empty() {
-            bound.write_buffer(
-                self.instances_buffer,
-                0,
-                bytemuck::cast_slice(&prepared.instances),
-            );
+        // Highlights and underlines are drawn under the glyphs, and strikethroughs over them.
+        let (under, over) = state.decorations.split_at(before_glyphs);
+        let mut offset = 0;
+        for instances in [under, &prepared.instances, over] {
+            if !instances.is_empty() {
+                bound.write_buffer(
+                    self.instances_buffer,
+                    (offset * std::mem::size_of::<lumen_text::GpuGlyphInstance>()) as u64,
+                    bytemuck::cast_slice(instances),
+                );
+            }
+            offset += instances.len();
         }
 
         if let Some(started) = trace_started {
             trace_text_bind(
                 self.node_id,
                 upload_count,
-                prepared.instances.len(),
+                prepared.instances.len() + state.decorations.len(),
                 layout_ms,
                 atlas_ms,
                 trace_now_ms() - started,
@@ -703,6 +794,8 @@ impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
 pub(crate) struct TextState {
     shaped: Option<(TextShapeKey, lumen_text::ShapedText)>,
     paints: Vec<GpuTextPaint>,
+    /// Rect instances of the decorations: those under the glyphs, then those over them.
+    decorations: Vec<lumen_text::GpuGlyphInstance>,
     dropping_glyphs: bool,
     overfull: Option<u64>,
 }
@@ -808,6 +901,243 @@ fn take_span_paints(content: &mut TextContent) -> Vec<Option<Paint>> {
             span.color.take()
         })
         .collect()
+}
+
+/// Takes what does not affect the layout out of `content`'s spans, returning spans that hold
+/// only their colors and decorations.
+fn take_span_styles(content: &mut TextContent) -> Vec<TextSpan> {
+    let TextContent::Spans(spans) = content else {
+        return Vec::new();
+    };
+    spans
+        .iter_mut()
+        .map(|span| TextSpan {
+            color: span.color.take(),
+            underline: std::mem::take(&mut span.underline),
+            strikethrough: std::mem::take(&mut span.strikethrough),
+            highlight: std::mem::take(&mut span.highlight),
+            ..TextSpan::default()
+        })
+        .collect()
+}
+
+/// The node's decorations, which spans that leave theirs unset take.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct TextDecorations {
+    pub(crate) underline: Option<TextLine>,
+    pub(crate) strikethrough: Option<TextLine>,
+    pub(crate) highlight: Option<TextHighlight>,
+}
+
+/// The node's decoration params, moved out of the others.
+#[derive(Debug, Clone)]
+pub(crate) struct DecorationParams {
+    underline: Option<TextLineDelegate>,
+    strikethrough: Option<TextLineDelegate>,
+    highlight: Option<TextHighlightDelegate>,
+}
+
+impl DecorationParams {
+    /// Moves the node's decorations out of `params`, leaving them unset.
+    pub(crate) fn take(params: &mut TextParamsDelegate) -> Self {
+        Self {
+            underline: params.underline.take(),
+            strikethrough: params.strikethrough.take(),
+            highlight: params.highlight.take(),
+        }
+    }
+
+    pub(crate) fn has_expressions(&self) -> bool {
+        use crate::node::DelegateEvaluable;
+        DelegateEvaluable::has_expressions(&self.underline)
+            || DelegateEvaluable::has_expressions(&self.strikethrough)
+            || DelegateEvaluable::has_expressions(&self.highlight)
+    }
+
+    pub(crate) fn eval(
+        &self,
+        node_id: NodeId,
+        expr: &ExpressionContext<'_>,
+    ) -> crate::Result<TextDecorations> {
+        use crate::node::DelegateEvaluable;
+        let ctx = |property_path| DelegateEvalContext {
+            node_id,
+            property_path,
+            expr,
+        };
+        Ok(TextDecorations {
+            underline: DelegateEvaluable::eval(&self.underline, &ctx("underline"))?,
+            strikethrough: DelegateEvaluable::eval(&self.strikethrough, &ctx("strikethrough"))?,
+            highlight: DelegateEvaluable::eval(&self.highlight, &ctx("highlight"))?,
+        })
+    }
+}
+
+/// The node's decorations: evaluated at compile when constant, else each frame.
+#[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "each compiled text node holds one, so its size does not matter"
+)]
+pub(crate) enum NodeDecorations {
+    Constant(TextDecorations),
+    Animated(DecorationParams),
+}
+
+/// Appends the rect instances of the decorations of `shaped`, placed at `origin`, to
+/// `instances`: highlights, then underlines, then strikethroughs. Returns how many come before
+/// the strikethroughs, which are drawn over the glyphs.
+///
+/// Consecutive spans that take the node's decoration share one run, and a span with its own is
+/// a run alone. A line without its own paint takes the paint index `text_paint` gives each
+/// span; `push_paint` adds a decoration's own paint, with the span whose box it spans if it is
+/// the span's own, and returns its index.
+pub(crate) fn decorate<'a>(
+    shaped: &lumen_text::ShapedText,
+    node: &'a TextDecorations,
+    spans: &'a [TextSpan],
+    origin: [f32; 2],
+    text_paint: impl Fn(usize) -> u32,
+    mut push_paint: impl FnMut(&'a Paint, Option<usize>) -> u32,
+    instances: &mut Vec<lumen_text::GpuGlyphInstance>,
+) -> usize {
+    let span_count = shaped.counts.span as usize;
+    let draw =
+        |instances: &mut Vec<_>, kind, spans, extent: (f64, f64), paint: &dyn Fn(usize) -> u32| {
+            let decoration = lumen_text::TextDecoration {
+                kind,
+                spans,
+                extent: [extent.0 as f32, extent.1 as f32],
+            };
+            shaped.decorate(&decoration, origin, paint, instances);
+        };
+    let mut node_paint = None;
+    for_each_run(
+        node.highlight.as_ref(),
+        spans,
+        span_count,
+        |span| &span.highlight,
+        |range, highlight, own| {
+            let index = match own {
+                Some(span) => push_paint(&highlight.paint, Some(span)),
+                None => *node_paint.get_or_insert_with(|| push_paint(&highlight.paint, None)),
+            };
+            let kind = lumen_text::TextDecorationKind::Highlight {
+                padding: [highlight.padding.0 as f32, highlight.padding.1 as f32],
+                radius: highlight.radius as f32,
+            };
+            draw(instances, kind, range, highlight.extent, &|_| index);
+        },
+    );
+    let mut before_glyphs = 0;
+    for underline in [true, false] {
+        if !underline {
+            before_glyphs = instances.len();
+        }
+        let node_line = if underline {
+            &node.underline
+        } else {
+            &node.strikethrough
+        };
+        let mut node_paint = None;
+        for_each_run(
+            node_line.as_ref(),
+            spans,
+            span_count,
+            |span| {
+                if underline {
+                    &span.underline
+                } else {
+                    &span.strikethrough
+                }
+            },
+            |range, line, own| {
+                let decoration = lumen_text::TextLineDecoration {
+                    style: match line.style {
+                        TextLineStyle::Solid => lumen_text::TextLineStyle::Solid,
+                        TextLineStyle::Double => lumen_text::TextLineStyle::Double,
+                        TextLineStyle::Dotted => lumen_text::TextLineStyle::Dotted,
+                        TextLineStyle::Dashed => lumen_text::TextLineStyle::Dashed,
+                        TextLineStyle::Wavy => lumen_text::TextLineStyle::Wavy,
+                    },
+                    thickness: line.thickness.map(|thickness| thickness as f32),
+                    offset: line.offset.map(|offset| offset as f32),
+                };
+                let kind = if underline {
+                    lumen_text::TextDecorationKind::Underline(decoration)
+                } else {
+                    lumen_text::TextDecorationKind::Strikethrough(decoration)
+                };
+                let index = line.paint.as_ref().map(|paint| match own {
+                    Some(span) => push_paint(paint, Some(span)),
+                    None => *node_paint.get_or_insert_with(|| push_paint(paint, None)),
+                });
+                match index {
+                    Some(index) => draw(instances, kind, range, line.extent, &|_| index),
+                    None => draw(instances, kind, range, line.extent, &text_paint),
+                }
+            },
+        );
+    }
+    before_glyphs
+}
+
+/// The number of paints that `params`' decorations with their own add, or `None` when neither
+/// the node nor any span has a decoration.
+pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
+    let mut lines: Vec<&TextLineDelegate> = params
+        .underline
+        .iter()
+        .chain(&params.strikethrough)
+        .collect();
+    let mut highlights = usize::from(params.highlight.is_some());
+    if let TextContentDelegate::Spans(spans) = &params.content {
+        for span in &spans.items {
+            for line in [&span.underline, &span.strikethrough] {
+                if let Override::Set(line) = line {
+                    lines.push(line);
+                }
+            }
+            highlights += usize::from(matches!(span.highlight, Override::Set(_)));
+        }
+    }
+    (!lines.is_empty() || highlights > 0)
+        .then(|| highlights + lines.iter().filter(|line| line.paint.is_some()).count())
+}
+
+/// Calls `run` with each run of the `span_count` spans that draws a decoration, its value and,
+/// for a span's own, the span: consecutive spans that take the node's `inherited` value, and
+/// each span with its own. `spans` holds the spans' decorations, which `own` reads; plain
+/// string content has none, so takes the node's.
+fn for_each_run<'a, T>(
+    inherited: Option<&'a T>,
+    spans: &'a [TextSpan],
+    span_count: usize,
+    own: impl Fn(&'a TextSpan) -> &'a Override<T>,
+    mut run: impl FnMut(std::ops::Range<usize>, &'a T, Option<usize>),
+) {
+    let inherits = |span: usize| {
+        spans
+            .get(span)
+            .is_none_or(|span| matches!(own(span), Override::Inherit))
+    };
+    let mut span = 0;
+    while span < span_count {
+        if inherits(span) {
+            let start = span;
+            while span < span_count && inherits(span) {
+                span += 1;
+            }
+            if let Some(value) = inherited {
+                run(start..span, value, None);
+            }
+            continue;
+        }
+        if let Override::Set(value) = own(&spans[span]) {
+            run(span..span + 1, value, Some(span));
+        }
+        span += 1;
+    }
 }
 
 /// Loads the families `style` and the spans of `content` name.
