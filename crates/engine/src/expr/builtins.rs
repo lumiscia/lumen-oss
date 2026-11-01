@@ -11,7 +11,7 @@ use crate::{
     node::{
         DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
         source::{
-            text::{TextAlignmentHorizontal, TextFontStyle, TextLayoutStyle},
+            text::{TextAlignmentHorizontal, TextFontStyle, TextLayoutStyle, TextLimits},
             text_content::TextContent,
         },
     },
@@ -303,6 +303,7 @@ pub fn evaluate_text_measure_builtin(
         max_width,
         line_height: 0.0,
         alignment_horizontal: TextAlignmentHorizontal::Left,
+        limits: TextLimits::default(),
     };
     let measurement = measure_text_value(ctx, style.request(&TextContent::Text(text)))?;
     Ok(ExpressionValue::Number(match builtin {
@@ -371,6 +372,7 @@ fn measure_text_node(
         max_width,
         line_height,
         alignment_horizontal,
+        limits: TextLimits::eval(&text.params, node_id, ctx)?,
     };
     measure_text_value(ctx, style.request(&content))
 }

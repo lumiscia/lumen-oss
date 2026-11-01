@@ -86,6 +86,28 @@ pub enum TextRenderMode {
     Auto = 2,
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum")]
+pub enum TextOverflow {
+    #[default]
+    Clip = 0,
+    Ellipsis = 1,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum")]
+pub enum TextFit {
+    #[default]
+    None = 0,
+    Shrink = 1,
+}
+
 /// Produces a text source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TextParams {
@@ -177,6 +199,27 @@ pub struct TextParams {
     /// Enables 4×4 supersampling when evaluating paint at each glyph pixel.
     #[meta()]
     pub paint_supersample: bool,
+    /// Most lines to show. Unlimited when absent.
+    #[meta(min = 0, step = 1)]
+    pub max_lines: Option<i64>,
+    /// Most height in pixels of the lines to show. Unlimited when absent.
+    #[meta(min = 0, step = 1)]
+    pub max_height: Option<f64>,
+    /// How the last line shown ends when lines past `max_lines` or `max_height` are dropped: as
+    /// it is, or in an ellipsis. Clusters at that line's end are dropped until the ellipsis fits
+    /// `max_width`. The ellipsis takes the style and paint of the text it follows, and is one
+    /// glyph, numbered after the last one shown.
+    #[meta(kind = "enum", enum_type = TextOverflow)]
+    pub overflow: TextOverflow,
+    /// Whether the text shrinks to fit `max_width`, `max_lines` and `max_height` without breaking
+    /// a word, before any lines are dropped. Every font size, letter spacing, `line_height` and
+    /// decoration size scales by the largest factor up to 1 that fits.
+    #[meta(kind = "enum", enum_type = TextFit)]
+    pub fit: TextFit,
+    /// Smallest `font_size` that `fit` shrinks the text to. Lines that still do not fit are
+    /// dropped by `overflow`.
+    #[meta(min = 1, step = 1)]
+    pub min_font_size: f64,
 }
 
 impl Default for TextParams {
@@ -209,6 +252,11 @@ impl Default for TextParams {
             alignment_horizontal: TextAlignmentHorizontal::Left,
             alignment_vertical: TextAlignmentVertical::Top,
             paint_supersample: true,
+            max_lines: None,
+            max_height: None,
+            overflow: TextOverflow::Clip,
+            fit: TextFit::None,
+            min_font_size: 8.0,
         }
     }
 }
@@ -820,6 +868,39 @@ pub(crate) struct TextLayoutStyle {
     pub(crate) max_width: f64,
     pub(crate) line_height: f64,
     pub(crate) alignment_horizontal: TextAlignmentHorizontal,
+    pub(crate) limits: TextLimits,
+}
+
+/// How a text's lines are limited and fitted.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct TextLimits {
+    pub(crate) max_lines: Option<i64>,
+    pub(crate) max_height: Option<f64>,
+    pub(crate) overflow: TextOverflow,
+    pub(crate) fit: TextFit,
+    pub(crate) min_font_size: f64,
+}
+
+impl TextLimits {
+    pub(crate) fn eval(
+        params: &TextParamsDelegate,
+        node_id: NodeId,
+        expr: &ExpressionContext<'_>,
+    ) -> crate::Result<Self> {
+        use crate::node::DelegateEvaluable;
+        let ctx = |property_path| DelegateEvalContext {
+            node_id,
+            property_path,
+            expr,
+        };
+        Ok(Self {
+            max_lines: DelegateEvaluable::eval(&params.max_lines, &ctx("max_lines"))?,
+            max_height: DelegateEvaluable::eval(&params.max_height, &ctx("max_height"))?,
+            overflow: params.overflow.eval(&ctx("overflow"))?,
+            fit: params.fit.eval(&ctx("fit"))?,
+            min_font_size: params.min_font_size.eval(node_id, "min_font_size", expr)?,
+        })
+    }
 }
 
 impl TextLayoutStyle {
@@ -833,6 +914,13 @@ impl TextLayoutStyle {
             max_width: params.max_width,
             line_height: params.line_height,
             alignment_horizontal: params.alignment_horizontal,
+            limits: TextLimits {
+                max_lines: params.max_lines,
+                max_height: params.max_height,
+                overflow: params.overflow,
+                fit: params.fit,
+                min_font_size: params.min_font_size,
+            },
         }
     }
 
@@ -854,6 +942,17 @@ impl TextLayoutStyle {
             TextAlignmentHorizontal::Justify => lumen_text::TextAlign::Justified,
             TextAlignmentHorizontal::Left => lumen_text::TextAlign::Left,
         };
+        let limits = &self.limits;
+        request.max_lines = limits
+            .max_lines
+            .map(|lines| lines.clamp(0, u32::MAX.into()) as u32);
+        request.max_height = limits.max_height.map(|height| height.max(0.0) as f32);
+        request.overflow = match limits.overflow {
+            TextOverflow::Clip => lumen_text::TextOverflow::Clip,
+            TextOverflow::Ellipsis => lumen_text::TextOverflow::Ellipsis,
+        };
+        request.min_fit_scale = (limits.fit == TextFit::Shrink)
+            .then(|| (limits.min_font_size / self.font_size.max(1.0)) as f32);
         request
     }
 

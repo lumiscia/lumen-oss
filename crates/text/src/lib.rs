@@ -38,6 +38,16 @@ const MSDF_MAX_MAGNIFICATION: f32 = 4.0;
 pub const MSDF_AUTO_MIN_SIZE: f32 = 512.0;
 /// Width of the MSDF distance range in atlas texels, centred on the outline.
 pub const MSDF_PX_RANGE: f32 = 6.0;
+/// Most shapes a fit takes, counting the final one of text that fits at no factor tried.
+const FIT_SHAPES: usize = 12;
+/// Smallest factor a fit shrinks text by when its requested floor is not a positive number.
+const MIN_FIT_SCALE: f32 = 0.01;
+/// Most recent fits a text system keeps.
+const FIT_CACHE: usize = 32;
+/// Pixels by which lines may pass a limit and still fit it.
+const FIT_TOLERANCE: f32 = 0.01;
+/// Stands in for the byte offset of an ellipsis' cluster, which is past every other.
+const ELLIPSIS_CLUSTER: usize = usize::MAX;
 
 /// How outline glyphs are drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -87,6 +97,9 @@ pub struct TextSystem {
     font_system: FontSystem,
     swash_cache: SwashCache,
     font_generation: u64,
+    /// Recent fits as the request, without its origin and color, the factor it chose and how
+    /// text wraps at it, newest last.
+    fits: Vec<(TextLayoutRequest, f32, Wrap)>,
 }
 
 impl TextSystem {
@@ -103,12 +116,14 @@ impl TextSystem {
             font_system,
             swash_cache: SwashCache::new(),
             font_generation: 0,
+            fits: Vec::new(),
         }
     }
 
     pub fn load_font_data(&mut self, data: Vec<u8>) {
         self.font_system.db_mut().load_font_data(data);
         self.font_generation += 1;
+        self.fits.clear();
     }
 
     /// Changes whenever fonts are loaded, so shaped text can be invalidated.
@@ -126,6 +141,79 @@ impl TextSystem {
 
     /// Shapes text without placing it, so it can be placed at many origins.
     pub fn shape(&mut self, request: &TextLayoutRequest) -> ShapedText {
+        let Some(min_scale) = request.min_fit_scale.filter(|_| request.is_limited()) else {
+            return self.shape_lines(request, Wrap::WordOrGlyph, true);
+        };
+        // Measurement, bounds and drawing each shape the same text, so they share its fit.
+        let key = TextLayoutRequest {
+            origin: [0.0; 2],
+            color: [1.0; 4],
+            ..request.clone()
+        };
+        let cached = self.fits.iter().find(|(fitted, ..)| *fitted == key);
+        let (scale, wrap, fitted) = match cached {
+            Some(&(_, scale, wrap)) => (scale, wrap, None),
+            None => {
+                let min_scale = if min_scale > 0.0 {
+                    min_scale.min(1.0)
+                } else {
+                    MIN_FIT_SCALE
+                };
+                let (scale, fitted) = self.fit(request, min_scale);
+                // Text that fits keeps its words whole, as the fit shaped them, even where it
+                // overflows by less than the fit's tolerance.
+                let wrap = if fitted.is_some() {
+                    Wrap::Word
+                } else {
+                    Wrap::WordOrGlyph
+                };
+                if self.fits.len() == FIT_CACHE {
+                    self.fits.remove(0);
+                }
+                self.fits.push((key, scale, wrap));
+                (scale, wrap, fitted)
+            }
+        };
+        // A fit can leave more paragraphs than `max_lines`, which only a limited shape drops.
+        let mut shaped = fitted
+            .filter(|shaped| {
+                request
+                    .max_lines
+                    .is_none_or(|max| shaped.counts.line <= max)
+            })
+            .unwrap_or_else(|| self.shape_lines(&request.scaled(scale), wrap, true));
+        shaped.fit_scale = scale;
+        shaped
+    }
+
+    /// The largest factor from `min_scale` to 1 that makes `request` fit its limits when every
+    /// size scales by it, without breaking words, and the text shaped at it. Without one that
+    /// fits within one shape less than [`FIT_SHAPES`], which leaves one to shape the text at
+    /// it, `min_scale` and no text.
+    fn fit(&mut self, request: &TextLayoutRequest, min_scale: f32) -> (f32, Option<ShapedText>) {
+        let mut best: Option<(f32, ShapedText)> = None;
+        // The smallest factor known not to fit, or 1, past which text never grows.
+        let mut overflowing: f32 = 1.0;
+        let mut scale = 1.0;
+        for _ in 1..FIT_SHAPES {
+            let shaped = self.shape_lines(&request.scaled(scale), Wrap::Word, false);
+            let ratio = request.fit_ratio(&shaped);
+            if ratio >= 1.0 {
+                best = Some((scale, shaped));
+            } else {
+                overflowing = scale;
+            }
+            scale = match &best {
+                Some((fits, _)) if overflowing / fits > 1.002 => (fits * overflowing).sqrt(),
+                Some(_) => break,
+                None if scale <= min_scale => break,
+                None => (scale * ratio.min(0.98)).max(min_scale),
+            };
+        }
+        best.map_or((min_scale, None), |(scale, shaped)| (scale, Some(shaped)))
+    }
+
+    fn shape_lines(&mut self, request: &TextLayoutRequest, wrap: Wrap, limit: bool) -> ShapedText {
         let fallback = [TextSpan::new("")];
         let spans = if request.spans.is_empty() {
             &fallback[..]
@@ -181,7 +269,7 @@ impl TextSystem {
             .filter(|width| *width > 0.0)
             .map(|width| width + widening);
         buffer.set_size(layout_width, None);
-        buffer.set_wrap(if wraps { Wrap::WordOrGlyph } else { Wrap::None });
+        buffer.set_wrap(if wraps { wrap } else { Wrap::None });
         let text: String = spans.iter().map(|span| span.text.as_str()).collect();
         let span_ranges: Vec<Range<usize>> = spans
             .iter()
@@ -261,23 +349,66 @@ impl TextSystem {
         let mut x_max = f32::NEG_INFINITY;
         let runs: Vec<_> = buffer.layout_runs().collect();
         let max_width = request.max_width.filter(|_| wraps);
-        for (run_index, run) in runs.iter().enumerate() {
+        let shown = if limit && (request.max_lines.is_some() || request.max_height.is_some()) {
+            runs.iter()
+                .take(request.max_lines.map_or(usize::MAX, |lines| lines as usize))
+                .take_while(|run| {
+                    request.max_height.is_none_or(|height| {
+                        run.line_top + run.line_height <= height + FIT_TOLERANCE
+                    })
+                })
+                .count()
+        } else {
+            runs.len()
+        };
+        let truncated = shown < runs.len();
+        let mut has_ellipsis = false;
+        for (run_index, run) in runs[..shown].iter().enumerate() {
             let mut line_glyphs = run.glyphs.to_vec();
-            // The line's trailing tracking is that of the glyph cosmic-text placed first in a
-            // right-to-left line and last in a left-to-right one, whose advance ends the line.
-            let trailing_index = if run.rtl {
+            // cosmic-text aligned the untrimmed line within the widened width. Justified
+            // lines are not shifted.
+            let aligned = layout_width.map_or(0.0, |layout_width| {
+                align_factor * (layout_width - run.line_w).max(0.0)
+            });
+            let mut line_w = run.line_w;
+            // The ellipsis glyphs' range in `line_glyphs`.
+            let mut ellipsis = 0..0;
+            if truncated && request.overflow == TextOverflow::Ellipsis && run_index + 1 == shown {
+                let fallback_span = glyphs
+                    .last()
+                    .map_or(0, |shaped: &ShapedGlyph| shaped.item.span);
+                (line_w, ellipsis) = self.ellipsize(
+                    &mut line_glyphs,
+                    run,
+                    spans,
+                    &attrs,
+                    request,
+                    max_width,
+                    aligned,
+                    fallback_span as usize,
+                );
+                has_ellipsis = true;
+            }
+            // The line's trailing tracking is that of the glyph whose advance ends it on the
+            // right: the rightmost of a line closed up around an ellipsis, or else the one
+            // cosmic-text placed first in a right-to-left line and last in a left-to-right one.
+            let trailing_index = if !ellipsis.is_empty() {
+                let end = |index: usize| line_glyphs[index].x + line_glyphs[index].w;
+                (0..line_glyphs.len()).max_by(|&a, &b| end(a).total_cmp(&end(b)))
+            } else if run.rtl {
                 (!line_glyphs.is_empty()).then_some(0)
             } else {
                 line_glyphs.len().checked_sub(1)
             };
             let trailing = trailing_index.map_or(0.0, |index| spacing(&line_glyphs[index]));
-            let mut ink_width = run.line_w - trailing;
+            let mut ink_width = line_w - trailing;
             let ends_paragraph = runs
                 .get(run_index + 1)
                 .is_none_or(|next| next.line_i != run.line_i);
             if let Some(max_width) = max_width
                 && request.align == TextAlign::Justified
                 && !ends_paragraph
+                && ellipsis.is_empty()
             {
                 // cosmic-text stretched the line to the widened width, which leaves it short
                 // by the difference between its trailing tracking and the narrowest. That
@@ -304,11 +435,6 @@ impl TextSystem {
                     }
                 }
             }
-            // cosmic-text aligned the untrimmed line within the widened width. Justified
-            // lines are not shifted.
-            let aligned = layout_width.map_or(0.0, |layout_width| {
-                align_factor * (layout_width - run.line_w).max(0.0)
-            });
             let shift = match max_width {
                 Some(max_width) => align_factor * (max_width - ink_width).max(0.0) - aligned,
                 None => 0.0,
@@ -321,12 +447,19 @@ impl TextSystem {
             let line_middle = run.line_top + run.line_height * 0.5;
             let paragraph_start = paragraphs[run.line_i].start;
             let first = glyphs.len();
-            for mut glyph in line_glyphs {
+            for (index, mut glyph) in line_glyphs.into_iter().enumerate() {
                 glyph.x += shift;
                 let span = glyph.metadata.min(spans.len() - 1);
                 x_min = x_min.min(glyph.x);
                 x_max = x_max.max(glyph.x + glyph.w - spacing(&glyph));
-                clusters.push((run.line_i, glyph.start));
+                clusters.push((
+                    run.line_i,
+                    if ellipsis.contains(&index) {
+                        ELLIPSIS_CLUSTER
+                    } else {
+                        glyph.start
+                    },
+                ));
                 if span_metrics[span].is_none() {
                     let font = self.font_metrics(&mut fonts, &glyph);
                     span_metrics[span] = Some(font.decorations(spans[span].font_size.max(1.0)));
@@ -360,12 +493,16 @@ impl TextSystem {
                     shaped.pivot[0] = middle;
                 }
             }
-            // Segments follow the line from left to right, splitting where the span or direction changes.
+            // Segments follow the line from left to right, splitting where the span or direction
+            // changes, and around an ellipsis, which covers no bytes.
             let mut order: Vec<usize> = (first..glyphs.len()).collect();
             order.sort_by(|&a, &b| glyphs[a].glyph.x.total_cmp(&glyphs[b].glyph.x));
             for run_glyphs in order.chunk_by(|&a, &b| {
+                let ellipses = [a, b].map(|index| ellipsis.contains(&(index - first)));
                 let (a, b) = (&glyphs[a], &glyphs[b]);
-                a.item.span == b.item.span && a.glyph.level.is_rtl() == b.glyph.level.is_rtl()
+                a.item.span == b.item.span
+                    && a.glyph.level.is_rtl() == b.glyph.level.is_rtl()
+                    && ellipses[0] == ellipses[1]
             }) {
                 let lead = &glyphs[run_glyphs[0]];
                 let span_range = &span_ranges[lead.item.span as usize];
@@ -410,6 +547,12 @@ impl TextSystem {
         // Wrapping drops the whitespace it breaks at from the runs, so clusters are taken from
         // the unwrapped shaping too, which keeps numbering independent of the wrap width.
         let mut ordered = clusters.clone();
+        // Truncated text shows a logical prefix of its clusters, which keep their numbers, and
+        // the ellipsis is numbered after them.
+        let last_shown = truncated.then(|| {
+            ordered.retain(|cluster| cluster.1 != ELLIPSIS_CLUSTER);
+            ordered.iter().max().copied()
+        });
         for (paragraph, line) in buffer.lines.iter().enumerate() {
             let shaping = line.shape_opt().into_iter().flat_map(|shape| &shape.spans);
             ordered.extend(
@@ -421,8 +564,11 @@ impl TextSystem {
         }
         ordered.sort_unstable();
         ordered.dedup();
+        if let Some(last_shown) = last_shown {
+            ordered.retain(|cluster| last_shown.is_some_and(|last| *cluster <= last));
+        }
         for (shaped, cluster) in glyphs.iter_mut().zip(&clusters) {
-            shaped.item.glyph = ordered.binary_search(cluster).unwrap_or_default() as u32;
+            shaped.item.glyph = ordered.binary_search(cluster).unwrap_or_else(|index| index) as u32;
         }
         let bounds = if glyphs.is_empty() {
             [0.0, 0.0, 0.0, height]
@@ -453,8 +599,16 @@ impl TextSystem {
             measurement: TextMeasurement { width, height },
             bounds,
             counts: TextItem {
-                glyph: ordered.len() as u32,
-                word: words.total(),
+                glyph: ordered.len() as u32 + u32::from(has_ellipsis),
+                word: if truncated {
+                    glyphs
+                        .iter()
+                        .map(|shaped| shaped.item.word + 1)
+                        .max()
+                        .unwrap_or(0)
+                } else {
+                    words.total()
+                },
                 line: lines,
                 span: request.spans.len() as u32,
             },
@@ -470,8 +624,143 @@ impl TextSystem {
                 .map(|range| range.start)
                 .chain([text.len()])
                 .collect(),
+            fit_scale: 1.0,
+            paragraphs: paragraphs.len() as u32,
             glyphs,
         }
+    }
+
+    /// Ends `line`, the glyphs of `run` from left to right, with an ellipsis in reading order:
+    /// on the right of a left-to-right paragraph and the left of a right-to-left one. Its
+    /// logically last clusters, and whitespace before the ellipsis, are dropped until the line
+    /// fits `max_width`, and the rest close up. The ellipsis takes the attrs of the span of the
+    /// last glyph kept, else of the line's first, else `fallback_span`'s. A line without glyphs
+    /// starts at `aligned`. Returns the line's width and the ellipsis glyphs' range in `line`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the ellipsis reads the line's shaping state from `shape_lines`"
+    )]
+    fn ellipsize(
+        &mut self,
+        line: &mut Vec<LayoutGlyph>,
+        run: &cosmic_text::LayoutRun,
+        spans: &[TextSpan],
+        attrs: &[Attrs],
+        request: &TextLayoutRequest,
+        max_width: Option<f32>,
+        aligned: f32,
+        fallback_span: usize,
+    ) -> (f32, Range<usize>) {
+        let spacing = |glyph: &LayoutGlyph| {
+            spans
+                .get(glyph.metadata)
+                .map_or(0.0, |span| span.letter_spacing)
+        };
+        let left = line
+            .iter()
+            .map(|glyph| glyph.x)
+            .fold(f32::INFINITY, f32::min);
+        let mut order: Vec<usize> = (0..line.len()).collect();
+        order.sort_by_key(|&index| (line[index].start, index));
+        let fallback_span = order
+            .first()
+            .map_or(fallback_span, |&first| line[first].metadata);
+        let mut ellipses: HashMap<usize, Vec<LayoutGlyph>> = HashMap::new();
+        // Glyphs `order[..kept]` are kept.
+        let mut kept = order.len();
+        let mut kept_width: f32 = line.iter().map(|glyph| glyph.w).sum();
+        let mut ellipsis = loop {
+            let last = kept.checked_sub(1).map(|last| &line[order[last]]);
+            let span = last
+                .map_or(fallback_span, |glyph| glyph.metadata)
+                .min(spans.len() - 1);
+            let ellipsis = ellipses.entry(span).or_insert_with(|| {
+                let mut buffer =
+                    Buffer::new(&mut self.font_system, request.span_metrics(&spans[span]));
+                buffer.set_text("\u{2026}", &attrs[span], Shaping::Advanced, None);
+                buffer.shape_until_scroll(&mut self.font_system, true);
+                buffer
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs.iter().cloned())
+                    .collect()
+            });
+            let Some(last) = last else {
+                break ellipsis.clone();
+            };
+            // The line ends on the right in the ellipsis, or in the rightmost glyph kept when
+            // the ellipsis is on its left, without that glyph's tracking.
+            let rightmost = if run.rtl {
+                order[..kept]
+                    .iter()
+                    .map(|&index| &line[index])
+                    .max_by(|a, b| (a.x + a.w).total_cmp(&(b.x + b.w)))
+            } else {
+                ellipsis.last()
+            };
+            let width: f32 =
+                ellipsis.iter().map(|glyph| glyph.w).sum::<f32>() - rightmost.map_or(0.0, spacing);
+            let space = run.text[last.start..last.end]
+                .chars()
+                .all(char::is_whitespace);
+            if !space && max_width.is_none_or(|max| kept_width + width <= max + FIT_TOLERANCE) {
+                break ellipsis.clone();
+            }
+            let start = last.start;
+            while kept > 0 && line[order[kept - 1]].start == start {
+                kept -= 1;
+                kept_width -= line[order[kept]].w;
+            }
+        };
+        let cut = match kept.checked_sub(1) {
+            Some(last) => line[order[last]].end,
+            None => order.first().map_or(0, |&first| line[first].start),
+        };
+        let mut removed = vec![false; line.len()];
+        for &index in &order[kept..] {
+            removed[index] = true;
+        }
+        let removed_glyphs: Vec<&LayoutGlyph> = (0..line.len())
+            .filter(|&index| removed[index])
+            .map(|index| &line[index])
+            .collect();
+        let mut kept_glyphs: Vec<LayoutGlyph> = (0..line.len())
+            .filter(|&index| !removed[index])
+            .map(|index| {
+                let mut glyph = line[index].clone();
+                glyph.x -= removed_glyphs
+                    .iter()
+                    .filter(|removed| removed.x < glyph.x)
+                    .map(|removed| removed.w)
+                    .sum::<f32>();
+                glyph
+            })
+            .collect();
+        let left = if left.is_finite() { left } else { aligned };
+        let ellipsis_width: f32 = ellipsis.iter().map(|glyph| glyph.w).sum();
+        for glyph in &mut ellipsis {
+            (glyph.start, glyph.end) = (cut, cut);
+            glyph.level = if run.rtl {
+                unicode_bidi::Level::rtl()
+            } else {
+                unicode_bidi::Level::ltr()
+            };
+            glyph.x += if run.rtl { left } else { left + kept_width };
+        }
+        let range = if run.rtl {
+            for glyph in &mut kept_glyphs {
+                glyph.x += ellipsis_width;
+            }
+            let range = 0..ellipsis.len();
+            ellipsis.append(&mut kept_glyphs);
+            *line = ellipsis;
+            range
+        } else {
+            let range = kept_glyphs.len()..kept_glyphs.len() + ellipsis.len();
+            kept_glyphs.append(&mut ellipsis);
+            *line = kept_glyphs;
+            range
+        };
+        (kept_width + ellipsis_width, range)
     }
 
     /// Line and decoration metrics of `glyph`'s font, cached in `fonts`.
@@ -879,7 +1168,7 @@ impl TextSpan {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextLayoutRequest {
     /// Text in order, as styled runs that may span lines and paragraphs.
     pub spans: Vec<TextSpan>,
@@ -890,6 +1179,17 @@ pub struct TextLayoutRequest {
     pub origin: [f32; 2],
     pub color: [f32; 4],
     pub disable_hinting: bool,
+    /// Most lines to show.
+    pub max_lines: Option<u32>,
+    /// Most height of the lines to show.
+    pub max_height: Option<f32>,
+    /// How the last line shown ends when lines past `max_lines` or `max_height` are dropped.
+    pub overflow: TextOverflow,
+    /// When set, every size shrinks by the largest factor down to this one that fits the text
+    /// in `max_width`, `max_lines` and `max_height` without breaking a word, before lines are
+    /// dropped. Font sizes, letter spacing, `line_height` and the decorations' own sizes all
+    /// scale.
+    pub min_fit_scale: Option<f32>,
 }
 
 impl TextLayoutRequest {
@@ -907,7 +1207,56 @@ impl TextLayoutRequest {
             origin: [0.0, 0.0],
             color: [1.0, 1.0, 1.0, 1.0],
             disable_hinting: true,
+            max_lines: None,
+            max_height: None,
+            overflow: TextOverflow::Clip,
+            min_fit_scale: None,
         }
+    }
+
+    fn is_limited(&self) -> bool {
+        self.max_width.is_some_and(|width| width > 0.0)
+            || self.max_lines.is_some()
+            || self.max_height.is_some()
+    }
+
+    /// This request with every size scaled by `scale`.
+    fn scaled(&self, scale: f32) -> Self {
+        let mut request = self.clone();
+        for span in &mut request.spans {
+            span.font_size *= scale;
+            span.letter_spacing *= scale;
+        }
+        request.line_height = self.line_height.map(|height| height * scale);
+        request
+    }
+
+    /// 1 when `shaped`, shaped without breaking words, fits the limits, and otherwise an estimate
+    /// below 1 of the factor that would make it fit. Wrapped lines hold more text as it shrinks,
+    /// so wrapped height shrinks about as the square of the factor.
+    fn fit_ratio(&self, shaped: &ShapedText) -> f32 {
+        let wraps = self.max_width.is_some_and(|width| width > 0.0);
+        let TextMeasurement { width, height } = shaped.measurement;
+        let mut ratio: f32 = 1.0;
+        if let Some(max) = self.max_width.filter(|_| wraps)
+            && width > max + FIT_TOLERANCE
+        {
+            ratio = ratio.min(max / width);
+        }
+        // Shrinking never joins paragraphs, so lines past them are dropped at any size.
+        if let Some(max) = self.max_lines.map(|max| max.max(shaped.paragraphs))
+            && shaped.counts.line > max
+        {
+            let lines = max as f32 / shaped.counts.line as f32;
+            ratio = ratio.min(if wraps { lines } else { 0.0 });
+        }
+        if let Some(max) = self.max_height
+            && height > max + FIT_TOLERANCE
+        {
+            let heights = max.max(0.0) / height;
+            ratio = ratio.min(if wraps { heights.sqrt() } else { heights });
+        }
+        ratio
     }
 
     fn span_metrics(&self, span: &TextSpan) -> Metrics {
@@ -924,6 +1273,19 @@ pub enum TextFontStyle {
     Normal,
     Italic,
     Oblique,
+}
+
+/// How the last line shown ends when lines past a request's `max_lines` or `max_height` are
+/// dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextOverflow {
+    /// As it is.
+    #[default]
+    Clip,
+    /// In an ellipsis in reading order, in the style of the text it follows. Clusters at the
+    /// line's end are dropped until it fits `max_width`. The ellipsis is one glyph, numbered
+    /// after the last one shown.
+    Ellipsis,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1002,15 +1364,19 @@ pub struct ShapedText {
     /// Number of glyphs, words, lines and spans.
     pub counts: TextItem,
     /// Each contiguous run of one span and direction on a line, by line and then from left
-    /// to right.
+    /// to right. An ellipsis is a segment of its own, covering no bytes.
     pub segments: Vec<TextSegment>,
     /// The box of each span's segments as `[x, y, width, height]`, or `None` for a span that
     /// draws none.
     pub span_boxes: Vec<Option<[f32; 4]>>,
     /// Decoration metrics of each span's font, or zero for spans that draw no glyphs.
     pub span_metrics: Vec<TextSpanMetrics>,
+    /// Factor every size was scaled by to fit the request's limits; 1 unless it shrank.
+    pub fit_scale: f32,
     /// Byte offset of each span in the whole text, and the text's length.
     span_starts: Vec<usize>,
+    /// Lines the text has however wide its lines may be.
+    paragraphs: u32,
     glyphs: Vec<ShapedGlyph>,
 }
 
@@ -1215,6 +1581,10 @@ impl ShapedText {
             let metrics = self.span_metrics[tallest.span as usize];
             let (top, bottom, shape, padding, radius) = match decoration.kind {
                 TextDecorationKind::Highlight { padding, radius } => {
+                    let (padding, radius) = (
+                        padding.map(|pad| pad * self.fit_scale),
+                        radius * self.fit_scale,
+                    );
                     let ascent = in_run().map(|segment| segment.ascent).fold(0.0, f32::max);
                     let descent = in_run().map(|segment| segment.descent).fold(0.0, f32::max);
                     let top = tallest.baseline - ascent - padding[1];
@@ -1233,11 +1603,14 @@ impl ShapedText {
                         }
                         _ => (metrics.strikeout_offset, metrics.strikeout_thickness),
                     };
-                    let thickness = line.thickness.unwrap_or(thickness);
+                    let thickness = line
+                        .thickness
+                        .map_or(thickness, |thickness| thickness * self.fit_scale);
                     if thickness <= 0.0 {
                         continue;
                     }
-                    let top = tallest.baseline + line.offset.unwrap_or(offset);
+                    let top = tallest.baseline
+                        + line.offset.map_or(offset, |offset| offset * self.fit_scale);
                     let shape = match line.style {
                         TextLineStyle::Solid => RECT_SOLID,
                         TextLineStyle::Double => RECT_DOUBLE,
@@ -1273,12 +1646,25 @@ impl ShapedText {
                 let bytes =
                     [segment.bytes.start, segment.bytes.end].map(|byte| (span_start + byte) as f32);
                 let covered = [bytes[0].max(start), bytes[1].min(end)];
-                if covered[0] >= covered[1] {
-                    continue;
-                }
                 let width = segment.x[1] - segment.x[0];
                 let along = covered.map(|byte| (byte - bytes[0]) / (bytes[1] - bytes[0]) * width);
-                let x = if segment.rtl {
+                // An ellipsis alone in its segment covers no bytes. It is decorated when the
+                // decoration covers the text it takes its style from: the text it follows, or
+                // the first it replaced when it is alone on its line.
+                let x = if bytes[0] == bytes[1] {
+                    let byte = bytes[0];
+                    let decorated = if line.len() == 1 {
+                        start <= byte && byte < end
+                    } else {
+                        start < byte && byte <= end
+                    };
+                    if !decorated {
+                        continue;
+                    }
+                    segment.x
+                } else if covered[0] >= covered[1] {
+                    continue;
+                } else if segment.rtl {
                     [segment.x[1] - along[1], segment.x[1] - along[0]]
                 } else {
                     [segment.x[0] + along[0], segment.x[0] + along[1]]
@@ -3128,5 +3514,309 @@ mod tests {
             assert!((end - 200.0).abs() < 0.01, "line {line} ends at {end}");
         }
         assert!(shaped.bounds[0] + shaped.bounds[2] <= 200.01);
+    }
+
+    fn ellipsis_glyph(system: &mut TextSystem, font_size: f32) -> u16 {
+        let shaped = system.shape(&TextLayoutRequest::from_spans(vec![span(
+            "\u{2026}", font_size,
+        )]));
+        shaped.glyphs[0].glyph.glyph_id
+    }
+
+    #[test]
+    fn max_lines_end_wrapped_text_in_an_ellipsis() {
+        let mut system = TextSystem::new();
+        let ellipsis = ellipsis_glyph(&mut system, 20.0);
+        let items = |shaped: &ShapedText| -> Vec<(u16, TextItem)> {
+            shaped
+                .glyphs
+                .iter()
+                .map(|shaped| (shaped.glyph.glyph_id, shaped.item))
+                .collect()
+        };
+        let mut request =
+            TextLayoutRequest::from_spans(vec![span("one two three four five six", 20.0)]);
+        request.max_width = Some(100.0);
+        let full = system.shape(&request);
+        assert!(full.counts.line > 2);
+        request.max_lines = Some(2);
+        let clipped = system.shape(&request);
+        request.overflow = TextOverflow::Ellipsis;
+        let ellipsized = system.shape(&request);
+        for shaped in [&clipped, &ellipsized] {
+            assert_eq!(shaped.counts.line, 2);
+            assert!((shaped.measurement.height - 48.0).abs() < 0.01);
+            assert!(shaped.measurement.width <= 100.01);
+        }
+        // The lines shown keep their glyphs' numbers, and the counts end with them.
+        let shown = clipped.glyphs.len();
+        assert_eq!(items(&clipped), items(&full)[..shown]);
+        let last_shown = clipped.glyphs[shown - 1].item;
+        assert_eq!(clipped.counts.glyph, last_shown.glyph + 1);
+        assert_eq!(clipped.counts.word, last_shown.word + 1);
+        // The ellipsis is one more glyph, after the second line's.
+        let (last, kept) = ellipsized.glyphs.split_last().unwrap();
+        assert_eq!(last.glyph.glyph_id, ellipsis);
+        assert_eq!(
+            (last.item.line, last.item.glyph),
+            (1, ellipsized.counts.glyph - 1)
+        );
+        assert!(kept.iter().all(|glyph| glyph.glyph.x < last.glyph.x));
+
+        // A word broken to fill the line loses clusters until the ellipsis fits after it.
+        let mut request = TextLayoutRequest::from_spans(vec![span("Supercalifragilistic", 20.0)]);
+        request.max_width = Some(100.0);
+        let first_line = system
+            .shape(&request)
+            .glyphs
+            .iter()
+            .filter(|glyph| glyph.item.line == 0)
+            .count();
+        request.max_lines = Some(1);
+        request.overflow = TextOverflow::Ellipsis;
+        let shaped = system.shape(&request);
+        let (last, kept) = shaped.glyphs.split_last().unwrap();
+        assert_eq!(last.glyph.glyph_id, ellipsis);
+        assert!(kept.len() < first_line);
+        assert!(shaped.measurement.width <= 100.01);
+        let kept_end = kept
+            .last()
+            .map(|glyph| glyph.glyph.x + glyph.glyph.w)
+            .unwrap();
+        assert!((last.glyph.x - kept_end).abs() < 0.01);
+        assert_eq!(shaped.counts.glyph, kept.len() as u32 + 1);
+    }
+
+    #[test]
+    fn right_to_left_ellipsis_ends_the_line_on_its_left() {
+        let mut system = TextSystem::new();
+        let ellipsis = ellipsis_glyph(&mut system, 30.0);
+        let mut request = TextLayoutRequest::from_spans(vec![span("שלום עולם טוב מאוד", 30.0)]);
+        request.max_width = Some(120.0);
+        request.max_lines = Some(1);
+        request.overflow = TextOverflow::Ellipsis;
+        request.align = TextAlign::Right;
+        let shaped = system.shape(&request);
+        assert_eq!(shaped.counts.line, 1);
+        let leftmost = shaped
+            .glyphs
+            .iter()
+            .min_by(|a, b| a.glyph.x.total_cmp(&b.glyph.x))
+            .unwrap();
+        assert_eq!(leftmost.glyph.glyph_id, ellipsis);
+        assert_eq!(leftmost.item.glyph, shaped.counts.glyph - 1);
+        assert!(shaped.measurement.width <= 120.01);
+        assert!((shaped.bounds[0] + shaped.bounds[2] - 120.0).abs() < 0.01);
+        assert!(shaped.segments.iter().all(|segment| segment.rtl));
+    }
+
+    #[test]
+    fn shrink_fits_a_long_line_by_the_largest_factor() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![
+            span("Shrink this long line ", 40.0),
+            TextSpan {
+                letter_spacing: 2.0,
+                ..span("into the box", 30.0)
+            },
+        ]);
+        request.max_width = Some(200.0);
+        request.max_lines = Some(1);
+        request.min_fit_scale = Some(0.1);
+        let shaped = system.shape(&request);
+        let scale = shaped.fit_scale;
+        assert!(scale > 0.1 && scale < 1.0, "{scale}");
+        assert_eq!(shaped.counts.line, 1);
+        assert!(shaped.measurement.width <= 200.01);
+        assert!((shaped.glyphs[0].glyph.font_size - 40.0 * scale).abs() < 0.001);
+        // It measures and draws as the text shaped at that factor, which 1% larger overflows.
+        let unfitted = |scale: f32| {
+            let mut request = request.scaled(scale);
+            request.min_fit_scale = None;
+            request
+        };
+        let again = system.shape(&request);
+        assert_eq!(again.measurement, shaped.measurement);
+        assert_eq!(system.fits.len(), 1);
+        let plain = system.shape(&unfitted(scale));
+        assert_eq!(plain.measurement, shaped.measurement);
+        assert_eq!(plain.bounds, shaped.bounds);
+        assert!((shaped.bounds[2] - shaped.measurement.width).abs() < 0.01);
+        let larger = system.shape_lines(&unfitted(scale * 1.01), Wrap::Word, false);
+        assert!(request.fit_ratio(&larger) < 1.0);
+        // Text that already fits never grows.
+        request.max_width = Some(2000.0);
+        assert_eq!(system.shape(&request).fit_scale, 1.0);
+    }
+
+    #[test]
+    fn text_that_does_not_fit_at_the_smallest_factor_overflows() {
+        let mut system = TextSystem::new();
+        let ellipsis = ellipsis_glyph(&mut system, 36.0);
+        let mut request =
+            TextLayoutRequest::from_spans(vec![span("Too long to fit in one line", 40.0)]);
+        request.max_width = Some(200.0);
+        request.max_lines = Some(1);
+        request.overflow = TextOverflow::Ellipsis;
+        request.min_fit_scale = Some(0.9);
+        let shaped = system.shape(&request);
+        assert_eq!(shaped.fit_scale, 0.9);
+        assert_eq!(shaped.counts.line, 1);
+        let last = shaped.glyphs.last().unwrap();
+        assert_eq!(last.glyph.glyph_id, ellipsis);
+        assert!((last.glyph.font_size - 36.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn right_to_left_ellipsis_measures_without_the_rightmost_tracking() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![
+            TextSpan {
+                letter_spacing: 10.0,
+                ..span("שלום ", 30.0)
+            },
+            span("עולם\nעוד", 30.0),
+        ]);
+        request.max_width = Some(500.0);
+        request.max_lines = Some(1);
+        request.overflow = TextOverflow::Ellipsis;
+        request.align = TextAlign::Right;
+        let shaped = system.shape(&request);
+        let [x, _, width, _] = shaped.bounds;
+        assert!((shaped.measurement.width - width).abs() < 0.01);
+        assert!((x + width - 500.0).abs() < 0.01, "{x} + {width}");
+        let right = shaped
+            .segments
+            .iter()
+            .map(|segment| segment.x[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!((right - 500.0).abs() < 0.01, "{right}");
+    }
+
+    #[test]
+    fn an_ellipsis_alone_on_its_line_takes_the_decoration_of_the_text_it_replaced() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![span("Hello world", 20.0)]);
+        request.max_width = Some(12.0);
+        request.max_lines = Some(1);
+        request.overflow = TextOverflow::Ellipsis;
+        let shaped = system.shape(&request);
+        assert_eq!(shaped.glyphs.len(), 1);
+        let [segment] = &shaped.segments[..] else {
+            panic!("expected the ellipsis alone");
+        };
+        let mut instances = Vec::new();
+        let highlight = TextDecoration {
+            kind: TextDecorationKind::Highlight {
+                padding: [0.0; 2],
+                radius: 0.0,
+            },
+            spans: 0..1,
+            extent: [0.0, 1.0],
+        };
+        shaped.decorate(&highlight, [0.0; 2], |_| 0, &mut instances);
+        let [rect] = &instances[..] else {
+            panic!("expected one rect");
+        };
+        assert!((rect.rect[0] - segment.x[0]).abs() < 0.01);
+        assert!((rect.rect[2] - (segment.x[1] - segment.x[0])).abs() < 0.01);
+    }
+
+    #[test]
+    fn an_ellipsis_at_a_span_boundary_is_decorated_by_extents_reaching_it() {
+        let mut system = TextSystem::new();
+        let mut request =
+            TextLayoutRequest::from_spans(vec![span("Hello", 20.0), span("\nmore", 20.0)]);
+        request.max_lines = Some(1);
+        request.overflow = TextOverflow::Ellipsis;
+        let shaped = system.shape(&request);
+        let ellipsis = shaped.segments.last().unwrap();
+        assert_eq!((ellipsis.span, ellipsis.bytes.clone()), (0, 5..5));
+        let underline = |spans: Range<usize>, extent: [f32; 2]| {
+            let decoration = TextDecoration {
+                kind: TextDecorationKind::Underline(TextLineDecoration {
+                    style: TextLineStyle::Solid,
+                    thickness: None,
+                    offset: None,
+                }),
+                spans,
+                extent,
+            };
+            let mut instances = Vec::new();
+            shaped.decorate(&decoration, [0.0; 2], |_| 0, &mut instances);
+            instances
+                .iter()
+                .map(|instance| instance.rect[0] + instance.rect[2])
+                .collect::<Vec<_>>()
+        };
+        // Ending at the boundary reaches the text the ellipsis follows.
+        for (spans, extent) in [(0..1, [0.0, 1.0]), (0..2, [0.0, 0.5])] {
+            let [end] = underline(spans, extent)[..] else {
+                panic!("expected one rect");
+            };
+            assert!((end - ellipsis.x[1]).abs() < 0.01, "{end}");
+        }
+        // Starting there covers only the hidden text.
+        assert!(underline(0..2, [0.5, 1.0]).is_empty());
+        assert!(underline(1..2, [0.0, 1.0]).is_empty());
+    }
+
+    #[test]
+    fn max_height_drops_lines_and_a_trailing_empty_line_counts() {
+        let mut system = TextSystem::new();
+        let ellipsis = ellipsis_glyph(&mut system, 20.0);
+        let mut request = TextLayoutRequest::from_spans(vec![span("one\r\ntwo\r\n", 20.0)]);
+        request.line_height = Some(20.0);
+        assert_eq!(system.shape(&request).counts.line, 3);
+        request.max_height = Some(45.0);
+        let clipped = system.shape(&request);
+        assert_eq!(clipped.counts.line, 2);
+        assert_eq!(clipped.measurement.height, 40.0);
+        assert_eq!(clipped.counts.glyph, 6);
+        // The empty line dropped still ends the line before it in an ellipsis.
+        request.overflow = TextOverflow::Ellipsis;
+        let shaped = system.shape(&request);
+        let last = shaped.glyphs.last().unwrap();
+        assert_eq!(last.glyph.glyph_id, ellipsis);
+        assert_eq!((last.item.line, last.item.glyph), (1, 6));
+        assert_eq!(shaped.counts.glyph, 7);
+    }
+
+    #[test]
+    fn shrink_reaches_a_floor_below_one_percent() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![span("HH", 2000.0)]);
+        request.max_width = Some(15.0);
+        request.max_lines = Some(1);
+        request.min_fit_scale = Some(8.0 / 2000.0);
+        let shaped = system.shape(&request);
+        assert_eq!(shaped.glyphs.len(), 2);
+        assert!(shaped.fit_scale < 0.01, "{}", shaped.fit_scale);
+        assert!(shaped.measurement.width <= 15.01);
+    }
+
+    #[test]
+    fn a_cached_fit_shapes_as_the_fit_did() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![span("HH", 40.0)]);
+        request.max_width = Some(17.0);
+        request.max_lines = Some(1);
+        request.min_fit_scale = Some(0.2);
+        let fitted = system.shape(&request);
+        let cached = system.shape(&request);
+        assert_eq!(fitted.counts.glyph, 2);
+        assert_eq!(cached.counts.glyph, 2);
+        assert_eq!(cached.measurement, fitted.measurement);
+    }
+
+    #[test]
+    fn shrink_keeps_the_size_when_only_paragraphs_overflow() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![span("A\nB", 40.0)]);
+        request.max_lines = Some(1);
+        request.min_fit_scale = Some(0.2);
+        let shaped = system.shape(&request);
+        assert_eq!(shaped.fit_scale, 1.0);
+        assert_eq!(shaped.counts.line, 1);
     }
 }
