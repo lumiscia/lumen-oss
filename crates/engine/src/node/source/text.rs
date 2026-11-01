@@ -285,7 +285,8 @@ impl CompiledText {
         );
 
         let mut text_system = text_system()?;
-        load_font_family(&mut text_system, ctx.media(), &request.font_family)?;
+        let span = &request.spans[0];
+        load_font_family(&mut text_system, ctx.media(), &span.font_family)?;
         let mut state = self.state.lock().map_err(|_| {
             LumenError::Render(RenderError::Gpu {
                 details: format!("text node {} state lock was poisoned", self.node_id.0),
@@ -294,13 +295,13 @@ impl CompiledText {
         let state = &mut *state;
 
         let shape_key = TextShapeKey {
-            content: request.content.clone(),
-            font_family: request.font_family.clone(),
-            font_size_bits: request.font_size.to_bits(),
-            font_weight: request.font_weight,
+            content: span.text.clone(),
+            font_family: span.font_family.clone(),
+            font_size_bits: span.font_size.to_bits(),
+            font_weight: span.font_weight,
             font_style: evaluated.font_style,
             max_width_bits: request.max_width.unwrap_or(0.0).to_bits(),
-            letter_spacing_bits: request.letter_spacing.to_bits(),
+            letter_spacing_bits: span.letter_spacing.to_bits(),
             line_height_bits: request.line_height.unwrap_or(0.0).to_bits(),
             alignment_horizontal: evaluated.alignment_horizontal,
             font_generation: text_system.font_generation(),
@@ -683,15 +684,17 @@ pub(crate) fn layout_request(
     max_width: f32,
     alignment_horizontal: TextAlignmentHorizontal,
 ) -> lumen_text::TextLayoutRequest {
-    let mut request = lumen_text::TextLayoutRequest::new(content);
-    request.font_family = font_family;
-    request.font_size = font_size;
-    request.font_weight = font_weight.clamp(1, 1000) as u16;
-    request.font_style = match font_style {
-        TextFontStyle::Italic => lumen_text::TextFontStyle::Italic,
-        TextFontStyle::Oblique => lumen_text::TextFontStyle::Oblique,
-        TextFontStyle::Normal => lumen_text::TextFontStyle::Normal,
-    };
+    let mut request = lumen_text::TextLayoutRequest::from_spans(vec![lumen_text::TextSpan {
+        font_family,
+        font_size,
+        font_weight: font_weight.clamp(1, 1000) as u16,
+        font_style: match font_style {
+            TextFontStyle::Italic => lumen_text::TextFontStyle::Italic,
+            TextFontStyle::Oblique => lumen_text::TextFontStyle::Oblique,
+            TextFontStyle::Normal => lumen_text::TextFontStyle::Normal,
+        },
+        ..lumen_text::TextSpan::new(content)
+    }]);
     request.max_width = (max_width > 0.0).then_some(max_width);
     request.align = match alignment_horizontal {
         TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
@@ -708,7 +711,9 @@ pub(crate) fn apply_line_spacing(
     letter_spacing: f64,
     line_height: f64,
 ) {
-    request.letter_spacing = letter_spacing as f32;
+    for span in &mut request.spans {
+        span.letter_spacing = letter_spacing as f32;
+    }
     request.line_height = (line_height > 0.0).then_some(line_height as f32);
 }
 

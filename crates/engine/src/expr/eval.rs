@@ -585,7 +585,12 @@ mod tests {
         let mut ctx = test_context();
         let error = expression.evaluate(&ctx).unwrap_err().to_string();
         assert!(error.contains("`glyph` is only available"), "{error}");
-        let item = |glyph, word, line| lumen_text::TextItem { glyph, word, line };
+        let item = |glyph, word, line| lumen_text::TextItem {
+            glyph,
+            word,
+            line,
+            span: 0,
+        };
         ctx.glyph = Some(crate::expr::GlyphScope {
             item: item(1, 2, 3),
             counts: item(4, 5, 6),
