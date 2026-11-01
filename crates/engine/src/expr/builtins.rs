@@ -10,8 +10,9 @@ use crate::{
     },
     node::{
         DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
-        source::text::{
-            TextAlignmentHorizontal, TextFontStyle, apply_line_spacing, layout_request,
+        source::{
+            text::{TextAlignmentHorizontal, TextFontStyle, TextLayoutStyle},
+            text_content::TextContent,
         },
     },
 };
@@ -293,18 +294,17 @@ pub fn evaluate_text_measure_builtin(
     let font_family = evaluate(3)?
         .map(|value| value.as_string())
         .unwrap_or_else(|| "sans-serif".to_string());
-    let measurement = measure_text_value(
-        ctx,
-        layout_request(
-            text,
-            font_family,
-            font_size as f32,
-            400,
-            TextFontStyle::Normal,
-            max_width as f32,
-            TextAlignmentHorizontal::Left,
-        ),
-    )?;
+    let style = TextLayoutStyle {
+        font_family,
+        font_size,
+        font_weight: 400,
+        font_style: TextFontStyle::Normal,
+        letter_spacing: 0.0,
+        max_width,
+        line_height: 0.0,
+        alignment_horizontal: TextAlignmentHorizontal::Left,
+    };
+    let measurement = measure_text_value(ctx, style.request(&TextContent::Text(text)))?;
     Ok(ExpressionValue::Number(match builtin {
         BuiltinFn::TextHeight => f64::from(measurement.height),
         BuiltinFn::TextWidth => f64::from(measurement.width),
@@ -335,16 +335,20 @@ fn measure_text_node(
         ));
     };
 
-    let content = text.params.content.eval(node_id, "content", ctx)?;
+    let content = text.params.content.eval_layout(&DelegateEvalContext {
+        node_id,
+        property_path: "content",
+        expr: ctx,
+    })?;
     let font_family = text.params.font_family.eval(node_id, "font_family", ctx)?;
-    let font_size = text.params.font_size.eval(node_id, "font_size", ctx)? as f32;
+    let font_size = text.params.font_size.eval(node_id, "font_size", ctx)?;
     let font_weight = text.params.font_weight.eval(node_id, "font_weight", ctx)?;
     let font_style = text.params.font_style.eval(&DelegateEvalContext {
         node_id,
         property_path: "font_style",
         expr: ctx,
     })?;
-    let max_width = text.params.max_width.eval(node_id, "max_width", ctx)? as f32;
+    let max_width = text.params.max_width.eval(node_id, "max_width", ctx)?;
     let letter_spacing = text
         .params
         .letter_spacing
@@ -358,17 +362,17 @@ fn measure_text_node(
             property_path: "alignment_horizontal",
             expr: ctx,
         })?;
-    let mut request = layout_request(
-        content,
+    let style = TextLayoutStyle {
         font_family,
         font_size,
         font_weight,
         font_style,
+        letter_spacing,
         max_width,
+        line_height,
         alignment_horizontal,
-    );
-    apply_line_spacing(&mut request, letter_spacing, line_height);
-    measure_text_value(ctx, request)
+    };
+    measure_text_value(ctx, style.request(&content))
 }
 
 thread_local! {

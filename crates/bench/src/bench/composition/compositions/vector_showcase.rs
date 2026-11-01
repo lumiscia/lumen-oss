@@ -1,3 +1,4 @@
+use lumen_engine::node::source::text_content::TextContentDelegate;
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
@@ -102,7 +103,9 @@ impl CompositionFixture for VectorShowcase {
             NodeKind::Text(Text {
                 id: title,
                 params: TextParamsDelegate {
-                    content: Deferred::value("Feature showcase".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value(
+                        "Feature showcase".to_string(),
+                    )),
                     font_size: Deferred::value(48.0),
                     font_weight: Deferred::value(700),
                     max_width: Deferred::value(520.0),
@@ -118,7 +121,9 @@ impl CompositionFixture for VectorShowcase {
             NodeKind::Text(Text {
                 id: subtitle,
                 params: TextParamsDelegate {
-                    content: Deferred::value("shape, path, text, raster_multimerge".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value(
+                        "shape, path, text, raster_multimerge".to_string(),
+                    )),
                     font_size: Deferred::value(22.0),
                     font_weight: Deferred::value(400),
                     max_width: Deferred::value(520.0),

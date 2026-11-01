@@ -2,13 +2,14 @@ struct TextGlobals {
     target_size: vec2<f32>,
     px_range: f32,
     glyph_count: u32,
-    paint_bounds: vec4<f32>,
 }
 
 struct GlyphInstance {
     rect: vec4<f32>,
     uv_rect: vec4<f32>,
     color: vec4<f32>,
+    // The render mode in the bits of `GLYPH_MODE_MASK`, and the index into `paints` from
+    // `GLYPH_PAINT_SHIFT` up.
     mode: u32,
     flags: u32,
     // The glyph's own transform, applied before the text's when `GLYPH_TRANSFORMED` is set.
@@ -21,6 +22,9 @@ const GLYPH_TRANSFORMED: u32 = 1u;
 // Keep in sync with `GLYPH_CLUSTER_FOLLOWER` and `GLYPH_CLUSTER_SHIFT` in `gpu.rs`.
 const GLYPH_CLUSTER_FOLLOWER: u32 = 2u;
 const GLYPH_CLUSTER_SHIFT: u32 = 8u;
+// Keep in sync with `GLYPH_MODE_MASK` and `GLYPH_PAINT_SHIFT` in `gpu.rs`.
+const GLYPH_MODE_MASK: u32 = 0xffu;
+const GLYPH_PAINT_SHIFT: u32 = 8u;
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -40,21 +44,29 @@ struct VertexOut {
 @group(0) @binding(2) var atlas_sampler: sampler;
 @group(0) @binding(3) var<storage, read> glyphs: array<GlyphInstance>;
 struct TextStyle {
-    fill: Paint,
     transform: DrawableTransform,
     motion: DrawableMotion,
 }
 
 @group(0) @binding(4) var<uniform> style: TextStyle;
 
+// A paint and the box, as `[x, y, width, height]`, that its relative coordinates map to `0..1`.
+struct TextPaint {
+    paint: Paint,
+    bounds: vec4<f32>,
+}
+
+@group(0) @binding(6) var<storage, read> paints: array<TextPaint>;
+
 // Requires the engine's alpha, paint and drawable transform chunks prepended.
-fn text_paint_at(pixel: vec2<f32>) -> vec4<f32> {
+fn text_paint_at(fill: u32, pixel: vec2<f32>) -> vec4<f32> {
+    let bounds = paints[fill].bounds;
     let local01 = clamp(
-        (pixel - globals.paint_bounds.xy) / max(globals.paint_bounds.zw, vec2<f32>(1.0)),
+        (pixel - bounds.xy) / max(bounds.zw, vec2<f32>(1.0)),
         vec2<f32>(0.0),
         vec2<f32>(1.0),
     );
-    return sample_paint(style.fill, pixel, local01);
+    return sample_paint(paints[fill].paint, pixel, local01);
 }
 
 // The untransformed position under a canvas pixel of the glyph `in` draws, undoing the
@@ -67,12 +79,12 @@ fn glyph_to_local(in: VertexOut, pixel: vec2<f32>) -> vec2<f32> {
 
 // Averages the paint over the canvas pixel; paint follows the text, so each sample
 // is evaluated at its untransformed position.
-fn text_paint_aa(in: VertexOut) -> vec4<f32> {
+fn text_paint_aa(in: VertexOut, fill: u32) -> vec4<f32> {
     var color = vec4<f32>(0.0);
     for (var y = 0u; y < 4u; y = y + 1u) {
         for (var x = 0u; x < 4u; x = x + 1u) {
             let offset = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) * 0.25 - vec2<f32>(0.5);
-            color += text_paint_at(glyph_to_local(in, in.position.xy + offset));
+            color += text_paint_at(fill, glyph_to_local(in, in.position.xy + offset));
         }
     }
     return color * 0.0625;
@@ -127,7 +139,7 @@ fn vs_main(
         let max_corner = max(rect.xy + rect.zw, other.xy + other.zw);
         rect = vec4<f32>(min_corner, max_corner - min_corner);
     }
-    let pad = select(0.0, 1.0, filtered && (glyph.mode != 2u || followers > 0u));
+    let pad = select(0.0, 1.0, filtered && ((glyph.mode & GLYPH_MODE_MASK) != 2u || followers > 0u));
     let local = rect.xy - vec2<f32>(pad) + corner * (rect.zw + vec2<f32>(2.0 * pad));
     let moved = select(local, glyph.linear * local + glyph.offset, transformed);
     let pixel = drawable_to_canvas(style.transform, moved);
@@ -143,7 +155,7 @@ fn vs_main(
         out.texel = instance_texel(glyph, local);
     }
     out.color = glyph.color;
-    out.mode = glyph.mode;
+    out.mode = glyph.mode & GLYPH_MODE_MASK;
     out.uv_rect = glyph.uv_rect;
     // A glyph scaled to nothing has no opacity, so is never drawn; its inverse is finite.
     let inverse = mat2x2<f32>(
@@ -193,7 +205,7 @@ fn cluster_color(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>, paint:
         let glyph = glyphs[in.instance + member];
         let texel = instance_texel(glyph, local);
         var source = vec4<f32>(0.0);
-        if (glyph.mode == 2u) {
+        if ((glyph.mode & GLYPH_MODE_MASK) == 2u) {
             let inside = all(local >= glyph.rect.xy) && all(local <= glyph.rect.xy + glyph.rect.zw);
             let field = textureSampleLevel(
                 atlas_texture,
@@ -214,7 +226,7 @@ fn cluster_color(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>, paint:
                 raster_bilinear(texel, glyph.uv_rect),
                 filtered,
             );
-            source = select(paint * raster.a, raster * paint.a, glyph.mode == 1u);
+            source = select(paint * raster.a, raster * paint.a, (glyph.mode & GLYPH_MODE_MASK) == 1u);
         }
         color = source + color * (1.0 - source.a);
     }
@@ -239,9 +251,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let screen_px_range = max(0.5 * dot(vec2<f32>(globals.px_range), 1.0 / texel_width), 1.0);
     // Paint follows the text, so it is evaluated at the untransformed pixel.
     let local = glyph_to_local(in, in.position.xy);
-    var text_paint = text_paint_at(local);
-    if (style.fill.paint_supersample != 0u) {
-        text_paint = text_paint_aa(in);
+    let fill = glyphs[in.instance].mode >> GLYPH_PAINT_SHIFT;
+    // A solid paint is the same everywhere, so it is read alone and never supersampled.
+    var text_paint = premultiply(paints[fill].paint.colors[0]);
+    if (paints[fill].paint.kind != 0u) {
+        text_paint = text_paint_at(fill, local);
+        if (paints[fill].paint.paint_supersample != 0u) {
+            text_paint = text_paint_aa(in, fill);
+        }
     }
     if ((glyphs[in.instance].flags >> GLYPH_CLUSTER_SHIFT) != 0u) {
         return cluster_color(in, local, texel_width, text_paint);

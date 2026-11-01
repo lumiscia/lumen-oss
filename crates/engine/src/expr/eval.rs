@@ -17,21 +17,25 @@ impl Expression {
 }
 
 pub fn property_value_to_expression_value(value: &PropertyValue) -> crate::Result<ExpressionValue> {
-    match value {
-        PropertyValue::Float(number) => Ok(ExpressionValue::Number(*number)),
-        PropertyValue::Int(number) => Ok(ExpressionValue::Number(*number as f64)),
-        PropertyValue::Bool(boolean) => Ok(ExpressionValue::Boolean(*boolean)),
-        PropertyValue::String(text) => Ok(ExpressionValue::String(text.clone())),
-        PropertyValue::Vec2(value) => Ok(ExpressionValue::Vec2(*value)),
-        PropertyValue::Color(value) => Ok(ExpressionValue::color_from_u8(*value)),
-        unsupported => Err(LumenError::Expression(ExpressionError::Evaluate {
+    let converted = match value {
+        PropertyValue::Float(number) => Some(ExpressionValue::Number(*number)),
+        PropertyValue::Int(number) => Some(ExpressionValue::Number(*number as f64)),
+        PropertyValue::Bool(boolean) => Some(ExpressionValue::Boolean(*boolean)),
+        PropertyValue::String(text) => Some(ExpressionValue::String(text.clone())),
+        PropertyValue::Vec2(value) => Some(ExpressionValue::Vec2(*value)),
+        PropertyValue::Color(value) => Some(ExpressionValue::color_from_u8(*value)),
+        PropertyValue::TextContent(content) => content.literal_text().map(ExpressionValue::String),
+        _ => None,
+    };
+    converted.ok_or_else(|| {
+        LumenError::Expression(ExpressionError::Evaluate {
             path: None,
             details: format!(
                 "cannot convert node property `{}` into an expression value",
-                node_property_type_name(unsupported)
+                node_property_type_name(value)
             ),
-        })),
-    }
+        })
+    })
 }
 
 /// An expression's AST with each distinct subtree as one step, so a subtree it repeats, as
@@ -389,9 +393,11 @@ fn global_value(global: &GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Resul
         GlobalVar::Glyph
         | GlobalVar::Word
         | GlobalVar::Line
+        | GlobalVar::Span
         | GlobalVar::GlyphCount
         | GlobalVar::WordCount
-        | GlobalVar::LineCount => glyph_global(global, ctx),
+        | GlobalVar::LineCount
+        | GlobalVar::SpanCount => glyph_global(global, ctx),
         GlobalVar::Custom(name) => {
             Err(LumenError::Expression(ExpressionError::UndefinedVariable {
                 path: ctx.path.clone(),
@@ -406,8 +412,10 @@ fn glyph_global(global: &GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Resul
         (GlobalVar::Glyph, scope) => ("glyph", scope.map(|scope| scope.item.glyph)),
         (GlobalVar::Word, scope) => ("word", scope.map(|scope| scope.item.word)),
         (GlobalVar::Line, scope) => ("line", scope.map(|scope| scope.item.line)),
+        (GlobalVar::Span, scope) => ("span", scope.map(|scope| scope.item.span)),
         (GlobalVar::GlyphCount, scope) => ("glyph_count", scope.map(|scope| scope.counts.glyph)),
         (GlobalVar::WordCount, scope) => ("word_count", scope.map(|scope| scope.counts.word)),
+        (GlobalVar::SpanCount, scope) => ("span_count", scope.map(|scope| scope.counts.span)),
         (_, scope) => ("line_count", scope.map(|scope| scope.counts.line)),
     };
     value
@@ -580,24 +588,24 @@ mod tests {
     #[test]
     fn glyph_globals_read_the_glyph_scope_and_fail_outside_it() {
         let source = "glyph + word * 10 + line * 100 + glyph_count * 1000 + word_count * 10000 \
-                      + line_count * 100000";
+                      + line_count * 100000 + span * 1000000 + span_count * 10000000";
         let expression = Expression::parse(source).unwrap();
         let mut ctx = test_context();
         let error = expression.evaluate(&ctx).unwrap_err().to_string();
         assert!(error.contains("`glyph` is only available"), "{error}");
-        let item = |glyph, word, line| lumen_text::TextItem {
+        let item = |glyph, word, line, span| lumen_text::TextItem {
             glyph,
             word,
             line,
-            span: 0,
+            span,
         };
         ctx.glyph = Some(crate::expr::GlyphScope {
-            item: item(1, 2, 3),
-            counts: item(4, 5, 6),
+            item: item(1, 2, 3, 7),
+            counts: item(4, 5, 6, 8),
         });
         assert_eq!(
             expression.evaluate(&ctx).unwrap(),
-            ExpressionValue::Number(654_321.0)
+            ExpressionValue::Number(87_654_321.0)
         );
     }
 
@@ -1034,7 +1042,9 @@ mod tests {
             NodeKind::Text(Text {
                 id: text_id,
                 params: crate::node::source::text::TextParamsDelegate {
-                    content: crate::node::Deferred::value("Morning, update posted.".to_string()),
+                    content: crate::node::source::text_content::TextContentDelegate::Text(
+                        crate::node::Deferred::value("Morning, update posted.".to_string()),
+                    ),
                     font_family: crate::node::Deferred::value("Roboto".to_string()),
                     font_size: crate::node::Deferred::value(32.0),
                     max_width: crate::node::Deferred::value(300.0),
@@ -1069,8 +1079,8 @@ mod tests {
             NodeKind::Text(Text {
                 id: text_id,
                 params: crate::node::source::text::TextParamsDelegate {
-                    content: crate::node::Deferred::Expr(
-                        Expression::parse("\"Frame two\"").unwrap(),
+                    content: crate::node::source::text_content::TextContentDelegate::Text(
+                        crate::node::Deferred::Expr(Expression::parse("\"Frame two\"").unwrap()),
                     ),
                     font_family: crate::node::Deferred::Expr(
                         Expression::parse("\"Roboto\"").unwrap(),
@@ -1096,6 +1106,41 @@ mod tests {
         assert!(matches!(result, Ok(ExpressionValue::Number(value)) if value > 0.0));
     }
 
+    #[cfg(feature = "json")]
+    #[test]
+    fn span_colors_may_read_the_measurement_of_their_text() {
+        let text_id = NodeId::new(8);
+        let content = crate::node::source::text_content::TextContentDelegate::from_json_value(
+            &serde_json::json!([{
+                "text": "Morning",
+                "color": "=if(text_width(node(8)) > 10, #ff0000, #0000ff)",
+                "underline": { "paint": "=if(text_height(node(8)) > 10, #ff0000, #0000ff)" }
+            }]),
+        )
+        .unwrap();
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            text_id,
+            NodeKind::Text(Text {
+                id: text_id,
+                params: crate::node::source::text::TextParamsDelegate {
+                    content,
+                    ..Default::default()
+                },
+            }),
+        );
+        let ctx = ExpressionContext {
+            graph: Some(&graph),
+            ..test_context()
+        };
+
+        let width = Expression::parse("text_width(node(8))")
+            .unwrap()
+            .evaluate(&ctx);
+
+        assert!(matches!(width, Ok(ExpressionValue::Number(value)) if value > 10.0));
+    }
+
     #[test]
     fn recursive_text_measurement_returns_error_instead_of_panicking() {
         let text_id = NodeId::new(8);
@@ -1105,8 +1150,10 @@ mod tests {
             NodeKind::Text(Text {
                 id: text_id,
                 params: crate::node::source::text::TextParamsDelegate {
-                    content: crate::node::Deferred::Expr(
-                        Expression::parse("text_width(node(8))").unwrap(),
+                    content: crate::node::source::text_content::TextContentDelegate::Text(
+                        crate::node::Deferred::Expr(
+                            Expression::parse("text_width(node(8))").unwrap(),
+                        ),
                     ),
                     ..Default::default()
                 },

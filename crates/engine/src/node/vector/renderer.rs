@@ -5,7 +5,10 @@ use crate::{
     node::{Deferred, NodeId, NodeParams, PortRef},
 };
 
-use crate::node::source::text::{CompiledText, GlyphParams, Text, TextState};
+use crate::node::source::{
+    text::{CompiledText, GlyphParams, Text, TextLayoutStyle, TextState},
+    text_content::TextContentDelegate,
+};
 
 use super::{
     drawable::{DrawableTransform, GpuDrawableMotion, GpuDrawableTransform},
@@ -308,10 +311,33 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 (MAX_TEXT_GLYPHS * std::mem::size_of::<lumen_text::GpuGlyphInstance>()) as u64,
             ),
         );
-        let paint_buffer = self.ctx.builder_mut().buffer_for(
+        let style_buffer = self.ctx.builder_mut().buffer_for(
             lumen_gpu::NodeKey(text.id.0),
-            Some(format!("text:{}:paint", text.id.0)),
+            Some(format!("text:{}:style", text.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<TextStyleUniforms>() as u64),
+        );
+        let paint_count = match &params.content {
+            TextContentDelegate::Spans(spans) => spans.items.len().max(1),
+            TextContentDelegate::Text(_) => 1,
+        };
+        if paint_count > lumen_text::GLYPH_MAX_PAINTS as usize {
+            return Err(crate::error::RenderError::NodeEvaluation {
+                frame: 0,
+                node_id: text.id,
+                node_kind: "Text",
+                details: format!(
+                    "text has {paint_count} spans, more than the {} that can be painted",
+                    lumen_text::GLYPH_MAX_PAINTS
+                ),
+            }
+            .into());
+        }
+        let paints_buffer = self.ctx.builder_mut().buffer_for(
+            lumen_gpu::NodeKey(text.id.0),
+            Some(format!("text:{}:paints", text.id.0)),
+            lumen_gpu::BufferDesc::storage(
+                (paint_count * std::mem::size_of::<GpuTextPaint>()) as u64,
+            ),
         );
         let atlas_sampler = self.ctx.builder_mut().sampler(
             Some(format!("text:{}:atlas-sampler", text.id.0)),
@@ -343,6 +369,11 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                     4,
                     lumen_gpu::wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ),
+                lumen_gpu::BindingLayoutEntry::storage(
+                    6,
+                    lumen_gpu::wgpu::ShaderStages::FRAGMENT,
+                    true,
+                ),
             ];
             if reads_layer {
                 entries.push(lumen_gpu::BindingLayoutEntry::texture(
@@ -370,7 +401,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             lumen_gpu::Binding::sampled_texture(0, 1, atlas_texture),
             lumen_gpu::Binding::sampler(0, 2, atlas_sampler),
             lumen_gpu::Binding::storage_buffer(0, 3, instances_buffer),
-            lumen_gpu::Binding::uniform(0, 4, paint_buffer),
+            lumen_gpu::Binding::uniform(0, 4, style_buffer),
+            lumen_gpu::Binding::storage_buffer(0, 6, paints_buffer),
         ];
         let text_pass = |label: &str, program, target, load, bindings, draw, viewport| {
             lumen_gpu::RenderPassDesc {
@@ -472,14 +504,30 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         }
         let mut params = text.params.clone();
         let glyph = GlyphParams::take(&mut params);
+        let content = if crate::node::DelegateEvaluable::has_expressions(&params.content) {
+            None
+        } else {
+            let content = std::mem::take(&mut params.content);
+            Some(crate::node::DelegateEvaluable::eval(
+                &content,
+                &crate::node::DelegateEvalContext {
+                    node_id: text.id,
+                    property_path: "content",
+                    expr: &self.ctx.expr_context(text.id, "params"),
+                },
+            )?)
+        };
         self.ctx.register_compiled_node(CompiledText {
             node_id: text.id,
             params,
             glyph,
+            content,
             atlas_texture,
             globals_buffer,
             instances_buffer,
-            paint_buffer,
+            style_buffer,
+            paints_buffer,
+            paint_count,
             max_glyphs: MAX_TEXT_GLYPHS,
             size,
             layer_size,
@@ -496,16 +544,21 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
     /// The canvas pixels unblurred text may draw to, or `None` when it should fill the
     /// canvas: the ink of its glyphs, as the font that will draw it measures them.
     ///
-    /// Only text whose layout is constant and whose paint is a solid colour is bounded: its
+    /// Only text whose layout is constant and whose paints are solid colours is bounded: its
     /// paint is evaluated at the pixel it is drawn to, which a viewport offset moves. Text in a
     /// font that the media store has not resolved is not bounded either, since the font drawn
     /// later may be wider than the one measured here, nor text with `glyph_*` params, which
     /// move glyphs off the layout and fade clusters across their union.
     fn text_bounds(&self, text: &Text) -> Option<lumen_gpu::RectI> {
         let params = &text.params;
+        let solid = |paint: &super::paint::PaintDelegate| {
+            matches!(paint, super::paint::PaintDelegate::SolidColor(..))
+        };
         if GlyphParams::any(params)
-            || !matches!(params.color, super::paint::PaintDelegate::SolidColor(..))
-            || params.content.is_expr()
+            || !solid(&params.color)
+            || crate::node::DelegateEvaluable::has_expressions(&params.content)
+            || matches!(&params.content, TextContentDelegate::Spans(spans)
+                if spans.items.iter().any(|span| span.color.as_ref().is_some_and(|paint| !solid(paint))))
             || params.font_family.is_expr()
             || params.font_size.is_expr()
             || params.font_weight.is_expr()
@@ -517,38 +570,35 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             return None;
         }
         let expr = self.ctx.expr_context(text.id, "params");
-        let evaluated = params
+        let mut evaluated = params
             .eval(&crate::node::NodeParamEvalContext {
                 node_id: text.id,
                 expr: &expr,
             })
             .ok()?;
-        let mut request = crate::node::source::text::layout_request(
-            evaluated.content,
-            evaluated.font_family,
-            evaluated.font_size as f32,
-            evaluated.font_weight,
-            evaluated.font_style,
-            evaluated.max_width as f32,
-            evaluated.alignment_horizontal,
-        );
-        crate::node::source::text::apply_line_spacing(
-            &mut request,
-            evaluated.letter_spacing,
-            evaluated.line_height,
-        );
-        let family = request.spans[0].font_family.as_str();
-        let resolved = self
-            .ctx
-            .media()
-            .is_some_and(|media| media.font_resolver_id(family).is_some());
-        if !resolved && !family.is_empty() && family != lumen_text::DEFAULT_FONT_FAMILY {
+        let style = TextLayoutStyle::take(&mut evaluated);
+        let request = style.request(&evaluated.content);
+        let unresolved = request.spans.iter().any(|span| {
+            let family = span.font_family.as_str();
+            !family.is_empty()
+                && family != lumen_text::DEFAULT_FONT_FAMILY
+                && !self
+                    .ctx
+                    .media()
+                    .is_some_and(|media| media.font_resolver_id(family).is_some())
+        });
+        if unresolved {
             return None;
         }
         let (shaped, ink) = {
             let mut text_system = crate::node::source::text::text_system().ok()?;
-            crate::node::source::text::load_font_family(&mut text_system, self.ctx.media(), family)
-                .ok()?;
+            crate::node::source::text::load_font_families(
+                &mut text_system,
+                self.ctx.media(),
+                &style,
+                Some(&evaluated.content),
+            )
+            .ok()?;
             let shaped = text_system.shape(&request);
             let ink = text_system.ink_bounds(&shaped)?;
             (shaped, ink)
@@ -764,9 +814,17 @@ pub(crate) struct PathUniforms {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct TextStyleUniforms {
-    pub(crate) fill_paint: super::paint::GpuPaint,
     pub(crate) transform: GpuDrawableTransform,
     pub(crate) motion: GpuDrawableMotion,
+}
+
+/// A paint of a text, and the box `[x, y, width, height]` its relative coordinates map to
+/// `0..1`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct GpuTextPaint {
+    pub(crate) paint: super::paint::GpuPaint,
+    pub(crate) bounds: [f32; 4],
 }
 
 #[repr(C)]

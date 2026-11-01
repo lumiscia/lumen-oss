@@ -46,6 +46,8 @@ export {
   sec,
   sin,
   smoothstep,
+  span,
+  spanCount,
   spring,
   step,
   textHeight,

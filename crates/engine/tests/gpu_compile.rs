@@ -1,3 +1,4 @@
+use lumen_engine::node::source::text_content::TextContentDelegate;
 use lumen_engine::{
     composition::{Composition, CompositionBuilder, RenderSettings, TimelineSettings},
     error::{GraphValidationError, LumenError, PropertyError},
@@ -1563,7 +1564,7 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         NodeKind::Text(Text {
             id: text,
             params: TextParamsDelegate {
-                content: Deferred::value("hi".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("hi".to_string())),
                 font_size: Deferred::value(4.0),
                 color: Paint::Gradient(GradientPaint {
                     kind: PaintKind::LinearGradient,
@@ -1608,7 +1609,7 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         .unwrap();
 
     assert_eq!(compiled.plan.textures().len(), 4);
-    assert_eq!(compiled.plan.buffers().len(), 5);
+    assert_eq!(compiled.plan.buffers().len(), 6);
     assert_eq!(compiled.plan.programs().len(), 3);
     assert!(compiled.compiled_nodes.contains_key(&shape));
     assert!(compiled.compiled_nodes.contains_key(&text));
@@ -1642,7 +1643,7 @@ fn text_bind_ahead_restores_committed_frame_after_pending_frame() {
         NodeKind::Text(Text {
             id: text,
             params: TextParamsDelegate {
-                content: Deferred::value("Bind ahead".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Bind ahead".to_string())),
                 position: Deferred::Expr(Expression::parse("vec2(frame * 10, 0)").unwrap()),
                 ..Default::default()
             },
@@ -1687,7 +1688,9 @@ fn text_rejects_stale_upload_after_atlas_slot_reuse() {
         NodeKind::Text(Text {
             id: text,
             params: TextParamsDelegate {
-                content: Deferred::Expr(Expression::parse("if(frame == 0, \"W\", \"M\")").unwrap()),
+                content: TextContentDelegate::Text(Deferred::Expr(
+                    Expression::parse("if(frame == 0, \"W\", \"M\")").unwrap(),
+                )),
                 font_size: Deferred::value(2000.0),
                 position: Deferred::value((0.0, -400.0)),
                 ..Default::default()
@@ -1747,7 +1750,9 @@ fn text_rejects_stale_upload_from_another_compiled_plan() {
         NodeKind::Text(Text {
             id: text,
             params: TextParamsDelegate {
-                content: Deferred::Expr(Expression::parse("if(frame == 0, \"W\", \"M\")").unwrap()),
+                content: TextContentDelegate::Text(Deferred::Expr(
+                    Expression::parse("if(frame == 0, \"W\", \"M\")").unwrap(),
+                )),
                 font_size: Deferred::value(32.0),
                 ..Default::default()
             },
@@ -1867,7 +1872,7 @@ fn text_msdf_coverage_matches_raster_for_plain_italic_and_variable_weight() {
     ] {
         for size in [24.0, 72.0, 144.0] {
             let composition = text_test_composition(TextParamsDelegate {
-                content: Deferred::value("AV text 28".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("AV text 28".to_string())),
                 font_family: Deferred::value(family.to_string()),
                 font_style: style.into(),
                 font_weight: Deferred::value(weight),
@@ -1918,7 +1923,8 @@ fn text_msdf_coverage_matches_raster_for_plain_italic_and_variable_weight() {
                         .0
                         .iter()
                         .any(|bytes| {
-                            bytemuck::pod_read_unaligned::<lumen_text::GpuGlyphInstance>(bytes).mode
+                            bytemuck::pod_read_unaligned::<lumen_text::GpuGlyphInstance>(bytes)
+                                .render_mode()
                                 == lumen_text::GLYPH_MODE_MSDF
                         })
             });
@@ -1991,7 +1997,7 @@ fn text_standalone_compile_bind_execute_requires_injected_atlas() {
             .device
             .push_error_scope(lumen_gpu::wgpu::ErrorFilter::Validation);
         let composition = text_test_composition(TextParamsDelegate {
-            content: Deferred::value("Standalone text".to_string()),
+            content: TextContentDelegate::Text(Deferred::value("Standalone text".to_string())),
             font_size: Deferred::value(72.0),
             render_mode: mode.into(),
             ..Default::default()
@@ -2025,7 +2031,7 @@ fn text_nodes_share_one_fixed_atlas_with_large_second_node() {
         return;
     };
     let mut composition = text_test_composition(TextParamsDelegate {
-        content: Deferred::value("Atlas W".to_string()),
+        content: TextContentDelegate::Text(Deferred::value("Atlas W".to_string())),
         font_size: Deferred::value(72.0),
         ..Default::default()
     })
@@ -2035,7 +2041,7 @@ fn text_nodes_share_one_fixed_atlas_with_large_second_node() {
         NodeKind::Text(Text {
             id: NodeId::new(3),
             params: TextParamsDelegate {
-                content: Deferred::value("Atlas M".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Atlas M".to_string())),
                 font_size: Deferred::value(72.0),
                 position: Deferred::value((0.0, 100.0)),
                 ..Default::default()
@@ -2101,7 +2107,7 @@ fn text_nodes_share_one_fixed_atlas_with_large_second_node() {
     let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(3)).unwrap() else {
         unreachable!()
     };
-    text.params.content = Deferred::value("W".to_string());
+    text.params.content = TextContentDelegate::Text(Deferred::value("W".to_string()));
     text.params.font_size = Deferred::value(3800.0);
     let composition = composition.build().unwrap();
     renderer.release_resources();
@@ -2174,7 +2180,7 @@ fn text_atlas_overflow_does_not_thrash_on_repeated_binds() {
     };
     const CONTENT: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let composition = text_test_composition(TextParamsDelegate {
-        content: Deferred::value(CONTENT.to_string()),
+        content: TextContentDelegate::Text(Deferred::value(CONTENT.to_string())),
         font_size: Deferred::value(1800.0),
         ..Default::default()
     });
@@ -2198,7 +2204,7 @@ fn text_atlas_overflow_does_not_thrash_on_repeated_binds() {
     let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(1)).unwrap() else {
         unreachable!()
     };
-    text.params.content = Deferred::value("W".to_string());
+    text.params.content = TextContentDelegate::Text(Deferred::value("W".to_string()));
     text.params.font_size = Deferred::value(20000.0);
     let composition = composition.build().unwrap();
     renderer.release_resources();
@@ -2240,7 +2246,7 @@ fn text_transparent_gradient_midpoint_is_premultiplied() {
     for mode in [TextRenderMode::Raster, TextRenderMode::Msdf] {
         for supersample in [false, true] {
             let composition = text_test_composition(TextParamsDelegate {
-                content: Deferred::value("M".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("M".to_string())),
                 font_size: Deferred::value(180.0),
                 render_mode: mode.into(),
                 paint_supersample: Deferred::value(supersample),
@@ -2384,7 +2390,7 @@ fn text_measurement_loads_time_remapped_family_on_first_bind() {
         NodeKind::Text(Text {
             id: text,
             params: TextParamsDelegate {
-                content: Deferred::value("WWW".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("WWW".to_string())),
                 font_family: Deferred::Expr(
                     Expression::parse("if(frame == 1, \"RemapX\", \"Roboto\")").unwrap(),
                 ),
@@ -2472,7 +2478,9 @@ fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
         NodeKind::Text(Text {
             id: text,
             params: TextParamsDelegate {
-                content: Deferred::value("Sharp text\nwraps across lines".to_string()),
+                content: TextContentDelegate::Text(Deferred::value(
+                    "Sharp text\nwraps across lines".to_string(),
+                )),
                 font_size: Deferred::value(17.0),
                 max_width: Deferred::value(90.0),
                 position: Deferred::value((10.3, 20.6)),
@@ -2776,7 +2784,7 @@ impl ScaledFontStore {
             NodeKind::Text(Text {
                 id: text,
                 params: TextParamsDelegate {
-                    content: Deferred::value("WWW".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value("WWW".to_string())),
                     font_family: Deferred::value(self.family.to_string()),
                     font_size: if bounded {
                         Deferred::value(20.0)
@@ -2930,7 +2938,7 @@ fn bounded_text_is_remeasured_after_binding_loads_a_font() {
             NodeKind::Text(Text {
                 id: text,
                 params: TextParamsDelegate {
-                    content: Deferred::value("WWWWWWWWWW".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value("WWWWWWWWWW".to_string())),
                     font_family: Deferred::value("Roboto".to_string()),
                     font_size: if bounded {
                         Deferred::value(20.0)
@@ -2951,7 +2959,7 @@ fn bounded_text_is_remeasured_after_binding_loads_a_font() {
             NodeKind::Text(Text {
                 id: loader,
                 params: TextParamsDelegate {
-                    content: Deferred::value("W".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value("W".to_string())),
                     font_family: Deferred::Expr(Expression::parse("\"Loader\"").unwrap()),
                     position: Deferred::value((0.0, 400.0)),
                     render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
@@ -3012,7 +3020,7 @@ fn bounded_text_is_remeasured_after_another_renderer_loads_a_font() {
             NodeKind::Text(Text {
                 id: text,
                 params: TextParamsDelegate {
-                    content: Deferred::value("WWWWWWWWWW".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value("WWWWWWWWWW".to_string())),
                     font_size: if bounded {
                         Deferred::value(20.0)
                     } else {
@@ -5989,7 +5997,7 @@ fn text_transform_in_msdf_mode_matches_larger_and_rotated_text() {
         vec![NodeKind::Text(Text {
             id: NodeId::new(1),
             params: TextParamsDelegate {
-                content: Deferred::value("Lumen AV".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Lumen AV".to_string())),
                 font_size: Deferred::value(font_size),
                 render_mode: TextRenderMode::Msdf.into(),
                 position: Deferred::value((20.0, 30.0)),
@@ -6237,7 +6245,9 @@ fn text_opacity_fades_overlapping_glyphs_as_one_layer() {
         vec![NodeKind::Text(Text {
             id: NodeId::new(1),
             params: TextParamsDelegate {
-                content: Deferred::value("A\u{338} f\u{301}".to_string()),
+                content: TextContentDelegate::Text(Deferred::value(
+                    "A\u{338} f\u{301}".to_string(),
+                )),
                 font_size: Deferred::value(48.0),
                 position: Deferred::value((8.0, 8.0)),
                 opacity: Deferred::value(opacity),
@@ -6270,7 +6280,7 @@ fn scaled_text_supersamples_paint_over_one_canvas_pixel() {
     let text = vec![NodeKind::Text(Text {
         id: NodeId::new(1),
         params: TextParamsDelegate {
-            content: Deferred::value("H".to_string()),
+            content: TextContentDelegate::Text(Deferred::value("H".to_string())),
             font_size: Deferred::value(16.0),
             render_mode: TextRenderMode::Msdf.into(),
             position: Deferred::value((8.0, 8.0)),
@@ -6349,7 +6359,7 @@ fn text_spacing_and_variable_weight_change_output_smoothly() {
         }
     }
     let base = || TextParamsDelegate {
-        content: Deferred::value("Hi\nHo".to_string()),
+        content: TextContentDelegate::Text(Deferred::value("Hi\nHo".to_string())),
         font_family: Deferred::value("Inter".to_string()),
         font_size: Deferred::value(40.0),
         position: Deferred::value((20.0, 10.0)),
@@ -6461,7 +6471,7 @@ fn text_glyphs_larger_than_the_atlas_still_draw() {
     };
     // At 6000 px the stem of an "I" is taller than the 4096 px atlas.
     let mut composition = text_test_composition(TextParamsDelegate {
-        content: Deferred::value("I".to_string()),
+        content: TextContentDelegate::Text(Deferred::value("I".to_string())),
         font_size: Deferred::value(6000.0),
         position: Deferred::value((-700.0, -2000.0)),
         ..Default::default()
@@ -6491,7 +6501,7 @@ fn text_msdf_corners_stay_within_a_pixel_of_raster_at_1000px() {
     let (width, height) = (1500_usize, 1100_usize);
     let mut render = |mode: TextRenderMode| {
         let mut composition = text_test_composition(TextParamsDelegate {
-            content: Deferred::value("Ra".to_string()),
+            content: TextContentDelegate::Text(Deferred::value("Ra".to_string())),
             font_size: Deferred::value(1000.0),
             position: Deferred::value((20.0, -180.0)),
             render_mode: mode.into(),
@@ -6976,7 +6986,7 @@ fn motion_blur_on_still_layers_changes_nothing() {
             vec![NodeKind::Text(Text {
                 id: NodeId::new(1),
                 params: TextParamsDelegate {
-                    content: Deferred::value("Lumen".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value("Lumen".to_string())),
                     font_size: Deferred::value(24.0),
                     render_mode: TextRenderMode::Msdf.into(),
                     position: expression("vec2(10, 30)"),
@@ -7189,7 +7199,7 @@ fn blurred_text_keeps_its_coverage_where_glyph_smears_cross() {
             vec![NodeKind::Text(Text {
                 id: NodeId::new(1),
                 params: TextParamsDelegate {
-                    content: Deferred::value("Lumen".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value("Lumen".to_string())),
                     font_size: Deferred::value(32.0),
                     render_mode: mode.into(),
                     position: expression("vec2(frame * 40 - 20, 40)"),
@@ -7255,7 +7265,7 @@ fn blur_keeps_taps_around_a_frame_whose_scale_is_zero() {
         vec![NodeKind::Text(Text {
             id: NodeId::new(1),
             params: TextParamsDelegate {
-                content: Deferred::value("Lumen".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Lumen".to_string())),
                 font_size: Deferred::value(32.0),
                 render_mode: TextRenderMode::Msdf.into(),
                 position: Deferred::value((10.0, 30.0)),
@@ -7449,7 +7459,9 @@ fn blurred_text_composites_glyphs_and_paint_before_averaging() {
                 NodeKind::Text(Text {
                     id: NodeId::new(1),
                     params: TextParamsDelegate {
-                        content: Deferred::value("A\u{338} f\u{301}".to_string()),
+                        content: TextContentDelegate::Text(Deferred::value(
+                            "A\u{338} f\u{301}".to_string(),
+                        )),
                         font_size: Deferred::value(48.0),
                         render_mode: mode.into(),
                         position,
@@ -7471,7 +7483,7 @@ fn blurred_text_composites_glyphs_and_paint_before_averaging() {
             NodeKind::Text(Text {
                 id: NodeId::new(1),
                 params: TextParamsDelegate {
-                    content: Deferred::value("H".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value("H".to_string())),
                     font_size: Deferred::value(40.0),
                     render_mode: TextRenderMode::Msdf.into(),
                     position,
@@ -7521,7 +7533,7 @@ fn blurred_text_entering_from_beyond_the_edge_keeps_its_smear() {
         vec![NodeKind::Text(Text {
             id: NodeId::new(1),
             params: TextParamsDelegate {
-                content: Deferred::value("Lumen".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Lumen".to_string())),
                 font_size: Deferred::value(32.0),
                 position,
                 motion_blur: Deferred::value(motion_blur),
@@ -7568,7 +7580,7 @@ fn blurred_text_scrolling_beyond_the_canvas_is_not_clipped() {
         vec![NodeKind::Text(Text {
             id: NodeId::new(1),
             params: TextParamsDelegate {
-                content: Deferred::value("MMMMMMMMMMMM".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("MMMMMMMMMMMM".to_string())),
                 font_size: Deferred::value(32.0),
                 position,
                 motion_blur: Deferred::value(motion_blur),
@@ -7626,7 +7638,7 @@ fn blurred_msdf_text_keeps_its_resolution_whichever_way_the_scale_changes() {
         vec![NodeKind::Text(Text {
             id: NodeId::new(1),
             params: TextParamsDelegate {
-                content: Deferred::value("Hi".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Hi".to_string())),
                 font_size: Deferred::value(32.0),
                 render_mode: TextRenderMode::Msdf.into(),
                 position: Deferred::value((10.0, 10.0)),
@@ -8581,7 +8593,7 @@ fn glyph_text(content: &str, params: TextParamsDelegate) -> Vec<NodeKind> {
     vec![NodeKind::Text(Text {
         id: NodeId::new(1),
         params: TextParamsDelegate {
-            content: Deferred::value(content.to_string()),
+            content: TextContentDelegate::Text(Deferred::value(content.to_string())),
             font_size: Deferred::value(40.0),
             position: Deferred::value((20.0, 10.0)),
             ..params
@@ -8636,7 +8648,7 @@ fn bounded_text_holds_glyphs_its_glyph_params_move() {
         vec![NodeKind::Text(Text {
             id: NodeId::new(1),
             params: TextParamsDelegate {
-                content: Deferred::value("Hi".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Hi".to_string())),
                 font_size: Deferred::value(30.0),
                 position: Deferred::value(position),
                 glyph_offset: Deferred::value(glyph_offset),
@@ -8904,7 +8916,7 @@ fn glyph_globals_outside_glyph_params_are_an_error() {
         NodeKind::Text(Text {
             id: NodeId::new(1),
             params: TextParamsDelegate {
-                content: Deferred::value("Lumen".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Lumen".to_string())),
                 ..params
             },
         })
@@ -8963,7 +8975,7 @@ fn glyph_scope_ends_at_property_references_but_crosses_functions() {
         NodeKind::Text(Text {
             id: NodeId::new(id),
             params: TextParamsDelegate {
-                content: Deferred::value("Lumen".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Lumen".to_string())),
                 ..params
             },
         })
@@ -9434,7 +9446,7 @@ fn render_blurred_text(
         NodeKind::Text(Text {
             id: text,
             params: TextParamsDelegate {
-                content: Deferred::value("Blur edge".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Blur edge".to_string())),
                 font_family: Deferred::value("Inter".to_string()),
                 font_size: Deferred::value(case.font_size),
                 position,
@@ -10444,6 +10456,116 @@ fn kept_text_is_drawn_again_after_its_font_loads() {
     assert!(loaded == uncached_rgba8(&mut reference, &composition, 2, &store));
 }
 
+#[test]
+fn memoized_text_is_drawn_again_after_a_span_font_loads() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    let store = ScaledFontStore::new("Spanny", 2);
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 10, "duration_frames": 10 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": [
+            {
+                "id": 1,
+                "type": "text",
+                "params": {
+                    "content": [{ "text": "WWW", "font_family": "Spanny" }],
+                    "font_size": 20,
+                    "position": [10, 10]
+                }
+            },
+            { "id": 2, "type": "memo", "params": { "key": "=frame * 0" } },
+            { "id": 3, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 2, "to_port": "source" },
+            { "from_node": 2, "to_node": 3, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+
+    let unloaded = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
+    let loaded = render_rgba8(&mut renderer, &composition, 2, &store);
+    assert!(loaded != unloaded, "the span is drawn in the loaded font");
+    assert!(loaded == uncached_rgba8(&mut reference, &composition, 2, &store));
+}
+
+#[test]
+fn memoized_text_holds_its_output_when_its_family_would_fail_to_evaluate() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 10, "duration_frames": 10 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": [
+            {
+                "id": 1,
+                "type": "text",
+                "params": {
+                    "content": "WWW",
+                    "font_family": "=if(frame == 0, \"Roboto\", node(999, \"font_family\"))",
+                    "font_size": 20,
+                    "position": [10, 10]
+                }
+            },
+            { "id": 2, "type": "memo", "params": { "key": "=frame * 0" } },
+            { "id": 3, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 2, "to_port": "source" },
+            { "from_node": 2, "to_node": 3, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+
+    let first = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let held = render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
+    assert!(held == first, "the memo holds the text it drew");
+}
+
+#[test]
+fn memoized_text_is_drawn_again_after_an_animated_span_font_loads() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let mut reference = gpu_composition_renderer().unwrap();
+    let store = ScaledFontStore::new("Dyfont", 2);
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 10, "duration_frames": 10 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": [
+            {
+                "id": 1,
+                "type": "text",
+                "params": {
+                    "content": [{ "text": "WWW", "font_family": "=\"Dyfont\"" }],
+                    "font_size": 20,
+                    "position": [10, 10]
+                }
+            },
+            { "id": 2, "type": "memo", "params": { "key": "=frame * 0" } },
+            { "id": 3, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 2, "to_port": "source" },
+            { "from_node": 2, "to_node": 3, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+
+    let unloaded = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let loaded = render_rgba8(&mut renderer, &composition, 1, &store);
+    assert!(loaded != unloaded, "the span is drawn in the loaded font");
+    assert!(loaded == uncached_rgba8(&mut reference, &composition, 1, &store));
+}
+
 /// Static layers 4 and 5 sharing square 3, alternately selected every two frames, under a moving
 /// square.
 fn switching_static_layers() -> Composition {
@@ -10557,7 +10679,7 @@ fn discarded_binds_keep_nothing_and_stale_uploads_are_still_rejected() {
         NodeKind::Text(Text {
             id: NodeId::new(2),
             params: TextParamsDelegate {
-                content: Deferred::value("Kept".to_string()),
+                content: TextContentDelegate::Text(Deferred::value("Kept".to_string())),
                 font_size: Deferred::value(12.0),
                 position: Deferred::value((2.0, 8.0)),
                 ..Default::default()
@@ -10703,7 +10825,7 @@ fn kept_text_keeps_its_glyphs_in_the_shared_atlas() {
         NodeKind::Text(Text {
             id: NodeId::new(id),
             params: TextParamsDelegate {
-                content: Deferred::value(content.to_string()),
+                content: TextContentDelegate::Text(Deferred::value(content.to_string())),
                 font_size,
                 scale: Deferred::value((0.03, 0.03)),
                 position: Deferred::value((x, 0.0)),
@@ -11059,10 +11181,10 @@ fn memo_snapshot_dropped_with_its_key_change_is_not_shown_again() {
         NodeKind::Text(Text {
             id: NodeId::new(5),
             params: TextParamsDelegate {
-                content: expression(&format!(
+                content: TextContentDelegate::Text(expression(&format!(
                     "if(floor(frame) % 2 == 1, '{}', 'W')",
                     "W".repeat(3000)
-                )),
+                ))),
                 font_size: Deferred::value(12.0),
                 scale: Deferred::value((0.001, 0.001)),
                 position: Deferred::value((30.0, 10.0)),
@@ -11358,5 +11480,245 @@ fn memo_holds_snapshot_across_switch_between_uncropped_and_cropped_layers() {
             "frame {} holds the first snapshot",
             index * 2
         );
+    }
+}
+
+/// Renders `frames` of a `size`² canvas holding a text node with the JSON `params`, which may
+/// name Inter.
+fn render_text_frames(
+    renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+    params: serde_json::Value,
+    size: u32,
+    frames: &[u32],
+) -> Vec<Vec<u8>> {
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 12 },
+        "render_settings": { "width": size, "height": size },
+        "nodes": [
+            { "id": 1, "type": "text", "params": params },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap();
+    renderer
+        .compile_with_media(
+            &composition,
+            &BlurFont,
+            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .unwrap();
+    frames
+        .iter()
+        .map(|&frame| render_rgba8(renderer, &composition, frame, &BlurFont))
+        .collect()
+}
+
+fn render_text_params(
+    renderer: &mut lumen_engine::gpu::GpuCompositionRenderer,
+    params: serde_json::Value,
+    size: u32,
+) -> Vec<u8> {
+    render_text_frames(renderer, params, size, &[0]).remove(0)
+}
+
+#[test]
+fn text_spans_shape_in_their_own_size_and_weight() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let text = |content: serde_json::Value, style: &serde_json::Value| {
+        let mut params =
+            json!({ "content": content, "font_family": "Inter", "position": [20, 20] });
+        for (key, value) in style.as_object().unwrap() {
+            params[key] = value.clone();
+        }
+        params
+    };
+    let small = json!({ "font_size": 24 });
+    let large = json!({ "font_size": 48, "font_weight": 800 });
+    let mut spans = [small.clone(), large.clone()];
+    for span in &mut spans {
+        span["text"] = json!("I");
+    }
+    let pixels = render_text_params(&mut renderer, text(json!(spans), &json!({})), size);
+    let runs = inked_columns(&pixels, size);
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    let inks = [0, 1].map(|index| ink_box(&pixels, size, runs[index].clone()));
+    assert!(
+        inks[0][3].abs_diff(inks[1][3]) <= 1,
+        "baselines differ: {inks:?}"
+    );
+    // Each span's glyph is as wide and tall as the plain text in its style draws it.
+    for (style, ink) in [small, large].iter().zip(inks) {
+        let alone = render_text_params(&mut renderer, text(json!("I"), style), size);
+        let alone = ink_box(&alone, size, inked_columns(&alone, size)[0].clone());
+        let extent = |[x0, y0, x1, y1]: [usize; 4]| [x1 - x0, y1 - y0];
+        let [width, height] = extent(ink);
+        let [alone_width, alone_height] = extent(alone);
+        assert!(
+            width.abs_diff(alone_width) <= 1 && height.abs_diff(alone_height) <= 1,
+            "{style}: {ink:?} drawn alone is {alone:?}"
+        );
+    }
+}
+
+#[test]
+fn span_gradients_span_their_span_or_the_whole_text() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let gradient = json!({
+        "type": "linear_gradient",
+        "start": [0, 0],
+        "end": [1, 0],
+        "stops": [[0, [255, 0, 0, 255]], [1, [0, 0, 255, 255]]]
+    });
+    for paint_space in ["span", "text"] {
+        let pixels = render_text_params(
+            &mut renderer,
+            json!({
+                "content": [{ "text": "IIII" }, { "text": "IIII", "color": gradient }],
+                "font_family": "Inter",
+                "font_size": 32,
+                "position": [8, 40],
+                "paint_space": paint_space
+            }),
+            size,
+        );
+        let runs = inked_columns(&pixels, size);
+        assert_eq!(runs.len(), 8, "{runs:?}");
+        // Sums of red, green and blue over the run's mostly opaque pixels.
+        let channels = |run: &std::ops::Range<usize>| {
+            let mut sums = [0u64; 3];
+            for y in 0..size as usize {
+                for x in run.clone() {
+                    let pixel = &pixels[(y * size as usize + x) * 4..][..4];
+                    if pixel[3] > 200 {
+                        for (sum, &channel) in sums.iter_mut().zip(pixel) {
+                            *sum += u64::from(channel);
+                        }
+                    }
+                }
+            }
+            sums
+        };
+        let red_share = |run| {
+            let [red, _, blue] = channels(run);
+            red as f64 / (red + blue) as f64
+        };
+        // The first span takes the node's white.
+        for run in &runs[..4] {
+            let [red, green, blue] = channels(run);
+            assert!(
+                green > 0 && green == red && green == blue,
+                "{paint_space}: {run:?}"
+            );
+        }
+        let (first, last) = (red_share(&runs[4]), red_share(&runs[7]));
+        match paint_space {
+            "span" => assert!(first > 0.75, "{paint_space}: {first}"),
+            _ => assert!((0.3..0.7).contains(&first), "{paint_space}: {first}"),
+        }
+        assert!(last < 0.25, "{paint_space}: {last}");
+    }
+}
+
+#[test]
+fn glyph_params_read_the_span_index() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let text = |glyph_offset: serde_json::Value| {
+        json!({
+            "content": [{ "text": "II" }, { "text": "II" }],
+            "font_family": "Inter",
+            "font_size": 32,
+            "position": [8, 20],
+            "glyph_offset": glyph_offset
+        })
+    };
+    let still = render_text_params(&mut renderer, text(json!([0, 0])), size);
+    let moved = render_text_params(
+        &mut renderer,
+        text(json!("=vec2(0, 40 * span / (span_count - 1))")),
+        size,
+    );
+    let runs = inked_columns(&still, size);
+    assert_eq!(runs.len(), 4, "{runs:?}");
+    assert_eq!(inked_columns(&moved, size), runs);
+    for (index, run) in runs.into_iter().enumerate() {
+        let [x0, y0, x1, y1] = ink_box(&still, size, run.clone());
+        let shift = if index < 2 { 0 } else { 40 };
+        assert_eq!(
+            ink_box(&moved, size, run),
+            [x0, y0 + shift, x1, y1 + shift],
+            "glyph {index}"
+        );
+    }
+}
+
+#[test]
+fn animated_span_fields_reshape_each_frame() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let text = |font_size: serde_json::Value| {
+        json!({
+            "content": [{ "text": "I" }, { "text": "I", "font_size": font_size }],
+            "font_family": "Inter",
+            "font_size": 24,
+            "position": [20, 20]
+        })
+    };
+    let frames = render_text_frames(
+        &mut renderer,
+        text(json!("=24 + frame * 24")),
+        size,
+        &[0, 1, 0],
+    );
+    assert_ne!(frames[0], frames[1]);
+    assert_eq!(frames[0], frames[2]);
+    for (frame, font_size) in [(0, 24), (1, 48)] {
+        let expected = render_text_params(&mut renderer, text(json!(font_size)), size);
+        assert!(frames[frame] == expected, "frame {frame}");
+    }
+}
+
+#[test]
+fn plain_string_content_matches_its_span_and_expression_forms() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let text = |content: serde_json::Value| {
+        json!({
+            "content": content,
+            "font_size": 32,
+            "position": [8, 20],
+            "color": {
+                "type": "linear_gradient",
+                "stops": [[0, [255, 0, 0, 255]], [1, [0, 0, 255, 255]]]
+            }
+        })
+    };
+    let plain = render_text_params(&mut renderer, text(json!("Lumen")), size);
+    assert!(total_alpha(&plain) > 0);
+    for content in [
+        json!([{ "text": "Lumen" }]),
+        json!("=\"Lumen\""),
+        json!([{ "text": "=\"Lumen\"" }]),
+    ] {
+        let pixels = render_text_params(&mut renderer, text(content.clone()), size);
+        assert!(pixels == plain, "{content}");
     }
 }

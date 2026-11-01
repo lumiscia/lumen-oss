@@ -406,6 +406,25 @@ impl TextSystem {
             [x_min, 0.0, x_max - x_min, height]
         };
 
+        let mut span_boxes: Vec<Option<[f32; 4]>> = vec![None; request.spans.len()];
+        for segment in &segments {
+            let top = segment.line_top;
+            let edges = [segment.x[0], top, segment.x[1], top + segment.line_height];
+            if let Some(span) = span_boxes.get_mut(segment.span as usize) {
+                *span = Some(span.map_or(edges, |a| {
+                    [
+                        a[0].min(edges[0]),
+                        a[1].min(edges[1]),
+                        a[2].max(edges[2]),
+                        a[3].max(edges[3]),
+                    ]
+                }));
+            }
+        }
+        for [x0, y0, x1, y1] in span_boxes.iter_mut().flatten() {
+            (*x1, *y1) = (*x1 - *x0, *y1 - *y0);
+        }
+
         ShapedText {
             measurement: TextMeasurement { width, height },
             bounds,
@@ -416,6 +435,7 @@ impl TextSystem {
                 span: request.spans.len() as u32,
             },
             segments,
+            span_boxes,
             span_metrics: span_metrics
                 .into_iter()
                 .take(request.spans.len())
@@ -955,6 +975,9 @@ pub struct ShapedText {
     /// Each contiguous run of one span and direction on a line, by line and then from left
     /// to right.
     pub segments: Vec<TextSegment>,
+    /// The box of each span's segments as `[x, y, width, height]`, or `None` for a span that
+    /// draws none.
+    pub span_boxes: Vec<Option<[f32; 4]>>,
     /// Decoration metrics of each span's font, or zero for spans that draw no glyphs.
     pub span_metrics: Vec<TextSpanMetrics>,
     glyphs: Vec<ShapedGlyph>,
@@ -2073,7 +2096,7 @@ mod tests {
             prepared
                 .instances
                 .iter()
-                .filter(|instance| instance.mode == GLYPH_MODE_MSDF)
+                .filter(|instance| instance.render_mode() == GLYPH_MODE_MSDF)
                 .count()
         }
 
@@ -2103,7 +2126,7 @@ mod tests {
                     }
                 });
                 for ((glyph, placed), instance) in visible.zip(&prepared.instances) {
-                    let baseline = if instance.mode == GLYPH_MODE_MSDF {
+                    let baseline = if instance.render_mode() == GLYPH_MODE_MSDF {
                         instance.rect[1]
                             + (placed.top - 0.5) * request.spans[0].font_size
                                 / msdf_em_size(request.spans[0].font_size)
@@ -2279,7 +2302,7 @@ mod tests {
                         ((0.0..width).contains(&fx), (0.0..height).contains(&fy));
                     coverage.push(if !(inside_x && inside_y) {
                         0.0
-                    } else if instance.mode == GLYPH_MODE_MSDF {
+                    } else if instance.render_mode() == GLYPH_MODE_MSDF {
                         let (u, v) = (
                             u0 + fx * texels_per_pixel - 0.5,
                             v0 + fy * texels_per_pixel - 0.5,
@@ -2352,7 +2375,7 @@ mod tests {
             atlas.begin_frame();
             let colour = prepare(&mut system, &mut atlas, &colour, TextRenderMode::Msdf);
             assert_eq!(colour.instances.len(), 1);
-            assert_eq!(colour.instances[0].mode, GLYPH_MODE_RASTER_COLOR);
+            assert_eq!(colour.instances[0].render_mode(), GLYPH_MODE_RASTER_COLOR);
 
             // Two copies of one outline overlap everywhere.
             let key = msdf::msdf_key(overlapping.glyphs[0].key.0);

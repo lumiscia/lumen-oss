@@ -1,3 +1,4 @@
+use lumen_engine::node::source::text_content::TextContentDelegate;
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     expr::Expression,
@@ -98,7 +99,9 @@ impl CompositionFixture for AnimatedShowcase {
             NodeKind::Text(Text {
                 id: headline,
                 params: TextParamsDelegate {
-                    content: Deferred::value("GPU-native previews.".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value(
+                        "GPU-native previews.".to_string(),
+                    )),
                     font_size: Deferred::value(42.0),
                     font_weight: Deferred::value(700),
                     max_width: Deferred::value(700.0),
@@ -114,7 +117,9 @@ impl CompositionFixture for AnimatedShowcase {
             NodeKind::Text(Text {
                 id: subhead,
                 params: TextParamsDelegate {
-                    content: Deferred::value("Expressions update uniforms per frame.".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value(
+                        "Expressions update uniforms per frame.".to_string(),
+                    )),
                     font_size: Deferred::value(21.0),
                     font_weight: Deferred::value(500),
                     max_width: Deferred::value(730.0),

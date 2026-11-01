@@ -133,9 +133,11 @@ pub enum GlobalVar {
     Glyph,
     Word,
     Line,
+    Span,
     GlyphCount,
     WordCount,
     LineCount,
+    SpanCount,
     Custom(String),
 }
 

@@ -1,3 +1,4 @@
+use lumen_engine::node::source::text_content::TextContentDelegate;
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
@@ -198,7 +199,9 @@ impl CompositionFixture for AntialiasingStress {
             NodeKind::Text(Text {
                 id: label,
                 params: TextParamsDelegate {
-                    content: Deferred::value("subpixel diagonals".to_string()),
+                    content: TextContentDelegate::Text(Deferred::value(
+                        "subpixel diagonals".to_string(),
+                    )),
                     font_size: Deferred::value(68.0),
                     font_weight: Deferred::value(800),
                     max_width: Deferred::value(760.0),

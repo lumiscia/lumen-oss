@@ -702,9 +702,11 @@ impl<'a> Parser<'a> {
                 "glyph" => GlobalVar::Glyph,
                 "word" => GlobalVar::Word,
                 "line" => GlobalVar::Line,
+                "span" => GlobalVar::Span,
                 "glyph_count" => GlobalVar::GlyphCount,
                 "word_count" => GlobalVar::WordCount,
                 "line_count" => GlobalVar::LineCount,
+                "span_count" => GlobalVar::SpanCount,
                 _ => GlobalVar::Custom(identifier),
             }))
     }

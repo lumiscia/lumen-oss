@@ -1,3 +1,4 @@
+use lumen_engine::node::source::text_content::TextContentDelegate;
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     expr::Expression,
@@ -110,7 +111,7 @@ impl CompositionFixture for ManyElements {
                 NodeKind::Text(Text {
                     id: label,
                     params: TextParamsDelegate {
-                        content: Deferred::value(format!("#{index:03}")),
+                        content: TextContentDelegate::Text(Deferred::value(format!("#{index:03}"))),
                         font_size: Deferred::value(14.0),
                         position: Deferred::value((x + 8.0, y + 46.0)),
                         color: Paint::solid([230, 232, 240, 255]).into(),

@@ -12,7 +12,10 @@ use crate::{
         cache::{BindCache, CacheState, LayoutMemo, MemoSnapshots, skipped_count},
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
-    node::{Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef},
+    node::{
+        Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef,
+        source::text_content::TextContentDelegate,
+    },
     scope::{FrameTime, Routed, Scope},
 };
 
@@ -50,8 +53,8 @@ enum PlanChoice {
     SwitchSelection(Option<usize>),
     /// Whether a clip shows, which decides whether anything upstream of it is compiled.
     ClipShown(bool),
-    /// The resolver the media store gave a text node's font family, which its bounds were
-    /// measured with.
+    /// The resolver the media store gave a font family of a text node or its spans, which its
+    /// bounds were measured with.
     TextFont(String),
     ShaderSource(u64),
 }
@@ -1205,11 +1208,27 @@ impl<'a> PlanKeyCollector<'a> {
                 self.push_entry(clip.id, PlanChoice::ClipShown(shown));
             }
             NodeKind::Text(text) => {
-                if let Deferred::Value(family) = &text.params.font_family {
-                    if let Some(resolver) = self.media.and_then(|m| m.font_resolver_id(family)) {
-                        self.push_entry(text.id, PlanChoice::TextFont(resolver));
+                let spans = match &text.params.content {
+                    TextContentDelegate::Spans(spans) => &spans.items[..],
+                    TextContentDelegate::Text(_) => &[],
+                };
+                let families = std::iter::once(&text.params.font_family)
+                    .chain(spans.iter().filter_map(|span| span.font_family.as_ref()));
+                // An animated family is keyed by the family it names at this frame. One that fails
+                // to evaluate is left for binding to report, since a memo may never bind it.
+                let mut ctx = None;
+                for family in families {
+                    match family {
+                        Deferred::Value(family) => self.collect_font_family(text.id, family),
+                        Deferred::Expr(_) => {
+                            let ctx = ctx.get_or_insert_with(|| {
+                                scope.expr_context(frame, format!("{}.params", text.id), self.media)
+                            });
+                            if let Ok(family) = family.eval(text.id, "font_family", ctx) {
+                                self.collect_font_family(text.id, &family);
+                            }
+                        }
                     }
-                    self.load_font_family(family);
                 }
                 self.has_text = true;
             }
@@ -1241,6 +1260,15 @@ impl<'a> PlanKeyCollector<'a> {
             result?;
         }
         Ok(())
+    }
+
+    /// Keys the plan by the resolver the media store gives the literal `family` of text `node_id`
+    /// and loads it.
+    fn collect_font_family(&mut self, node_id: NodeId, family: &str) {
+        if let Some(resolver) = self.media.and_then(|m| m.font_resolver_id(family)) {
+            self.push_entry(node_id, PlanChoice::TextFont(resolver));
+        }
+        self.load_font_family(family);
     }
 
     /// Loads the literal `family` the media store resolves, as the compile would, so the key's
