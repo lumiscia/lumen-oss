@@ -1,8 +1,10 @@
+use std::hash::{Hash, Hasher};
+
 use crate::{
     error::{ExpressionError, LumenError},
     expr::{
         ExpressionContext,
-        ast::{BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
+        ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::{evaluate_builtin, evaluate_text_measure_builtin},
     },
     node::{PropertyExpression, PropertyValue},
@@ -10,7 +12,7 @@ use crate::{
 
 impl Expression {
     pub fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
-        evaluate_expr(&self.ast, ctx)
+        self.plan.evaluate(ctx)
     }
 }
 
@@ -32,68 +34,223 @@ pub fn property_value_to_expression_value(value: &PropertyValue) -> crate::Resul
     }
 }
 
+/// An expression's AST with each distinct subtree as one step, so a subtree it repeats, as
+/// expanded easing curves repeat their progress, is evaluated once per evaluation. Steps are
+/// evaluated in the AST's order and only where it evaluates them, so `&&`, `||` and conditional
+/// branches stay lazy and errors are those of the AST.
+#[derive(Debug)]
+pub(crate) struct EvalPlan {
+    steps: Vec<Step>,
+    root: usize,
+    /// Subtrees that `Op::Tree` evaluates as they are.
+    trees: Vec<ExprNode>,
+    memo_slots: usize,
+}
+
+#[derive(Debug)]
+struct Step {
+    op: Op,
+    /// Where an evaluation keeps the value of a step that more than one step reads.
+    memo: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Op {
+    Literal(Literal),
+    Global(GlobalVar),
+    Unary(UnaryOp, usize),
+    Binary(usize, BinaryOp, usize),
+    Builtin(BuiltinFn, Box<[usize]>),
+    Conditional(usize, usize, usize),
+    /// Text measurement, which reads its arguments as written, and references to nodes.
+    Tree(usize),
+}
+
+/// A literal compared by its bits, so that `0` and `-0` stay distinct.
+#[derive(Debug, Clone)]
+struct Literal(ExpressionValue);
+
+impl Literal {
+    fn key(&self) -> (u8, [u64; 4], &str) {
+        match &self.0 {
+            ExpressionValue::Number(number) => (0, [number.to_bits(), 0, 0, 0], ""),
+            ExpressionValue::Boolean(boolean) => (1, [u64::from(*boolean), 0, 0, 0], ""),
+            ExpressionValue::String(text) => (2, [0; 4], text),
+            ExpressionValue::Vec2((x, y)) => (3, [x.to_bits(), y.to_bits(), 0, 0], ""),
+            ExpressionValue::Color(color) => (4, color.map(f64::to_bits), ""),
+        }
+    }
+}
+
+impl PartialEq for Literal {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for Literal {}
+
+impl Hash for Literal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
+}
+
+impl EvalPlan {
+    pub(crate) fn new(ast: &ExprNode) -> Self {
+        let mut builder = PlanBuilder::default();
+        let root = builder.add(ast);
+        let mut reads = vec![0_u32; builder.ops.len()];
+        for op in &builder.ops {
+            match op {
+                Op::Unary(_, value) => reads[*value] += 1,
+                Op::Binary(lhs, _, rhs) => {
+                    reads[*lhs] += 1;
+                    reads[*rhs] += 1;
+                }
+                Op::Builtin(_, args) => args.iter().for_each(|arg| reads[*arg] += 1),
+                Op::Conditional(condition, when_true, when_false) => {
+                    for step in [condition, when_true, when_false] {
+                        reads[*step] += 1;
+                    }
+                }
+                Op::Literal(_) | Op::Global(_) | Op::Tree(_) => {}
+            }
+        }
+        let mut memo_slots = 0;
+        let steps = builder
+            .ops
+            .into_iter()
+            .zip(reads)
+            .map(|(op, reads)| {
+                let memo =
+                    (reads > 1 && !matches!(op, Op::Literal(_) | Op::Global(_))).then(|| {
+                        memo_slots += 1;
+                        memo_slots - 1
+                    });
+                Step { op, memo }
+            })
+            .collect();
+        Self {
+            steps,
+            root,
+            trees: builder.trees,
+            memo_slots,
+        }
+    }
+
+    fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
+        let mut memo = vec![None; self.memo_slots];
+        self.evaluate_step(self.root, ctx, &mut memo)
+    }
+
+    fn evaluate_step(
+        &self,
+        index: usize,
+        ctx: &ExpressionContext<'_>,
+        memo: &mut [Option<ExpressionValue>],
+    ) -> crate::Result<ExpressionValue> {
+        let step = &self.steps[index];
+        if let Some(slot) = step.memo
+            && let Some(value) = &memo[slot]
+        {
+            return Ok(value.clone());
+        }
+        let value = match &step.op {
+            Op::Literal(Literal(value)) => value.clone(),
+            Op::Global(global) => global_value(global, ctx)?,
+            Op::Unary(op, value) => unary(*op, self.evaluate_step(*value, ctx, memo)?, ctx)?,
+            Op::Binary(lhs, op, rhs) => {
+                let lhs = self.evaluate_step(*lhs, ctx, memo)?;
+                binary(lhs, *op, || self.evaluate_step(*rhs, ctx, memo), ctx)?
+            }
+            Op::Builtin(builtin, args) => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.evaluate_step(*arg, ctx, memo))
+                    .collect::<crate::Result<Vec<_>>>()?;
+                evaluate_builtin(*builtin, &args, ctx)?
+            }
+            Op::Conditional(condition, when_true, when_false) => {
+                let branch = if self.evaluate_step(*condition, ctx, memo)?.as_bool() {
+                    when_true
+                } else {
+                    when_false
+                };
+                self.evaluate_step(*branch, ctx, memo)?
+            }
+            Op::Tree(tree) => evaluate_expr(&self.trees[*tree], ctx)?,
+        };
+        if let Some(slot) = step.memo {
+            memo[slot] = Some(value.clone());
+        }
+        Ok(value)
+    }
+}
+
+#[derive(Default)]
+struct PlanBuilder {
+    ops: Vec<Op>,
+    trees: Vec<ExprNode>,
+    interned: foldhash::HashMap<Op, usize>,
+}
+
+impl PlanBuilder {
+    /// Adds the steps of `node`, returning the step that evaluates it.
+    fn add(&mut self, node: &ExprNode) -> usize {
+        let op = match node {
+            ExprNode::Literal(value) => Op::Literal(Literal(value.clone())),
+            ExprNode::Global(global) => Op::Global(global.clone()),
+            ExprNode::Unary(op, value) => Op::Unary(*op, self.add(value)),
+            ExprNode::Binary(lhs, op, rhs) => {
+                let lhs = self.add(lhs);
+                Op::Binary(lhs, *op, self.add(rhs))
+            }
+            ExprNode::Builtin(builtin, args) if !measures_text(*builtin) => {
+                Op::Builtin(*builtin, args.iter().map(|arg| self.add(arg)).collect())
+            }
+            ExprNode::Conditional(condition, when_true, when_false) => {
+                let condition = self.add(condition);
+                let when_true = self.add(when_true);
+                Op::Conditional(condition, when_true, self.add(when_false))
+            }
+            ExprNode::Builtin(..)
+            | ExprNode::SymbolicPath(_)
+            | ExprNode::Node(_)
+            | ExprNode::PropertyValue(..)
+            | ExprNode::VirtualProperty(_) => {
+                self.trees.push(node.clone());
+                Op::Tree(self.trees.len() - 1)
+            }
+        };
+        if let Some(&step) = self.interned.get(&op) {
+            return step;
+        }
+        self.ops.push(op.clone());
+        self.interned.insert(op, self.ops.len() - 1);
+        self.ops.len() - 1
+    }
+}
+
+fn measures_text(builtin: BuiltinFn) -> bool {
+    matches!(builtin, BuiltinFn::TextHeight | BuiltinFn::TextWidth)
+}
+
 pub(crate) fn evaluate_expr(
     expr: &ExprNode,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
     match expr {
         ExprNode::Literal(value) => Ok(value.clone()),
-        ExprNode::Unary(op, value) => {
-            let evaluated = evaluate_expr(value, ctx)?;
-            match op {
-                UnaryOp::Neg => match evaluated {
-                    ExpressionValue::Vec2((x, y)) => Ok(ExpressionValue::Vec2((-x, -y))),
-                    other => Ok(ExpressionValue::Number(-to_number(&other, ctx)?)),
-                },
-                UnaryOp::Not => Ok(ExpressionValue::Boolean(!evaluated.as_bool())),
-            }
-        }
-        ExprNode::Binary(left, op, right) => {
-            let lhs = evaluate_expr(left, ctx)?;
-            match op {
-                BinaryOp::And => {
-                    if !lhs.as_bool() {
-                        return Ok(ExpressionValue::Boolean(false));
-                    }
-                    let rhs = evaluate_expr(right, ctx)?;
-                    Ok(ExpressionValue::Boolean(rhs.as_bool()))
-                }
-                BinaryOp::Or => {
-                    if lhs.as_bool() {
-                        return Ok(ExpressionValue::Boolean(true));
-                    }
-                    let rhs = evaluate_expr(right, ctx)?;
-                    Ok(ExpressionValue::Boolean(rhs.as_bool()))
-                }
-                BinaryOp::Eq => {
-                    let rhs = evaluate_expr(right, ctx)?;
-                    Ok(ExpressionValue::Boolean(lhs == rhs))
-                }
-                BinaryOp::Neq => {
-                    let rhs = evaluate_expr(right, ctx)?;
-                    Ok(ExpressionValue::Boolean(lhs != rhs))
-                }
-                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-                    let rhs = evaluate_expr(right, ctx)?;
-                    arithmetic(*op, &lhs, &rhs, ctx)
-                }
-                BinaryOp::Gt | BinaryOp::Lt | BinaryOp::Gte | BinaryOp::Lte => {
-                    let rhs = evaluate_expr(right, ctx)?;
-                    let (lhs, rhs) = (to_number(&lhs, ctx)?, to_number(&rhs, ctx)?);
-                    Ok(ExpressionValue::Boolean(match op {
-                        BinaryOp::Gt => lhs > rhs,
-                        BinaryOp::Lt => lhs < rhs,
-                        BinaryOp::Gte => lhs >= rhs,
-                        _ => lhs <= rhs,
-                    }))
-                }
-            }
-        }
+        ExprNode::Unary(op, value) => unary(*op, evaluate_expr(value, ctx)?, ctx),
+        ExprNode::Binary(left, op, right) => binary(
+            evaluate_expr(left, ctx)?,
+            *op,
+            || evaluate_expr(right, ctx),
+            ctx,
+        ),
         ExprNode::Builtin(builtin, args) => {
-            if matches!(
-                builtin,
-                crate::expr::ast::BuiltinFn::TextHeight | crate::expr::ast::BuiltinFn::TextWidth
-            ) {
+            if measures_text(*builtin) {
                 return evaluate_text_measure_builtin(*builtin, args, ctx);
             }
             let mut evaluated_args = Vec::with_capacity(args.len());
@@ -102,25 +259,7 @@ pub(crate) fn evaluate_expr(
             }
             evaluate_builtin(*builtin, &evaluated_args, ctx)
         }
-        ExprNode::Global(global) => match global {
-            GlobalVar::Frame => Ok(ExpressionValue::Number(ctx.frame)),
-            GlobalVar::Time => Ok(ExpressionValue::Number(ctx.time_seconds())),
-            GlobalVar::Fps => Ok(ExpressionValue::Number(f64::from(ctx.fps))),
-            GlobalVar::Width => Ok(ExpressionValue::Number(f64::from(ctx.width))),
-            GlobalVar::Height => Ok(ExpressionValue::Number(f64::from(ctx.height))),
-            GlobalVar::Glyph
-            | GlobalVar::Word
-            | GlobalVar::Line
-            | GlobalVar::GlyphCount
-            | GlobalVar::WordCount
-            | GlobalVar::LineCount => glyph_global(global, ctx),
-            GlobalVar::Custom(name) => {
-                Err(LumenError::Expression(ExpressionError::UndefinedVariable {
-                    path: ctx.path.clone(),
-                    name: name.clone(),
-                }))
-            }
-        },
+        ExprNode::Global(global) => global_value(global, ctx),
         ExprNode::SymbolicPath(segments) => {
             Err(LumenError::Expression(ExpressionError::Evaluate {
                 path: ctx.path.clone(),
@@ -184,6 +323,80 @@ pub(crate) fn evaluate_expr(
             } else {
                 evaluate_expr(when_false, ctx)
             }
+        }
+    }
+}
+
+fn unary(
+    op: UnaryOp,
+    value: ExpressionValue,
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<ExpressionValue> {
+    match op {
+        UnaryOp::Neg => match value {
+            ExpressionValue::Vec2((x, y)) => Ok(ExpressionValue::Vec2((-x, -y))),
+            other => Ok(ExpressionValue::Number(-to_number(&other, ctx)?)),
+        },
+        UnaryOp::Not => Ok(ExpressionValue::Boolean(!value.as_bool())),
+    }
+}
+
+/// `lhs op rhs`, evaluating `rhs` unless `&&` or `||` is decided by `lhs`.
+fn binary(
+    lhs: ExpressionValue,
+    op: BinaryOp,
+    rhs: impl FnOnce() -> crate::Result<ExpressionValue>,
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<ExpressionValue> {
+    match op {
+        BinaryOp::And => {
+            if !lhs.as_bool() {
+                return Ok(ExpressionValue::Boolean(false));
+            }
+            Ok(ExpressionValue::Boolean(rhs()?.as_bool()))
+        }
+        BinaryOp::Or => {
+            if lhs.as_bool() {
+                return Ok(ExpressionValue::Boolean(true));
+            }
+            Ok(ExpressionValue::Boolean(rhs()?.as_bool()))
+        }
+        BinaryOp::Eq => Ok(ExpressionValue::Boolean(lhs == rhs()?)),
+        BinaryOp::Neq => Ok(ExpressionValue::Boolean(lhs != rhs()?)),
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
+            arithmetic(op, &lhs, &rhs()?, ctx)
+        }
+        BinaryOp::Gt | BinaryOp::Lt | BinaryOp::Gte | BinaryOp::Lte => {
+            let rhs = rhs()?;
+            let (lhs, rhs) = (to_number(&lhs, ctx)?, to_number(&rhs, ctx)?);
+            Ok(ExpressionValue::Boolean(match op {
+                BinaryOp::Gt => lhs > rhs,
+                BinaryOp::Lt => lhs < rhs,
+                BinaryOp::Gte => lhs >= rhs,
+                _ => lhs <= rhs,
+            }))
+        }
+    }
+}
+
+fn global_value(global: &GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
+    match global {
+        GlobalVar::Frame => Ok(ExpressionValue::Number(ctx.frame)),
+        GlobalVar::Time => Ok(ExpressionValue::Number(ctx.time_seconds())),
+        GlobalVar::Fps => Ok(ExpressionValue::Number(f64::from(ctx.fps))),
+        GlobalVar::Width => Ok(ExpressionValue::Number(f64::from(ctx.width))),
+        GlobalVar::Height => Ok(ExpressionValue::Number(f64::from(ctx.height))),
+        GlobalVar::Glyph
+        | GlobalVar::Word
+        | GlobalVar::Line
+        | GlobalVar::GlyphCount
+        | GlobalVar::WordCount
+        | GlobalVar::LineCount => glyph_global(global, ctx),
+        GlobalVar::Custom(name) => {
+            Err(LumenError::Expression(ExpressionError::UndefinedVariable {
+                path: ctx.path.clone(),
+                name: name.clone(),
+            }))
         }
     }
 }
@@ -319,7 +532,7 @@ fn node_property_type_name(value: &PropertyValue) -> &'static str {
 mod tests {
     use super::*;
     use crate::{
-        expr::ast::{BuiltinFn, ExprNode, ExpressionId},
+        expr::ast::{BuiltinFn, ExprNode},
         graph::Graph,
         node::{NodeId, NodeKind, PropertyValue, source::text::Text},
     };
@@ -451,9 +664,8 @@ mod tests {
     #[test]
     fn evaluates_linear_and_step_builtins() {
         let ctx = test_context();
-        let expression = Expression {
-            id: ExpressionId(1),
-            ast: ExprNode::Builtin(
+        let expression = Expression::new(
+            ExprNode::Builtin(
                 BuiltinFn::Linear,
                 vec![
                     ExprNode::Literal(ExpressionValue::Number(10.0)),
@@ -461,12 +673,10 @@ mod tests {
                     ExprNode::Literal(ExpressionValue::Number(0.25)),
                 ],
             ),
-            references: Vec::new(),
-            source: "linear(10, 20, 0.25)".to_string(),
-        };
-        let stepped = Expression {
-            id: ExpressionId(2),
-            ast: ExprNode::Builtin(
+            "linear(10, 20, 0.25)".to_string(),
+        );
+        let stepped = Expression::new(
+            ExprNode::Builtin(
                 BuiltinFn::Step,
                 vec![
                     ExprNode::Literal(ExpressionValue::Number(10.0)),
@@ -474,9 +684,8 @@ mod tests {
                     ExprNode::Literal(ExpressionValue::Number(0.5)),
                 ],
             ),
-            references: Vec::new(),
-            source: "step(10, 20, 0.5)".to_string(),
-        };
+            "step(10, 20, 0.5)".to_string(),
+        );
 
         assert_eq!(
             expression.evaluate(&ctx).unwrap(),
@@ -631,6 +840,37 @@ mod tests {
             ..test_context()
         };
         Expression::parse(source).unwrap().evaluate(&ctx)
+    }
+
+    #[test]
+    fn repeated_subtrees_evaluate_as_the_tree_does() {
+        let sources = [
+            "min(1, max(0, (time - 0.5) / 0.5)) * min(1, max(0, (time - 0.5) / 0.5))",
+            "if(frame > 48, 10 / (frame - 48), (frame - 48) * 2)",
+            "frame == 48 || 10 / (frame - 48) > 1",
+            "10 / (frame - 48) + 10 / (frame - 48)",
+            "vec2(-(time * 0), time * 0) + vec2(time * 0, -0)",
+        ];
+        for source in sources {
+            let expression = Expression::parse(source).unwrap();
+            for frame in [0.0, 48.0, 60.0] {
+                let ctx = ExpressionContext {
+                    frame,
+                    ..test_context()
+                };
+                let planned = expression.evaluate(&ctx).map_err(|error| error.to_string());
+                let walked = evaluate_expr(expression.ast(), &ctx).map_err(|e| e.to_string());
+                match (planned, walked) {
+                    (Ok(ExpressionValue::Vec2(a)), Ok(ExpressionValue::Vec2(b))) => {
+                        assert_eq!(
+                            (a.0.to_bits(), a.1.to_bits()),
+                            (b.0.to_bits(), b.1.to_bits())
+                        );
+                    }
+                    (planned, walked) => assert_eq!(planned, walked, "{source} at {frame}"),
+                }
+            }
+        }
     }
 
     #[test]

@@ -84,7 +84,7 @@ fn reads_outside_node<P: NodeParams>(params: &P) -> bool {
 
 fn expr_reads_outside_node(expr: &crate::expr::Expression) -> bool {
     let mut measures_text = false;
-    crate::expr::functions::visit(&expr.ast, &mut |node| {
+    crate::expr::functions::visit(expr.ast(), &mut |node| {
         measures_text |= matches!(
             node,
             crate::expr::ExprNode::Builtin(

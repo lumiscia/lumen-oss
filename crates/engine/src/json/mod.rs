@@ -167,7 +167,7 @@ fn check_prop_reads(value: &Value, props: Option<&BTreeMap<String, PropDef>>) ->
                 return Ok(());
             };
             let mut error = None;
-            crate::expr::functions::visit(&expression.ast, &mut |node| {
+            crate::expr::functions::visit(expression.ast(), &mut |node| {
                 let ExprNode::Builtin(BuiltinFn::Prop, args) = node else {
                     return;
                 };

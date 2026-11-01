@@ -4,8 +4,8 @@ use crate::{
     error::ExpressionError,
     expr::{
         ast::{
-            BinaryOp, ExprNode, Expression, ExpressionId, ExpressionReference, ExpressionValue,
-            GlobalVar, PropertyPath, UnaryOp,
+            BinaryOp, ExprNode, Expression, ExpressionReference, ExpressionValue, GlobalVar,
+            PropertyPath, UnaryOp,
         },
         builtins::range_error,
         easing::Easing,
@@ -328,7 +328,7 @@ pub fn parse_expression(source: &str) -> Result<Expression, ExpressionError> {
 }
 
 /// The distinct nodes and properties `ast` reads, in the order they first appear.
-fn references(ast: &ExprNode) -> Vec<ExpressionReference> {
+pub(super) fn references(ast: &ExprNode) -> Vec<ExpressionReference> {
     let mut seen = HashSet::new();
     let mut references = Vec::new();
     functions::visit(ast, &mut |node| {
@@ -422,12 +422,7 @@ impl<'a> Parser<'a> {
         self.tokenize()?;
         let ast = self.parse_or()?;
         self.expect(TokenExpectation::Eof)?;
-        Ok(Expression {
-            id: ExpressionId(0),
-            references: references(&ast),
-            ast,
-            source: self.source.to_string(),
-        })
+        Ok(Expression::new(ast, self.source.to_string()))
     }
 
     fn binary(

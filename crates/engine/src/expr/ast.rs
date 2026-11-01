@@ -1,3 +1,5 @@
+use std::{fmt, sync::Arc};
+
 use crate::node::NodeId;
 
 pub use super::spec::BuiltinFn;
@@ -98,7 +100,7 @@ impl ExpressionValue {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -115,7 +117,7 @@ pub enum BinaryOp {
     Or,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Neg,
     Not,
@@ -168,12 +170,52 @@ pub enum ExpressionReference {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub struct Expression {
     pub id: ExpressionId,
-    pub ast: ExprNode,
+    pub(super) ast: ExprNode,
     pub references: Vec<ExpressionReference>,
     pub source: String,
+    /// How `ast` is evaluated, built from it once.
+    pub(super) plan: Arc<super::eval::EvalPlan>,
+}
+
+impl Expression {
+    /// Builds an expression from an AST, deriving its references and evaluation plan.
+    pub fn new(ast: ExprNode, source: String) -> Self {
+        Self {
+            id: ExpressionId(0),
+            references: super::parser::references(&ast),
+            plan: Arc::new(super::eval::EvalPlan::new(&ast)),
+            ast,
+            source,
+        }
+    }
+
+    pub fn ast(&self) -> &ExprNode {
+        &self.ast
+    }
+}
+
+// The plan follows from `ast`, so it is left out of comparisons and debug output.
+impl PartialEq for Expression {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.ast == other.ast
+            && self.references == other.references
+            && self.source == other.source
+    }
+}
+
+impl fmt::Debug for Expression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Expression")
+            .field("id", &self.id)
+            .field("ast", &self.ast)
+            .field("references", &self.references)
+            .field("source", &self.source)
+            .finish()
+    }
 }
 
 #[cfg(test)]
