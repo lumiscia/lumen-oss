@@ -26,6 +26,9 @@ pub struct EnumOptionDef {
     pub name: &'static str,
     pub label: &'static str,
     pub value: i64,
+    /// Other names JSON accepts for the option, from its `#[serde(alias)]` attributes. Empty
+    /// without the `json` feature.
+    pub aliases: &'static [&'static str],
 }
 
 #[cfg(any(feature = "json", feature = "metadata"))]
@@ -58,6 +61,9 @@ pub struct PropertyDef {
     /// Whether JSON `null` is a value of its own, as for `Override` fields.
     #[cfg(feature = "metadata")]
     pub nullable: bool,
+    /// Whether a nested object must set the field. Applies to fields without a default.
+    #[cfg(feature = "metadata")]
+    pub required: bool,
 }
 
 #[cfg(feature = "metadata")]

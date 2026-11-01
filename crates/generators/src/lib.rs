@@ -476,9 +476,9 @@ fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
     };
 
     let mut defs = serde_json::Map::new();
-    insert_object_def::<TextSpanDelegate>(&mut defs, "TextSpan", &["text"], &[])?;
-    insert_object_def::<TextLineDelegate>(&mut defs, "TextLine", &[], &[])?;
-    insert_object_def::<TextHighlightDelegate>(&mut defs, "TextHighlight", &[], &[])?;
+    insert_object_def::<TextSpanDelegate>(&mut defs, "TextSpan", &[])?;
+    insert_object_def::<TextLineDelegate>(&mut defs, "TextLine", &[])?;
+    insert_object_def::<TextHighlightDelegate>(&mut defs, "TextHighlight", &[])?;
     insert_def(
         &mut defs,
         "TextContent",
@@ -502,7 +502,6 @@ fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
     insert_object_def::<GradientPaintDelegate>(
         &mut defs,
         "GradientPaint",
-        &["type", "stops"],
         &[
             (
                 "radius",
@@ -518,18 +517,7 @@ fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
             ),
         ],
     )?;
-    // Serde aliases of the gradient enums.
-    for (enum_name, aliases) in [
-        ("PaintKind", &["linear", "radial", "conic"][..]),
-        ("GradientUnits", &["userSpaceOnUse"]),
-        ("GradientInterpolation", &["linear"]),
-    ] {
-        defs.get_mut(&def_key(enum_name))
-            .and_then(|def| def["enum"].as_array_mut())
-            .with_context(|| format!("`{enum_name}` is not an enum def"))?
-            .extend(aliases.iter().map(|alias| json!(alias)));
-    }
-    let stop = object_schema_json::<GradientStopDelegate>(&mut defs, &["offset", "color"], &[])?;
+    let stop = object_schema_json::<GradientStopDelegate>(&mut defs, &[])?;
     insert_def(
         &mut defs,
         "GradientStop",
@@ -620,34 +608,34 @@ fn insert_def(defs: &mut serde_json::Map<String, Value>, type_name: &str, mut sc
 fn insert_object_def<P: lumen_engine::node::NodeParams>(
     defs: &mut serde_json::Map<String, Value>,
     type_name: &str,
-    required: &[&str],
     value_schemas: &[(&str, Value)],
 ) -> Result<()> {
-    let schema = object_schema_json::<P>(defs, required, value_schemas)?;
+    let schema = object_schema_json::<P>(defs, value_schemas)?;
     insert_def(defs, type_name, schema);
     Ok(())
 }
 
-/// An object schema with a field per param of `P`, described like node params, of which
-/// `required` must be present and have no default. Enum fields reference a `$def` of their enum,
-/// and `value_schemas` replaces the value schemas of fields the metadata can't describe.
+/// An object schema with a field per param of `P`, described like node params. Fields marked
+/// `required` must be present and have no default. Enum fields reference a `$def` of their
+/// enum, and `value_schemas` replaces the value schemas of fields the metadata can't describe.
 fn object_schema_json<P: lumen_engine::node::NodeParams>(
     defs: &mut serde_json::Map<String, Value>,
-    required: &[&str],
     value_schemas: &[(&str, Value)],
 ) -> Result<Value> {
     let properties = P::property_defs();
     let mut specs = param_specs(&properties, &P::default().default_properties())?;
     let mut fields = serde_json::Map::new();
+    let mut required = Vec::new();
     for (property, spec) in properties.iter().zip(&mut specs) {
-        if required.contains(&property.id) {
+        if property.required {
             spec.default_value = None;
+            required.push(property.id);
         }
         let replaced = value_schemas.iter().find(|(id, _)| *id == property.id);
         let value_schema = match (replaced, property.enum_def) {
             (Some((_, schema)), _) => schema.clone(),
             (None, Some(enum_def)) => {
-                insert_def(defs, enum_def.name, enum_schema_json(spec));
+                insert_def(defs, enum_def.name, enum_def_schema_json(spec, enum_def));
                 json!({ "$ref": format!("#/$defs/{}", def_key(enum_def.name)) })
             }
             (None, None) => value_schema_json(spec),
@@ -659,9 +647,9 @@ fn object_schema_json<P: lumen_engine::node::NodeParams>(
         }
         fields.insert(spec.id.clone(), field);
     }
-    if let Some(id) = required
+    if let Some(id) = value_schemas
         .iter()
-        .chain(value_schemas.iter().map(|(id, _)| id))
+        .map(|(id, _)| id)
         .find(|id| !fields.contains_key(**id))
     {
         bail!("`{id}` is not a field");
@@ -770,6 +758,16 @@ fn enum_schema_json(property: &NodeParamSpec) -> Value {
         .map(|option| option.name.clone())
         .collect::<Vec<_>>();
     json!({ "type": "string", "enum": values })
+}
+
+/// The schema of an enum `$def`, which also lists the serde aliases the engine accepts.
+fn enum_def_schema_json(property: &NodeParamSpec, enum_def: &lumen_engine::node::EnumDef) -> Value {
+    let mut schema = enum_schema_json(property);
+    if let Some(values) = schema["enum"].as_array_mut() {
+        let aliases = enum_def.options.iter().flat_map(|option| option.aliases);
+        values.extend(aliases.map(|alias| json!(alias)));
+    }
+    schema
 }
 
 /// The schema of an `Override` field: absent inherits, `null` switches the inherited value off.
