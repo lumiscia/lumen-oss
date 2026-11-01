@@ -509,6 +509,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             || params.font_family.is_expr()
             || params.font_size.is_expr()
             || params.font_weight.is_expr()
+            || crate::node::DelegateEvaluable::has_expressions(&params.font_style)
             || params.max_width.is_expr()
             || params.letter_spacing.is_expr()
             || params.line_height.is_expr()

@@ -3,7 +3,13 @@ use crate::{
     expr::Expression,
 };
 
-use super::{clip_props::ClipProps, ids::NodeId, shader_uniforms::ShaderUniforms, vector};
+use super::{
+    clip_props::ClipProps,
+    ids::NodeId,
+    shader_uniforms::ShaderUniforms,
+    source::text_content::{TextContentDelegate, TextHighlightDelegate, TextLineDelegate},
+    vector,
+};
 
 #[derive(Debug, Clone)]
 pub enum PropertyValue {
@@ -16,6 +22,10 @@ pub enum PropertyValue {
     Vec2((f64, f64)),
     ShaderUniforms(ShaderUniforms),
     ClipProps(ClipProps),
+    // The text kinds hold their delegates, so expressions in their fields are kept.
+    TextContent(Box<TextContentDelegate>),
+    TextLine(Box<TextLineDelegate>),
+    TextHighlight(Box<TextHighlightDelegate>),
     FloatVec(Vec<f64>),
     IntVec(Vec<i64>),
     StringVec(Vec<String>),

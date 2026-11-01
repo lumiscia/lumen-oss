@@ -61,6 +61,9 @@ pub enum NodeParamKind {
     Enum,
     ShaderUniforms,
     ClipProps,
+    TextContent,
+    TextLine,
+    TextHighlight,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -75,6 +78,9 @@ pub enum NodeLiteralValue {
     Vec2((f64, f64)),
     ShaderUniforms(Value),
     ClipProps(Value),
+    TextContent(Value),
+    TextLine(Value),
+    TextHighlight(Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -100,8 +106,12 @@ pub struct NodeParamSpec {
     pub name: String,
     pub kind: NodeParamKind,
     pub description: String,
-    pub default_value: NodeLiteralValue,
+    /// Absent for optional fields of a param kind, which take their parent's value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<NodeLiteralValue>,
     pub accepts_expressions: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub nullable: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub enum_options: Vec<NodeEnumOptionSpec>,
     #[serde(skip_serializing_if = "PropertyConstraintsSpec::is_empty")]
@@ -261,289 +271,358 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
         .values()
         .map(node_schema_json)
         .collect::<Vec<_>>();
-    Ok(format!(
-        "{}\n",
-        serde_json::to_string_pretty(&json!({
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "x-lumen-schemaVersion": manifest.schema_version,
-            "x-lumen-expressions": expressions_json(),
-            "type": "object",
-            "required": ["timeline", "render_settings", "nodes", "connections"],
-            "additionalProperties": true,
-            "properties": {
-                "timeline": {
-                    "type": "object",
-                    "required": ["duration_frames"],
-                    "properties": {
-                        "fps": { "type": "number", "exclusiveMinimum": 0, "default": 30 },
-                        "duration_frames": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 4294967295u32
-                        }
-                    },
-                    "additionalProperties": true
+    let mut schema = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "x-lumen-schemaVersion": manifest.schema_version,
+        "x-lumen-expressions": expressions_json(),
+        "type": "object",
+        "required": ["timeline", "render_settings", "nodes", "connections"],
+        "additionalProperties": true,
+        "properties": {
+            "timeline": {
+                "type": "object",
+                "required": ["duration_frames"],
+                "properties": {
+                    "fps": { "type": "number", "exclusiveMinimum": 0, "default": 30 },
+                    "duration_frames": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4294967295u32
+                    }
                 },
-                "audio": {
-                    "type": "object",
-                    "required": ["tracks", "clips"],
-                    "properties": {
-                        "tracks": {
-                            "type": "array",
-                            "items": { "$ref": "#/$defs/audioTrack" }
-                        },
-                        "clips": {
-                            "type": "array",
-                            "items": { "$ref": "#/$defs/audioClip" }
-                        }
-                    },
-                    "additionalProperties": true
-                },
-                "render_settings": {
-                    "type": "object",
-                    "required": ["width", "height"],
-                    "properties": {
-                        "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                        "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                        "background_color": { "$ref": "#/$defs/color" }
-                    },
-                    "additionalProperties": true
-                },
-                "functions": {
-                    "description": "Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used.",
-                    "type": "object",
-                    "propertyNames": {
-                        "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
-                    },
-                    "additionalProperties": { "type": "string" }
-                },
-                "compositions": {
-                    "description": "Reusable compositions by name, which `clip` nodes play. Node ids are scoped to each template.",
-                    "type": "object",
-                    "additionalProperties": { "$ref": "#/$defs/compositionTemplate" }
-                },
-                "nodes": {
-                    "type": "array",
-                    "items": { "oneOf": node_variants }
-                },
-                "connections": {
-                    "type": "array",
-                    "items": { "$ref": "#/$defs/connection" }
-                }
+                "additionalProperties": true
             },
-            "$defs": {
-                "compositionTemplate": {
-                    "description": "A composition a `clip` plays. Without `render_settings` it takes the root's size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's fps.",
-                    "type": "object",
-                    "required": ["nodes", "connections"],
-                    "properties": {
-                        "render_settings": {
-                            "type": "object",
-                            "required": ["width", "height"],
-                            "properties": {
-                                "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                                "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                                "background_color": { "$ref": "#/$defs/color" }
-                            },
-                            "additionalProperties": true
-                        },
-                        "timeline": {
-                            "type": "object",
-                            "required": ["duration_frames"],
-                            "properties": {
-                                "fps": { "type": "number", "exclusiveMinimum": 0 },
-                                "duration_frames": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "maximum": 4294967295u32
-                                }
-                            },
-                            "additionalProperties": true
-                        },
-                        "props": {
-                            "description": "Props that `prop('name')` reads inside the template, set per `clip`.",
-                            "type": "object",
-                            "additionalProperties": { "$ref": "#/$defs/compositionProp" }
-                        },
-                        "nodes": { "type": "array", "items": { "$ref": "#/properties/nodes/items" } },
-                        "connections": {
-                            "type": "array",
-                            "items": { "$ref": "#/$defs/connection" }
-                        }
+            "audio": {
+                "type": "object",
+                "required": ["tracks", "clips"],
+                "properties": {
+                    "tracks": {
+                        "type": "array",
+                        "items": { "$ref": "#/$defs/audioTrack" }
                     },
-                    "additionalProperties": false
+                    "clips": {
+                        "type": "array",
+                        "items": { "$ref": "#/$defs/audioClip" }
+                    }
                 },
-                "compositionProp": {
-                    "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent or [0, 0].",
-                    "oneOf": [
-                        prop_declaration_json("string", json!({ "type": "string" })),
-                        prop_declaration_json("number", json!({ "type": "number" })),
-                        prop_declaration_json("color", json!({ "$ref": "#/$defs/color" })),
-                        prop_declaration_json("vec2", json!({ "$ref": "#/$defs/vec2" }))
-                    ]
+                "additionalProperties": true
+            },
+            "render_settings": {
+                "type": "object",
+                "required": ["width", "height"],
+                "properties": {
+                    "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                    "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                    "background_color": { "$ref": "#/$defs/color" }
                 },
-                "clipPropValue": {
-                    "description": "A value for a template prop: a literal of the prop's type or an expression.",
-                    "anyOf": [
-                        { "type": "number" },
-                        { "type": "string" },
-                        { "$ref": "#/$defs/vec2" },
-                        { "$ref": "#/$defs/color" }
-                    ]
+                "additionalProperties": true
+            },
+            "functions": {
+                "description": "Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used.",
+                "type": "object",
+                "propertyNames": {
+                    "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
                 },
-                "expression": {
-                    "description": "An expression evaluated per frame in place of a literal value.",
-                    "type": "string",
-                    "pattern": "^=([^=]|$)"
-                },
-                "color": {
-                    "oneOf": [
-                        {
-                            "type": "array",
-                            "minItems": 3,
-                            "maxItems": 4,
-                            "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+                "additionalProperties": { "type": "string" }
+            },
+            "compositions": {
+                "description": "Reusable compositions by name, which `clip` nodes play. Node ids are scoped to each template.",
+                "type": "object",
+                "additionalProperties": { "$ref": "#/$defs/compositionTemplate" }
+            },
+            "nodes": {
+                "type": "array",
+                "items": { "oneOf": node_variants }
+            },
+            "connections": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/connection" }
+            }
+        },
+        "$defs": {
+            "compositionTemplate": {
+                "description": "A composition a `clip` plays. Without `render_settings` it takes the root's size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's fps.",
+                "type": "object",
+                "required": ["nodes", "connections"],
+                "properties": {
+                    "render_settings": {
+                        "type": "object",
+                        "required": ["width", "height"],
+                        "properties": {
+                            "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                            "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                            "background_color": { "$ref": "#/$defs/color" }
                         },
-                        {
-                            "type": "string",
-                            "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
-                        }
-                    ]
-                },
-                "paint": {
-                    "oneOf": [
-                        { "$ref": "#/$defs/color" },
-                        {
-                            "type": "object",
-                            "required": ["type", "stops"],
-                            "properties": {
-                                "type": {
-                                    "type": "string",
-                                    "enum": ["linear", "linear_gradient", "radial", "radial_gradient", "conic", "conic_gradient"]
-                                },
-                                "units": {
-                                    "type": "string",
-                                    "enum": ["object_bounding_box", "user_space", "userSpaceOnUse"],
-                                    "default": "object_bounding_box"
-                                },
-                                "spread": {
-                                    "type": "string",
-                                    "enum": ["pad", "repeat", "reflect"],
-                                    "default": "pad"
-                                },
-                                "interpolation": {
-                                    "type": "string",
-                                    "enum": ["srgb", "linear_srgb", "linear"],
-                                    "default": "srgb"
-                                },
-                                "start": { "$ref": "#/$defs/vec2" },
-                                "end": { "$ref": "#/$defs/vec2" },
-                                "center": { "$ref": "#/$defs/vec2" },
-                                "radius": {
-                                    "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/vec2" }]
-                                },
-                                "angle": { "type": "number" },
-                                "stops": {
-                                    "type": "array",
-                                    "minItems": 1,
-                                    "items": {
-                                        "oneOf": [
-                                            {
-                                                "type": "object",
-                                                "required": ["offset", "color"],
-                                                "properties": {
-                                                    "offset": { "type": "number" },
-                                                    "color": { "$ref": "#/$defs/color" }
-                                                },
-                                                "additionalProperties": false
-                                            },
-                                            {
-                                                "type": "array",
-                                                "prefixItems": [
-                                                    { "type": "number" },
-                                                    { "$ref": "#/$defs/color" }
-                                                ],
-                                                "minItems": 2,
-                                                "maxItems": 2
-                                            }
-                                        ]
-                                    }
-                                }
-                            },
-                            "additionalProperties": false
-                        }
-                    ]
-                },
-                "shaderUniformValue": {
-                    "description": "A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields.",
-                    "anyOf": [
-                        { "type": "number" },
-                        {
-                            "type": "array",
-                            "minItems": 2,
-                            "maxItems": 4,
-                            "items": {
-                                "anyOf": [{ "type": "number" }, { "$ref": "#/$defs/expression" }]
+                        "additionalProperties": true
+                    },
+                    "timeline": {
+                        "type": "object",
+                        "required": ["duration_frames"],
+                        "properties": {
+                            "fps": { "type": "number", "exclusiveMinimum": 0 },
+                            "duration_frames": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 4294967295u32
                             }
                         },
-                        { "$ref": "#/$defs/expression" },
-                        {
-                            "type": "string",
-                            "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
+                        "additionalProperties": true
+                    },
+                    "props": {
+                        "description": "Props that `prop('name')` reads inside the template, set per `clip`.",
+                        "type": "object",
+                        "additionalProperties": { "$ref": "#/$defs/compositionProp" }
+                    },
+                    "nodes": { "type": "array", "items": { "$ref": "#/properties/nodes/items" } },
+                    "connections": {
+                        "type": "array",
+                        "items": { "$ref": "#/$defs/connection" }
+                    }
+                },
+                "additionalProperties": false
+            },
+            "compositionProp": {
+                "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent or [0, 0].",
+                "oneOf": [
+                    prop_declaration_json("string", json!({ "type": "string" })),
+                    prop_declaration_json("number", json!({ "type": "number" })),
+                    prop_declaration_json("color", json!({ "$ref": "#/$defs/color" })),
+                    prop_declaration_json("vec2", json!({ "$ref": "#/$defs/vec2" }))
+                ]
+            },
+            "clipPropValue": {
+                "description": "A value for a template prop: a literal of the prop's type or an expression.",
+                "anyOf": [
+                    { "type": "number" },
+                    { "type": "string" },
+                    { "$ref": "#/$defs/vec2" },
+                    { "$ref": "#/$defs/color" }
+                ]
+            },
+            "expression": {
+                "description": "An expression evaluated per frame in place of a literal value.",
+                "type": "string",
+                "pattern": "^=([^=]|$)"
+            },
+            "color": {
+                "oneOf": [
+                    {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 4,
+                        "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+                    },
+                    {
+                        "type": "string",
+                        "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
+                    }
+                ]
+            },
+            "paint": {
+                "oneOf": [
+                    { "$ref": "#/$defs/color" },
+                    {
+                        "type": "object",
+                        "required": ["type", "stops"],
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["linear", "linear_gradient", "radial", "radial_gradient", "conic", "conic_gradient"]
+                            },
+                            "units": {
+                                "type": "string",
+                                "enum": ["object_bounding_box", "user_space", "userSpaceOnUse"],
+                                "default": "object_bounding_box"
+                            },
+                            "spread": {
+                                "type": "string",
+                                "enum": ["pad", "repeat", "reflect"],
+                                "default": "pad"
+                            },
+                            "interpolation": {
+                                "type": "string",
+                                "enum": ["srgb", "linear_srgb", "linear"],
+                                "default": "srgb"
+                            },
+                            "start": { "$ref": "#/$defs/vec2" },
+                            "end": { "$ref": "#/$defs/vec2" },
+                            "center": { "$ref": "#/$defs/vec2" },
+                            "radius": {
+                                "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/vec2" }]
+                            },
+                            "angle": { "type": "number" },
+                            "stops": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                    "oneOf": [
+                                        {
+                                            "type": "object",
+                                            "required": ["offset", "color"],
+                                            "properties": {
+                                                "offset": { "type": "number" },
+                                                "color": { "$ref": "#/$defs/color" }
+                                            },
+                                            "additionalProperties": false
+                                        },
+                                        {
+                                            "type": "array",
+                                            "prefixItems": [
+                                                { "type": "number" },
+                                                { "$ref": "#/$defs/color" }
+                                            ],
+                                            "minItems": 2,
+                                            "maxItems": 2
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                ]
+            },
+            "shaderUniformValue": {
+                "description": "A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields.",
+                "anyOf": [
+                    { "type": "number" },
+                    {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 4,
+                        "items": {
+                            "anyOf": [{ "type": "number" }, { "$ref": "#/$defs/expression" }]
                         }
-                    ]
-                },
-                "vec2": {
-                    "type": "array",
-                    "prefixItems": [{ "type": "number" }, { "type": "number" }],
-                    "items": false,
-                    "minItems": 2,
-                    "maxItems": 2
-                },
-                "connection": {
-                    "type": "object",
-                    "required": ["from_node", "to_node", "to_port"],
-                    "properties": {
-                        "from_node": { "type": "integer" },
-                        "from_port": { "type": "string" },
-                        "to_node": { "type": "integer" },
-                        "to_port": { "type": "string" }
                     },
-                    "additionalProperties": false
+                    { "$ref": "#/$defs/expression" },
+                    {
+                        "type": "string",
+                        "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
+                    }
+                ]
+            },
+            "vec2": {
+                "type": "array",
+                "prefixItems": [{ "type": "number" }, { "type": "number" }],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+            },
+            "connection": {
+                "type": "object",
+                "required": ["from_node", "to_node", "to_port"],
+                "properties": {
+                    "from_node": { "type": "integer" },
+                    "from_port": { "type": "string" },
+                    "to_node": { "type": "integer" },
+                    "to_port": { "type": "string" }
                 },
-                "audioTrack": {
-                    "type": "object",
-                    "required": ["id"],
-                    "properties": {
-                        "id": { "type": "string" },
-                        "name": { "type": "string" },
-                        "muted": { "type": "boolean" },
-                        "solo": { "type": "boolean" },
-                        "volume": { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 }
-                    },
-                    "additionalProperties": true
+                "additionalProperties": false
+            },
+            "audioTrack": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "muted": { "type": "boolean" },
+                    "solo": { "type": "boolean" },
+                    "volume": { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 }
                 },
-                "audioClip": {
-                    "type": "object",
-                    "required": ["id", "source_id", "track_id"],
-                    "properties": {
-                        "id": { "type": "string" },
-                        "source_id": { "type": "string" },
-                        "track_id": { "type": "string" },
-                        "name": { "type": "string" },
-                        "start_ms": { "type": "integer", "minimum": 0 },
-                        "duration_ms": { "type": "integer", "minimum": 1 },
-                        "source_start_ms": { "type": "integer", "minimum": 0 },
-                        "start_frame": { "type": "integer", "minimum": 0 },
-                        "duration_frames": { "type": "integer", "minimum": 1 },
-                        "source_start_seconds": { "type": "number", "minimum": 0 },
-                        "volume": { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 }
-                    },
-                    "additionalProperties": true
-                }
+                "additionalProperties": true
+            },
+            "audioClip": {
+                "type": "object",
+                "required": ["id", "source_id", "track_id"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "source_id": { "type": "string" },
+                    "track_id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "start_ms": { "type": "integer", "minimum": 0 },
+                    "duration_ms": { "type": "integer", "minimum": 1 },
+                    "source_start_ms": { "type": "integer", "minimum": 0 },
+                    "start_frame": { "type": "integer", "minimum": 0 },
+                    "duration_frames": { "type": "integer", "minimum": 1 },
+                    "source_start_seconds": { "type": "number", "minimum": 0 },
+                    "volume": { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 }
+                },
+                "additionalProperties": true
             }
-        }))?
-    ))
+        }
+    });
+    schema["$defs"]
+        .as_object_mut()
+        .expect("`$defs` is an object")
+        .extend(kind_defs_json()?);
+    Ok(format!("{}\n", serde_json::to_string_pretty(&schema)?))
+}
+
+/// `$defs` of the param kinds whose fields are a delegate's `property_defs()`, and the outer
+/// shapes around them. Each carries the TypeScript type name `x-lumen-type`.
+fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
+    use lumen_engine::node::source::text_content::{
+        TextHighlightDelegate, TextLineDelegate, TextSpanDelegate,
+    };
+
+    let mut defs = serde_json::Map::new();
+    insert_object_def::<TextSpanDelegate>(&mut defs, "TextSpan", &["text"])?;
+    insert_object_def::<TextLineDelegate>(&mut defs, "TextLine", &[])?;
+    insert_object_def::<TextHighlightDelegate>(&mut defs, "TextHighlight", &[])?;
+    insert_def(
+        &mut defs,
+        "TextContent",
+        json!({
+            "description": "Text to render: a string, or spans that each override the node's text style.",
+            "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "$ref": "#/$defs/textSpan" } }
+            ]
+        }),
+    );
+    Ok(defs)
+}
+
+fn def_key(type_name: &str) -> String {
+    let mut chars = type_name.chars();
+    chars
+        .next()
+        .map(|first| first.to_lowercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+fn insert_def(defs: &mut serde_json::Map<String, Value>, type_name: &str, mut schema: Value) {
+    schema["x-lumen-type"] = json!(type_name);
+    defs.insert(def_key(type_name), schema);
+}
+
+/// An object `$def` with a field per param of `P`, described like node params, of which
+/// `required` must be present. Enum fields reference a `$def` of their enum.
+fn insert_object_def<P: lumen_engine::node::NodeParams>(
+    defs: &mut serde_json::Map<String, Value>,
+    type_name: &str,
+    required: &[&str],
+) -> Result<()> {
+    let properties = P::property_defs();
+    let specs = param_specs(&properties, &P::default().default_properties())?;
+    let mut fields = serde_json::Map::new();
+    for (property, spec) in properties.iter().zip(&specs) {
+        let value_schema = match property.enum_def {
+            Some(enum_def) => {
+                insert_def(defs, enum_def.name, enum_schema_json(spec));
+                json!({ "$ref": format!("#/$defs/{}", def_key(enum_def.name)) })
+            }
+            None => value_schema_json(spec),
+        };
+        fields.insert(spec.id.clone(), field_schema_json(spec, value_schema));
+    }
+    let mut schema =
+        json!({ "type": "object", "properties": fields, "additionalProperties": false });
+    if !required.is_empty() {
+        schema["required"] = json!(required);
+    }
+    insert_def(defs, type_name, schema);
+    Ok(())
 }
 
 fn prop_declaration_json(kind: &str, default: Value) -> Value {
@@ -610,7 +689,11 @@ fn node_schema_json(spec: &NodeSpec) -> Value {
 }
 
 fn property_schema_json(property: &NodeParamSpec) -> Value {
-    let value_schema = match property.kind {
+    field_schema_json(property, value_schema_json(property))
+}
+
+fn value_schema_json(property: &NodeParamSpec) -> Value {
+    match property.kind {
         NodeParamKind::Float => numeric_property_schema_json("number", property),
         NodeParamKind::Int => numeric_property_schema_json("integer", property),
         NodeParamKind::Bool => json!({ "type": "boolean" }),
@@ -630,25 +713,44 @@ fn property_schema_json(property: &NodeParamSpec) -> Value {
             "type": "object",
             "additionalProperties": { "$ref": "#/$defs/clipPropValue" }
         }),
-        NodeParamKind::Enum => {
-            let values = property
-                .enum_options
-                .iter()
-                .map(|option| option.name.clone())
-                .collect::<Vec<_>>();
-            json!({ "type": "string", "enum": values })
-        }
-    };
+        NodeParamKind::TextContent => json!({ "$ref": "#/$defs/textContent" }),
+        NodeParamKind::TextLine => json!({ "$ref": "#/$defs/textLine" }),
+        NodeParamKind::TextHighlight => json!({ "$ref": "#/$defs/textHighlight" }),
+        NodeParamKind::Enum => enum_schema_json(property),
+    }
+}
+
+fn enum_schema_json(property: &NodeParamSpec) -> Value {
+    let values = property
+        .enum_options
+        .iter()
+        .map(|option| option.name.clone())
+        .collect::<Vec<_>>();
+    json!({ "type": "string", "enum": values })
+}
+
+/// The schema of an `Override` field: absent inherits, `null` switches the inherited value off.
+fn nullable_schema_json(schema: Value) -> Value {
+    json!({ "anyOf": [schema, { "type": "null" }] })
+}
+
+/// `value_schema` with the param's expression, `null` and metadata keywords.
+fn field_schema_json(property: &NodeParamSpec, value_schema: Value) -> Value {
     let mut schema = if property.accepts_expressions {
         json!({ "anyOf": [value_schema, { "$ref": "#/$defs/expression" }] })
     } else {
         value_schema
     };
+    if property.nullable {
+        schema = nullable_schema_json(schema);
+    }
     if let Value::Object(object) = &mut schema {
         object.insert("title".to_string(), json!(property.name));
         object.insert("description".to_string(), json!(property.description));
         object.insert("x-lumen-kind".to_string(), json!(property.kind));
-        object.insert("default".to_string(), json!(property.default_value));
+        if let Some(default_value) = &property.default_value {
+            object.insert("default".to_string(), json!(default_value));
+        }
         if !property.enum_options.is_empty() {
             object.insert(
                 "x-lumen-enumOptions".to_string(),
@@ -678,51 +780,17 @@ fn numeric_property_schema_json(kind: &str, property: &NodeParamSpec) -> Value {
 }
 
 fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpec> {
-    let params = schema
-        .properties
-        .iter()
-        .map(|property| {
-            let raw_default_value = schema
-                .default_properties
-                .iter()
-                .find(|(name, _)| *name == property.id)
-                .map(|(_, value)| literal_from_property_value(value, property.enum_def))
-                .transpose()?
-                .with_context(|| {
-                    format!(
-                        "missing default value for param `{}` on node `{}`",
-                        property.id, schema.kind
-                    )
-                })?;
-            let enum_options = property
-                .enum_def
-                .map(|enum_def| {
-                    enum_def
-                        .options
-                        .iter()
-                        .map(|option| NodeEnumOptionSpec {
-                            name: option.name.to_string(),
-                            label: option.label.to_string(),
-                            value: option.value,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(NodeParamSpec {
-                id: property.id.to_string(),
-                name: property.name.to_string(),
-                kind: property_kind_from_schema(property.expected),
-                description: property.description.to_string(),
-                default_value: raw_default_value,
-                accepts_expressions: property.accepts_expressions,
-                enum_options,
-                constraints: constraints_from_schema(property.constraints),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let params = param_specs(&schema.properties, &schema.default_properties)?;
+    if let Some(param) = params.iter().find(|param| param.default_value.is_none()) {
+        bail!(
+            "missing default value for param `{}` on node `{}`",
+            param.id,
+            schema.kind
+        );
+    }
     let default_params = params
         .iter()
-        .map(|property| (property.id.clone(), property.default_value.clone()))
+        .filter_map(|property| Some((property.id.clone(), property.default_value.clone()?)))
         .collect();
     Ok(NodeSpec {
         kind: schema.kind.to_string(),
@@ -749,6 +817,47 @@ fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpe
         params,
         default_params,
     })
+}
+
+fn param_specs(
+    properties: &[lumen_engine::node::PropertyDef],
+    defaults: &[(&'static str, lumen_engine::node::PropertyValue)],
+) -> Result<Vec<NodeParamSpec>> {
+    properties
+        .iter()
+        .map(|property| {
+            let default_value = defaults
+                .iter()
+                .find(|(name, _)| *name == property.id)
+                .map(|(_, value)| literal_from_property_value(value, property.enum_def))
+                .transpose()?;
+            let enum_options = property
+                .enum_def
+                .map(|enum_def| {
+                    enum_def
+                        .options
+                        .iter()
+                        .map(|option| NodeEnumOptionSpec {
+                            name: option.name.to_string(),
+                            label: option.label.to_string(),
+                            value: option.value,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(NodeParamSpec {
+                id: property.id.to_string(),
+                name: property.name.to_string(),
+                kind: property_kind_from_schema(property.expected),
+                description: property.description.to_string(),
+                default_value,
+                accepts_expressions: property.accepts_expressions,
+                nullable: property.nullable,
+                enum_options,
+                constraints: constraints_from_schema(property.constraints),
+            })
+        })
+        .collect()
 }
 
 fn category_from_schema(category: lumen_engine::node::NodeCategory) -> NodeCategory {
@@ -780,6 +889,9 @@ fn property_kind_from_schema(kind: lumen_engine::node::PropertyKind) -> NodePara
         lumen_engine::node::PropertyKind::Enum => NodeParamKind::Enum,
         lumen_engine::node::PropertyKind::ShaderUniforms => NodeParamKind::ShaderUniforms,
         lumen_engine::node::PropertyKind::ClipProps => NodeParamKind::ClipProps,
+        lumen_engine::node::PropertyKind::TextContent => NodeParamKind::TextContent,
+        lumen_engine::node::PropertyKind::TextLine => NodeParamKind::TextLine,
+        lumen_engine::node::PropertyKind::TextHighlight => NodeParamKind::TextHighlight,
     }
 }
 
@@ -831,6 +943,15 @@ fn literal_from_property_value(
         lumen_engine::node::PropertyValue::ClipProps(value) => {
             Ok(NodeLiteralValue::ClipProps(value.to_json_value()))
         }
+        lumen_engine::node::PropertyValue::TextContent(value) => {
+            Ok(NodeLiteralValue::TextContent(value.to_json_value()))
+        }
+        lumen_engine::node::PropertyValue::TextLine(value) => {
+            Ok(NodeLiteralValue::TextLine(Value::Object(value.to_json())))
+        }
+        lumen_engine::node::PropertyValue::TextHighlight(value) => Ok(
+            NodeLiteralValue::TextHighlight(Value::Object(value.to_json())),
+        ),
         other => bail!("unsupported default param literal: {other:?}"),
     }
 }
@@ -916,6 +1037,103 @@ mod tests {
                     "{label} schema"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn text_kind_schemas_match_engine_parsing() {
+        use lumen_engine::node::{
+            Delegated,
+            source::text_content::{
+                TextContent, TextContentDelegate, TextHighlightDelegate, TextLineDelegate,
+                TextSpanDelegate,
+            },
+        };
+
+        let artifacts = render_definition_artifacts().unwrap();
+        let schema: Value = serde_json::from_str(&artifacts.composition_schema_json).unwrap();
+        let validator = |def: &str| {
+            jsonschema::validator_for(&json!({
+                "$defs": schema["$defs"].clone(),
+                "$ref": format!("#/$defs/{def}")
+            }))
+            .unwrap()
+        };
+        let content = validator("textContent");
+
+        for (def, value) in [
+            (
+                "textContent",
+                TextContent::default().into_delegate().to_json_value(),
+            ),
+            (
+                "textSpan",
+                Value::Object(TextSpanDelegate::default().to_json()),
+            ),
+            (
+                "textLine",
+                Value::Object(TextLineDelegate::default().to_json()),
+            ),
+            (
+                "textHighlight",
+                Value::Object(TextHighlightDelegate::default().to_json()),
+            ),
+        ] {
+            assert!(validator(def).is_valid(&value), "{def} default: {value}");
+        }
+
+        let example = json!([
+            { "text": "Hello, " },
+            {
+                "text": "=prop('name')",
+                "font_family": "Inter",
+                "font_size": 48.0,
+                "font_weight": "=frame * 10",
+                "font_style": "italic",
+                "letter_spacing": -0.5,
+                "color": [255, 0, 0, 255],
+                "underline": {
+                    "style": "wavy",
+                    "paint": "=rgb(0, 0, 255)",
+                    "thickness": 2.0,
+                    "offset": 3.0,
+                    "extent": "=vec2(0, frame / 24)"
+                },
+                "strikethrough": null,
+                "highlight": {
+                    "paint": [255, 255, 0, 128],
+                    "padding": [4.0, 2.0],
+                    "radius": 3.0,
+                    "extent": [0.0, 1.0]
+                }
+            }
+        ]);
+        let parsed = TextContentDelegate::from_json_value(&example).unwrap();
+        assert_eq!(parsed.to_json_value(), example);
+        assert!(content.is_valid(&example));
+
+        let enum_expressions = json!([{
+            "text": "a",
+            "font_style": "=frame % 3",
+            "underline": { "style": "=1" }
+        }]);
+        assert!(content.is_valid(&enum_expressions));
+        assert!(TextContentDelegate::from_json_value(&enum_expressions).is_ok());
+
+        for invalid in [
+            json!(5),
+            json!([{ "text": "a", "font_wieght": 700 }]),
+            json!([{ "text": "a", "font_size": null }]),
+            json!([{ "font_size": 12 }]),
+            json!([{ "text": "a", "font_style": "bold" }]),
+            json!([{ "text": "a", "underline": "=1" }]),
+            json!([{ "text": "a", "highlight": { "radius": "big" } }]),
+        ] {
+            assert!(!content.is_valid(&invalid), "{invalid}");
+            assert!(
+                TextContentDelegate::from_json_value(&invalid).is_err(),
+                "{invalid}"
+            );
         }
     }
 

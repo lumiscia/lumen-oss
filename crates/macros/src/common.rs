@@ -70,6 +70,7 @@ pub(crate) struct PropertyDefTokens<'a> {
     pub docs: &'a [String],
     pub constraints: &'a PropertyConstraintsAttr,
     pub accepts_expressions: proc_macro2::TokenStream,
+    pub nullable: proc_macro2::TokenStream,
 }
 
 impl PropertyDefTokens<'_> {
@@ -80,6 +81,7 @@ impl PropertyDefTokens<'_> {
             kind,
             enum_def,
             accepts_expressions,
+            nullable,
             ..
         } = self;
         let description = doc_string(self.docs);
@@ -98,6 +100,8 @@ impl PropertyDefTokens<'_> {
                 constraints: #constraints,
                 #[cfg(feature = "metadata")]
                 accepts_expressions: #accepts_expressions,
+                #[cfg(feature = "metadata")]
+                nullable: #nullable,
             }
         }
     }
@@ -117,6 +121,11 @@ pub(crate) fn property_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
             quote!(::lumen_engine::node::PropertyKind::ShaderUniforms)
         }
         "clip_props" | "ClipProps" => quote!(::lumen_engine::node::PropertyKind::ClipProps),
+        "text_content" | "TextContent" => quote!(::lumen_engine::node::PropertyKind::TextContent),
+        "text_line" | "TextLine" => quote!(::lumen_engine::node::PropertyKind::TextLine),
+        "text_highlight" | "TextHighlight" => {
+            quote!(::lumen_engine::node::PropertyKind::TextHighlight)
+        }
         _ => {
             let span = kind.span();
             quote::quote_spanned!(span=> compile_error!("unknown param kind"))

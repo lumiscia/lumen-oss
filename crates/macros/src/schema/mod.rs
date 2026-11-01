@@ -196,6 +196,7 @@ fn property_def_tokens(property: &PropertyAttr) -> proc_macro2::TokenStream {
         constraints: &property.constraints,
         // `#[property]` fields hold a raw `PropertyExpression` from `parse_property`.
         accepts_expressions: quote!(true),
+        nullable: quote!(false),
     }
     .tokens()
 }

@@ -83,6 +83,44 @@ impl NodeParamType for super::ClipProps {
     }
 }
 
+impl<T: NodeParamType> NodeParamType for Option<T> {
+    fn property_kind() -> PropertyKind {
+        T::property_kind()
+    }
+    #[cfg(any(feature = "json", feature = "metadata"))]
+    fn enum_def() -> Option<&'static EnumDef> {
+        T::enum_def()
+    }
+}
+
+impl<T: NodeParamType> NodeParamType for super::Override<T> {
+    fn property_kind() -> PropertyKind {
+        T::property_kind()
+    }
+    #[cfg(any(feature = "json", feature = "metadata"))]
+    fn enum_def() -> Option<&'static EnumDef> {
+        T::enum_def()
+    }
+}
+
+impl NodeParamType for super::source::text_content::TextContent {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::TextContent
+    }
+}
+
+impl NodeParamType for super::source::text_content::TextLine {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::TextLine
+    }
+}
+
+impl NodeParamType for super::source::text_content::TextHighlight {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::TextHighlight
+    }
+}
+
 // Only nested delegates may hold `Vec` fields: `#[derive(Node)]` rejects params with
 // `NodeParams::HAS_VEC_FIELDS` because the schema has no array kind.
 impl<T> NodeParamType for Vec<T> {

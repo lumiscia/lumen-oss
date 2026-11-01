@@ -44,12 +44,16 @@ struct DelegateAttr {
     kind: Option<Ident>,
     /// Adds an `Expr` variant evaluated through the enum's `DeferredValue` impl.
     expressions: bool,
+    /// Parses a struct's nested JSON field by field, accepting `=expression` strings, and
+    /// adds `to_json`. Every field needs a property mapping.
+    properties: bool,
 }
 
 fn parse_delegate_attr(input: &DeriveInput) -> Result<DelegateAttr> {
     let mut name = None;
     let mut kind = None;
     let mut expressions = false;
+    let mut properties = false;
     if let Some(attr) = optional_attr(&input.attrs, "delegate") {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("name") {
@@ -58,6 +62,8 @@ fn parse_delegate_attr(input: &DeriveInput) -> Result<DelegateAttr> {
                 kind = Some(ident_value(&meta)?);
             } else if meta.path.is_ident("expressions") {
                 expressions = true;
+            } else if meta.path.is_ident("properties") {
+                properties = true;
             } else {
                 return Err(meta.error("unknown delegate attribute key"));
             }
@@ -68,6 +74,7 @@ fn parse_delegate_attr(input: &DeriveInput) -> Result<DelegateAttr> {
         name: name.unwrap_or_else(|| format_ident!("{}Delegate", input.ident)),
         kind,
         expressions,
+        properties,
     })
 }
 
@@ -119,12 +126,21 @@ fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::Token
         Some(enum_type) => quote!(Some(<#enum_type as ::lumen_engine::node::NodeEnum>::enum_def())),
         None => quote!(<#ty as ::lumen_engine::node::NodeParamType>::enum_def()),
     };
+    let delegate = quote!(<#ty as ::lumen_engine::node::Delegated>::Delegate);
+    let optional = structure::is_optional_type(ty);
     // `Vec` fields are deserialized whole by serde, so an expression string never parses.
     // Constant fields reject expressions at parse time.
     let accepts_expressions = if property.constant || structure::is_vec_type(ty) {
         quote!(false)
+    } else if optional {
+        quote!(<<#delegate as ::lumen_engine::node::OptionalDelegate>::Inner as ::lumen_engine::node::DelegateValue>::ACCEPTS_EXPRESSIONS)
     } else {
-        quote!(<<#ty as ::lumen_engine::node::Delegated>::Delegate as ::lumen_engine::node::DelegateValue>::ACCEPTS_EXPRESSIONS)
+        quote!(<#delegate as ::lumen_engine::node::DelegateValue>::ACCEPTS_EXPRESSIONS)
+    };
+    let nullable = if optional {
+        quote!(<#delegate as ::lumen_engine::node::OptionalDelegate>::NULLABLE)
+    } else {
+        quote!(false)
     };
     PropertyDefTokens {
         id: &property.id,
@@ -134,6 +150,7 @@ fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::Token
         docs: &property.docs,
         constraints: &property.constraints,
         accepts_expressions,
+        nullable,
     }
     .tokens()
 }
