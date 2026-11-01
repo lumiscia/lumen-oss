@@ -22,7 +22,7 @@ use crate::node::{
 };
 
 use super::text_content::{
-    TextContent, TextContentDelegate, TextHighlight, TextHighlightDelegate, TextLine,
+    FontFeatures, TextContent, TextContentDelegate, TextHighlight, TextHighlightDelegate, TextLine,
     TextLineDelegate, TextLineStyle, TextSpan,
 };
 
@@ -135,6 +135,11 @@ pub struct TextParams {
     /// Extra space after every glyph in pixels. Negative values tighten the text.
     #[meta(step = 0.1)]
     pub letter_spacing: f64,
+    /// OpenType features by four-character tag, such as `{ "tnum": 1, "liga": 0 }`. 0 turns a
+    /// feature off, 1 turns it on and larger values select an alternate. Values take literals
+    /// or expressions, but the whole map cannot be an expression.
+    #[meta()]
+    pub font_features: FontFeatures,
     /// Distance between lines in pixels. Use 0 for 1.2 × the font size.
     #[meta(min = 0, step = 1)]
     pub line_height: f64,
@@ -233,6 +238,7 @@ impl Default for TextParams {
             render_mode: TextRenderMode::Raster,
             max_width: 0.0,
             letter_spacing: 0.0,
+            font_features: FontFeatures::default(),
             line_height: 0.0,
             position: (0.0, 0.0),
             scale: (1.0, 1.0),
@@ -298,6 +304,8 @@ pub(crate) struct CompiledText {
     /// The content, evaluated at compile when it has no expressions.
     pub(crate) content: Option<TextContent>,
     pub(crate) decorations: NodeDecorations,
+    /// The node's font features, evaluated at compile when they have no expressions.
+    pub(crate) font_features: Option<FontFeatures>,
     /// Whether the node or any span has a decoration.
     pub(crate) decorated: bool,
     pub(crate) atlas_texture: lumen_gpu::TextureId,
@@ -374,6 +382,10 @@ impl CompiledText {
             Some(content) => (take_span_paints(content), Vec::new()),
             None => Default::default(),
         };
+        let font_features = self
+            .font_features
+            .is_none()
+            .then(|| std::mem::take(&mut evaluated.font_features));
         let decorations = match &self.decorations {
             NodeDecorations::Constant(decorations) => std::borrow::Cow::Borrowed(decorations),
             NodeDecorations::Animated(params) => {
@@ -398,6 +410,7 @@ impl CompiledText {
         let shape_key = TextShapeKey {
             style,
             content,
+            font_features,
             font_generation: text_system.font_generation(),
         };
         let mut layout_ms = 0.0;
@@ -411,7 +424,11 @@ impl CompiledText {
                 (Some(content), _) | (None, Some(content)) => content,
                 (None, None) => unreachable!("content is constant or evaluated"),
             };
-            let request = shape_key.style.request(content);
+            let font_features = match (&shape_key.font_features, &self.font_features) {
+                (Some(features), _) | (None, Some(features)) => features,
+                (None, None) => unreachable!("font features are constant or evaluated"),
+            };
+            let request = shape_key.style.request(content, font_features);
             state.shaped = Some((shape_key, text_system.shape(&request)));
             if let Some(started) = layout_started {
                 layout_ms = trace_now_ms() - started;
@@ -853,6 +870,8 @@ struct TextShapeKey {
     style: TextLayoutStyle,
     /// The content, or `None` when it is constant.
     content: Option<TextContent>,
+    /// The font features, or `None` when they are constant.
+    font_features: Option<FontFeatures>,
     font_generation: u64,
 }
 
@@ -925,12 +944,16 @@ impl TextLayoutStyle {
     }
 
     /// A `max_width` or `line_height` of 0 or less is automatic.
-    pub(crate) fn request(&self, content: &TextContent) -> lumen_text::TextLayoutRequest {
+    pub(crate) fn request(
+        &self,
+        content: &TextContent,
+        font_features: &FontFeatures,
+    ) -> lumen_text::TextLayoutRequest {
         let spans = match content {
-            TextContent::Text(text) => vec![self.span(text, None)],
+            TextContent::Text(text) => vec![self.span(text, None, font_features)],
             TextContent::Spans(spans) => spans
                 .iter()
-                .map(|span| self.span(&span.text, Some(span)))
+                .map(|span| self.span(&span.text, Some(span), font_features))
                 .collect(),
         };
         let mut request = lumen_text::TextLayoutRequest::from_spans(spans);
@@ -956,7 +979,12 @@ impl TextLayoutStyle {
         request
     }
 
-    fn span(&self, text: &str, span: Option<&TextSpan>) -> lumen_text::TextSpan {
+    fn span(
+        &self,
+        text: &str,
+        span: Option<&TextSpan>,
+        font_features: &FontFeatures,
+    ) -> lumen_text::TextSpan {
         let font_style = span
             .and_then(|span| span.font_style)
             .unwrap_or(self.font_style);
@@ -981,6 +1009,7 @@ impl TextLayoutStyle {
             letter_spacing: span
                 .and_then(|span| span.letter_spacing)
                 .unwrap_or(self.letter_spacing) as f32,
+            font_features: font_features.merged(span.and_then(|span| span.font_features.as_ref())),
         }
     }
 }

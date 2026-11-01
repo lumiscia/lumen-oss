@@ -64,6 +64,7 @@ pub enum NodeParamKind {
     TextContent,
     TextLine,
     TextHighlight,
+    FontFeatures,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -81,6 +82,7 @@ pub enum NodeLiteralValue {
     TextContent(Value),
     TextLine(Value),
     TextHighlight(Value),
+    FontFeatures(Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -538,6 +540,21 @@ fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
 
     insert_def(
         &mut defs,
+        "FontFeatures",
+        json!({
+            "description": "OpenType features by four-character tag. 0 turns a feature off, 1 turns it on and larger values select an alternate.",
+            "type": "object",
+            "propertyNames": { "minLength": 4, "maxLength": 4, "pattern": "^[\\x20-\\x7E]+$" },
+            "additionalProperties": {
+                "anyOf": [
+                    { "type": "integer", "minimum": 0, "maximum": u32::MAX },
+                    { "$ref": "#/$defs/expression" }
+                ]
+            }
+        }),
+    );
+    insert_def(
+        &mut defs,
         "ShaderUniformComponent",
         json!({ "anyOf": [{ "type": "number" }, { "$ref": "#/$defs/expression" }] }),
     );
@@ -748,6 +765,7 @@ fn value_schema_json(property: &NodeParamSpec) -> Value {
         NodeParamKind::TextContent => json!({ "$ref": "#/$defs/textContent" }),
         NodeParamKind::TextLine => json!({ "$ref": "#/$defs/textLine" }),
         NodeParamKind::TextHighlight => json!({ "$ref": "#/$defs/textHighlight" }),
+        NodeParamKind::FontFeatures => json!({ "$ref": "#/$defs/fontFeatures" }),
         NodeParamKind::Enum => enum_schema_json(property),
     }
 }
@@ -927,6 +945,7 @@ fn property_kind_from_schema(kind: lumen_engine::node::PropertyKind) -> NodePara
         lumen_engine::node::PropertyKind::TextContent => NodeParamKind::TextContent,
         lumen_engine::node::PropertyKind::TextLine => NodeParamKind::TextLine,
         lumen_engine::node::PropertyKind::TextHighlight => NodeParamKind::TextHighlight,
+        lumen_engine::node::PropertyKind::FontFeatures => NodeParamKind::FontFeatures,
     }
 }
 
@@ -987,6 +1006,9 @@ fn literal_from_property_value(
         lumen_engine::node::PropertyValue::TextHighlight(value) => Ok(
             NodeLiteralValue::TextHighlight(Value::Object(value.to_json())),
         ),
+        lumen_engine::node::PropertyValue::FontFeatures(value) => {
+            Ok(NodeLiteralValue::FontFeatures(value.to_json_value()))
+        }
         other => bail!("unsupported default param literal: {other:?}"),
     }
 }
@@ -1127,6 +1149,7 @@ mod tests {
                 "font_weight": "=frame * 10",
                 "font_style": "italic",
                 "letter_spacing": -0.5,
+                "font_features": { "liga": "=frame % 2", "tnum": 1 },
                 "color": [255, 0, 0, 255],
                 "underline": {
                     "style": "wavy",
@@ -1164,6 +1187,12 @@ mod tests {
             json!([{ "text": "a", "font_style": "bold" }]),
             json!([{ "text": "a", "underline": "=1" }]),
             json!([{ "text": "a", "highlight": { "radius": "big" } }]),
+            json!([{ "text": "a", "font_features": "=1" }]),
+            json!([{ "text": "a", "font_features": { "tnu": 1 } }]),
+            json!([{ "text": "a", "font_features": { "tnum": -1 } }]),
+            json!([{ "text": "a", "font_features": { "tnum": 1.5 } }]),
+            json!([{ "text": "a", "font_features": { "tnum": 4294967296u64 } }]),
+            json!([{ "text": "a", "font_features": { "liga\n": 1 } }]),
         ] {
             assert!(!content.is_valid(&invalid), "{invalid}");
             assert!(

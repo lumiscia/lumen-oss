@@ -7,7 +7,9 @@ use super::{
     clip_props::ClipProps,
     ids::NodeId,
     shader_uniforms::ShaderUniforms,
-    source::text_content::{TextContentDelegate, TextHighlightDelegate, TextLineDelegate},
+    source::text_content::{
+        FontFeaturesDelegate, TextContentDelegate, TextHighlightDelegate, TextLineDelegate,
+    },
     vector,
 };
 
@@ -26,6 +28,7 @@ pub enum PropertyValue {
     TextContent(Box<TextContentDelegate>),
     TextLine(Box<TextLineDelegate>),
     TextHighlight(Box<TextHighlightDelegate>),
+    FontFeatures(Box<FontFeaturesDelegate>),
     FloatVec(Vec<f64>),
     IntVec(Vec<i64>),
     StringVec(Vec<String>),
