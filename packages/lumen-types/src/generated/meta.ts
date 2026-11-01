@@ -3,7 +3,7 @@
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "vec2";
+export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "vec2";
 export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "clip" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
@@ -812,6 +812,7 @@ export type NodeLiteralValue =
   | TextContent
   | TextLine
   | TextHighlight
+  | FontFeatures
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]
@@ -855,6 +856,8 @@ export type TransformSampling = "nearest" | "linear";
 export type ClipPropValue = number | string | Vec2 | Color;
 /** Prop values a `clip` passes to its template, by prop name. */
 export type ClipProps = Readonly<Record<string, ClipPropValue>>;
+/** OpenType features by four-character tag. 0 turns a feature off, 1 turns it on and larger values select an alternate. */
+export type FontFeatures = Readonly<Record<string, ExpressionValue<number>>>;
 export type GradientInterpolation = "srgb" | "linear_srgb" | "linear";
 export type GradientPaint = {
   /** Start angle of a conic gradient in degrees. */
@@ -937,6 +940,11 @@ export type TextSpan = {
   readonly color?: ExpressionValue<Paint>;
   /** Font family name. */
   readonly font_family?: ExpressionValue<string>;
+  /**
+   * OpenType features, merged over the node's: a feature set here wins and the others are
+   * kept. Within a word, the first span's features apply to all of it.
+   */
+  readonly font_features?: FontFeatures;
   /** Font size in pixels. */
   readonly font_size?: ExpressionValue<number>;
   /** Font style. */
@@ -1190,6 +1198,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "content"?: ExpressionValue<TextContent>;
     readonly "fit"?: TextFit;
     readonly "font_family"?: ExpressionValue<string>;
+    readonly "font_features"?: FontFeatures;
     readonly "font_size"?: ExpressionValue<number>;
     readonly "font_style"?: ExpressionValue<TextFontStyle>;
     readonly "font_weight"?: ExpressionValue<number>;
