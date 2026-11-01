@@ -22,7 +22,7 @@ use lumen_engine::{
     composition::Composition,
     error::MediaError,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
-    gpu::GpuCompositionRenderer,
+    gpu::{FrozenComposition, GpuCompositionRenderer},
     image::ImageFileResolver,
     media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
@@ -696,7 +696,7 @@ fn main() {
 
 fn run() -> Result<()> {
     let args = parse_args().inspect_err(|_| print_usage())?;
-    let composition = load_composition(&args.composition)?;
+    let composition = FrozenComposition::new(load_composition(&args.composition)?);
     let media_root = media_root(args.media_root.as_deref())?;
     let font_dir = resolve_font_dir(args.font_dir, env::var_os("LUMEN_FONT_DIR"));
     let media_store = LocalMediaStore::new(media_root, font_dir);
@@ -745,7 +745,7 @@ fn load_composition(path: &Path) -> Result<Composition> {
 }
 
 fn render_single_png(
-    composition: &Composition,
+    composition: &FrozenComposition,
     media_store: &LocalMediaStore,
     output: &Path,
     frame_override: Option<u32>,
@@ -777,7 +777,7 @@ fn render_single_png(
 }
 
 fn render_mp4(
-    composition: Composition,
+    composition: FrozenComposition,
     media_store: LocalMediaStore,
     output: &Path,
     override_encoder: Option<&str>,
@@ -964,7 +964,7 @@ fn render_mp4(
 #[cfg(all(target_os = "macos", feature = "metal"))]
 #[allow(clippy::too_many_arguments)]
 fn render_video_gpu_videotoolbox(
-    composition: Composition,
+    composition: FrozenComposition,
     media_store: LocalMediaStore,
     output: &Path,
     width: u32,
@@ -1114,7 +1114,7 @@ fn encode_ready_gpu_frame(
 #[cfg(not(all(target_os = "macos", feature = "metal")))]
 #[allow(clippy::too_many_arguments)]
 fn render_video_gpu_videotoolbox(
-    _composition: Composition,
+    _composition: FrozenComposition,
     _media_store: LocalMediaStore,
     _output: &Path,
     _width: u32,
@@ -1185,7 +1185,7 @@ fn start_vulkan_video_encode(
 
 #[cfg(target_os = "linux")]
 fn render_video_gpu_vulkan(
-    composition: Composition,
+    composition: FrozenComposition,
     media_store: LocalMediaStore,
     output: &Path,
     total_frames: u32,
