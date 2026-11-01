@@ -29,7 +29,8 @@ use crate::{
 };
 
 pub(crate) use property::{
-    StringParam, classify_string, integer_mismatch, integral_i64, parse_property,
+    StringParam, classify_string, integer_mismatch, integral_i64, nested_from_json,
+    parse_nested_field, parse_nested_optional_field, parse_property, property_to_json,
 };
 pub use property::{parse_color, try_parse_color, unknown_param_error};
 

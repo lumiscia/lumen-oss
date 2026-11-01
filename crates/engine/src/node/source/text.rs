@@ -22,7 +22,7 @@ use crate::node::{Deferred, DeferredValue, NodeId, NodeParamEvalContext, NodePar
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
 )]
 #[repr(i64)]
-#[delegate(kind = "enum")]
+#[delegate(kind = "enum", expressions)]
 pub enum TextFontStyle {
     #[default]
     Normal = 0,

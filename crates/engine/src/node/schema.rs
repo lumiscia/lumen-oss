@@ -15,6 +15,9 @@ pub enum PropertyKind {
     Paint = 7,
     ShaderUniforms = 8,
     ClipProps = 9,
+    TextContent = 10,
+    TextLine = 11,
+    TextHighlight = 12,
 }
 
 #[cfg(any(feature = "json", feature = "metadata"))]
@@ -52,6 +55,9 @@ pub struct PropertyDef {
     /// Whether the param accepts an `"=..."` expression in place of a literal.
     #[cfg(feature = "metadata")]
     pub accepts_expressions: bool,
+    /// Whether JSON `null` is a value of its own, as for `Override` fields.
+    #[cfg(feature = "metadata")]
+    pub nullable: bool,
 }
 
 #[cfg(feature = "metadata")]

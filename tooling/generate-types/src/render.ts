@@ -1,4 +1,5 @@
 import type { MetaManifest, NodeParamSpec, NodeSpec } from "./definitions.js";
+import { renderDefTypes } from "./render-defs.js";
 
 const quote = (value: string): string => JSON.stringify(value);
 
@@ -38,6 +39,12 @@ const paramType = (nodeKind: string, param: NodeParamSpec): string => {
       return "ShaderUniforms";
     case "clip_props":
       return "ClipProps";
+    case "text_content":
+      return "TextContent";
+    case "text_line":
+      return "TextLine";
+    case "text_highlight":
+      return "TextHighlight";
     case "enum":
       return enumTypeForParam(nodeKind, param);
     default:
@@ -45,10 +52,26 @@ const paramType = (nodeKind: string, param: NodeParamSpec): string => {
   }
 };
 
-const renderEnumType = (spec: NodeSpec, param: NodeParamSpec): string =>
-  `export type ${enumTypeForParam(spec.kind, param)} = ${union(
-    (param.enumOptions ?? []).map((option) => option.name),
-  )};`;
+const renderEnumType = (spec: NodeSpec, param: NodeParamSpec): readonly [string, string] => {
+  const name = enumTypeForParam(spec.kind, param);
+  return [
+    name,
+    `export type ${name} = ${union((param.enumOptions ?? []).map((option) => option.name))};`,
+  ];
+};
+
+/** Type declarations by name; a name declared twice must declare the same type. */
+const uniqueDeclarations = (declarations: Iterable<readonly [string, string]>): string[] => {
+  const byName = new Map<string, string>();
+  for (const [name, declaration] of declarations) {
+    const existing = byName.get(name);
+    if (existing !== undefined && existing !== declaration) {
+      throw new Error(`conflicting declarations of \`${name}\``);
+    }
+    byName.set(name, declaration);
+  }
+  return [...byName.values()];
+};
 
 const renderNodeInterface = (spec: NodeSpec): string => {
   const params = spec.params ?? [];
@@ -113,13 +136,15 @@ export function renderMetaTypes(manifest: MetaManifest): string {
   const paramKinds = uniqueSorted(
     specs.flatMap((spec) => (spec.params ?? []).map((param) => param.kind)),
   );
-  const enumTypes = specs
-    .flatMap((spec) =>
+  const defTypes = renderDefTypes(manifest.defs);
+  const namedTypes = uniqueDeclarations([
+    ...specs.flatMap((spec) =>
       (spec.params ?? [])
         .filter((param) => param.kind === "enum")
         .map((param) => renderEnumType(spec, param)),
-    )
-    .join("\n");
+    ),
+    ...defTypes,
+  ]).join("\n");
   const nodeInterfaces = specs.map(renderNodeInterface).join("\n\n");
   const nodeMap = specs.map(renderNodeMapMember).join("\n");
   const nodeInputMap = specs.map(renderNodeInputMapMember).join("\n");
@@ -199,6 +224,9 @@ export type NodeLiteralValue =
   | GradientPaint
   | ShaderUniforms
   | ClipProps
+  | TextContent
+  | TextLine
+  | TextHighlight
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]
@@ -255,7 +283,7 @@ export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
 export type ClipPropValue = number | string | Vec2 | Color;
 export type ClipProps = Readonly<Record<string, ClipPropValue>>;
 
-${enumTypes}
+${namedTypes}
 
 export interface CompositionNodeBase<TKind extends NodeKind> {
   readonly id: number;

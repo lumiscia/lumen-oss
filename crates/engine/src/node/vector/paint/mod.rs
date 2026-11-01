@@ -37,7 +37,7 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
     use gpu::{GpuPaint, test_gradient_to_gpu as gradient_to_gpu};
-    use types::{MAX_GRADIENT_STOPS, PaintDelegate};
+    use types::{GradientPaintDelegate, MAX_GRADIENT_STOPS, PaintDelegate};
 
     #[test]
     fn gpu_paint_size_matches_wgsl_uniform_stride() {
@@ -439,6 +439,25 @@ mod tests {
         let delegate = PaintDelegate::from(gradient.clone());
         let roundtripped = delegate.into_evaluated().unwrap();
         assert_eq!(roundtripped, gradient);
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn nested_gradient_delegates_deserialize_enum_names_through_serde() {
+        let delegate: GradientPaintDelegate = serde_json::from_value(serde_json::json!({
+            "kind": "RadialGradient",
+            "spread": "Repeat",
+            "angle": 45.0
+        }))
+        .unwrap();
+        let Paint::Gradient(gradient) = PaintDelegate::Gradient(delegate).into_evaluated().unwrap()
+        else {
+            panic!("expected a gradient");
+        };
+        assert_eq!(gradient.kind, PaintKind::RadialGradient);
+        assert_eq!(gradient.spread, GradientSpread::Repeat);
+        assert_eq!(gradient.angle, 45.0);
+        assert_eq!(gradient.units, GradientUnits::ObjectBoundingBox);
     }
 
     #[test]

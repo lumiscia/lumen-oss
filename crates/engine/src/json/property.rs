@@ -4,10 +4,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 
 use crate::{
+    error::{LumenError, PropertyError},
     expr::Expression,
     node::{
-        ClipProps, NodeId, PropertyDef, PropertyExpression, PropertyKind, PropertyValue,
-        ShaderUniforms,
+        ClipProps, Deferred, DelegateValue, EnumDef, NodeId, OptionalDelegate, Override,
+        PropertyDef, PropertyExpression, PropertyKind, PropertyValue, ShaderUniforms,
+        source::text_content::TextContentDelegate,
     },
 };
 
@@ -131,6 +133,19 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
         PropertyKind::ClipProps => ClipProps::from_json_value(val, name)
             .map_err(|error| anyhow!(error))
             .map(PropertyValue::ClipProps),
+        // `parse_property` has already classified a string, so it is the literal text.
+        PropertyKind::TextContent => match val {
+            Value::String(text) => Ok(TextContentDelegate::Text(Deferred::Value(text.clone()))),
+            _ => TextContentDelegate::from_json_value(val)
+                .map_err(|error| anyhow!("`{name}`: {error}")),
+        }
+        .map(|content| PropertyValue::TextContent(Box::new(content))),
+        PropertyKind::TextLine => nested_from_json(val)
+            .map_err(|error| anyhow!("`{name}`: {error}"))
+            .map(|line| PropertyValue::TextLine(Box::new(line))),
+        PropertyKind::TextHighlight => nested_from_json(val)
+            .map_err(|error| anyhow!("`{name}`: {error}"))
+            .map(|highlight| PropertyValue::TextHighlight(Box::new(highlight))),
         PropertyKind::Enum => {
             let enum_def = def
                 .enum_def
@@ -145,6 +160,73 @@ fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyVal
                 .with_context(|| format!("`{name}` unknown enum value `{enum_name}`"))?;
             Ok(PropertyValue::Int(option.value))
         }
+    }
+}
+
+/// Deserializes `val`, naming the path to an error inside it.
+pub(crate) fn nested_from_json<T: serde::de::DeserializeOwned>(
+    val: &Value,
+) -> std::result::Result<T, String> {
+    serde_path_to_error::deserialize(val).map_err(|error| error.to_string())
+}
+
+/// Parses a field of a param nested in another, such as a text span's `font_size`, the way
+/// node params parse.
+pub(crate) fn parse_nested_field<T: DelegateValue>(
+    value: &Value,
+    def: &PropertyDef,
+    constant: bool,
+) -> std::result::Result<T, String> {
+    let parsed = parse_property(value, Some(def), def.id).map_err(|error| format!("{error:#}"))?;
+    if constant && matches!(parsed, PropertyExpression::Expr(_)) {
+        return Err(format!("`{}` does not support expressions", def.id));
+    }
+    // A nested field has no node of its own to name, so errors name the field.
+    T::from_property_expression(parsed, NodeId::new(0), def.id).map_err(|error| match error {
+        LumenError::Property(PropertyError::InvalidType {
+            expected, actual, ..
+        }) => format!("`{}` expected {expected}, got {actual}", def.id),
+        error => error.to_string(),
+    })
+}
+
+/// Like [`parse_nested_field`] for `Option` and `Override` fields.
+pub(crate) fn parse_nested_optional_field<T: OptionalDelegate>(
+    value: &Value,
+    def: &PropertyDef,
+    constant: bool,
+) -> std::result::Result<T, String> {
+    if value.is_null() && T::NULLABLE {
+        return Ok(T::from_override(Override::Clear));
+    }
+    parse_nested_field(value, def, constant).map(|value| T::from_override(Override::Set(value)))
+}
+
+/// The JSON that parses to `property`, naming enum values from `enum_def`.
+pub(crate) fn property_to_json(property: &PropertyExpression, enum_def: Option<&EnumDef>) -> Value {
+    let value = match property {
+        PropertyExpression::Expr(expr) => return Value::from(format!("={}", expr.source)),
+        PropertyExpression::Value(value) => value,
+    };
+    match value {
+        PropertyValue::Float(value) => Value::from(*value),
+        PropertyValue::Int(value) => enum_def
+            .and_then(|def| def.options.iter().find(|option| option.value == *value))
+            .map_or_else(|| Value::from(*value), |option| Value::from(option.name)),
+        PropertyValue::Bool(value) => Value::from(*value),
+        PropertyValue::String(text) if text.starts_with('=') => Value::from(format!("={text}")),
+        PropertyValue::String(text) => Value::from(text.as_str()),
+        PropertyValue::Color(color) => Value::from(color.to_vec()),
+        PropertyValue::Paint(paint) => paint.to_json_value(),
+        PropertyValue::Vec2((x, y)) => Value::from(vec![*x, *y]),
+        PropertyValue::ShaderUniforms(uniforms) => uniforms.to_json_value(),
+        PropertyValue::ClipProps(props) => props.to_json_value(),
+        PropertyValue::TextContent(content) => content.to_json_value(),
+        PropertyValue::TextLine(line) => Value::Object(line.to_json()),
+        PropertyValue::TextHighlight(highlight) => Value::Object(highlight.to_json()),
+        PropertyValue::FloatVec(values) => Value::from(values.clone()),
+        PropertyValue::IntVec(values) => Value::from(values.clone()),
+        PropertyValue::StringVec(values) => Value::from(values.clone()),
     }
 }
 

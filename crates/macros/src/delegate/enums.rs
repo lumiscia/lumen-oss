@@ -205,7 +205,11 @@ pub(crate) fn expand_enum_delegate(
         has_expressions_matches.push(quote!(
             Self::Expr(deferred) => ::lumen_engine::node::DelegateEvaluable::has_expressions(deferred)
         ));
-        delegate_variants.push(quote!(Expr(::lumen_engine::node::Deferred<#ident>)));
+        // Enum names deserialize to the other variants; expressions come from properties.
+        let skip_deserializing =
+            is_enum_kind.then(|| quote!(#[cfg_attr(feature = "json", serde(skip_deserializing))]));
+        delegate_variants
+            .push(quote!(#skip_deserializing Expr(::lumen_engine::node::Deferred<#ident>)));
         eval_matches.push(quote!(
             Self::Expr(deferred) => deferred.eval(ctx.node_id, ctx.property_path, ctx.expr)
         ));

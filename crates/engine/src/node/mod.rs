@@ -28,7 +28,7 @@ pub use deferred::DeferredJsonValue;
 pub use deferred::DeferredValue;
 pub use delegate::{
     DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated,
-    NodeParamEvalContext, NodeParams,
+    NodeParamEvalContext, NodeParams, OptionalDelegate, Override,
 };
 pub use ids::{NodeId, TrackId};
 pub use kind::NodeKind;

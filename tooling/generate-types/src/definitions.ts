@@ -5,6 +5,7 @@ export interface MetaManifest {
   readonly expressions: ExpressionsSpec;
   readonly nodeKinds: readonly string[];
   readonly nodeSpecs: Readonly<Record<string, NodeSpec>>;
+  readonly defs: Readonly<Record<string, JsonSchema>>;
 }
 
 export interface ExpressionsSpec {
@@ -58,7 +59,7 @@ export interface NodeEnumOptionSpec {
   readonly value: number;
 }
 
-interface JsonSchema {
+export interface JsonSchema {
   readonly [key: string]: unknown;
 }
 
@@ -87,6 +88,9 @@ function manifestFromCompositionSchema(schema: JsonSchema): MetaManifest {
     },
     nodeKinds: Object.keys(nodeSpecs),
     nodeSpecs,
+    defs: Object.fromEntries(
+      Object.entries(objectValue(schema.$defs)).map(([key, def]) => [key, objectValue(def)]),
+    ),
   };
 }
 
