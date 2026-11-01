@@ -196,7 +196,8 @@ export interface NodeParamSpec {
   readonly name: string;
   readonly kind: NodeParamKind;
   readonly description: string;
-  readonly defaultValue: NodeLiteralValue;
+  /** Absent for params that are unset unless given. */
+  readonly defaultValue?: NodeLiteralValue;
   readonly enumOptions?: readonly NodeEnumOptionSpec[];
   readonly constraints?: ParamConstraintsSpec;
 }

@@ -106,7 +106,8 @@ pub struct NodeParamSpec {
     pub name: String,
     pub kind: NodeParamKind,
     pub description: String,
-    /// Absent for optional fields of a param kind, which take their parent's value.
+    /// Absent for optional params, which are unset unless given, and optional fields of a param
+    /// kind, which take their parent's value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_value: Option<NodeLiteralValue>,
     pub accepts_expressions: bool,
@@ -822,13 +823,6 @@ fn numeric_property_schema_json(kind: &str, property: &NodeParamSpec) -> Value {
 
 fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpec> {
     let params = param_specs(&schema.properties, &schema.default_properties)?;
-    if let Some(param) = params.iter().find(|param| param.default_value.is_none()) {
-        bail!(
-            "missing default value for param `{}` on node `{}`",
-            param.id,
-            schema.kind
-        );
-    }
     let default_params = params
         .iter()
         .filter_map(|property| Some((property.id.clone(), property.default_value.clone()?)))
@@ -1058,16 +1052,17 @@ mod tests {
         for spec in manifest.node_specs.values() {
             for param in &spec.params {
                 let label = format!("{}.{}", spec.kind, param.id);
-                let literal = composition_with_node(
-                    spec,
-                    json!({ param.id.clone(): param.default_value.clone() }),
-                );
-                lumen_engine::json::parse_value(&literal)
-                    .unwrap_or_else(|error| panic!("{label} literal should parse: {error:#}"));
-                assert!(
-                    validator.is_valid(&literal),
-                    "{label} literal should validate"
-                );
+                // Optional params have no default to try.
+                if let Some(default_value) = &param.default_value {
+                    let literal =
+                        composition_with_node(spec, json!({ param.id.clone(): default_value }));
+                    lumen_engine::json::parse_value(&literal)
+                        .unwrap_or_else(|error| panic!("{label} literal should parse: {error:#}"));
+                    assert!(
+                        validator.is_valid(&literal),
+                        "{label} literal should validate"
+                    );
+                }
 
                 let expression = composition_with_node(spec, json!({ param.id.clone(): "=1" }));
                 let engine_accepts = lumen_engine::json::parse_value(&expression).is_ok();
