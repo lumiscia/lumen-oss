@@ -619,7 +619,7 @@ impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
     fn new(param: &'a Deferred<T>, name: &'static str) -> Self {
         let mut reads = [false; 3];
         if let Deferred::Expr(expression) = param {
-            crate::expr::functions::visit(&expression.ast, &mut |node| match node {
+            crate::expr::functions::visit(expression.ast(), &mut |node| match node {
                 ExprNode::Global(GlobalVar::Glyph) => reads[0] = true,
                 ExprNode::Global(GlobalVar::Word) => reads[1] = true,
                 ExprNode::Global(GlobalVar::Line) => reads[2] = true,
