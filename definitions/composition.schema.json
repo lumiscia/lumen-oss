@@ -3986,6 +3986,12 @@
                     "title": "Glyph Scale",
                     "x-lumen-kind": "vec2"
                   },
+                  "highlight": {
+                    "$ref": "#/$defs/textHighlight",
+                    "description": "Box behind each line of the text, and of spans that leave theirs unset. Off when\nabsent.",
+                    "title": "Highlight",
+                    "x-lumen-kind": "text_highlight"
+                  },
                   "letter_spacing": {
                     "anyOf": [
                       {
@@ -4186,6 +4192,18 @@
                     "description": "Scale multiplier per axis, about the anchor. Raster glyphs are resampled, so\nuse MSDF rendering to keep scaled text sharp.",
                     "title": "Scale",
                     "x-lumen-kind": "vec2"
+                  },
+                  "strikethrough": {
+                    "$ref": "#/$defs/textLine",
+                    "description": "Line through the text, and through spans that leave theirs unset. Off when absent.",
+                    "title": "Strikethrough",
+                    "x-lumen-kind": "text_line"
+                  },
+                  "underline": {
+                    "$ref": "#/$defs/textLine",
+                    "description": "Line under the text, and under spans that leave theirs unset. Off when absent. Its\nfields take literals or expressions, but the whole line cannot be an expression.",
+                    "title": "Underline",
+                    "x-lumen-kind": "text_line"
                   }
                 },
                 "type": "object"
