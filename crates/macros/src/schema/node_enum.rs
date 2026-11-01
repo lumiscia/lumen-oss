@@ -43,11 +43,13 @@ pub(crate) fn expand_node_enum(input: DeriveInput) -> Result<proc_macro2::TokenS
         let name = &option.name;
         let label = &option.label;
         let value = option.value;
+        let aliases = &option.aliases;
         quote! {
             ::lumen_engine::node::EnumOptionDef {
                 name: #name,
                 label: #label,
                 value: #value,
+                aliases: &[#(#aliases),*],
             }
         }
     });

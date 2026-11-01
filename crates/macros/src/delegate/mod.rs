@@ -36,6 +36,8 @@ struct PropertyAttr {
     enum_type: Option<Path>,
     constraints: PropertyConstraintsAttr,
     constant: bool,
+    /// The field must be set when parsing a `properties` struct's JSON.
+    required: bool,
     docs: Vec<String>,
 }
 
@@ -86,6 +88,7 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
     let mut kind = None;
     let mut enum_type = None;
     let mut constant = false;
+    let mut required = false;
     let mut constraints = PropertyConstraintsAttr::default();
 
     attr.parse_nested_meta(|meta| {
@@ -99,6 +102,8 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
             enum_type = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("constant") {
             constant = optional_bool(&meta)?;
+        } else if meta.path.is_ident("required") {
+            required = optional_bool(&meta)?;
         } else if !constraints.parse_key(&meta)? {
             return Err(meta.error("unknown meta attribute key"));
         }
@@ -113,6 +118,7 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
         enum_type,
         constraints,
         constant,
+        required,
         docs: doc_lines(attrs),
     })
 }
@@ -151,6 +157,7 @@ fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::Token
         constraints: &property.constraints,
         accepts_expressions,
         nullable,
+        required: property.required,
     }
     .tokens()
 }

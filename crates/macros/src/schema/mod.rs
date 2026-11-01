@@ -67,6 +67,7 @@ struct EnumOptionAttr {
     name: String,
     label: String,
     value: i64,
+    aliases: Vec<String>,
 }
 
 fn parse_node_attr(attrs: &[Attribute]) -> Result<NodeAttr> {
@@ -197,6 +198,7 @@ fn property_def_tokens(property: &PropertyAttr) -> proc_macro2::TokenStream {
         // `#[property]` fields hold a raw `PropertyExpression` from `parse_property`.
         accepts_expressions: quote!(true),
         nullable: quote!(false),
+        required: false,
     }
     .tokens()
 }
@@ -227,7 +229,28 @@ fn parse_enum_option_attr(
         name: name.unwrap_or_else(|| to_snake_case(&variant_name)),
         label: label.unwrap_or_else(|| title_from_ident(&variant_name)),
         value,
+        aliases: serde_aliases(attrs)?,
     })
+}
+
+/// The names of the variant's `#[serde(alias = "...")]` attributes.
+fn serde_aliases(attrs: &[Attribute]) -> Result<Vec<String>> {
+    let mut aliases = Vec::new();
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("alias") {
+                aliases.push(meta.value()?.parse::<LitStr>()?.value());
+            } else if meta.input.peek(Token![=]) {
+                meta.value()?.parse::<Expr>()?;
+            } else if meta.input.peek(syn::token::Paren) {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                content.parse::<proc_macro2::TokenStream>()?;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(aliases)
 }
 
 fn int_expr_value(expr: &Expr) -> Result<i64> {

@@ -64,10 +64,10 @@ pub enum GradientInterpolation {
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub struct GradientStop {
     /// Position along the gradient from 0 to 1. Values outside that range are clamped.
-    #[meta(step = 0.01, constant)]
+    #[meta(step = 0.01, constant, required)]
     pub offset: f32,
     /// Color at the offset.
-    #[meta(constant)]
+    #[meta(constant, required)]
     pub color: [u8; 4],
 }
 
@@ -76,7 +76,7 @@ pub struct GradientStop {
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub struct GradientPaint {
     /// Gradient shape. Required.
-    #[meta(id = "type", name = "Type")]
+    #[meta(id = "type", name = "Type", required)]
     pub kind: PaintKind,
     /// Whether points and radii are fractions of the shape's bounding box or pixels.
     #[meta()]
@@ -103,7 +103,7 @@ pub struct GradientPaint {
     #[meta(step = 1, constant)]
     pub angle: f32,
     /// Colors along the gradient. Required, with at least one stop.
-    #[meta()]
+    #[meta(required)]
     pub stops: Vec<GradientStop>,
 }
 

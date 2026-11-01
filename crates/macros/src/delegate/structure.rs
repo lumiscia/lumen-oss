@@ -259,6 +259,10 @@ pub(crate) fn expand_struct_delegate(
         });
 
         let field_ids = metas.iter().map(|meta| &meta.property.id);
+        let required_ids = metas
+            .iter()
+            .filter(|meta| meta.property.required)
+            .map(|meta| &meta.property.id);
         quote! {
             #[cfg(feature = "json")]
             impl #delegate_ident {
@@ -279,6 +283,11 @@ pub(crate) fn expand_struct_delegate(
                     D: ::serde::Deserializer<'de>,
                 {
                     let fields = <::serde_json::Map<::std::string::String, ::serde_json::Value> as ::serde::Deserialize>::deserialize(deserializer)?;
+                    for field in [#(#required_ids),*] {
+                        if !fields.contains_key(field) {
+                            return Err(<D::Error as ::serde::de::Error>::missing_field(field));
+                        }
+                    }
                     let mut delegate = <Self as ::core::default::Default>::default();
                     for (key, value) in &fields {
                         match key.as_str() {

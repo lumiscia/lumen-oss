@@ -71,6 +71,7 @@ pub(crate) struct PropertyDefTokens<'a> {
     pub constraints: &'a PropertyConstraintsAttr,
     pub accepts_expressions: proc_macro2::TokenStream,
     pub nullable: proc_macro2::TokenStream,
+    pub required: bool,
 }
 
 impl PropertyDefTokens<'_> {
@@ -82,6 +83,7 @@ impl PropertyDefTokens<'_> {
             enum_def,
             accepts_expressions,
             nullable,
+            required,
             ..
         } = self;
         let description = doc_string(self.docs);
@@ -102,6 +104,8 @@ impl PropertyDefTokens<'_> {
                 accepts_expressions: #accepts_expressions,
                 #[cfg(feature = "metadata")]
                 nullable: #nullable,
+                #[cfg(feature = "metadata")]
+                required: #required,
             }
         }
     }

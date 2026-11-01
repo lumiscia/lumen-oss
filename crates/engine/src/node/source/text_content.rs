@@ -27,7 +27,7 @@ impl Default for TextContent {
 #[delegate(properties)]
 pub struct TextSpan {
     /// Text of the span. Required.
-    #[meta(multiline)]
+    #[meta(multiline, required)]
     pub text: String,
     /// Font family name.
     #[meta(format = "font_family")]
@@ -159,13 +159,7 @@ impl Default for TextContentDelegate {
 impl TextContentDelegate {
     /// Parses `value` as written in JSON, where a string starting with `=` is an expression.
     pub fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        if let Some(spans) = value.as_array() {
-            if let Some(index) = spans.iter().position(|span| {
-                span.as_object()
-                    .is_some_and(|span| !span.contains_key("text"))
-            }) {
-                return Err(format!("[{index}]: missing field `text`"));
-            }
+        if value.is_array() {
             crate::json::nested_from_json(value).map(Self::Spans)
         } else {
             crate::json::nested_from_json(value).map(Self::Text)
@@ -433,6 +427,17 @@ mod tests {
             let error = parse(json.clone()).unwrap_err();
             assert!(error.contains(expected), "{json}: {error}");
         }
+    }
+
+    #[test]
+    fn a_span_without_text_is_rejected_when_deserialized_directly() {
+        let error =
+            serde_json::from_value::<TextSpanDelegate>(serde_json::json!({ "font_size": 12 }))
+                .unwrap_err();
+        assert!(
+            error.to_string().contains("missing field `text`"),
+            "{error}"
+        );
     }
 
     #[test]
