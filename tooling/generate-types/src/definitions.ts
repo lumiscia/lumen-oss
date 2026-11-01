@@ -170,7 +170,6 @@ function constraintsFromSchema(
 function paramKindFromSchema(schema: JsonSchema): string {
   if (Array.isArray(schema.enum)) return "enum";
   if (schema.$ref === "#/$defs/color") return "color";
-  if (schema.$ref === "#/$defs/paint") return "paint";
   if (schema.$ref === "#/$defs/vec2") return "vec2";
   return stringValue(schema.type) ?? "string";
 }

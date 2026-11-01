@@ -2,9 +2,12 @@
 
 pub(crate) const MAX_GRADIENT_STOPS: usize = 8;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::Delegate)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+#[delegate(kind = "enum")]
 pub enum PaintKind {
     #[default]
     #[cfg_attr(feature = "json", serde(alias = "linear"))]
@@ -15,9 +18,12 @@ pub enum PaintKind {
     ConicGradient,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::Delegate)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+#[delegate(kind = "enum")]
 pub enum GradientUnits {
     #[default]
     ObjectBoundingBox,
@@ -25,9 +31,12 @@ pub enum GradientUnits {
     UserSpace,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::Delegate)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+#[delegate(kind = "enum")]
 pub enum GradientSpread {
     #[default]
     Pad,
@@ -35,46 +44,65 @@ pub enum GradientSpread {
     Reflect,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::Delegate)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+#[delegate(kind = "enum")]
 pub enum GradientInterpolation {
     #[default]
+    #[enum_option(label = "sRGB")]
     Srgb,
     #[cfg_attr(feature = "json", serde(alias = "linear"))]
+    #[enum_option(label = "Linear sRGB")]
     LinearSrgb,
 }
 
+/// A color at a point along a gradient. Gradient fields take literals only.
 #[derive(Debug, Clone, Default, PartialEq, lumen_macros::Delegate)]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub struct GradientStop {
-    #[meta(min = 0, max = 1, step = 0.01)]
+    /// Position along the gradient from 0 to 1. Values outside that range are clamped.
+    #[meta(step = 0.01, constant)]
     pub offset: f32,
-    #[meta()]
+    /// Color at the offset.
+    #[meta(constant)]
     pub color: [u8; 4],
 }
 
+/// A linear, radial or conic gradient. Gradient fields take literals only.
 #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub struct GradientPaint {
-    #[meta()]
+    /// Gradient shape. Required.
+    #[meta(id = "type", name = "Type")]
     pub kind: PaintKind,
+    /// Whether points and radii are fractions of the shape's bounding box or pixels.
     #[meta()]
     pub units: GradientUnits,
+    /// How the gradient continues past its first and last stops.
     #[meta()]
     pub spread: GradientSpread,
+    /// Color space the stops blend in.
     #[meta()]
     pub interpolation: GradientInterpolation,
-    #[meta()]
+    /// Start point of a linear gradient.
+    #[meta(constant)]
     pub start: [f32; 2],
-    #[meta()]
+    /// End point of a linear gradient.
+    #[meta(constant)]
     pub end: [f32; 2],
-    #[meta()]
+    /// Center of a radial or conic gradient.
+    #[meta(constant)]
     pub center: [f32; 2],
-    #[meta()]
+    /// Horizontal and vertical radius of a radial gradient. A number sets both.
+    #[meta(constant)]
     pub radius: [f32; 2],
-    #[meta(step = 1)]
+    /// Start angle of a conic gradient in degrees.
+    #[meta(step = 1, constant)]
     pub angle: f32,
+    /// Colors along the gradient. Required, with at least one stop.
     #[meta()]
     pub stops: Vec<GradientStop>,
 }
