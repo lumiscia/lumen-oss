@@ -242,46 +242,7 @@ export type Color =
   | readonly [number, number, number]
   | readonly [number, number, number, number]
   | \`#\${string}\`;
-export type GradientStop =
-  | { readonly offset: number; readonly color: Color }
-  | readonly [number, Color];
-export type GradientPaint = {
-  readonly type:
-    | "linear"
-    | "linear_gradient"
-    | "radial"
-    | "radial_gradient"
-    | "conic"
-    | "conic_gradient";
-  readonly units?: "object_bounding_box" | "user_space" | "userSpaceOnUse";
-  readonly spread?: "pad" | "repeat" | "reflect";
-  readonly interpolation?: "srgb" | "linear_srgb" | "linear";
-  readonly start?: Vec2;
-  readonly end?: Vec2;
-  readonly center?: Vec2;
-  readonly radius?: number | Vec2;
-  readonly angle?: number;
-  readonly stops: readonly GradientStop[];
-};
-export type Paint = Color | GradientPaint;
 export type HexColor = \`#\${string}\`;
-export type ShaderUniformComponent = number | ExpressionString;
-export type ShaderUniformValue =
-  | number
-  | ExpressionString
-  | readonly [ShaderUniformComponent, ShaderUniformComponent]
-  | readonly [ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent]
-  | readonly [
-      ShaderUniformComponent,
-      ShaderUniformComponent,
-      ShaderUniformComponent,
-      ShaderUniformComponent,
-    ]
-  | HexColor;
-export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
-/** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
-export type ClipPropValue = number | string | Vec2 | Color;
-export type ClipProps = Readonly<Record<string, ClipPropValue>>;
 
 ${namedTypes}
 

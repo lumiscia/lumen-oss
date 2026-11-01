@@ -390,15 +390,6 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                     prop_declaration_json("vec2", json!({ "$ref": "#/$defs/vec2" }))
                 ]
             },
-            "clipPropValue": {
-                "description": "A value for a template prop: a literal of the prop's type or an expression.",
-                "anyOf": [
-                    { "type": "number" },
-                    { "type": "string" },
-                    { "$ref": "#/$defs/vec2" },
-                    { "$ref": "#/$defs/color" }
-                ]
-            },
             "expression": {
                 "description": "An expression evaluated per frame in place of a literal value.",
                 "type": "string",
@@ -412,89 +403,6 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
                         "maxItems": 4,
                         "items": { "type": "integer", "minimum": 0, "maximum": 255 }
                     },
-                    {
-                        "type": "string",
-                        "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
-                    }
-                ]
-            },
-            "paint": {
-                "oneOf": [
-                    { "$ref": "#/$defs/color" },
-                    {
-                        "type": "object",
-                        "required": ["type", "stops"],
-                        "properties": {
-                            "type": {
-                                "type": "string",
-                                "enum": ["linear", "linear_gradient", "radial", "radial_gradient", "conic", "conic_gradient"]
-                            },
-                            "units": {
-                                "type": "string",
-                                "enum": ["object_bounding_box", "user_space", "userSpaceOnUse"],
-                                "default": "object_bounding_box"
-                            },
-                            "spread": {
-                                "type": "string",
-                                "enum": ["pad", "repeat", "reflect"],
-                                "default": "pad"
-                            },
-                            "interpolation": {
-                                "type": "string",
-                                "enum": ["srgb", "linear_srgb", "linear"],
-                                "default": "srgb"
-                            },
-                            "start": { "$ref": "#/$defs/vec2" },
-                            "end": { "$ref": "#/$defs/vec2" },
-                            "center": { "$ref": "#/$defs/vec2" },
-                            "radius": {
-                                "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/vec2" }]
-                            },
-                            "angle": { "type": "number" },
-                            "stops": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
-                                    "oneOf": [
-                                        {
-                                            "type": "object",
-                                            "required": ["offset", "color"],
-                                            "properties": {
-                                                "offset": { "type": "number" },
-                                                "color": { "$ref": "#/$defs/color" }
-                                            },
-                                            "additionalProperties": false
-                                        },
-                                        {
-                                            "type": "array",
-                                            "prefixItems": [
-                                                { "type": "number" },
-                                                { "$ref": "#/$defs/color" }
-                                            ],
-                                            "minItems": 2,
-                                            "maxItems": 2
-                                        }
-                                    ]
-                                }
-                            }
-                        },
-                        "additionalProperties": false
-                    }
-                ]
-            },
-            "shaderUniformValue": {
-                "description": "A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields.",
-                "anyOf": [
-                    { "type": "number" },
-                    {
-                        "type": "array",
-                        "minItems": 2,
-                        "maxItems": 4,
-                        "items": {
-                            "anyOf": [{ "type": "number" }, { "$ref": "#/$defs/expression" }]
-                        }
-                    },
-                    { "$ref": "#/$defs/expression" },
                     {
                         "type": "string",
                         "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
@@ -559,16 +467,18 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
 }
 
 /// `$defs` of the param kinds whose fields are a delegate's `property_defs()`, and the outer
-/// shapes around them. Each carries the TypeScript type name `x-lumen-type`.
+/// shapes around them that the property metadata can't express. Each carries the TypeScript
+/// type name `x-lumen-type`.
 fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
-    use lumen_engine::node::source::text_content::{
-        TextHighlightDelegate, TextLineDelegate, TextSpanDelegate,
+    use lumen_engine::node::{
+        source::text_content::{TextHighlightDelegate, TextLineDelegate, TextSpanDelegate},
+        vector::paint::{GradientPaintDelegate, GradientStopDelegate},
     };
 
     let mut defs = serde_json::Map::new();
-    insert_object_def::<TextSpanDelegate>(&mut defs, "TextSpan", &["text"])?;
-    insert_object_def::<TextLineDelegate>(&mut defs, "TextLine", &[])?;
-    insert_object_def::<TextHighlightDelegate>(&mut defs, "TextHighlight", &[])?;
+    insert_object_def::<TextSpanDelegate>(&mut defs, "TextSpan", &["text"], &[])?;
+    insert_object_def::<TextLineDelegate>(&mut defs, "TextLine", &[], &[])?;
+    insert_object_def::<TextHighlightDelegate>(&mut defs, "TextHighlight", &[], &[])?;
     insert_def(
         &mut defs,
         "TextContent",
@@ -578,6 +488,117 @@ fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
                 { "type": "string" },
                 { "type": "array", "items": { "$ref": "#/$defs/textSpan" } }
             ]
+        }),
+    );
+
+    insert_def(
+        &mut defs,
+        "Paint",
+        json!({
+            "description": "A solid color or a gradient.",
+            "oneOf": [{ "$ref": "#/$defs/color" }, { "$ref": "#/$defs/gradientPaint" }]
+        }),
+    );
+    insert_object_def::<GradientPaintDelegate>(
+        &mut defs,
+        "GradientPaint",
+        &["type", "stops"],
+        &[
+            (
+                "radius",
+                json!({ "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/vec2" }] }),
+            ),
+            (
+                "stops",
+                json!({
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "$ref": "#/$defs/gradientStop" }
+                }),
+            ),
+        ],
+    )?;
+    // Serde aliases of the gradient enums.
+    for (enum_name, aliases) in [
+        ("PaintKind", &["linear", "radial", "conic"][..]),
+        ("GradientUnits", &["userSpaceOnUse"]),
+        ("GradientInterpolation", &["linear"]),
+    ] {
+        defs.get_mut(&def_key(enum_name))
+            .and_then(|def| def["enum"].as_array_mut())
+            .with_context(|| format!("`{enum_name}` is not an enum def"))?
+            .extend(aliases.iter().map(|alias| json!(alias)));
+    }
+    let stop = object_schema_json::<GradientStopDelegate>(&mut defs, &["offset", "color"], &[])?;
+    insert_def(
+        &mut defs,
+        "GradientStop",
+        json!({
+            "description": "A color at a point along a gradient: `{ offset, color }` or `[offset, color]`.",
+            "oneOf": [
+                stop,
+                {
+                    "type": "array",
+                    "prefixItems": [{ "type": "number" }, { "$ref": "#/$defs/color" }],
+                    "minItems": 2,
+                    "maxItems": 2
+                }
+            ]
+        }),
+    );
+
+    insert_def(
+        &mut defs,
+        "ShaderUniformComponent",
+        json!({ "anyOf": [{ "type": "number" }, { "$ref": "#/$defs/expression" }] }),
+    );
+    insert_def(
+        &mut defs,
+        "ShaderUniformValue",
+        json!({
+            "description": "A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields.",
+            "anyOf": [
+                { "type": "number" },
+                {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 4,
+                    "items": { "$ref": "#/$defs/shaderUniformComponent" }
+                },
+                { "$ref": "#/$defs/expression" },
+                { "type": "string", "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$" }
+            ]
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "ShaderUniforms",
+        json!({
+            "description": "Shader uniform values by field name, checked against the shader's uniform struct when the node compiles.",
+            "type": "object",
+            "additionalProperties": { "$ref": "#/$defs/shaderUniformValue" }
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "ClipPropValue",
+        json!({
+            "description": "A value for a template prop: a literal of the prop's type, or an expression in the clip's time.",
+            "anyOf": [
+                { "type": "number" },
+                { "type": "string" },
+                { "$ref": "#/$defs/vec2" },
+                { "$ref": "#/$defs/color" }
+            ]
+        }),
+    );
+    insert_def(
+        &mut defs,
+        "ClipProps",
+        json!({
+            "description": "Prop values a `clip` passes to its template, by prop name.",
+            "type": "object",
+            "additionalProperties": { "$ref": "#/$defs/clipPropValue" }
         }),
     );
     Ok(defs)
@@ -596,33 +617,61 @@ fn insert_def(defs: &mut serde_json::Map<String, Value>, type_name: &str, mut sc
     defs.insert(def_key(type_name), schema);
 }
 
-/// An object `$def` with a field per param of `P`, described like node params, of which
-/// `required` must be present. Enum fields reference a `$def` of their enum.
 fn insert_object_def<P: lumen_engine::node::NodeParams>(
     defs: &mut serde_json::Map<String, Value>,
     type_name: &str,
     required: &[&str],
+    value_schemas: &[(&str, Value)],
 ) -> Result<()> {
+    let schema = object_schema_json::<P>(defs, required, value_schemas)?;
+    insert_def(defs, type_name, schema);
+    Ok(())
+}
+
+/// An object schema with a field per param of `P`, described like node params, of which
+/// `required` must be present and have no default. Enum fields reference a `$def` of their enum,
+/// and `value_schemas` replaces the value schemas of fields the metadata can't describe.
+fn object_schema_json<P: lumen_engine::node::NodeParams>(
+    defs: &mut serde_json::Map<String, Value>,
+    required: &[&str],
+    value_schemas: &[(&str, Value)],
+) -> Result<Value> {
     let properties = P::property_defs();
-    let specs = param_specs(&properties, &P::default().default_properties())?;
+    let mut specs = param_specs(&properties, &P::default().default_properties())?;
     let mut fields = serde_json::Map::new();
-    for (property, spec) in properties.iter().zip(&specs) {
-        let value_schema = match property.enum_def {
-            Some(enum_def) => {
+    for (property, spec) in properties.iter().zip(&mut specs) {
+        if required.contains(&property.id) {
+            spec.default_value = None;
+        }
+        let replaced = value_schemas.iter().find(|(id, _)| *id == property.id);
+        let value_schema = match (replaced, property.enum_def) {
+            (Some((_, schema)), _) => schema.clone(),
+            (None, Some(enum_def)) => {
                 insert_def(defs, enum_def.name, enum_schema_json(spec));
                 json!({ "$ref": format!("#/$defs/{}", def_key(enum_def.name)) })
             }
-            None => value_schema_json(spec),
+            (None, None) => value_schema_json(spec),
         };
-        fields.insert(spec.id.clone(), field_schema_json(spec, value_schema));
+        let mut field = field_schema_json(spec, value_schema);
+        // The param kind describes the field's Rust type, not the replaced shape.
+        if let (Some(_), Value::Object(object)) = (replaced, &mut field) {
+            object.remove("x-lumen-kind");
+        }
+        fields.insert(spec.id.clone(), field);
+    }
+    if let Some(id) = required
+        .iter()
+        .chain(value_schemas.iter().map(|(id, _)| id))
+        .find(|id| !fields.contains_key(**id))
+    {
+        bail!("`{id}` is not a field");
     }
     let mut schema =
         json!({ "type": "object", "properties": fields, "additionalProperties": false });
     if !required.is_empty() {
         schema["required"] = json!(required);
     }
-    insert_def(defs, type_name, schema);
-    Ok(())
+    Ok(schema)
 }
 
 fn prop_declaration_json(kind: &str, default: Value) -> Value {
@@ -705,14 +754,8 @@ fn value_schema_json(property: &NodeParamSpec) -> Value {
         NodeParamKind::Color => json!({ "$ref": "#/$defs/color" }),
         NodeParamKind::Paint => json!({ "$ref": "#/$defs/paint" }),
         NodeParamKind::Vec2 => json!({ "$ref": "#/$defs/vec2" }),
-        NodeParamKind::ShaderUniforms => json!({
-            "type": "object",
-            "additionalProperties": { "$ref": "#/$defs/shaderUniformValue" }
-        }),
-        NodeParamKind::ClipProps => json!({
-            "type": "object",
-            "additionalProperties": { "$ref": "#/$defs/clipPropValue" }
-        }),
+        NodeParamKind::ShaderUniforms => json!({ "$ref": "#/$defs/shaderUniforms" }),
+        NodeParamKind::ClipProps => json!({ "$ref": "#/$defs/clipProps" }),
         NodeParamKind::TextContent => json!({ "$ref": "#/$defs/textContent" }),
         NodeParamKind::TextLine => json!({ "$ref": "#/$defs/textLine" }),
         NodeParamKind::TextHighlight => json!({ "$ref": "#/$defs/textHighlight" }),
@@ -1138,18 +1181,128 @@ mod tests {
     }
 
     #[test]
-    fn shader_uniforms_schema_matches_engine_parsing() {
+    fn paint_shader_uniform_and_clip_props_schemas_match_engine_parsing() {
         let manifest = meta_manifest().unwrap();
         let validator = schema_validator();
+        let check = |label: &str, composition: Value, valid: bool| {
+            assert_eq!(validator.is_valid(&composition), valid, "{label} schema");
+            assert_eq!(
+                lumen_engine::json::parse_value(&composition).is_ok(),
+                valid,
+                "{label} engine"
+            );
+        };
+
+        let stops = json!([[0.0, [255, 0, 0]], { "offset": 1.0, "color": "#0000ff" }]);
+        let gradient = |field: &str, value: Value| {
+            let mut paint = json!({ "type": "linear", "stops": stops });
+            paint[field] = value;
+            paint
+        };
+        let mut paints = vec![
+            (json!([255, 0, 0]), true),
+            (json!([255, 0, 0, 128]), true),
+            (json!("#ff0000"), true),
+            (json!("#ff000080"), true),
+            (json!("=rgb(255, 0, 0)"), true),
+            (
+                json!({
+                    "type": "radial_gradient",
+                    "units": "user_space",
+                    "spread": "reflect",
+                    "interpolation": "linear_srgb",
+                    "start": [0, 0],
+                    "end": [1, 0],
+                    "center": [0.5, 0.5],
+                    "radius": [0.25, 0.5],
+                    "angle": 90,
+                    "stops": [{ "offset": -0.5, "color": [0, 0, 0, 255] }, [1.5, "#ffffff"]]
+                }),
+                true,
+            ),
+            (gradient("radius", json!(0.25)), true),
+            (json!("red"), false),
+            (json!("#ff00"), false),
+            (json!([255, 0]), false),
+            (json!([256, 0, 0]), false),
+            (json!({ "stops": stops }), false),
+            (json!({ "type": "linear" }), false),
+            (gradient("stops", json!([])), false),
+            (gradient("type", json!("diamond")), false),
+            (gradient("units", json!("user")), false),
+            (gradient("spread", json!("mirror")), false),
+            (gradient("interpolation", json!("oklab")), false),
+            (gradient("radius", json!("big")), false),
+            (gradient("radius", json!([1])), false),
+            (gradient("start", json!("=vec2(0, 0)")), false),
+            (gradient("angle", json!("=frame")), false),
+            (gradient("stops", json!([[0]])), false),
+            (gradient("stops", json!([[0, [0, 0, 0], 1]])), false),
+            (gradient("stops", json!([["0", [0, 0, 0]]])), false),
+            (gradient("stops", json!([{ "color": [0, 0, 0] }])), false),
+            (
+                gradient("stops", json!([{ "offset": 0, "color": "=frame" }])),
+                false,
+            ),
+            (
+                gradient(
+                    "stops",
+                    json!([{ "offset": 0, "color": [0, 0, 0], "x": 1 }]),
+                ),
+                false,
+            ),
+        ];
+        for (field, values) in [
+            (
+                "type",
+                &[
+                    "linear",
+                    "linear_gradient",
+                    "radial",
+                    "radial_gradient",
+                    "conic",
+                    "conic_gradient",
+                ][..],
+            ),
+            (
+                "units",
+                &["object_bounding_box", "user_space", "userSpaceOnUse"],
+            ),
+            ("spread", &["pad", "repeat", "reflect"]),
+            ("interpolation", &["srgb", "linear_srgb", "linear"]),
+        ] {
+            paints.extend(
+                values
+                    .iter()
+                    .map(|value| (gradient(field, json!(value)), true)),
+            );
+        }
+        for (paint, valid) in paints {
+            let composition = composition_with_node(
+                &manifest.node_specs["shape"],
+                json!({ "fill_paint": paint }),
+            );
+            check(&paint.to_string(), composition, valid);
+        }
+
         for (uniforms, valid) in [
             (
-                json!({ "a": 1, "b": [1, "=frame"], "c": "=vec2(1, 2)", "d": "#ff000080" }),
+                json!({
+                    "a": 1,
+                    "b": [1, "=frame"],
+                    "c": [1, 2, 3],
+                    "d": [1, 2, 3, "=frame"],
+                    "e": "=vec2(1, 2)",
+                    "f": "#ff0000",
+                    "g": "#ff000080"
+                }),
                 true,
             ),
             (json!({ "a": true }), false),
             (json!({ "a": [1] }), false),
             (json!({ "a": [1, 2, 3, 4, 5] }), false),
             (json!({ "a": [1, "x"] }), false),
+            (json!({ "a": [1, [2]] }), false),
             (json!({ "a": "red" }), false),
             (json!({ "a": "#ff00" }), false),
             (json!([1, 2]), false),
@@ -1158,12 +1311,31 @@ mod tests {
                 &manifest.node_specs["wgsl_shader"],
                 json!({ "uniforms": uniforms }),
             );
-            assert_eq!(validator.is_valid(&composition), valid, "{uniforms}");
-            assert_eq!(
-                lumen_engine::json::parse_value(&composition).is_ok(),
-                valid,
-                "{uniforms}"
-            );
+            check(&uniforms.to_string(), composition, valid);
+        }
+
+        let demo: Value =
+            serde_json::from_str(include_str!("../../local/demo/clips.json")).unwrap();
+        let clip = demo["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|node| node["type"] == "clip")
+            .unwrap();
+        for (props, valid) in [
+            (
+                json!({ "title": "=frame", "subtitle": "==x", "accent": [255, 0, 0], "index": 2 }),
+                true,
+            ),
+            (json!({ "accent": "#ff0000", "index": "=frame" }), true),
+            (json!({ "index": true }), false),
+            (json!({ "index": {} }), false),
+            (json!({ "title": null }), false),
+            (json!([1]), false),
+        ] {
+            let mut composition = demo.clone();
+            composition["nodes"][clip]["params"]["props"] = props.clone();
+            check(&props.to_string(), composition, valid);
         }
     }
 

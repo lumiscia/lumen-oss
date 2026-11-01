@@ -5,8 +5,8 @@ mod types;
 pub(crate) use gpu::GpuPaint;
 
 pub use types::{
-    GradientInterpolation, GradientPaint, GradientSpread, GradientStop, GradientUnits, Paint,
-    PaintDelegate, PaintKind,
+    GradientInterpolation, GradientPaint, GradientPaintDelegate, GradientSpread, GradientStop,
+    GradientStopDelegate, GradientUnits, Paint, PaintDelegate, PaintKind,
 };
 
 impl Paint {
@@ -37,7 +37,7 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
     use gpu::{GpuPaint, test_gradient_to_gpu as gradient_to_gpu};
-    use types::{GradientPaintDelegate, MAX_GRADIENT_STOPS, PaintDelegate};
+    use types::MAX_GRADIENT_STOPS;
 
     #[test]
     fn gpu_paint_size_matches_wgsl_uniform_stride() {

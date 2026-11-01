@@ -62,7 +62,15 @@ function schemaType(schema: JsonSchema, names: Map<string, string>, indent: stri
     case "array": {
       const prefixItems = array(schema.prefixItems);
       if (prefixItems.length > 0) return `readonly [${prefixItems.map(type).join(", ")}]`;
-      return `readonly ${parenthesize(type(schema.items))}[]`;
+      const item = type(schema.items);
+      const { minItems, maxItems } = schema;
+      if (typeof minItems === "number" && typeof maxItems === "number" && maxItems <= 4) {
+        return Array.from({ length: maxItems - minItems + 1 }, (_, index) => {
+          const items = Array.from({ length: minItems + index }, () => item);
+          return `readonly [${items.join(", ")}]`;
+        }).join(" | ");
+      }
+      return `readonly ${parenthesize(item)}[]`;
     }
     case "object":
       return objectType(schema, names, indent);
@@ -90,7 +98,8 @@ function objectType(schema: JsonSchema, names: Map<string, string>, indent: stri
 /**
  * `export type` declarations, keyed by name, for the `$defs` that carry an `x-lumen-type`.
  * Expression references, hex colour patterns and `anyOf` with an expression become
- * `ExpressionString`, `HexColor` and `ExpressionValue<T>`.
+ * `ExpressionString`, `HexColor` and `ExpressionValue<T>`; arrays of at most 4 items become
+ * tuples.
  */
 export function renderDefTypes(defs: Readonly<Record<string, JsonSchema>>): Map<string, string> {
   const names = defTypeNames(defs);
