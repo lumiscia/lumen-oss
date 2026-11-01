@@ -3,7 +3,7 @@
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "int" | "paint" | "shader_uniforms" | "string" | "vec2";
+export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "vec2";
 export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "clip" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
@@ -724,6 +724,10 @@ export const expressionGlobals = [
     "name": "line"
   },
   {
+    "doc": "Index of the span being drawn, or 0 in plain text. Only in a text node's `glyph_*` params.",
+    "name": "span"
+  },
+  {
     "doc": "Number of glyphs in the text. Only in a text node's `glyph_*` params.",
     "name": "glyph_count"
   },
@@ -734,6 +738,10 @@ export const expressionGlobals = [
   {
     "doc": "Number of lines in the text. Only in a text node's `glyph_*` params.",
     "name": "line_count"
+  },
+  {
+    "doc": "Number of spans in the text, or 1 in plain text. Only in a text node's `glyph_*` params.",
+    "name": "span_count"
   }
 ] as const;
 export type ExpressionGlobalName = (typeof expressionGlobals)[number]["name"];
@@ -837,6 +845,7 @@ export type ShapeGeometryKind = "rectangle" | "ellipse" | "polygon";
 export type TextAlignmentHorizontal = "left" | "center" | "right" | "justify";
 export type TextAlignmentVertical = "top" | "middle" | "bottom";
 export type TextFontStyle = "normal" | "italic" | "oblique";
+export type TextPaintSpace = "span" | "text";
 export type TextRenderMode = "raster" | "msdf" | "auto";
 export type TransformSampling = "nearest" | "linear";
 /** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
@@ -1175,7 +1184,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "alignment_vertical"?: TextAlignmentVertical;
     readonly "anchor"?: ExpressionValue<Vec2>;
     readonly "color"?: ExpressionValue<Paint>;
-    readonly "content"?: ExpressionValue<string>;
+    readonly "content"?: ExpressionValue<TextContent>;
     readonly "font_family"?: ExpressionValue<string>;
     readonly "font_size"?: ExpressionValue<number>;
     readonly "font_style"?: ExpressionValue<TextFontStyle>;
@@ -1189,6 +1198,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "max_width"?: ExpressionValue<number>;
     readonly "motion_blur"?: ExpressionValue<number>;
     readonly "opacity"?: ExpressionValue<number>;
+    readonly "paint_space"?: TextPaintSpace;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
     readonly "position"?: ExpressionValue<Vec2>;
     readonly "render_mode"?: TextRenderMode;

@@ -3807,7 +3807,7 @@
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Text color.",
+                    "description": "Text color, and that of spans without their own.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
@@ -3817,20 +3817,20 @@
                   "content": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/$defs/textContent"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": "",
-                    "description": "Text content to render.",
+                    "description": "Text to render: a string, or spans that each override the style these params give.",
                     "title": "Content",
                     "x-lumen-constraints": {
                       "multiline": true,
                       "recommendedRows": 4
                     },
-                    "x-lumen-kind": "string"
+                    "x-lumen-kind": "text_content"
                   },
                   "font_family": {
                     "anyOf": [
@@ -3930,7 +3930,7 @@
                       }
                     ],
                     "default": [0.0, 0.0],
-                    "description": "Offset of each glyph in pixels. The `glyph_*` params are evaluated for every glyph,\nand can read its `glyph`, `word` and `line` index and their counts.",
+                    "description": "Offset of each glyph in pixels. The `glyph_*` params are evaluated for every glyph,\nand can read its `glyph`, `word`, `line` and `span` index and their counts.",
                     "title": "Glyph Offset",
                     "x-lumen-kind": "vec2"
                   },
@@ -4082,6 +4082,26 @@
                       "step": 0.01
                     },
                     "x-lumen-kind": "float"
+                  },
+                  "paint_space": {
+                    "default": "span",
+                    "description": "Box a span's own gradient `color` spans: the span's lines, or the whole text. The\nnode's `color` always spans the whole text.",
+                    "enum": ["span", "text"],
+                    "title": "Paint Space",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Span",
+                        "name": "span",
+                        "value": 0
+                      },
+                      {
+                        "label": "Text",
+                        "name": "text",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   },
                   "paint_supersample": {
                     "anyOf": [
@@ -5321,6 +5341,10 @@
         "name": "line"
       },
       {
+        "doc": "Index of the span being drawn, or 0 in plain text. Only in a text node's `glyph_*` params.",
+        "name": "span"
+      },
+      {
         "doc": "Number of glyphs in the text. Only in a text node's `glyph_*` params.",
         "name": "glyph_count"
       },
@@ -5331,6 +5355,10 @@
       {
         "doc": "Number of lines in the text. Only in a text node's `glyph_*` params.",
         "name": "line_count"
+      },
+      {
+        "doc": "Number of spans in the text, or 1 in plain text. Only in a text node's `glyph_*` params.",
+        "name": "span_count"
       }
     ]
   },
