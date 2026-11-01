@@ -14,9 +14,13 @@ use crate::media::MediaStore;
 use crate::node::vector::{
     drawable::{DeferredTransform, DrawableMotion, DrawableTransform},
     paint::Paint,
-    renderer::TextStyleUniforms,
+    renderer::{GpuTextPaint, TextStyleUniforms},
 };
-use crate::node::{Deferred, DeferredValue, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{
+    Deferred, DeferredValue, NodeId, NodeParamEvalContext, NodeParams, Override, PortRef,
+};
+
+use super::text_content::{TextContent, TextSpan};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
@@ -60,6 +64,17 @@ pub enum TextAlignmentVertical {
 )]
 #[repr(i64)]
 #[delegate(kind = "enum")]
+pub enum TextPaintSpace {
+    #[default]
+    Span = 0,
+    Text = 1,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum")]
 pub enum TextRenderMode {
     #[default]
     Raster = 0,
@@ -70,9 +85,9 @@ pub enum TextRenderMode {
 /// Produces a text source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TextParams {
-    /// Text content to render.
+    /// Text to render: a string, or spans that each override the style these params give.
     #[meta(multiline, recommended_rows = 4)]
-    pub content: String,
+    pub content: TextContent,
     /// Font family name.
     #[meta(format = "font_family")]
     pub font_family: String,
@@ -119,7 +134,7 @@ pub struct TextParams {
     #[meta(min = 0, max = 360, step = 1)]
     pub motion_blur: f64,
     /// Offset of each glyph in pixels. The `glyph_*` params are evaluated for every glyph,
-    /// and can read its `glyph`, `word` and `line` index and their counts.
+    /// and can read its `glyph`, `word`, `line` and `span` index and their counts.
     #[meta()]
     pub glyph_offset: (f64, f64),
     /// Scale multiplier of each glyph per axis, about the middle of its advance and line.
@@ -131,9 +146,13 @@ pub struct TextParams {
     /// Opacity multiplier of each glyph, applied before `opacity`.
     #[meta(min = 0, max = 1, step = 0.01)]
     pub glyph_opacity: f64,
-    /// Text color.
+    /// Text color, and that of spans without their own.
     #[meta(role = "color")]
     pub color: Paint,
+    /// Box a span's own gradient `color` spans: the span's lines, or the whole text. The
+    /// node's `color` always spans the whole text.
+    #[meta(kind = "enum", enum_type = TextPaintSpace)]
+    pub paint_space: TextPaintSpace,
     /// Horizontal text alignment.
     #[meta(kind = "enum", enum_type = TextAlignmentHorizontal)]
     pub alignment_horizontal: TextAlignmentHorizontal,
@@ -148,7 +167,7 @@ pub struct TextParams {
 impl Default for TextParams {
     fn default() -> Self {
         Self {
-            content: String::new(),
+            content: TextContent::default(),
             font_family: lumen_text::DEFAULT_FONT_FAMILY.to_string(),
             font_size: 16.0,
             font_weight: 400,
@@ -168,6 +187,7 @@ impl Default for TextParams {
             glyph_rotation: 0.0,
             glyph_opacity: 1.0,
             color: Paint::solid([255, 255, 255, 255]),
+            paint_space: TextPaintSpace::Span,
             alignment_horizontal: TextAlignmentHorizontal::Left,
             alignment_vertical: TextAlignmentVertical::Top,
             paint_supersample: true,
@@ -206,13 +226,18 @@ impl GpuCompileNode for Text {
 #[derive(Debug)]
 pub(crate) struct CompiledText {
     pub(crate) node_id: NodeId,
-    /// The node's params, less the per-glyph ones in `glyph`.
+    /// The node's params, less the per-glyph ones in `glyph` and constant `content`.
     pub(crate) params: TextParamsDelegate,
     pub(crate) glyph: GlyphParams,
+    /// The content, evaluated at compile when it has no expressions.
+    pub(crate) content: Option<TextContent>,
     pub(crate) atlas_texture: lumen_gpu::TextureId,
     pub(crate) globals_buffer: lumen_gpu::BufferId,
     pub(crate) instances_buffer: lumen_gpu::BufferId,
-    pub(crate) paint_buffer: lumen_gpu::BufferId,
+    pub(crate) style_buffer: lumen_gpu::BufferId,
+    /// A paint for each span, or the one paint of string content.
+    pub(crate) paints_buffer: lumen_gpu::BufferId,
+    pub(crate) paint_count: usize,
     pub(crate) max_glyphs: usize,
     pub(crate) size: lumen_gpu::Size,
     /// The size of what the glyphs are drawn to: the layer of blurred text, else the output.
@@ -248,12 +273,10 @@ impl CompiledText {
     ) -> crate::Result<bool> {
         let trace_started = crate::log_level_enabled(tracing::Level::TRACE).then(trace_now_ms);
         let mut expr = ctx.expr_context(self.node_id, "params");
-        let evaluated = self.params.eval(&NodeParamEvalContext {
+        let mut evaluated = self.params.eval(&NodeParamEvalContext {
             node_id: self.node_id,
             expr: &expr,
         })?;
-        let mut paint = evaluated.color.to_gpu([255, 255, 255, 255]);
-        paint.paint_supersample = u32::from(evaluated.paint_supersample);
         let (position_x, position_y) = evaluated.position;
         let drawable = DrawableTransform {
             position: evaluated.position,
@@ -269,24 +292,20 @@ impl CompiledText {
             anchor: &self.params.anchor,
         }
         .shutter(evaluated.motion_blur, drawable, self.node_id, &expr)?;
-        let mut request = layout_request(
-            evaluated.content,
-            evaluated.font_family,
-            evaluated.font_size as f32,
-            evaluated.font_weight,
-            evaluated.font_style,
-            evaluated.max_width as f32,
-            evaluated.alignment_horizontal,
-        );
-        apply_line_spacing(
-            &mut request,
-            evaluated.letter_spacing,
-            evaluated.line_height,
-        );
+        let style = TextLayoutStyle::take(&mut evaluated);
+        let mut content = self
+            .content
+            .is_none()
+            .then(|| std::mem::take(&mut evaluated.content));
+        let span_paints = content.as_mut().map(take_span_paints).unwrap_or_default();
 
         let mut text_system = text_system()?;
-        let span = &request.spans[0];
-        load_font_family(&mut text_system, ctx.media(), &span.font_family)?;
+        load_font_families(
+            &mut text_system,
+            ctx.media(),
+            &style,
+            self.content.as_ref().or(content.as_ref()),
+        )?;
         let mut state = self.state.lock().map_err(|_| {
             LumenError::Render(RenderError::Gpu {
                 details: format!("text node {} state lock was poisoned", self.node_id.0),
@@ -295,15 +314,8 @@ impl CompiledText {
         let state = &mut *state;
 
         let shape_key = TextShapeKey {
-            content: span.text.clone(),
-            font_family: span.font_family.clone(),
-            font_size_bits: span.font_size.to_bits(),
-            font_weight: span.font_weight,
-            font_style: evaluated.font_style,
-            max_width_bits: request.max_width.unwrap_or(0.0).to_bits(),
-            letter_spacing_bits: span.letter_spacing.to_bits(),
-            line_height_bits: request.line_height.unwrap_or(0.0).to_bits(),
-            alignment_horizontal: evaluated.alignment_horizontal,
+            style,
+            content,
             font_generation: text_system.font_generation(),
         };
         let mut layout_ms = 0.0;
@@ -313,6 +325,11 @@ impl CompiledText {
             .is_none_or(|(key, _)| *key != shape_key)
         {
             let layout_started = trace_started.map(|_| trace_now_ms());
+            let content = match (&shape_key.content, &self.content) {
+                (Some(content), _) | (None, Some(content)) => content,
+                (None, None) => unreachable!("content is constant or evaluated"),
+            };
+            let request = shape_key.style.request(content);
             state.shaped = Some((shape_key, text_system.shape(&request)));
             if let Some(started) = layout_started {
                 layout_ms = trace_now_ms() - started;
@@ -405,6 +422,11 @@ impl CompiledText {
                 height,
             );
         }
+        if self.paint_count > 1 {
+            for (instance, &source) in prepared.instances.iter_mut().zip(&prepared.sources) {
+                instance.set_paint(layout.glyphs[source].item.span);
+            }
+        }
         let ink_bounds = self.glyph.apply(
             self.node_id,
             &layout,
@@ -416,9 +438,31 @@ impl CompiledText {
             target_size: [self.layer_size.width as f32, self.layer_size.height as f32],
             px_range: lumen_text::MSDF_PX_RANGE,
             glyph_count: prepared.instances.len() as u32,
-            paint_bounds: layout.bounds,
         };
         bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
+        state.paints.clear();
+        for span in 0..self.paint_count {
+            let own = match &self.content {
+                Some(TextContent::Spans(spans)) => {
+                    spans.get(span).and_then(|span| span.color.as_ref())
+                }
+                Some(TextContent::Text(_)) => None,
+                None => span_paints.get(span).and_then(Option::as_ref),
+            };
+            let paint = own.unwrap_or(&evaluated.color);
+            let mut gpu = paint.to_gpu([255, 255, 255, 255]);
+            gpu.paint_supersample = u32::from(evaluated.paint_supersample);
+            let own_box = (own.is_some()
+                && evaluated.paint_space == TextPaintSpace::Span
+                && !matches!(paint, Paint::SolidColor(..)))
+            .then(|| shaped.span_boxes.get(span).copied().flatten())
+            .flatten();
+            let bounds = own_box.map_or(layout.bounds, |[x, y, width, height]| {
+                [origin[0] + x, origin[1] + y, width, height]
+            });
+            state.paints.push(GpuTextPaint { paint: gpu, bounds });
+        }
+        bound.write_buffer(self.paints_buffer, 0, bytemuck::cast_slice(&state.paints));
         let [x, y, width, height] = layout.bounds;
         let (min, max) =
             ink_bounds.map_or(([x, y], [x + width, y + height]), |[x0, y0, x1, y1]| {
@@ -431,11 +475,10 @@ impl CompiledText {
         let canvas = [self.size.width as f32, self.size.height as f32];
         let layer = [self.layer_size.width as f32, self.layer_size.height as f32];
         let style = TextStyleUniforms {
-            fill_paint: paint,
             transform: motion.layer_transform(&drawable, min, max, canvas, layer),
             motion: motion.to_gpu(),
         };
-        bound.write_buffer(self.paint_buffer, 0, bytemuck::bytes_of(&style));
+        bound.write_buffer(self.style_buffer, 0, bytemuck::bytes_of(&style));
         if !prepared.instances.is_empty() {
             bound.write_buffer(
                 self.instances_buffer,
@@ -604,6 +647,7 @@ fn same_draw(a: &lumen_text::GpuGlyphInstance, b: &lumen_text::GpuGlyphInstance)
     transformed(a) == transformed(b)
         && (!transformed(a) || (a.linear == b.linear && a.offset == b.offset))
         && a.color == b.color
+        && a.paint() == b.paint()
 }
 
 /// A per-glyph param, evaluated again only when an index it reads changes. A constant, or
@@ -611,19 +655,20 @@ fn same_draw(a: &lumen_text::GpuGlyphInstance, b: &lumen_text::GpuGlyphInstance)
 struct PerGlyph<'a, T> {
     param: &'a Deferred<T>,
     name: &'static str,
-    /// Whether the param reads the glyph, word and line index.
-    reads: [bool; 3],
-    last: Option<([u32; 3], T)>,
+    /// Whether the param reads the glyph, word, line and span index.
+    reads: [bool; 4],
+    last: Option<([u32; 4], T)>,
 }
 
 impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
     fn new(param: &'a Deferred<T>, name: &'static str) -> Self {
-        let mut reads = [false; 3];
+        let mut reads = [false; 4];
         if let Deferred::Expr(expression) = param {
             crate::expr::functions::visit(expression.ast(), &mut |node| match node {
                 ExprNode::Global(GlobalVar::Glyph) => reads[0] = true,
                 ExprNode::Global(GlobalVar::Word) => reads[1] = true,
                 ExprNode::Global(GlobalVar::Line) => reads[2] = true,
+                ExprNode::Global(GlobalVar::Span) => reads[3] = true,
                 _ => {}
             });
         }
@@ -640,8 +685,8 @@ impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
             return Ok(*value);
         }
         let item = expr.glyph.map(|scope| scope.item).unwrap_or_default();
-        let key = [item.glyph, item.word, item.line];
-        let key: [u32; 3] =
+        let key = [item.glyph, item.word, item.line, item.span];
+        let key: [u32; 4] =
             std::array::from_fn(|index| if self.reads[index] { key[index] } else { 0 });
         if let Some((last, value)) = self.last
             && last == key
@@ -657,64 +702,128 @@ impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
 #[derive(Debug, Default)]
 pub(crate) struct TextState {
     shaped: Option<(TextShapeKey, lumen_text::ShapedText)>,
+    paints: Vec<GpuTextPaint>,
     dropping_glyphs: bool,
     overfull: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 struct TextShapeKey {
-    content: String,
-    font_family: String,
-    font_size_bits: u32,
-    font_weight: u16,
-    font_style: TextFontStyle,
-    max_width_bits: u32,
-    letter_spacing_bits: u32,
-    line_height_bits: u32,
-    alignment_horizontal: TextAlignmentHorizontal,
+    style: TextLayoutStyle,
+    /// The content, or `None` when it is constant.
+    content: Option<TextContent>,
     font_generation: u64,
 }
 
-pub(crate) fn layout_request(
-    content: String,
-    font_family: String,
-    font_size: f32,
-    font_weight: i64,
-    font_style: TextFontStyle,
-    max_width: f32,
-    alignment_horizontal: TextAlignmentHorizontal,
-) -> lumen_text::TextLayoutRequest {
-    let mut request = lumen_text::TextLayoutRequest::from_spans(vec![lumen_text::TextSpan {
-        font_family,
-        font_size,
-        font_weight: font_weight.clamp(1, 1000) as u16,
-        font_style: match font_style {
-            TextFontStyle::Italic => lumen_text::TextFontStyle::Italic,
-            TextFontStyle::Oblique => lumen_text::TextFontStyle::Oblique,
-            TextFontStyle::Normal => lumen_text::TextFontStyle::Normal,
-        },
-        ..lumen_text::TextSpan::new(content)
-    }]);
-    request.max_width = (max_width > 0.0).then_some(max_width);
-    request.align = match alignment_horizontal {
-        TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
-        TextAlignmentHorizontal::Right => lumen_text::TextAlign::Right,
-        TextAlignmentHorizontal::Justify => lumen_text::TextAlign::Justified,
-        TextAlignmentHorizontal::Left => lumen_text::TextAlign::Left,
-    };
-    request
+/// What a text's layout reads besides its content: the style its spans inherit, and how its
+/// lines wrap, space and align.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TextLayoutStyle {
+    pub(crate) font_family: String,
+    pub(crate) font_size: f64,
+    pub(crate) font_weight: i64,
+    pub(crate) font_style: TextFontStyle,
+    pub(crate) letter_spacing: f64,
+    pub(crate) max_width: f64,
+    pub(crate) line_height: f64,
+    pub(crate) alignment_horizontal: TextAlignmentHorizontal,
 }
 
-/// A `line_height` of 0 or less keeps the automatic line height.
-pub(crate) fn apply_line_spacing(
-    request: &mut lumen_text::TextLayoutRequest,
-    letter_spacing: f64,
-    line_height: f64,
-) {
-    for span in &mut request.spans {
-        span.letter_spacing = letter_spacing as f32;
+impl TextLayoutStyle {
+    pub(crate) fn take(params: &mut TextParams) -> Self {
+        Self {
+            font_family: std::mem::take(&mut params.font_family),
+            font_size: params.font_size,
+            font_weight: params.font_weight,
+            font_style: params.font_style,
+            letter_spacing: params.letter_spacing,
+            max_width: params.max_width,
+            line_height: params.line_height,
+            alignment_horizontal: params.alignment_horizontal,
+        }
     }
-    request.line_height = (line_height > 0.0).then_some(line_height as f32);
+
+    /// A `max_width` or `line_height` of 0 or less is automatic.
+    pub(crate) fn request(&self, content: &TextContent) -> lumen_text::TextLayoutRequest {
+        let spans = match content {
+            TextContent::Text(text) => vec![self.span(text, None)],
+            TextContent::Spans(spans) => spans
+                .iter()
+                .map(|span| self.span(&span.text, Some(span)))
+                .collect(),
+        };
+        let mut request = lumen_text::TextLayoutRequest::from_spans(spans);
+        request.max_width = (self.max_width > 0.0).then_some(self.max_width as f32);
+        request.line_height = (self.line_height > 0.0).then_some(self.line_height as f32);
+        request.align = match self.alignment_horizontal {
+            TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
+            TextAlignmentHorizontal::Right => lumen_text::TextAlign::Right,
+            TextAlignmentHorizontal::Justify => lumen_text::TextAlign::Justified,
+            TextAlignmentHorizontal::Left => lumen_text::TextAlign::Left,
+        };
+        request
+    }
+
+    fn span(&self, text: &str, span: Option<&TextSpan>) -> lumen_text::TextSpan {
+        let font_style = span
+            .and_then(|span| span.font_style)
+            .unwrap_or(self.font_style);
+        lumen_text::TextSpan {
+            text: text.to_string(),
+            font_family: span
+                .and_then(|span| span.font_family.as_deref())
+                .unwrap_or(&self.font_family)
+                .to_string(),
+            font_size: span
+                .and_then(|span| span.font_size)
+                .unwrap_or(self.font_size) as f32,
+            font_weight: span
+                .and_then(|span| span.font_weight)
+                .unwrap_or(self.font_weight)
+                .clamp(1, 1000) as u16,
+            font_style: match font_style {
+                TextFontStyle::Italic => lumen_text::TextFontStyle::Italic,
+                TextFontStyle::Oblique => lumen_text::TextFontStyle::Oblique,
+                TextFontStyle::Normal => lumen_text::TextFontStyle::Normal,
+            },
+            letter_spacing: span
+                .and_then(|span| span.letter_spacing)
+                .unwrap_or(self.letter_spacing) as f32,
+        }
+    }
+}
+
+/// Takes what does not affect the layout out of `content`'s spans: their colors, returned in
+/// order, and their decorations.
+fn take_span_paints(content: &mut TextContent) -> Vec<Option<Paint>> {
+    let TextContent::Spans(spans) = content else {
+        return Vec::new();
+    };
+    spans
+        .iter_mut()
+        .map(|span| {
+            span.underline = Override::Inherit;
+            span.strikethrough = Override::Inherit;
+            span.highlight = Override::Inherit;
+            span.color.take()
+        })
+        .collect()
+}
+
+/// Loads the families `style` and the spans of `content` name.
+pub(crate) fn load_font_families(
+    text_system: &mut lumen_text::TextSystem,
+    media: Option<&dyn MediaStore>,
+    style: &TextLayoutStyle,
+    content: Option<&TextContent>,
+) -> crate::Result<()> {
+    load_font_family(text_system, media, &style.font_family)?;
+    if let Some(TextContent::Spans(spans)) = content {
+        for family in spans.iter().filter_map(|span| span.font_family.as_deref()) {
+            load_font_family(text_system, media, family)?;
+        }
+    }
+    Ok(())
 }
 
 /// Shared by rendering and text measurement so both see the same loaded fonts.

@@ -9,6 +9,7 @@ import type {
   LumenComposition,
   NodeInputPortName,
   NodeKind,
+  TextContent,
   Vec2,
 } from "@lumiscia/lumen-types";
 
@@ -56,7 +57,9 @@ type ParamExpr<T> = [T] extends [boolean]
       ? Expr<Vec2>
       : [T] extends [string]
         ? Expr<string>
-        : Expr<Color>;
+        : [T] extends [TextContent]
+          ? Expr<string>
+          : Expr<Color>;
 
 export type NodeReference = number | Pick<CompositionNode, "id">;
 

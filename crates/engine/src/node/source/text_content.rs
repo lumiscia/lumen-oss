@@ -178,6 +178,65 @@ impl TextContentDelegate {
     }
 }
 
+#[cfg(feature = "json")]
+impl<'de> serde::Deserialize<'de> for TextContentDelegate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        Self::from_json_value(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl TextContentDelegate {
+    /// Evaluates the text and what shapes it, leaving the spans' colors and decorations, which a
+    /// measurement of the text may be an input of, unevaluated.
+    pub(crate) fn eval_layout(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<TextContent> {
+        let Self::Spans(spans) = self else {
+            return self.eval(ctx);
+        };
+        spans
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, span)| {
+                let path = format!("{}[{index}]", ctx.property_path);
+                TextSpanDelegate {
+                    text: span.text.clone(),
+                    font_family: span.font_family.clone(),
+                    font_size: span.font_size.clone(),
+                    font_weight: span.font_weight.clone(),
+                    font_style: span.font_style.clone(),
+                    letter_spacing: span.letter_spacing.clone(),
+                    color: None,
+                    underline: Override::Inherit,
+                    strikethrough: Override::Inherit,
+                    highlight: Override::Inherit,
+                }
+                .eval(&ctx.child(&path))
+            })
+            .collect::<crate::Result<_>>()
+            .map(TextContent::Spans)
+    }
+
+    /// The whole text when it is literal, with spans joined.
+    pub fn literal_text(&self) -> Option<String> {
+        match self {
+            Self::Text(Deferred::Value(text)) => Some(text.clone()),
+            Self::Text(Deferred::Expr(_)) => None,
+            Self::Spans(spans) => spans
+                .items
+                .iter()
+                .map(|span| match &span.text {
+                    Deferred::Value(text) => Some(text.as_str()),
+                    Deferred::Expr(_) => None,
+                })
+                .collect(),
+        }
+    }
+}
+
 impl Delegated for TextContent {
     type Delegate = TextContentDelegate;
 

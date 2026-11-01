@@ -42,7 +42,7 @@ pub struct ExpressionContext<'a> {
     pub props: Option<&'a crate::scope::PropValues>,
 }
 
-/// A glyph and the text it is drawn in, read by the `glyph`, `word` and `line` globals and
+/// A glyph and the text it is drawn in, read by the `glyph`, `word`, `line` and `span` globals and
 /// their counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlyphScope {

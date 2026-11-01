@@ -201,6 +201,10 @@ pub const GLOBALS: &[GlobalSpec] = &[
         doc: "Index of the line being drawn. Only in a text node's `glyph_*` params.",
     },
     GlobalSpec {
+        name: "span",
+        doc: "Index of the span being drawn, or 0 in plain text. Only in a text node's `glyph_*` params.",
+    },
+    GlobalSpec {
         name: "glyph_count",
         doc: "Number of glyphs in the text. Only in a text node's `glyph_*` params.",
     },
@@ -211,6 +215,10 @@ pub const GLOBALS: &[GlobalSpec] = &[
     GlobalSpec {
         name: "line_count",
         doc: "Number of lines in the text. Only in a text node's `glyph_*` params.",
+    },
+    GlobalSpec {
+        name: "span_count",
+        doc: "Number of spans in the text, or 1 in plain text. Only in a text node's `glyph_*` params.",
     },
 ];
 

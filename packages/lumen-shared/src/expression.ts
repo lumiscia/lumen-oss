@@ -336,8 +336,8 @@ export const linear = builtins.linear as Interpolate;
 export const tween = builtins.tween as Tween;
 
 /**
- * `glyph`, `word` and `line` index the glyph a text node is drawing, and the counts number
- * them. They are only valid in the text node's `glyph_*` params.
+ * `glyph`, `word`, `line` and `span` index the glyph a text node is drawing, and the counts
+ * number them. They are only valid in the text node's `glyph_*` params.
  */
 export const {
   fps,
@@ -347,6 +347,8 @@ export const {
   height,
   line,
   lineCount,
+  span,
+  spanCount,
   time,
   width,
   word,
