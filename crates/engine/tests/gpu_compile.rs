@@ -2367,8 +2367,8 @@ fn text_measurement_loads_time_remapped_family_on_first_bind() {
         resolver_calls: Arc::new(AtomicUsize::new(0)),
     };
     let mut request = lumen_text::TextLayoutRequest::new("WWW");
-    request.font_family = "RemapX".to_string();
-    request.font_size = 32.0;
+    request.spans[0].font_family = "RemapX".to_string();
+    request.spans[0].font_size = 32.0;
     let mut reference = lumen_text::TextSystem::new();
     let fallback_width = reference.measure(&request).width;
     reference.load_font_data(font);

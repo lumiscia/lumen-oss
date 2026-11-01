@@ -6,10 +6,12 @@
 
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 
 use cosmic_text::{
-    Align, Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, LayoutGlyph, Metrics,
-    Shaping, Style, SwashCache, SwashContent, SwashImage, Weight, Wrap,
+    Align, Attrs, AttrsList, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, LayoutGlyph,
+    LineEnding, LineIter, Metrics, Shaping, Style, SwashCache, SwashContent, SwashImage, Weight,
+    Wrap,
 };
 use etagere::{AllocId, size2};
 use swash::scale::Source;
@@ -100,40 +102,84 @@ impl TextSystem {
 
     /// Shapes text without placing it, so it can be placed at many origins.
     pub fn shape(&mut self, request: &TextLayoutRequest) -> ShapedText {
-        let metrics = Metrics::new(request.font_size.max(1.0), request.line_height());
-        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+        let fallback = [TextSpan::new("")];
+        let spans = if request.spans.is_empty() {
+            &fallback[..]
+        } else {
+            &request.spans[..]
+        };
+        // cosmic-text 0.19 merges adjacent spans with the same family, weight, style and
+        // stretch into one shaping run, so a ligature or grapheme cluster that crosses a span
+        // boundary takes the first span's size and spacing, and the later span gets no glyphs
+        // from that cluster.
+        let attrs: Vec<Attrs> = spans
+            .iter()
+            .enumerate()
+            .map(|(index, span)| {
+                let metrics = request.span_metrics(span);
+                let mut attrs = Attrs::new()
+                    .family(Family::Name(&span.font_family))
+                    .weight(Weight(span.font_weight.clamp(1, 1000)))
+                    .style(match span.font_style {
+                        TextFontStyle::Italic => Style::Italic,
+                        TextFontStyle::Oblique => Style::Oblique,
+                        TextFontStyle::Normal => Style::Normal,
+                    })
+                    .cache_key_flags(if request.disable_hinting {
+                        CacheKeyFlags::DISABLE_HINTING
+                    } else {
+                        CacheKeyFlags::empty()
+                    })
+                    // Each line is as tall as its tallest glyph's line height.
+                    .metrics(metrics)
+                    .metadata(index);
+                if span.letter_spacing != 0.0 {
+                    // cosmic-text takes tracking in em and adds it to every glyph advance.
+                    attrs = attrs.letter_spacing(span.letter_spacing / metrics.font_size);
+                }
+                attrs
+            })
+            .collect();
+        let mut buffer = Buffer::new(&mut self.font_system, request.span_metrics(&spans[0]));
         let wraps = request.max_width.is_some_and(|width| width > 0.0);
         // cosmic-text adds tracking after every glyph, including the last on a
-        // line, so every line is `letter_spacing` wider than its ink. Widening
-        // the layout width by the same amount makes wrapping and alignment see
-        // the trimmed line widths. cosmic-text clamps negative widths to zero, so a
+        // line, so every line is its last glyph's `letter_spacing` wider than its
+        // ink. Widening the layout width by the narrowest spacing makes wrapping
+        // see trimmed line widths; lines ending in a wider spacing wrap early by
+        // the difference. cosmic-text clamps negative widths to zero, so a
         // negative spacing larger than `max_width` wraps less than it should.
+        let widening = spans
+            .iter()
+            .map(|span| span.letter_spacing)
+            .fold(f32::INFINITY, f32::min);
         let layout_width = request
             .max_width
             .filter(|width| *width > 0.0)
-            .map(|width| width + request.letter_spacing);
+            .map(|width| width + widening);
         buffer.set_size(layout_width, None);
         buffer.set_wrap(if wraps { Wrap::WordOrGlyph } else { Wrap::None });
-        let mut attrs = Attrs::new()
-            .family(Family::Name(&request.font_family))
-            .weight(Weight(request.font_weight.clamp(1, 1000)))
-            .style(match request.font_style {
-                TextFontStyle::Italic => Style::Italic,
-                TextFontStyle::Oblique => Style::Oblique,
-                TextFontStyle::Normal => Style::Normal,
+        let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+        let span_ranges: Vec<Range<usize>> = spans
+            .iter()
+            .scan(0, |end, span| {
+                let start = *end;
+                *end += span.text.len();
+                Some(start..*end)
             })
-            .cache_key_flags(if request.disable_hinting {
-                CacheKeyFlags::DISABLE_HINTING
-            } else {
-                CacheKeyFlags::empty()
-            });
-        if request.letter_spacing != 0.0 {
-            // cosmic-text takes tracking in em and adds it to every glyph advance.
-            attrs = attrs.letter_spacing(request.letter_spacing / metrics.font_size);
+            .collect();
+        // Paragraphs split at CR and LF, with a final empty one after a trailing line ending.
+        let mut paragraphs: Vec<Range<usize>> = Vec::new();
+        let mut last_ending = LineEnding::default();
+        for (range, ending) in LineIter::new(&text) {
+            paragraphs.push(range);
+            last_ending = ending;
+        }
+        if last_ending != LineEnding::None {
+            paragraphs.push(text.len()..text.len());
         }
         buffer.set_text(
-            &request.content,
-            &attrs,
+            &text,
+            &attrs[0],
             Shaping::Advanced,
             Some(match request.align {
                 TextAlign::Left => Align::Left,
@@ -142,9 +188,45 @@ impl TextSystem {
                 TextAlign::Justified => Align::Justified,
             }),
         );
+        for (line, paragraph) in buffer.lines.iter_mut().zip(&paragraphs) {
+            // An empty line is as tall as the span that owns its line ending, or else its
+            // preceding one.
+            let owner_byte = if paragraph.is_empty() && paragraph.end == text.len() {
+                paragraph.start.saturating_sub(1)
+            } else {
+                paragraph.start
+            };
+            let owner = span_ranges
+                .iter()
+                .position(|range| range.contains(&owner_byte))
+                .unwrap_or(0);
+            let mut list = AttrsList::new(&attrs[owner]);
+            for (range, attrs) in span_ranges.iter().zip(&attrs) {
+                let start = range.start.max(paragraph.start);
+                let end = range.end.min(paragraph.end);
+                if start < end && *attrs != list.defaults() {
+                    list.add_span(start - paragraph.start..end - paragraph.start, attrs);
+                }
+            }
+            line.set_attrs_list(list);
+        }
         buffer.shape_until_scroll(&mut self.font_system, true);
 
+        let spacing = |glyph: &LayoutGlyph| {
+            spans
+                .get(glyph.metadata)
+                .map_or(0.0, |span| span.letter_spacing)
+        };
+        let align_factor = match request.align {
+            TextAlign::Center => 0.5,
+            TextAlign::Right => 1.0,
+            TextAlign::Left | TextAlign::Justified => 0.0,
+        };
+
+        let mut fonts = HashMap::new();
+        let mut span_metrics: Vec<Option<TextSpanMetrics>> = vec![None; spans.len()];
         let mut glyphs = Vec::new();
+        let mut segments = Vec::new();
         // Each glyph's cluster as `(paragraph, byte offset)`, which orders clusters logically.
         let mut clusters = Vec::new();
         let mut words = WordCounter::default();
@@ -153,27 +235,88 @@ impl TextSystem {
         let mut height: f32 = 0.0;
         let mut x_min = f32::INFINITY;
         let mut x_max = f32::NEG_INFINITY;
-        for run in buffer.layout_runs() {
-            if !run.glyphs.is_empty() {
-                width = width.max(run.line_w - request.letter_spacing);
+        let runs: Vec<_> = buffer.layout_runs().collect();
+        let max_width = request.max_width.filter(|_| wraps);
+        for (run_index, run) in runs.iter().enumerate() {
+            let mut line_glyphs = run.glyphs.to_vec();
+            // The line's trailing tracking is that of the glyph cosmic-text placed first in a
+            // right-to-left line and last in a left-to-right one, whose advance ends the line.
+            let trailing_index = if run.rtl {
+                (!line_glyphs.is_empty()).then_some(0)
+            } else {
+                line_glyphs.len().checked_sub(1)
+            };
+            let trailing = trailing_index.map_or(0.0, |index| spacing(&line_glyphs[index]));
+            let mut ink_width = run.line_w - trailing;
+            let ends_paragraph = runs
+                .get(run_index + 1)
+                .is_none_or(|next| next.line_i != run.line_i);
+            if let Some(max_width) = max_width
+                && request.align == TextAlign::Justified
+                && !ends_paragraph
+            {
+                // cosmic-text stretched the line to the widened width, which leaves it short
+                // by the difference between its trailing tracking and the narrowest. That
+                // is spread over the same spaces.
+                let is_space = |glyph: &LayoutGlyph| {
+                    let cluster = &run.text[glyph.start..glyph.end];
+                    !cluster.is_empty() && cluster.chars().all(char::is_whitespace)
+                };
+                let spaces = line_glyphs.iter().filter(|glyph| is_space(glyph)).count();
+                let gap = max_width - ink_width;
+                if spaces > 0 && gap > 0.0 {
+                    ink_width = max_width;
+                    let extra = gap / spaces as f32;
+                    let mut order: Vec<usize> = (0..line_glyphs.len()).collect();
+                    order.sort_by(|&a, &b| line_glyphs[a].x.total_cmp(&line_glyphs[b].x));
+                    let mut moved = 0.0;
+                    for index in order {
+                        let glyph = &mut line_glyphs[index];
+                        glyph.x += moved;
+                        if is_space(glyph) {
+                            glyph.w += extra;
+                            moved += extra;
+                        }
+                    }
+                }
+            }
+            // cosmic-text aligned the untrimmed line within the widened width. Justified
+            // lines are not shifted.
+            let aligned = layout_width.map_or(0.0, |layout_width| {
+                align_factor * (layout_width - run.line_w).max(0.0)
+            });
+            let shift = match max_width {
+                Some(max_width) => align_factor * (max_width - ink_width).max(0.0) - aligned,
+                None => 0.0,
+            };
+            if !line_glyphs.is_empty() {
+                width = width.max(ink_width);
             }
             height = height.max(run.line_top + run.line_height);
             words.enter(run.line_i, run.text);
             let line_middle = run.line_top + run.line_height * 0.5;
+            let paragraph_start = paragraphs[run.line_i].start;
             let first = glyphs.len();
-            for glyph in run.glyphs {
+            for mut glyph in line_glyphs {
+                glyph.x += shift;
+                let span = glyph.metadata.min(spans.len() - 1);
                 x_min = x_min.min(glyph.x);
-                x_max = x_max.max(glyph.x + glyph.w - request.letter_spacing);
+                x_max = x_max.max(glyph.x + glyph.w - spacing(&glyph));
                 clusters.push((run.line_i, glyph.start));
+                if span_metrics[span].is_none() {
+                    let font = self.font_metrics(&mut fonts, &glyph);
+                    span_metrics[span] = Some(font.decorations(spans[span].font_size.max(1.0)));
+                }
                 glyphs.push(ShapedGlyph {
-                    glyph: glyph.clone(),
                     line_y: run.line_y,
                     item: TextItem {
                         glyph: 0,
                         word: words.word_at(&run.text[glyph.start..glyph.end], glyph.start),
                         line: lines,
+                        span: span as u32,
                     },
                     pivot: [0.0, line_middle],
+                    glyph,
                 });
             }
             // A cluster turns about the middle of its advance, which its marks share.
@@ -182,14 +325,61 @@ impl TextSystem {
                     (f32::INFINITY, f32::NEG_INFINITY),
                     |(min, max), shaped| {
                         let glyph = &shaped.glyph;
-                        let end = glyph.x + glyph.w - request.letter_spacing;
-                        (min.min(glyph.x), max.max(end))
+                        (
+                            min.min(glyph.x),
+                            max.max(glyph.x + glyph.w - spacing(glyph)),
+                        )
                     },
                 );
                 let middle = (min + max.max(min)) * 0.5;
                 for shaped in cluster {
                     shaped.pivot[0] = middle;
                 }
+            }
+            // Segments follow the line from left to right, splitting where the span or direction changes.
+            let mut order: Vec<usize> = (first..glyphs.len()).collect();
+            order.sort_by(|&a, &b| glyphs[a].glyph.x.total_cmp(&glyphs[b].glyph.x));
+            for run_glyphs in order.chunk_by(|&a, &b| {
+                let (a, b) = (&glyphs[a], &glyphs[b]);
+                a.item.span == b.item.span && a.glyph.level.is_rtl() == b.glyph.level.is_rtl()
+            }) {
+                let lead = &glyphs[run_glyphs[0]];
+                let span_range = &span_ranges[lead.item.span as usize];
+                let bytes = |glyph: &LayoutGlyph| {
+                    let clamp = |byte: usize| {
+                        (paragraph_start + byte).clamp(span_range.start, span_range.end)
+                            - span_range.start
+                    };
+                    clamp(glyph.start)..clamp(glyph.end)
+                };
+                let mut segment = TextSegment {
+                    span: lead.item.span,
+                    line: lines,
+                    x: [f32::INFINITY, f32::NEG_INFINITY],
+                    baseline: run.line_y,
+                    line_top: run.line_top,
+                    line_height: run.line_height,
+                    ascent: 0.0,
+                    descent: 0.0,
+                    bytes: bytes(&lead.glyph),
+                    rtl: lead.glyph.level.is_rtl(),
+                };
+                for &index in run_glyphs {
+                    let glyph = &glyphs[index].glyph;
+                    let font = self.font_metrics(&mut fonts, glyph);
+                    let mut end = glyph.x + glyph.w;
+                    if Some(index - first) == trailing_index {
+                        end -= trailing;
+                    }
+                    segment.x = [segment.x[0].min(glyph.x), segment.x[1].max(end)];
+                    segment.ascent = segment.ascent.max(font.ascent * glyph.font_size);
+                    segment.descent = segment.descent.max(font.descent * glyph.font_size);
+                    let glyph_bytes = bytes(glyph);
+                    segment.bytes = segment.bytes.start.min(glyph_bytes.start)
+                        ..segment.bytes.end.max(glyph_bytes.end);
+                }
+                segment.x[1] = segment.x[1].max(segment.x[0]);
+                segments.push(segment);
             }
             lines += 1;
         }
@@ -223,9 +413,31 @@ impl TextSystem {
                 glyph: ordered.len() as u32,
                 word: words.total(),
                 line: lines,
+                span: request.spans.len() as u32,
             },
+            segments,
+            span_metrics: span_metrics
+                .into_iter()
+                .take(request.spans.len())
+                .map(Option::unwrap_or_default)
+                .collect(),
             glyphs,
         }
+    }
+
+    /// Line and decoration metrics of `glyph`'s font, cached in `fonts`.
+    fn font_metrics(
+        &mut self,
+        fonts: &mut HashMap<(cosmic_text::fontdb::ID, Weight), FontMetrics>,
+        glyph: &LayoutGlyph,
+    ) -> FontMetrics {
+        *fonts
+            .entry((glyph.font_id, glyph.font_weight))
+            .or_insert_with(|| {
+                self.font_system
+                    .get_font(glyph.font_id, glyph.font_weight)
+                    .map_or_else(FontMetrics::default, |font| FontMetrics::new(&font))
+            })
     }
 
     /// The pixels `shaped` may draw to, as `[min_x, min_y, max_x, max_y]` from its origin, in any
@@ -593,18 +805,38 @@ fn load_default_fonts(font_system: &mut FontSystem) {
     db.set_sans_serif_family(DEFAULT_FONT_FAMILY);
 }
 
-#[derive(Debug, Clone)]
-pub struct TextLayoutRequest {
-    pub content: String,
+/// A run of text with one font and spacing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextSpan {
+    pub text: String,
     pub font_family: String,
     pub font_size: f32,
     pub font_weight: u16,
     pub font_style: TextFontStyle,
-    pub max_width: Option<f32>,
-    /// Line pitch in pixels; `None` is 1.2 × `font_size`.
-    pub line_height: Option<f32>,
     /// Extra advance in pixels after every glyph. May be negative.
     pub letter_spacing: f32,
+}
+
+impl TextSpan {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            font_family: DEFAULT_FONT_FAMILY.to_string(),
+            font_size: 16.0,
+            font_weight: 400,
+            font_style: TextFontStyle::Normal,
+            letter_spacing: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TextLayoutRequest {
+    /// Text in order, as styled runs that may span lines and paragraphs.
+    pub spans: Vec<TextSpan>,
+    pub max_width: Option<f32>,
+    /// Line pitch in pixels; `None` is 1.2 × the largest font size on each line.
+    pub line_height: Option<f32>,
     pub align: TextAlign,
     pub origin: [f32; 2],
     pub color: [f32; 4],
@@ -612,16 +844,16 @@ pub struct TextLayoutRequest {
 }
 
 impl TextLayoutRequest {
+    /// Plain text in one default span.
     pub fn new(content: impl Into<String>) -> Self {
+        Self::from_spans(vec![TextSpan::new(content)])
+    }
+
+    pub fn from_spans(spans: Vec<TextSpan>) -> Self {
         Self {
-            content: content.into(),
-            font_family: DEFAULT_FONT_FAMILY.to_string(),
-            font_size: 16.0,
-            font_weight: 400,
-            font_style: TextFontStyle::Normal,
+            spans,
             max_width: None,
             line_height: None,
-            letter_spacing: 0.0,
             align: TextAlign::Left,
             origin: [0.0, 0.0],
             color: [1.0, 1.0, 1.0, 1.0],
@@ -629,8 +861,12 @@ impl TextLayoutRequest {
         }
     }
 
-    pub fn line_height(&self) -> f32 {
-        self.line_height.unwrap_or(self.font_size * 1.2).max(1.0)
+    fn span_metrics(&self, span: &TextSpan) -> Metrics {
+        let font_size = span.font_size.max(1.0);
+        Metrics::new(
+            font_size,
+            self.line_height.unwrap_or(font_size * 1.2).max(1.0),
+        )
     }
 }
 
@@ -659,6 +895,8 @@ pub struct TextItem {
     pub word: u32,
     /// Line after wrapping, counting empty lines.
     pub line: u32,
+    /// Index of the glyph's span in the request.
+    pub span: u32,
 }
 
 /// Numbers the words of a text's paragraphs, which arrive in order.
@@ -712,9 +950,88 @@ pub struct ShapedText {
     pub measurement: TextMeasurement,
     /// Advance box of all glyphs as `[x, y, width, height]`.
     pub bounds: [f32; 4],
-    /// Number of glyphs, words and lines.
+    /// Number of glyphs, words, lines and spans.
     pub counts: TextItem,
+    /// Each contiguous run of one span and direction on a line, by line and then from left
+    /// to right.
+    pub segments: Vec<TextSegment>,
+    /// Decoration metrics of each span's font, or zero for spans that draw no glyphs.
+    pub span_metrics: Vec<TextSpanMetrics>,
     glyphs: Vec<ShapedGlyph>,
+}
+
+/// Part of a span on one line, relative to the text's origin.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextSegment {
+    pub span: u32,
+    pub line: u32,
+    /// Left and right edges of the glyph advances, without the line's trailing tracking.
+    pub x: [f32; 2],
+    pub baseline: f32,
+    pub line_top: f32,
+    pub line_height: f32,
+    /// Largest ascent and descent of the segment's fonts, as distances from the baseline.
+    pub ascent: f32,
+    pub descent: f32,
+    /// Bytes of the span's text the segment covers, in reading order. They run from
+    /// `x[1]` to `x[0]` when `rtl`.
+    pub bytes: Range<usize>,
+    pub rtl: bool,
+}
+
+/// A span's decoration strokes in pixels. Offsets are the Y of each stroke's top edge
+/// below the baseline, so a strikeout's is negative.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TextSpanMetrics {
+    pub underline_offset: f32,
+    pub underline_thickness: f32,
+    pub strikeout_offset: f32,
+    pub strikeout_thickness: f32,
+}
+
+/// A font's metrics in em, with Y pointing down from the baseline.
+#[derive(Debug, Clone, Copy, Default)]
+struct FontMetrics {
+    ascent: f32,
+    descent: f32,
+    decorations: TextSpanMetrics,
+}
+
+impl FontMetrics {
+    /// Missing decorations take cosmic-text's defaults.
+    fn new(font: &cosmic_text::Font) -> Self {
+        let metrics = font.metrics();
+        let upem = f32::from(metrics.units_per_em);
+        if upem == 0.0 {
+            return Self::default();
+        }
+        let [underline, strikeout] =
+            [(metrics.underline, -0.125), (metrics.strikeout, 0.3)].map(|(decoration, offset)| {
+                decoration.map_or([-offset, 1.0 / 14.0], |decoration| {
+                    [-decoration.offset / upem, decoration.thickness / upem]
+                })
+            });
+        Self {
+            ascent: metrics.ascent / upem,
+            descent: -metrics.descent / upem,
+            decorations: TextSpanMetrics {
+                underline_offset: underline[0],
+                underline_thickness: underline[1],
+                strikeout_offset: strikeout[0],
+                strikeout_thickness: strikeout[1],
+            },
+        }
+    }
+
+    fn decorations(&self, font_size: f32) -> TextSpanMetrics {
+        let metrics = self.decorations;
+        TextSpanMetrics {
+            underline_offset: metrics.underline_offset * font_size,
+            underline_thickness: metrics.underline_thickness * font_size,
+            strikeout_offset: metrics.strikeout_offset * font_size,
+            strikeout_thickness: metrics.strikeout_thickness * font_size,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1207,7 +1524,7 @@ mod tests {
     fn measures_roboto_text() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("External URL media");
-        request.font_size = 44.0;
+        request.spans[0].font_size = 44.0;
         request.max_width = Some(900.0);
 
         let measurement = system.measure(&request);
@@ -1220,7 +1537,7 @@ mod tests {
     fn wraps_text_to_max_width() {
         let mut system = TextSystem::new();
         let mut unwrapped = TextLayoutRequest::new("one two three four five");
-        unwrapped.font_size = 24.0;
+        unwrapped.spans[0].font_size = 24.0;
         let mut wrapped = unwrapped.clone();
         wrapped.max_width = Some(80.0);
 
@@ -1235,7 +1552,7 @@ mod tests {
     fn atlas_contains_glyph_pixels() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("A");
-        request.font_size = 48.0;
+        request.spans[0].font_size = 48.0;
         let layout = system.layout(&request);
         let render = system.render_atlas(&layout, TextRenderMode::Raster, 128, 16);
 
@@ -1345,7 +1662,7 @@ mod tests {
     fn raster_glyphs_are_placed_on_whole_pixels() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("AV Sharp text\nمرحبا بالعالم wraps here");
-        request.font_size = 31.0;
+        request.spans[0].font_size = 31.0;
         request.max_width = Some(220.0);
         request.align = TextAlign::Center;
         let shaped = system.shape(&request);
@@ -1388,7 +1705,7 @@ mod tests {
     fn raster_ink_follows_fractional_y() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("H");
-        request.font_size = 24.0;
+        request.spans[0].font_size = 24.0;
         let shaped = system.shape(&request);
         let size = 64;
         let ink_center = |system: &mut TextSystem, y: f32| {
@@ -1424,7 +1741,7 @@ mod tests {
         let mut atlas = GlyphAtlas::new(64);
         let mut overfull = None;
         let mut request = TextLayoutRequest::new("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-        request.font_size = 40.0;
+        request.spans[0].font_size = 40.0;
         let mut layout = system.layout(&request);
         atlas.begin_frame();
         let full = system.prepare_glyphs(
@@ -1462,10 +1779,10 @@ mod tests {
         let mut system = TextSystem::new();
         let mut atlas = GlyphAtlas::new(64);
         let mut first = TextLayoutRequest::new("W");
-        first.font_size = 64.0;
+        first.spans[0].font_size = 64.0;
         let first = system.layout(&first);
         let mut second = TextLayoutRequest::new("A");
-        second.font_size = 40.0;
+        second.spans[0].font_size = 40.0;
         let second = system.layout(&second);
         let mut overfull = None;
         atlas.begin_frame();
@@ -1505,11 +1822,11 @@ mod tests {
     fn letter_spacing_widens_advance_and_line_height_spaces_lines() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("Spacing");
-        request.font_size = 40.0;
+        request.spans[0].font_size = 40.0;
         let base = system.layout(&request);
         let glyph_x = |layout: &TextLayout, index: usize| layout.glyphs[index].position[0];
 
-        request.letter_spacing = 6.0;
+        request.spans[0].letter_spacing = 6.0;
         let tracked = system.layout(&request);
         let count = base.glyphs.len();
         assert!(
@@ -1522,13 +1839,13 @@ mod tests {
                 < 0.01
         );
 
-        request.letter_spacing = -2.0;
+        request.spans[0].letter_spacing = -2.0;
         let tight = system.layout(&request);
         assert!(tight.measurement.width < base.measurement.width);
 
         let line_gap = |system: &mut TextSystem, line_height| {
             let mut request = TextLayoutRequest::new("a\nb");
-            request.font_size = 40.0;
+            request.spans[0].font_size = 40.0;
             request.line_height = line_height;
             let layout = system.layout(&request);
             layout.glyphs[1].position[1] - layout.glyphs[0].position[1]
@@ -1542,10 +1859,10 @@ mod tests {
         let mut system = TextSystem::new();
         let h_x = |system: &mut TextSystem, align, spacing| {
             let mut request = TextLayoutRequest::new("H");
-            request.font_size = 40.0;
+            request.spans[0].font_size = 40.0;
             request.max_width = Some(200.0);
             request.align = align;
-            request.letter_spacing = spacing;
+            request.spans[0].letter_spacing = spacing;
             system.layout(&request).glyphs[0].position[0]
         };
         for align in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
@@ -1560,8 +1877,8 @@ mod tests {
     fn letter_spacing_wraps_on_trimmed_line_width() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("HH");
-        request.font_size = 40.0;
-        request.letter_spacing = 20.0;
+        request.spans[0].font_size = 40.0;
+        request.spans[0].letter_spacing = 20.0;
         let natural = system.measure(&request).width;
         let line_count = |system: &mut TextSystem, request: &mut TextLayoutRequest, width| {
             request.max_width = Some(width);
@@ -1578,7 +1895,7 @@ mod tests {
         assert_eq!(line_count(&mut system, &mut request, natural + 0.5), 1);
         assert_eq!(line_count(&mut system, &mut request, natural - 0.5), 2);
 
-        request.letter_spacing = -10.0;
+        request.spans[0].letter_spacing = -10.0;
         let natural = system.measure(&request).width;
         assert_eq!(line_count(&mut system, &mut request, natural + 0.5), 1);
         assert_eq!(line_count(&mut system, &mut request, natural - 0.5), 2);
@@ -1588,10 +1905,10 @@ mod tests {
     fn measured_width_excludes_trailing_letter_spacing() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("H");
-        request.font_size = 40.0;
+        request.spans[0].font_size = 40.0;
         let base = system.measure(&request).width;
         for spacing in [20.0, -10.0] {
-            request.letter_spacing = spacing;
+            request.spans[0].letter_spacing = spacing;
             let shaped = system.shape(&request);
             assert!((shaped.measurement.width - base).abs() < 0.01);
             assert!((shaped.bounds[2] - base).abs() < 0.01);
@@ -1604,9 +1921,9 @@ mod tests {
         system.load_font_data(include_bytes!("../assets/inter/InterVariable-Latin.ttf").to_vec());
         let width = |system: &mut TextSystem, weight| {
             let mut request = TextLayoutRequest::new("Variable weight");
-            request.font_family = "Inter".to_string();
-            request.font_size = 64.0;
-            request.font_weight = weight;
+            request.spans[0].font_family = "Inter".to_string();
+            request.spans[0].font_size = 64.0;
+            request.spans[0].font_weight = weight;
             system.measure(&request).width
         };
         let (light, between, regular) = (
@@ -1624,7 +1941,7 @@ mod tests {
     fn replacing_one_glyph_in_full_atlas_evicts_only_stale_glyph() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("ABCDE");
-        request.font_size = 24.0;
+        request.spans[0].font_size = 24.0;
         let mut layout = system.layout(&request);
         let mut atlas = GlyphAtlas::new(64);
         atlas.begin_frame();
@@ -1668,7 +1985,7 @@ mod tests {
         let mut seen = HashSet::new();
         for frame in 0..60 {
             let mut request = TextLayoutRequest::new("Lumen text");
-            request.font_size = 32.0 + frame as f32 * (568.0 / 59.0);
+            request.spans[0].font_size = 32.0 + frame as f32 * (568.0 / 59.0);
             let layout = system.layout(&request);
             seen.extend(layout.glyphs.iter().map(|glyph| glyph.key));
             atlas.begin_frame();
@@ -1720,7 +2037,7 @@ mod tests {
         let (first, second) = unique.split_at(split);
         let layout = |system: &mut TextSystem, content: &str| {
             let mut request = TextLayoutRequest::new(content);
-            request.font_size = 28.0;
+            request.spans[0].font_size = 28.0;
             request.max_width = Some(900.0);
             system.layout(&request)
         };
@@ -1764,7 +2081,7 @@ mod tests {
         fn small_raster_fallbacks_share_the_msdf_baseline() {
             let mut system = TextSystem::new();
             let mut request = TextLayoutRequest::new("SMALL SIZES AT FRACTIONAL POSITIONS");
-            request.font_size = 14.0;
+            request.spans[0].font_size = 14.0;
             let shaped = system.shape(&request);
             let mut atlas = GlyphAtlas::new(1024);
             for y in [24.0, 24.6, -24.6] {
@@ -1788,8 +2105,8 @@ mod tests {
                 for ((glyph, placed), instance) in visible.zip(&prepared.instances) {
                     let baseline = if instance.mode == GLYPH_MODE_MSDF {
                         instance.rect[1]
-                            + (placed.top - 0.5) * request.font_size
-                                / msdf_em_size(request.font_size)
+                            + (placed.top - 0.5) * request.spans[0].font_size
+                                / msdf_em_size(request.spans[0].font_size)
                     } else {
                         // Swash's raster offset is in outline coordinates, where Y points up.
                         instance.rect[1] + placed.top - glyph.key.0.y_bin.as_float()
@@ -1812,7 +2129,7 @@ mod tests {
             let mut fields = HashSet::new();
             for frame in 0..40 {
                 let mut request = TextLayoutRequest::new("Lumen MSDF text");
-                request.font_size = 32.0 + frame as f32 * (968.0 / 39.0);
+                request.spans[0].font_size = 32.0 + frame as f32 * (968.0 / 39.0);
                 request.origin = [frame as f32 * 0.37, 0.0];
                 let layout = system.layout(&request);
                 fields.extend(
@@ -1851,7 +2168,7 @@ mod tests {
         fn oversized_raster_glyphs_fall_back_to_distance_fields() {
             let mut system = TextSystem::new();
             let mut request = TextLayoutRequest::new("H");
-            request.font_size = 1500.0;
+            request.spans[0].font_size = 1500.0;
             let layout = system.layout(&request);
             let mut atlas = GlyphAtlas::new(512);
             atlas.begin_frame();
@@ -1870,8 +2187,8 @@ mod tests {
             // Colour glyphs have no outline to scale, so they are still dropped.
             system.load_font_data(COLR_FONT.to_vec());
             let mut colour = TextLayoutRequest::new("A");
-            colour.font_family = "Roboto COLR Test".to_string();
-            colour.font_size = 1500.0;
+            colour.spans[0].font_family = "Roboto COLR Test".to_string();
+            colour.spans[0].font_size = 1500.0;
             let colour = system.layout(&colour);
             atlas.begin_frame();
             let colour = prepare(&mut system, &mut atlas, &colour, TextRenderMode::Raster);
@@ -1883,7 +2200,7 @@ mod tests {
         fn oversized_fallbacks_stay_stable_when_the_atlas_overflows() {
             let mut system = TextSystem::new();
             let mut request = TextLayoutRequest::new("HWI");
-            request.font_size = 1500.0;
+            request.spans[0].font_size = 1500.0;
             let layout = system.layout(&request);
             let mut atlas = GlyphAtlas::new(512);
             let mut overfull = None;
@@ -1918,7 +2235,7 @@ mod tests {
                 (MSDF_AUTO_MIN_SIZE + 100.0, 1),
             ] {
                 let mut request = TextLayoutRequest::new("H");
-                request.font_size = size;
+                request.spans[0].font_size = size;
                 let layout = system.layout(&request);
                 atlas.begin_frame();
                 let prepared = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Auto);
@@ -1995,7 +2312,7 @@ mod tests {
             let mut system = TextSystem::new();
             for text in ["R", "W", "a", "4"] {
                 let mut request = TextLayoutRequest::new(text);
-                request.font_size = 1000.0;
+                request.spans[0].font_size = 1000.0;
                 request.disable_hinting = true;
                 let layout = system.layout(&request);
                 let [x, y] = layout.glyphs[0].position.map(|axis| axis.floor() as i32);
@@ -2026,8 +2343,8 @@ mod tests {
             let mut system = TextSystem::new();
             system.load_font_data(COLR_FONT.to_vec());
             let mut colour = TextLayoutRequest::new("A");
-            colour.font_family = "Roboto COLR Test".to_string();
-            colour.font_size = 48.0;
+            colour.spans[0].font_family = "Roboto COLR Test".to_string();
+            colour.spans[0].font_size = 48.0;
             let colour = system.layout(&colour);
 
             let mut overlapping = system.layout(&TextLayoutRequest::new("O"));
@@ -2092,7 +2409,8 @@ mod tests {
             TextItem {
                 glyph: 9,
                 word: 3,
-                line: 3
+                line: 3,
+                span: 1,
             }
         );
     }
@@ -2101,7 +2419,7 @@ mod tests {
     fn wrapped_words_take_the_next_line() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("one two three");
-        request.font_size = 20.0;
+        request.spans[0].font_size = 20.0;
         request.max_width = Some(50.0);
         let (items, counts) = items(&mut system, &request);
         let words: Vec<_> = items.iter().map(|[_, word, line]| (*word, *line)).collect();
@@ -2114,7 +2432,7 @@ mod tests {
     fn wrapping_does_not_change_glyph_or_word_numbering() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("one two three");
-        request.font_size = 20.0;
+        request.spans[0].font_size = 20.0;
         let (unwrapped, unwrapped_counts) = items(&mut system, &request);
         request.max_width = Some(50.0);
         let (wrapped, wrapped_counts) = items(&mut system, &request);
@@ -2140,7 +2458,7 @@ mod tests {
     fn marks_and_ligatures_share_one_glyph_index_and_pivot() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("A\u{338}x fix");
-        request.font_size = 40.0;
+        request.spans[0].font_size = 40.0;
         let layout = system.layout(&request);
         let (items, counts) = items(&mut system, &request);
         // The overlay mark is a glyph of its own, numbered and pivoting with its base.
@@ -2155,5 +2473,341 @@ mod tests {
         // Pivots sit mid-line, at the middle of each cluster's advance.
         let line_middle = 0.6 * 40.0;
         assert!((layout.glyphs[2].pivot[1] - line_middle).abs() < 0.01);
+    }
+
+    fn span(text: &str, font_size: f32) -> TextSpan {
+        TextSpan {
+            font_size,
+            ..TextSpan::new(text)
+        }
+    }
+
+    #[test]
+    fn plain_text_measures_as_before_spans() {
+        let mut system = TextSystem::new();
+        // Recorded from the single-attribute shaping that spans replaced.
+        for (spacing, align, measurement, bounds, first, last) in [
+            (
+                0.0,
+                TextAlign::Left,
+                [210.57129, 108.0],
+                [0.0, 0.0, 210.57129, 108.0],
+                [0.0, 28.253906],
+                [169.6875, 100.25391],
+            ),
+            (
+                3.0,
+                TextAlign::Center,
+                [255.57129, 108.0],
+                [2.2143555, 0.0, 255.57129, 108.0],
+                [2.2143555, 28.253906],
+                [224.24658, 100.25391],
+            ),
+            (
+                -1.5,
+                TextAlign::Right,
+                [188.07129, 108.0],
+                [71.92871, 0.0, 188.07129, 108.0],
+                [71.92871, 28.253906],
+                [245.80566, 100.25391],
+            ),
+        ] {
+            let mut request = TextLayoutRequest::new("Plain text keeps measuring\nthe same way");
+            request.spans[0].font_size = 30.0;
+            request.spans[0].letter_spacing = spacing;
+            request.max_width = Some(260.0);
+            request.align = align;
+            let shaped = system.shape(&request);
+            let layout = shaped.place([0.0, 0.0], [1.0; 4]);
+            let close = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-3);
+            let measured = [shaped.measurement.width, shaped.measurement.height];
+            assert!(close(&measured, &measurement), "{spacing}: {measured:?}");
+            assert!(
+                close(&shaped.bounds, &bounds),
+                "{spacing}: {:?}",
+                shaped.bounds
+            );
+            assert!(close(&layout.glyphs[0].position, &first));
+            assert!(close(&layout.glyphs.last().unwrap().position, &last));
+            assert_eq!(layout.glyphs.len(), 37);
+            assert_eq!(
+                shaped.counts,
+                TextItem {
+                    glyph: 38,
+                    word: 7,
+                    line: 3,
+                    span: 1,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn spans_keep_their_style_and_lines_follow_their_largest_span() {
+        let mut system = TextSystem::new();
+        let bold = TextSpan {
+            font_weight: 700,
+            ..span("BIG", 48.0)
+        };
+        let request =
+            TextLayoutRequest::from_spans(vec![span("small ", 16.0), bold, span("\nsmall", 16.0)]);
+        let layout = system.layout(&request);
+
+        let spans: Vec<_> = layout.glyphs.iter().map(|glyph| glyph.item.span).collect();
+        assert_eq!(spans, [0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2]);
+        assert_eq!(layout.counts.span, 3);
+        let size = |glyph: &TextGlyph| f32::from_bits(glyph.key.0.font_size_bits);
+        assert_eq!(size(&layout.glyphs[0]), 16.0);
+        assert_eq!(size(&layout.glyphs[6]), 48.0);
+        assert_eq!(layout.glyphs[6].key.0.font_weight, Weight(700));
+        // Both glyph sizes share the first line's baseline, and each line is 1.2 × its
+        // largest size.
+        assert_eq!(layout.glyphs[0].position[1], layout.glyphs[6].position[1]);
+        assert!((layout.measurement.height - (57.6 + 19.2)).abs() < 0.01);
+        let lines: Vec<_> = layout.glyphs.iter().map(|glyph| glyph.item.line).collect();
+        assert_eq!(lines[9..], [1; 5]);
+    }
+
+    #[test]
+    fn segments_follow_spans_across_wrapped_lines() {
+        let mut system = TextSystem::new();
+        let text = "beta gamma delta";
+        let mut request =
+            TextLayoutRequest::from_spans(vec![span("alpha ", 20.0), span(text, 28.0)]);
+        request.max_width = Some(160.0);
+        let shaped = system.shape(&request);
+
+        let segments: Vec<_> = shaped
+            .segments
+            .iter()
+            .filter(|segment| segment.span == 1)
+            .collect();
+        assert!(segments.len() >= 2, "{:?}", shaped.segments);
+        assert_eq!(shaped.segments[0].span, 0);
+        assert_eq!(shaped.segments[0].x[1], segments[0].x[0]);
+        assert_eq!(segments[0].bytes.start, 0);
+        assert_eq!(segments.last().unwrap().bytes.end, text.len());
+        for pair in segments.windows(2) {
+            assert_eq!(pair[1].line, pair[0].line + 1);
+            assert!(pair[1].bytes.start > pair[0].bytes.end);
+            assert!(pair[1].baseline > pair[0].baseline);
+            assert_eq!(pair[1].line_top, pair[0].line_top + pair[0].line_height);
+        }
+        for segment in &segments {
+            assert!(!segment.rtl && segment.x[1] > segment.x[0]);
+            assert!(
+                segment.ascent > 20.0 && segment.descent > 4.0,
+                "{segment:?}"
+            );
+            assert!(segment.line_top + segment.line_height >= segment.baseline + segment.descent);
+        }
+    }
+
+    #[test]
+    fn letter_spacing_is_per_span_and_trimmed_after_each_line() {
+        let mut system = TextSystem::new();
+        let tracked = |first: f32, second: f32| {
+            TextLayoutRequest::from_spans(vec![
+                TextSpan {
+                    letter_spacing: first,
+                    ..span("HH", 40.0)
+                },
+                TextSpan {
+                    letter_spacing: second,
+                    ..span("II", 40.0)
+                },
+            ])
+        };
+        let base = system.layout(&tracked(0.0, 0.0));
+        let layout = system.layout(&tracked(10.0, 30.0));
+        // The last glyph's own spacing is trimmed.
+        let expected = base.measurement.width + 10.0 * 2.0 + 30.0;
+        assert!((layout.measurement.width - expected).abs() < 0.01);
+        assert!((layout.bounds[2] - expected).abs() < 0.01);
+        assert!((layout.glyphs[3].position[0] - base.glyphs[3].position[0] - 50.0).abs() < 0.01);
+
+        let mut request = tracked(10.0, 30.0);
+        request.max_width = Some(400.0);
+        request.align = TextAlign::Right;
+        let shaped = system.shape(&request);
+        assert!((shaped.bounds[0] + shaped.bounds[2] - 400.0).abs() < 0.01);
+        assert!((shaped.segments[1].x[1] - 400.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn spans_report_decoration_metrics_for_their_size() {
+        let mut system = TextSystem::new();
+        let shaped = system.shape(&TextLayoutRequest::from_spans(vec![
+            span("Under", 40.0),
+            span("line", 80.0),
+            span("", 80.0),
+        ]));
+        let [small, large, empty] = shaped.span_metrics[..] else {
+            panic!("expected three spans");
+        };
+        assert!(small.underline_offset > 0.0 && small.underline_thickness > 0.0);
+        assert!(small.strikeout_offset < 0.0 && small.strikeout_thickness > 0.0);
+        assert!((large.underline_thickness - 2.0 * small.underline_thickness).abs() < 1e-3);
+        assert!((large.strikeout_offset - 2.0 * small.strikeout_offset).abs() < 1e-3);
+        assert_eq!(empty, TextSpanMetrics::default());
+    }
+
+    #[test]
+    fn plain_text_keeps_cr_and_lf_line_endings() {
+        let mut system = TextSystem::new();
+        let trailing = system.shape(&TextLayoutRequest::new("a\n"));
+        assert_eq!(trailing.counts.line, 2);
+        assert!((trailing.measurement.height - 38.4).abs() < 0.01);
+        let carriage = system.shape(&TextLayoutRequest::new("a\rB"));
+        assert_eq!(carriage.counts.line, 2);
+        assert_eq!(carriage.place([0.0; 2], [1.0; 4]).glyphs.len(), 2);
+        assert_eq!(carriage.segments[1].bytes, 2..3);
+    }
+
+    #[test]
+    fn a_cluster_crossing_spans_takes_the_first_spans_style() {
+        let mut system = TextSystem::new();
+        let shaped = system.shape(&TextLayoutRequest::from_spans(vec![
+            span("f", 16.0),
+            span("i", 80.0),
+        ]));
+        let spans: Vec<_> = shaped
+            .place([0.0; 2], [1.0; 4])
+            .glyphs
+            .iter()
+            .map(|glyph| glyph.item.span)
+            .collect();
+        // The "fi" ligature is one glyph in the first span, so the second span's size is lost.
+        assert_eq!(spans, [0]);
+        assert!((shaped.measurement.height - 19.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn splitting_a_span_does_not_change_its_width() {
+        let mut system = TextSystem::new();
+        let whole = system.measure(&TextLayoutRequest::from_spans(vec![span("HHHH", 40.0)]));
+        let split = system.measure(&TextLayoutRequest::from_spans(vec![
+            span("HH", 40.0),
+            span("HH", 40.0),
+        ]));
+        assert_eq!(whole.width, split.width);
+    }
+
+    #[test]
+    fn justified_right_to_left_text_measures_its_ink() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![span("שלום עולם", 30.0)]);
+        request.max_width = Some(260.0);
+        request.align = TextAlign::Justified;
+        let shaped = system.shape(&request);
+        assert!((shaped.measurement.width - 113.83301).abs() < 0.01);
+        assert!((shaped.measurement.width - shaped.bounds[2]).abs() < 0.01);
+    }
+
+    #[test]
+    fn negative_tracking_measures_from_the_line_start() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![TextSpan {
+            letter_spacing: -10.0,
+            ..span(" H", 30.0)
+        }]);
+        request.max_width = Some(260.0);
+        request.align = TextAlign::Right;
+        let shaped = system.shape(&request);
+        assert!((shaped.measurement.width - 18.813477).abs() < 0.01);
+        assert!((shaped.bounds[0] + shaped.bounds[2] - 260.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn justified_lines_with_moved_glyphs_measure_the_full_width() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![
+            TextSpan {
+                letter_spacing: -10.0,
+                ..span("  H ", 30.0)
+            },
+            span("H H H H H H H H H H", 30.0),
+        ]);
+        request.max_width = Some(260.0);
+        request.align = TextAlign::Justified;
+        let shaped = system.shape(&request);
+        assert!((shaped.measurement.width - 260.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn bidi_text_with_negative_tracking_measures_as_before() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![TextSpan {
+            letter_spacing: -1.5,
+            ..span("\u{202a}שלום abc עולם\u{202c}", 30.0)
+        }]);
+        request.max_width = Some(260.0);
+        request.align = TextAlign::Right;
+        let shaped = system.shape(&request);
+        assert!((shaped.measurement.width - 149.1123).abs() < 0.01);
+    }
+
+    #[test]
+    fn negative_tracking_trims_the_rightmost_glyph() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![
+            TextSpan {
+                letter_spacing: 10.0,
+                ..span("H", 40.0)
+            },
+            TextSpan {
+                letter_spacing: -20.0,
+                ..span("I", 40.0)
+            },
+        ]);
+        let shaped = system.shape(&request);
+        assert!((shaped.measurement.width - shaped.bounds[2]).abs() < 0.01);
+        assert!((shaped.bounds[2] - 49.39453).abs() < 0.01);
+        assert!(shaped.segments[1].x[1] - shaped.segments[1].x[0] > 5.0);
+
+        request.max_width = Some(200.0);
+        request.align = TextAlign::Right;
+        let shaped = system.shape(&request);
+        assert!((shaped.bounds[0] + shaped.bounds[2] - 200.0).abs() < 0.01);
+        assert!((shaped.segments[1].x[1] - 200.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn newline_only_span_sets_its_empty_line_height() {
+        let mut system = TextSystem::new();
+        let shaped = system.shape(&TextLayoutRequest::from_spans(vec![
+            span("a\n", 16.0),
+            span("\n", 80.0),
+            span("b", 16.0),
+        ]));
+        assert_eq!(shaped.counts.line, 3);
+        assert!((shaped.measurement.height - 134.4).abs() < 0.01);
+        assert!((shaped.segments[1].line_top - (19.2 + 96.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn justified_lines_fill_the_width_after_tracking_compensation() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::from_spans(vec![
+            span("a ", 20.0),
+            TextSpan {
+                letter_spacing: 10.0,
+                ..span("one two three four five six seven eight", 20.0)
+            },
+        ]);
+        request.max_width = Some(200.0);
+        request.align = TextAlign::Justified;
+        let shaped = system.shape(&request);
+        // The fourth line is a single word, which has no spaces to widen.
+        for line in 0..3 {
+            let end = shaped
+                .segments
+                .iter()
+                .filter(|segment| segment.line == line)
+                .map(|segment| segment.x[1])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!((end - 200.0).abs() < 0.01, "line {line} ends at {end}");
+        }
+        assert!(shaped.bounds[0] + shaped.bounds[2] <= 200.01);
     }
 }

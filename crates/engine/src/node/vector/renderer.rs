@@ -537,7 +537,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             evaluated.letter_spacing,
             evaluated.line_height,
         );
-        let family = request.font_family.as_str();
+        let family = request.spans[0].font_family.as_str();
         let resolved = self
             .ctx
             .media()
@@ -547,12 +547,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         }
         let (shaped, ink) = {
             let mut text_system = crate::node::source::text::text_system().ok()?;
-            crate::node::source::text::load_font_family(
-                &mut text_system,
-                self.ctx.media(),
-                &request.font_family,
-            )
-            .ok()?;
+            crate::node::source::text::load_font_family(&mut text_system, self.ctx.media(), family)
+                .ok()?;
             let shaped = text_system.shape(&request);
             let ink = text_system.ink_bounds(&shaped)?;
             (shaped, ink)

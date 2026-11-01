@@ -208,7 +208,7 @@ fn run_case(case: BenchCase, iterations: usize, repeats: usize) -> anyhow::Resul
                     timeout: None,
                 })?;
         } else {
-            request.font_size = 24.0 + (frame % 96) as f32;
+            request.spans[0].font_size = 24.0 + (frame % 96) as f32;
             std::hint::black_box(system.layout(&request));
         }
         Ok(())
