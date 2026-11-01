@@ -377,6 +377,402 @@
       ],
       "description": "A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields."
     },
+    "textContent": {
+      "description": "Text to render: a string, or spans that each override the node's text style.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/textSpan"
+          },
+          "type": "array"
+        }
+      ],
+      "x-lumen-type": "TextContent"
+    },
+    "textFontStyle": {
+      "enum": ["normal", "italic", "oblique"],
+      "type": "string",
+      "x-lumen-type": "TextFontStyle"
+    },
+    "textHighlight": {
+      "additionalProperties": false,
+      "properties": {
+        "extent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/vec2"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": [0.0, 1.0],
+          "description": "Start and end of the box along the text, as fractions of its width. An expression\ngives both as one `vec2`, not one per element.",
+          "title": "Extent",
+          "x-lumen-constraints": {
+            "step": 0.01
+          },
+          "x-lumen-kind": "vec2"
+        },
+        "padding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/vec2"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": [0.0, 0.0],
+          "description": "Horizontal and vertical padding around the text in pixels. An expression gives both as\none `vec2`, not one per element.",
+          "title": "Padding",
+          "x-lumen-constraints": {
+            "step": 1.0
+          },
+          "x-lumen-kind": "vec2"
+        },
+        "paint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/paint"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": [0, 0, 0, 255],
+          "description": "Box color.",
+          "title": "Paint",
+          "x-lumen-constraints": {
+            "role": "color"
+          },
+          "x-lumen-kind": "paint"
+        },
+        "radius": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": 0.0,
+          "description": "Corner radius in pixels.",
+          "title": "Radius",
+          "x-lumen-constraints": {
+            "min": 0.0,
+            "step": 1.0
+          },
+          "x-lumen-kind": "float"
+        }
+      },
+      "type": "object",
+      "x-lumen-type": "TextHighlight"
+    },
+    "textLine": {
+      "additionalProperties": false,
+      "properties": {
+        "extent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/vec2"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": [0.0, 1.0],
+          "description": "Start and end of the line along the text, as fractions of its width. An expression\ngives both as one `vec2`, not one per element.",
+          "title": "Extent",
+          "x-lumen-constraints": {
+            "step": 0.01
+          },
+          "x-lumen-kind": "vec2"
+        },
+        "offset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Line position in pixels below the baseline; negative values are above it. Absent uses\nthe font's underline or strikethrough position.",
+          "title": "Offset",
+          "x-lumen-constraints": {
+            "step": 0.5
+          },
+          "x-lumen-kind": "float"
+        },
+        "paint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/paint"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Line color. Absent uses the text color.",
+          "title": "Paint",
+          "x-lumen-constraints": {
+            "role": "color"
+          },
+          "x-lumen-kind": "paint"
+        },
+        "style": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/textLineStyle"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": "solid",
+          "description": "Line style.",
+          "title": "Style",
+          "x-lumen-enumOptions": [
+            {
+              "label": "Solid",
+              "name": "solid",
+              "value": 0
+            },
+            {
+              "label": "Double",
+              "name": "double",
+              "value": 1
+            },
+            {
+              "label": "Dotted",
+              "name": "dotted",
+              "value": 2
+            },
+            {
+              "label": "Dashed",
+              "name": "dashed",
+              "value": 3
+            },
+            {
+              "label": "Wavy",
+              "name": "wavy",
+              "value": 4
+            }
+          ],
+          "x-lumen-kind": "enum"
+        },
+        "thickness": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Line thickness in pixels. Absent uses the font's.",
+          "title": "Thickness",
+          "x-lumen-constraints": {
+            "min": 0.0,
+            "step": 0.5
+          },
+          "x-lumen-kind": "float"
+        }
+      },
+      "type": "object",
+      "x-lumen-type": "TextLine"
+    },
+    "textLineStyle": {
+      "enum": ["solid", "double", "dotted", "dashed", "wavy"],
+      "type": "string",
+      "x-lumen-type": "TextLineStyle"
+    },
+    "textSpan": {
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/paint"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Text color.",
+          "title": "Color",
+          "x-lumen-constraints": {
+            "role": "color"
+          },
+          "x-lumen-kind": "paint"
+        },
+        "font_family": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Font family name.",
+          "title": "Font Family",
+          "x-lumen-constraints": {
+            "format": "font_family"
+          },
+          "x-lumen-kind": "string"
+        },
+        "font_size": {
+          "anyOf": [
+            {
+              "minimum": 1.0,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Font size in pixels.",
+          "title": "Font Size",
+          "x-lumen-constraints": {
+            "min": 1.0,
+            "step": 1.0
+          },
+          "x-lumen-kind": "float"
+        },
+        "font_style": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/textFontStyle"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Font style.",
+          "title": "Font Style",
+          "x-lumen-enumOptions": [
+            {
+              "label": "Normal",
+              "name": "normal",
+              "value": 0
+            },
+            {
+              "label": "Italic",
+              "name": "italic",
+              "value": 1
+            },
+            {
+              "label": "Oblique",
+              "name": "oblique",
+              "value": 2
+            }
+          ],
+          "x-lumen-kind": "enum"
+        },
+        "font_weight": {
+          "anyOf": [
+            {
+              "maximum": 1000.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Font weight. Variable fonts render any value in their weight range.",
+          "title": "Font Weight",
+          "x-lumen-constraints": {
+            "max": 1000.0,
+            "min": 1.0
+          },
+          "x-lumen-kind": "int"
+        },
+        "highlight": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/textHighlight"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Box behind the text. `null` turns off the node's highlight. Its fields take literals or\nexpressions, but the whole highlight cannot be an expression.",
+          "title": "Highlight",
+          "x-lumen-kind": "text_highlight"
+        },
+        "letter_spacing": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Extra space after every glyph in pixels. Negative values tighten the text.",
+          "title": "Letter Spacing",
+          "x-lumen-constraints": {
+            "step": 0.1
+          },
+          "x-lumen-kind": "float"
+        },
+        "strikethrough": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/textLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Line through the text. `null` turns off the node's strikethrough. Its fields take\nliterals or expressions, but the whole line cannot be an expression.",
+          "title": "Strikethrough",
+          "x-lumen-kind": "text_line"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": "",
+          "description": "Text of the span. Required.",
+          "title": "Text",
+          "x-lumen-constraints": {
+            "multiline": true
+          },
+          "x-lumen-kind": "string"
+        },
+        "underline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/textLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Line under the text. `null` turns off the node's underline. Its fields take literals or\nexpressions, but the whole line cannot be an expression.",
+          "title": "Underline",
+          "x-lumen-kind": "text_line"
+        }
+      },
+      "required": ["text"],
+      "type": "object",
+      "x-lumen-type": "TextSpan"
+    },
     "vec2": {
       "items": false,
       "maxItems": 2,
@@ -3332,11 +3728,18 @@
                     "x-lumen-kind": "float"
                   },
                   "font_style": {
+                    "anyOf": [
+                      {
+                        "enum": ["normal", "italic", "oblique"],
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "normal",
                     "description": "Font style.",
-                    "enum": ["normal", "italic", "oblique"],
                     "title": "Font Style",
-                    "type": "string",
                     "x-lumen-enumOptions": [
                       {
                         "label": "Normal",

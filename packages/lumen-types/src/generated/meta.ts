@@ -800,6 +800,9 @@ export type NodeLiteralValue =
   | GradientPaint
   | ShaderUniforms
   | ClipProps
+  | TextContent
+  | TextLine
+  | TextHighlight
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]
@@ -875,6 +878,74 @@ export type TextAlignmentVertical = "top" | "middle" | "bottom";
 export type TextFontStyle = "normal" | "italic" | "oblique";
 export type TextRenderMode = "raster" | "msdf" | "auto";
 export type TransformSampling = "nearest" | "linear";
+/** Text to render: a string, or spans that each override the node's text style. */
+export type TextContent = string | readonly TextSpan[];
+export type TextHighlight = {
+  /**
+   * Start and end of the box along the text, as fractions of its width. An expression
+   * gives both as one `vec2`, not one per element.
+   */
+  readonly extent?: ExpressionValue<Vec2>;
+  /**
+   * Horizontal and vertical padding around the text in pixels. An expression gives both as
+   * one `vec2`, not one per element.
+   */
+  readonly padding?: ExpressionValue<Vec2>;
+  /** Box color. */
+  readonly paint?: ExpressionValue<Paint>;
+  /** Corner radius in pixels. */
+  readonly radius?: ExpressionValue<number>;
+};
+export type TextLine = {
+  /**
+   * Start and end of the line along the text, as fractions of its width. An expression
+   * gives both as one `vec2`, not one per element.
+   */
+  readonly extent?: ExpressionValue<Vec2>;
+  /**
+   * Line position in pixels below the baseline; negative values are above it. Absent uses
+   * the font's underline or strikethrough position.
+   */
+  readonly offset?: ExpressionValue<number>;
+  /** Line color. Absent uses the text color. */
+  readonly paint?: ExpressionValue<Paint>;
+  /** Line style. */
+  readonly style?: ExpressionValue<TextLineStyle>;
+  /** Line thickness in pixels. Absent uses the font's. */
+  readonly thickness?: ExpressionValue<number>;
+};
+export type TextLineStyle = "solid" | "double" | "dotted" | "dashed" | "wavy";
+export type TextSpan = {
+  /** Text color. */
+  readonly color?: ExpressionValue<Paint>;
+  /** Font family name. */
+  readonly font_family?: ExpressionValue<string>;
+  /** Font size in pixels. */
+  readonly font_size?: ExpressionValue<number>;
+  /** Font style. */
+  readonly font_style?: ExpressionValue<TextFontStyle>;
+  /** Font weight. Variable fonts render any value in their weight range. */
+  readonly font_weight?: ExpressionValue<number>;
+  /**
+   * Box behind the text. `null` turns off the node's highlight. Its fields take literals or
+   * expressions, but the whole highlight cannot be an expression.
+   */
+  readonly highlight?: TextHighlight | null;
+  /** Extra space after every glyph in pixels. Negative values tighten the text. */
+  readonly letter_spacing?: ExpressionValue<number>;
+  /**
+   * Line through the text. `null` turns off the node's strikethrough. Its fields take
+   * literals or expressions, but the whole line cannot be an expression.
+   */
+  readonly strikethrough?: TextLine | null;
+  /** Text of the span. Required. */
+  readonly text: ExpressionValue<string>;
+  /**
+   * Line under the text. `null` turns off the node's underline. Its fields take literals or
+   * expressions, but the whole line cannot be an expression.
+   */
+  readonly underline?: TextLine | null;
+};
 
 export interface CompositionNodeBase<TKind extends NodeKind> {
   readonly id: number;
@@ -1102,7 +1173,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "content"?: ExpressionValue<string>;
     readonly "font_family"?: ExpressionValue<string>;
     readonly "font_size"?: ExpressionValue<number>;
-    readonly "font_style"?: TextFontStyle;
+    readonly "font_style"?: ExpressionValue<TextFontStyle>;
     readonly "font_weight"?: ExpressionValue<number>;
     readonly "glyph_offset"?: ExpressionValue<Vec2>;
     readonly "glyph_opacity"?: ExpressionValue<number>;
