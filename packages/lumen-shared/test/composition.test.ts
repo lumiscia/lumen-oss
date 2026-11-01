@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { AudioTrack } from "../src/audio.js";
 import { Composition } from "../src/composition.js";
-import { floor, frame } from "../src/expression.js";
+import { floor, frame, hex, progress, uppercase, vec2 } from "../src/expression.js";
 
 describe("Composition node IDs", () => {
   test("assigns sequential IDs when none are provided", () => {
@@ -195,5 +195,50 @@ describe("Composition memo nodes", () => {
     const memo = composition.addNode({ params: { key: floor(frame.div(4)) }, type: "memo" });
 
     expect(memo.params).toEqual({ key: "=floor((frame / 4))" });
+  });
+});
+
+describe("Composition rich text", () => {
+  test("lowers expressions nested in spans and decorations", () => {
+    const composition = new Composition();
+
+    composition.addNode({
+      type: "text",
+      params: {
+        content: [
+          { text: uppercase("x"), font_size: frame.mul(2), color: hex("#ffffff") },
+          { text: "=literal", underline: { extent: vec2(0, progress(0, 30)) }, highlight: null },
+        ],
+        strikethrough: { offset: frame.sub(4), style: "dashed" },
+      },
+    });
+
+    expect(composition.toJSON().nodes[0]?.params).toEqual({
+      content: [
+        { text: "=uppercase('x')", font_size: "=(frame * 2)", color: "=#ffffff" },
+        { text: "=literal", underline: { extent: "=vec2(0, progress(0, 30))" }, highlight: null },
+      ],
+      strikethrough: { offset: "=(frame - 4)", style: "dashed" },
+    });
+  });
+
+  test("leaves objects with their own toJSON to serialize themselves", () => {
+    const composition = new Composition();
+    const span = Object.defineProperty({ text: "draft" }, "toJSON", {
+      value: () => ({ text: "final" }),
+    });
+
+    composition.addNode({ type: "text", params: { content: [span] } });
+
+    expect(JSON.parse(JSON.stringify(composition)).nodes[0].params.content).toEqual([
+      { text: "final" },
+    ]);
+
+    const content = Object.defineProperty([{ text: "draft" }], "toJSON", {
+      value: () => [{ text: "final" }],
+    });
+    const other = new Composition();
+    other.addNode({ type: "text", params: { content } });
+    expect(JSON.parse(JSON.stringify(other)).nodes[0].params.content).toEqual([{ text: "final" }]);
   });
 });

@@ -85,6 +85,7 @@ export type {
   CompositionDefinitionOptions,
   CompositionOptions,
   ConnectOptions,
+  ExpressionInput,
   NodeInput,
   NodeReference,
   PropDeclaration,

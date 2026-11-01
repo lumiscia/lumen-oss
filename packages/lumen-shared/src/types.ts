@@ -41,13 +41,28 @@ type NodeInputByKind = {
 /** Lets each param that takes `=...` strings take an `Expr` of the matching type too. */
 type WithExpressionParams<TNode extends { readonly params?: object }> = Omit<TNode, "params"> & {
   readonly params?: {
-    readonly [K in keyof NonNullable<TNode["params"]>]: ParamInput<NonNullable<TNode["params"]>[K]>;
+    readonly [K in keyof NonNullable<TNode["params"]>]: ExpressionInput<
+      NonNullable<TNode["params"]>[K]
+    >;
   };
 };
 
-type ParamInput<TParam> = [Extract<TParam, ExpressionString>] extends [never]
-  ? TParam
-  : TParam | ParamExpr<Exclude<TParam, ExpressionString | undefined>>;
+/**
+ * `T`, where every field that takes `=...` strings, at any depth of objects and arrays, also
+ * takes an `Expr` of the matching type. Use it to type a value built outside `addNode`:
+ * `ExpressionInput<TextSpan>`.
+ */
+export type ExpressionInput<T> =
+  | ([Extract<T, ExpressionString>] extends [never]
+      ? never
+      : ParamExpr<Exclude<T, ExpressionString | undefined>>)
+  | NestedInput<T>;
+
+type NestedInput<T> = T extends ExpressionString
+  ? T
+  : T extends object
+    ? { [K in keyof T]: ExpressionInput<T[K]> }
+    : T;
 
 type ParamExpr<T> = [T] extends [boolean]
   ? never
@@ -59,7 +74,20 @@ type ParamExpr<T> = [T] extends [boolean]
         ? Expr<string>
         : [T] extends [TextContent]
           ? Expr<string>
-          : Expr<Color>;
+          : [T] extends [Color]
+            ? Expr<Color>
+            : MemberExpr<T>;
+
+/** The `Expr`s a union such as `Paint` or `ShaderUniformValue` takes, one per kind of member. */
+type MemberExpr<T> = T extends number
+  ? Expr<number>
+  : T extends readonly [unknown, unknown]
+    ? Expr<Vec2>
+    : T extends readonly unknown[] | `#${string}`
+      ? Expr<Color>
+      : T extends string
+        ? Expr<string>
+        : never;
 
 export type NodeReference = number | Pick<CompositionNode, "id">;
 
