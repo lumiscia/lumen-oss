@@ -64,6 +64,24 @@ pub fn msdf_em_size(font_size: f32) -> f32 {
     em
 }
 
+/// Uses no platform font lists, so fallback chooses among the loaded fonts the same way on every
+/// platform.
+struct NoPlatformFallback;
+
+impl cosmic_text::Fallback for NoPlatformFallback {
+    fn common_fallback(&self) -> &[&'static str] {
+        &[]
+    }
+
+    fn forbidden_fallback(&self) -> &[&'static str] {
+        &[]
+    }
+
+    fn script_fallback(&self, _: unicode_script::Script, _: &str) -> &[&'static str] {
+        &[]
+    }
+}
+
 #[derive(Debug)]
 pub struct TextSystem {
     font_system: FontSystem,
@@ -72,8 +90,14 @@ pub struct TextSystem {
 }
 
 impl TextSystem {
+    /// A text system with only the bundled fonts. Other fonts must be loaded with
+    /// `load_font_data`, so text renders the same on every machine.
     pub fn new() -> Self {
-        let mut font_system = FontSystem::new_with_fonts(std::iter::empty());
+        let mut font_system = FontSystem::new_with_locale_and_db_and_fallback(
+            "en-US".to_string(),
+            cosmic_text::fontdb::Database::new(),
+            NoPlatformFallback,
+        );
         load_default_fonts(&mut font_system);
         Self {
             font_system,
@@ -1717,6 +1741,11 @@ mod tests {
     }
 
     #[test]
+    fn loads_only_the_bundled_fonts() {
+        assert_eq!(TextSystem::new().font_system.db().len(), 1);
+    }
+
+    #[test]
     fn measures_roboto_text() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("External URL media");
@@ -2678,21 +2707,6 @@ mod tests {
         }
     }
 
-    /// A text system without system fonts, so text in scripts Roboto lacks measures the same on
-    /// every machine.
-    fn bundled_text_system() -> TextSystem {
-        let mut font_system = FontSystem::new_with_locale_and_db(
-            "en-US".into(),
-            cosmic_text::fontdb::Database::new(),
-        );
-        load_default_fonts(&mut font_system);
-        TextSystem {
-            font_system,
-            swash_cache: SwashCache::new(),
-            font_generation: 0,
-        }
-    }
-
     #[test]
     fn plain_text_measures_as_before_spans() {
         let mut system = TextSystem::new();
@@ -2865,7 +2879,7 @@ mod tests {
 
     #[test]
     fn decorations_run_along_spans_and_extents_follow_reading_order() {
-        let mut system = bundled_text_system();
+        let mut system = TextSystem::new();
         let underline = |spans: Range<usize>, extent: [f32; 2]| TextDecoration {
             kind: TextDecorationKind::Underline(TextLineDecoration {
                 style: TextLineStyle::Solid,
@@ -3000,7 +3014,7 @@ mod tests {
 
     #[test]
     fn justified_right_to_left_text_measures_its_ink() {
-        let mut system = bundled_text_system();
+        let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::from_spans(vec![span("שלום עולם", 30.0)]);
         request.max_width = Some(260.0);
         request.align = TextAlign::Justified;
@@ -3041,7 +3055,7 @@ mod tests {
 
     #[test]
     fn bidi_text_with_negative_tracking_measures_as_before() {
-        let mut system = bundled_text_system();
+        let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::from_spans(vec![TextSpan {
             letter_spacing: -1.5,
             ..span("\u{202a}שלום abc עולם\u{202c}", 30.0)
