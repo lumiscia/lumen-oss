@@ -87,7 +87,16 @@
           "$ref": "#/$defs/color"
         }
       ],
-      "description": "A value for a template prop: a literal of the prop's type or an expression."
+      "description": "A value for a template prop: a literal of the prop's type, or an expression in the clip's time.",
+      "x-lumen-type": "ClipPropValue"
+    },
+    "clipProps": {
+      "additionalProperties": {
+        "$ref": "#/$defs/clipPropValue"
+      },
+      "description": "Prop values a `clip` passes to its template, by prop name.",
+      "type": "object",
+      "x-lumen-type": "ClipProps"
     },
     "color": {
       "oneOf": [
@@ -251,101 +260,235 @@
       "pattern": "^=([^=]|$)",
       "type": "string"
     },
+    "gradientInterpolation": {
+      "enum": ["srgb", "linear_srgb", "linear"],
+      "type": "string",
+      "x-lumen-type": "GradientInterpolation"
+    },
+    "gradientPaint": {
+      "additionalProperties": false,
+      "properties": {
+        "angle": {
+          "default": 0.0,
+          "description": "Start angle of a conic gradient in degrees.",
+          "title": "Angle",
+          "type": "number",
+          "x-lumen-constraints": {
+            "step": 1.0
+          },
+          "x-lumen-kind": "float"
+        },
+        "center": {
+          "$ref": "#/$defs/vec2",
+          "default": [0.5, 0.5],
+          "description": "Center of a radial or conic gradient.",
+          "title": "Center",
+          "x-lumen-kind": "vec2"
+        },
+        "end": {
+          "$ref": "#/$defs/vec2",
+          "default": [1.0, 0.0],
+          "description": "End point of a linear gradient.",
+          "title": "End",
+          "x-lumen-kind": "vec2"
+        },
+        "interpolation": {
+          "$ref": "#/$defs/gradientInterpolation",
+          "default": "srgb",
+          "description": "Color space the stops blend in.",
+          "title": "Interpolation",
+          "x-lumen-enumOptions": [
+            {
+              "label": "sRGB",
+              "name": "srgb",
+              "value": 0
+            },
+            {
+              "label": "Linear sRGB",
+              "name": "linear_srgb",
+              "value": 1
+            }
+          ],
+          "x-lumen-kind": "enum"
+        },
+        "radius": {
+          "default": [0.5, 0.5],
+          "description": "Horizontal and vertical radius of a radial gradient. A number sets both.",
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/vec2"
+            }
+          ],
+          "title": "Radius"
+        },
+        "spread": {
+          "$ref": "#/$defs/gradientSpread",
+          "default": "pad",
+          "description": "How the gradient continues past its first and last stops.",
+          "title": "Spread",
+          "x-lumen-enumOptions": [
+            {
+              "label": "Pad",
+              "name": "pad",
+              "value": 0
+            },
+            {
+              "label": "Repeat",
+              "name": "repeat",
+              "value": 1
+            },
+            {
+              "label": "Reflect",
+              "name": "reflect",
+              "value": 2
+            }
+          ],
+          "x-lumen-kind": "enum"
+        },
+        "start": {
+          "$ref": "#/$defs/vec2",
+          "default": [0.0, 0.0],
+          "description": "Start point of a linear gradient.",
+          "title": "Start",
+          "x-lumen-kind": "vec2"
+        },
+        "stops": {
+          "description": "Colors along the gradient. Required, with at least one stop.",
+          "items": {
+            "$ref": "#/$defs/gradientStop"
+          },
+          "minItems": 1,
+          "title": "Stops",
+          "type": "array"
+        },
+        "type": {
+          "$ref": "#/$defs/paintKind",
+          "description": "Gradient shape. Required.",
+          "title": "Type",
+          "x-lumen-enumOptions": [
+            {
+              "label": "Linear Gradient",
+              "name": "linear_gradient",
+              "value": 0
+            },
+            {
+              "label": "Radial Gradient",
+              "name": "radial_gradient",
+              "value": 1
+            },
+            {
+              "label": "Conic Gradient",
+              "name": "conic_gradient",
+              "value": 2
+            }
+          ],
+          "x-lumen-kind": "enum"
+        },
+        "units": {
+          "$ref": "#/$defs/gradientUnits",
+          "default": "object_bounding_box",
+          "description": "Whether points and radii are fractions of the shape's bounding box or pixels.",
+          "title": "Units",
+          "x-lumen-enumOptions": [
+            {
+              "label": "Object Bounding Box",
+              "name": "object_bounding_box",
+              "value": 0
+            },
+            {
+              "label": "User Space",
+              "name": "user_space",
+              "value": 1
+            }
+          ],
+          "x-lumen-kind": "enum"
+        }
+      },
+      "required": ["type", "stops"],
+      "type": "object",
+      "x-lumen-type": "GradientPaint"
+    },
+    "gradientSpread": {
+      "enum": ["pad", "repeat", "reflect"],
+      "type": "string",
+      "x-lumen-type": "GradientSpread"
+    },
+    "gradientStop": {
+      "description": "A color at a point along a gradient: `{ offset, color }` or `[offset, color]`.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "color": {
+              "$ref": "#/$defs/color",
+              "description": "Color at the offset.",
+              "title": "Color",
+              "x-lumen-kind": "color"
+            },
+            "offset": {
+              "description": "Position along the gradient from 0 to 1. Values outside that range are clamped.",
+              "title": "Offset",
+              "type": "number",
+              "x-lumen-constraints": {
+                "step": 0.01
+              },
+              "x-lumen-kind": "float"
+            }
+          },
+          "required": ["offset", "color"],
+          "type": "object"
+        },
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/color"
+            }
+          ],
+          "type": "array"
+        }
+      ],
+      "x-lumen-type": "GradientStop"
+    },
+    "gradientUnits": {
+      "enum": ["object_bounding_box", "user_space", "userSpaceOnUse"],
+      "type": "string",
+      "x-lumen-type": "GradientUnits"
+    },
     "paint": {
+      "description": "A solid color or a gradient.",
       "oneOf": [
         {
           "$ref": "#/$defs/color"
         },
         {
-          "additionalProperties": false,
-          "properties": {
-            "angle": {
-              "type": "number"
-            },
-            "center": {
-              "$ref": "#/$defs/vec2"
-            },
-            "end": {
-              "$ref": "#/$defs/vec2"
-            },
-            "interpolation": {
-              "default": "srgb",
-              "enum": ["srgb", "linear_srgb", "linear"],
-              "type": "string"
-            },
-            "radius": {
-              "oneOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "$ref": "#/$defs/vec2"
-                }
-              ]
-            },
-            "spread": {
-              "default": "pad",
-              "enum": ["pad", "repeat", "reflect"],
-              "type": "string"
-            },
-            "start": {
-              "$ref": "#/$defs/vec2"
-            },
-            "stops": {
-              "items": {
-                "oneOf": [
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "color": {
-                        "$ref": "#/$defs/color"
-                      },
-                      "offset": {
-                        "type": "number"
-                      }
-                    },
-                    "required": ["offset", "color"],
-                    "type": "object"
-                  },
-                  {
-                    "maxItems": 2,
-                    "minItems": 2,
-                    "prefixItems": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/color"
-                      }
-                    ],
-                    "type": "array"
-                  }
-                ]
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            "type": {
-              "enum": [
-                "linear",
-                "linear_gradient",
-                "radial",
-                "radial_gradient",
-                "conic",
-                "conic_gradient"
-              ],
-              "type": "string"
-            },
-            "units": {
-              "default": "object_bounding_box",
-              "enum": ["object_bounding_box", "user_space", "userSpaceOnUse"],
-              "type": "string"
-            }
-          },
-          "required": ["type", "stops"],
-          "type": "object"
+          "$ref": "#/$defs/gradientPaint"
         }
-      ]
+      ],
+      "x-lumen-type": "Paint"
+    },
+    "paintKind": {
+      "enum": ["linear_gradient", "radial_gradient", "conic_gradient", "linear", "radial", "conic"],
+      "type": "string",
+      "x-lumen-type": "PaintKind"
+    },
+    "shaderUniformComponent": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "$ref": "#/$defs/expression"
+        }
+      ],
+      "x-lumen-type": "ShaderUniformComponent"
     },
     "shaderUniformValue": {
       "anyOf": [
@@ -354,14 +497,7 @@
         },
         {
           "items": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "$ref": "#/$defs/expression"
-              }
-            ]
+            "$ref": "#/$defs/shaderUniformComponent"
           },
           "maxItems": 4,
           "minItems": 2,
@@ -375,7 +511,16 @@
           "type": "string"
         }
       ],
-      "description": "A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields."
+      "description": "A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields.",
+      "x-lumen-type": "ShaderUniformValue"
+    },
+    "shaderUniforms": {
+      "additionalProperties": {
+        "$ref": "#/$defs/shaderUniformValue"
+      },
+      "description": "Shader uniform values by field name, checked against the shader's uniform struct when the node compiles.",
+      "type": "object",
+      "x-lumen-type": "ShaderUniforms"
     },
     "textContent": {
       "description": "Text to render: a string, or spans that each override the node's text style.",
@@ -747,7 +892,6 @@
               "$ref": "#/$defs/expression"
             }
           ],
-          "default": "",
           "description": "Text of the span. Required.",
           "title": "Text",
           "x-lumen-constraints": {
@@ -1413,13 +1557,10 @@
                     "x-lumen-kind": "float"
                   },
                   "props": {
-                    "additionalProperties": {
-                      "$ref": "#/$defs/clipPropValue"
-                    },
+                    "$ref": "#/$defs/clipProps",
                     "default": {},
                     "description": "Values for the template's props by name; expressions run in this composition's time.",
                     "title": "Props",
-                    "type": "object",
                     "x-lumen-kind": "clip_props"
                   },
                   "speed": {
@@ -4392,13 +4533,10 @@
                     "x-lumen-kind": "string"
                   },
                   "uniforms": {
-                    "additionalProperties": {
-                      "$ref": "#/$defs/shaderUniformValue"
-                    },
+                    "$ref": "#/$defs/shaderUniforms",
                     "default": {},
                     "description": "Uniform struct field values by name; unset fields are zero.",
                     "title": "Shader uniforms",
-                    "type": "object",
                     "x-lumen-kind": "shader_uniforms"
                   }
                 },

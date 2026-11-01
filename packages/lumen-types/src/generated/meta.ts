@@ -818,46 +818,7 @@ export type Color =
   | readonly [number, number, number]
   | readonly [number, number, number, number]
   | `#${string}`;
-export type GradientStop =
-  | { readonly offset: number; readonly color: Color }
-  | readonly [number, Color];
-export type GradientPaint = {
-  readonly type:
-    | "linear"
-    | "linear_gradient"
-    | "radial"
-    | "radial_gradient"
-    | "conic"
-    | "conic_gradient";
-  readonly units?: "object_bounding_box" | "user_space" | "userSpaceOnUse";
-  readonly spread?: "pad" | "repeat" | "reflect";
-  readonly interpolation?: "srgb" | "linear_srgb" | "linear";
-  readonly start?: Vec2;
-  readonly end?: Vec2;
-  readonly center?: Vec2;
-  readonly radius?: number | Vec2;
-  readonly angle?: number;
-  readonly stops: readonly GradientStop[];
-};
-export type Paint = Color | GradientPaint;
 export type HexColor = `#${string}`;
-export type ShaderUniformComponent = number | ExpressionString;
-export type ShaderUniformValue =
-  | number
-  | ExpressionString
-  | readonly [ShaderUniformComponent, ShaderUniformComponent]
-  | readonly [ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent]
-  | readonly [
-      ShaderUniformComponent,
-      ShaderUniformComponent,
-      ShaderUniformComponent,
-      ShaderUniformComponent,
-    ]
-  | HexColor;
-export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
-/** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
-export type ClipPropValue = number | string | Vec2 | Color;
-export type ClipProps = Readonly<Record<string, ClipPropValue>>;
 
 export type BooleanOperation = "union" | "intersect" | "subtract" | "xor";
 export type ChannelShuffleAlpha = "red" | "green" | "blue" | "alpha" | "zero" | "one";
@@ -878,6 +839,50 @@ export type TextAlignmentVertical = "top" | "middle" | "bottom";
 export type TextFontStyle = "normal" | "italic" | "oblique";
 export type TextRenderMode = "raster" | "msdf" | "auto";
 export type TransformSampling = "nearest" | "linear";
+/** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
+export type ClipPropValue = number | string | Vec2 | Color;
+/** Prop values a `clip` passes to its template, by prop name. */
+export type ClipProps = Readonly<Record<string, ClipPropValue>>;
+export type GradientInterpolation = "srgb" | "linear_srgb" | "linear";
+export type GradientPaint = {
+  /** Start angle of a conic gradient in degrees. */
+  readonly angle?: number;
+  /** Center of a radial or conic gradient. */
+  readonly center?: Vec2;
+  /** End point of a linear gradient. */
+  readonly end?: Vec2;
+  /** Color space the stops blend in. */
+  readonly interpolation?: GradientInterpolation;
+  /** Horizontal and vertical radius of a radial gradient. A number sets both. */
+  readonly radius?: number | Vec2;
+  /** How the gradient continues past its first and last stops. */
+  readonly spread?: GradientSpread;
+  /** Start point of a linear gradient. */
+  readonly start?: Vec2;
+  /** Colors along the gradient. Required, with at least one stop. */
+  readonly stops: readonly GradientStop[];
+  /** Gradient shape. Required. */
+  readonly type: PaintKind;
+  /** Whether points and radii are fractions of the shape's bounding box or pixels. */
+  readonly units?: GradientUnits;
+};
+export type GradientSpread = "pad" | "repeat" | "reflect";
+/** A color at a point along a gradient: `{ offset, color }` or `[offset, color]`. */
+export type GradientStop = {
+  /** Color at the offset. */
+  readonly color: Color;
+  /** Position along the gradient from 0 to 1. Values outside that range are clamped. */
+  readonly offset: number;
+} | readonly [number, Color];
+export type GradientUnits = "object_bounding_box" | "user_space" | "userSpaceOnUse";
+/** A solid color or a gradient. */
+export type Paint = Color | GradientPaint;
+export type PaintKind = "linear_gradient" | "radial_gradient" | "conic_gradient" | "linear" | "radial" | "conic";
+export type ShaderUniformComponent = ExpressionValue<number>;
+/** A shader uniform field value: a number, a 2-4 component vector, an expression, or a hex colour for vec3<f32> and vec4<f32> fields. */
+export type ShaderUniformValue = ExpressionValue<number | readonly [ShaderUniformComponent, ShaderUniformComponent] | readonly [ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent] | readonly [ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent] | HexColor>;
+/** Shader uniform values by field name, checked against the shader's uniform struct when the node compiles. */
+export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
 /** Text to render: a string, or spans that each override the node's text style. */
 export type TextContent = string | readonly TextSpan[];
 export type TextHighlight = {
