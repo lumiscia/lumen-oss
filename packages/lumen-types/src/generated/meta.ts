@@ -851,6 +851,7 @@ export type TextFontStyle = "normal" | "italic" | "oblique";
 export type TextOverflow = "clip" | "ellipsis";
 export type TextPaintSpace = "span" | "text";
 export type TextRenderMode = "raster" | "msdf" | "auto";
+export type TextTransform = "none" | "uppercase" | "lowercase" | "capitalize";
 export type TransformSampling = "nearest" | "linear";
 /** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
 export type ClipPropValue = number | string | Vec2 | Color;
@@ -936,6 +937,12 @@ export type TextLine = {
 };
 export type TextLineStyle = "solid" | "double" | "dotted" | "dashed" | "wavy";
 export type TextSpan = {
+  /**
+   * Pixels the span's glyphs and its own decorations sit above the baseline; negative
+   * values sit below it. The line keeps its height, so shifted text can overlap the
+   * lines around it.
+   */
+  readonly baseline_shift?: ExpressionValue<number>;
   /** Text color. */
   readonly color?: ExpressionValue<Paint>;
   /** Font family name. */
@@ -965,6 +972,8 @@ export type TextSpan = {
   readonly strikethrough?: TextLine | null;
   /** Text of the span. Required. */
   readonly text: ExpressionValue<string>;
+  /** Case applied to the span's text. */
+  readonly text_transform?: ExpressionValue<TextTransform>;
   /**
    * Line under the text. `null` turns off the node's underline. Its fields take literals or
    * expressions, but the whole line cannot be an expression.
@@ -1218,11 +1227,13 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "overflow"?: TextOverflow;
     readonly "paint_space"?: TextPaintSpace;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
+    readonly "paragraph_spacing"?: ExpressionValue<number>;
     readonly "position"?: ExpressionValue<Vec2>;
     readonly "render_mode"?: TextRenderMode;
     readonly "rotation"?: ExpressionValue<number>;
     readonly "scale"?: ExpressionValue<Vec2>;
     readonly "strikethrough"?: TextLine;
+    readonly "text_transform"?: ExpressionValue<TextTransform>;
     readonly "underline"?: TextLine;
   };
 }
