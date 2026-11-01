@@ -12127,3 +12127,53 @@ fn text_fit_shrinks_into_its_box_and_measures_as_drawn() {
         "{columns:?}"
     );
 }
+
+#[test]
+fn typography_params_move_ink_and_keep_bounded_text_whole() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let plain = render_text_params(
+        &mut renderer,
+        decorated_text(json!([{ "text": "II" }, { "text": "II" }]), json!({})),
+        size,
+    );
+    // Raised past the top of the line box, the span is still drawn whole.
+    let raised = render_text_params(
+        &mut renderer,
+        decorated_text(
+            json!([{ "text": "II" }, { "text": "II", "baseline_shift": 24 }]),
+            json!({}),
+        ),
+        size,
+    );
+    let (plain_runs, raised_runs) = (inked_columns(&plain, size), inked_columns(&raised, size));
+    assert_eq!(raised_runs, plain_runs);
+    for (run, lift) in [(0, 0), (2, 24)] {
+        let [_, top, ..] = ink_box(&plain, size, plain_runs[run].clone());
+        let [_, raised_top, ..] = ink_box(&raised, size, raised_runs[run].clone());
+        assert_eq!(raised_top + lift, top, "run {run}");
+    }
+
+    let upper = render_text_params(
+        &mut renderer,
+        decorated_text(json!("ii"), json!({ "text_transform": "uppercase" })),
+        size,
+    );
+    let capitals = render_text_params(&mut renderer, decorated_text(json!("II"), json!({})), size);
+    assert!(upper == capitals);
+
+    let mut paragraphs = |spacing: u32| {
+        let pixels = render_text_params(
+            &mut renderer,
+            decorated_text(json!("I\nI"), json!({ "paragraph_spacing": spacing })),
+            size,
+        );
+        inked_rows(&pixels, size)
+    };
+    let (tight, spaced) = (paragraphs(0), paragraphs(10));
+    assert_eq!(spaced[0], tight[0]);
+    assert_eq!(spaced[1].start, tight[1].start + 10);
+}

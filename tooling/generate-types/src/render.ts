@@ -17,8 +17,12 @@ const pascalCase = (value: string): string =>
 
 const typeNameForNode = (kind: string): string => `${pascalCase(kind)}Node`;
 
-const enumTypeForParam = (nodeKind: string, param: NodeParamSpec): string =>
-  `${pascalCase(nodeKind)}${pascalCase(param.id)}`;
+/** A param named after its node, such as the text node's `text_transform`, is not prefixed twice. */
+const enumTypeForParam = (nodeKind: string, param: NodeParamSpec): string => {
+  const kind = pascalCase(nodeKind);
+  const id = pascalCase(param.id);
+  return id.startsWith(kind) ? id : `${kind}${id}`;
+};
 
 const paramType = (nodeKind: string, param: NodeParamSpec): string => {
   switch (param.kind) {

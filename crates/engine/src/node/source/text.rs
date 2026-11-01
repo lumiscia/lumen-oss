@@ -108,6 +108,31 @@ pub enum TextFit {
     Shrink = 1,
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum", expressions)]
+pub enum TextTransform {
+    #[default]
+    None = 0,
+    Uppercase = 1,
+    Lowercase = 2,
+    /// Uppercases the first letter of each word.
+    Capitalize = 3,
+}
+
+impl From<TextTransform> for lumen_text::TextTransform {
+    fn from(transform: TextTransform) -> Self {
+        match transform {
+            TextTransform::None => Self::None,
+            TextTransform::Uppercase => Self::Uppercase,
+            TextTransform::Lowercase => Self::Lowercase,
+            TextTransform::Capitalize => Self::Capitalize,
+        }
+    }
+}
+
 /// Produces a text source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TextParams {
@@ -217,14 +242,22 @@ pub struct TextParams {
     #[meta(kind = "enum", enum_type = TextOverflow)]
     pub overflow: TextOverflow,
     /// Whether the text shrinks to fit `max_width`, `max_lines` and `max_height` without breaking
-    /// a word, before any lines are dropped. Every font size, letter spacing, `line_height` and
-    /// decoration size scales by the largest factor up to 1 that fits.
+    /// a word, before any lines are dropped. Every font size, letter spacing, `line_height`,
+    /// baseline shift, paragraph spacing and decoration size scales by the largest factor up to 1
+    /// that fits.
     #[meta(kind = "enum", enum_type = TextFit)]
     pub fit: TextFit,
     /// Smallest `font_size` that `fit` shrinks the text to. Lines that still do not fit are
     /// dropped by `overflow`.
     #[meta(min = 1, step = 1)]
     pub min_font_size: f64,
+    /// Case applied to the text, and to spans that leave theirs unset.
+    #[meta(kind = "enum", enum_type = TextTransform)]
+    pub text_transform: TextTransform,
+    /// Extra space in pixels after each paragraph, but the last. A line break starts a new
+    /// paragraph.
+    #[meta(min = 0, step = 1)]
+    pub paragraph_spacing: f64,
 }
 
 impl Default for TextParams {
@@ -263,6 +296,8 @@ impl Default for TextParams {
             overflow: TextOverflow::Clip,
             fit: TextFit::None,
             min_font_size: 8.0,
+            text_transform: TextTransform::None,
+            paragraph_spacing: 0.0,
         }
     }
 }
@@ -887,6 +922,8 @@ pub(crate) struct TextLayoutStyle {
     pub(crate) max_width: f64,
     pub(crate) line_height: f64,
     pub(crate) alignment_horizontal: TextAlignmentHorizontal,
+    pub(crate) text_transform: TextTransform,
+    pub(crate) paragraph_spacing: f64,
     pub(crate) limits: TextLimits,
 }
 
@@ -940,6 +977,8 @@ impl TextLayoutStyle {
                 fit: params.fit,
                 min_font_size: params.min_font_size,
             },
+            text_transform: params.text_transform,
+            paragraph_spacing: params.paragraph_spacing,
         }
     }
 
@@ -959,6 +998,7 @@ impl TextLayoutStyle {
         let mut request = lumen_text::TextLayoutRequest::from_spans(spans);
         request.max_width = (self.max_width > 0.0).then_some(self.max_width as f32);
         request.line_height = (self.line_height > 0.0).then_some(self.line_height as f32);
+        request.paragraph_spacing = self.paragraph_spacing.max(0.0) as f32;
         request.align = match self.alignment_horizontal {
             TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
             TextAlignmentHorizontal::Right => lumen_text::TextAlign::Right,
@@ -1010,6 +1050,11 @@ impl TextLayoutStyle {
                 .and_then(|span| span.letter_spacing)
                 .unwrap_or(self.letter_spacing) as f32,
             font_features: font_features.merged(span.and_then(|span| span.font_features.as_ref())),
+            transform: span
+                .and_then(|span| span.text_transform)
+                .unwrap_or(self.text_transform)
+                .into(),
+            baseline_shift: span.and_then(|span| span.baseline_shift).unwrap_or(0.0) as f32,
         }
     }
 }
@@ -1130,15 +1175,21 @@ pub(crate) fn decorate<'a>(
     instances: &mut Vec<lumen_text::GpuGlyphInstance>,
 ) -> usize {
     let span_count = shaped.counts.span as usize;
-    let draw =
-        |instances: &mut Vec<_>, kind, spans, extent: (f64, f64), paint: &dyn Fn(usize) -> u32| {
-            let decoration = lumen_text::TextDecoration {
+    // A span's own decoration moves with its baseline shift; the node's stays on the line.
+    let draw = |instances: &mut Vec<_>,
                 kind,
                 spans,
-                extent: [extent.0 as f32, extent.1 as f32],
-            };
-            shaped.decorate(&decoration, origin, paint, instances);
+                own: bool,
+                extent: (f64, f64),
+                paint: &dyn Fn(usize) -> u32| {
+        let decoration = lumen_text::TextDecoration {
+            kind,
+            spans,
+            shifted: own,
+            extent: [extent.0 as f32, extent.1 as f32],
         };
+        shaped.decorate(&decoration, origin, paint, instances);
+    };
     let mut node_paint = None;
     for_each_run(
         node.highlight.as_ref(),
@@ -1154,7 +1205,14 @@ pub(crate) fn decorate<'a>(
                 padding: [highlight.padding.0 as f32, highlight.padding.1 as f32],
                 radius: highlight.radius as f32,
             };
-            draw(instances, kind, range, highlight.extent, &|_| index);
+            draw(
+                instances,
+                kind,
+                range,
+                own.is_some(),
+                highlight.extent,
+                &|_| index,
+            );
         },
     );
     let mut before_glyphs = 0;
@@ -1201,8 +1259,19 @@ pub(crate) fn decorate<'a>(
                     None => *node_paint.get_or_insert_with(|| push_paint(paint, None)),
                 });
                 match index {
-                    Some(index) => draw(instances, kind, range, line.extent, &|_| index),
-                    None => draw(instances, kind, range, line.extent, &text_paint),
+                    Some(index) => {
+                        draw(instances, kind, range, own.is_some(), line.extent, &|_| {
+                            index
+                        })
+                    }
+                    None => draw(
+                        instances,
+                        kind,
+                        range,
+                        own.is_some(),
+                        line.extent,
+                        &text_paint,
+                    ),
                 }
             },
         );

@@ -621,6 +621,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             || crate::node::DelegateEvaluable::has_expressions(&params.overflow)
             || crate::node::DelegateEvaluable::has_expressions(&params.fit)
             || params.min_font_size.is_expr()
+            || params.paragraph_spacing.is_expr()
+            || crate::node::DelegateEvaluable::has_expressions(&params.text_transform)
         {
             return None;
         }
