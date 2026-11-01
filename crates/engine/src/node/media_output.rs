@@ -37,8 +37,8 @@ impl GpuCompileNode for MediaOutput {
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
         let size = lumen_gpu::Size::new(
-            ctx.composition().render_settings.width.max(1),
-            ctx.composition().render_settings.height.max(1),
+            ctx.composition().render_settings().width.max(1),
+            ctx.composition().render_settings().height.max(1),
         );
         let output_format = ctx.output_format();
         // A memo's copy stays its own, since external output textures stand in for the output.

@@ -35,9 +35,9 @@ fn lumen_local_parses_composition_json() {
 }"#;
 
     let composition = json::parse(payload).expect("should parse composition JSON");
-    assert_eq!(composition.graph.nodes.len(), 2);
-    assert_eq!(composition.graph.connections.len(), 1);
-    assert_eq!(composition.timeline.duration_frames, 2);
-    assert_eq!(composition.render_settings.width, 2);
-    assert_eq!(composition.render_settings.height, 1);
+    assert_eq!(composition.graph().nodes.len(), 2);
+    assert_eq!(composition.graph().connections.len(), 1);
+    assert_eq!(composition.timeline().duration_frames, 2);
+    assert_eq!(composition.render_settings().width, 2);
+    assert_eq!(composition.render_settings().height, 1);
 }

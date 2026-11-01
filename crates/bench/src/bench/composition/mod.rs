@@ -57,7 +57,7 @@ async fn run_async() -> anyhow::Result<()> {
         let frames = args
             .frames
             .unwrap_or_else(|| fixture.default_frames(&composition))
-            .min(composition.timeline.duration_frames);
+            .min(composition.timeline().duration_frames);
 
         for mode in selected_modes(&args.modes) {
             if requires_unsupported_platform(mode) {

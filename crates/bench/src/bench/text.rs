@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use lumen_engine::{
-    composition::{Composition, RenderSettings, TimelineSettings},
+    composition::{CompositionBuilder, RenderSettings, TimelineSettings},
     expr::{Expression, ExpressionContext},
     gpu::GpuCompositionRenderer,
     graph::Graph,
@@ -177,7 +177,7 @@ fn run_case(case: BenchCase, iterations: usize, repeats: usize) -> anyhow::Resul
             source: lumen_engine::node::PortRef::new(NodeId::new(1), "output".to_string()),
         }),
     );
-    let composition = Composition::new(
+    let composition = CompositionBuilder::new(
         graph,
         TimelineSettings {
             fps: 30.0,
@@ -188,7 +188,9 @@ fn run_case(case: BenchCase, iterations: usize, repeats: usize) -> anyhow::Resul
             height: 900,
             background_color: [0; 4],
         },
-    );
+    )
+    .build()
+    .expect("valid benchmark composition");
     let mut renderer = if case == BenchCase::Layout {
         None
     } else {

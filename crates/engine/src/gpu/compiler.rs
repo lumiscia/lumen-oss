@@ -241,7 +241,7 @@ impl<'a> CompileContext<'a> {
         output_format: lumen_gpu::wgpu::TextureFormat,
         timeline_bounds: bool,
     ) -> Self {
-        let duration = composition.timeline.duration_frames;
+        let duration = composition.timeline().duration_frames;
         let bound_frames =
             (timeline_bounds && on_timeline(composition, frame) && duration <= MAX_UNION_FRAMES)
                 .then(|| {
@@ -273,11 +273,6 @@ impl<'a> CompileContext<'a> {
 
     /// Compiles a plan whose text atlas must be injected with `CompiledComposition::prepare_text_atlas`.
     pub fn compile(mut self) -> crate::Result<CompiledComposition> {
-        if let Err(mut errors) = self.composition.validate_structure() {
-            // Structural validation can report several independent problems. The public compiler
-            // error remains typed, so return the first one before traversing any graph edges.
-            return Err(errors.remove(0));
-        }
         let output_node = self.scope.media_output()?;
         let output_ref = PortRef::new(output_node, "output".to_string());
         let output = self
@@ -401,7 +396,7 @@ impl<'a> CompileContext<'a> {
         self.cache.pop(&self.builder);
         let output = output?;
         self.outputs.insert(key, output.clone());
-        if std::ptr::eq(self.scope.graph, &self.composition.graph) {
+        if std::ptr::eq(self.scope.graph, self.composition.graph()) {
             self.public_outputs
                 .entry(port.clone())
                 .or_insert_with(|| output.clone());
@@ -916,5 +911,7 @@ impl<'a> CompileContext<'a> {
 /// Whether `frame` is a whole frame of the composition's timeline, which bounds unioned over
 /// the timeline hold for.
 pub(crate) fn on_timeline(composition: &Composition, frame: f64) -> bool {
-    frame.fract() == 0.0 && frame >= 0.0 && frame < f64::from(composition.timeline.duration_frames)
+    frame.fract() == 0.0
+        && frame >= 0.0
+        && frame < f64::from(composition.timeline().duration_frames)
 }

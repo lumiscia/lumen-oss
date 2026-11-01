@@ -1,5 +1,5 @@
 use lumen_engine::{
-    composition::Composition,
+    composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
     node::{
         Deferred, NodeId, NodeKind,
@@ -128,7 +128,9 @@ fn build_small_media_transform(with_exposure: bool) -> Composition {
         })
         .expect("connect pipeline -> output");
 
-    Composition::new(graph, timeline(30.0, 1_200), render_1080p([0, 0, 0, 255]))
+    CompositionBuilder::new(graph, timeline(30.0, 1_200), render_1080p([0, 0, 0, 255]))
+        .build()
+        .expect("valid benchmark composition")
 }
 
 fn small_media_store() -> BenchmarkMediaStore {
@@ -151,19 +153,19 @@ mod tests {
         let composition = fixture.build();
         let media = fixture.media_store();
 
-        assert_eq!(composition.render_settings.width, 1920);
-        assert_eq!(composition.render_settings.height, 1080);
+        assert_eq!(composition.render_settings().width, 1920);
+        assert_eq!(composition.render_settings().height, 1080);
         let resolver = media.get_image_resolver(MEDIA_ID).unwrap();
         assert_eq!(resolver.metadata().width, MEDIA_WIDTH);
         assert_eq!(resolver.metadata().height, MEDIA_HEIGHT);
         assert!(
             composition
-                .graph
+                .graph()
                 .nodes
                 .values()
                 .any(|node| matches!(node, NodeKind::Transform(_)))
         );
-        let media_source_matches = composition.graph.nodes.values().any(|node| match node {
+        let media_source_matches = composition.graph().nodes.values().any(|node| match node {
             NodeKind::MediaIn(node) => {
                 matches!(&node.params.source, Deferred::Value(source) if source == MEDIA_ID)
             }
@@ -179,47 +181,48 @@ mod tests {
 
         assert_eq!(
             (
-                filtered.render_settings.width,
-                filtered.render_settings.height,
-                filtered.render_settings.background_color,
+                filtered.render_settings().width,
+                filtered.render_settings().height,
+                filtered.render_settings().background_color,
             ),
             (
-                direct.render_settings.width,
-                direct.render_settings.height,
-                direct.render_settings.background_color,
+                direct.render_settings().width,
+                direct.render_settings().height,
+                direct.render_settings().background_color,
             )
         );
-        assert_eq!(filtered.timeline.fps, direct.timeline.fps);
+        assert_eq!(filtered.timeline().fps, direct.timeline().fps);
         assert_eq!(
-            filtered.timeline.duration_frames,
-            direct.timeline.duration_frames
+            filtered.timeline().duration_frames,
+            direct.timeline().duration_frames
         );
-        assert_eq!(filtered.graph.nodes.len(), direct.graph.nodes.len() + 1);
+        assert_eq!(filtered.graph().nodes.len(), direct.graph().nodes.len() + 1);
         assert!(
             !direct
-                .graph
+                .graph()
                 .nodes
                 .values()
                 .any(|node| matches!(node, NodeKind::Exposure(_)))
         );
         assert!(
             filtered
-                .graph
+                .graph()
                 .nodes
                 .values()
                 .any(|node| matches!(node, NodeKind::Exposure(_)))
         );
-        let NodeKind::MediaOutput(direct_output) = direct.graph.nodes.get(&NodeId::new(4)).unwrap()
+        let NodeKind::MediaOutput(direct_output) =
+            direct.graph().nodes.get(&NodeId::new(4)).unwrap()
         else {
             panic!("expected direct media output")
         };
         let NodeKind::Exposure(filtered_exposure) =
-            filtered.graph.nodes.get(&NodeId::new(3)).unwrap()
+            filtered.graph().nodes.get(&NodeId::new(3)).unwrap()
         else {
             panic!("expected downstream exposure")
         };
         let NodeKind::MediaOutput(filtered_output) =
-            filtered.graph.nodes.get(&NodeId::new(4)).unwrap()
+            filtered.graph().nodes.get(&NodeId::new(4)).unwrap()
         else {
             panic!("expected filtered media output")
         };

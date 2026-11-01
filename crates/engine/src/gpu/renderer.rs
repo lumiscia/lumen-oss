@@ -8,7 +8,7 @@ use crate::{
     error::{GraphValidationError, RenderError},
     gpu::{
         BoundFrame, CompileContext, CompiledComposition, FrameBindContext, MediaTextureKey,
-        RasterHandle, RenderComposition, TimeRemapPath,
+        RasterHandle, TimeRemapPath,
         cache::{BindCache, CacheState, LayoutMemo, MemoSnapshots, skipped_count},
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
@@ -23,7 +23,7 @@ use super::media::GpuMediaFrameImporter;
 /// it was compiled from, whose params the plan binds.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CompiledPlanKey {
-    /// `composition_fingerprint` of the composition, covering every node's literal params and
+    /// `Composition::fingerprint` of the composition, covering every node's literal params and
     /// expression sources along with the canvases and timelines textures were sized for.
     composition: u64,
     /// Whether the frame is a whole frame of the timeline, so animated sources may be sized to
@@ -150,18 +150,17 @@ impl GpuCompositionRenderer {
         }
     }
 
-    pub fn compile(&mut self, composition: &impl RenderComposition) -> crate::Result<()> {
+    pub fn compile(&mut self, composition: &Composition) -> crate::Result<()> {
         self.compile_with_output_format(composition, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
     }
 
     pub fn compile_with_output_format(
         &mut self,
-        composition: &impl RenderComposition,
+        composition: &Composition,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        let (composition, fingerprint) = (composition.composition(), composition.fingerprint());
-        let key = self.compiled_plan_key(composition, fingerprint, 0.0, None)?;
+        let key = self.compiled_plan_key(composition, 0.0, None)?;
         self.plan_compile_count += 1;
         let compiled = CompileContext::with_options(composition, 0.0, None, output_format, true)
             .render_static(!self.reuse_static_output)
@@ -227,19 +226,13 @@ impl GpuCompositionRenderer {
 
     pub fn compile_with_media<M: MediaStore>(
         &mut self,
-        composition: &impl RenderComposition,
+        composition: &Composition,
         media: &M,
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        self.ensure_compiled_for_frame(
-            composition.composition(),
-            composition.fingerprint(),
-            0.0,
-            Some(media),
-            PlanUse::Render,
-        )
-        .map(drop)
+        self.ensure_compiled_for_frame(composition, 0.0, Some(media), PlanUse::Render)
+            .map(drop)
     }
 
     /// Drops every compiled plan and cached media texture, destroying the GPU textures and
@@ -424,13 +417,12 @@ impl GpuCompositionRenderer {
     /// budget. Never drops a cached plan, including stale ones, or changes the current one.
     pub fn precompile_frame<M: MediaStore>(
         &mut self,
-        composition: &impl RenderComposition,
+        composition: &Composition,
         frame: u32,
         media: &M,
     ) -> crate::Result<()> {
         self.ensure_compiled_for_frame(
-            composition.composition(),
-            composition.fingerprint(),
+            composition,
             f64::from(frame),
             Some(media),
             PlanUse::Lookahead,
@@ -440,7 +432,7 @@ impl GpuCompositionRenderer {
 
     pub fn precompile_frame_window<M: MediaStore>(
         &mut self,
-        composition: &impl RenderComposition,
+        composition: &Composition,
         start_frame: u32,
         frame_count: u32,
         media: &M,
@@ -451,13 +443,11 @@ impl GpuCompositionRenderer {
             frame_count,
             "precompile frame window"
         );
-        let (composition, fingerprint) = (composition.composition(), composition.fingerprint());
         for offset in 0..frame_count {
             let frame = start_frame.saturating_add(offset);
             // Later frames are unlikely to fit either, so stop rather than compile and discard them.
             if !self.ensure_compiled_for_frame(
                 composition,
-                fingerprint,
                 f64::from(frame),
                 Some(media),
                 PlanUse::Lookahead,
@@ -470,7 +460,7 @@ impl GpuCompositionRenderer {
 
     pub fn render_frame<M: MediaStore>(
         &mut self,
-        composition: &impl RenderComposition,
+        composition: &Composition,
         frame: u32,
         media: &M,
     ) -> crate::Result<RasterHandle> {
@@ -481,7 +471,7 @@ impl GpuCompositionRenderer {
     /// Renders at a fractional frame time; `frame` is in composition frames, not seconds.
     pub fn render_frame_at<M: MediaStore>(
         &mut self,
-        composition: &impl RenderComposition,
+        composition: &Composition,
         frame: f64,
         media: &M,
     ) -> crate::Result<RasterHandle> {
@@ -492,7 +482,7 @@ impl GpuCompositionRenderer {
 
     pub fn render_frame_submitted<M: MediaStore>(
         &mut self,
-        composition: &impl RenderComposition,
+        composition: &Composition,
         frame: u32,
         media: &M,
     ) -> crate::Result<(RasterHandle, lumen_gpu::wgpu::SubmissionIndex)> {
@@ -512,7 +502,7 @@ impl GpuCompositionRenderer {
 
     pub fn render_frame_into_external<M: MediaStore>(
         &mut self,
-        composition: &impl RenderComposition,
+        composition: &Composition,
         frame: u32,
         media: &M,
         external: lumen_gpu::ExternalTexture,
@@ -539,7 +529,7 @@ impl GpuCompositionRenderer {
 
     pub fn bind_frame<M: MediaStore>(
         &mut self,
-        composition: &impl RenderComposition,
+        composition: &Composition,
         frame: u32,
         media: &M,
     ) -> crate::Result<BoundFrame> {
@@ -550,18 +540,17 @@ impl GpuCompositionRenderer {
     /// inputs show the source frame displayed at that instant.
     pub fn bind_frame_at<M: MediaStore>(
         &mut self,
-        composition: &impl RenderComposition,
+        composition: &Composition,
         frame: f64,
         media: &M,
     ) -> crate::Result<BoundFrame> {
         if !(frame.is_finite() && frame >= 0.0) {
             return Err(RenderError::FrameOutOfRange {
                 frame: frame.max(0.0) as u32,
-                duration_frames: composition.composition().timeline.duration_frames,
+                duration_frames: composition.timeline().duration_frames,
             }
             .into());
         }
-        let (composition, fingerprint) = (composition.composition(), composition.fingerprint());
         self.bind_sequence += 1;
         // A font loaded while the plan compiles or the frame binds, here or by another renderer,
         // can widen text past the bounds the plan measured. The plan is then keyed by the new
@@ -569,14 +558,9 @@ impl GpuCompositionRenderer {
         let mut rebinds = 0;
         let mut bound = loop {
             let generation = text_font_generation();
-            self.ensure_compiled_for_frame(
-                composition,
-                fingerprint,
-                frame,
-                Some(media),
-                PlanUse::Render,
-            )?;
-            self.memo_snapshots.retain_composition(fingerprint);
+            self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
+            self.memo_snapshots
+                .retain_composition(composition.fingerprint());
             let prepared = self.active_prepared()?;
             let layout = &prepared.compiled.cache;
             let epoch = layout.epoch(&prepared.renderer);
@@ -593,7 +577,7 @@ impl GpuCompositionRenderer {
                         layout,
                         &prepared.cache,
                         epoch,
-                        fingerprint,
+                        composition.fingerprint(),
                         held,
                     )),
                 )?;
@@ -1021,18 +1005,16 @@ impl GpuCompositionRenderer {
 
     /// Makes the plan for `frame` resident and, when rendering, current. Returns false when
     /// lookahead skipped a plan that would not fit the budget.
-    /// `fingerprint` is the composition's `composition_fingerprint`.
     fn ensure_compiled_for_frame<M: MediaStore>(
         &mut self,
         composition: &Composition,
-        fingerprint: u64,
         frame: f64,
         media: Option<&M>,
         plan_use: PlanUse,
     ) -> crate::Result<bool> {
+        let fingerprint = composition.fingerprint();
         let key = self.compiled_plan_key(
             composition,
-            fingerprint,
             frame,
             media.map(|store| store as &dyn MediaStore),
         )?;
@@ -1127,7 +1109,6 @@ impl GpuCompositionRenderer {
     fn compiled_plan_key(
         &self,
         composition: &Composition,
-        fingerprint: u64,
         frame: f64,
         media: Option<&dyn MediaStore>,
     ) -> crate::Result<CompiledPlanKey> {
@@ -1146,7 +1127,7 @@ impl GpuCompositionRenderer {
         entries.sort();
         entries.dedup();
         Ok(CompiledPlanKey {
-            composition: fingerprint,
+            composition: composition.fingerprint(),
             on_timeline: super::compiler::on_timeline(composition, frame),
             text_font_generation: collector.has_text.then(text_font_generation).flatten(),
             entries,

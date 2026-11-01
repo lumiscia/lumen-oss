@@ -24,9 +24,6 @@ pub struct Graph {
     outgoing_connection_counts: HashMap<NodeId, usize>,
 }
 
-unsafe impl Sync for Graph {}
-unsafe impl Send for Graph {}
-
 impl Graph {
     pub fn new() -> Self {
         Self {

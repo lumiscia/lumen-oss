@@ -66,9 +66,9 @@ pub fn convert_project_payload(payload: &serde_json::Value) -> Result<ProjectBun
     })?;
     Ok(ProjectBundle {
         project: ProjectInfo {
-            width: composition.render_settings.width,
-            height: composition.render_settings.height,
-            duration_frames: composition.timeline.duration_frames,
+            width: composition.render_settings().width,
+            height: composition.render_settings().height,
+            duration_frames: composition.timeline().duration_frames,
         },
         composition,
     })

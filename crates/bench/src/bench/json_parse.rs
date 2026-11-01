@@ -34,11 +34,6 @@ impl Bench for JsonParseBench {
                 lumen_engine::json::parse(fixture.source)
                     .map_err(|error| anyhow!("failed to parse {}: {error}", fixture.name))
             })?;
-            setup.time("validate_structure", || {
-                composition
-                    .validate_structure()
-                    .map_err(|errors| anyhow!("validate {} failed: {errors:?}", fixture.name))
-            })?;
 
             let mut loop_timer = PhaseTimer::default();
             for _ in 0..args.iterations {
@@ -56,20 +51,21 @@ impl Bench for JsonParseBench {
             println!(
                 "json_parse_bench fixture={} nodes={} duration_frames={} width={} height={}",
                 fixture.name,
-                composition.graph.nodes.len(),
-                composition.timeline.duration_frames,
-                composition.render_settings.width,
-                composition.render_settings.height,
+                composition.graph().nodes.len(),
+                composition.timeline().duration_frames,
+                composition.render_settings().width,
+                composition.render_settings().height,
             );
 
             let cold = phase_first(&setup, "json_parse_cold").unwrap_or_default();
             let warm = phase_mean(&loop_timer, "json_parse").unwrap_or_default();
             summary.push_row(vec![
                 fixture.name.to_string(),
-                composition.graph.nodes.len().to_string(),
+                composition.graph().nodes.len().to_string(),
                 format!(
                     "{}×{}",
-                    composition.render_settings.width, composition.render_settings.height
+                    composition.render_settings().width,
+                    composition.render_settings().height
                 ),
                 format_duration(cold),
                 format_duration(warm),

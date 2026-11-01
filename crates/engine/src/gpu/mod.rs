@@ -6,7 +6,6 @@
 mod binding;
 mod cache;
 pub(crate) mod compiler;
-mod frozen;
 #[cfg(feature = "ffmpeg")]
 mod media;
 mod params;
@@ -20,7 +19,6 @@ mod types;
 
 pub use binding::FrameBindContext;
 pub use compiler::{CompileContext, GpuCompileNode};
-pub use frozen::{FrozenComposition, RenderComposition};
 pub use renderer::GpuCompositionRenderer;
 #[cfg(all(target_os = "linux", feature = "ffmpeg", feature = "vulkan"))]
 pub use target::VulkanVideoTarget;

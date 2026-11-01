@@ -1,5 +1,5 @@
 use lumen_engine::{
-    composition::Composition,
+    composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
     node::{
         Deferred, NodeId, NodeKind,
@@ -75,6 +75,8 @@ impl CompositionFixture for SimplePipeline {
             })
             .expect("connect exposure -> output");
 
-        Composition::new(graph, timeline(30.0, 120), render_720p([9, 17, 31, 255]))
+        CompositionBuilder::new(graph, timeline(30.0, 120), render_720p([9, 17, 31, 255]))
+            .build()
+            .expect("valid benchmark composition")
     }
 }

@@ -24,11 +24,11 @@ fn typescript_helper_expressions_round_trip() {
     let props = BTreeMap::from([("title".to_string(), ExpressionValue::String("Lumen".into()))]);
     let ctx = ExpressionContext {
         frame: fixture["frame"].as_f64().unwrap(),
-        fps: composition.timeline.fps,
-        width: composition.render_settings.width,
-        height: composition.render_settings.height,
-        duration_frames: composition.timeline.duration_frames,
-        graph: Some(&composition.graph),
+        fps: composition.timeline().fps,
+        width: composition.render_settings().width,
+        height: composition.render_settings().height,
+        duration_frames: composition.timeline().duration_frames,
+        graph: Some(composition.graph()),
         props: Some(&props),
         ..Default::default()
     };
