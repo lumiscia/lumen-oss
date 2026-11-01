@@ -3,7 +3,7 @@
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "vec2";
+export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "vec2";
 export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "clip" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
@@ -780,7 +780,8 @@ export interface NodeParamSpec {
   readonly name: string;
   readonly kind: NodeParamKind;
   readonly description: string;
-  readonly defaultValue: NodeLiteralValue;
+  /** Absent for params that are unset unless given. */
+  readonly defaultValue?: NodeLiteralValue;
   readonly enumOptions?: readonly NodeEnumOptionSpec[];
   readonly constraints?: ParamConstraintsSpec;
 }
@@ -1193,6 +1194,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "glyph_opacity"?: ExpressionValue<number>;
     readonly "glyph_rotation"?: ExpressionValue<number>;
     readonly "glyph_scale"?: ExpressionValue<Vec2>;
+    readonly "highlight"?: TextHighlight;
     readonly "letter_spacing"?: ExpressionValue<number>;
     readonly "line_height"?: ExpressionValue<number>;
     readonly "max_width"?: ExpressionValue<number>;
@@ -1204,6 +1206,8 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "render_mode"?: TextRenderMode;
     readonly "rotation"?: ExpressionValue<number>;
     readonly "scale"?: ExpressionValue<Vec2>;
+    readonly "strikethrough"?: TextLine;
+    readonly "underline"?: TextLine;
   };
 }
 
