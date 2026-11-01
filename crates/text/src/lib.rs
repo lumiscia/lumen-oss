@@ -2482,6 +2482,21 @@ mod tests {
         }
     }
 
+    /// A text system without system fonts, so text in scripts Roboto lacks measures the same on
+    /// every machine.
+    fn bundled_text_system() -> TextSystem {
+        let mut font_system = FontSystem::new_with_locale_and_db(
+            "en-US".into(),
+            cosmic_text::fontdb::Database::new(),
+        );
+        load_default_fonts(&mut font_system);
+        TextSystem {
+            font_system,
+            swash_cache: SwashCache::new(),
+            font_generation: 0,
+        }
+    }
+
     #[test]
     fn plain_text_measures_as_before_spans() {
         let mut system = TextSystem::new();
@@ -2695,7 +2710,7 @@ mod tests {
 
     #[test]
     fn justified_right_to_left_text_measures_its_ink() {
-        let mut system = TextSystem::new();
+        let mut system = bundled_text_system();
         let mut request = TextLayoutRequest::from_spans(vec![span("שלום עולם", 30.0)]);
         request.max_width = Some(260.0);
         request.align = TextAlign::Justified;
@@ -2736,7 +2751,7 @@ mod tests {
 
     #[test]
     fn bidi_text_with_negative_tracking_measures_as_before() {
-        let mut system = TextSystem::new();
+        let mut system = bundled_text_system();
         let mut request = TextLayoutRequest::from_spans(vec![TextSpan {
             letter_spacing: -1.5,
             ..span("\u{202a}שלום abc עולם\u{202c}", 30.0)
