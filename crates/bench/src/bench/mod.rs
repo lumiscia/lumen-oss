@@ -23,6 +23,6 @@ pub trait CompositionFixture {
         media::BenchmarkMediaStore::default()
     }
     fn default_frames(&self, composition: &lumen_engine::composition::Composition) -> u32 {
-        composition.timeline.duration_frames.min(90)
+        composition.timeline().duration_frames.min(90)
     }
 }

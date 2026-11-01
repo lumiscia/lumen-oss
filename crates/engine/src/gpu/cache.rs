@@ -18,7 +18,7 @@
 //!
 //! A memo's snapshot belongs to the renderer rather than to a plan: it is identified by the memo
 //! node and its path, and holds only across frames of the exact composition it was
-//! taken from, as fingerprinted by `composition_fingerprint`, and while the key keeps its value.
+//! taken from, as fingerprinted by `Composition::fingerprint`, and while the key keeps its value.
 //! A plan bound with a held key that does not have the snapshot yet copies it from a plan that
 //! does. Snapshots live in their plans' textures, so they count against the plan cache budget;
 //! once every plan holding one is evicted or recompiled, the next frame renders the source again
@@ -36,7 +36,7 @@
 //! frame.
 
 use std::collections::HashMap;
-use std::hash::{BuildHasher, Hasher};
+use std::hash::Hasher;
 
 use crate::{
     composition::Composition,
@@ -304,48 +304,6 @@ fn is_static_candidate(node: &NodeKind) -> bool {
     }
 }
 
-/// Identifies the exact content of a composition and its templates: their canvases, timelines,
-/// props, connections and every node's params, literal values and expression sources.
-pub(crate) fn composition_fingerprint(composition: &Composition) -> u64 {
-    use std::fmt::Write;
-
-    // Debug output spells out every param, expression and input. A fixed seed keeps fingerprints
-    // comparable across calls.
-    struct HashWriter(foldhash::quality::FoldHasher<'static>);
-    impl Write for HashWriter {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            self.0.write(text.as_bytes());
-            Ok(())
-        }
-    }
-
-    fn write_graph(out: &mut HashWriter, graph: &crate::graph::Graph) {
-        let mut nodes = graph.nodes.iter().collect::<Vec<_>>();
-        nodes.sort_unstable_by_key(|(id, _)| id.0);
-        let _ = write!(out, "{:?}", graph.connections);
-        for (id, node) in nodes {
-            let _ = write!(out, "{}{:?}", id.0, node);
-        }
-    }
-
-    let mut out = HashWriter(foldhash::quality::FixedState::with_seed(0).build_hasher());
-    let _ = write!(
-        out,
-        "{:?}{:?}",
-        composition.render_settings, composition.timeline
-    );
-    write_graph(&mut out, &composition.graph);
-    for (name, template) in &composition.compositions {
-        let _ = write!(
-            out,
-            "{name:?}{:?}{:?}{:?}",
-            template.render_settings, template.timeline, template.props
-        );
-        write_graph(&mut out, &template.graph);
-    }
-    out.0.finish()
-}
-
 /// A plan's instances and which of their output can be kept across frames.
 #[derive(Debug, Default)]
 pub(crate) struct CacheLayout {
@@ -422,7 +380,7 @@ pub(crate) struct MemoSnapshots(HashMap<MemoId, MemoSnapshot>);
 #[derive(Debug)]
 struct MemoSnapshot {
     key: u64,
-    /// `composition_fingerprint` of the composition the snapshot was taken from.
+    /// `Composition::fingerprint` of the composition the snapshot was taken from.
     fingerprint: u64,
     /// The plans whose memo texture holds the snapshot, with the epoch they copied it at.
     holders: HashMap<u64, u64>,
@@ -602,7 +560,7 @@ impl CacheState {
 #[derive(Debug, Clone)]
 pub(crate) struct BoundCache {
     epoch: u64,
-    /// `composition_fingerprint` of the composition the frame was bound from.
+    /// `Composition::fingerprint` of the composition the frame was bound from.
     fingerprint: u64,
     bound: Vec<bool>,
     /// Keyed memos that copy their source this frame, with their key.

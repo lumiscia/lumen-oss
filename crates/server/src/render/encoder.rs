@@ -144,13 +144,13 @@ pub(super) fn write_composited_audio_with(
     media_store: &LocalMediaStore,
     mut write_frame: impl FnMut(AudioFrame) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let Some(audio) = composition.audio.as_ref() else {
+    let Some(audio) = composition.audio() else {
         return Ok(());
     };
 
     let total_samples = duration_samples(
-        composition.timeline.duration_frames,
-        composition.timeline.fps,
+        composition.timeline().duration_frames,
+        composition.timeline().fps,
     );
     let mixer = AudioMixer::new(audio, media_store);
     let mut start_sample = 0_u64;
@@ -171,7 +171,7 @@ pub(super) fn write_composited_audio_with(
 
 pub(super) fn has_audio(composition: &Composition) -> bool {
     composition
-        .audio
+        .audio()
         .as_ref()
         .is_some_and(|audio| !audio.clips.is_empty())
 }

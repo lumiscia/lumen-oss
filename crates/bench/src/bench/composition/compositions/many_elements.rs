@@ -1,5 +1,5 @@
 use lumen_engine::{
-    composition::Composition,
+    composition::{Composition, CompositionBuilder},
     expr::Expression,
     graph::{Connection, Graph},
     node::{
@@ -36,7 +36,7 @@ impl CompositionFixture for ManyElements {
     }
 
     fn default_frames(&self, composition: &Composition) -> u32 {
-        composition.timeline.duration_frames.min(120)
+        composition.timeline().duration_frames.min(120)
     }
 
     fn build(&self) -> Composition {
@@ -198,6 +198,8 @@ impl CompositionFixture for ManyElements {
         );
         connect(&mut graph, scene, output, "source");
 
-        Composition::new(graph, timeline(60.0, 240), render_1080p([12, 14, 20, 255]))
+        CompositionBuilder::new(graph, timeline(60.0, 240), render_1080p([12, 14, 20, 255]))
+            .build()
+            .expect("valid benchmark composition")
     }
 }

@@ -20,8 +20,8 @@ use serde_json::{Map, Value};
 use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack},
     composition::{
-        Composition, CompositionMetadata, CompositionTemplate, PropDef, PropKind, RenderSettings,
-        TimelineSettings, declared_props,
+        Composition, CompositionBuilder, CompositionMetadata, CompositionTemplate, PropDef,
+        PropKind, RenderSettings, TimelineSettings, declared_props,
     },
     expr::{BuiltinFn, ExprNode, Expression, ExpressionValue, FunctionScope},
     graph::{Connection, Graph},
@@ -68,22 +68,27 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
         name: v.get("name").and_then(|n| n.as_str()).map(String::from),
     });
 
-    let mut comp = Composition::new(graph, timeline, render_settings);
-    comp.metadata = metadata;
-    comp.compositions = compositions;
-    comp.audio = root
+    let audio = root
         .get("audio")
-        .map(|audio| parse_audio_timeline(audio, comp.timeline.fps))
+        .map(|audio| parse_audio_timeline(audio, timeline.fps))
         .transpose()?;
-    if let Err(errors) = comp.validate_structure() {
+    CompositionBuilder {
+        graph,
+        timeline,
+        render_settings,
+        metadata,
+        audio,
+        compositions,
+    }
+    .build()
+    .map_err(|errors| {
         let details = errors
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("; ");
-        bail!("composition structure validation failed: {details}");
-    }
-    Ok(comp)
+        anyhow::anyhow!("composition structure validation failed: {details}")
+    })
 }
 
 /// Builds the nodes and connections of the root, or of a template whose props are `props`.
@@ -524,12 +529,12 @@ mod tests {
         }"#;
 
         let comp = parse(json).expect("should parse");
-        assert_eq!(comp.timeline.fps, 30.0);
-        assert_eq!(comp.timeline.duration_frames, 90);
-        assert_eq!(comp.render_settings.width, 1920);
-        assert_eq!(comp.render_settings.height, 1080);
-        assert_eq!(comp.graph.nodes.len(), 2);
-        assert_eq!(comp.graph.connections.len(), 1);
+        assert_eq!(comp.timeline().fps, 30.0);
+        assert_eq!(comp.timeline().duration_frames, 90);
+        assert_eq!(comp.render_settings().width, 1920);
+        assert_eq!(comp.render_settings().height, 1080);
+        assert_eq!(comp.graph().nodes.len(), 2);
+        assert_eq!(comp.graph().connections.len(), 1);
     }
 
     #[test]
@@ -564,7 +569,7 @@ mod tests {
         }"#;
 
         let comp = parse(json).expect("should parse");
-        let audio = comp.audio.expect("audio timeline");
+        let audio = comp.audio().expect("audio timeline");
         assert_eq!(audio.tracks[0].id, "track-1");
         assert!(audio.tracks[0].solo);
         assert_eq!(audio.clips[0].source_id, "voice");
@@ -599,10 +604,8 @@ mod tests {
             }))
         };
 
-        let audio = parse_audio(serde_json::json!(0), serde_json::json!(2.5))
-            .unwrap()
-            .audio
-            .unwrap();
+        let comp = parse_audio(serde_json::json!(0), serde_json::json!(2.5)).unwrap();
+        let audio = comp.audio().unwrap();
         assert_eq!(audio.tracks[0].volume, 0.0);
         assert_eq!(audio.clips[0].volume, 2.5);
 
@@ -652,7 +655,7 @@ mod tests {
         }"#;
 
         let comp = parse(json).expect("should parse");
-        let clip = &comp.audio.expect("audio timeline").clips[0];
+        let clip = &comp.audio().expect("audio timeline").clips[0];
         assert_eq!(clip.start_ms, 1_000);
         assert_eq!(clip.duration_ms, 500);
     }
@@ -678,7 +681,7 @@ mod tests {
         }"##;
 
         let comp = parse(json).expect("should parse");
-        assert_eq!(comp.graph.nodes.len(), 3);
+        assert_eq!(comp.graph().nodes.len(), 3);
     }
 
     #[test]
@@ -700,7 +703,7 @@ mod tests {
 
         let composition = parse(json).expect("should parse vec2 expression");
         let crate::node::NodeKind::Path(path) = composition
-            .graph
+            .graph()
             .nodes
             .get(&NodeId::new(1))
             .expect("path node")
@@ -715,7 +718,7 @@ mod tests {
                 height: 600,
                 duration_frames: 48,
                 path: Some("1.position".to_string()),
-                graph: Some(&composition.graph),
+                graph: Some(composition.graph()),
                 media: None,
                 glyph: None,
                 props: None,
@@ -750,7 +753,7 @@ mod tests {
         }"#;
 
         let comp = parse(json).expect("should parse");
-        assert_eq!(comp.graph.nodes.len(), 4);
+        assert_eq!(comp.graph().nodes.len(), 4);
     }
 
     #[test]
@@ -770,7 +773,7 @@ mod tests {
         }"#;
 
         let comp = parse(json).expect("should parse");
-        let opacity = comp.graph.nodes.get(&NodeId::new(2)).expect("opacity");
+        let opacity = comp.graph().nodes.get(&NodeId::new(2)).expect("opacity");
         assert!(matches!(opacity, crate::node::NodeKind::Opacity(_)));
         assert_eq!(
             opacity.input_ports(),
@@ -800,7 +803,7 @@ mod tests {
         }"#;
 
         let comp = parse(json).expect("should parse");
-        let merge = comp.graph.nodes.get(&NodeId::new(3)).expect("merge");
+        let merge = comp.graph().nodes.get(&NodeId::new(3)).expect("merge");
         assert!(matches!(
             merge,
             crate::node::NodeKind::Merge(node)
@@ -960,7 +963,7 @@ mod tests {
         let timeline = r#"{ "fps": 30, "duration_frames": 10 }"#;
         let json = composition_json(timeline, r#"{ "width": 100, "height": 100 }"#);
         assert_eq!(
-            parse(&json).unwrap().render_settings.background_color,
+            parse(&json).unwrap().render_settings().background_color,
             [0, 0, 0, 255]
         );
 
@@ -997,9 +1000,9 @@ mod tests {
             r#"{ "width": 100.0, "height": 50.0 }"#,
         ))
         .unwrap();
-        assert_eq!(comp.timeline.duration_frames, 10);
+        assert_eq!(comp.timeline().duration_frames, 10);
         assert_eq!(
-            (comp.render_settings.width, comp.render_settings.height),
+            (comp.render_settings().width, comp.render_settings().height),
             (100, 50)
         );
     }
@@ -1045,7 +1048,7 @@ mod tests {
     #[test]
     fn parses_the_clips_demo() {
         let comp = parse(include_str!("../../../local/demo/clips.json")).expect("should parse");
-        assert!(comp.compositions.contains_key("title_card"));
+        assert!(comp.compositions().contains_key("title_card"));
     }
 
     #[test]
@@ -1055,13 +1058,13 @@ mod tests {
             card_nodes("=rgb(prop('index'), 0, 0)"),
         ))
         .unwrap();
-        let card = &comp.compositions["card"];
+        let card = &comp.compositions()["card"];
         assert!(matches!(
             card.graph.nodes[&NodeId::new(1)],
             NodeKind::Background(_)
         ));
         assert!(matches!(
-            comp.graph.nodes[&NodeId::new(1)],
+            comp.graph().nodes[&NodeId::new(1)],
             NodeKind::Clip(_)
         ));
         assert_eq!(card.props["index"].default, ExpressionValue::Number(0.0));
@@ -1187,19 +1190,20 @@ mod tests {
     }
 
     #[test]
-    fn validate_structure_rejects_templates_that_instantiate_themselves() {
+    fn build_rejects_templates_that_instantiate_themselves() {
         let mut comp = parse_value(&clip_composition(
             serde_json::json!({ "composition": "card" }),
             card_nodes("#000000"),
         ))
-        .unwrap();
+        .unwrap()
+        .into_builder();
         let NodeKind::Clip(clip) = &comp.graph.nodes[&NodeId::new(1)] else {
             unreachable!("node 1 is the clip");
         };
         let clip = NodeKind::Clip(clip.clone());
         let card = comp.compositions.get_mut("card").unwrap();
         card.graph.nodes.insert(NodeId::new(1), clip);
-        let errors = comp.validate_structure().unwrap_err();
+        let errors = comp.build().unwrap_err();
         assert!(
             errors
                 .iter()
@@ -1242,7 +1246,7 @@ mod tests {
             ))
             .unwrap();
             let scope = crate::scope::Scope::root(&comp);
-            let NodeKind::Clip(clip) = &comp.graph.nodes[&NodeId::new(1)] else {
+            let NodeKind::Clip(clip) = &comp.graph().nodes[&NodeId::new(1)] else {
                 unreachable!("node 1 is the clip");
             };
             clip.route(&scope, frame.into(), None).unwrap().is_some()
@@ -1291,10 +1295,14 @@ mod tests {
         ))
         .unwrap();
         let scope = crate::scope::Scope::root(&comp);
-        let error =
-            crate::scope::route(&scope, &comp.graph.nodes[&NodeId::new(1)], 0.0.into(), None)
-                .unwrap_err()
-                .to_string();
+        let error = crate::scope::route(
+            &scope,
+            &comp.graph().nodes[&NodeId::new(1)],
+            0.0.into(),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(
             error.contains("prop `index`: expected a number, got string"),
             "{error}"

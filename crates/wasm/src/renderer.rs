@@ -53,9 +53,9 @@ impl LumenRenderer {
         let composition =
             composition_json_to_composition(composition_json).map_err(|e| JsValue::from_str(&e))?;
 
-        self.width = composition.render_settings.width as usize;
-        self.height = composition.render_settings.height as usize;
-        self.duration_frames = composition.timeline.duration_frames;
+        self.width = composition.render_settings().width as usize;
+        self.height = composition.render_settings().height as usize;
+        self.duration_frames = composition.timeline().duration_frames;
         tracing::debug!(
             target: "lumen_wasm",
             width = self.width,
@@ -267,8 +267,8 @@ impl SurfaceCompositionRenderer {
         let format = self.gpu.config.format;
         self.gpu.prepare(
             canvas,
-            composition.render_settings.width,
-            composition.render_settings.height,
+            composition.render_settings().width,
+            composition.render_settings().height,
         )?;
         if self.needs_compile || self.gpu.config.format != format {
             tracing::debug!(target: "lumen_wasm", frame, "recompile on existing GPU device");
@@ -451,7 +451,7 @@ pub(crate) fn collect_requirement_window(
     lookahead_count: u32,
 ) -> Result<FrameRequirementsPayload, JsValue> {
     let mut requirements = lumen_engine::media::FrameRequirements::default();
-    let duration = composition.timeline.duration_frames;
+    let duration = composition.timeline().duration_frames;
     let last_frame = if duration == 0 {
         frame
     } else {

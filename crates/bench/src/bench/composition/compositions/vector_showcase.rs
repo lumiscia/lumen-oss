@@ -1,5 +1,5 @@
 use lumen_engine::{
-    composition::Composition,
+    composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
     node::{
         Deferred, NodeId, NodeKind,
@@ -164,6 +164,8 @@ impl CompositionFixture for VectorShowcase {
             })
             .expect("connect multimerge -> output");
 
-        Composition::new(graph, timeline(30.0, 180), render_720p([8, 10, 18, 255]))
+        CompositionBuilder::new(graph, timeline(30.0, 180), render_720p([8, 10, 18, 255]))
+            .build()
+            .expect("valid benchmark composition")
     }
 }

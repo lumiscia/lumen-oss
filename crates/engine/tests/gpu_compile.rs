@@ -1,5 +1,5 @@
 use lumen_engine::{
-    composition::{Composition, RenderSettings, TimelineSettings},
+    composition::{Composition, CompositionBuilder, RenderSettings, TimelineSettings},
     error::{GraphValidationError, LumenError, PropertyError},
     expr::Expression,
     gpu::{AlphaMode, CompileContext, FrameBindContext},
@@ -111,7 +111,7 @@ impl std::ops::DerefMut for TestRenderer {
 }
 
 #[test]
-fn compiler_rejects_cycle_before_recursive_port_traversal() {
+fn build_rejects_cycle_before_recursive_port_traversal() {
     let first = NodeId::new(1);
     let second = NodeId::new(2);
     let output = NodeId::new(3);
@@ -161,7 +161,7 @@ fn compiler_rejects_cycle_before_recursive_port_traversal() {
     ] {
         graph.connect(connection).unwrap();
     }
-    let composition = Composition::new(
+    let errors = CompositionBuilder::new(
         graph,
         TimelineSettings {
             fps: 30.0,
@@ -172,14 +172,14 @@ fn compiler_rejects_cycle_before_recursive_port_traversal() {
             height: 100,
             background_color: [0, 0, 0, 255],
         },
-    );
-
-    let error = CompileContext::new(&composition)
-        .compile()
-        .expect_err("cyclic graph must be rejected before compilation");
+    )
+    .build()
+    .expect_err("cyclic graph must be rejected before compilation");
     assert!(matches!(
-        error,
-        LumenError::GraphValidation(GraphValidationError::Cycle { .. })
+        errors.as_slice(),
+        [LumenError::GraphValidation(
+            GraphValidationError::Cycle { .. }
+        )]
     ));
 }
 
@@ -238,7 +238,7 @@ fn compiles_background_exposure_media_output_to_gpu_plan() {
             to_port: "source".to_string(),
         })
         .unwrap();
-    let composition = Composition::new(
+    let composition = CompositionBuilder::new(
         graph,
         TimelineSettings {
             fps: 24.0,
@@ -249,7 +249,9 @@ fn compiles_background_exposure_media_output_to_gpu_plan() {
             height: 4,
             background_color: [0, 0, 0, 255],
         },
-    );
+    )
+    .build()
+    .expect("valid test composition");
 
     let compiled = CompileContext::new(&composition).compile().unwrap();
 
@@ -321,7 +323,7 @@ fn frame_binding_updates_expression_uniforms_without_recompile() {
             to_port: "source".to_string(),
         })
         .unwrap();
-    let composition = Composition::new(
+    let composition = CompositionBuilder::new(
         graph,
         TimelineSettings {
             fps: 24.0,
@@ -332,7 +334,9 @@ fn frame_binding_updates_expression_uniforms_without_recompile() {
             height: 4,
             background_color: [0, 0, 0, 255],
         },
-    );
+    )
+    .build()
+    .expect("valid test composition");
     let compiled = CompileContext::new(&composition).compile().unwrap();
 
     let frame_zero = FrameBindContext::new(&composition, 0)
@@ -408,7 +412,7 @@ fn compiles_media_input_as_frame_texture_boundary() {
             to_port: "source".to_string(),
         })
         .unwrap();
-    let composition = Composition::new(
+    let composition = CompositionBuilder::new(
         graph,
         TimelineSettings {
             fps: 24.0,
@@ -419,7 +423,9 @@ fn compiles_media_input_as_frame_texture_boundary() {
             height: 9,
             background_color: [0, 0, 0, 255],
         },
-    );
+    )
+    .build()
+    .expect("valid test composition");
 
     let compiled = CompileContext::new(&composition).compile().unwrap();
 
@@ -492,7 +498,7 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
         }),
     );
 
-    let composition = Composition::new(
+    let composition = CompositionBuilder::new(
         graph,
         TimelineSettings {
             fps: 24.0,
@@ -503,7 +509,9 @@ fn compiles_media_input_to_native_domain_when_media_metadata_is_available() {
             height: 1080,
             background_color: [0, 0, 0, 255],
         },
-    );
+    )
+    .build()
+    .expect("valid test composition");
     let store = TestMediaStore::image("plate", 320, 180);
     let compiled = CompileContext::with_media(
         &composition,
@@ -1693,9 +1701,10 @@ fn text_rejects_stale_upload_after_atlas_slot_reuse() {
             source: PortRef::new(text, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = 512;
     composition.render_settings.height = 512;
+    let composition = composition.build().unwrap();
     let older = renderer
         .bind_frame(&composition, 0, &EmptyMediaStore)
         .unwrap();
@@ -1785,9 +1794,10 @@ fn text_rejects_stale_upload_from_another_compiled_plan() {
             })
             .unwrap();
     }
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = 64;
     composition.render_settings.height = 64;
+    let composition = composition.build().unwrap();
     let older = renderer
         .bind_frame(&composition, 0, &EmptyMediaStore)
         .unwrap();
@@ -1856,7 +1866,7 @@ fn text_msdf_coverage_matches_raster_for_plain_italic_and_variable_weight() {
         ("Inter", TextFontStyle::Normal, 850),
     ] {
         for size in [24.0, 72.0, 144.0] {
-            let mut composition = text_test_composition(TextParamsDelegate {
+            let composition = text_test_composition(TextParamsDelegate {
                 content: Deferred::value("AV text 28".to_string()),
                 font_family: Deferred::value(family.to_string()),
                 font_style: style.into(),
@@ -1873,11 +1883,14 @@ fn text_msdf_coverage_matches_raster_for_plain_italic_and_variable_weight() {
                 )
                 .unwrap();
             let raster = render_rgba8(&mut renderer, &composition, 0, &InterFont);
+            let mut composition = composition.into_builder();
             let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(1)).unwrap()
             else {
                 unreachable!()
             };
             text.params.render_mode = TextRenderMode::Msdf.into();
+            let composition = composition.build().unwrap();
+
             renderer
                 .compile_with_media(
                     &composition,
@@ -1949,9 +1962,10 @@ fn text_test_composition(params: TextParamsDelegate) -> Composition {
             source: PortRef::new(NodeId::new(1), "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = 1024;
     composition.render_settings.height = 256;
+    let composition = composition.build().unwrap();
     composition
 }
 
@@ -2014,7 +2028,8 @@ fn text_nodes_share_one_fixed_atlas_with_large_second_node() {
         content: Deferred::value("Atlas W".to_string()),
         font_size: Deferred::value(72.0),
         ..Default::default()
-    });
+    })
+    .into_builder();
     composition.graph.nodes.insert(
         NodeId::new(3),
         NodeKind::Text(Text {
@@ -2041,6 +2056,7 @@ fn text_nodes_share_one_fixed_atlas_with_large_second_node() {
         unreachable!()
     };
     output.source = PortRef::new(NodeId::new(4), "output".to_string());
+    let composition = composition.build().unwrap();
     let initial = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
     let atlas_resources: Vec<_> = renderer
         .compiled()
@@ -2081,12 +2097,15 @@ fn text_nodes_share_one_fixed_atlas_with_large_second_node() {
         initial,
         render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore)
     );
+    let mut composition = composition.into_builder();
     let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(3)).unwrap() else {
         unreachable!()
     };
     text.params.content = Deferred::value("W".to_string());
     text.params.font_size = Deferred::value(3800.0);
+    let composition = composition.build().unwrap();
     renderer.release_resources();
+
     let bound = renderer
         .bind_frame(&composition, 0, &EmptyMediaStore)
         .unwrap();
@@ -2154,7 +2173,7 @@ fn text_atlas_overflow_does_not_thrash_on_repeated_binds() {
         return;
     };
     const CONTENT: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    let mut composition = text_test_composition(TextParamsDelegate {
+    let composition = text_test_composition(TextParamsDelegate {
         content: Deferred::value(CONTENT.to_string()),
         font_size: Deferred::value(1800.0),
         ..Default::default()
@@ -2175,11 +2194,13 @@ fn text_atlas_overflow_does_not_thrash_on_repeated_binds() {
         assert_eq!(repeated.texture_upload_count(), 0);
         renderer.upload_bound_frame(&repeated).unwrap();
     }
+    let mut composition = composition.into_builder();
     let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(1)).unwrap() else {
         unreachable!()
     };
     text.params.content = Deferred::value("W".to_string());
     text.params.font_size = Deferred::value(20000.0);
+    let composition = composition.build().unwrap();
     renderer.release_resources();
     for frame in 4..7 {
         let oversized = renderer
@@ -2193,10 +2214,12 @@ fn text_atlas_overflow_does_not_thrash_on_repeated_binds() {
         );
         renderer.upload_bound_frame(&oversized).unwrap();
     }
+    let mut composition = composition.into_builder();
     let NodeKind::Text(text) = composition.graph.nodes.get_mut(&NodeId::new(1)).unwrap() else {
         unreachable!()
     };
     text.params.font_size = Deferred::value(72.0);
+    let composition = composition.build().unwrap();
     renderer.release_resources();
     let recovered = renderer
         .bind_frame(&composition, 7, &EmptyMediaStore)
@@ -2466,9 +2489,10 @@ fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
             source: PortRef::new(text, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = 160;
     composition.render_settings.height = 80;
+    let composition = composition.build().unwrap();
 
     let compiled = CompileContext::new(&composition).compile().unwrap();
     let bound = FrameBindContext::new(&composition, 0)
@@ -2598,9 +2622,10 @@ fn polygon_shape_renders_its_points_instead_of_a_rectangle() {
             source: PortRef::new(shape, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = 16;
     composition.render_settings.height = 16;
+    let composition = composition.build().unwrap();
 
     let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
     let pixel = |x: usize, y: usize| &pixels[(y * 16 + x) * 4..][..4];
@@ -2647,9 +2672,10 @@ fn small_shape_compiles_to_a_texture_and_dispatch_around_its_bounds() {
             source: PortRef::new(shape, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = 1920;
     composition.render_settings.height = 1080;
+    let composition = composition.build().unwrap();
 
     let compiled = CompileContext::new(&composition).compile().unwrap();
     let raster = compiled
@@ -2770,9 +2796,10 @@ impl ScaledFontStore {
                 source: PortRef::new(text, "output".to_string()),
             }),
         );
-        let mut composition = test_composition(graph);
+        let mut composition = test_composition(graph).into_builder();
         composition.render_settings.width = 640;
         composition.render_settings.height = 360;
+        let composition = composition.build().unwrap();
         composition
     }
 }
@@ -2950,9 +2977,10 @@ fn bounded_text_is_remeasured_after_binding_loads_a_font() {
                 source: PortRef::new(merge, "output".to_string()),
             }),
         );
-        let mut composition = test_composition(graph);
+        let mut composition = test_composition(graph).into_builder();
         composition.render_settings.width = 256;
         composition.render_settings.height = 192;
+        let composition = composition.build().unwrap();
         composition
     };
     let store = ScaledFontStore::new("Roboto", 2)
@@ -3004,9 +3032,10 @@ fn bounded_text_is_remeasured_after_another_renderer_loads_a_font() {
                 source: PortRef::new(text, "output".to_string()),
             }),
         );
-        let mut composition = test_composition(graph);
+        let mut composition = test_composition(graph).into_builder();
         composition.render_settings.width = 256;
         composition.render_settings.height = 192;
+        let composition = composition.build().unwrap();
         composition
     };
     let Some(mut renderer) = gpu_composition_renderer() else {
@@ -3136,10 +3165,11 @@ fn render_transformed_small_shape(
             source: PortRef::new(transform, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = 256;
     composition.render_settings.height = 192;
     composition.timeline.duration_frames = 2;
+    let composition = composition.build().unwrap();
     Some(render_rgba8(
         &mut renderer,
         &composition,
@@ -3212,14 +3242,14 @@ fn moving_shape_composition(
             source: PortRef::new(shape, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = 128;
     composition.render_settings.height = 64;
     composition.timeline = TimelineSettings {
         fps,
         duration_frames,
     };
-    composition
+    composition.build().unwrap()
 }
 
 fn pixel_alpha(pixels: &[u8], width: u32, x: u32, y: u32) -> u8 {
@@ -3231,23 +3261,27 @@ fn animated_bounds_follow_timeline_edits() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
     };
-    let mut composition =
+    let composition =
         moving_shape_composition("vec2(10 + frame * 10, 20)", Deferred::value(8), 24.0, 2);
     render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
 
+    let mut composition = composition.into_builder();
     composition.timeline.duration_frames = 10;
+    let composition = composition.build().unwrap();
     let pixels = render_rgba8(&mut renderer, &composition, 8, &EmptyMediaStore);
     assert!(
         pixel_alpha(&pixels, 128, 94, 24) > 0,
         "duration edit clipped the shape"
     );
 
-    let mut composition =
+    let composition =
         moving_shape_composition("vec2(10 + time * 100, 20)", Deferred::value(8), 24.0, 10);
     renderer.release_resources();
     render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
 
+    let mut composition = composition.into_builder();
     composition.timeline.fps = 12.0;
+    let composition = composition.build().unwrap();
     let pixels = render_rgba8(&mut renderer, &composition, 8, &EmptyMediaStore);
     assert!(
         pixel_alpha(&pixels, 128, 80, 24) > 0,
@@ -3266,7 +3300,8 @@ fn animated_bounds_follow_referenced_node_edits() {
         Deferred::Expr(Expression::parse("node(99, \"width\")").unwrap()),
         24.0,
         2,
-    );
+    )
+    .into_builder();
     composition.graph.nodes.insert(
         referenced,
         NodeKind::Shape(Shape {
@@ -3277,12 +3312,15 @@ fn animated_bounds_follow_referenced_node_edits() {
             },
         }),
     );
+    let composition = composition.build().unwrap();
     render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
 
+    let mut composition = composition.into_builder();
     let Some(NodeKind::Shape(shape)) = composition.graph.nodes.get_mut(&referenced) else {
         unreachable!("the referenced node is a shape");
     };
     shape.params.width = Deferred::value(100);
+    let composition = composition.build().unwrap();
     let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
     assert!(
         pixel_alpha(&pixels, 128, 100, 24) > 0,
@@ -3331,9 +3369,10 @@ fn render_shape_rgba8(params: ShapeParamsDelegate, width: u32, height: u32) -> O
             source: PortRef::new(shape, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = width;
     composition.render_settings.height = height;
+    let composition = composition.build().unwrap();
     Some(render_rgba8(
         &mut renderer,
         &composition,
@@ -3424,9 +3463,10 @@ fn polygon_shape_with_invalid_points_draws_nothing_without_stale_geometry() {
             source: PortRef::new(shape, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = 16;
     composition.render_settings.height = 16;
+    let composition = composition.build().unwrap();
 
     for (frame, expected) in [
         (0, [255, 0, 0, 255]),
@@ -3772,7 +3812,8 @@ fn crop_then_resize(
         }),
         8,
         4,
-    );
+    )
+    .into_builder();
     let [x, y, width, height] = resize;
     composition.graph.nodes.insert(
         resize_id,
@@ -3796,7 +3837,7 @@ fn crop_then_resize(
             source: PortRef::new(resize_id, "output".to_string()),
         }),
     );
-    composition
+    composition.build().unwrap()
 }
 
 fn values(values: [i64; 4]) -> [Deferred<i64>; 4] {
@@ -4263,9 +4304,10 @@ fn render_matte_on(
             source: PortRef::new(merge, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = canvas_width as u32;
     composition.render_settings.height = MASK_CANVAS_HEIGHT as u32;
+    let composition = composition.build().unwrap();
     let Some(mut renderer) = gpu_composition_renderer() else {
         return Vec::new();
     };
@@ -4757,9 +4799,10 @@ fn render_boolean_alpha(a: (f64, i64), b: (f64, i64), params: BooleanParamsDeleg
             source: PortRef::new(boolean, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = MASK_CANVAS_WIDTH as u32;
     composition.render_settings.height = MASK_CANVAS_HEIGHT as u32;
+    let composition = composition.build().unwrap();
     let Some(mut renderer) = gpu_composition_renderer() else {
         return Vec::new();
     };
@@ -4990,7 +5033,7 @@ fn solid(id: NodeId, color: [u8; 4]) -> NodeKind {
 }
 
 fn test_composition(graph: Graph) -> Composition {
-    Composition::new(
+    CompositionBuilder::new(
         graph,
         TimelineSettings {
             fps: 24.0,
@@ -5002,6 +5045,8 @@ fn test_composition(graph: Graph) -> Composition {
             background_color: [0, 0, 0, 255],
         },
     )
+    .build()
+    .expect("valid test composition")
 }
 
 #[derive(Debug, Clone)]
@@ -5100,9 +5145,10 @@ fn render_drawable_frame(
             source: PortRef::new(last, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = size;
     composition.render_settings.height = size;
+    let composition = composition.build().unwrap();
     renderer
         .compile_with_media(
             &composition,
@@ -6419,9 +6465,11 @@ fn text_glyphs_larger_than_the_atlas_still_draw() {
         font_size: Deferred::value(6000.0),
         position: Deferred::value((-700.0, -2000.0)),
         ..Default::default()
-    });
+    })
+    .into_builder();
     composition.render_settings.width = 256;
     composition.render_settings.height = 256;
+    let composition = composition.build().unwrap();
     let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
     let inked = pixels
         .as_chunks::<4>()
@@ -6448,9 +6496,11 @@ fn text_msdf_corners_stay_within_a_pixel_of_raster_at_1000px() {
             position: Deferred::value((20.0, -180.0)),
             render_mode: mode.into(),
             ..Default::default()
-        });
+        })
+        .into_builder();
         composition.render_settings.width = width as u32;
         composition.render_settings.height = height as u32;
+        let composition = composition.build().unwrap();
         renderer
             .compile_with_media(
                 &composition,
@@ -6576,9 +6626,10 @@ fn render_blur_case(case: BlurCase) -> Vec<u8> {
             source: PortRef::new(effect, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = case.canvas;
     composition.render_settings.height = case.canvas;
+    let composition = composition.build().unwrap();
     let Some(mut renderer) = gpu_composition_renderer() else {
         return Vec::new();
     };
@@ -7995,8 +8046,9 @@ fn switch_composition(plans: u32) -> Composition {
             source: PortRef::new(switch, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.timeline.duration_frames = 120;
+    let composition = composition.build().unwrap();
     composition
 }
 
@@ -8129,8 +8181,9 @@ fn animated_shader_composition(bits: u64) -> Composition {
         output,
         NodeKind::MediaOutput(MediaOutput { id: output, source }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.timeline.duration_frames = 1 << (bits + 1);
+    let composition = composition.build().unwrap();
     composition
 }
 
@@ -8183,9 +8236,10 @@ fn shrinking_the_canvas_forgets_rejected_plan_estimates() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
     };
-    let mut composition = switch_composition(9);
+    let mut composition = switch_composition(9).into_builder();
     composition.render_settings.width = 1024;
     composition.render_settings.height = 1024;
+    let composition = composition.build().unwrap();
     renderer
         .render_frame(&composition, 0, &EmptyMediaStore)
         .unwrap();
@@ -8196,8 +8250,10 @@ fn shrinking_the_canvas_forgets_rejected_plan_estimates() {
         .unwrap();
     assert_eq!(renderer.cached_plan_count(), 1);
 
+    let mut composition = composition.into_builder();
     composition.render_settings.width = 8;
     composition.render_settings.height = 4;
+    let composition = composition.build().unwrap();
     renderer
         .precompile_frame(&composition, 1, &EmptyMediaStore)
         .unwrap();
@@ -8209,16 +8265,19 @@ fn resizing_the_canvas_does_not_reuse_the_old_plan() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
     };
-    let mut composition = switch_composition(9);
+    let mut composition = switch_composition(9).into_builder();
     composition.render_settings.width = 8;
     composition.render_settings.height = 4;
+    let composition = composition.build().unwrap();
     let raster = renderer
         .render_frame(&composition, 0, &EmptyMediaStore)
         .unwrap();
     assert_eq!(raster.domain.storage_size, lumen_gpu::Size::new(8, 4));
 
+    let mut composition = composition.into_builder();
     composition.render_settings.width = 16;
     composition.render_settings.height = 8;
+    let composition = composition.build().unwrap();
     let raster = renderer
         .render_frame(&composition, 0, &EmptyMediaStore)
         .unwrap();
@@ -9113,10 +9172,11 @@ fn render_bounded_effect(
             source: PortRef::new(effect, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = 384;
     composition.render_settings.height = 288;
     composition.timeline.duration_frames = case.duration_frames;
+    let composition = composition.build().unwrap();
     let mut renderer = gpu_composition_renderer()?;
     let pixels = frames
         .iter()
@@ -9412,12 +9472,14 @@ fn render_blurred_text(
             source: PortRef::new(effect, "output".to_string()),
         }),
     );
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     (
         composition.render_settings.width,
         composition.render_settings.height,
     ) = case.canvas;
+    let composition = composition.build().unwrap();
     let mut renderer = gpu_composition_renderer()?;
+
     let pixels = frames
         .iter()
         .map(|&frame| render_rgba8(&mut renderer, &composition, frame, &BlurFont))
@@ -9898,15 +9960,17 @@ fn clip_definition_edits_rebuild_the_plan() {
         }),
     ];
     for (composition, edit) in edits {
-        let mut composition = lumen_engine::json::parse_value(&composition).unwrap();
+        let composition = lumen_engine::json::parse_value(&composition).unwrap();
         let Some(mut renderer) = gpu_composition_renderer() else {
             return;
         };
         render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+        let mut composition = composition.into_builder();
         let Some(NodeKind::Clip(clip)) = composition.graph.nodes.get_mut(&NodeId::new(1)) else {
             unreachable!("node 1 is the clip");
         };
         edit(&mut clip.params);
+        let composition = composition.build().unwrap();
         let edited = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
         let mut fresh = gpu_composition_renderer().unwrap();
         let expected = render_rgba8(&mut fresh, &composition, 0, &EmptyMediaStore);
@@ -10050,15 +10114,17 @@ fn clip_props_reading_other_nodes_do_not_bound_the_template() {
         .as_array_mut()
         .unwrap()
         .push(json!({ "id": 99, "type": "shape", "params": { "width": 2 } }));
-    let mut composition = lumen_engine::json::parse_value(&composition).unwrap();
+    let composition = lumen_engine::json::parse_value(&composition).unwrap();
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
     };
     render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let mut composition = composition.into_builder();
     let Some(NodeKind::Shape(shape)) = composition.graph.nodes.get_mut(&NodeId::new(99)) else {
         unreachable!("node 99 is the shape");
     };
     shape.params.width = Deferred::value(20);
+    let composition = composition.build().unwrap();
     let edited = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
     let expected = render_rgba8(
         &mut gpu_composition_renderer().unwrap(),
@@ -10152,9 +10218,10 @@ fn cache_composition(nodes: Vec<NodeKind>) -> Composition {
     for node in nodes {
         graph.nodes.insert(node.id(), node);
     }
-    let mut composition = test_composition(graph);
+    let mut composition = test_composition(graph).into_builder();
     composition.render_settings.width = CACHE_CANVAS.0;
     composition.render_settings.height = CACHE_CANVAS.1;
+    let composition = composition.build().unwrap();
     composition
 }
 
@@ -10345,7 +10412,7 @@ fn kept_text_is_drawn_again_after_its_font_loads() {
     };
     let mut reference = gpu_composition_renderer().unwrap();
     let store = ScaledFontStore::new("Cachey", 2);
-    let mut composition = store.composition(0.0, true);
+    let mut composition = store.composition(0.0, true).into_builder();
     let output = composition.graph.nodes.remove(&NodeId::new(2)).unwrap();
     let NodeKind::MediaOutput(output) = output else {
         unreachable!();
@@ -10367,8 +10434,10 @@ fn kept_text_is_drawn_again_after_its_font_loads() {
         .graph
         .nodes
         .insert(output.id, output_node(output.id, 4));
+    let composition = composition.build().unwrap();
 
     let unloaded = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+
     render_rgba8(&mut renderer, &composition, 1, &EmptyMediaStore);
     let loaded = render_rgba8(&mut renderer, &composition, 2, &store);
     assert!(loaded != unloaded, "the text is drawn in the loaded font");
@@ -10482,7 +10551,7 @@ fn discarded_binds_keep_nothing_and_stale_uploads_are_still_rejected() {
         return;
     };
     let mut reference = gpu_composition_renderer().unwrap();
-    let mut composition = static_under_animated([200, 30, 30, 255]);
+    let mut composition = static_under_animated([200, 30, 30, 255]).into_builder();
     composition.graph.nodes.insert(
         NodeId::new(2),
         NodeKind::Text(Text {
@@ -10495,6 +10564,7 @@ fn discarded_binds_keep_nothing_and_stale_uploads_are_still_rejected() {
             },
         }),
     );
+    let composition = composition.build().unwrap();
     let submit = |renderer: &mut lumen_engine::gpu::GpuCompositionRenderer, frame| {
         let bound = renderer
             .bind_frame(&composition, frame, &EmptyMediaStore)
@@ -10547,7 +10617,7 @@ fn kept_output_reaches_external_output_textures() {
         output_node(NodeId::new(4), 3),
     ]);
     let memo_root = {
-        let mut composition = static_under_animated([200, 30, 30, 255]);
+        let mut composition = static_under_animated([200, 30, 30, 255]).into_builder();
         composition.graph.nodes.insert(
             NodeId::new(7),
             NodeKind::Memo(Memo {
@@ -10562,7 +10632,7 @@ fn kept_output_reaches_external_output_textures() {
             .graph
             .nodes
             .insert(NodeId::new(6), output_node(NodeId::new(6), 7));
-        composition
+        composition.build().unwrap()
     };
     for (composition, held) in [(&fully_static, false), (&memo_root, true)] {
         renderer.release_resources();
@@ -10649,9 +10719,11 @@ fn kept_text_keeps_its_glyphs_in_the_shared_atlas() {
         raster_text(2, "M", expression("12 + 3788 * min(frame, 1)"), 120.0),
         multimerge(NodeId::new(3), &[1, 2]),
         output_node(NodeId::new(4), 3),
-    ]);
+    ])
+    .into_builder();
     composition.render_settings.width = 256;
     composition.render_settings.height = 128;
+    let composition = composition.build().unwrap();
     for frame in 0..3 {
         let pixels = render_rgba8(&mut renderer, &composition, frame, &EmptyMediaStore);
         let expected = uncached_rgba8(&mut reference, &composition, frame, &EmptyMediaStore);
@@ -10707,7 +10779,7 @@ fn memo_snapshot_is_shared_by_the_plans_its_key_spans() {
 
     // A switch upstream of the memo selects another plan every two frames.
     renderer.release_resources();
-    let mut switched = memo_shader_composition(Some("floor(frame / 100)"));
+    let mut switched = memo_shader_composition(Some("floor(frame / 100)")).into_builder();
     switched.graph.nodes.insert(
         NodeId::new(5),
         canvas_background(NodeId::new(5), [0, 255, 0, 255]),
@@ -10729,6 +10801,7 @@ fn memo_snapshot_is_shared_by_the_plans_its_key_spans() {
         unreachable!();
     };
     memo.source = PortRef::new(NodeId::new(6), "output".to_string());
+    let switched = switched.build().unwrap();
     let first = render_rgba8(&mut renderer, &switched, 0, &EmptyMediaStore);
     for frame in 1..6 {
         let pixels = render_rgba8(&mut renderer, &switched, frame, &EmptyMediaStore);
@@ -10848,7 +10921,7 @@ fn memo_snapshots_do_not_survive_composition_edits() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
     };
-    let mut composition = cache_composition(vec![
+    let composition = cache_composition(vec![
         square(
             NodeId::new(99),
             Deferred::value((0.0, 0.0)),
@@ -10865,10 +10938,12 @@ fn memo_snapshots_do_not_survive_composition_edits() {
         output_node(NodeId::new(3), 2),
     ]);
     let before = render_rgba8_at(&mut renderer, &composition, 0.0);
+    let mut composition = composition.into_builder();
     let NodeKind::Shape(shape) = composition.graph.nodes.get_mut(&NodeId::new(99)).unwrap() else {
         unreachable!();
     };
     shape.params.width = Deferred::value(16);
+    let composition = composition.build().unwrap();
     let mut fresh = gpu_composition_renderer().unwrap();
     let expected = render_rgba8_at(&mut fresh, &composition, 0.0);
     assert!(expected != before, "the edit moves the square");
@@ -10883,7 +10958,7 @@ fn memo_snapshots_do_not_survive_composition_edits() {
 
 #[test]
 fn literal_param_edits_rebuild_the_plan() {
-    let edits: [fn(&mut Composition); 2] = [
+    let edits: [fn(&mut CompositionBuilder); 2] = [
         |composition| {
             let Some(NodeKind::Shape(shape)) = composition.graph.nodes.get_mut(&NodeId::new(1))
             else {
@@ -10903,7 +10978,7 @@ fn literal_param_edits_rebuild_the_plan() {
         let Some(mut renderer) = gpu_composition_renderer() else {
             return;
         };
-        let mut composition = cache_composition(vec![
+        let composition = cache_composition(vec![
             square(
                 NodeId::new(1),
                 Deferred::value((2.0, 2.0)),
@@ -10920,7 +10995,9 @@ fn literal_param_edits_rebuild_the_plan() {
             output_node(NodeId::new(3), 2),
         ]);
         let before = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+        let mut composition = composition.into_builder();
         edit(&mut composition);
+        let composition = composition.build().unwrap();
         let edited = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
         let mut fresh = gpu_composition_renderer().unwrap();
         let expected = render_rgba8(&mut fresh, &composition, 0, &EmptyMediaStore);
@@ -10938,7 +11015,7 @@ fn literal_param_edits_reuse_programs() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
     };
-    let mut composition = cache_composition(vec![
+    let composition = cache_composition(vec![
         square(
             NodeId::new(1),
             Deferred::value((2.0, 2.0)),
@@ -10957,10 +11034,12 @@ fn literal_param_edits_reuse_programs() {
     render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
     let created = renderer.created_program_count();
     assert!(created > 0);
+    let mut composition = composition.into_builder();
     let Some(NodeKind::Blur(blur)) = composition.graph.nodes.get_mut(&NodeId::new(2)) else {
         unreachable!("node 2 is the blur");
     };
     blur.params.radius = Deferred::value(4.0);
+    let composition = composition.build().unwrap();
     render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
     assert_eq!(renderer.plan_compile_count(), 2);
     assert_eq!(renderer.created_program_count(), created);
@@ -10974,7 +11053,7 @@ fn memo_snapshot_dropped_with_its_key_change_is_not_shown_again() {
     };
     let mut reference = gpu_composition_renderer().unwrap();
     // Frame 1 places more glyphs than the atlas holds, so its frame is not kept.
-    let mut composition = memo_shader_composition(Some("floor(frame) % 2"));
+    let mut composition = memo_shader_composition(Some("floor(frame) % 2")).into_builder();
     composition.graph.nodes.insert(
         NodeId::new(5),
         NodeKind::Text(Text {
@@ -11000,6 +11079,7 @@ fn memo_snapshot_dropped_with_its_key_change_is_not_shown_again() {
         .graph
         .nodes
         .insert(NodeId::new(3), output_node(NodeId::new(3), 6));
+    let composition = composition.build().unwrap();
     let plain = memo_shader_composition(None);
     // Frames 0 and 0.5 are bound to different plans, each holding key 0.
     for frame in [0.0, 0.5, 1.0, 2.0] {

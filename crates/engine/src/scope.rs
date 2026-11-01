@@ -84,9 +84,9 @@ impl<'a> Scope<'a> {
     pub fn root(composition: &'a Composition) -> Self {
         Self {
             root: composition,
-            graph: &composition.graph,
-            timeline: &composition.timeline,
-            render_settings: &composition.render_settings,
+            graph: composition.graph(),
+            timeline: composition.timeline(),
+            render_settings: composition.render_settings(),
             props: None,
         }
     }
@@ -148,10 +148,13 @@ impl<'a> Scope<'a> {
     /// path no longer names time remaps and clips.
     pub fn graph_at(root: &'a Composition, path: &[NodeId]) -> Option<&'a Graph> {
         path.iter()
-            .try_fold(&root.graph, |graph, id| match graph.nodes.get(id)? {
+            .try_fold(root.graph(), |graph, id| match graph.nodes.get(id)? {
                 NodeKind::TimeRemap(_) => Some(graph),
                 NodeKind::Clip(clip) => match clip.template_name() {
-                    Some(name) => root.compositions.get(name).map(|template| &template.graph),
+                    Some(name) => root
+                        .compositions()
+                        .get(name)
+                        .map(|template| &template.graph),
                     None => Some(graph),
                 },
                 _ => None,

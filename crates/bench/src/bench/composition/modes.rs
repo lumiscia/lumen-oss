@@ -361,8 +361,8 @@ async fn benchmark_render_cpu_encode(
     output: &Path,
 ) -> anyhow::Result<Duration> {
     let mut renderer = renderer(composition, media).await?;
-    let width = composition.render_settings.width;
-    let height = composition.render_settings.height;
+    let width = composition.render_settings().width;
+    let height = composition.render_settings().height;
     let mut encoder = MuxedEncoder::create(
         output.to_string_lossy().to_string(),
         video_config(composition, VideoCodec::H264)?,
@@ -396,8 +396,8 @@ async fn benchmark_render_cpu_encode_profile(
 ) -> anyhow::Result<Duration> {
     let mut renderer = renderer(composition, media).await?;
     print_plan_profile(renderer.compiled());
-    let width = composition.render_settings.width;
-    let height = composition.render_settings.height;
+    let width = composition.render_settings().width;
+    let height = composition.render_settings().height;
     let mut encoder = MuxedEncoder::create(
         output.to_string_lossy().to_string(),
         video_config(composition, VideoCodec::H264)?,
@@ -699,9 +699,9 @@ pub(crate) fn video_config(
     codec: VideoCodec,
 ) -> anyhow::Result<VideoEncoderConfig> {
     let mut config = VideoEncoderConfig::cpu_rgba(
-        composition.render_settings.width,
-        composition.render_settings.height,
-        Rational::from_fps(f64::from(composition.timeline.fps))?,
+        composition.render_settings().width,
+        composition.render_settings().height,
+        Rational::from_fps(f64::from(composition.timeline().fps))?,
         codec,
     );
     config.bit_rate = 14_000_000;
@@ -716,8 +716,8 @@ pub(crate) fn composition_size(
     composition: &lumen_engine::composition::Composition,
 ) -> lumen_gpu::Size {
     lumen_gpu::Size::new(
-        composition.render_settings.width,
-        composition.render_settings.height,
+        composition.render_settings().width,
+        composition.render_settings().height,
     )
 }
 

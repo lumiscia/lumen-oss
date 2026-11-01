@@ -35,8 +35,19 @@ pub struct CompositionMetadata {
     pub name: Option<String>,
 }
 
+/// A validated composition that can no longer change. It is fingerprinted once when built, so
+/// renderers recognize it across frames without reading all of it again. Edit it through
+/// [`Composition::into_builder`].
 #[derive(Debug)]
 pub struct Composition {
+    parts: CompositionBuilder,
+    fingerprint: u64,
+}
+
+/// The parts of a composition, assembled or edited before [`CompositionBuilder::build`] validates
+/// them into a [`Composition`].
+#[derive(Debug)]
+pub struct CompositionBuilder {
     pub graph: Graph,
     pub timeline: TimelineSettings,
     pub render_settings: RenderSettings,
@@ -171,10 +182,44 @@ fn color_literal(value: &serde_json::Value) -> Option<[u8; 4]> {
     Some(color)
 }
 
-unsafe impl Sync for Composition {}
-unsafe impl Send for Composition {}
-
 impl Composition {
+    pub fn graph(&self) -> &Graph {
+        &self.parts.graph
+    }
+
+    pub fn timeline(&self) -> &TimelineSettings {
+        &self.parts.timeline
+    }
+
+    pub fn render_settings(&self) -> &RenderSettings {
+        &self.parts.render_settings
+    }
+
+    pub fn metadata(&self) -> Option<&CompositionMetadata> {
+        self.parts.metadata.as_ref()
+    }
+
+    pub fn audio(&self) -> Option<&AudioTimeline> {
+        self.parts.audio.as_ref()
+    }
+
+    /// Templates that `clip` nodes instantiate, by name.
+    pub fn compositions(&self) -> &BTreeMap<String, CompositionTemplate> {
+        &self.parts.compositions
+    }
+
+    /// Identifies the composition's content: equal for compositions built from equal parts.
+    pub(crate) fn fingerprint(&self) -> u64 {
+        self.fingerprint
+    }
+
+    /// The composition's parts, to be edited and built again.
+    pub fn into_builder(self) -> CompositionBuilder {
+        self.parts
+    }
+}
+
+impl CompositionBuilder {
     pub fn new(graph: Graph, timeline: TimelineSettings, render_settings: RenderSettings) -> Self {
         Self {
             graph,
@@ -186,7 +231,17 @@ impl Composition {
         }
     }
 
-    pub fn validate_structure(&self) -> Result<(), Vec<LumenError>> {
+    /// Validates the composition's structure: its graphs, the clips that instantiate templates,
+    /// and that no template instantiates itself.
+    pub fn build(self) -> Result<Composition, Vec<LumenError>> {
+        self.validate()?;
+        Ok(Composition {
+            fingerprint: fingerprint(&self),
+            parts: self,
+        })
+    }
+
+    fn validate(&self) -> Result<(), Vec<LumenError>> {
         let mut errors = Vec::new();
 
         match self.graph.validate() {
@@ -332,6 +387,49 @@ impl Composition {
         done.insert(name);
         cycle
     }
+}
+
+/// Identifies the exact content of a composition and its templates: their canvases, timelines,
+/// props, connections and every node's params, literal values and expression sources.
+fn fingerprint(composition: &CompositionBuilder) -> u64 {
+    use std::fmt::Write;
+    use std::hash::{BuildHasher, Hasher};
+
+    // Debug output spells out every param, expression and input. A fixed seed keeps fingerprints
+    // comparable across calls.
+    struct HashWriter(foldhash::quality::FoldHasher<'static>);
+    impl Write for HashWriter {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.write(text.as_bytes());
+            Ok(())
+        }
+    }
+
+    fn write_graph(out: &mut HashWriter, graph: &Graph) {
+        let mut nodes = graph.nodes.iter().collect::<Vec<_>>();
+        nodes.sort_unstable_by_key(|(id, _)| id.0);
+        let _ = write!(out, "{:?}", graph.connections);
+        for (id, node) in nodes {
+            let _ = write!(out, "{}{:?}", id.0, node);
+        }
+    }
+
+    let mut out = HashWriter(foldhash::quality::FixedState::with_seed(0).build_hasher());
+    let _ = write!(
+        out,
+        "{:?}{:?}",
+        composition.render_settings, composition.timeline
+    );
+    write_graph(&mut out, &composition.graph);
+    for (name, template) in &composition.compositions {
+        let _ = write!(
+            out,
+            "{name:?}{:?}{:?}{:?}",
+            template.render_settings, template.timeline, template.props
+        );
+        write_graph(&mut out, &template.graph);
+    }
+    out.0.finish()
 }
 
 fn as_clip(node: &NodeKind) -> Option<&Clip> {

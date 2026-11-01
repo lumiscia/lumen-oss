@@ -188,12 +188,17 @@ impl Clip {
         let Some(name) = self.template_name() else {
             return Ok(None);
         };
-        scope.root.compositions.get(name).map(Some).ok_or_else(|| {
-            self.error(
-                None,
-                format!("composition `{name}` is not defined in `compositions`"),
-            )
-        })
+        scope
+            .root
+            .compositions()
+            .get(name)
+            .map(Some)
+            .ok_or_else(|| {
+                self.error(
+                    None,
+                    format!("composition `{name}` is not defined in `compositions`"),
+                )
+            })
     }
 
     /// When the clip shows in `scope`, evaluated at `ctx`'s frame.

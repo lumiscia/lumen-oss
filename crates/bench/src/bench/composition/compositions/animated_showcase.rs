@@ -1,5 +1,5 @@
 use lumen_engine::{
-    composition::Composition,
+    composition::{Composition, CompositionBuilder},
     expr::Expression,
     graph::{Connection, Graph},
     node::{
@@ -25,7 +25,7 @@ impl CompositionFixture for AnimatedShowcase {
     }
 
     fn default_frames(&self, composition: &Composition) -> u32 {
-        composition.timeline.duration_frames.min(180)
+        composition.timeline().duration_frames.min(180)
     }
 
     fn build(&self) -> Composition {
@@ -256,6 +256,8 @@ impl CompositionFixture for AnimatedShowcase {
             })
             .expect("connect merge -> output");
 
-        Composition::new(graph, timeline(30.0, 180), render_720p([9, 17, 31, 255]))
+        CompositionBuilder::new(graph, timeline(30.0, 180), render_720p([9, 17, 31, 255]))
+            .build()
+            .expect("valid benchmark composition")
     }
 }

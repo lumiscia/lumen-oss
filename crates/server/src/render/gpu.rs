@@ -31,10 +31,10 @@ pub fn render_project_mp4(
     on_progress: &mut dyn FnMut(RenderProgress),
 ) -> Result<Vec<u8>, RenderError> {
     let composition = &bundle.composition;
-    let width = composition.render_settings.width;
-    let height = composition.render_settings.height;
-    let fps = composition.timeline.fps;
-    let total_frames = composition.timeline.duration_frames;
+    let width = composition.render_settings().width;
+    let height = composition.render_settings().height;
+    let fps = composition.timeline().fps;
+    let total_frames = composition.timeline().duration_frames;
 
     if fps <= 0.0 {
         return Err(RenderError {

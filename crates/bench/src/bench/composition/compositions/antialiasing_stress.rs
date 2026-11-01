@@ -1,5 +1,5 @@
 use lumen_engine::{
-    composition::Composition,
+    composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
     node::{
         Deferred, NodeId, NodeKind,
@@ -34,7 +34,7 @@ impl CompositionFixture for AntialiasingStress {
     }
 
     fn default_frames(&self, composition: &Composition) -> u32 {
-        composition.timeline.duration_frames.min(120)
+        composition.timeline().duration_frames.min(120)
     }
 
     fn build(&self) -> Composition {
@@ -270,6 +270,8 @@ impl CompositionFixture for AntialiasingStress {
             })
             .expect("connect multimerge -> output");
 
-        Composition::new(graph, timeline(30.0, 120), render_1080p([7, 9, 13, 255]))
+        CompositionBuilder::new(graph, timeline(30.0, 120), render_1080p([7, 9, 13, 255]))
+            .build()
+            .expect("valid benchmark composition")
     }
 }

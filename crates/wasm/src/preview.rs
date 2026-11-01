@@ -115,10 +115,10 @@ impl PreviewState {
 
     /// Replaces the loaded composition and parks the playhead on frame 0.
     fn install_composition(&mut self, composition: Composition) {
-        self.width = composition.render_settings.width as usize;
-        self.height = composition.render_settings.height as usize;
-        self.duration_frames = composition.timeline.duration_frames;
-        self.fps = f64::from(composition.timeline.fps.max(1.0));
+        self.width = composition.render_settings().width as usize;
+        self.height = composition.render_settings().height as usize;
+        self.duration_frames = composition.timeline().duration_frames;
+        self.fps = f64::from(composition.timeline().fps.max(1.0));
         self.composition = Some(composition);
         self.playing = false;
         self.render_metrics.reset();

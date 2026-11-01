@@ -22,7 +22,7 @@ use lumen_engine::{
     composition::Composition,
     error::MediaError,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
-    gpu::{FrozenComposition, GpuCompositionRenderer},
+    gpu::GpuCompositionRenderer,
     image::ImageFileResolver,
     media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
@@ -696,7 +696,7 @@ fn main() {
 
 fn run() -> Result<()> {
     let args = parse_args().inspect_err(|_| print_usage())?;
-    let composition = FrozenComposition::new(load_composition(&args.composition)?);
+    let composition = load_composition(&args.composition)?;
     let media_root = media_root(args.media_root.as_deref())?;
     let font_dir = resolve_font_dir(args.font_dir, env::var_os("LUMEN_FONT_DIR"));
     let media_store = LocalMediaStore::new(media_root, font_dir);
@@ -745,16 +745,16 @@ fn load_composition(path: &Path) -> Result<Composition> {
 }
 
 fn render_single_png(
-    composition: &FrozenComposition,
+    composition: &Composition,
     media_store: &LocalMediaStore,
     output: &Path,
     frame_override: Option<u32>,
 ) -> Result<()> {
     let frame = frame_override.unwrap_or(0);
-    if frame >= composition.timeline.duration_frames {
+    if frame >= composition.timeline().duration_frames {
         return Err(anyhow!(
             "requested frame {frame} is out of range for duration {}",
-            composition.timeline.duration_frames
+            composition.timeline().duration_frames
         ));
     }
 
@@ -777,19 +777,19 @@ fn render_single_png(
 }
 
 fn render_mp4(
-    composition: FrozenComposition,
+    composition: Composition,
     media_store: LocalMediaStore,
     output: &Path,
     override_encoder: Option<&str>,
     quality: &EncoderQuality,
 ) -> Result<()> {
-    if composition.timeline.fps <= 0.0 {
+    if composition.timeline().fps <= 0.0 {
         return Err(anyhow!(
             "invalid timeline fps: {}",
-            composition.timeline.fps
+            composition.timeline().fps
         ));
     }
-    if composition.timeline.duration_frames == 0 {
+    if composition.timeline().duration_frames == 0 {
         return Err(anyhow!(
             "composition duration_frames must be greater than zero"
         ));
@@ -801,9 +801,9 @@ fn render_mp4(
     }
 
     let encoder = choose_video_encoder(override_encoder);
-    let width = composition.render_settings.width;
-    let height = composition.render_settings.height;
-    let total_frames = composition.timeline.duration_frames;
+    let width = composition.render_settings().width;
+    let height = composition.render_settings().height;
+    let total_frames = composition.timeline().duration_frames;
     if encoder == "h264_videotoolbox_gpu" || encoder == "hevc_videotoolbox_gpu" {
         return render_video_gpu_videotoolbox(
             composition,
@@ -851,7 +851,7 @@ fn render_mp4(
         output,
         width,
         height,
-        composition.timeline.fps,
+        composition.timeline().fps,
         &encoder,
         quality,
         include_audio,
@@ -964,7 +964,7 @@ fn render_mp4(
 #[cfg(all(target_os = "macos", feature = "metal"))]
 #[allow(clippy::too_many_arguments)]
 fn render_video_gpu_videotoolbox(
-    composition: FrozenComposition,
+    composition: Composition,
     media_store: LocalMediaStore,
     output: &Path,
     width: u32,
@@ -985,7 +985,7 @@ fn render_video_gpu_videotoolbox(
     let mut config = VideoEncoderConfig::cpu_rgba(
         width,
         height,
-        Rational::from_fps(f64::from(composition.timeline.fps))?,
+        Rational::from_fps(f64::from(composition.timeline().fps))?,
         if encoder.starts_with("hevc") {
             VideoCodec::Hevc
         } else {
@@ -1114,7 +1114,7 @@ fn encode_ready_gpu_frame(
 #[cfg(not(all(target_os = "macos", feature = "metal")))]
 #[allow(clippy::too_many_arguments)]
 fn render_video_gpu_videotoolbox(
-    _composition: FrozenComposition,
+    _composition: Composition,
     _media_store: LocalMediaStore,
     _output: &Path,
     _width: u32,
@@ -1150,8 +1150,8 @@ fn start_vulkan_video_encode(
     quality: &EncoderQuality,
 ) -> Result<VulkanVideoSession> {
     let (width, height) = (
-        composition.render_settings.width,
-        composition.render_settings.height,
+        composition.render_settings().width,
+        composition.render_settings().height,
     );
     if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
         return Err(anyhow!(
@@ -1164,7 +1164,7 @@ fn start_vulkan_video_encode(
     let mut config = VideoEncoderConfig::cpu_rgba(
         width,
         height,
-        Rational::from_fps(f64::from(composition.timeline.fps))?,
+        Rational::from_fps(f64::from(composition.timeline().fps))?,
         video_codec_for_encoder(encoder),
     );
     config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
@@ -1185,7 +1185,7 @@ fn start_vulkan_video_encode(
 
 #[cfg(target_os = "linux")]
 fn render_video_gpu_vulkan(
-    composition: FrozenComposition,
+    composition: Composition,
     media_store: LocalMediaStore,
     output: &Path,
     total_frames: u32,
@@ -1204,8 +1204,8 @@ fn render_video_gpu_vulkan(
         )
         .context("failed to compile composition")?;
     let (width, height) = (
-        composition.render_settings.width,
-        composition.render_settings.height,
+        composition.render_settings().width,
+        composition.render_settings().height,
     );
 
     let mut timings = RenderTiming::default();
@@ -1310,13 +1310,13 @@ fn write_composited_audio(
     media_store: &LocalMediaStore,
     encoder: &LumenFfmpegEncoder,
 ) -> Result<()> {
-    let Some(audio) = composition.audio.as_ref() else {
+    let Some(audio) = composition.audio() else {
         return Ok(());
     };
 
     let total_samples = duration_samples(
-        composition.timeline.duration_frames,
-        composition.timeline.fps,
+        composition.timeline().duration_frames,
+        composition.timeline().fps,
     );
     let mixer = AudioMixer::new(audio, media_store);
     let mut start_sample = 0_u64;
@@ -1341,13 +1341,13 @@ fn write_composited_audio_direct(
     media_store: &LocalMediaStore,
     encoder: &mut MuxedEncoder,
 ) -> Result<()> {
-    let Some(audio) = composition.audio.as_ref() else {
+    let Some(audio) = composition.audio() else {
         return Ok(());
     };
 
     let total_samples = duration_samples(
-        composition.timeline.duration_frames,
-        composition.timeline.fps,
+        composition.timeline().duration_frames,
+        composition.timeline().fps,
     );
     let mixer = AudioMixer::new(audio, media_store);
     let mut start_sample = 0_u64;
@@ -1370,7 +1370,7 @@ fn write_composited_audio_direct(
 
 fn has_audio(composition: &Composition) -> bool {
     composition
-        .audio
+        .audio()
         .as_ref()
         .is_some_and(|audio| !audio.clips.is_empty())
 }
