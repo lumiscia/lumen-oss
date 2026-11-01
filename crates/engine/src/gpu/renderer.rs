@@ -32,6 +32,10 @@ pub struct CompiledPlanKey {
     /// Whether the frame is a whole frame of the timeline, so animated sources may be sized to
     /// their bounds over it.
     on_timeline: bool,
+    /// The fonts the shared text system held once the literal font families of the frame's text
+    /// were loaded, which text bounds are measured with; loading any face may change how text is
+    /// shaped. `None` without text, or when the text system is unavailable.
+    text_font_generation: Option<u64>,
     entries: Vec<PlanKeyEntry>,
 }
 
@@ -52,9 +56,6 @@ enum PlanChoice {
     /// The resolver the media store gave a text node's font family, which its bounds were
     /// measured with.
     TextFont(String),
-    /// The fonts the shared text system held when a text node's bounds were measured; loading
-    /// any face may change how that text is shaped.
-    TextFontGeneration(u64),
     ShaderSource(u64),
 }
 
@@ -1141,6 +1142,7 @@ impl GpuCompositionRenderer {
             visited: foldhash::HashSet::default(),
             stack: Vec::new(),
             entries: Vec::new(),
+            has_text: false,
         };
         collector.collect(&root, &output, frame.into())?;
         let mut entries = collector.entries;
@@ -1149,6 +1151,7 @@ impl GpuCompositionRenderer {
         Ok(CompiledPlanKey {
             composition: fingerprint,
             on_timeline: super::compiler::on_timeline(composition, frame),
+            text_font_generation: collector.has_text.then(text_font_generation).flatten(),
             entries,
         })
     }
@@ -1170,6 +1173,8 @@ struct PlanKeyCollector<'a> {
     /// extend the instance path, so `visited` alone never sees a cycle through one repeat.
     stack: Vec<(NodeId, *const crate::graph::Graph)>,
     entries: Vec<PlanKeyEntry>,
+    /// Whether any text was reached, whose bounds depend on the loaded fonts.
+    has_text: bool,
 }
 
 impl<'a> PlanKeyCollector<'a> {
@@ -1222,14 +1227,13 @@ impl<'a> PlanKeyCollector<'a> {
                 self.push_entry(clip.id, PlanChoice::ClipShown(shown));
             }
             NodeKind::Text(text) => {
-                if let Deferred::Value(family) = &text.params.font_family
-                    && let Some(resolver) = self.media.and_then(|m| m.font_resolver_id(family))
-                {
-                    self.push_entry(text.id, PlanChoice::TextFont(resolver));
+                if let Deferred::Value(family) = &text.params.font_family {
+                    if let Some(resolver) = self.media.and_then(|m| m.font_resolver_id(family)) {
+                        self.push_entry(text.id, PlanChoice::TextFont(resolver));
+                    }
+                    self.load_font_family(family);
                 }
-                if let Some(generation) = self.text_font_generation(&text.params.font_family) {
-                    self.push_entry(text.id, PlanChoice::TextFontGeneration(generation));
-                }
+                self.has_text = true;
             }
             NodeKind::WgslShader(shader) => {
                 let ctx = scope.expr_context(frame, format!("{}.params", shader.id), self.media);
@@ -1261,15 +1265,14 @@ impl<'a> PlanKeyCollector<'a> {
         Ok(())
     }
 
-    /// The font generation after loading the literal `family` the media store resolves, as the
-    /// compile would; `None` when the text system is unavailable.
-    fn text_font_generation(&self, family: &Deferred<String>) -> Option<u64> {
-        let mut text_system = crate::node::source::text::text_system().ok()?;
-        if let Deferred::Value(family) = family {
-            crate::node::source::text::load_font_family(&mut text_system, self.media, family)
-                .ok()?;
+    /// Loads the literal `family` the media store resolves, as the compile would, so the key's
+    /// font generation is taken once every font the frame's text names is loaded. Failures are
+    /// left to the compile and bind, which load it again.
+    fn load_font_family(&self, family: &str) {
+        if let Ok(mut text_system) = crate::node::source::text::text_system() {
+            let _ =
+                crate::node::source::text::load_font_family(&mut text_system, self.media, family);
         }
-        Some(text_system.font_generation())
     }
 
     fn push_entry(&mut self, node_id: NodeId, choice: PlanChoice) {
