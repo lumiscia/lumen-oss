@@ -5,6 +5,7 @@ use std::{
 
 use ffmpeg::media::Type;
 use ffmpeg_next as ffmpeg;
+use lumen_ffmpeg::{ALLOWED_INPUT_FORMATS, ALLOWED_INPUT_PROTOCOLS};
 
 use crate::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMetadata, AudioResolver},
@@ -140,9 +141,14 @@ impl AudioResolver for FfmpegAudioResolver {
 }
 
 fn audio_metadata(source: &str) -> Result<AudioMetadata, MediaError> {
-    let format = ffmpeg::format::input(source).map_err(|err| MediaError::Decode {
-        media_source: source.to_string(),
-        details: format!("failed opening audio source: {err}"),
+    let mut options = ffmpeg::Dictionary::new();
+    options.set("format_whitelist", ALLOWED_INPUT_FORMATS);
+    options.set("protocol_whitelist", ALLOWED_INPUT_PROTOCOLS);
+    let format = ffmpeg::format::input_with_dictionary(source, options).map_err(|err| {
+        MediaError::Decode {
+            media_source: source.to_string(),
+            details: format!("failed opening audio source: {err}"),
+        }
     })?;
     let stream = format
         .streams()
@@ -182,6 +188,10 @@ fn decode_audio_range_to_f32_stereo(
         .arg(format!("{start_seconds:.9}"))
         .arg("-t")
         .arg(format!("{duration_seconds:.9}"))
+        .arg("-format_whitelist")
+        .arg(ALLOWED_INPUT_FORMATS)
+        .arg("-protocol_whitelist")
+        .arg(ALLOWED_INPUT_PROTOCOLS)
         .arg("-i")
         .arg(source)
         .arg("-vn")
@@ -227,4 +237,58 @@ fn decode_audio_range_to_f32_stereo(
     }
 
     Ok(AudioBuffer::from_channels(AUDIO_SAMPLE_RATE, channels))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{audio_metadata, decode_audio_range_to_f32_stereo};
+
+    #[test]
+    fn audio_paths_read_uploads_but_not_playlists() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("lumen_audio_allowlist_{unique}"));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let wav = dir.join("tone.wav");
+        let segment = dir.join("tone.ts");
+        for (path, codec) in [(&wav, "pcm_s16le"), (&segment, "aac")] {
+            let generated = Command::new("ffmpeg")
+                .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+                .args(["-i", "sine=frequency=440:duration=0.5", "-c:a", codec])
+                .arg(path)
+                .status();
+            if !matches!(generated, Ok(status) if status.success()) {
+                eprintln!("ffmpeg CLI unavailable; skipping audio input allowlist test");
+                return;
+            }
+        }
+        let playlist = dir.join("tone.m3u8");
+        std::fs::write(
+            &playlist,
+            format!(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:0.5,\n{}\n#EXT-X-ENDLIST\n",
+                segment.display()
+            ),
+        )
+        .expect("write playlist");
+        let wav = wav.to_str().expect("wav path");
+        let playlist = playlist.to_str().expect("playlist path");
+
+        assert!(audio_metadata(wav).is_ok());
+        let decoded = decode_audio_range_to_f32_stereo(wav, 0, 4800).expect("decode wav");
+        assert!(decoded.frames() > 0);
+
+        let metadata = audio_metadata(playlist);
+        let decoded = decode_audio_range_to_f32_stereo(playlist, 0, 4800);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(metadata.is_err());
+        assert!(decoded.is_err());
+    }
 }

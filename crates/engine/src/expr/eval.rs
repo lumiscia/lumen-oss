@@ -1,4 +1,7 @@
-use std::hash::{Hash, Hasher};
+use std::{
+    cell::Cell,
+    hash::{Hash, Hasher},
+};
 
 use crate::{
     error::{ExpressionError, LumenError},
@@ -12,7 +15,64 @@ use crate::{
 
 impl Expression {
     pub fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
+        let _evaluation = EvaluationGuard::enter(self.depth, ctx)?;
         self.plan.evaluate(ctx)
+    }
+}
+
+/// Most levels of evaluation that may be open at once, counting an expression's depth for each
+/// evaluation that is open. Reading another node's property or measuring its text evaluates its
+/// expression inside the reader's, so this bounds the stack that nodes reading through each other
+/// use. It is sized for the largest frames, on a 1 MiB stack.
+const MAX_EVALUATION_LEVELS: u32 = 96;
+/// Levels charged to every evaluation on top of its expression's depth, for the read or
+/// measurement that starts it.
+const EVALUATION_OVERHEAD: u32 = 2;
+/// Most evaluations that one outermost evaluation may start, including all it reads through.
+const MAX_EVALUATIONS: u32 = 10_000;
+
+thread_local! {
+    /// The levels of the open evaluations and the evaluations started since the outermost one began.
+    static EVALUATIONS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+}
+
+struct EvaluationGuard {
+    levels: u32,
+}
+
+impl EvaluationGuard {
+    fn enter(depth: usize, ctx: &ExpressionContext<'_>) -> crate::Result<Self> {
+        let levels = u32::try_from(depth)
+            .unwrap_or(u32::MAX)
+            .saturating_add(EVALUATION_OVERHEAD);
+        let (open, started) = EVALUATIONS.get();
+        let exhausted = if open.saturating_add(levels) > MAX_EVALUATION_LEVELS {
+            Some(format!(
+                "node reads nest deeper than {MAX_EVALUATION_LEVELS} levels of evaluation; do they read each other?"
+            ))
+        } else if started >= MAX_EVALUATIONS {
+            Some(format!(
+                "node reads started more than {MAX_EVALUATIONS} evaluations; do they fan out through each other?"
+            ))
+        } else {
+            None
+        };
+        if let Some(details) = exhausted {
+            return Err(LumenError::Expression(ExpressionError::Evaluate {
+                path: ctx.path.clone(),
+                details,
+            }));
+        }
+        EVALUATIONS.set((open + levels, started + 1));
+        Ok(Self { levels })
+    }
+}
+
+impl Drop for EvaluationGuard {
+    fn drop(&mut self) {
+        let (open, started) = EVALUATIONS.get();
+        let open = open - self.levels;
+        EVALUATIONS.set((open, if open == 0 { 0 } else { started }));
     }
 }
 
@@ -1247,6 +1307,176 @@ mod tests {
             .evaluate(&ctx)
             .expect_err("recursive text measurement must fail");
 
-        assert!(error.to_string().contains("recursive text measurement"));
+        assert!(error.to_string().contains("do they read each other?"));
+    }
+
+    /// Text nodes `1..=count` with the given `font_size` and `content` expressions, where
+    /// `{next}` stands for the id of the node after it. The last node has plain values.
+    fn chained_text_nodes(count: u64, font_size: &str, content: &str) -> Graph {
+        let mut graph = Graph::new();
+        for id in 1..=count {
+            let mut params = crate::node::source::text::TextParamsDelegate::default();
+            if id < count {
+                let next = (id + 1).to_string();
+                params.font_size = crate::node::Deferred::Expr(
+                    Expression::parse(&font_size.replace("{next}", &next)).unwrap(),
+                );
+                params.content = crate::node::source::text_content::TextContentDelegate::Text(
+                    crate::node::Deferred::Expr(
+                        Expression::parse(&content.replace("{next}", &next)).unwrap(),
+                    ),
+                );
+            }
+            graph.nodes.insert(
+                NodeId::new(id),
+                NodeKind::Text(Text {
+                    id: NodeId::new(id),
+                    params,
+                }),
+            );
+        }
+        graph
+    }
+
+    fn evaluate_in(graph: &Graph, source: &str) -> crate::Result<ExpressionValue> {
+        let ctx = ExpressionContext {
+            graph: Some(graph),
+            ..test_context()
+        };
+        Expression::parse(source).unwrap().evaluate(&ctx)
+    }
+
+    #[test]
+    fn a_node_reading_itself_fails_instead_of_overflowing_the_stack() {
+        let graph = chained_text_nodes(2, "node(1, 'font_size')", "'a'");
+        let error = evaluate_in(&graph, "node(1, 'font_size')").expect_err("self read");
+
+        assert!(error.to_string().contains("levels of evaluation"));
+    }
+
+    #[test]
+    fn nodes_reading_each_other_fail_and_leave_later_reads_working() {
+        let mut graph = chained_text_nodes(3, "1", "'a'");
+        for (id, other) in [(1, 2), (2, 1)] {
+            let NodeKind::Text(text) = graph.nodes.get_mut(&NodeId::new(id)).unwrap() else {
+                unreachable!()
+            };
+            text.params.font_size = crate::node::Deferred::Expr(
+                Expression::parse(&format!("node({other}, 'font_size')")).unwrap(),
+            );
+        }
+
+        let error = evaluate_in(&graph, "node(1, 'font_size')").expect_err("loop");
+        assert!(error.to_string().contains("levels of evaluation"));
+
+        let after = evaluate_in(&graph, "node(3, 'font_size')").unwrap();
+        assert!(matches!(after, ExpressionValue::Number(_)));
+    }
+
+    #[test]
+    fn a_shallow_fan_out_that_multiplies_work_is_cut_off() {
+        let read = "node({next}, 'font_size')";
+        let graph = chained_text_nodes(8, &[read; 8].join(" + "), "'a'");
+        let error = evaluate_in(&graph, "node(1, 'font_size')").expect_err("fan-out");
+
+        assert!(error.to_string().contains("more than 10000 evaluations"));
+    }
+
+    #[test]
+    fn fan_out_through_properties_and_measurements_shares_one_budget() {
+        let font_size = ["node({next}, 'font_size')"; 5].join(" + ");
+        let content = ["text_width(node({next}))"; 5].join(" + ");
+        let graph = chained_text_nodes(8, &font_size, &content);
+        let error = evaluate_in(&graph, "text_width(node(1)) + node(1, 'font_size')")
+            .expect_err("mixed fan-out");
+
+        assert!(error.to_string().contains("more than 10000 evaluations"));
+        let after = evaluate_in(&graph, "node(8, 'font_size')").unwrap();
+        assert!(matches!(after, ExpressionValue::Number(_)));
+    }
+
+    #[test]
+    fn wide_shallow_reads_stay_within_budget() {
+        let read = "node({next}, 'font_size')";
+        let graph = chained_text_nodes(8, &format!("{read} + {read}"), "'a'");
+
+        let value = evaluate_in(&graph, "node(1, 'font_size')").unwrap();
+
+        assert!(matches!(value, ExpressionValue::Number(_)));
+    }
+
+    fn on_worker_stack<T: Send + 'static>(run: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(run)
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_self_read_in_a_deep_expression_fails_on_a_worker_stack() {
+        let read = format!(
+            "{}node(1, 'font_size'){}",
+            "abs(".repeat(63),
+            ")".repeat(63)
+        );
+        let graph = chained_text_nodes(2, &read, "'a'");
+
+        let error =
+            on_worker_stack(move || evaluate_in(&graph, "node(1, 'font_size')").unwrap_err());
+
+        assert!(error.to_string().contains("levels of evaluation"));
+    }
+
+    #[test]
+    fn a_chain_of_deep_expressions_fails_on_a_worker_stack() {
+        let read = format!(
+            "{}node({{next}}, 'font_size'){}",
+            "abs(".repeat(63),
+            ")".repeat(63)
+        );
+        let graph = chained_text_nodes(8, &read, "'a'");
+
+        let error =
+            on_worker_stack(move || evaluate_in(&graph, "node(1, 'font_size')").unwrap_err());
+
+        assert!(error.to_string().contains("levels of evaluation"));
+    }
+
+    #[test]
+    fn the_whole_budget_fits_a_worker_stack_in_the_largest_frames() {
+        // Right-nested binaries are the deepest frames, and a measurement's own arguments are
+        // evaluated from the AST rather than the plan.
+        let nest = |levels: usize, leaf: &str| {
+            format!("{}{leaf}{}", "1 + (".repeat(levels), ")".repeat(levels))
+        };
+        let cost = |depth: u32| depth + EVALUATION_OVERHEAD;
+        let nodes = 2;
+        let property_levels = (MAX_EVALUATION_LEVELS - cost(1)) / nodes - cost(1);
+        let measure_levels = (MAX_EVALUATION_LEVELS - cost(2)) / nodes - cost(3);
+        let read = nest(property_levels as usize, "node({next}, 'font_size')");
+        let measure = format!(
+            "text_width({})",
+            nest(measure_levels as usize, "text_width(node({next}))")
+        );
+        let graph = std::sync::Arc::new(chained_text_nodes(nodes as u64 + 1, &read, &measure));
+
+        for source in ["node(1, 'font_size')", "text_width(node(1))"] {
+            let graph = graph.clone();
+            let value = on_worker_stack(move || evaluate_in(&graph, source));
+            assert!(value.is_ok(), "{source}: {value:?}");
+        }
+    }
+
+    #[test]
+    fn clamp_with_a_nan_bound_is_an_error_instead_of_a_panic() {
+        for source in ["clamp(1, pow(-1, 0.5), 2)", "clamp(1, 0, pow(-1, 0.5))"] {
+            let error = Expression::parse(source)
+                .unwrap()
+                .evaluate(&test_context())
+                .expect_err("NaN bound");
+            assert!(error.to_string().contains("clamp requires min <= max"));
+        }
     }
 }
