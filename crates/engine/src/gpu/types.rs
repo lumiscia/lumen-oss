@@ -34,6 +34,9 @@ pub struct RasterHandle {
     pub texture: lumen_gpu::TextureId,
     pub domain: lumen_gpu::TextureDomain,
     pub metadata: RasterMetadata,
+    /// Uniform holding the raster's logical bounds (`origin: vec2<i32>`, `size: vec2<u32>`)
+    /// within its storage texture, or `None` when it fills the whole texture.
+    pub bounds: Option<lumen_gpu::BufferId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

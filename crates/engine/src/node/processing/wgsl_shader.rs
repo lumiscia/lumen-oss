@@ -274,6 +274,7 @@ impl GpuCompileNode for WgslShader {
                 alpha_mode: AlphaMode::Premultiplied,
                 ..first.metadata
             },
+            bounds: None,
         }))
     }
 }
@@ -429,6 +430,7 @@ impl ShaderInterface {
     fn parse(source: &str) -> Result<Self, String> {
         let source = strip_comments(source);
         let tokens = tokenize(&source);
+        check_workgroup_sizes(&tokens)?;
         for group in attribute_values(&tokens, "group") {
             if group? != 0 {
                 return Err("only `@group(0)` is available".to_string());
@@ -735,11 +737,11 @@ fn tokenize(source: &str) -> Vec<&str> {
     tokens
 }
 
-/// Integer literals of every `@name(...)` attribute; non-literal arguments are errors.
-fn attribute_values<'a>(
+/// The tokens between the parentheses of every `@name(...)` attribute.
+fn attribute_args<'a>(
     tokens: &'a [&'a str],
     name: &'a str,
-) -> impl Iterator<Item = Result<u32, String>> + 'a {
+) -> impl Iterator<Item = &'a [&'a str]> + 'a {
     tokens
         .windows(3)
         .enumerate()
@@ -748,17 +750,56 @@ fn attribute_values<'a>(
                 return None;
             }
             let args = &tokens[index + 3..];
-            let args = &args[..args.iter().position(|&token| token == ")")?];
-            let value = match args {
-                [literal] => literal.trim_end_matches(['u', 'i']).parse().ok(),
-                _ => None,
-            };
-            Some(
-                value.ok_or_else(|| {
-                    format!("`@{name}({})` must use an integer literal", args.concat())
-                }),
-            )
+            Some(&args[..args.iter().position(|&token| token == ")")?])
         })
+}
+
+fn integer_literal(token: &str) -> Option<u32> {
+    token.trim_end_matches(['u', 'i']).parse().ok()
+}
+
+/// Integer literals of every `@name(...)` attribute; non-literal arguments are errors.
+fn attribute_values<'a>(
+    tokens: &'a [&'a str],
+    name: &'a str,
+) -> impl Iterator<Item = Result<u32, String>> + 'a {
+    attribute_args(tokens, name).map(move |args| {
+        match args {
+            [literal] => integer_literal(literal),
+            _ => None,
+        }
+        .ok_or_else(|| format!("`@{name}({})` must use an integer literal", args.concat()))
+    })
+}
+
+/// Errors unless every `@workgroup_size(...)` is 8, 8, 1, the size the engine dispatches for.
+fn check_workgroup_sizes(tokens: &[&str]) -> Result<(), String> {
+    for args in attribute_args(tokens, "workgroup_size") {
+        let sizes = args
+            .split(|&token| token == ",")
+            .filter(|size| !size.is_empty())
+            .map(|size| match size {
+                [literal] => integer_literal(literal),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .filter(|sizes| (1..=3).contains(&sizes.len()))
+            .ok_or_else(|| {
+                format!(
+                    "`@workgroup_size({})` must use integer literals",
+                    args.concat()
+                )
+            })?;
+        let size = |axis: usize| sizes.get(axis).copied().unwrap_or(1);
+        if [size(0), size(1), size(2)] != [8, 8, 1] {
+            return Err(format!(
+                "`@workgroup_size({})` must be `@workgroup_size(8, 8, 1)`; the engine dispatches \
+                 one thread per pixel in 8x8 groups",
+                args.concat()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn struct_body<'a>(tokens: &'a [&'a str], name: &str) -> Option<&'a [&'a str]> {
@@ -978,6 +1019,14 @@ mod tests {
                 "@group(0) @binding(1) var<uniform> p: Missing;",
                 "`Missing`",
             ),
+            (
+                "@compute @workgroup_size(16) fn cs_main() {}",
+                "must be `@workgroup_size(8, 8, 1)`",
+            ),
+            (
+                "@compute @workgroup_size(8, 8) @workgroup_size(8, 4, 2) fn cs_main() {}",
+                "@workgroup_size(8,4,2)",
+            ),
         ] {
             let error = ShaderInterface::parse(shader).unwrap_err();
             assert!(error.contains(expected), "{shader}: {error}");
@@ -990,5 +1039,6 @@ mod tests {
         )
         .unwrap();
         assert!(interface.declares_input0 && interface.declares_output);
+        assert!(ShaderInterface::parse("@compute @workgroup_size(8, 8) fn cs_main() {}").is_ok());
     }
 }

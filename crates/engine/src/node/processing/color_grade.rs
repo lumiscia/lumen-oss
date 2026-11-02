@@ -162,6 +162,7 @@ impl GpuCompileNode for ColorGrade {
             texture,
             domain: source.domain,
             metadata: source.metadata,
+            bounds: source.bounds,
         }))
     }
 }

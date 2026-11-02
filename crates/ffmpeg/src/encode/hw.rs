@@ -1,4 +1,4 @@
-use std::ptr;
+use std::{ffi::CStr, ptr};
 
 use crate::ffi::{self, sys};
 use crate::gpu::GpuBackend;
@@ -24,7 +24,15 @@ pub(crate) fn create_encoder_hw_contexts(
 ) -> Result<Option<EncoderHwContexts>> {
     match config.mode {
         EncodeMode::GpuTexture(GpuBackend::Cuda) => {
-            let device = AvBufferRef::new_hw_device(AV_HWDEVICE_TYPE_CUDA, GpuBackend::Cuda)?;
+            let ordinal = config
+                .cuda_ordinal
+                .map(|ordinal| ffi::cstring("av_hwdevice_ctx_create", &ordinal.to_string()))
+                .transpose()?;
+            let device = AvBufferRef::new_hw_device(
+                AV_HWDEVICE_TYPE_CUDA,
+                GpuBackend::Cuda,
+                ordinal.as_deref(),
+            )?;
             let frames = AvBufferRef::new_hw_frames(
                 &device,
                 GpuBackend::Cuda,
@@ -66,7 +74,8 @@ pub(crate) fn create_encoder_hw_contexts(
         }
         // Vulkan Video encoders only accept Vulkan frames, so CPU frames are uploaded as NV12.
         EncodeMode::CpuUpload if takes_hw_frames(codec, AV_PIX_FMT_VULKAN) => {
-            let device = AvBufferRef::new_hw_device(AV_HWDEVICE_TYPE_VULKAN, GpuBackend::Vulkan)?;
+            let device =
+                AvBufferRef::new_hw_device(AV_HWDEVICE_TYPE_VULKAN, GpuBackend::Vulkan, None)?;
             let frames = AvBufferRef::new_hw_frames(
                 &device,
                 GpuBackend::Vulkan,
@@ -118,11 +127,21 @@ pub(crate) struct AvBufferRef {
 }
 
 impl AvBufferRef {
-    fn new_hw_device(device_type: sys::AVHWDeviceType, backend: GpuBackend) -> Result<Self> {
+    fn new_hw_device(
+        device_type: sys::AVHWDeviceType,
+        backend: GpuBackend,
+        device: Option<&CStr>,
+    ) -> Result<Self> {
         let mut ptr = ptr::null_mut();
         unsafe {
             ffi::check(
-                sys::av_hwdevice_ctx_create(&mut ptr, device_type, ptr::null(), ptr::null_mut(), 0),
+                sys::av_hwdevice_ctx_create(
+                    &mut ptr,
+                    device_type,
+                    device.map_or(ptr::null(), CStr::as_ptr),
+                    ptr::null_mut(),
+                    0,
+                ),
                 "av_hwdevice_ctx_create",
             )
             .map_err(|error| error.with_backend(backend))?;

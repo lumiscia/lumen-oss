@@ -1,5 +1,6 @@
+use crate::error::RenderError;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -46,7 +47,7 @@ pub struct TransformParams {
     /// Vertical pivot point in pixels.
     #[meta(name = "Pivot Y", step = 1)]
     pub pivot_y: f64,
-    /// Uses the pivot as given; when off, a (0, 0) pivot means the source centre.
+    /// Uses the pivot as given; when off, the pivot is the source centre.
     #[meta(name = "Custom pivot")]
     pub custom_pivot: bool,
     /// Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
@@ -97,12 +98,36 @@ impl Default for Transform {
     }
 }
 
+impl Transform {
+    /// A pivot is only read while `custom_pivot` is on, so one set without it would be ignored.
+    fn reject_ignored_pivot(&self) -> crate::Result<()> {
+        let moved = |pivot: &Deferred<f64>| match pivot {
+            Deferred::Value(value) => *value != 0.0,
+            Deferred::Expr(_) => true,
+        };
+        if matches!(self.params.custom_pivot, Deferred::Value(false))
+            && (moved(&self.params.pivot_x) || moved(&self.params.pivot_y))
+        {
+            return Err(RenderError::NodeEvaluation {
+                frame: 0,
+                node_id: self.id,
+                node_kind: "Transform",
+                details: "a pivot only applies when `custom_pivot` is on; set custom_pivot: true"
+                    .to_string(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+}
+
 impl GpuCompileNode for Transform {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
+        self.reject_ignored_pivot()?;
         let source = ctx
             .compile_bounded_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
@@ -137,6 +162,7 @@ impl GpuCompileNode for Transform {
             texture,
             domain,
             metadata: source.metadata,
+            bounds: None,
         }))
     }
 }
@@ -425,9 +451,9 @@ impl TransformKey {
     }
 }
 
-/// Without a custom pivot, a pivot of (0, 0) within 1e-6 selects the source centre.
+/// Without a custom pivot the pivot is the source centre.
 fn resolve_pivot(custom_pivot: bool, pivot: [f32; 2], source_size: lumen_gpu::Size) -> [f32; 2] {
-    if custom_pivot || pivot.iter().any(|component| component.abs() > 0.000001) {
+    if custom_pivot {
         pivot
     } else {
         [
@@ -439,19 +465,41 @@ fn resolve_pivot(custom_pivot: bool, pivot: [f32; 2], source_size: lumen_gpu::Si
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_pivot;
+    use super::Transform;
+    use crate::node::Deferred;
+
+    fn pivot_error(set: impl FnOnce(&mut Transform)) -> Option<String> {
+        let mut transform = Transform::default();
+        set(&mut transform);
+        transform
+            .reject_ignored_pivot()
+            .err()
+            .map(|error| error.to_string())
+    }
 
     #[test]
-    fn legacy_pivot_fallback_tolerates_near_zero() {
-        let size = lumen_gpu::Size {
-            width: 8,
-            height: 4,
-        };
-        assert_eq!(resolve_pivot(false, [0.0000001, 0.0], size), [4.0, 2.0]);
-        assert_eq!(resolve_pivot(false, [0.0, 0.0001], size), [0.0, 0.0001]);
+    fn pivot_without_custom_pivot_is_rejected() {
+        assert_eq!(pivot_error(|_| {}), None);
         assert_eq!(
-            resolve_pivot(true, [0.0000001, 0.0], size),
-            [0.0000001, 0.0]
+            pivot_error(|transform| transform.params.pivot_x = Deferred::value(0.0)),
+            None
+        );
+        let error = pivot_error(|transform| transform.params.pivot_y = Deferred::value(12.0))
+            .expect("a nonzero pivot is ignored");
+        assert!(error.contains("custom_pivot: true"), "{error}");
+        assert!(
+            pivot_error(|transform| {
+                transform.params.pivot_x =
+                    Deferred::Expr(crate::expr::Expression::parse("frame").unwrap());
+            })
+            .is_some()
+        );
+        assert_eq!(
+            pivot_error(|transform| {
+                transform.params.custom_pivot = Deferred::value(true);
+                transform.params.pivot_x = Deferred::value(12.0);
+            }),
+            None
         );
     }
 }
