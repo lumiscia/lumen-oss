@@ -4493,7 +4493,7 @@
                   },
                   "stroke": {
                     "$ref": "#/$defs/textStroke",
-                    "description": "Outline along the glyphs, and along those of spans that leave theirs unset. Off when\nabsent. It does not change the layout or the measured size. `glyph_opacity` fades a\nglyph's stroke and fill separately, so a faded glyph's outside stroke shows through its\nfill and the two overlap at more than the glyph's opacity (0.75 at 0.5).",
+                    "description": "Outline along the glyphs, and along those of spans that leave theirs unset. Off when\nabsent. It does not change the layout or the measured size. `glyph_opacity` fades a\nglyph's stroke and fill as one.",
                     "title": "Stroke",
                     "x-lumen-kind": "text_stroke"
                   },
