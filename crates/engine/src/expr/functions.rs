@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
 };
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
 /// Largest AST, in nodes, that expanding a function may produce.
 const MAX_EXPANDED_NODES: usize = 10_000;
 /// Deepest AST nesting that expanding a function may produce.
-const MAX_EXPANDED_DEPTH: usize = 64;
+pub(crate) const MAX_EXPANDED_DEPTH: usize = 64;
 
 struct Function {
     params: Vec<String>,
@@ -253,8 +253,9 @@ fn dependency_order(
         signatures: &BTreeMap<String, (Vec<String>, &str)>,
         stack: &mut Vec<String>,
         order: &mut Vec<String>,
+        done: &mut HashSet<String>,
     ) -> Result<(), ExpressionError> {
-        if order.iter().any(|done| done == name) {
+        if done.contains(name) {
             return Ok(());
         }
         if let Some(start) = stack.iter().position(|open| open == name) {
@@ -265,23 +266,31 @@ fn dependency_order(
                 cycle.join(" -> ")
             )));
         }
+        if stack.len() >= MAX_EXPANDED_DEPTH {
+            return Err(parse_error(format!(
+                "functions call each other more than {MAX_EXPANDED_DEPTH} levels deep: {} -> {name}",
+                stack.join(" -> ")
+            )));
+        }
         let body = signatures[name].1;
         stack.push(name.to_string());
         let callees =
             called_names(body).map_err(|error| function_error(name, body, error_details(error)))?;
         for callee in callees {
             if signatures.contains_key(&callee) {
-                visit_function(&callee, signatures, stack, order)?;
+                visit_function(&callee, signatures, stack, order, done)?;
             }
         }
         stack.pop();
+        done.insert(name.to_string());
         order.push(name.to_string());
         Ok(())
     }
 
     let mut order = Vec::new();
+    let mut done = HashSet::new();
     for name in signatures.keys() {
-        visit_function(name, signatures, &mut Vec::new(), &mut order)?;
+        visit_function(name, signatures, &mut Vec::new(), &mut order, &mut done)?;
     }
     Ok(order)
 }
@@ -491,10 +500,10 @@ mod tests {
 
     #[test]
     fn rejects_call_sites_that_nest_too_deep() {
-        let _scope = FunctionScope::enter(&definitions(&[("next(x)", "x + 1")])).unwrap();
+        let _scope = FunctionScope::enter(&definitions(&[("next(x)", "x + 1 + 1 + 1")])).unwrap();
         let nested = |depth: usize| (0..depth).fold("0".to_string(), |s, _| format!("next({s})"));
-        assert!(Expression::parse(&nested(60)).is_ok());
-        let error = Expression::parse(&nested(70)).unwrap_err().to_string();
+        assert!(Expression::parse(&nested(20)).is_ok());
+        let error = Expression::parse(&nested(30)).unwrap_err().to_string();
         assert!(
             error.contains("expression expands deeper than 64 levels"),
             "{error}"
@@ -570,5 +579,18 @@ mod tests {
         let _scope = FunctionScope::enter(&definitions(&[("f(a, b)", "a + b")])).unwrap();
         let error = Expression::parse("f(1)").unwrap_err().to_string();
         assert!(error.contains("`f` expects 2 arguments, got 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_call_chains_deeper_than_the_expansion_limit() {
+        let entries: Vec<(String, String)> = (0..200)
+            .map(|index| (format!("f{index:03}(x)"), format!("f{:03}(x)", index + 1)))
+            .collect();
+        let entries: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(signature, body)| (signature.as_str(), body.as_str()))
+            .collect();
+
+        assert!(scope_error(&entries).contains("more than 64 levels deep"));
     }
 }
