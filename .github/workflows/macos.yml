@@ -33,7 +33,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: brew install ffmpeg pkg-config
+        run: |
+          brew install ffmpeg@8 pkg-config
+          echo "PKG_CONFIG_PATH=$(brew --prefix ffmpeg@8)/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Check Metal paths
         run: cargo check -p lumen-server -p lumen-local --features metal
