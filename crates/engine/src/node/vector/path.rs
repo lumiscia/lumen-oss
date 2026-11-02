@@ -461,7 +461,8 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                     x_rotation: Angle::degrees(x_axis_rotation as f32),
                     flags: ArcFlags { large_arc, sweep },
                 };
-                if arc.is_straight_line() {
+                // lyon asserts on chords so short their squared terms underflow.
+                if arc.is_straight_line() || (to - from).square_length() < 1e-24 {
                     builder.line_to(to);
                 } else {
                     let mut finite = true;
@@ -715,6 +716,8 @@ mod tests {
             "M 1e7 1e7 l 1e7 1e7 l 1e7 -1e7 Z",
             "M 0 0 A 1e7 1e7 0 1 1 1e7 1e7",
             "M 0 0 A 1e-30 1e-30 0 0 1 1e7 1e7",
+            "M 0 0 A 1 1 0 0 1 1e-25 0",
+            "M 1e-30 0 A 5 5 0 0 1 0 0",
         ] {
             let points = parse_path_points(data, PATH_FLATTENING_TOLERANCE, 65536).unwrap();
             assert!(
