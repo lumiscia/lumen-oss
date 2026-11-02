@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mixTimelineChunk } from "./audio-worker.js";
+import { mixTimelineChunk } from "../src/audio-worker.js";
 
 type MixFixture = {
   expected: number[];

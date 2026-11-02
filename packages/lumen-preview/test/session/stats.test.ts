@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PlaybackFpsMeter } from "./stats.js";
+import { PlaybackFpsMeter } from "../../src/session/stats.js";
 
 describe("PlaybackFpsMeter", () => {
   it("counts presented frames rather than timeline speed", () => {

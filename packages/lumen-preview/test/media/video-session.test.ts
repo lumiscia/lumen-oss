@@ -1,12 +1,12 @@
 import { ALL_FORMATS } from "mediabunny";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_BLOB_CACHE_BYTES, DEFAULT_URL_CACHE_BYTES } from "./source.js";
+import { DEFAULT_BLOB_CACHE_BYTES, DEFAULT_URL_CACHE_BYTES } from "../../src/media/source.js";
 import {
   DEFAULT_VIDEO_FRAME_CACHE_CAPACITY,
   VideoSession,
   createVideoRegistration,
-} from "./video-session.js";
+} from "../../src/media/video-session.js";
 
 /** Uses real Mediabunny against a network read that never answers. */
 describe("VideoSession disposal", () => {

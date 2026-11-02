@@ -1,5 +1,6 @@
 const DEFAULT_CHANNEL_COUNT = 2;
 const DEFAULT_SAMPLE_RATE = 48_000;
+const RECOVERY_RAMP_FRAMES = 240;
 
 export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor {
   constructor() {
@@ -8,8 +9,10 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     this.currentSample = 0;
     this.generation = 0;
     this.chunks = new Map();
+    this.heardAudio = false;
     this.holdOnUnderrun = true;
     this.playing = false;
+    this.recoveryFrames = 0;
     this.stalled = true;
     this.sampleRate = DEFAULT_SAMPLE_RATE;
     this.reportCountdown = 0;
@@ -26,7 +29,9 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
           this.generation = message.generation;
           this.currentSample = Number(message.startSample);
           this.chunks.clear();
+          this.heardAudio = false;
           this.holdOnUnderrun = message.holdOnUnderrun;
+          this.recoveryFrames = 0;
           this.playing = true;
           this.stalled = true;
           this.reportPosition(0);
@@ -68,7 +73,8 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     }
 
     // When holding, the position only covers samples that were heard. Otherwise it follows elapsed
-    // time, and missing samples play as silence.
+    // time, missing samples play as silence, and audio returning from an underrun ramps up. The gap
+    // before the first chunk after `play` isn't an underrun.
     const frames = left.length;
     let written = 0;
     for (; written < frames; written += 1) {
@@ -77,12 +83,17 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
       if (chunk) {
         const chunkFrame = sample - chunk.startSample;
         const base = chunkFrame * this.channelCount;
+        const gain = 1 - this.recoveryFrames / RECOVERY_RAMP_FRAMES;
         for (let channel = 0; channel < output.length; channel += 1) {
           const sourceChannel = Math.min(channel, this.channelCount - 1);
-          output[channel][written] = chunk.samples[base + sourceChannel] || 0;
+          output[channel][written] = (chunk.samples[base + sourceChannel] || 0) * gain;
         }
+        this.heardAudio = true;
+        this.recoveryFrames = Math.max(0, this.recoveryFrames - 1);
       } else if (this.holdOnUnderrun) {
         break;
+      } else if (this.heardAudio) {
+        this.recoveryFrames = RECOVERY_RAMP_FRAMES;
       }
     }
 

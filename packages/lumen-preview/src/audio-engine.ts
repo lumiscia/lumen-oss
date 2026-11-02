@@ -138,6 +138,8 @@ export class LumenAudioEngine {
   #playback: PlaybackClock | null = null;
   #queuedChunkStarts = new Set<number>();
   #sources = new Map<string, AudioSourceEntry>();
+  // Only the latest sync reports failures, because a newer one may have replaced those sources.
+  #sourceSync = 0;
   #timeline: AudioEngineTimeline | null = null;
   #timelineJson: string | null = null;
   #worker: Worker | null = null;
@@ -175,6 +177,7 @@ export class LumenAudioEngine {
       return;
     }
 
+    const sync = ++this.#sourceSync;
     const desired = new Map<string, AudioSourceRegistration>();
     for (const registration of registrations) {
       desired.set(registration.id, registration);
@@ -201,7 +204,7 @@ export class LumenAudioEngine {
     }
 
     const failures = (await Promise.all(loads)).filter((failure) => failure !== null);
-    if (failures.length > 0) {
+    if (failures.length > 0 && sync === this.#sourceSync && !this.#disposed) {
       throw new Error(failures.join("\n"));
     }
   }

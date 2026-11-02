@@ -5,7 +5,7 @@ import {
   LumenAudioEngine,
   type AudioEngineTimeline,
   type AudioSourceRegistration,
-} from "./audio-engine.js";
+} from "../src/audio-engine.js";
 
 type Posted = { generation?: number; id?: string; startSample?: number; type: string };
 
@@ -382,6 +382,60 @@ describe("LumenAudioEngine", () => {
       await expect(obsolete).resolves.toBeUndefined();
       expect(postedOfType(fakes.workers[0]?.posted, "remove-source")).toEqual([]);
       expect(setSources()).toHaveLength(1);
+    });
+
+    describe("a sync that fails and is then superseded", () => {
+      const urlSource = (id: string) =>
+        source(id, { kind: "url", url: `https://a.test/${id}.wav` });
+
+      beforeEach(() => {
+        vi.stubGlobal("fetch", (url: string, init: RequestInit) =>
+          url.includes("offline")
+            ? Promise.resolve(new Response(null, { status: 503 }))
+            : new Promise((_resolve, reject) => {
+                init.signal?.addEventListener("abort", () =>
+                  reject(new DOMException("Aborted", "AbortError")),
+                );
+              }),
+        );
+      });
+
+      function startFailingSync(engine: LumenAudioEngine) {
+        engine.loadAudioTimeline(timelineJson("offline", "stalled"));
+        return engine.syncAudioSources([urlSource("offline"), urlSource("stalled")]);
+      }
+
+      it("doesn't report its failure once a newer sync has replaced the source", async () => {
+        const engine = createEngine();
+        const obsolete = startFailingSync(engine);
+        await new Promise((resolve) => setTimeout(resolve));
+
+        await engine.syncAudioSources([source("offline", new Uint8Array([1]))]);
+
+        await expect(obsolete).resolves.toBeUndefined();
+        expect(setSources()).toHaveLength(1);
+      });
+
+      it("doesn't report its failure after dispose", async () => {
+        const engine = createEngine();
+        const obsolete = startFailingSync(engine);
+        await new Promise((resolve) => setTimeout(resolve));
+
+        engine.dispose();
+
+        await expect(obsolete).resolves.toBeUndefined();
+      });
+
+      it("still reports the failure from the latest sync", async () => {
+        const engine = createEngine();
+        const failing = startFailingSync(engine);
+        await new Promise((resolve) => setTimeout(resolve));
+
+        const latest = engine.syncAudioSources([urlSource("offline")]);
+
+        await expect(latest).rejects.toThrow('audio source "offline"');
+        await expect(failing).resolves.toBeUndefined();
+      });
     });
 
     it("publishes nothing for a source removed before its decode finished", async () => {

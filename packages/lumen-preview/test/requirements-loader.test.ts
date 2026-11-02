@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FrameRequirementLoader } from "./requirements-loader.js";
+import { FrameRequirementLoader } from "../src/requirements-loader.js";
 
 describe("FrameRequirementLoader", () => {
   it("reloads frames evicted while a joined prefetch was pending", async () => {

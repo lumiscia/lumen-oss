@@ -1,7 +1,7 @@
 import type { InputVideoTrack } from "mediabunny";
 import { describe, expect, it, vi } from "vitest";
 
-import { createVideoTimeline } from "./timeline.js";
+import { createVideoTimeline } from "../../src/media/timeline.js";
 
 function fakeTrack(averagePacketRate: number) {
   const computePacketStats = vi.fn(async () => ({

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { LumenMediaBridge } from "./bridge.js";
-import type { NativeVideoFrameTarget } from "./types.js";
+import { LumenMediaBridge } from "../../src/media/bridge.js";
+import type { NativeVideoFrameTarget } from "../../src/media/types.js";
 
 type FakeSample = {
   clone(): FakeSample;

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { LumenPreviewContext } from "../preview.js";
-import type { MediaRegistration } from "../media/index.js";
-import { LumenPreviewSession } from "./session.js";
+import { LumenPreviewContext } from "../../src/preview.js";
+import type { MediaRegistration } from "../../src/media/index.js";
+import { LumenPreviewSession } from "../../src/session/session.js";
 
 const SAMPLES_PER_MS = 48;
 const QUANTUM = 128;
@@ -83,7 +83,7 @@ async function installBrowser() {
   vi.stubGlobal("registerProcessor", () => {});
   vi.stubGlobal("currentTime", 0);
   vi.resetModules();
-  const { LumenAudioWorkletProcessor } = await import("../audio-worklet.js");
+  const { LumenAudioWorkletProcessor } = await import("../../src/audio-worklet.js");
 
   vi.stubGlobal(
     "AudioContext",
@@ -380,6 +380,29 @@ describe("preview drivers and the audio clock", () => {
   });
 
   describe("worker driver, whose video runs on its own clock", () => {
+    it("ramps up when the mixer recovers from running dry during playback", async () => {
+      const { preview } = await startWorkerDriver(browser);
+      preview.play();
+      await flush();
+      browser.render(100);
+
+      browser.state.mixerStarved = true;
+      expect(isSilent(browser.render(3_000).slice(-10))).toBe(true);
+      browser.deliverStarvedChunks();
+      const left = Float32Array.from(browser.render(20).flatMap((quantum) => [...quantum]));
+
+      let largestStep = 0;
+      for (let frame = 1; frame < left.length; frame += 1) {
+        largestStep = Math.max(largestStep, Math.abs((left[frame] ?? 0) - (left[frame - 1] ?? 0)));
+      }
+      expect(left[0]).toBe(0);
+      expect(left.at(-1)).toBe(0.5);
+      expect(largestStep).toBeLessThan(0.01);
+      expect(
+        Math.abs(browser.processor.currentSample - browser.state.now * SAMPLES_PER_MS),
+      ).toBeLessThan(TOLERANCE_SAMPLES);
+    });
+
     it.each(["addModule", "resume"] as const)(
       "starts audio at the elapsed position after a slow %s",
       async (step) => {
