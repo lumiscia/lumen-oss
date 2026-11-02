@@ -1318,8 +1318,9 @@ fn estimated_plan_bytes(compiled: &CompiledComposition) -> u64 {
 
 /// Times a frame is bound again after fonts load during binding, before binding fails rather
 /// than draw text past its bounds. A node loads all the fonts it names at once, and a bind can
-/// stop at the first text they outgrow, so each node may take a bind of its own. The margin is for
-/// fonts other renderers load meanwhile.
+/// stop at the first text they outgrow, so this allows each node a bind of its own, with a margin
+/// for fonts other renderers load meanwhile. A node evaluated many times can name more fonts than
+/// this allows, and its frame then fails, but the fonts stay loaded for the next render.
 fn max_font_rebinds(composition: &Composition) -> usize {
     let templates: usize = composition
         .compositions()
