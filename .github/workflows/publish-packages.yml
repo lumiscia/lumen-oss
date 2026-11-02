@@ -2,6 +2,11 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      exclude:
+        description: Space-separated crates to skip, for resuming after a partly failed publish.
+        type: string
+        default: ""
 
 concurrency:
   group: release
@@ -79,8 +84,8 @@ jobs:
           fi
 
           pnpm sync:cargo-version
-          git diff --exit-code Cargo.toml pnpm-lock.yaml packages/*/package.json
-          cargo metadata --no-deps --format-version 1 > /dev/null
+          cargo update --workspace --locked
+          git diff --exit-code Cargo.toml Cargo.lock crates/*/Cargo.toml pnpm-lock.yaml packages/*/package.json
 
       - name: Build packages
         run: pnpm release:build
@@ -90,9 +95,15 @@ jobs:
         id: crates_io_auth
 
       - name: Publish crates
-        run: pnpm publish:crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
+          EXCLUDE: ${{ inputs.exclude }}
+        run: |
+          excludes=()
+          for crate in $EXCLUDE; do
+            excludes+=(--exclude "$crate")
+          done
+          cargo publish --workspace "${excludes[@]}"
 
       - name: Publish npm packages
         run: pnpm publish:packages

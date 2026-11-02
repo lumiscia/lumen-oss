@@ -4686,7 +4686,7 @@
                       }
                     ],
                     "default": false,
-                    "description": "Uses the pivot as given; when off, a (0, 0) pivot means the source centre.",
+                    "description": "Uses the pivot as given; when off, the pivot is the source centre.",
                     "title": "Custom pivot",
                     "x-lumen-kind": "bool"
                   },

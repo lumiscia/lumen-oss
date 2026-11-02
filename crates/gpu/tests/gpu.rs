@@ -623,7 +623,7 @@ fn submit_plan_with_external_texture_restores_slot_and_retains_target() {
         .submit_plan_with_external_texture(
             &plan,
             output,
-            ExternalTexture::new(Arc::clone(&external), desc),
+            ExternalTexture::new(Arc::clone(&external), desc.domain),
         )
         .unwrap();
 
@@ -680,18 +680,53 @@ fn execute_rejects_unprepared_or_changed_plans() {
     let Some(mut renderer) = renderer() else {
         return;
     };
-    let plan = RenderPlan::builder().build();
+    let one_buffer = || {
+        let mut builder = RenderPlan::builder();
+        builder.buffer(None, BufferDesc::uniform(16));
+        builder.build()
+    };
+    let (prepared, same_shape) = (one_buffer(), one_buffer());
 
-    assert!(renderer.execute(&plan, &FrameUpdate::new()).is_ok());
+    let unprepared = renderer
+        .execute(&prepared, &FrameUpdate::new())
+        .unwrap_err();
+    assert!(
+        unprepared.to_string().contains("not been prepared"),
+        "unexpected error: {unprepared}"
+    );
 
-    let mut changed = RenderPlan::builder();
-    changed.buffer(None, BufferDesc::uniform(16));
-    let changed = changed.build();
-    let err = renderer.execute(&changed, &FrameUpdate::new()).unwrap_err();
+    renderer.prepare_plan(&prepared).unwrap();
+    assert!(renderer.execute(&prepared, &FrameUpdate::new()).is_ok());
+    let err = renderer
+        .execute(&same_shape, &FrameUpdate::new())
+        .unwrap_err();
     assert!(
         err.to_string().contains("not been prepared"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn rejected_buffer_upload_is_not_cached_as_written() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let mut builder = RenderPlan::builder();
+    let buffer = builder.buffer(None, BufferDesc::uniform(16));
+    let plan = builder.build();
+    renderer.prepare_plan(&plan).unwrap();
+
+    // Not a multiple of 4 bytes, so the write fails validation.
+    let bytes = [1, 2, 3];
+    let mut update = FrameUpdate::new();
+    update.write_buffer(buffer, 0, &bytes);
+    for _ in 0..2 {
+        let err = renderer.execute(&plan, &update).unwrap_err();
+        assert!(
+            err.to_string().contains("validation"),
+            "unexpected error: {err}"
+        );
+    }
 }
 
 #[test]

@@ -117,6 +117,7 @@ impl GpuCompileNode for AlphaPremultiply {
                 alpha_mode,
                 ..source.metadata
             },
+            bounds: source.bounds,
         }))
     }
 }

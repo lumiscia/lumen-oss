@@ -124,6 +124,7 @@ impl GpuCompileNode for Blur {
                 alpha_mode: AlphaMode::Premultiplied,
                 ..source.metadata
             },
+            bounds: None,
         }))
     }
 }

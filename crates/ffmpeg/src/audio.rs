@@ -2,7 +2,7 @@ use std::ptr;
 
 use crate::{
     FfmpegError, Result,
-    ffi::{self, AvFrame, sys},
+    ffi::{self, AvFrame, CodecContextGuard, sys},
     format::{InputContext, Packet, Rational},
 };
 use sys::{
@@ -62,8 +62,8 @@ impl AudioDecoder {
                 "no audio decoder found",
             ));
         }
-        let context = unsafe { sys::avcodec_alloc_context3(codec) };
-        if context.is_null() {
+        let mut context = CodecContextGuard(unsafe { sys::avcodec_alloc_context3(codec) });
+        if context.0.is_null() {
             return Err(FfmpegError::new(
                 "avcodec_alloc_context3",
                 "failed to allocate audio decoder context",
@@ -71,18 +71,18 @@ impl AudioDecoder {
         }
         unsafe {
             ffi::check(
-                sys::avcodec_parameters_to_context(context, parameters),
+                sys::avcodec_parameters_to_context(context.0, parameters),
                 "avcodec_parameters_to_context",
             )?;
             ffi::check(
-                sys::avcodec_open2(context, codec, ptr::null_mut()),
+                sys::avcodec_open2(context.0, codec, ptr::null_mut()),
                 "avcodec_open2",
             )?;
         }
         Ok(Self {
             stream_index,
             time_base: input.stream_time_base(stream_index)?.into(),
-            context,
+            context: context.release(),
         })
     }
 
@@ -172,11 +172,15 @@ impl AudioResampler {
                 );
             }
         }
-        let mut ptr = ptr::null_mut();
+        // Owning the context before it is configured frees it if `swr_init` fails.
+        let mut resampler = Self {
+            ptr: ptr::null_mut(),
+            config,
+        };
         unsafe {
             ffi::check(
                 sys::swr_alloc_set_opts2(
-                    &mut ptr,
+                    &mut resampler.ptr,
                     ptr::addr_of_mut!(dst_layout),
                     config.sample_format.to_av_sample_format(),
                     config.sample_rate as i32,
@@ -188,9 +192,9 @@ impl AudioResampler {
                 ),
                 "swr_alloc_set_opts2",
             )?;
-            ffi::check(sys::swr_init(ptr), "swr_init")?;
+            ffi::check(sys::swr_init(resampler.ptr), "swr_init")?;
         }
-        Ok(Self { ptr, config })
+        Ok(resampler)
     }
 
     pub fn convert(&mut self, source: &DecodedAudioFrame) -> Result<AudioFrame> {

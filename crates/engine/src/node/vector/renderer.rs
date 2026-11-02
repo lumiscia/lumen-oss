@@ -584,6 +584,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             texture,
             domain,
             metadata: RasterMetadata::default(),
+            bounds: None,
         }))
     }
 
@@ -896,6 +897,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 texture,
                 domain,
                 metadata: RasterMetadata::default(),
+                bounds: None,
             }),
             params,
             storage,

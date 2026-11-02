@@ -1,11 +1,18 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::{
     BufferDesc, BufferId, BufferResource, ComputePassDesc, NodeKey, ParamKey, ParamSlot,
     ParamTarget, Pass, PassDesc, PassId, Program, ProgramDesc, ProgramId, RenderPassDesc,
     SamplerId, SamplerResource, TextureDesc, TextureId, TextureResource,
 };
 
+static NEXT_PLAN_ID: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Debug, Clone)]
 pub struct RenderPlan {
+    /// Distinguishes this plan from every other built in the process, so a renderer knows which
+    /// one it prepared.
+    pub(crate) id: u64,
     pub(crate) textures: Vec<TextureResource>,
     pub(crate) buffers: Vec<BufferResource>,
     pub(crate) samplers: Vec<SamplerResource>,
@@ -164,6 +171,7 @@ impl RenderPlanBuilder {
 
     pub fn build(self) -> RenderPlan {
         RenderPlan {
+            id: NEXT_PLAN_ID.fetch_add(1, Ordering::Relaxed),
             textures: self.textures,
             buffers: self.buffers,
             samplers: self.samplers,

@@ -4,8 +4,8 @@ use std::{ffi::CStr, mem::MaybeUninit, sync::Arc};
 
 use cudarc::driver::{CudaContext as CudaContextInner, result, sys};
 
-use super::{CudaExternalMemoryHandle, CudaVideoFrame, interop, kernel};
-pub use interop::ImportedCudaExternalImage;
+use super::{CudaVideoFrame, interop, kernel};
+pub use interop::{ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CudaDeviceInfo {
@@ -15,10 +15,8 @@ pub struct CudaDeviceInfo {
     pub pci_bus_id: String,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct CudaDriver;
-
-unsafe impl Send for CudaDriver {}
-unsafe impl Sync for CudaDriver {}
 
 impl CudaDriver {
     pub fn load() -> Result<Self, String> {
@@ -26,20 +24,14 @@ impl CudaDriver {
         Ok(Self)
     }
 
-    pub fn create_primary_context(&self) -> Result<CudaContext<'_>, String> {
+    pub fn create_primary_context(&self) -> Result<CudaContext, String> {
         self.create_primary_context_for_ordinal(0)
     }
 
-    pub fn create_primary_context_for_ordinal(
-        &self,
-        ordinal: i32,
-    ) -> Result<CudaContext<'_>, String> {
+    pub fn create_primary_context_for_ordinal(&self, ordinal: i32) -> Result<CudaContext, String> {
         let inner =
             CudaContextInner::new(ordinal.max(0) as usize).map_err(|error| error.to_string())?;
-        Ok(CudaContext {
-            _driver: self,
-            inner,
-        })
+        Ok(CudaContext { inner })
     }
 
     pub fn driver_version(&self) -> Result<i32, String> {
@@ -97,12 +89,32 @@ impl CudaDriver {
         };
         format!("{name} ({result:?}): {description}")
     }
+}
+
+/// A CUDA primary context. Allocations and imports made through it keep it alive and bind it
+/// before releasing their resources.
+#[derive(Clone)]
+pub struct CudaContext {
+    pub(super) inner: Arc<CudaContextInner>,
+}
+
+impl CudaContext {
+    pub fn ordinal(&self) -> i32 {
+        self.inner.ordinal() as i32
+    }
+
+    pub fn set_current(&self) -> Result<(), String> {
+        self.inner
+            .bind_to_thread()
+            .map_err(|error| error.to_string())
+    }
 
     pub fn allocate_rgba_frame(
         &self,
         width: u32,
         height: u32,
-    ) -> Result<CudaDeviceAllocation<'_>, String> {
+    ) -> Result<CudaDeviceAllocation, String> {
+        self.set_current()?;
         let width_bytes = width as usize * 4;
         let mut device_ptr = MaybeUninit::<sys::CUdeviceptr>::uninit();
         let mut pitch = MaybeUninit::<usize>::uninit();
@@ -118,8 +130,8 @@ impl CudaDriver {
             .map_err(|error| error.to_string())?;
         }
         Ok(CudaDeviceAllocation {
-            _driver: self,
             memory: Arc::new(CudaDeviceMemory {
+                context: self.clone(),
                 device_ptr: unsafe { device_ptr.assume_init() },
                 width,
                 height,
@@ -131,8 +143,9 @@ impl CudaDriver {
     pub fn copy_image_to_rgba_frame(
         &self,
         source: &ImportedCudaExternalImage,
-        destination: &CudaDeviceAllocation<'_>,
+        destination: &CudaDeviceAllocation,
     ) -> Result<(), String> {
+        self.set_current()?;
         interop::copy_image_to_rgba_frame(
             source,
             destination.memory.device_ptr,
@@ -144,9 +157,10 @@ impl CudaDriver {
 
     pub fn copy_rgba_frame_to_image(
         &self,
-        source: &CudaDeviceAllocation<'_>,
+        source: &CudaDeviceAllocation,
         destination: &ImportedCudaExternalImage,
     ) -> Result<(), String> {
+        self.set_current()?;
         interop::copy_rgba_frame_to_image(
             source.memory.device_ptr,
             source.memory.pitch,
@@ -156,55 +170,33 @@ impl CudaDriver {
         )
     }
 
-    pub fn synchronize_context(&self) -> Result<(), String> {
+    pub fn synchronize(&self) -> Result<(), String> {
+        self.set_current()?;
         unsafe { sys::cuCtxSynchronize() }
             .result()
             .map_err(|error| error.to_string())
     }
 
-    pub fn create_nv12_to_rgba_converter(
-        &self,
-        context: &CudaContext<'_>,
-    ) -> Result<CudaNv12ToRgbaConverter<'_>, String> {
-        let converter = kernel::CudaNv12ToRgbaConverter::new(context.inner.clone())?;
+    pub fn create_nv12_to_rgba_converter(&self) -> Result<CudaNv12ToRgbaConverter, String> {
         Ok(CudaNv12ToRgbaConverter {
-            _driver: self,
-            context: context.inner.clone(),
-            converter,
+            converter: kernel::CudaNv12ToRgbaConverter::new(self.inner.clone())?,
         })
     }
 }
 
-pub struct CudaContext<'a> {
-    _driver: &'a CudaDriver,
-    inner: Arc<CudaContextInner>,
-}
-
-impl CudaContext<'_> {
-    pub fn ordinal(&self) -> i32 {
-        self.inner.ordinal() as i32
-    }
-
-    pub fn set_current(&self) -> Result<(), String> {
-        self.inner
-            .bind_to_thread()
-            .map_err(|error| error.to_string())
-    }
-}
-
-pub struct CudaDeviceAllocation<'a> {
-    _driver: &'a CudaDriver,
+pub struct CudaDeviceAllocation {
     memory: Arc<CudaDeviceMemory>,
 }
 
 struct CudaDeviceMemory {
+    context: CudaContext,
     device_ptr: sys::CUdeviceptr,
     width: u32,
     height: u32,
     pitch: usize,
 }
 
-impl CudaDeviceAllocation<'_> {
+impl CudaDeviceAllocation {
     pub fn as_video_frame(&self, pts: Option<i64>) -> CudaVideoFrame {
         CudaVideoFrame::from_retained_device_ptr(
             self.memory.device_ptr,
@@ -229,6 +221,7 @@ impl CudaDeviceAllocation<'_> {
     }
 
     pub fn clear(&self, value: u8) -> Result<(), String> {
+        self.memory.context.set_current()?;
         unsafe {
             sys::cuMemsetD8_v2(
                 self.memory.device_ptr,
@@ -245,43 +238,21 @@ impl CudaDeviceAllocation<'_> {
 
 impl Drop for CudaDeviceMemory {
     fn drop(&mut self) {
+        let _ = self.context.set_current();
         let _ = unsafe { sys::cuMemFree_v2(self.device_ptr).result() };
     }
 }
 
-pub struct CudaNv12ToRgbaConverter<'a> {
-    _driver: &'a CudaDriver,
-    context: Arc<CudaContextInner>,
+pub struct CudaNv12ToRgbaConverter {
     converter: kernel::CudaNv12ToRgbaConverter,
 }
 
-impl CudaNv12ToRgbaConverter<'_> {
+impl CudaNv12ToRgbaConverter {
     pub fn convert(
         &self,
         source: &super::CudaDecodedFrame,
-        destination: &CudaDeviceAllocation<'_>,
+        destination: &CudaDeviceAllocation,
     ) -> Result<(), String> {
-        let _ = self.context.bind_to_thread();
         self.converter.convert(source, destination)
     }
-}
-
-pub fn import_vulkan_opaque_fd_image<'a>(
-    _driver: &'a CudaDriver,
-    memory: CudaExternalMemoryHandle,
-    allocation_size: u64,
-    width: u32,
-    height: u32,
-) -> Result<ImportedCudaExternalImage, String> {
-    interop::import_vulkan_opaque_fd_image(memory, allocation_size, width, height)
-}
-
-pub fn import_owned_vulkan_opaque_fd_image<'a>(
-    _driver: &'a CudaDriver,
-    fd: std::os::fd::OwnedFd,
-    allocation_size: u64,
-    width: u32,
-    height: u32,
-) -> Result<ImportedCudaExternalImage, String> {
-    interop::import_owned_vulkan_opaque_fd_image(fd, allocation_size, width, height)
 }
