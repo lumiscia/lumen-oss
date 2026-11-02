@@ -912,6 +912,15 @@ impl TextSystem {
             })
     }
 
+    /// Whether `key` is an outline glyph with nothing to draw, such as whitespace.
+    fn is_blank_outline(&mut self, key: CacheKey) -> bool {
+        self.is_plain_outline(key)
+            && self
+                .swash_cache
+                .get_outline_commands_uncached(&mut self.font_system, key)
+                .is_none_or(|commands| commands.is_empty())
+    }
+
     /// Draws `layout` into a fresh `size`² atlas and returns its pixels.
     #[cfg(test)]
     fn render_atlas(
@@ -1022,6 +1031,9 @@ impl TextSystem {
                     image: AtlasImage::Empty,
                     ..
                 }) => {}
+                None if self.is_blank_outline(glyph.key.0) => {
+                    atlas.insert(key, AtlasImage::Empty);
+                }
                 _ => {
                     // The stroke is omitted along with its glyph.
                     let stroked = glyph_stroke(strokes, glyph).is_some()
@@ -2836,6 +2848,26 @@ mod tests {
         assert_eq!(recovered.dropped_glyphs, 0);
         assert!(!recovered.instances.is_empty());
         assert!(!recovered.uploads.is_empty());
+    }
+
+    #[test]
+    fn whitespace_the_full_atlas_never_reached_is_not_dropped() {
+        let mut system = TextSystem::new();
+        let mut dropped = |text: &str| {
+            let mut request = TextLayoutRequest::new(text);
+            request.spans[0].font_size = 40.0;
+            let layout = system.layout(&request);
+            let mut atlas = GlyphAtlas::new(64);
+            atlas.begin_frame();
+            prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster).dropped_glyphs
+        };
+        let letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let without_spaces = dropped(letters);
+        assert!(without_spaces > 0);
+        assert_eq!(
+            dropped(&format!("{letters}{}", " ".repeat(100))),
+            without_spaces
+        );
     }
 
     #[test]

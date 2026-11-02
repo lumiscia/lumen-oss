@@ -1316,8 +1316,9 @@ fn estimated_plan_bytes(compiled: &CompiledComposition) -> u64 {
 }
 
 /// Times a frame is bound again after fonts load during binding, before binding fails rather
-/// than draw text past its bounds.
-const MAX_FONT_REBINDS: u32 = 3;
+/// than draw text past its bounds. A bind can stop at the first text a new font outgrows, so each
+/// late font may take a bind of its own; only a store whose fonts never settle reaches this.
+const MAX_FONT_REBINDS: u32 = 64;
 
 fn text_font_generation() -> Option<u64> {
     crate::node::source::text::text_system()

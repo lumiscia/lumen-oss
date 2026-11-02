@@ -6668,6 +6668,88 @@ fn a_font_loaded_while_binding_resizes_constant_text_instead_of_failing() {
     assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
 }
 
+/// Resolves "LoadN" to a font named "LateN" and "LateN" to no font data, for each digit N.
+#[derive(Debug, Clone)]
+struct LateFonts;
+
+#[derive(Debug, Clone)]
+struct LateFontsResolver(String);
+
+impl lumen_engine::media::FontResolver for LateFontsResolver {
+    fn id(&self) -> &str {
+        &self.0
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(match self.0.strip_prefix("Load") {
+            Some(digit) => vec![renamed_inter(&format!("Late{digit}"))],
+            None => Vec::new(),
+        })
+    }
+}
+
+impl MediaStore for LateFonts {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family.starts_with("Load") || family.starts_with("Late")).then(|| family.to_string())
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        self.font_resolver_id(family)
+            .map(|id| Box::new(LateFontsResolver(id)) as Box<dyn lumen_engine::media::FontResolver>)
+    }
+}
+
+#[test]
+fn many_fonts_loaded_while_binding_settle_in_one_render() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // Each pair is a text measuring a node whose font loads as the frame binds, then a text that
+    // font outgrows, so every font stops a bind.
+    let mut nodes = vec![
+        json!({ "id": 100, "type": "raster_multimerge" }),
+        json!({ "id": 101, "type": "media_output" }),
+    ];
+    let mut connections = vec![json!({ "from_node": 100, "to_node": 101, "to_port": "source" })];
+    for font in 0..5 {
+        let (measured, measuring, outgrown) = (200 + font, 2 * font + 1, 2 * font + 2);
+        nodes.extend([
+            json!({ "id": measured, "type": "text", "params": {
+                "content": "x", "font_family": format!("Load{font}")
+            } }),
+            json!({ "id": measuring, "type": "text", "params": {
+                "content": "a",
+                "glyph_offset": format!("=vec2(0 * text_width(node({measured})), 0)")
+            } }),
+            json!({ "id": outgrown, "type": "text", "params": {
+                "content": "ffi", "font_family": format!("Late{font}"), "font_size": 40
+            } }),
+        ]);
+        for from_node in [measuring, outgrown] {
+            connections.push(json!({
+                "from_node": from_node, "from_port": "output", "to_node": 100, "to_port": "layers"
+            }));
+        }
+    }
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": nodes,
+        "connections": connections
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &LateFonts);
+    assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+}
+
 #[test]
 fn text_dropped_by_a_full_atlas_still_counts_toward_the_instance_limit() {
     let _guard = TEXT_TEST_LOCK.lock().unwrap();
