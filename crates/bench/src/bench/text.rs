@@ -4,10 +4,11 @@ use anyhow::{Context, anyhow};
 use lumen_engine::node::source::text_content::TextContentDelegate;
 use lumen_engine::{
     composition::{CompositionBuilder, RenderSettings, TimelineSettings},
+    error::MediaError,
     expr::{Expression, ExpressionContext},
     gpu::GpuCompositionRenderer,
     graph::Graph,
-    media::{ImageResolver, MediaStore, VideoFrameResolver},
+    media::{FontResolver, ImageResolver, MediaStore, VideoFrameResolver},
     node::{
         Deferred, NodeId, NodeKind,
         media_output::MediaOutput,
@@ -64,6 +65,7 @@ impl Bench for TextBench {
         let mut iterations = 100usize;
         let mut repeats = 1usize;
         let mut selection = "all".to_string();
+        let mut fonts = Vec::new();
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -80,9 +82,13 @@ impl Bench for TextBench {
                         .parse()?
                 }
                 "--case" => selection = args.next().context("--case requires a value")?,
+                "--font" => {
+                    let path = args.next().context("--font requires a path")?;
+                    fonts.push(std::fs::read(&path).with_context(|| format!("reading {path}"))?);
+                }
                 "--help" | "-h" | "--list" => {
                     println!(
-                        "lumen-bench-text [--case all|layout|raster|msdf|emoji|measure-literal|measure-expression|measure-nested-reference] [--iterations N] [--text-repeats N]"
+                        "lumen-bench-text [--case all|layout|raster|msdf|emoji|measure-literal|measure-expression|measure-nested-reference] [--iterations N] [--text-repeats N] [--font PATH]...\n\nOnly the bundled Roboto is loaded by default; pass --font with fonts covering emoji, Arabic and Hebrew to measure fallback."
                     );
                     return Ok(());
                 }
@@ -95,6 +101,7 @@ impl Bench for TextBench {
         if selection != "all" && !BenchCase::ALL.iter().any(|case| case.name() == selection) {
             return Err(anyhow!("unknown text case `{selection}`"));
         }
+        let media = BenchMedia { fonts };
         let mut summary = SummaryReport::new(
             "Text benchmark summary",
             ["case", "glyphs", "iterations", "cold", "total", "mean/iter"],
@@ -103,7 +110,7 @@ impl Bench for TextBench {
             if selection != "all" && selection != case.name() {
                 continue;
             }
-            let result = run_case(case, iterations, repeats)?;
+            let result = run_case(case, iterations, repeats, &media)?;
             summary.push_row(vec![
                 case.name().to_string(),
                 result.glyph_count.to_string(),
@@ -124,18 +131,45 @@ struct BenchResult {
     glyph_count: usize,
 }
 
+/// Media with no images or video, whose `--font` files load for any font family.
 #[derive(Debug)]
-struct EmptyMedia;
-impl MediaStore for EmptyMedia {
+struct BenchMedia {
+    fonts: Vec<Vec<u8>>,
+}
+
+impl MediaStore for BenchMedia {
     fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
         None
     }
     fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
         None
     }
+    fn font_resolver_id(&self, _: &str) -> Option<String> {
+        (!self.fonts.is_empty()).then(|| "bench".to_string())
+    }
+    fn get_font_resolver(&self, _: &str) -> Option<Box<dyn FontResolver>> {
+        (!self.fonts.is_empty())
+            .then(|| Box::new(BenchFonts(self.fonts.clone())) as Box<dyn FontResolver>)
+    }
 }
 
-fn run_case(case: BenchCase, iterations: usize, repeats: usize) -> anyhow::Result<BenchResult> {
+struct BenchFonts(Vec<Vec<u8>>);
+
+impl FontResolver for BenchFonts {
+    fn id(&self) -> &str {
+        "bench"
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
+        Ok(self.0.clone())
+    }
+}
+
+fn run_case(
+    case: BenchCase,
+    iterations: usize,
+    repeats: usize,
+    media: &BenchMedia,
+) -> anyhow::Result<BenchResult> {
     if matches!(
         case,
         BenchCase::MeasureLiteral
@@ -150,6 +184,9 @@ fn run_case(case: BenchCase, iterations: usize, repeats: usize) -> anyhow::Resul
     let mut request = lumen_text::TextLayoutRequest::new(content.clone());
     request.max_width = Some(1300.0);
     let mut system = lumen_text::TextSystem::new();
+    for font in &media.fonts {
+        system.load_font_data(font.clone());
+    }
     let glyph_count = system.layout(&request).glyphs.len();
     let mut graph = Graph::new();
     graph.nodes.insert(
@@ -199,8 +236,7 @@ fn run_case(case: BenchCase, iterations: usize, repeats: usize) -> anyhow::Resul
     };
     let mut run = |frame| -> anyhow::Result<()> {
         if let Some(renderer) = &mut renderer {
-            let (_, submission) =
-                renderer.render_frame_submitted(&composition, frame, &EmptyMedia)?;
+            let (_, submission) = renderer.render_frame_submitted(&composition, frame, media)?;
             renderer
                 .gpu_renderer()
                 .device
