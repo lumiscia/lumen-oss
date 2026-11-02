@@ -178,6 +178,8 @@ pub struct CompileContext<'a> {
     bound_frames: Option<Arc<[PlanFrame]>>,
     /// Full-frame copies of bounded rasters, by the bounded texture and display size.
     full_frames: HashMap<(lumen_gpu::TextureId, u32, u32), RasterHandle>,
+    /// Draws every source across the canvas rather than within its bounds.
+    full_frame_sources: bool,
     cache: super::cache::CacheRecorder,
 }
 
@@ -231,6 +233,12 @@ impl<'a> CompileContext<'a> {
         self
     }
 
+    /// Makes `source_bounds` give `None` for every source, so each fills the canvas.
+    pub(crate) fn full_frame_sources(mut self, full_frame_sources: bool) -> Self {
+        self.full_frame_sources = full_frame_sources;
+        self
+    }
+
     /// `timeline_bounds` sizes animated sources to their bounds over the timeline, which holds
     /// only for plans the caller keeps to whole frames of it.
     pub(crate) fn with_options(
@@ -265,6 +273,7 @@ impl<'a> CompileContext<'a> {
             text_atlas_texture: None,
             bound_frames,
             full_frames: HashMap::new(),
+            full_frame_sources: false,
             cache: super::cache::CacheRecorder::default(),
         }
     }
@@ -622,6 +631,9 @@ impl<'a> CompileContext<'a> {
         motion: SourceMotion,
         mut bounds_at: impl FnMut(&ExpressionContext<'_>) -> crate::Result<Option<[f32; 4]>>,
     ) -> Option<lumen_gpu::RectI> {
+        if self.full_frame_sources {
+            return None;
+        }
         let mut expr = self.expr_context(node_id, "params");
         match motion {
             SourceMotion::Fixed => {

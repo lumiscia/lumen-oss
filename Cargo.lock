@@ -1631,6 +1631,7 @@ dependencies = [
  "glemu",
  "image",
  "js-sys",
+ "lumen-engine",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",
  "lumen-engine-macros",
