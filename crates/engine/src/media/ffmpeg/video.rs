@@ -5,7 +5,7 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    CpuVideoFrame, DecodeMode, GpuBackend, GpuVideoFrame, InputContext, Rational, VideoDecoder,
+    CpuVideoFrame, DecodeMode, GpuBackend, GpuVideoFrame, InputContext, VideoDecoder,
     VideoDecoderConfig, VideoStreamInfo,
 };
 
@@ -18,25 +18,9 @@ use super::image::{FrameImage, FrameLruCache};
 
 const SEEK_REOPEN_THRESHOLD: u32 = 120;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FfmpegResolverOptions {
     pub prefer_hardware_decode: bool,
-}
-
-impl Default for FfmpegResolverOptions {
-    fn default() -> Self {
-        Self {
-            prefer_hardware_decode: default_hardware_decode(),
-        }
-    }
-}
-
-fn default_hardware_decode() -> bool {
-    cfg!(all(
-        target_os = "linux",
-        feature = "cuda",
-        feature = "vulkan"
-    ))
 }
 
 struct VideoDecodeWorker {
@@ -58,8 +42,20 @@ impl VideoDecodeWorker {
         }
 
         let decoded = self.decoder.decode_frame(frame)?;
-        self.cache.insert(frame, decoded.clone());
+        self.cache.insert(frame, decoded.clone(), false);
         Ok(decoded)
+    }
+
+    fn has_room_to_prefetch(&self) -> bool {
+        self.cache.has_room_for(self.decoder.frame_bytes())
+    }
+
+    fn prefetch_frame(&mut self, frame: u32) {
+        if !self.cache.contains(frame)
+            && let Ok(decoded) = self.decoder.decode_frame(frame)
+        {
+            self.cache.insert(frame, decoded, true);
+        }
     }
 
     fn retain_frames(&mut self, frames: &[u32]) {
@@ -76,6 +72,7 @@ struct LibavStreamDecoder {
     frame_count: u32,
     fps: f64,
     time_base_seconds: f64,
+    start_time: i64,
     input: InputContext,
     decoder: VideoDecoder,
     next_frame_hint: u32,
@@ -91,6 +88,7 @@ struct DecoderComponents {
     frame_count: u32,
     fps: f64,
     time_base_seconds: f64,
+    start_time: i64,
     decoder: VideoDecoder,
     gpu_decode_status: GpuDecodeStatus,
 }
@@ -153,6 +151,7 @@ impl LibavStreamDecoder {
             frame_count: components.frame_count,
             fps: components.fps,
             time_base_seconds: components.time_base_seconds,
+            start_time: components.start_time,
             input: components.input,
             decoder: components.decoder,
             next_frame_hint: 0,
@@ -165,10 +164,7 @@ impl LibavStreamDecoder {
         source: &str,
         prefer_hardware_decode: bool,
     ) -> Result<DecoderComponents, MediaError> {
-        let input = InputContext::open(source.to_string()).map_err(|err| MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!("failed opening media source: {err}"),
-        })?;
+        let mut input = open_input(source)?;
         let stream = input
             .best_video_stream()
             .map_err(|err| MediaError::Decode {
@@ -176,11 +172,33 @@ impl LibavStreamDecoder {
                 details: format!("failed selecting video stream: {err}"),
             })?;
         let stream_index = stream.stream_index;
-        let stream_time_base = stream.time_base.as_f64().unwrap_or(1.0 / 30.0);
+        let time_base_seconds = stream
+            .time_base
+            .as_f64()
+            .filter(|seconds| *seconds > 0.0)
+            .ok_or_else(|| MediaError::Decode {
+                media_source: source.to_string(),
+                details: "stream has no valid time base".to_string(),
+            })?;
         let fps = resolve_stream_fps(&stream, source)?;
         let width = stream.width;
         let height = stream.height;
-        let frame_count = resolve_frame_count(&stream, fps);
+        let frame_count = match resolve_frame_count(&stream, input.presented_duration_us(), fps) {
+            Some(frame_count) => Some(frame_count),
+            None if input.is_image() => {
+                let frame_count = count_frames(&mut input, stream_index);
+                // An image packet can hold the whole file, so the spent input goes before the next
+                // one reads it again.
+                drop(input);
+                input = open_input(source)?;
+                frame_count
+            }
+            None => None,
+        }
+        .ok_or_else(|| MediaError::Decode {
+            media_source: source.to_string(),
+            details: "unable to determine stream frame count".to_string(),
+        })?;
         let (decoder, gpu_decode_status) =
             open_video_decoder(source, &input, &stream, prefer_hardware_decode)?;
 
@@ -191,7 +209,8 @@ impl LibavStreamDecoder {
             height,
             frame_count,
             fps,
-            time_base_seconds: stream_time_base.max(1e-12),
+            time_base_seconds,
+            start_time: stream.start_time,
             decoder,
             gpu_decode_status,
         })
@@ -381,19 +400,21 @@ impl LibavStreamDecoder {
     }
 
     fn frame_to_timestamp(&self, frame: u32) -> i64 {
-        if self.fps <= 0.0 || self.time_base_seconds <= 0.0 {
-            return i64::from(frame);
-        }
         let seconds = f64::from(frame) / self.fps;
-        (seconds / self.time_base_seconds).round() as i64
+        (seconds / self.time_base_seconds).round() as i64 + self.start_time
     }
 
     fn timestamp_to_frame(&self, timestamp: i64) -> u32 {
-        if timestamp <= 0 || self.fps <= 0.0 {
+        let elapsed = timestamp.saturating_sub(self.start_time);
+        if elapsed <= 0 {
             return 0;
         }
-        let seconds = (timestamp as f64) * self.time_base_seconds;
+        let seconds = (elapsed as f64) * self.time_base_seconds;
         (seconds * self.fps).round() as u32
+    }
+
+    fn frame_bytes(&self) -> usize {
+        self.width as usize * self.height as usize * 4
     }
 
     fn reopen(&mut self) -> Result<(), MediaError> {
@@ -405,6 +426,7 @@ impl LibavStreamDecoder {
         self.frame_count = components.frame_count;
         self.fps = components.fps;
         self.time_base_seconds = components.time_base_seconds;
+        self.start_time = components.start_time;
         self.decoder = components.decoder;
         self.gpu_decode_status = components.gpu_decode_status;
         self.next_frame_hint = 0;
@@ -439,21 +461,39 @@ fn run_decode_worker(
     };
     let mut pending = BTreeSet::new();
 
-    while let Ok(request) = request_rx.recv() {
-        if handle_worker_request(request, &mut worker, &mut pending) {
-            break;
-        }
+    loop {
+        let can_prefetch = |worker: &Result<VideoDecodeWorker, MediaError>| {
+            worker
+                .as_ref()
+                .is_ok_and(VideoDecodeWorker::has_room_to_prefetch)
+        };
 
-        while let Ok(request) = request_rx.try_recv() {
+        if pending.is_empty() || !can_prefetch(&worker) {
+            let Ok(request) = request_rx.recv() else {
+                return;
+            };
             if handle_worker_request(request, &mut worker, &mut pending) {
                 return;
             }
         }
 
-        if let Some(frame) = pending.pop_first()
+        loop {
+            match request_rx.try_recv() {
+                Ok(request) => {
+                    if handle_worker_request(request, &mut worker, &mut pending) {
+                        return;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return,
+            }
+        }
+
+        if can_prefetch(&worker)
+            && let Some(frame) = pending.pop_first()
             && let Ok(worker) = &mut worker
         {
-            let _ = worker.resolve_frame(frame);
+            worker.prefetch_frame(frame);
         }
     }
 }
@@ -622,45 +662,50 @@ impl VideoFrameResolver for FfmpegVideoResolver {
 }
 
 fn resolve_stream_fps(stream: &VideoStreamInfo, source: &str) -> Result<f64, MediaError> {
-    let fps = stream
-        .avg_frame_rate
-        .as_f64()
+    stream
+        .frame_rate
+        .and_then(|rate| rate.as_f64())
         .filter(|fps| *fps > 0.0)
-        .or_else(|| invert_rational(stream.time_base))
-        .unwrap_or(0.0);
-
-    if fps > 0.0 {
-        Ok(fps)
-    } else {
-        Err(MediaError::Decode {
+        .ok_or_else(|| MediaError::Decode {
             media_source: source.to_string(),
             details: "unable to determine stream frame rate".to_string(),
         })
-    }
 }
 
-fn resolve_frame_count(stream: &VideoStreamInfo, fps: f64) -> u32 {
+fn resolve_frame_count(
+    stream: &VideoStreamInfo,
+    container_duration_us: Option<i64>,
+    fps: f64,
+) -> Option<u32> {
     if let Some(explicit) = stream.frame_count {
-        return u32::try_from(explicit).unwrap_or(u32::MAX);
+        return Some(u32::try_from(explicit).unwrap_or(u32::MAX));
     }
 
-    let Some(duration) = stream.duration_ts else {
-        return 1;
-    };
-    let Some(time_base_seconds) = stream.time_base.as_f64() else {
-        return 1;
-    };
-
-    if duration <= 0 || fps <= 0.0 {
-        return 1;
-    }
-
-    let estimated = ((duration as f64) * time_base_seconds * fps).round();
-    estimated.clamp(1.0, f64::from(u32::MAX)) as u32
+    let stream_seconds = stream
+        .duration_ts
+        .zip(stream.time_base.as_f64())
+        .map(|(duration, time_base)| duration as f64 * time_base);
+    let container_seconds = container_duration_us.map(|duration| duration as f64 / 1_000_000.0);
+    let seconds = stream_seconds.or(container_seconds)?;
+    Some((seconds * fps).round().clamp(1.0, f64::from(u32::MAX)) as u32)
 }
 
-fn invert_rational(value: Rational) -> Option<f64> {
-    (value.numerator != 0).then_some(value.denominator as f64 / value.numerator as f64)
+fn open_input(source: &str) -> Result<InputContext, MediaError> {
+    InputContext::open(source.to_string()).map_err(|err| MediaError::Decode {
+        media_source: source.to_string(),
+        details: format!("failed opening media source: {err}"),
+    })
+}
+
+/// Reads `input` to its end, releasing each packet before reading the next.
+fn count_frames(input: &mut InputContext, stream_index: usize) -> Option<u32> {
+    let mut frames = 0;
+    while let Some(packet) = input.read_packet().ok()? {
+        if packet.stream_index() == stream_index {
+            frames += 1;
+        }
+    }
+    (frames > 0).then_some(frames)
 }
 
 fn open_video_decoder(
@@ -670,7 +715,8 @@ fn open_video_decoder(
     prefer_hardware_decode: bool,
 ) -> Result<(VideoDecoder, GpuDecodeStatus), MediaError> {
     let stream_index = stream.stream_index;
-    if prefer_hardware_decode {
+    // GPU frames stay in coded orientation, so rotated sources need the CPU path's rotation.
+    if prefer_hardware_decode && stream.rotation == 0 {
         let backend = preferred_gpu_backend();
         match VideoDecoder::open(
             input,
@@ -733,4 +779,195 @@ fn preferred_non_macos_gpu_backend() -> GpuBackend {
 #[cfg(not(all(target_os = "linux", feature = "cuda")))]
 fn preferred_non_macos_gpu_backend() -> GpuBackend {
     GpuBackend::Vulkan
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::PathBuf, process::Command};
+
+    use super::*;
+
+    const NTSC_RATE: &str = "30000/1001";
+
+    /// Encodes frames whose luma is `16 + 3 * n`, so a decoded frame identifies its own index.
+    fn encode_counting_clip(name: &str, args: &[&str]) -> Option<PathBuf> {
+        let source = format!(
+            "nullsrc=s=32x32:r={NTSC_RATE}:d=2,geq=lum='16+3*N':cb=128:cr=128,format=yuv420p"
+        );
+        encode_clip(name, &source, args)
+    }
+
+    fn encode_clip(name: &str, source: &str, args: &[&str]) -> Option<PathBuf> {
+        let path = std::env::temp_dir().join(format!("lumen_engine_{}_{name}", std::process::id()));
+        let output = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", source])
+            .args(args)
+            .args([
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-qp",
+                "1",
+                "-bf",
+                "0",
+            ])
+            .arg(&path)
+            .output();
+        let output = match output {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("ffmpeg CLI not installed; skipping {name}");
+                return None;
+            }
+            Err(error) => panic!("{name}: failed to run ffmpeg: {error}"),
+        };
+        if output.status.success() {
+            return Some(path);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("Unknown encoder") || stderr.contains("Encoder not found") {
+            eprintln!(
+                "ffmpeg encoder unavailable; skipping {name}: {}",
+                stderr.trim()
+            );
+            return None;
+        }
+        panic!(
+            "{name}: ffmpeg fixture failed ({}): {stderr}",
+            output.status
+        );
+    }
+
+    fn open_cpu(path: &std::path::Path) -> Result<FfmpegVideoResolver, MediaError> {
+        FfmpegVideoResolver::open_with_options(
+            path.to_string_lossy().to_string(),
+            FfmpegResolverOptions {
+                prefer_hardware_decode: false,
+            },
+        )
+    }
+
+    fn decoded_frame_index(resolver: &FfmpegVideoResolver, frame: u32) -> u32 {
+        let MediaFrame::CpuRgba(decoded) = resolver.frame(frame).expect("decode frame") else {
+            panic!("expected a CPU frame");
+        };
+        // Limited-range luma back to full-range grey, then to the index it encodes.
+        let luma = f64::from(decoded.rgba[0]) * 219.0 / 255.0 + 16.0;
+        ((luma - 16.0) / 3.0).round() as u32
+    }
+
+    #[test]
+    fn frame_indexes_count_from_the_stream_start_time() {
+        // MPEG-TS seeks land between keyframes, so that case only reads forward.
+        for (name, frames) in [
+            ("offset.mp4", &[0, 5, 40, 12][..]),
+            ("offset.ts", &[0, 5, 40][..]),
+        ] {
+            let Some(path) = encode_counting_clip(name, &["-output_ts_offset", "1.4"]) else {
+                return;
+            };
+            let resolver = open_cpu(&path).expect("open clip");
+            for frame in frames {
+                assert_eq!(decoded_frame_index(&resolver, *frame), *frame, "{name}");
+            }
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn frame_count_falls_back_to_the_container_duration() {
+        // Matroska stores no per-stream duration or frame count here, and its container duration
+        // includes the start offset.
+        for (name, args) in [
+            ("no_stream_duration.mkv", &[][..]),
+            (
+                "offset_no_stream_duration.mkv",
+                &["-output_ts_offset", "1.4"][..],
+            ),
+        ] {
+            let Some(path) = encode_counting_clip(name, args) else {
+                return;
+            };
+            let resolver = open_cpu(&path).expect("open clip");
+            let metadata = resolver.metadata();
+            assert_eq!(metadata.frame_count, 60, "{name}");
+            assert!((f64::from(metadata.fps) - 30_000.0 / 1001.0).abs() < 0.001);
+            assert_eq!(decoded_frame_index(&resolver, 59), 59, "{name}");
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn audio_preroll_does_not_add_frames_to_the_container_duration() {
+        // AAC priming puts the Matroska start before zero, ahead of a video stream at zero.
+        let Some(path) = encode_clip(
+            "audio_preroll.mkv",
+            "testsrc2=s=32x32:r=20:d=2",
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=d=2",
+                "-c:a",
+                "aac",
+                "-avoid_negative_ts",
+                "disabled",
+            ],
+        ) else {
+            return;
+        };
+        let resolver = open_cpu(&path).expect("open clip");
+        assert_eq!(resolver.metadata().frame_count, 40);
+        assert!(resolver.frame(39).is_ok());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn images_read_as_video_count_their_own_frames() {
+        const ONE_PIXEL_PNG: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0xf8, 0xef, 0xa0, 0xf0, 0x1f, 0x00, 0x06, 0x00, 0x02, 0x5f, 0x34, 0xcd,
+            0x40, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        let still =
+            std::env::temp_dir().join(format!("lumen_engine_{}_still.png", std::process::id()));
+        fs::write(&still, ONE_PIXEL_PNG).expect("write png");
+        let resolver = open_cpu(&still).expect("open png");
+        assert_eq!(resolver.metadata().frame_count, 1);
+        assert!(resolver.frame(0).is_ok());
+        let _ = fs::remove_file(still);
+
+        let animated =
+            std::env::temp_dir().join(format!("lumen_engine_{}_animated.apng", std::process::id()));
+        let Ok(generated) = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", "testsrc2=s=32x32:r=25:d=0.4", "-f", "apng"])
+            .arg(&animated)
+            .status()
+        else {
+            eprintln!("ffmpeg CLI unavailable; skipping APNG frame count");
+            return;
+        };
+        assert!(generated.success(), "generate APNG");
+        let resolver = open_cpu(&animated).expect("open apng");
+        assert_eq!(resolver.metadata().frame_count, 10);
+        assert!(resolver.frame(9).is_ok());
+        let _ = fs::remove_file(animated);
+    }
+
+    #[test]
+    fn missing_duration_is_an_error_instead_of_a_one_frame_clip() {
+        let Some(path) = encode_counting_clip("elementary.h264", &["-f", "h264"]) else {
+            return;
+        };
+        let error = open_cpu(&path)
+            .err()
+            .expect("no duration to count frames from");
+        assert!(error.to_string().contains("frame count"), "{error}");
+        let _ = fs::remove_file(path);
+    }
 }

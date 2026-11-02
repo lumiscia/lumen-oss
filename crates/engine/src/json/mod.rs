@@ -112,6 +112,8 @@ fn parse_graph(
     for node_val in nodes_arr {
         let node_obj = node_val.as_object().context("node must be an object")?;
         let id = parse_node_id(node_obj.get("id").context("node missing `id`")?)?;
+        reject_unknown_keys(node_obj, &["id", "type", "params"], "a node")
+            .with_context(|| format!("node {id}"))?;
         let kind_str = node_obj
             .get("type")
             .and_then(|v| v.as_str())
@@ -121,14 +123,22 @@ fn parse_graph(
         if let Some(params) = node_obj.get("params") {
             check_prop_reads(params, props).with_context(|| format!("node {id}"))?;
         }
-        graph.nodes.insert(id, node_kind);
+        if graph.nodes.insert(id, node_kind).is_some() {
+            bail!("duplicate node id {id}");
+        }
     }
 
     // Second pass: create connections and wire up PortRefs
-    for conn_val in connections_arr {
+    for (index, conn_val) in connections_arr.iter().enumerate() {
         let conn_obj = conn_val
             .as_object()
             .context("connection must be an object")?;
+        reject_unknown_keys(
+            conn_obj,
+            &["from_node", "from_port", "to_node", "to_port"],
+            "a connection",
+        )
+        .with_context(|| format!("connection {index}"))?;
         let from_node = parse_node_id(conn_obj.get("from_node").context("missing `from_node`")?)?;
         let from_port = conn_obj
             .get("from_port")
@@ -240,20 +250,18 @@ fn parse_template(
     root_timeline: &TimelineSettings,
     root_settings: &RenderSettings,
 ) -> Result<CompositionTemplate> {
-    const KEYS: [&str; 5] = [
-        "render_settings",
-        "timeline",
-        "props",
-        "nodes",
-        "connections",
-    ];
     let obj = val.as_object().context("template must be an object")?;
-    if let Some(key) = obj.keys().find(|key| !KEYS.contains(&key.as_str())) {
-        bail!(
-            "unknown key `{key}`; a template has {}",
-            KEYS.map(|key| format!("`{key}`")).join(", ")
-        );
-    }
+    reject_unknown_keys(
+        obj,
+        &[
+            "render_settings",
+            "timeline",
+            "props",
+            "nodes",
+            "connections",
+        ],
+        "a template",
+    )?;
     let timeline = match obj.get("timeline") {
         Some(timeline) => parse_timeline(timeline, root_timeline.fps)?,
         None => root_timeline.clone(),
@@ -314,6 +322,18 @@ fn parse_prop_defs(val: &Value) -> Result<BTreeMap<String, PropDef>> {
             Ok((name.clone(), PropDef { kind, default }))
         })
         .collect()
+}
+
+fn reject_unknown_keys(obj: &Map<String, Value>, keys: &[&str], owner: &str) -> Result<()> {
+    if let Some(key) = obj.keys().find(|key| !keys.contains(&key.as_str())) {
+        let keys = keys
+            .iter()
+            .map(|key| format!("`{key}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("unknown key `{key}`; {owner} has {keys}");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -432,9 +452,6 @@ fn parse_audio_clip(val: &Value, fps: f32) -> Result<AudioClip> {
     let obj = val.as_object().context("audio clip must be an object")?;
     let start_ms = audio_time_ms(obj, "start_ms", "start_frame", fps)?;
     let duration_ms = audio_time_ms(obj, "duration_ms", "duration_frames", fps)?;
-    if duration_ms == 0 {
-        anyhow::bail!("audio clip duration_ms must be greater than zero");
-    }
 
     Ok(AudioClip {
         id: required_string(obj, "id")?,
@@ -515,6 +532,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_every_bundled_demo() {
+        let demos = concat!(env!("CARGO_MANIFEST_DIR"), "/../local/demo");
+        for entry in std::fs::read_dir(demos).unwrap() {
+            let path = entry.unwrap().path();
+            let source = std::fs::read_to_string(&path).unwrap();
+            parse(&source).unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
+        }
+    }
+
+    #[test]
     fn parse_minimal_composition() {
         let json = r#"{
             "lumenSchemaVersion": "0.1.0",
@@ -576,6 +603,143 @@ mod tests {
         assert_eq!(audio.clips[0].source_id, "voice");
         assert_eq!(audio.clips[0].start_ms, 100);
         assert_eq!(audio.clips[0].source_start_ms, 50);
+    }
+
+    fn audio_composition(audio: Value) -> Result<Composition> {
+        parse_value(&serde_json::json!({
+            "timeline": { "fps": 30, "duration_frames": 90 },
+            "render_settings": { "width": 16, "height": 16 },
+            "audio": audio,
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "width": 16, "height": 16 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
+            ]
+        }))
+    }
+
+    #[test]
+    fn audio_ids_and_track_references_are_checked() {
+        let clip = |id: &str, track_id: &str, duration_ms: u64| {
+            serde_json::json!({
+                "id": id,
+                "source_id": "voice",
+                "track_id": track_id,
+                "start_ms": 0,
+                "duration_ms": duration_ms
+            })
+        };
+        let error = |tracks: Value, clips: Value| {
+            let audio = serde_json::json!({ "tracks": tracks, "clips": clips });
+            format!("{:#}", audio_composition(audio).unwrap_err())
+        };
+        let main = serde_json::json!([{ "id": "main" }, { "id": "fx" }]);
+
+        let unknown = error(main.clone(), serde_json::json!([clip("a", "typo", 100)]));
+        assert!(
+            unknown.contains("clip `a` names unknown track `typo`; declared tracks: `main`, `fx`"),
+            "{unknown}"
+        );
+        let undeclared = error(
+            serde_json::json!([]),
+            serde_json::json!([clip("a", "x", 1)]),
+        );
+        assert!(undeclared.contains("declared tracks: none"), "{undeclared}");
+        let tracks = error(
+            serde_json::json!([{ "id": "main" }, { "id": "main" }]),
+            serde_json::json!([]),
+        );
+        assert!(tracks.contains("duplicate track id `main`"), "{tracks}");
+        let clips = error(
+            main.clone(),
+            serde_json::json!([clip("a", "main", 100), clip("a", "fx", 100)]),
+        );
+        assert!(clips.contains("duplicate clip id `a`"), "{clips}");
+        let duration = error(main, serde_json::json!([clip("a", "main", 0)]));
+        assert!(
+            duration.contains("clip `a` duration must be greater than zero"),
+            "{duration}"
+        );
+    }
+
+    #[test]
+    fn builders_get_the_audio_checks_too() {
+        let composition = audio_composition(serde_json::json!({
+            "tracks": [{ "id": "main" }],
+            "clips": []
+        }))
+        .unwrap();
+        let mut builder = composition.into_builder();
+        let audio = builder.audio.as_mut().unwrap();
+        audio.tracks[0].volume = f32::NAN;
+        let errors = builder.build().unwrap_err();
+        assert!(
+            errors[0].to_string().contains("track `main` volume"),
+            "{}",
+            errors[0]
+        );
+    }
+
+    fn graph_error(nodes: Value, connections: Value) -> String {
+        let error = parse_value(&serde_json::json!({
+            "timeline": { "fps": 30, "duration_frames": 90 },
+            "render_settings": { "width": 16, "height": 16 },
+            "nodes": nodes,
+            "connections": connections
+        }))
+        .unwrap_err();
+        format!("{error:#}")
+    }
+
+    #[test]
+    fn duplicate_node_ids_are_rejected_within_a_graph() {
+        let error = graph_error(
+            serde_json::json!([
+                { "id": 1, "type": "background" },
+                { "id": 1, "type": "media_output" }
+            ]),
+            serde_json::json!([]),
+        );
+        assert!(error.contains("duplicate node id 1"), "{error}");
+    }
+
+    #[test]
+    fn malformed_params_and_unknown_keys_name_what_is_wrong() {
+        for params in [serde_json::json!(5), serde_json::json!([]), Value::Null] {
+            let error = graph_error(
+                serde_json::json!([{ "id": 7, "type": "background", "params": params }]),
+                serde_json::json!([]),
+            );
+            assert!(
+                error.contains("node 7 (`background`): `params` must be an object"),
+                "{error}"
+            );
+        }
+
+        let error = graph_error(
+            serde_json::json!([{ "id": 7, "type": "background", "properties": {} }]),
+            serde_json::json!([]),
+        );
+        assert!(
+            error.contains("node 7: unknown key `properties`; a node has `id`, `type`, `params`"),
+            "{error}"
+        );
+
+        let error = graph_error(
+            serde_json::json!([
+                { "id": 1, "type": "background" },
+                { "id": 2, "type": "media_output" }
+            ]),
+            serde_json::json!([
+                { "from_node": 1, "to_node": 2, "to_port": "source", "toPort": "source" }
+            ]),
+        );
+        assert!(
+            error.contains("connection 0: unknown key `toPort`; a connection has"),
+            "{error}"
+        );
     }
 
     #[test]

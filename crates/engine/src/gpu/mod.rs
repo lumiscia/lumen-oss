@@ -10,6 +10,8 @@ pub(crate) mod compiler;
 mod media;
 mod params;
 mod renderer;
+#[cfg(test)]
+mod shader_layouts;
 #[cfg(any(
     all(target_os = "macos", feature = "ffmpeg", feature = "metal"),
     all(target_os = "linux", feature = "ffmpeg", feature = "vulkan")

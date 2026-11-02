@@ -113,7 +113,7 @@ impl GpuCompileNode for Resize {
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ResizeParams>() as u64),
         );
         // Sources that don't publish bounds fill their whole storage texture.
-        let (bounds, default_bounds) = match ctx.raster_bounds(source.texture) {
+        let (bounds, default_bounds) = match source.bounds {
             Some(bounds) => (bounds, None),
             None => {
                 let bounds = ctx.builder_mut().buffer_for(
@@ -181,6 +181,7 @@ impl GpuCompileNode for Resize {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: source.metadata,
+            bounds: None,
         }))
     }
 }

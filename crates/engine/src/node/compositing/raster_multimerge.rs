@@ -241,6 +241,7 @@ impl GpuCompileNode for RasterMultiMerge {
                     alpha_mode: AlphaMode::Premultiplied,
                     ..current.metadata
                 },
+                bounds: None,
             };
         }
         ctx.register_compiled_node(RasterMultiCompiledMerge {

@@ -1,7 +1,4 @@
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-use std::sync::OnceLock;
-
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use lumen_ffmpeg::{
     CudaContext, CudaDeviceAllocation, CudaDriver, CudaVideoFrame, GpuVideoInput,
     ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image,
@@ -196,7 +193,7 @@ impl VulkanVideoTarget {
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 pub struct CudaNvencTargetPool {
-    driver: &'static CudaDriver,
+    driver: CudaDriver,
     cuda_ordinal: i32,
     size: lumen_gpu::Size,
     format: lumen_gpu::wgpu::TextureFormat,
@@ -205,12 +202,11 @@ pub struct CudaNvencTargetPool {
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 pub struct CudaNvencTarget {
-    driver: &'static CudaDriver,
     external: lumen_gpu::ExternalTexture,
-    cuda_frame: CudaDeviceAllocation<'static>,
+    cuda_frame: CudaDeviceAllocation,
     imported: ImportedCudaExternalImage,
     exportable: lumen_gpu::ExportableVulkanTexture,
-    context: CudaContext<'static>,
+    context: CudaContext,
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -241,7 +237,7 @@ impl CudaNvencTargetPool {
                 details: error.to_string(),
             })?;
         let vulkan_device = bootstrap.device_info().clone();
-        let driver = cuda_driver().map_err(|details| RenderError::Gpu { details })?;
+        let driver = CudaDriver::load().map_err(|details| RenderError::Gpu { details })?;
         let cuda_ordinal = driver
             .devices()
             .map_err(|details| RenderError::Gpu { details })?
@@ -281,7 +277,7 @@ impl CudaNvencTargetPool {
                 details: error.to_string(),
             })?;
         let imported = import_owned_vulkan_opaque_fd_image(
-            self.driver,
+            &context,
             exportable
                 .memory_fd()
                 .try_clone()
@@ -293,20 +289,14 @@ impl CudaNvencTargetPool {
             self.size.height,
         )
         .map_err(|details| RenderError::Gpu { details })?;
-        let cuda_frame = self
-            .driver
+        let cuda_frame = context
             .allocate_rgba_frame(self.size.width, self.size.height)
             .map_err(|details| RenderError::Gpu { details })?;
         let external = lumen_gpu::ExternalTexture::new(
             exportable.texture_arc(),
-            lumen_gpu::TextureDesc {
-                domain: lumen_gpu::TextureDomain::full_frame(self.size),
-                format: self.format,
-                usage: cuda_nvenc_usage(),
-            },
+            lumen_gpu::TextureDomain::full_frame(self.size),
         );
         Ok(CudaNvencTarget {
-            driver: self.driver,
             external,
             cuda_frame,
             imported,
@@ -331,8 +321,8 @@ impl CudaNvencTargetPool {
         self.cuda_ordinal
     }
 
-    pub fn driver(&self) -> &'static CudaDriver {
-        self.driver
+    pub fn driver(&self) -> &CudaDriver {
+        &self.driver
     }
 }
 
@@ -343,11 +333,8 @@ impl CudaNvencTarget {
     }
 
     pub fn copy_rendered_frame_to_cuda(&self) -> crate::Result<()> {
-        self.context
-            .set_current()
-            .map_err(|details| RenderError::Gpu { details })?;
         Ok(self
-            .driver
+            .context
             .copy_image_to_rgba_frame(&self.imported, &self.cuda_frame)
             .map_err(|details| RenderError::Gpu { details })?)
     }
@@ -375,25 +362,6 @@ impl CudaNvencTarget {
     pub fn memory_type_index(&self) -> u32 {
         self.exportable.memory_type_index()
     }
-}
-
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-impl Drop for CudaNvencTarget {
-    fn drop(&mut self) {
-        let _ = self.context.set_current();
-    }
-}
-
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-fn cuda_driver() -> Result<&'static CudaDriver, String> {
-    static CUDA_DRIVER: OnceLock<CudaDriver> = OnceLock::new();
-    if let Some(driver) = CUDA_DRIVER.get() {
-        return Ok(driver);
-    }
-    let _ = CUDA_DRIVER.set(CudaDriver::load()?);
-    CUDA_DRIVER
-        .get()
-        .ok_or_else(|| "CUDA driver was not initialized".to_string())
 }
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
@@ -460,29 +428,30 @@ impl MetalVideoToolboxTargetPool {
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        let texture = lumen_gpu::texture_from_metal(
-            &renderer.device,
-            metal_texture,
-            &lumen_gpu::wgpu::TextureDescriptor {
-                label: Some("lumen VideoToolbox render target"),
-                size: self.size.as_extent(),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: lumen_gpu::wgpu::TextureDimension::D2,
-                format: self.format,
-                usage: external_output_usage(),
-                view_formats: &[],
-            },
-        );
+        // SAFETY: the texture is a 2D single-layer, single-mip, single-sample Metal texture on the
+        // renderer's device, created at this size and format.
+        let texture = unsafe {
+            lumen_gpu::texture_from_metal(
+                &renderer.device,
+                metal_texture,
+                &lumen_gpu::wgpu::TextureDescriptor {
+                    label: Some("lumen VideoToolbox render target"),
+                    size: self.size.as_extent(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: lumen_gpu::wgpu::TextureDimension::D2,
+                    format: self.format,
+                    usage: external_output_usage(),
+                    view_formats: &[],
+                },
+                None,
+            )
+        };
         Ok(MetalVideoToolboxTarget {
             pixel_frame,
             external: lumen_gpu::ExternalTexture::from_texture(
                 texture,
-                lumen_gpu::TextureDesc {
-                    domain: lumen_gpu::TextureDomain::full_frame(self.size),
-                    format: self.format,
-                    usage: external_output_usage(),
-                },
+                lumen_gpu::TextureDomain::full_frame(self.size),
             ),
         })
     }

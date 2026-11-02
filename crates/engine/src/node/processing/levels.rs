@@ -121,6 +121,7 @@ impl GpuCompileNode for Levels {
             texture,
             domain: source.domain,
             metadata: source.metadata,
+            bounds: source.bounds,
         }))
     }
 }

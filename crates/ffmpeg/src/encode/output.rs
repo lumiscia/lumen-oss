@@ -65,6 +65,19 @@ impl OutputContext {
         }
     }
 
+    /// Closes the output file and reports a failure to flush or close it. `Drop` closes it too, but
+    /// can only ignore the failure.
+    pub(crate) fn close(&mut self) -> Result<()> {
+        if !self.opened_io {
+            return Ok(());
+        }
+        self.opened_io = false;
+        unsafe {
+            ffi::check(sys::avio_closep(&mut (*self.ptr).pb), "avio_closep")
+                .map_err(|error| error.with_path(self.path.clone()))
+        }
+    }
+
     fn open_io(&mut self) -> Result<()> {
         unsafe {
             if ((*(*self.ptr).oformat).flags & sys::AVFMT_NOFILE) == 0 {

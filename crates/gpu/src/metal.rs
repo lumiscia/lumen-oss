@@ -12,24 +12,31 @@ pub fn metal_device_from_wgpu(device: &wgpu::Device) -> Result<Retained<Objc2Met
     Ok(hal_device.raw_device().clone())
 }
 
-pub fn texture_from_metal(
+/// Wraps a Metal texture as a wgpu texture.
+///
+/// # Safety
+///
+/// `texture` must belong to `device`'s Metal device and match `desc`: its 2D type, format, size,
+/// array layer count, mip level count, sample count and usage.
+pub unsafe fn texture_from_metal(
     device: &wgpu::Device,
     texture: Retained<Objc2MetalTexture>,
     desc: &wgpu::TextureDescriptor<'_>,
+    drop_callback: Option<wgpu::hal::DropCallback>,
 ) -> wgpu::Texture {
     let hal_texture = unsafe {
         wgpu::hal::metal::Device::texture_from_raw(
             texture,
             desc.format,
             objc2_metal::MTLTextureType::Type2D,
-            desc.sample_count,
+            desc.array_layer_count(),
             desc.mip_level_count,
             wgpu::hal::CopyExtent {
                 width: desc.size.width,
                 height: desc.size.height,
                 depth: desc.size.depth_or_array_layers,
             },
-            None,
+            drop_callback,
         )
     };
     unsafe {

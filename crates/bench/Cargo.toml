@@ -19,10 +19,10 @@ anyhow = "1.0.101"
 libc = "0.2"
 pollster = "1.0.1"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
-lumen-engine = { path = "../engine", features = ["ffmpeg", "image", "json"] }
-lumen-gpu = { package = "lumen-engine-gpu", path = "../gpu" }
-lumen-ffmpeg = { package = "lumen-engine-ffmpeg", path = "../ffmpeg" }
-lumen-text = { package = "lumen-engine-text", path = "../text", features = ["msdf"] }
+lumen-engine = { workspace = true, features = ["ffmpeg", "image", "json"] }
+lumen-gpu = { workspace = true }
+lumen-ffmpeg = { workspace = true }
+lumen-text = { workspace = true, features = ["msdf"] }
 
 [[bin]]
 name = "lumen-bench-composition"

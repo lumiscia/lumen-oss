@@ -7,7 +7,7 @@ Lumen is still a heavy-beta renderer. This matrix describes what is supported to
 | Area                       | Status                 | Notes                                                                                                                                                                                                              |
 | -------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Linux / Vulkan             | Supported              | Primary open native render path. CI runs on Ubuntu with Vulkan packages installed and lavapipe selected for integration tests.                                                                                     |
-| macOS / Metal              | Supported              | Primary Apple render path. Metal rendering and VideoToolbox encoding are expected paths, but they are not covered by the current GitHub Actions CI workflow.                                                       |
+| macOS / Metal              | Supported              | Primary Apple render path. Metal rendering and VideoToolbox encoding are expected paths, but CI only compiles them; it does not run them.                                                                          |
 | Windows                    | Basic development only | CI builds TypeScript packages and checks pure Rust crates. Native rendering, FFmpeg, server, and hardware encoding paths remain unsupported.                                                                       |
 | NVIDIA / CUDA              | Experimental fast path | Linux CUDA/NVENC interop exists for hardware video paths. CPU-backed encoding remains the baseline fallback.                                                                                                       |
 | AMD / Intel Vulkan         | Experimental           | Expected to use the Vulkan renderer without CUDA-specific interop. Coverage depends on local hardware because CI currently uses software Vulkan.                                                                   |
@@ -35,13 +35,15 @@ Known required packages on Debian/Ubuntu-style systems:
 - `pkg-config`
 - `vulkan-tools`
 
+Native audio decoding runs the `ffmpeg` executable, which must be on `PATH` (the `ffmpeg` package on Debian/Ubuntu). CI doesn't install it. Renders without audio don't need it.
+
 Hardware Vulkan rendering on AMD, Intel, and NVIDIA should use the same renderer family, but hardware-specific behavior is not fully represented by CI today.
 
 ### macOS
 
 macOS is an intended native renderer target through Metal. Hardware video encoding is expected to use VideoToolbox where available.
 
-The current GitHub Actions CI workflow does not run macOS jobs, so macOS support relies on local development and release validation rather than repository CI coverage.
+The macOS CI job only compiles `lumen-server` and `lumen-local` with the `metal` feature. Nothing renders or encodes on macOS in CI, so runtime behaviour relies on local development and release validation.
 
 ### Windows
 
@@ -76,10 +78,12 @@ The current repository CI covers:
 - Generated TypeScript artifacts and definition freshness.
 - SDK/server integration tests using software Vulkan through lavapipe.
 - Windows TypeScript package builds and pure Rust crate checks.
+- A macOS compile check of the Metal feature, without running tests.
+- A compile check of the hosted CUDA and Vulkan server build.
 
 The current repository CI does not cover:
 
-- macOS / Metal.
+- Running anything on macOS / Metal.
 - Native Windows rendering, FFmpeg, server, and hardware encoding paths.
 - Physical NVIDIA, AMD, or Intel GPU runners.
 - Hardware encoder paths.
