@@ -15,31 +15,40 @@ use crate::{
 
 impl Expression {
     pub fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
-        let _evaluation = EvaluationGuard::enter(ctx)?;
+        let _evaluation = EvaluationGuard::enter(self.depth, ctx)?;
         self.plan.evaluate(ctx)
     }
 }
 
-/// Most evaluations that may be open at once. Reading another node's property or measuring its
-/// text evaluates its expression inside the reader's, so this bounds how far nodes may read
-/// through each other, and with it the stack they use.
-const MAX_EVALUATION_DEPTH: u8 = 8;
+/// Most levels of evaluation that may be open at once, counting an expression's depth for each
+/// evaluation that is open. Reading another node's property or measuring its text evaluates its
+/// expression inside the reader's, so this bounds the stack that nodes reading through each other
+/// use. It is sized for the largest frames, on a 1 MiB stack.
+const MAX_EVALUATION_LEVELS: u32 = 96;
+/// Levels charged to every evaluation on top of its expression's depth, for the read or
+/// measurement that starts it.
+const EVALUATION_OVERHEAD: u32 = 2;
 /// Most evaluations that one outermost evaluation may start, including all it reads through.
 const MAX_EVALUATIONS: u32 = 10_000;
 
 thread_local! {
-    /// The open evaluations and those started since the outermost one began.
-    static EVALUATIONS: Cell<(u8, u32)> = const { Cell::new((0, 0)) };
+    /// The levels of the open evaluations and the evaluations started since the outermost one began.
+    static EVALUATIONS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
 }
 
-struct EvaluationGuard;
+struct EvaluationGuard {
+    levels: u32,
+}
 
 impl EvaluationGuard {
-    fn enter(ctx: &ExpressionContext<'_>) -> crate::Result<Self> {
+    fn enter(depth: usize, ctx: &ExpressionContext<'_>) -> crate::Result<Self> {
+        let levels = u32::try_from(depth)
+            .unwrap_or(u32::MAX)
+            .saturating_add(EVALUATION_OVERHEAD);
         let (open, started) = EVALUATIONS.get();
-        let exhausted = if open >= MAX_EVALUATION_DEPTH {
+        let exhausted = if open.saturating_add(levels) > MAX_EVALUATION_LEVELS {
             Some(format!(
-                "node reads nest deeper than {MAX_EVALUATION_DEPTH} levels; do they read each other?"
+                "node reads nest deeper than {MAX_EVALUATION_LEVELS} levels of evaluation; do they read each other?"
             ))
         } else if started >= MAX_EVALUATIONS {
             Some(format!(
@@ -54,19 +63,16 @@ impl EvaluationGuard {
                 details,
             }));
         }
-        EVALUATIONS.set((open + 1, started + 1));
-        Ok(Self)
+        EVALUATIONS.set((open + levels, started + 1));
+        Ok(Self { levels })
     }
 }
 
 impl Drop for EvaluationGuard {
     fn drop(&mut self) {
         let (open, started) = EVALUATIONS.get();
-        EVALUATIONS.set(if open <= 1 {
-            (0, 0)
-        } else {
-            (open - 1, started)
-        });
+        let open = open - self.levels;
+        EVALUATIONS.set((open, if open == 0 { 0 } else { started }));
     }
 }
 
@@ -1345,7 +1351,7 @@ mod tests {
         let graph = chained_text_nodes(2, "node(1, 'font_size')", "'a'");
         let error = evaluate_in(&graph, "node(1, 'font_size')").expect_err("self read");
 
-        assert!(error.to_string().contains("nest deeper than 8 levels"));
+        assert!(error.to_string().contains("levels of evaluation"));
     }
 
     #[test]
@@ -1361,7 +1367,7 @@ mod tests {
         }
 
         let error = evaluate_in(&graph, "node(1, 'font_size')").expect_err("loop");
-        assert!(error.to_string().contains("nest deeper than 8 levels"));
+        assert!(error.to_string().contains("levels of evaluation"));
 
         let after = evaluate_in(&graph, "node(3, 'font_size')").unwrap();
         assert!(matches!(after, ExpressionValue::Number(_)));
@@ -1399,20 +1405,67 @@ mod tests {
         assert!(matches!(value, ExpressionValue::Number(_)));
     }
 
+    fn on_worker_stack<T: Send + 'static>(run: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(run)
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
     #[test]
-    fn deepest_allowed_reads_fit_a_two_megabyte_worker_stack() {
-        let deep = |body: &str| format!("{}{body}", "-".repeat(55));
-        let font_size = deep("node({next}, 'font_size')");
-        let content = deep("text_width(node({next}))");
-        let graph = std::sync::Arc::new(chained_text_nodes(8, &font_size, &content));
+    fn a_self_read_in_a_deep_expression_fails_on_a_worker_stack() {
+        let read = format!(
+            "{}node(1, 'font_size'){}",
+            "abs(".repeat(63),
+            ")".repeat(63)
+        );
+        let graph = chained_text_nodes(2, &read, "'a'");
+
+        let error =
+            on_worker_stack(move || evaluate_in(&graph, "node(1, 'font_size')").unwrap_err());
+
+        assert!(error.to_string().contains("levels of evaluation"));
+    }
+
+    #[test]
+    fn a_chain_of_deep_expressions_fails_on_a_worker_stack() {
+        let read = format!(
+            "{}node({{next}}, 'font_size'){}",
+            "abs(".repeat(63),
+            ")".repeat(63)
+        );
+        let graph = chained_text_nodes(8, &read, "'a'");
+
+        let error =
+            on_worker_stack(move || evaluate_in(&graph, "node(1, 'font_size')").unwrap_err());
+
+        assert!(error.to_string().contains("levels of evaluation"));
+    }
+
+    #[test]
+    fn the_whole_budget_fits_a_worker_stack_in_the_largest_frames() {
+        // Right-nested binaries are the deepest frames, and a measurement's own arguments are
+        // evaluated from the AST rather than the plan.
+        let nest = |levels: usize, leaf: &str| {
+            format!("{}{leaf}{}", "1 + (".repeat(levels), ")".repeat(levels))
+        };
+        let cost = |depth: u32| depth + EVALUATION_OVERHEAD;
+        let nodes = 2;
+        let property_levels = (MAX_EVALUATION_LEVELS - cost(1)) / nodes - cost(1);
+        let measure_levels = (MAX_EVALUATION_LEVELS - cost(2)) / nodes - cost(3);
+        let read = nest(property_levels as usize, "node({next}, 'font_size')");
+        let measure = format!(
+            "text_width({})",
+            nest(measure_levels as usize, "text_width(node({next}))")
+        );
+        let graph = std::sync::Arc::new(chained_text_nodes(nodes as u64 + 1, &read, &measure));
+
         for source in ["node(1, 'font_size')", "text_width(node(1))"] {
             let graph = graph.clone();
-            std::thread::Builder::new()
-                .stack_size(2 << 20)
-                .spawn(move || evaluate_in(&graph, source).unwrap())
-                .unwrap()
-                .join()
-                .unwrap();
+            let value = on_worker_stack(move || evaluate_in(&graph, source));
+            assert!(value.is_ok(), "{source}: {value:?}");
         }
     }
 
