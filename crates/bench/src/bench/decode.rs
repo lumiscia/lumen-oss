@@ -5,36 +5,25 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, ensure};
 use lumen_ffmpeg::{
     CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, VideoCodec, VideoDecoder,
     VideoDecoderConfig, VideoEncoderConfig,
 };
 
+use crate::bench::report::{SummaryReport, format_duration, format_fps};
+
+const WIDTH: u32 = 128;
+const HEIGHT: u32 = 72;
+const FRAME_BYTES: u64 = WIDTH as u64 * HEIGHT as u64 * 4;
+
 #[derive(Debug)]
 struct Args {
-    frames: i64,
+    frames: u32,
     save: Option<PathBuf>,
 }
 
-use crate::bench::{
-    Bench,
-    report::{SummaryReport, format_duration, format_fps},
-};
-
-pub struct DecodeBench;
-
-impl Bench for DecodeBench {
-    fn name() -> &'static str {
-        "decode"
-    }
-
-    fn run() -> anyhow::Result<()> {
-        run_inner()
-    }
-}
-
-fn run_inner() -> anyhow::Result<()> {
+pub fn run() -> anyhow::Result<()> {
     let args = parse_args()?;
     if Command::new("ffmpeg").arg("-version").output().is_err() {
         return Err(anyhow!("ffmpeg CLI is unavailable"));
@@ -49,63 +38,58 @@ fn run_inner() -> anyhow::Result<()> {
     let crate_start = Instant::now();
     let crate_frames = decode_with_crate(&path)?;
     let crate_elapsed = crate_start.elapsed();
-    let crate_rss = max_rss_platform_units();
 
-    // Warm up source media and codec pages so the timed CLI run measures decode work,
-    // not cold file cache or one-off process startup.
-    let _ = time_ffmpeg_cli_decode(&path)?;
+    // Warm up source media and codec pages so the timed CLI run is not penalised for a cold
+    // file cache.
+    time_ffmpeg_cli_decode(&path)?;
+    let (cli_bytes, cli_elapsed) = time_ffmpeg_cli_decode(&path)?;
 
-    let (cli_startup, cli_decode) = time_ffmpeg_cli_decode(&path)?;
-    let cli_rss = max_rss_platform_units();
+    if args.save.is_none() {
+        let _ = fs::remove_file(&path);
+    }
+
+    ensure!(
+        crate_frames == args.frames,
+        "lumen-ffmpeg decoded {crate_frames} frames, expected {}",
+        args.frames
+    );
+    ensure!(
+        cli_bytes == u64::from(args.frames) * FRAME_BYTES,
+        "ffmpeg CLI wrote {cli_bytes} bytes, expected {} for {} RGBA frames",
+        u64::from(args.frames) * FRAME_BYTES,
+        args.frames
+    );
 
     println!(
-        "decode_bench frames={} crate_frames={} crate_decode_ms={} ffmpeg_cli_startup_ms={} ffmpeg_cli_decode_ms={} crate_fps={:.2} ffmpeg_cli_fps={:.2} crate_max_rss_platform_units={} after_cli_max_rss_platform_units={} source={}",
+        "decode_bench frames={} crate_decode_ms={} ffmpeg_cli_total_ms={} crate_fps={:.2} ffmpeg_cli_fps={:.2} source={}",
         args.frames,
-        crate_frames,
         crate_elapsed.as_millis(),
-        cli_startup.as_millis(),
-        cli_decode.as_millis(),
-        args.frames as f64 / crate_elapsed.as_secs_f64().max(1e-9),
-        args.frames as f64 / cli_decode.as_secs_f64().max(1e-9),
-        crate_rss,
-        cli_rss,
+        cli_elapsed.as_millis(),
+        f64::from(args.frames) / crate_elapsed.as_secs_f64().max(1e-9),
+        f64::from(args.frames) / cli_elapsed.as_secs_f64().max(1e-9),
         path.display()
     );
 
-    let frames = args.frames.max(0) as u32;
     let mut summary = SummaryReport::new(
         "Decode benchmark summary",
-        ["backend", "frames", "elapsed", "fps", "max_rss"],
+        ["backend", "frames", "elapsed", "fps"],
     );
     summary.push_row(vec![
-        "lumen-ffmpeg".to_string(),
+        "lumen-ffmpeg (in process)".to_string(),
         crate_frames.to_string(),
         format_duration(crate_elapsed),
-        format_fps(frames, crate_elapsed),
-        crate_rss.to_string(),
+        format_fps(args.frames, crate_elapsed),
     ]);
     summary.push_row(vec![
-        "ffmpeg CLI".to_string(),
-        frames.to_string(),
-        format_duration(cli_decode),
-        format_fps(frames, cli_decode),
-        cli_rss.to_string(),
+        "ffmpeg CLI (process + rawvideo pipe)".to_string(),
+        args.frames.to_string(),
+        format_duration(cli_elapsed),
+        format_fps(args.frames, cli_elapsed),
     ]);
-    if frames > 0 && !crate_elapsed.is_zero() && !cli_decode.is_zero() {
-        let speedup = cli_decode.as_secs_f64() / crate_elapsed.as_secs_f64();
-        summary.push_row(vec![
-            "crate vs CLI".to_string(),
-            "-".to_string(),
-            format!("{speedup:.2}× faster than CLI"),
-            format!("{speedup:.2}×").to_string(),
-            "-".to_string(),
-        ]);
-    }
     summary.print();
-
-    if args.save.is_none() {
-        let _ = fs::remove_file(path);
-    }
+    println!(
+        "The CLI row is wall clock for the whole process, including start-up and piping RGBA frames; the crate row decodes in process and hands frames over without a pipe. It is end-to-end, not decode-only throughput."
+    );
     Ok(())
 }
 
@@ -119,8 +103,10 @@ fn parse_args() -> anyhow::Result<Args> {
                 frames = args
                     .next()
                     .ok_or_else(|| anyhow!("--frames requires a value"))?
-                    .parse::<i64>()
-                    .context("--frames must be a positive integer")?;
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|&count| count > 0)
+                    .ok_or_else(|| anyhow!("--frames must be a positive integer"))?;
             }
             "--save" => {
                 save = Some(PathBuf::from(
@@ -138,23 +124,12 @@ fn parse_args() -> anyhow::Result<Args> {
     Ok(Args { frames, save })
 }
 
-fn max_rss_platform_units() -> i64 {
-    unsafe {
-        let mut usage = std::mem::zeroed();
-        if libc::getrusage(libc::RUSAGE_SELF, &mut usage) == 0 {
-            usage.ru_maxrss
-        } else {
-            0
-        }
-    }
-}
-
-fn make_video(path: &Path, frames: i64) -> anyhow::Result<()> {
-    let config = VideoEncoderConfig::cpu_rgba(128, 72, 30, VideoCodec::H264);
+fn make_video(path: &Path, frames: u32) -> anyhow::Result<()> {
+    let config = VideoEncoderConfig::cpu_rgba(WIDTH, HEIGHT, 30, VideoCodec::H264);
     let mut encoder = MuxedEncoder::create(path.to_string_lossy().to_string(), config)
         .context("create source encoder")?;
-    for pts in 0..frames {
-        encoder.write_video_frame(&frame(128, 72, pts))?;
+    for pts in 0..i64::from(frames) {
+        encoder.write_video_frame(&frame(WIDTH, HEIGHT, pts))?;
     }
     encoder.finish().context("finish source encode")
 }
@@ -180,8 +155,9 @@ fn frame(width: u32, height: u32, pts: i64) -> CpuVideoFrame {
     }
 }
 
-fn time_ffmpeg_cli_decode(path: &Path) -> anyhow::Result<(Duration, Duration)> {
-    let startup_start = Instant::now();
+/// Runs the ffmpeg CLI to completion and returns the RGBA bytes it wrote and its wall-clock time.
+fn time_ffmpeg_cli_decode(path: &Path) -> anyhow::Result<(u64, Duration)> {
+    let started = Instant::now();
     let mut child = Command::new("ffmpeg")
         .args([
             "-hide_banner",
@@ -199,24 +175,20 @@ fn time_ffmpeg_cli_decode(path: &Path) -> anyhow::Result<(Duration, Duration)> {
         .stderr(Stdio::null())
         .spawn()
         .context("spawn ffmpeg decode")?;
-    let startup = startup_start.elapsed();
-
-    let decode_start = Instant::now();
     let mut stdout = child
         .stdout
         .take()
         .ok_or_else(|| anyhow!("ffmpeg stdout unavailable"))?;
-    io::copy(&mut stdout, &mut io::sink()).context("drain ffmpeg decode output")?;
-    let decode = decode_start.elapsed();
-
+    let bytes = io::copy(&mut stdout, &mut io::sink()).context("drain ffmpeg decode output")?;
     let status = child.wait().context("wait for ffmpeg decode")?;
+    let elapsed = started.elapsed();
     if !status.success() {
         return Err(anyhow!("ffmpeg CLI decode failed"));
     }
-    Ok((startup, decode))
+    Ok((bytes, elapsed))
 }
 
-fn decode_with_crate(path: &Path) -> anyhow::Result<usize> {
+fn decode_with_crate(path: &Path) -> anyhow::Result<u32> {
     let mut input = InputContext::open(path.to_string_lossy().to_string())?;
     let stream = input.best_video_stream()?;
     let mut decoder = VideoDecoder::open(

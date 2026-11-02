@@ -3,35 +3,16 @@ mod modes;
 mod profile;
 mod readback;
 
-pub use modes::{
-    Mode, output_path, requires_unsupported_platform, run_mode, selected_modes, set_full_render,
-    temp_path,
-};
-
 use anyhow::anyhow;
 use std::path::PathBuf;
 
 use crate::bench::{
-    Bench, CompositionFixture,
-    report::{SummaryReport, format_duration, format_fps},
-    timing::PhaseTimer,
+    CompositionFixture,
+    report::{SummaryReport, format_duration},
     timing::fps,
 };
-
-pub struct CompositionBench;
-
-impl Bench for CompositionBench {
-    fn name() -> &'static str {
-        "composition"
-    }
-
-    fn run() -> anyhow::Result<()> {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
-            .block_on(run_async())
-    }
-}
+use modes::{Mode, Workload, output_path, run_mode};
+use profile::PhaseTimes;
 
 struct Args {
     composition: String,
@@ -39,68 +20,102 @@ struct Args {
     frames: Option<u32>,
     save: Option<PathBuf>,
     full_render: bool,
+    profile: bool,
+}
+
+pub fn run() -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run_async())
 }
 
 async fn run_async() -> anyhow::Result<()> {
     let args = parse_args()?;
-    set_full_render(args.full_render);
     let fixtures = selected_fixtures(&args.composition)?;
+    let modes = if args.modes.is_empty() {
+        Mode::ALL.to_vec()
+    } else {
+        args.modes.clone()
+    };
+    let encoding_runs = fixtures.len()
+        * modes
+            .iter()
+            .filter(|mode| mode.encodes() && !mode.requires_unsupported_platform())
+            .count();
     let mut summary = SummaryReport::new(
         "Composition benchmark summary",
-        ["composition", "mode", "frames", "elapsed", "fps", "status"],
+        [
+            "composition",
+            "mode",
+            "frames",
+            "full render",
+            "setup",
+            "first frame",
+            "steady",
+            "steady fps",
+            "status",
+        ],
     );
 
     for fixture in fixtures {
-        let mut setup = PhaseTimer::default();
-        let composition = setup.time("build_composition", || fixture.build());
-        let media = setup.time("build_media_store", || fixture.media_store());
+        let composition = fixture.build();
+        let media = fixture.media_store();
         let frames = args
             .frames
             .unwrap_or_else(|| fixture.default_frames(&composition))
             .min(composition.timeline().duration_frames);
+        let full_render = args.full_render || fixture.full_render();
 
-        for mode in selected_modes(&args.modes) {
-            if requires_unsupported_platform(mode) {
+        for &mode in &modes {
+            let name = fixture.name();
+            if mode.requires_unsupported_platform() {
                 println!(
-                    "composition_bench composition={} mode={} skipped=unsupported_platform",
-                    fixture.name(),
+                    "composition_bench composition={name} mode={} skipped=unsupported_platform",
                     mode.name()
                 );
                 summary.push_row(vec![
-                    fixture.name().to_string(),
+                    name.to_string(),
                     mode.name().to_string(),
                     frames.to_string(),
+                    full_render.to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
                     "-".to_string(),
                     "-".to_string(),
                     "skipped (platform)".to_string(),
                 ]);
                 continue;
             }
-            let output = output_path(args.save.as_deref(), fixture.name(), mode, args.modes.len())?;
-            let mut run = PhaseTimer::default();
-            let elapsed = run
-                .time_async("mode_total", async {
-                    run_mode(&composition, &media, frames, mode, output.as_deref()).await
-                })
-                .await?;
-            setup.print(&format!("composition_bench composition={}", fixture.name()));
-            run.print(&format!(
-                "composition_bench composition={} mode={}",
-                fixture.name(),
-                mode.name()
-            ));
+            let output = mode
+                .encodes()
+                .then(|| output_path(args.save.as_deref(), name, mode, encoding_runs));
+            let workload = Workload {
+                composition: &composition,
+                media: &media,
+                frames,
+                full_render,
+            };
+            let mut profile = args.profile.then(PhaseTimes::default);
+            let times = run_mode(&workload, mode, output.as_deref(), profile.as_mut()).await?;
+            if let Some(profile) = &profile {
+                profile.print(mode.name(), frames);
+            }
             if args.save.is_none()
                 && let Some(path) = output.as_deref()
             {
                 let _ = std::fs::remove_file(path);
             }
+            let steady_frames = frames - 1;
+            let steady_fps = (steady_frames > 0).then(|| fps(steady_frames, times.steady));
             println!(
-                "composition_bench composition={} mode={} frames={} elapsed_ms={} fps={:.2} output={}",
-                fixture.name(),
+                "composition_bench composition={name} mode={} frames={frames} full_render={full_render} setup_ms={:.2} first_frame_ms={:.2} steady_ms={:.2} elapsed_ms={} fps={} output={}",
                 mode.name(),
-                frames,
-                elapsed.as_millis(),
-                fps(frames, elapsed),
+                times.setup.as_secs_f64() * 1000.0,
+                times.first_frame.as_secs_f64() * 1000.0,
+                times.steady.as_secs_f64() * 1000.0,
+                times.loop_total().as_millis(),
+                steady_fps.map_or_else(|| "-".to_string(), |fps| format!("{fps:.2}")),
                 output
                     .as_deref()
                     .filter(|_| args.save.is_some())
@@ -108,17 +123,23 @@ async fn run_async() -> anyhow::Result<()> {
                     .unwrap_or_else(|| "-".to_string())
             );
             summary.push_row(vec![
-                fixture.name().to_string(),
+                name.to_string(),
                 mode.name().to_string(),
                 frames.to_string(),
-                format_duration(elapsed),
-                format_fps(frames, elapsed),
+                full_render.to_string(),
+                format_duration(times.setup),
+                format_duration(times.first_frame),
+                format_duration(times.steady),
+                steady_fps.map_or_else(|| "-".to_string(), |fps| format!("{fps:.1}")),
                 "ok".to_string(),
             ]);
         }
     }
 
     summary.print();
+    println!(
+        "setup creates the renderer, compiles the plan and opens any encoder; first frame includes one-off uploads and static work; steady fps covers the remaining frames, and for encoders their finish."
+    );
     Ok(())
 }
 
@@ -128,6 +149,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut frames = None;
     let mut save = None;
     let mut full_render = false;
+    let mut profile = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -151,7 +173,9 @@ fn parse_args() -> anyhow::Result<Args> {
                     args.next()
                         .ok_or_else(|| anyhow!("--frames requires a value"))?
                         .parse::<u32>()
-                        .map_err(|_| anyhow!("--frames must be a positive integer"))?,
+                        .ok()
+                        .filter(|&count| count > 0)
+                        .ok_or_else(|| anyhow!("--frames must be a positive integer"))?,
                 );
             }
             "--save" => {
@@ -161,15 +185,15 @@ fn parse_args() -> anyhow::Result<Args> {
                 ));
             }
             "--full-render" => full_render = true,
+            "--profile" => profile = true,
             "--list" => {
                 let names: Vec<_> = compositions::all()
                     .iter()
                     .map(|fixture| fixture.name())
                     .collect();
+                let modes: Vec<_> = Mode::ALL.iter().map(|mode| mode.cli_name()).collect();
                 println!("compositions: all, {}", names.join(", "));
-                println!(
-                    "modes: all, render-only, render-profile, readback, readback-profile, cpu-encode, cpu-encode-profile, metal-videotoolbox, metal-videotoolbox-profile, vk-cuda-export, vk-cuda-nvenc"
-                );
+                println!("modes: all, {}", modes.join(", "));
                 std::process::exit(0);
             }
             "--help" | "-h" => {
@@ -185,12 +209,18 @@ fn parse_args() -> anyhow::Result<Args> {
         frames,
         save,
         full_render,
+        profile,
     })
 }
 
 fn print_help() {
+    let names: Vec<_> = compositions::all()
+        .iter()
+        .map(|fixture| fixture.name())
+        .collect();
     println!(
-        "usage: lumen-bench-composition [--composition all|simple_pipeline|small_media_transform|small_media_transform_exposure|vector_showcase|animated_showcase|antialiasing_stress_aa|antialiasing_stress_noaa|many_elements] [--mode MODE] [--frames N] [--save PATH] [--full-render]"
+        "usage: lumen-bench-composition [--composition all|{}] [--mode MODE]... [--frames N] [--save PATH] [--full-render] [--profile]\n\nRun --list for the modes. --save names the file when exactly one encoding run is selected; otherwise it is a prefix and each file gets the composition and mode appended.",
+        names.join("|")
     );
 }
 

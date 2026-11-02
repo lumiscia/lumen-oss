@@ -1,6 +1,5 @@
 use std::{
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -10,77 +9,80 @@ use std::collections::VecDeque;
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use anyhow::Context;
 use anyhow::anyhow;
+use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, gpu::RasterHandle};
 use lumen_ffmpeg::{
     CpuVideoFrame, MuxedEncoder, PixelFormat, Rational, VideoCodec, VideoEncoderConfig,
 };
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use lumen_engine::gpu::CudaNvencTargetPool;
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+use lumen_engine::gpu::VulkanVideoTarget;
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-use lumen_ffmpeg::{CudaDriver, EncodeMode, GpuBackend, import_owned_vulkan_opaque_fd_image};
+#[cfg(any(
+    all(target_os = "linux", feature = "vulkan"),
+    all(target_os = "linux", feature = "cuda", feature = "vulkan")
+))]
+use lumen_ffmpeg::{EncodeMode, GpuBackend};
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+use lumen_ffmpeg::{GpuVideoInput, VulkanDevice, gpu_texture_encode_support};
 
-use crate::bench::{media::BenchmarkMediaStore, timing::micros_per_frame};
+use crate::bench::media::BenchmarkMediaStore;
 
 use super::{
-    profile::{print_plan_memory, print_plan_profile},
-    readback::{read_texture_rgba8, read_texture_rgba8_profile},
+    profile::{PhaseTimes, print_plan_memory, print_plan_profile, timed},
+    readback::read_texture_rgba8,
 };
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
 const GPU_ENCODER_FRAMES_IN_FLIGHT: usize = 3;
 
-static FULL_RENDER: AtomicBool = AtomicBool::new(false);
-
-/// Disables the automatic reuse of static node output in every benchmark renderer. Memos whose
-/// key is unchanged still hold.
-pub fn set_full_render(enabled: bool) {
-    FULL_RENDER.store(enabled, Ordering::Relaxed);
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     RenderOnly,
-    RenderProfile,
     Readback,
-    ReadbackProfile,
     CpuEncode,
-    CpuEncodeProfile,
     MetalVideotoolbox,
-    MetalVideotoolboxProfile,
-    VkCudaExport,
+    VulkanVideo,
     VkCudaNvenc,
 }
 
 impl Mode {
+    pub const ALL: [Self; 6] = [
+        Self::RenderOnly,
+        Self::Readback,
+        Self::CpuEncode,
+        Self::MetalVideotoolbox,
+        Self::VulkanVideo,
+        Self::VkCudaNvenc,
+    ];
+
     pub fn parse(value: &str) -> anyhow::Result<Self> {
-        match value {
-            "render-only" => Ok(Self::RenderOnly),
-            "render-profile" => Ok(Self::RenderProfile),
-            "readback" => Ok(Self::Readback),
-            "readback-profile" => Ok(Self::ReadbackProfile),
-            "cpu-encode" => Ok(Self::CpuEncode),
-            "cpu-encode-profile" => Ok(Self::CpuEncodeProfile),
-            "metal-videotoolbox" => Ok(Self::MetalVideotoolbox),
-            "metal-videotoolbox-profile" => Ok(Self::MetalVideotoolboxProfile),
-            "vk-cuda-export" => Ok(Self::VkCudaExport),
-            "vk-cuda-nvenc" => Ok(Self::VkCudaNvenc),
-            _ => Err(anyhow!("unknown mode `{value}`")),
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.cli_name() == value)
+            .ok_or_else(|| anyhow!("unknown mode `{value}`"))
+    }
+
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::RenderOnly => "render-only",
+            Self::Readback => "readback",
+            Self::CpuEncode => "cpu-encode",
+            Self::MetalVideotoolbox => "metal-videotoolbox",
+            Self::VulkanVideo => "vulkan-video",
+            Self::VkCudaNvenc => "vk-cuda-nvenc",
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
             Self::RenderOnly => "render_only",
-            Self::RenderProfile => "render_profile",
             Self::Readback => "readback",
-            Self::ReadbackProfile => "readback_profile",
             Self::CpuEncode => "cpu_encode",
-            Self::CpuEncodeProfile => "cpu_encode_profile",
             Self::MetalVideotoolbox => "metal_videotoolbox",
-            Self::MetalVideotoolboxProfile => "metal_videotoolbox_profile",
-            Self::VkCudaExport => "vk_cuda_export",
+            Self::VulkanVideo => "vulkan_video",
             Self::VkCudaNvenc => "vk_cuda_nvenc",
         }
     }
@@ -88,59 +90,87 @@ impl Mode {
     pub fn encodes(self) -> bool {
         matches!(
             self,
-            Self::CpuEncode
-                | Self::CpuEncodeProfile
-                | Self::MetalVideotoolbox
-                | Self::MetalVideotoolboxProfile
-                | Self::VkCudaNvenc
+            Self::CpuEncode | Self::MetalVideotoolbox | Self::VulkanVideo | Self::VkCudaNvenc
         )
     }
+
+    pub fn requires_unsupported_platform(self) -> bool {
+        match self {
+            Self::MetalVideotoolbox => !cfg!(all(target_os = "macos", feature = "metal")),
+            Self::VulkanVideo => !cfg!(all(target_os = "linux", feature = "vulkan")),
+            Self::VkCudaNvenc => !cfg!(all(
+                target_os = "linux",
+                feature = "cuda",
+                feature = "vulkan"
+            )),
+            Self::RenderOnly | Self::Readback | Self::CpuEncode => false,
+        }
+    }
 }
 
-pub fn selected_modes(modes: &[Mode]) -> Vec<Mode> {
-    if !modes.is_empty() {
-        return modes.to_vec();
-    }
-    vec![
-        Mode::RenderOnly,
-        Mode::Readback,
-        Mode::CpuEncode,
-        Mode::MetalVideotoolbox,
-        Mode::VkCudaExport,
-        Mode::VkCudaNvenc,
-    ]
+/// What a mode renders.
+pub struct Workload<'a> {
+    pub composition: &'a Composition,
+    pub media: &'a BenchmarkMediaStore,
+    pub frames: u32,
+    /// Disables the automatic reuse of static node output. Memos whose key is unchanged still
+    /// hold.
+    pub full_render: bool,
 }
 
-pub fn requires_unsupported_platform(mode: Mode) -> bool {
-    if matches!(
-        mode,
-        Mode::MetalVideotoolbox | Mode::MetalVideotoolboxProfile
-    ) && !cfg!(all(target_os = "macos", feature = "metal"))
-    {
-        return true;
+/// How long a run spent before its first frame, on that frame, and on the rest.
+#[derive(Clone, Copy, Debug)]
+pub struct RunTimes {
+    pub setup: Duration,
+    pub first_frame: Duration,
+    /// Every frame after the first, plus finishing the encoder.
+    pub steady: Duration,
+    loop_started: Instant,
+    steady_started: Instant,
+}
+
+impl RunTimes {
+    /// Starts the frame loop; everything since `setup_started` was setup.
+    fn begin(setup_started: Instant) -> Self {
+        let now = Instant::now();
+        Self {
+            setup: now - setup_started,
+            first_frame: Duration::ZERO,
+            steady: Duration::ZERO,
+            loop_started: now,
+            steady_started: now,
+        }
     }
-    matches!(mode, Mode::VkCudaExport | Mode::VkCudaNvenc)
-        && !cfg!(all(
-            target_os = "linux",
-            feature = "cuda",
-            feature = "vulkan"
-        ))
+
+    fn frame_done(&mut self, frame: u32) {
+        if frame == 0 {
+            let now = Instant::now();
+            self.first_frame = now - self.loop_started;
+            self.steady_started = now;
+        }
+    }
+
+    fn finish(mut self) -> Self {
+        self.steady = self.steady_started.elapsed();
+        self
+    }
+
+    pub fn loop_total(&self) -> Duration {
+        self.first_frame + self.steady
+    }
 }
 
 pub fn output_path(
     save: Option<&Path>,
     composition: &str,
     mode: Mode,
-    explicit_mode_count: usize,
-) -> anyhow::Result<Option<PathBuf>> {
-    if !mode.encodes() {
-        return Ok(None);
-    }
+    encoding_runs: usize,
+) -> PathBuf {
     let Some(save) = save else {
-        return Ok(Some(temp_path(mode.name(), "mp4")));
+        return temp_path(mode.name(), "mp4");
     };
-    if explicit_mode_count <= 1 {
-        return Ok(Some(save.to_path_buf()));
+    if encoding_runs <= 1 {
+        return save.to_path_buf();
     }
     let parent = save.parent().unwrap_or_else(|| Path::new("."));
     let stem = save
@@ -151,397 +181,183 @@ pub fn output_path(
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("mp4");
-    Ok(Some(parent.join(format!(
-        "{stem}_{composition}_{}.{extension}",
-        mode.name()
-    ))))
+    parent.join(format!("{stem}_{composition}_{}.{extension}", mode.name()))
 }
 
 pub async fn run_mode(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-    frames: u32,
+    workload: &Workload<'_>,
     mode: Mode,
     output: Option<&Path>,
-) -> anyhow::Result<Duration> {
+    mut phases: Option<&mut PhaseTimes>,
+) -> anyhow::Result<RunTimes> {
+    let phases = &mut phases;
+    let output = || output.ok_or_else(|| anyhow!("{} needs an output path", mode.cli_name()));
     match mode {
-        Mode::RenderOnly => benchmark_render_only(composition, media, frames).await,
-        Mode::RenderProfile => benchmark_render_profile(composition, media, frames).await,
-        Mode::Readback => benchmark_render_readback(composition, media, frames).await,
-        Mode::ReadbackProfile => {
-            benchmark_render_readback_profile(composition, media, frames).await
-        }
-        Mode::CpuEncode => {
-            benchmark_render_cpu_encode(
-                composition,
-                media,
-                frames,
-                output.ok_or_else(|| anyhow!("cpu encode mode needs an output path"))?,
-            )
-            .await
-        }
-        Mode::CpuEncodeProfile => {
-            benchmark_render_cpu_encode_profile(
-                composition,
-                media,
-                frames,
-                output.ok_or_else(|| anyhow!("cpu encode profile mode needs an output path"))?,
-            )
-            .await
-        }
-        Mode::MetalVideotoolbox => {
-            benchmark_render_metal_videotoolbox(
-                composition,
-                media,
-                frames,
-                output.ok_or_else(|| anyhow!("Metal VideoToolbox mode needs an output path"))?,
-                false,
-            )
-            .await
-        }
-        Mode::MetalVideotoolboxProfile => {
-            benchmark_render_metal_videotoolbox(
-                composition,
-                media,
-                frames,
-                output.ok_or_else(|| {
-                    anyhow!("Metal VideoToolbox profile mode needs an output path")
-                })?,
-                true,
-            )
-            .await
-        }
-        Mode::VkCudaExport => benchmark_render_vk_cuda_export(composition, media, frames).await,
-        Mode::VkCudaNvenc => {
-            benchmark_render_vk_cuda_nvenc(
-                composition,
-                media,
-                frames,
-                output.ok_or_else(|| anyhow!("NVENC mode needs an output path"))?,
-            )
-            .await
-        }
+        Mode::RenderOnly => render_only(workload, phases).await,
+        Mode::Readback => readback(workload, phases).await,
+        Mode::CpuEncode => cpu_encode(workload, output()?, phases).await,
+        Mode::MetalVideotoolbox => metal_videotoolbox(workload, output()?, phases).await,
+        Mode::VulkanVideo => vulkan_video(workload, output()?, phases).await,
+        Mode::VkCudaNvenc => vk_cuda_nvenc(workload, output()?, phases).await,
     }
 }
 
-async fn benchmark_render_only(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-    frames: u32,
-) -> anyhow::Result<Duration> {
-    let mut renderer = renderer(composition, media).await?;
-    let started = Instant::now();
-    for frame in 0..frames {
-        renderer.render_frame_submitted(composition, frame, media)?;
-        renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())?;
+/// Binds, uploads and submits one frame to the renderer's own output texture.
+fn render_frame(
+    renderer: &mut GpuCompositionRenderer,
+    workload: &Workload<'_>,
+    frame: u32,
+    phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<RasterHandle> {
+    let bound = timed(phases, "bind", || {
+        renderer.bind_frame(workload.composition, frame, workload.media)
+    })?;
+    timed(phases, "upload", || renderer.upload_bound_frame(&bound))?;
+    let (raster, _) = timed(phases, "submit", || renderer.submit_render())?;
+    Ok(raster)
+}
+
+async fn render_only(
+    workload: &Workload<'_>,
+    phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<RunTimes> {
+    let setup_started = Instant::now();
+    let mut renderer = renderer(workload).await?;
+    if phases.is_some() {
+        print_plan_profile(renderer.compiled());
     }
-    let elapsed = started.elapsed();
+    let mut times = RunTimes::begin(setup_started);
+    for frame in 0..workload.frames {
+        render_frame(&mut renderer, workload, frame, phases)?;
+        timed(phases, "poll", || {
+            renderer
+                .gpu_renderer()
+                .device
+                .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())
+        })?;
+        times.frame_done(frame);
+    }
     print_plan_memory(renderer.compiled());
-    Ok(elapsed)
+    Ok(times.finish())
 }
 
-async fn benchmark_render_profile(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-    frames: u32,
-) -> anyhow::Result<Duration> {
-    let mut renderer = renderer(composition, media).await?;
-    print_plan_profile(renderer.compiled());
-    let mut bind = Duration::ZERO;
-    let mut upload = Duration::ZERO;
-    let mut submit = Duration::ZERO;
-    let mut poll = Duration::ZERO;
-    let started = Instant::now();
-    for frame in 0..frames {
-        let step = Instant::now();
-        let bound = renderer.bind_frame(composition, frame, media)?;
-        bind += step.elapsed();
-
-        let step = Instant::now();
-        renderer.upload_bound_frame(&bound)?;
-        upload += step.elapsed();
-
-        let step = Instant::now();
-        let _ = renderer.submit_render()?;
-        submit += step.elapsed();
-
-        let step = Instant::now();
-        renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())?;
-        poll += step.elapsed();
+async fn readback(
+    workload: &Workload<'_>,
+    phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<RunTimes> {
+    let setup_started = Instant::now();
+    let mut renderer = renderer(workload).await?;
+    if phases.is_some() {
+        print_plan_profile(renderer.compiled());
     }
-    let elapsed = started.elapsed();
-    println!(
-        "composition_profile frames={} bind_ms={} upload_ms={} submit_ms={} poll_ms={} bind_us_per_frame={:.2} upload_us_per_frame={:.2} submit_us_per_frame={:.2} poll_us_per_frame={:.2}",
-        frames,
-        bind.as_millis(),
-        upload.as_millis(),
-        submit.as_millis(),
-        poll.as_millis(),
-        micros_per_frame(bind, frames),
-        micros_per_frame(upload, frames),
-        micros_per_frame(submit, frames),
-        micros_per_frame(poll, frames),
-    );
-    Ok(elapsed)
-}
-
-async fn benchmark_render_readback(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-    frames: u32,
-) -> anyhow::Result<Duration> {
-    let mut renderer = renderer(composition, media).await?;
-    let started = Instant::now();
-    for frame in 0..frames {
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, media)?;
-        let _pixels = read_texture_rgba8(
+    let mut times = RunTimes::begin(setup_started);
+    for frame in 0..workload.frames {
+        let raster = render_frame(&mut renderer, workload, frame, phases)?;
+        read_texture_rgba8(
             renderer.gpu_renderer(),
             raster.texture,
             raster.domain.storage_size,
+            phases,
         )?;
+        times.frame_done(frame);
     }
-    Ok(started.elapsed())
+    Ok(times.finish())
 }
 
-async fn benchmark_render_readback_profile(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-    frames: u32,
-) -> anyhow::Result<Duration> {
-    let mut renderer = renderer(composition, media).await?;
-    print_plan_profile(renderer.compiled());
-    let mut render = Duration::ZERO;
-    let mut create_buffer = Duration::ZERO;
-    let mut encode_copy = Duration::ZERO;
-    let mut map_wait = Duration::ZERO;
-    let mut copy_rows = Duration::ZERO;
-    let started = Instant::now();
-    for frame in 0..frames {
-        let step = Instant::now();
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, media)?;
-        render += step.elapsed();
-        let timings = read_texture_rgba8_profile(
-            renderer.gpu_renderer(),
-            raster.texture,
-            raster.domain.storage_size,
-        )?;
-        create_buffer += timings.create_buffer;
-        encode_copy += timings.encode_copy;
-        map_wait += timings.map_wait;
-        copy_rows += timings.copy_rows;
-    }
-    let elapsed = started.elapsed();
-    println!(
-        "readback_profile frames={} render_ms={} create_buffer_ms={} encode_copy_ms={} map_wait_ms={} copy_rows_ms={} render_us_per_frame={:.2} create_buffer_us_per_frame={:.2} encode_copy_us_per_frame={:.2} map_wait_us_per_frame={:.2} copy_rows_us_per_frame={:.2}",
-        frames,
-        render.as_millis(),
-        create_buffer.as_millis(),
-        encode_copy.as_millis(),
-        map_wait.as_millis(),
-        copy_rows.as_millis(),
-        micros_per_frame(render, frames),
-        micros_per_frame(create_buffer, frames),
-        micros_per_frame(encode_copy, frames),
-        micros_per_frame(map_wait, frames),
-        micros_per_frame(copy_rows, frames),
-    );
-    Ok(elapsed)
-}
-
-async fn benchmark_render_cpu_encode(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-    frames: u32,
+async fn cpu_encode(
+    workload: &Workload<'_>,
     output: &Path,
-) -> anyhow::Result<Duration> {
-    let mut renderer = renderer(composition, media).await?;
-    let width = composition.render_settings().width;
-    let height = composition.render_settings().height;
+    phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<RunTimes> {
+    let setup_started = Instant::now();
+    let mut renderer = renderer(workload).await?;
+    if phases.is_some() {
+        print_plan_profile(renderer.compiled());
+    }
+    let width = workload.composition.render_settings().width;
+    let height = workload.composition.render_settings().height;
     let mut encoder = MuxedEncoder::create(
         output.to_string_lossy().to_string(),
-        video_config(composition, VideoCodec::H264)?,
+        video_config(workload.composition, VideoCodec::H264)?,
     )?;
-    let started = Instant::now();
-    for frame in 0..frames {
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, media)?;
+    let mut times = RunTimes::begin(setup_started);
+    for frame in 0..workload.frames {
+        let raster = render_frame(&mut renderer, workload, frame, phases)?;
         let pixels = read_texture_rgba8(
             renderer.gpu_renderer(),
             raster.texture,
             raster.domain.storage_size,
+            phases,
         )?;
-        encoder.write_video_frame(&CpuVideoFrame {
-            width,
-            height,
-            stride: width as usize * 4,
-            pixel_format: PixelFormat::Rgba8,
-            pts: Some(i64::from(frame)),
-            data: pixels,
+        timed(phases, "encode", || {
+            encoder.write_video_frame(&CpuVideoFrame {
+                width,
+                height,
+                stride: width as usize * 4,
+                pixel_format: PixelFormat::Rgba8,
+                pts: Some(i64::from(frame)),
+                data: pixels,
+            })
         })?;
+        times.frame_done(frame);
     }
-    encoder.finish()?;
-    Ok(started.elapsed())
-}
-
-async fn benchmark_render_cpu_encode_profile(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-    frames: u32,
-    output: &Path,
-) -> anyhow::Result<Duration> {
-    let mut renderer = renderer(composition, media).await?;
-    print_plan_profile(renderer.compiled());
-    let width = composition.render_settings().width;
-    let height = composition.render_settings().height;
-    let mut encoder = MuxedEncoder::create(
-        output.to_string_lossy().to_string(),
-        video_config(composition, VideoCodec::H264)?,
-    )?;
-    let mut render = Duration::ZERO;
-    let mut readback = Duration::ZERO;
-    let mut encode = Duration::ZERO;
-    let mut finish = Duration::ZERO;
-    let started = Instant::now();
-    for frame in 0..frames {
-        let step = Instant::now();
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, media)?;
-        render += step.elapsed();
-
-        let step = Instant::now();
-        let pixels = read_texture_rgba8(
-            renderer.gpu_renderer(),
-            raster.texture,
-            raster.domain.storage_size,
-        )?;
-        readback += step.elapsed();
-
-        let step = Instant::now();
-        encoder.write_video_frame(&CpuVideoFrame {
-            width,
-            height,
-            stride: width as usize * 4,
-            pixel_format: PixelFormat::Rgba8,
-            pts: Some(i64::from(frame)),
-            data: pixels,
-        })?;
-        encode += step.elapsed();
-    }
-    let step = Instant::now();
-    encoder.finish()?;
-    finish += step.elapsed();
-    let elapsed = started.elapsed();
-    println!(
-        "cpu_encode_profile frames={} render_ms={} readback_ms={} encode_ms={} finish_ms={} render_us_per_frame={:.2} readback_us_per_frame={:.2} encode_us_per_frame={:.2}",
-        frames,
-        render.as_millis(),
-        readback.as_millis(),
-        encode.as_millis(),
-        finish.as_millis(),
-        micros_per_frame(render, frames),
-        micros_per_frame(readback, frames),
-        micros_per_frame(encode, frames),
-    );
-    Ok(elapsed)
+    timed(phases, "finish", || encoder.finish())?;
+    Ok(times.finish())
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
-async fn benchmark_render_metal_videotoolbox(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-    frames: u32,
+async fn metal_videotoolbox(
+    workload: &Workload<'_>,
     output: &Path,
-    profile: bool,
-) -> anyhow::Result<Duration> {
-    let mut renderer = renderer_with_format(
-        composition,
-        media,
-        lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
-    )
-    .await?;
-    if profile {
+    phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<RunTimes> {
+    let setup_started = Instant::now();
+    let mut renderer =
+        renderer_with_format(workload, lumen_gpu::wgpu::TextureFormat::Bgra8Unorm).await?;
+    if phases.is_some() {
         print_plan_profile(renderer.compiled());
     }
-    let output_size = composition_size(composition);
+    let output_size = composition_size(workload.composition);
     let mut target_pool = MetalVideoToolboxTargetPool::bgra8(renderer.gpu_renderer(), output_size)?;
-    let mut config = video_config(composition, VideoCodec::H264)?;
+    let mut config = video_config(workload.composition, VideoCodec::H264)?;
     config.mode = lumen_ffmpeg::EncodeMode::GpuTexture(lumen_ffmpeg::GpuBackend::Metal);
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
     let mut pending = VecDeque::<PendingMetalEncodeFrame>::new();
-    let mut render = Duration::ZERO;
-    let mut poll = Duration::ZERO;
-    let mut encode = Duration::ZERO;
-    let mut finish = Duration::ZERO;
-    let started = Instant::now();
+    let mut times = RunTimes::begin(setup_started);
 
-    for frame in 0..frames {
+    for frame in 0..workload.frames {
         let target = target_pool.acquire(renderer.gpu_renderer(), frame)?;
-
-        let step = Instant::now();
-        let submitted = renderer.render_frame_into_external(
-            composition,
-            frame,
-            media,
-            target.external_texture(),
-        )?;
-        render += step.elapsed();
+        let submitted = timed(phases, "render", || {
+            renderer.render_frame_into_external(
+                workload.composition,
+                frame,
+                workload.media,
+                target.external_texture(),
+            )
+        })?;
         pending.push_back(PendingMetalEncodeFrame {
             frame,
             target,
             submitted,
         });
         if pending.len() >= GPU_ENCODER_FRAMES_IN_FLIGHT {
-            encode_ready_metal_frame(
-                &renderer,
-                &mut encoder,
-                &mut pending,
-                &mut poll,
-                &mut encode,
-            )?;
+            encode_ready_metal_frame(&renderer, &mut encoder, &mut pending, phases)?;
         }
+        times.frame_done(frame);
     }
     while !pending.is_empty() {
-        encode_ready_metal_frame(
-            &renderer,
-            &mut encoder,
-            &mut pending,
-            &mut poll,
-            &mut encode,
-        )?;
+        encode_ready_metal_frame(&renderer, &mut encoder, &mut pending, phases)?;
     }
-
-    let step = Instant::now();
-    encoder.finish()?;
-    finish += step.elapsed();
-    let elapsed = started.elapsed();
-    if profile {
-        println!(
-            "metal_videotoolbox_profile frames={} render_ms={} poll_ms={} encode_ms={} finish_ms={} render_us_per_frame={:.2} poll_us_per_frame={:.2} encode_us_per_frame={:.2}",
-            frames,
-            render.as_millis(),
-            poll.as_millis(),
-            encode.as_millis(),
-            finish.as_millis(),
-            micros_per_frame(render, frames),
-            micros_per_frame(poll, frames),
-            micros_per_frame(encode, frames),
-        );
-    }
-    Ok(elapsed)
+    timed(phases, "finish", || encoder.finish())?;
+    Ok(times.finish())
 }
 
 #[cfg(not(all(target_os = "macos", feature = "metal")))]
-async fn benchmark_render_metal_videotoolbox(
-    _composition: &lumen_engine::composition::Composition,
-    _media: &BenchmarkMediaStore,
-    _frames: u32,
+async fn metal_videotoolbox(
+    _workload: &Workload<'_>,
     _output: &Path,
-    _profile: bool,
-) -> anyhow::Result<Duration> {
+    _phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<RunTimes> {
     Err(anyhow!("metal-videotoolbox requires macOS + metal feature"))
 }
 
@@ -554,11 +370,10 @@ struct PendingMetalEncodeFrame {
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
 fn encode_ready_metal_frame(
-    renderer: &lumen_engine::gpu::GpuCompositionRenderer,
+    renderer: &GpuCompositionRenderer,
     encoder: &mut MuxedEncoder,
     pending: &mut VecDeque<PendingMetalEncodeFrame>,
-    poll: &mut Duration,
-    encode: &mut Duration,
+    phases: &mut Option<&mut PhaseTimes>,
 ) -> anyhow::Result<()> {
     let PendingMetalEncodeFrame {
         frame,
@@ -567,135 +382,180 @@ fn encode_ready_metal_frame(
     } = pending
         .pop_front()
         .ok_or_else(|| anyhow!("no pending Metal frame to encode"))?;
-    let step = Instant::now();
-    submitted.wait(&renderer.gpu_renderer().device)?;
-    *poll += step.elapsed();
-
-    let step = Instant::now();
-    encoder
-        .write_gpu_frame(&target.video_input())
-        .with_context(|| format!("Metal VideoToolbox encode failed at frame {frame}"))?;
-    *encode += step.elapsed();
+    timed(phases, "poll", || {
+        submitted.wait(&renderer.gpu_renderer().device)
+    })?;
+    timed(phases, "encode", || {
+        encoder.write_gpu_frame(&target.video_input())
+    })
+    .with_context(|| format!("Metal VideoToolbox encode failed at frame {frame}"))?;
     Ok(())
 }
 
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-async fn benchmark_render_vk_cuda_export(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-    frames: u32,
-) -> anyhow::Result<Duration> {
-    let mut renderer = renderer(composition, media).await?;
-    let output_size = composition_size(composition);
-    let exportable = create_exportable_texture(renderer.gpu_renderer(), output_size)?;
-    let driver = CudaDriver::load().map_err(|error| anyhow!(error))?;
-    let _context = driver
-        .create_primary_context()
-        .map_err(|error| anyhow!(error))?;
-    let imported = import_owned_vulkan_opaque_fd_image(
-        &driver,
-        exportable.memory_fd().try_clone()?,
-        exportable.allocation_size(),
-        output_size.width,
-        output_size.height,
-    )
-    .map_err(|error| anyhow!(error))?;
-    assert_ne!(imported.level_zero_raw(), 0);
-
-    let started = Instant::now();
-    for frame in 0..frames {
-        let (raster, _) = renderer.render_frame_submitted(composition, frame, media)?;
-        renderer
-            .gpu_renderer()
-            .copy_texture_to_external(raster.texture, exportable.texture())?;
-        renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())?;
+/// Renders and encodes on one Vulkan device, so frames never leave the GPU.
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+async fn vulkan_video(
+    workload: &Workload<'_>,
+    output: &Path,
+    phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<RunTimes> {
+    let setup_started = Instant::now();
+    let size = composition_size(workload.composition);
+    if !size.width.is_multiple_of(2) || !size.height.is_multiple_of(2) {
+        return Err(anyhow!(
+            "NV12 frames need even dimensions, got {}x{}",
+            size.width,
+            size.height
+        ));
     }
-    Ok(started.elapsed())
+    let (mut renderer, device) = GpuCompositionRenderer::new_vulkan_video().await?;
+    renderer.set_static_output_reuse(!workload.full_render);
+    renderer.compile_with_media(
+        workload.composition,
+        workload.media,
+        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+    )?;
+    if phases.is_some() {
+        print_plan_profile(renderer.compiled());
+    }
+    let target = VulkanVideoTarget::nv12(renderer.gpu_renderer(), size);
+    let mut encoder = open_vulkan_encoder(workload.composition, &device, output)?;
+    let mut times = RunTimes::begin(setup_started);
+    for frame in 0..workload.frames {
+        let raster = render_frame(&mut renderer, workload, frame, phases)?;
+        let texture = renderer
+            .gpu_renderer()
+            .texture(raster.texture)
+            .ok_or_else(|| anyhow!("render output texture {:?} is unavailable", raster.texture))?;
+        let video_frame = timed(phases, "convert", || {
+            target.convert(renderer.gpu_renderer(), texture, Some(i64::from(frame)))
+        })?;
+        timed(phases, "flush", || {
+            renderer
+                .gpu_renderer()
+                .device
+                .poll(lumen_gpu::wgpu::PollType::Poll)
+        })?;
+        timed(phases, "encode", || {
+            encoder.write_gpu_frame(&GpuVideoInput::Vulkan(&video_frame))
+        })?;
+        times.frame_done(frame);
+    }
+    timed(phases, "finish", || encoder.finish())?;
+    Ok(times.finish())
 }
 
-#[cfg(not(all(target_os = "linux", feature = "cuda", feature = "vulkan")))]
-async fn benchmark_render_vk_cuda_export(
-    _composition: &lumen_engine::composition::Composition,
-    _media: &BenchmarkMediaStore,
-    _frames: u32,
-) -> anyhow::Result<Duration> {
+/// Opens the first Vulkan Video encoder the machine supports, preferring H.264.
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+fn open_vulkan_encoder(
+    composition: &Composition,
+    device: &VulkanDevice,
+    output: &Path,
+) -> anyhow::Result<MuxedEncoder> {
+    let mut failures = Vec::new();
+    for codec in [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1] {
+        let support = gpu_texture_encode_support(codec, GpuBackend::Vulkan);
+        let Some(name) = support.encoder_name.filter(|_| support.available) else {
+            failures.push(format!("{codec:?}: {}", support.reason.unwrap_or_default()));
+            continue;
+        };
+        let mut config = video_config(composition, codec)?;
+        config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
+        config.vulkan_device = Some(device.clone());
+        match MuxedEncoder::create(output.to_string_lossy().to_string(), config) {
+            Ok(encoder) => {
+                println!("composition_bench vulkan_video encoder={name}");
+                return Ok(encoder);
+            }
+            Err(error) => failures.push(format!("{name}: {error}")),
+        }
+    }
     Err(anyhow!(
-        "vk-cuda-export requires linux + cuda + vulkan features"
+        "no Vulkan Video encoder opened ({})",
+        failures.join("; ")
     ))
 }
 
+#[cfg(not(all(target_os = "linux", feature = "vulkan")))]
+async fn vulkan_video(
+    _workload: &Workload<'_>,
+    _output: &Path,
+    _phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<RunTimes> {
+    Err(anyhow!("vulkan-video requires linux + vulkan feature"))
+}
+
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-async fn benchmark_render_vk_cuda_nvenc(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-    frames: u32,
+async fn vk_cuda_nvenc(
+    workload: &Workload<'_>,
     output: &Path,
-) -> anyhow::Result<Duration> {
-    let mut renderer = renderer(composition, media).await?;
-    let output_size = composition_size(composition);
+    phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<RunTimes> {
+    let setup_started = Instant::now();
+    let mut renderer = renderer(workload).await?;
+    if phases.is_some() {
+        print_plan_profile(renderer.compiled());
+    }
+    let output_size = composition_size(workload.composition);
     let target_pool = CudaNvencTargetPool::rgba8(renderer.gpu_renderer(), output_size)?;
     let target = target_pool.acquire(renderer.gpu_renderer())?;
-    let mut config = video_config(composition, VideoCodec::H264)?;
+    let mut config = video_config(workload.composition, VideoCodec::H264)?;
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
 
-    let started = Instant::now();
-    for frame in 0..frames {
-        let submitted = renderer.render_frame_into_external(
-            composition,
-            frame,
-            media,
-            target.external_texture(),
-        )?;
-        submitted.wait(&renderer.gpu_renderer().device)?;
-        target.copy_rendered_frame_to_cuda()?;
-        let frame = target.video_frame(Some(i64::from(frame)));
-        encoder.write_gpu_frame(&target.video_input(&frame))?;
+    let mut times = RunTimes::begin(setup_started);
+    for frame in 0..workload.frames {
+        let submitted = timed(phases, "render", || {
+            renderer.render_frame_into_external(
+                workload.composition,
+                frame,
+                workload.media,
+                target.external_texture(),
+            )
+        })?;
+        timed(phases, "poll", || {
+            submitted.wait(&renderer.gpu_renderer().device)
+        })?;
+        timed(phases, "copy_to_cuda", || {
+            target.copy_rendered_frame_to_cuda()
+        })?;
+        let cuda_frame = target.video_frame(Some(i64::from(frame)));
+        timed(phases, "encode", || {
+            encoder.write_gpu_frame(&target.video_input(&cuda_frame))
+        })?;
+        times.frame_done(frame);
     }
-    encoder.finish()?;
-    Ok(started.elapsed())
+    timed(phases, "finish", || encoder.finish())?;
+    Ok(times.finish())
 }
 
 #[cfg(not(all(target_os = "linux", feature = "cuda", feature = "vulkan")))]
-async fn benchmark_render_vk_cuda_nvenc(
-    _composition: &lumen_engine::composition::Composition,
-    _media: &BenchmarkMediaStore,
-    _frames: u32,
+async fn vk_cuda_nvenc(
+    _workload: &Workload<'_>,
     _output: &Path,
-) -> anyhow::Result<Duration> {
+    _phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<RunTimes> {
     Err(anyhow!(
         "vk-cuda-nvenc requires linux + cuda + vulkan features"
     ))
 }
 
-pub(crate) async fn renderer(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
-) -> anyhow::Result<lumen_engine::gpu::GpuCompositionRenderer> {
-    renderer_with_format(
-        composition,
-        media,
-        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-    )
-    .await
+async fn renderer(workload: &Workload<'_>) -> anyhow::Result<GpuCompositionRenderer> {
+    renderer_with_format(workload, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm).await
 }
 
-pub(crate) async fn renderer_with_format(
-    composition: &lumen_engine::composition::Composition,
-    media: &BenchmarkMediaStore,
+async fn renderer_with_format(
+    workload: &Workload<'_>,
     format: lumen_gpu::wgpu::TextureFormat,
-) -> anyhow::Result<lumen_engine::gpu::GpuCompositionRenderer> {
-    let mut renderer = lumen_engine::gpu::GpuCompositionRenderer::new().await?;
-    renderer.set_static_output_reuse(!FULL_RENDER.load(Ordering::Relaxed));
-    renderer.compile_with_media(composition, media, format)?;
+) -> anyhow::Result<GpuCompositionRenderer> {
+    let mut renderer = GpuCompositionRenderer::new().await?;
+    renderer.set_static_output_reuse(!workload.full_render);
+    renderer.compile_with_media(workload.composition, workload.media, format)?;
     Ok(renderer)
 }
 
-pub(crate) fn video_config(
-    composition: &lumen_engine::composition::Composition,
+fn video_config(
+    composition: &Composition,
     codec: VideoCodec,
 ) -> anyhow::Result<VideoEncoderConfig> {
     let mut config = VideoEncoderConfig::cpu_rgba(
@@ -710,33 +570,16 @@ pub(crate) fn video_config(
 
 #[cfg(any(
     all(target_os = "macos", feature = "metal"),
-    all(target_os = "linux", feature = "cuda", feature = "vulkan")
+    all(target_os = "linux", feature = "vulkan")
 ))]
-pub(crate) fn composition_size(
-    composition: &lumen_engine::composition::Composition,
-) -> lumen_gpu::Size {
+fn composition_size(composition: &Composition) -> lumen_gpu::Size {
     lumen_gpu::Size::new(
         composition.render_settings().width,
         composition.render_settings().height,
     )
 }
 
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-pub(crate) fn create_exportable_texture(
-    renderer: &lumen_gpu::Renderer,
-    size: lumen_gpu::Size,
-) -> anyhow::Result<lumen_gpu::ExportableVulkanTexture> {
-    renderer.create_exportable_vulkan_texture(
-        Some("lumen composition benchmark export texture"),
-        size,
-        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-        lumen_gpu::wgpu::TextureUsages::COPY_DST
-            | lumen_gpu::wgpu::TextureUsages::COPY_SRC
-            | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING,
-    )
-}
-
-pub fn temp_path(name: &str, extension: &str) -> PathBuf {
+fn temp_path(name: &str, extension: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
