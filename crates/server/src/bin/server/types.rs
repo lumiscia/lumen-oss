@@ -5,9 +5,6 @@ use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct RenderJobInput {
-    #[serde(default)]
-    pub job_id: Option<String>,
-    #[serde(alias = "project")]
     pub composition: Value,
     #[serde(default)]
     pub media: HashMap<String, String>,

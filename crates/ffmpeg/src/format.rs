@@ -130,6 +130,17 @@ impl Packet {
     }
 }
 
+/// Demuxers media can be read with. Everything here keeps a file's data inside that file. Demuxers
+/// that open other files or hosts named by the input (`hls`, `dash`, `concat`, `image2`, `imf`,
+/// `mlv`, `vobsub`, `rtsp`, `sap`, `sdp`) must stay out. `mov` data references are also external,
+/// but FFmpeg only follows them with `enable_drefs`, which is never set.
+pub const ALLOWED_INPUT_FORMATS: &str = "mov,matroska,mpegts,mpeg,avi,flv,asf,ogg,mxf,ivf,h264,hevc,\
+gif,apng,png_pipe,jpeg_pipe,webp_pipe,bmp_pipe,tiff_pipe,\
+mp3,aac,wav,flac,aiff,caf,ac3,eac3,dts,amr,w64,wv";
+
+/// Protocols media can be read through.
+pub const ALLOWED_INPUT_PROTOCOLS: &str = "file";
+
 pub struct InputContext {
     path: String,
     pub(crate) ptr: *mut sys::AVFormatContext,
@@ -150,18 +161,50 @@ impl InputContext {
         ffi::init();
         let path = path.into();
         let c_path = ffi::cstring("avformat_open_input", &path)?;
+        let formats = ffi::cstring("av_dict_set", ALLOWED_INPUT_FORMATS)?;
+        let protocols = ffi::cstring("av_dict_set", ALLOWED_INPUT_PROTOCOLS)?;
+        let mut options = ptr::null_mut();
         let mut ptr = ptr::null_mut();
         unsafe {
-            ffi::check(
-                sys::avformat_open_input(
-                    &mut ptr,
-                    c_path.as_ptr(),
-                    ptr::null_mut(),
-                    ptr::null_mut(),
+            let opened = ffi::check(
+                sys::av_dict_set(
+                    &mut options,
+                    c"format_whitelist".as_ptr(),
+                    formats.as_ptr(),
+                    0,
                 ),
-                "avformat_open_input",
+                "av_dict_set",
             )
-            .map_err(|error| error.with_path(path.clone()))?;
+            .and_then(|()| {
+                ffi::check(
+                    sys::av_dict_set(
+                        &mut options,
+                        c"protocol_whitelist".as_ptr(),
+                        protocols.as_ptr(),
+                        0,
+                    ),
+                    "av_dict_set",
+                )
+            })
+            .and_then(|()| {
+                ffi::check(
+                    sys::avformat_open_input(
+                        &mut ptr,
+                        c_path.as_ptr(),
+                        ptr::null_mut(),
+                        &mut options,
+                    ),
+                    "avformat_open_input",
+                )
+            });
+            sys::av_dict_free(&mut options);
+            opened.map_err(|mut error| {
+                // FFmpeg reports a format or protocol outside the allowlists as EINVAL.
+                if error.code == Some(-libc::EINVAL) {
+                    error.message = "container format or protocol is not supported".to_string();
+                }
+                error.with_path(path.clone())
+            })?;
             ffi::check(
                 sys::avformat_find_stream_info(ptr, ptr::null_mut()),
                 "avformat_find_stream_info",
