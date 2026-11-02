@@ -23,7 +23,7 @@ use crate::node::{
 
 use super::text_content::{
     FontFeatures, TextContent, TextContentDelegate, TextHighlight, TextHighlightDelegate, TextLine,
-    TextLineDelegate, TextLineStyle, TextSpan,
+    TextLineDelegate, TextLineStyle, TextSpan, TextStroke, TextStrokeAlign, TextStrokeDelegate,
 };
 
 #[derive(
@@ -220,6 +220,11 @@ pub struct TextParams {
     /// absent.
     #[meta()]
     pub highlight: Option<TextHighlight>,
+    /// Outline along the glyphs, and along those of spans that leave theirs unset. Off when
+    /// absent. It does not change the layout or the measured size. `glyph_opacity` fades a
+    /// glyph's stroke and fill as one.
+    #[meta()]
+    pub stroke: Option<TextStroke>,
     /// Horizontal text alignment.
     #[meta(kind = "enum", enum_type = TextAlignmentHorizontal)]
     pub alignment_horizontal: TextAlignmentHorizontal,
@@ -243,8 +248,8 @@ pub struct TextParams {
     pub overflow: TextOverflow,
     /// Whether the text shrinks to fit `max_width`, `max_lines` and `max_height` without breaking
     /// a word, before any lines are dropped. Every font size, letter spacing, `line_height`,
-    /// baseline shift, paragraph spacing and decoration size scales by the largest factor up to 1
-    /// that fits.
+    /// baseline shift, paragraph spacing, decoration size and stroke width scales by the largest
+    /// factor up to 1 that fits.
     #[meta(kind = "enum", enum_type = TextFit)]
     pub fit: TextFit,
     /// Smallest `font_size` that `fit` shrinks the text to. Lines that still do not fit are
@@ -288,6 +293,7 @@ impl Default for TextParams {
             underline: None,
             strikethrough: None,
             highlight: None,
+            stroke: None,
             alignment_horizontal: TextAlignmentHorizontal::Left,
             alignment_vertical: TextAlignmentVertical::Top,
             paint_supersample: true,
@@ -341,14 +347,16 @@ pub(crate) struct CompiledText {
     pub(crate) decorations: NodeDecorations,
     /// The node's font features, evaluated at compile when they have no expressions.
     pub(crate) font_features: Option<FontFeatures>,
-    /// Whether the node or any span has a decoration.
+    /// Whether the node or any span has a decoration or stroke.
     pub(crate) decorated: bool,
+    /// Whether the node or any span has a stroke.
+    pub(crate) stroked: bool,
     pub(crate) atlas_texture: lumen_gpu::TextureId,
     pub(crate) globals_buffer: lumen_gpu::BufferId,
     pub(crate) instances_buffer: lumen_gpu::BufferId,
     pub(crate) style_buffer: lumen_gpu::BufferId,
     /// A paint for each span, or the one paint of string content, and then those of the
-    /// decorations with their own.
+    /// decorations with their own and of the strokes.
     pub(crate) paints_buffer: lumen_gpu::BufferId,
     /// The number of span paints.
     pub(crate) paint_count: usize,
@@ -509,10 +517,13 @@ impl CompiledText {
             GpuTextPaint { paint: gpu, bounds }
         };
         state.decorations.clear();
-        // The decorations' own paints, which follow the span paints.
+        // The paints of the decorations with their own and of the strokes, which follow the span
+        // paints, each with the half width of its stroke.
         let mut decoration_paints = Vec::new();
         let mut before_glyphs = 0;
         let mut dropped_decorations = 0;
+        state.strokes.clear();
+        state.half_widths.clear();
         if self.decorated {
             // Spans without a color of their own share the first one's paint, so a line
             // runs along them as one rect.
@@ -530,7 +541,7 @@ impl CompiledText {
                     _ => plain,
                 },
                 |paint, span| {
-                    decoration_paints.push((paint, span));
+                    decoration_paints.push((paint, span, 0.0));
                     (self.paint_count + decoration_paints.len() - 1) as u32
                 },
                 &mut state.decorations,
@@ -538,6 +549,26 @@ impl CompiledText {
             dropped_decorations = state.decorations.len().saturating_sub(self.max_glyphs);
             state.decorations.truncate(self.max_glyphs);
             before_glyphs = before_glyphs.min(state.decorations.len());
+            if self.stroked {
+                span_strokes(
+                    decorations.stroke.as_ref(),
+                    spans,
+                    shaped,
+                    |stroke, span, half_width| {
+                        decoration_paints.push((&stroke.paint, span, half_width));
+                        (self.paint_count + decoration_paints.len() - 1) as u32
+                    },
+                    &mut state.strokes,
+                );
+            }
+            if state.strokes.iter().any(Option::is_some) {
+                state.half_widths.extend(
+                    state
+                        .strokes
+                        .iter()
+                        .map(|stroke| stroke.map_or(0.0, |stroke| stroke.half_width)),
+                );
+            }
         }
         let mode = match evaluated.render_mode {
             TextRenderMode::Raster => lumen_text::TextRenderMode::Raster,
@@ -559,11 +590,12 @@ impl CompiledText {
             .map_err(|_| RenderError::Gpu {
                 details: "text atlas lock was poisoned".to_string(),
             })?;
-        let mut prepared = text_system.prepare_glyphs(
+        let mut prepared = text_system.prepare_stroked_glyphs(
             &mut atlas,
             &layout,
             mode,
             self.max_glyphs - state.decorations.len(),
+            &state.half_widths,
             &mut state.overfull,
         );
         let atlas_size = atlas.size();
@@ -610,8 +642,10 @@ impl CompiledText {
                 own.and(Some(span)),
             ));
         }
-        for (paint, span) in decoration_paints {
-            state.paints.push(text_paint(paint, span));
+        for (paint, span, half_width) in decoration_paints {
+            let mut paint = text_paint(paint, span);
+            paint.paint.stroke = half_width.to_bits();
+            state.paints.push(paint);
         }
         for upload in prepared.uploads {
             let [width, height] = upload.size;
@@ -629,17 +663,96 @@ impl CompiledText {
                 instance.set_paint(layout.glyphs[source].item.span);
             }
         }
-        let ink_bounds = self.glyph.apply(
+        let mut ink_bounds = self.glyph.apply(
             self.node_id,
             &layout,
             &mut prepared.instances,
             &prepared.sources,
             &mut expr,
         )?;
+        // A stroke takes its glyph's transform and fade. Outside strokes are drawn under the
+        // glyphs, and centred ones over them.
+        state.under_strokes.clear();
+        state.over_strokes.clear();
+        for (mut instance, &glyph) in prepared.strokes.into_iter().zip(&prepared.stroke_glyphs) {
+            let fill = &prepared.instances[glyph];
+            let span = layout.glyphs[prepared.sources[glyph]].item.span as usize;
+            let Some(stroke) = state.strokes[span] else {
+                continue;
+            };
+            instance.set_paint(stroke.paint);
+            instance.opacity = fill.opacity;
+            if fill.flags & lumen_text::GLYPH_TRANSFORMED != 0 {
+                instance.flags |= lumen_text::GLYPH_TRANSFORMED;
+                instance.linear = fill.linear;
+                instance.offset = fill.offset;
+                let [x0, y0, x1, y1] = transformed_bounds(&instance);
+                ink_bounds = Some(ink_bounds.map_or([x0, y0, x1, y1], |bounds| {
+                    [
+                        bounds[0].min(x0),
+                        bounds[1].min(y0),
+                        bounds[2].max(x1),
+                        bounds[3].max(y1),
+                    ]
+                }));
+            }
+            if stroke.over {
+                state.over_strokes.push(instance);
+            } else {
+                state.under_strokes.push(instance);
+            }
+        }
+        // A faded glyph's lower layer reads its partner's coverage, so the pair fades as one,
+        // and the strokes of a fading cluster fade as one like its fills.
+        if prepared.instances.iter().any(|fill| fill.opacity < 1.0) {
+            let fills = before_glyphs + state.under_strokes.len();
+            let overs = fills + prepared.instances.len();
+            let mut stroke_at = vec![None; prepared.instances.len()];
+            let (mut under, mut over) = (0, 0);
+            for &glyph in &prepared.stroke_glyphs {
+                let span = layout.glyphs[prepared.sources[glyph]].item.span as usize;
+                let Some(stroke) = state.strokes[span] else {
+                    continue;
+                };
+                let count = if stroke.over { &mut over } else { &mut under };
+                stroke_at[glyph] = Some((stroke.over, *count));
+                *count += 1;
+            }
+            let mut index = 0;
+            while index < prepared.instances.len() {
+                let lead = index;
+                index += 1
+                    + (prepared.instances[lead].flags >> lumen_text::GLYPH_CLUSTER_SHIFT) as usize;
+                if prepared.instances[lead].opacity >= 1.0 {
+                    continue;
+                }
+                let mut strokes = stroke_at[lead..index].iter().flatten();
+                let Some(&(over, first)) = strokes.next() else {
+                    continue;
+                };
+                let list = if over {
+                    &mut state.over_strokes
+                } else {
+                    &mut state.under_strokes
+                };
+                for &(_, at) in strokes.filter(|(other, _)| *other == over) {
+                    list[at].flags |= lumen_text::GLYPH_CLUSTER_FOLLOWER;
+                    list[first].flags += 1 << lumen_text::GLYPH_CLUSTER_SHIFT;
+                }
+                let (lower, partner) = if over {
+                    (&mut prepared.instances[lead], overs + first)
+                } else {
+                    (&mut list[first], fills + lead)
+                };
+                lower.flags |= lumen_text::GLYPH_PARTNER;
+                lower.partner = partner as u32;
+            }
+        }
+        let stroke_count = state.under_strokes.len() + state.over_strokes.len();
         let globals = lumen_text::GpuTextGlobals {
             target_size: [self.layer_size.width as f32, self.layer_size.height as f32],
             px_range: lumen_text::MSDF_PX_RANGE,
-            glyph_count: (state.decorations.len() + prepared.instances.len()) as u32,
+            glyph_count: (state.decorations.len() + prepared.instances.len() + stroke_count) as u32,
         };
         bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
         bound.write_buffer(self.paints_buffer, 0, bytemuck::cast_slice(&state.paints));
@@ -656,6 +769,15 @@ impl CompiledText {
             min = [min[0].min(x0), min[1].min(y0)];
             max = [max[0].max(x1), max[1].max(y1)];
         }
+        // Strokes reach past the glyphs, and a pixel further when antialiased.
+        let reach = state
+            .strokes
+            .iter()
+            .flatten()
+            .map(|stroke| lumen_text::stroke_reach(stroke.half_width) + 1.0)
+            .fold(0.0, f32::max);
+        min = min.map(|bound| bound - reach);
+        max = max.map(|bound| bound + reach);
         let motion = DrawableMotion::new(shutter.as_ref(), min, max);
         let canvas = [self.size.width as f32, self.size.height as f32];
         let layer = [self.layer_size.width as f32, self.layer_size.height as f32];
@@ -664,10 +786,17 @@ impl CompiledText {
             motion: motion.to_gpu(),
         };
         bound.write_buffer(self.style_buffer, 0, bytemuck::bytes_of(&style));
-        // Highlights and underlines are drawn under the glyphs, and strikethroughs over them.
+        // Highlights and underlines are drawn under the glyphs and their strokes, and
+        // strikethroughs over them.
         let (under, over) = state.decorations.split_at(before_glyphs);
         let mut offset = 0;
-        for instances in [under, &prepared.instances, over] {
+        for instances in [
+            under,
+            &state.under_strokes,
+            &prepared.instances,
+            &state.over_strokes,
+            over,
+        ] {
             if !instances.is_empty() {
                 bound.write_buffer(
                     self.instances_buffer,
@@ -682,7 +811,7 @@ impl CompiledText {
             trace_text_bind(
                 self.node_id,
                 upload_count,
-                prepared.instances.len() + state.decorations.len(),
+                prepared.instances.len() + stroke_count + state.decorations.len(),
                 layout_ms,
                 atlas_ms,
                 trace_now_ms() - started,
@@ -777,7 +906,7 @@ impl GlyphParams {
             .to_gpu();
             let (offset_x, offset_y) = offset.eval(node_id, expr)?;
             let instance = &mut instances[index];
-            instance.color[3] *= transform.opacity;
+            instance.opacity *= transform.opacity;
             if transform.flags != 0 || (offset_x, offset_y) != (0.0, 0.0) {
                 instance.flags |= lumen_text::GLYPH_TRANSFORMED;
                 instance.linear = transform.linear;
@@ -808,36 +937,57 @@ impl GlyphParams {
             if instance.flags & lumen_text::GLYPH_TRANSFORMED == 0 {
                 continue;
             }
-            let [x, y, width, height] = instance.rect;
-            for [x, y] in [
-                [x, y],
-                [x + width, y],
-                [x, y + height],
-                [x + width, y + height],
-            ] {
-                let [column_x, column_y] = instance.linear;
-                let point = [
-                    column_x[0] * x + column_y[0] * y + instance.offset[0],
-                    column_x[1] * x + column_y[1] * y + instance.offset[1],
-                ];
-                let [x0, y0, x1, y1] =
-                    bounds.get_or_insert([point[0], point[1], point[0], point[1]]);
-                (*x0, *y0) = (x0.min(point[0]), y0.min(point[1]));
-                (*x1, *y1) = (x1.max(point[0]), y1.max(point[1]));
-            }
+            let [x0, y0, x1, y1] = transformed_bounds(instance);
+            bounds = Some(bounds.map_or([x0, y0, x1, y1], |bounds| {
+                [
+                    bounds[0].min(x0),
+                    bounds[1].min(y0),
+                    bounds[2].max(x1),
+                    bounds[3].max(y1),
+                ]
+            }));
         }
         expr.glyph = None;
         Ok(bounds)
     }
 }
 
-/// Whether two glyph instances draw with the same transform and colour.
+/// The box `[min_x, min_y, max_x, max_y]` that a transformed glyph instance's rect covers
+/// under its own transform.
+fn transformed_bounds(instance: &lumen_text::GpuGlyphInstance) -> [f32; 4] {
+    let [x, y, width, height] = instance.rect;
+    let [column_x, column_y] = instance.linear;
+    [
+        [x, y],
+        [x + width, y],
+        [x, y + height],
+        [x + width, y + height],
+    ]
+    .map(|[x, y]| {
+        [
+            column_x[0] * x + column_y[0] * y + instance.offset[0],
+            column_x[1] * x + column_y[1] * y + instance.offset[1],
+        ]
+    })
+    .into_iter()
+    .fold(
+        [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ],
+        |[x0, y0, x1, y1], [x, y]| [x0.min(x), y0.min(y), x1.max(x), y1.max(y)],
+    )
+}
+
+/// Whether two glyph instances draw with the same transform, opacity and paint.
 fn same_draw(a: &lumen_text::GpuGlyphInstance, b: &lumen_text::GpuGlyphInstance) -> bool {
     let transformed =
         |glyph: &lumen_text::GpuGlyphInstance| glyph.flags & lumen_text::GLYPH_TRANSFORMED != 0;
     transformed(a) == transformed(b)
         && (!transformed(a) || (a.linear == b.linear && a.offset == b.offset))
-        && a.color == b.color
+        && a.opacity == b.opacity
         && a.paint() == b.paint()
 }
 
@@ -898,6 +1048,13 @@ pub(crate) struct TextState {
     decorations: Vec<lumen_text::GpuGlyphInstance>,
     dropping_glyphs: bool,
     overfull: Option<u64>,
+    /// The stroke of each span, kept across frames like the buffers below.
+    strokes: Vec<Option<SpanStroke>>,
+    /// The half width of each span's stroke, or none when no span draws one.
+    half_widths: Vec<f32>,
+    /// Stroke instances drawn under the glyphs, and those drawn over them.
+    under_strokes: Vec<lumen_text::GpuGlyphInstance>,
+    over_strokes: Vec<lumen_text::GpuGlyphInstance>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -1071,13 +1228,14 @@ fn take_span_paints(content: &mut TextContent) -> Vec<Option<Paint>> {
             span.underline = Override::Inherit;
             span.strikethrough = Override::Inherit;
             span.highlight = Override::Inherit;
+            span.stroke = Override::Inherit;
             span.color.take()
         })
         .collect()
 }
 
 /// Takes what does not affect the layout out of `content`'s spans, returning spans that hold
-/// only their colors and decorations.
+/// only their colors, decorations and strokes.
 fn take_span_styles(content: &mut TextContent) -> Vec<TextSpan> {
     let TextContent::Spans(spans) = content else {
         return Vec::new();
@@ -1089,34 +1247,38 @@ fn take_span_styles(content: &mut TextContent) -> Vec<TextSpan> {
             underline: std::mem::take(&mut span.underline),
             strikethrough: std::mem::take(&mut span.strikethrough),
             highlight: std::mem::take(&mut span.highlight),
+            stroke: std::mem::take(&mut span.stroke),
             ..TextSpan::default()
         })
         .collect()
 }
 
-/// The node's decorations, which spans that leave theirs unset take.
+/// The node's decorations and stroke, which spans that leave theirs unset take.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct TextDecorations {
     pub(crate) underline: Option<TextLine>,
     pub(crate) strikethrough: Option<TextLine>,
     pub(crate) highlight: Option<TextHighlight>,
+    pub(crate) stroke: Option<TextStroke>,
 }
 
-/// The node's decoration params, moved out of the others.
+/// The node's decoration and stroke params, moved out of the others.
 #[derive(Debug, Clone)]
 pub(crate) struct DecorationParams {
     underline: Option<TextLineDelegate>,
     strikethrough: Option<TextLineDelegate>,
     highlight: Option<TextHighlightDelegate>,
+    stroke: Option<TextStrokeDelegate>,
 }
 
 impl DecorationParams {
-    /// Moves the node's decorations out of `params`, leaving them unset.
+    /// Moves the node's decorations and stroke out of `params`, leaving them unset.
     pub(crate) fn take(params: &mut TextParamsDelegate) -> Self {
         Self {
             underline: params.underline.take(),
             strikethrough: params.strikethrough.take(),
             highlight: params.highlight.take(),
+            stroke: params.stroke.take(),
         }
     }
 
@@ -1125,6 +1287,7 @@ impl DecorationParams {
         DelegateEvaluable::has_expressions(&self.underline)
             || DelegateEvaluable::has_expressions(&self.strikethrough)
             || DelegateEvaluable::has_expressions(&self.highlight)
+            || DelegateEvaluable::has_expressions(&self.stroke)
     }
 
     pub(crate) fn eval(
@@ -1142,6 +1305,7 @@ impl DecorationParams {
             underline: DelegateEvaluable::eval(&self.underline, &ctx("underline"))?,
             strikethrough: DelegateEvaluable::eval(&self.strikethrough, &ctx("strikethrough"))?,
             highlight: DelegateEvaluable::eval(&self.highlight, &ctx("highlight"))?,
+            stroke: DelegateEvaluable::eval(&self.stroke, &ctx("stroke"))?,
         })
     }
 }
@@ -1279,15 +1443,17 @@ pub(crate) fn decorate<'a>(
     before_glyphs
 }
 
-/// The number of paints that `params`' decorations with their own add, or `None` when neither
-/// the node nor any span has a decoration.
+/// The number of paints that `params`' decorations with their own and strokes add, or `None`
+/// when neither the node nor any span has a decoration or stroke.
 pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
     let mut lines: Vec<&TextLineDelegate> = params
         .underline
         .iter()
         .chain(&params.strikethrough)
         .collect();
-    let mut highlights = usize::from(params.highlight.is_some());
+    // Highlights and strokes each have a paint.
+    let mut painted =
+        usize::from(params.highlight.is_some()) + usize::from(params.stroke.is_some());
     if let TextContentDelegate::Spans(spans) = &params.content {
         for span in &spans.items {
             for line in [&span.underline, &span.strikethrough] {
@@ -1295,11 +1461,66 @@ pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
                     lines.push(line);
                 }
             }
-            highlights += usize::from(matches!(span.highlight, Override::Set(_)));
+            painted += usize::from(matches!(span.highlight, Override::Set(_)))
+                + usize::from(matches!(span.stroke, Override::Set(_)));
         }
     }
-    (!lines.is_empty() || highlights > 0)
-        .then(|| highlights + lines.iter().filter(|line| line.paint.is_some()).count())
+    (!lines.is_empty() || painted > 0)
+        .then(|| painted + lines.iter().filter(|line| line.paint.is_some()).count())
+}
+
+/// Whether the node or any span of `params` has a stroke.
+pub(crate) fn stroked(params: &TextParamsDelegate) -> bool {
+    params.stroke.is_some()
+        || matches!(&params.content, TextContentDelegate::Spans(spans)
+            if spans.items.iter().any(|span| matches!(span.stroke, Override::Set(_))))
+}
+
+/// A span's stroke: how far it reaches to each side of the glyph edge, whether it is drawn
+/// over the glyphs, and its paint index.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SpanStroke {
+    pub(crate) half_width: f32,
+    over: bool,
+    paint: u32,
+}
+
+/// Sets `strokes` to the stroke each of `shaped`'s spans draws, if any: the node's for spans
+/// that leave theirs unset, each its own otherwise. Widths scale with the text's fit.
+/// `push_paint` adds a stroke's paint, with the span whose box it spans if it is the span's own
+/// and its half width, and returns its index.
+pub(crate) fn span_strokes<'a>(
+    node: Option<&'a TextStroke>,
+    spans: &'a [TextSpan],
+    shaped: &lumen_text::ShapedText,
+    mut push_paint: impl FnMut(&'a TextStroke, Option<usize>, f32) -> u32,
+    strokes: &mut Vec<Option<SpanStroke>>,
+) {
+    let span_count = shaped.counts.span as usize;
+    strokes.clear();
+    strokes.resize(span_count, None);
+    let mut node_paint = None;
+    for_each_run(
+        node,
+        spans,
+        span_count,
+        |span| &span.stroke,
+        |range, stroke, own| {
+            if !(stroke.width.is_finite() && stroke.width > 0.0) {
+                return;
+            }
+            let half_width = stroke.half_width() as f32 * shaped.fit_scale;
+            let paint = match own {
+                Some(span) => push_paint(stroke, Some(span), half_width),
+                None => *node_paint.get_or_insert_with(|| push_paint(stroke, None, half_width)),
+            };
+            strokes[range].fill(Some(SpanStroke {
+                half_width,
+                over: stroke.align == TextStrokeAlign::Center,
+                paint,
+            }));
+        },
+    );
 }
 
 /// Calls `run` with each run of the `span_count` spans that draws a decoration, its value and,

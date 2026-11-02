@@ -9,6 +9,7 @@ use super::{
     shader_uniforms::ShaderUniforms,
     source::text_content::{
         FontFeaturesDelegate, TextContentDelegate, TextHighlightDelegate, TextLineDelegate,
+        TextStrokeDelegate,
     },
     vector,
 };
@@ -29,6 +30,7 @@ pub enum PropertyValue {
     TextLine(Box<TextLineDelegate>),
     TextHighlight(Box<TextHighlightDelegate>),
     FontFeatures(Box<FontFeaturesDelegate>),
+    TextStroke(Box<TextStrokeDelegate>),
     FloatVec(Vec<f64>),
     IntVec(Vec<i64>),
     StringVec(Vec<String>),

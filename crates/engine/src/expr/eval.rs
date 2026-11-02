@@ -534,6 +534,7 @@ fn node_property_type_name(value: &PropertyValue) -> &'static str {
         PropertyValue::TextLine(_) => "text line",
         PropertyValue::TextHighlight(_) => "text highlight",
         PropertyValue::FontFeatures(_) => "font features",
+        PropertyValue::TextStroke(_) => "text stroke",
         PropertyValue::FloatVec(_) => "float[]",
         PropertyValue::IntVec(_) => "int[]",
         PropertyValue::StringVec(_) => "string[]",

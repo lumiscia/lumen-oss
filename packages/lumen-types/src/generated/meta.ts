@@ -3,7 +3,7 @@
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "vec2";
+export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
 export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "clip" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
@@ -813,6 +813,7 @@ export type NodeLiteralValue =
   | TextLine
   | TextHighlight
   | FontFeatures
+  | TextStroke
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]
@@ -970,6 +971,11 @@ export type TextSpan = {
    * literals or expressions, but the whole line cannot be an expression.
    */
   readonly strikethrough?: TextLine | null;
+  /**
+   * Outline along the glyphs. `null` turns off the node's stroke. Its fields take literals or
+   * expressions, but the whole stroke cannot be an expression.
+   */
+  readonly stroke?: TextStroke | null;
   /** Text of the span. Required. */
   readonly text: ExpressionValue<string>;
   /** Case applied to the span's text. */
@@ -980,6 +986,18 @@ export type TextSpan = {
    */
   readonly underline?: TextLine | null;
 };
+export type TextStroke = {
+  /**
+   * Where the outline lies: behind the glyphs and outside their edge, or over them and
+   * centred on it.
+   */
+  readonly align?: ExpressionValue<TextStrokeAlign>;
+  /** Outline color. */
+  readonly paint?: ExpressionValue<Paint>;
+  /** Outline width in pixels. */
+  readonly width?: ExpressionValue<number>;
+};
+export type TextStrokeAlign = "outside" | "center";
 
 export interface CompositionNodeBase<TKind extends NodeKind> {
   readonly id: number;
@@ -1233,6 +1251,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly "rotation"?: ExpressionValue<number>;
     readonly "scale"?: ExpressionValue<Vec2>;
     readonly "strikethrough"?: TextLine;
+    readonly "stroke"?: TextStroke;
     readonly "text_transform"?: ExpressionValue<TextTransform>;
     readonly "underline"?: TextLine;
   };

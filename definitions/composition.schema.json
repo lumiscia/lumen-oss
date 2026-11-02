@@ -927,6 +927,19 @@
           "title": "Strikethrough",
           "x-lumen-kind": "text_line"
         },
+        "stroke": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/textStroke"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Outline along the glyphs. `null` turns off the node's stroke. Its fields take literals or\nexpressions, but the whole stroke cannot be an expression.",
+          "title": "Stroke",
+          "x-lumen-kind": "text_stroke"
+        },
         "text": {
           "anyOf": [
             {
@@ -995,6 +1008,80 @@
       "required": ["text"],
       "type": "object",
       "x-lumen-type": "TextSpan"
+    },
+    "textStroke": {
+      "additionalProperties": false,
+      "properties": {
+        "align": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/textStrokeAlign"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": "outside",
+          "description": "Where the outline lies: behind the glyphs and outside their edge, or over them and\ncentred on it.",
+          "title": "Align",
+          "x-lumen-enumOptions": [
+            {
+              "label": "Outside",
+              "name": "outside",
+              "value": 0
+            },
+            {
+              "label": "Center",
+              "name": "center",
+              "value": 1
+            }
+          ],
+          "x-lumen-kind": "enum"
+        },
+        "paint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/paint"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": [0, 0, 0, 255],
+          "description": "Outline color.",
+          "title": "Paint",
+          "x-lumen-constraints": {
+            "role": "color"
+          },
+          "x-lumen-kind": "paint"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": 2.0,
+          "description": "Outline width in pixels.",
+          "title": "Width",
+          "x-lumen-constraints": {
+            "min": 0.0,
+            "step": 0.5
+          },
+          "x-lumen-kind": "float"
+        }
+      },
+      "type": "object",
+      "x-lumen-type": "TextStroke"
+    },
+    "textStrokeAlign": {
+      "enum": ["outside", "center"],
+      "type": "string",
+      "x-lumen-type": "TextStrokeAlign"
     },
     "textTransform": {
       "enum": ["none", "uppercase", "lowercase", "capitalize"],
@@ -3918,7 +4005,7 @@
                   },
                   "fit": {
                     "default": "none",
-                    "description": "Whether the text shrinks to fit `max_width`, `max_lines` and `max_height` without breaking\na word, before any lines are dropped. Every font size, letter spacing, `line_height`,\nbaseline shift, paragraph spacing and decoration size scales by the largest factor up to 1\nthat fits.",
+                    "description": "Whether the text shrinks to fit `max_width`, `max_lines` and `max_height` without breaking\na word, before any lines are dropped. Every font size, letter spacing, `line_height`,\nbaseline shift, paragraph spacing, decoration size and stroke width scales by the largest\nfactor up to 1 that fits.",
                     "enum": ["none", "shrink"],
                     "title": "Fit",
                     "type": "string",
@@ -4403,6 +4490,12 @@
                     "description": "Line through the text, and through spans that leave theirs unset. Off when absent.",
                     "title": "Strikethrough",
                     "x-lumen-kind": "text_line"
+                  },
+                  "stroke": {
+                    "$ref": "#/$defs/textStroke",
+                    "description": "Outline along the glyphs, and along those of spans that leave theirs unset. Off when\nabsent. It does not change the layout or the measured size. `glyph_opacity` fades a\nglyph's stroke and fill as one.",
+                    "title": "Stroke",
+                    "x-lumen-kind": "text_stroke"
                   },
                   "text_transform": {
                     "anyOf": [

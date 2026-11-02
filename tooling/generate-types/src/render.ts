@@ -51,6 +51,8 @@ const paramType = (nodeKind: string, param: NodeParamSpec): string => {
       return "TextHighlight";
     case "font_features":
       return "FontFeatures";
+    case "text_stroke":
+      return "TextStroke";
     case "enum":
       return enumTypeForParam(nodeKind, param);
     default:
@@ -235,6 +237,7 @@ export type NodeLiteralValue =
   | TextLine
   | TextHighlight
   | FontFeatures
+  | TextStroke
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]

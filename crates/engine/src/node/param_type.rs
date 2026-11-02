@@ -127,6 +127,12 @@ impl NodeParamType for super::source::text_content::FontFeatures {
     }
 }
 
+impl NodeParamType for super::source::text_content::TextStroke {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::TextStroke
+    }
+}
+
 // Only nested delegates may hold `Vec` fields: `#[derive(Node)]` rejects params with
 // `NodeParams::HAS_VEC_FIELDS` because the schema has no array kind.
 impl<T> NodeParamType for Vec<T> {

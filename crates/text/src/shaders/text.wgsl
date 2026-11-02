@@ -7,7 +7,10 @@ struct TextGlobals {
 struct GlyphInstance {
     rect: vec4<f32>,
     uv_rect: vec4<f32>,
-    color: vec4<f32>,
+    opacity: f32,
+    // With `GLYPH_PARTNER`, the instance drawn over this one.
+    partner: u32,
+    padding: vec2<u32>,
     // The render mode in the bits of `GLYPH_MODE_MASK`, and the index into `paints` from
     // `GLYPH_PAINT_SHIFT` up.
     mode: u32,
@@ -22,6 +25,11 @@ const GLYPH_TRANSFORMED: u32 = 1u;
 // Keep in sync with `GLYPH_CLUSTER_FOLLOWER` and `GLYPH_CLUSTER_SHIFT` in `gpu.rs`.
 const GLYPH_CLUSTER_FOLLOWER: u32 = 2u;
 const GLYPH_CLUSTER_SHIFT: u32 = 8u;
+// Keep in sync with `GLYPH_RANGE_SHIFT` and `GLYPH_RANGE_MASK` in `gpu.rs`.
+const GLYPH_RANGE_SHIFT: u32 = 2u;
+const GLYPH_RANGE_MASK: u32 = 0xfu;
+// Keep in sync with `GLYPH_PARTNER` in `gpu.rs`.
+const GLYPH_PARTNER: u32 = 64u;
 // Keep in sync with `GLYPH_MODE_MASK` and `GLYPH_PAINT_SHIFT` in `gpu.rs`.
 const GLYPH_MODE_MASK: u32 = 0xffu;
 const GLYPH_PAINT_SHIFT: u32 = 8u;
@@ -43,7 +51,7 @@ struct VertexOut {
     // The atlas texel, or a rect's untransformed position, which the target's viewport offset
     // does not move.
     @location(0) texel: vec2<f32>,
-    @location(1) color: vec4<f32>,
+    @location(1) @interpolate(flat) opacity: f32,
     @location(2) @interpolate(flat) mode: u32,
     @location(3) @interpolate(flat) uv_rect: vec4<f32>,
     // Inverse of the glyph's own transform, as the columns of its linear part and its offset.
@@ -116,12 +124,12 @@ fn vs_main(
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOut {
     if (instance_index >= globals.glyph_count || style.transform.opacity <= 0.0
-        || glyphs[instance_index].color.a <= 0.0
+        || glyphs[instance_index].opacity <= 0.0
         || (glyphs[instance_index].flags & GLYPH_CLUSTER_FOLLOWER) != 0u) {
         var out: VertexOut;
         out.position = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         out.texel = vec2<f32>(0.0);
-        out.color = vec4<f32>(0.0);
+        out.opacity = 0.0;
         out.mode = 0u;
         out.uv_rect = vec4<f32>(0.0);
         out.inverse_linear = vec4<f32>(1.0, 0.0, 0.0, 1.0);
@@ -171,7 +179,7 @@ fn vs_main(
     if (followers > 0u) {
         out.texel = instance_texel(glyph, local);
     }
-    out.color = glyph.color;
+    out.opacity = glyph.opacity;
     out.mode = glyph.mode & GLYPH_MODE_MASK;
     out.uv_rect = glyph.uv_rect;
     // A glyph scaled to nothing has no opacity, so is never drawn; its inverse is finite.
@@ -212,7 +220,7 @@ fn rect_vertex(rect: GlyphInstance, corner: vec2<f32>, instance_index: u32) -> V
         1.0,
     );
     out.texel = local;
-    out.color = rect.color;
+    out.opacity = rect.opacity;
     out.mode = GLYPH_MODE_RECT;
     out.uv_rect = vec4<f32>(0.0);
     out.inverse_linear = vec4<f32>(1.0, 0.0, 0.0, 1.0);
@@ -312,49 +320,135 @@ fn raster_bilinear(texel: vec2<f32>, uv_rect: vec4<f32>) -> vec4<f32> {
     return mix(mix(c00, c10, frac.x), mix(c01, c11, frac.x), frac.y);
 }
 
+// A stroke field's 16-bit distance at `coord`, from 0 to 1. Coordinates past the glyph's slot,
+// which `uv_rect` insets by half a texel, repeat its edge, which saturates.
+fn stroke_texel(coord: vec2<i32>, uv_rect: vec4<f32>) -> f32 {
+    let slot_min = vec2<i32>(floor(uv_rect.xy));
+    let slot_max = vec2<i32>(floor(uv_rect.zw));
+    let texel = textureLoad(atlas_texture, clamp(coord, slot_min, slot_max), 0);
+    return dot(texel.rg, vec2<f32>(65280.0, 255.0) / 65535.0);
+}
+
+// A stroke field's distance at `texel`, filtered after decoding each texel, since a sampler may
+// filter red and green with only their own 8 bits of precision.
+fn stroke_field(texel: vec2<f32>, uv_rect: vec4<f32>) -> f32 {
+    let base = floor(texel - vec2<f32>(0.5));
+    let frac = texel - vec2<f32>(0.5) - base;
+    let p0 = vec2<i32>(base);
+    let d00 = stroke_texel(p0, uv_rect);
+    let d10 = stroke_texel(p0 + vec2<i32>(1, 0), uv_rect);
+    let d01 = stroke_texel(p0 + vec2<i32>(0, 1), uv_rect);
+    let d11 = stroke_texel(p0 + vec2<i32>(1, 1), uv_rect);
+    return mix(mix(d00, d10, frac.x), mix(d01, d11, frac.x), frac.y);
+}
+
 fn median3(value: vec3<f32>) -> f32 {
     return max(min(value.r, value.g), min(max(value.r, value.g), value.b));
 }
 
-// The instances of a cluster that fades, composited at full alpha so that they fade as one,
-// at the untransformed position `local`. The cluster's lead instance draws them all.
-// `texel_width` is how far the lead's texel moves per screen pixel.
-fn cluster_color(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>, paint: vec4<f32>) -> vec4<f32> {
+// Coverage of `glyph` at the untransformed position `local`, sampled from another instance's
+// fragment whose texel moves `texel_width` per screen pixel and `lead_scale` per local pixel.
+fn member_coverage(glyph: GlyphInstance, local: vec2<f32>, texel_width: vec2<f32>, lead_scale: vec2<f32>, filtered: bool) -> f32 {
+    let texel = instance_texel(glyph, local);
+    if ((glyph.mode & GLYPH_MODE_MASK) != 2u) {
+        return select(
+            raster_texel(vec2<i32>(floor(texel)), glyph.uv_rect),
+            raster_bilinear(texel, glyph.uv_rect),
+            filtered,
+        ).a;
+    }
+    let inside = all(local >= glyph.rect.xy) && all(local <= glyph.rect.xy + glyph.rect.zw);
+    let scale = (glyph.uv_rect.zw - glyph.uv_rect.xy) / glyph.rect.zw;
+    let screen_px_range = max(
+        0.5 * dot(vec2<f32>(globals.px_range), lead_scale / (texel_width * scale)),
+        1.0,
+    );
+    let half_width = bitcast<f32>(paints[glyph.mode >> GLYPH_PAINT_SHIFT].paint.stroke);
+    var coverage = 0.0;
+    if (half_width > 0.0) {
+        let tier = (glyph.flags >> GLYPH_RANGE_SHIFT) & GLYPH_RANGE_MASK;
+        let range = 2.0 * globals.px_range * exp2(f32(tier));
+        let reach = min(half_width * scale.x, 0.5 * (range - globals.px_range) - 1.5);
+        let aa = 0.5 * globals.px_range / screen_px_range;
+        let distance = abs(range * (stroke_field(texel, glyph.uv_rect) - 0.5));
+        coverage = clamp((reach + aa - distance) / (2.0 * aa), 0.0, 1.0) * min(reach / aa, 1.0);
+    } else {
+        let field = textureSampleLevel(
+            atlas_texture,
+            atlas_sampler,
+            texel / vec2<f32>(textureDimensions(atlas_texture)),
+            0.0,
+        );
+        coverage = clamp(screen_px_range * (median3(field.rgb) - 0.5) + 0.5, 0.0, 1.0);
+    }
+    return select(0.0, coverage, inside);
+}
+
+// The premultiplied colour of `paint` at `in`'s pixel, whose untransformed position is `local`.
+// A solid paint is the same everywhere, so it is read alone and never supersampled.
+fn glyph_paint(in: VertexOut, paint: u32, local: vec2<f32>) -> vec4<f32> {
+    if (paints[paint].paint.kind == 0u) {
+        return premultiply(paints[paint].paint.colors[0]);
+    }
+    if (paints[paint].paint.paint_supersample != 0u) {
+        return text_paint_aa(in, paint);
+    }
+    return text_paint_at(paint, local);
+}
+
+// The instances of a cluster that fades, each in its own paint, composited at full alpha so
+// that they fade as one, at the untransformed position `local`. The cluster's lead instance
+// draws them all, a faded glyph's stroke among them. `texel_width` is how far the lead's
+// texel moves per screen pixel.
+fn cluster_color(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>) -> vec4<f32> {
     let lead = glyphs[in.instance];
     let lead_scale = (lead.uv_rect.zw - lead.uv_rect.xy) / lead.rect.zw;
     let filtered = drawable_is_linear(style.transform) || in.transformed != 0u;
     var color = vec4<f32>(0.0);
     for (var member = 0u; member <= lead.flags >> GLYPH_CLUSTER_SHIFT; member = member + 1u) {
         let glyph = glyphs[in.instance + member];
-        let texel = instance_texel(glyph, local);
+        let paint = glyph_paint(in, glyph.mode >> GLYPH_PAINT_SHIFT, local);
         var source = vec4<f32>(0.0);
-        if ((glyph.mode & GLYPH_MODE_MASK) == 2u) {
-            let inside = all(local >= glyph.rect.xy) && all(local <= glyph.rect.xy + glyph.rect.zw);
-            let field = textureSampleLevel(
-                atlas_texture,
-                atlas_sampler,
-                texel / vec2<f32>(textureDimensions(atlas_texture)),
-                0.0,
-            );
-            let scale = (glyph.uv_rect.zw - glyph.uv_rect.xy) / glyph.rect.zw;
-            let px_range = max(
-                0.5 * dot(vec2<f32>(globals.px_range), lead_scale / (texel_width * scale)),
-                1.0,
-            );
-            let coverage = clamp(px_range * (median3(field.rgb) - 0.5) + 0.5, 0.0, 1.0);
-            source = paint * select(0.0, coverage, inside);
-        } else {
-            let raster = select(
+        if ((glyph.mode & GLYPH_MODE_MASK) == 1u) {
+            let texel = instance_texel(glyph, local);
+            source = select(
                 raster_texel(vec2<i32>(floor(texel)), glyph.uv_rect),
                 raster_bilinear(texel, glyph.uv_rect),
                 filtered,
-            );
-            source = select(paint * raster.a, raster * paint.a, (glyph.mode & GLYPH_MODE_MASK) == 1u);
+            ) * paint.a;
+        } else {
+            source = paint * member_coverage(glyph, local, texel_width, lead_scale, filtered);
         }
         color = source + color * (1.0 - source.a);
     }
-    return color * in.color.a;
+    return color * partnered_alpha(in, local, texel_width, lead_scale, filtered);
 }
+
+// The composited alpha of the instances of the cluster led by `first` at `local`.
+fn cluster_alpha(in: VertexOut, first: u32, local: vec2<f32>, texel_width: vec2<f32>, lead_scale: vec2<f32>, filtered: bool) -> f32 {
+    var alpha = 0.0;
+    for (var member = 0u; member <= glyphs[first].flags >> GLYPH_CLUSTER_SHIFT; member = member + 1u) {
+        let glyph = glyphs[first + member];
+        let source = member_coverage(glyph, local, texel_width, lead_scale, filtered)
+            * glyph_paint(in, glyph.mode >> GLYPH_PAINT_SHIFT, local).a;
+        alpha = source + alpha * (1.0 - source);
+    }
+    return alpha;
+}
+
+// The opacity to draw `in` at. A faded glyph's lower layer, its outside stroke or the fill under
+// its centred stroke, is drawn as much as shows past its partner when the two are composited
+// and then faded, so that compositing the partner over it at the glyph's opacity matches that.
+fn partnered_alpha(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>, lead_scale: vec2<f32>, filtered: bool) -> f32 {
+    let alpha = in.opacity;
+    let lead = glyphs[in.instance];
+    if ((lead.flags & GLYPH_PARTNER) == 0u || alpha >= 1.0) {
+        return alpha;
+    }
+    let above = cluster_alpha(in, lead.partner, local, texel_width, lead_scale, filtered);
+    return alpha * (1.0 - above) / max(1.0 - alpha * above, 1.0e-6);
+}
+
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
@@ -375,30 +469,45 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // Paint follows the text, so it is evaluated at the untransformed pixel.
     let local = glyph_to_local(in, in.position.xy);
     let fill = glyphs[in.instance].mode >> GLYPH_PAINT_SHIFT;
-    // A solid paint is the same everywhere, so it is read alone and never supersampled.
-    var text_paint = premultiply(paints[fill].paint.colors[0]);
-    if (paints[fill].paint.kind != 0u) {
-        text_paint = text_paint_at(fill, local);
-        if (paints[fill].paint.paint_supersample != 0u) {
-            text_paint = text_paint_aa(in, fill);
-        }
-    }
+    let text_paint = glyph_paint(in, fill, local);
     if (in.mode == GLYPH_MODE_RECT) {
-        return text_paint * (rect_coverage(glyphs[in.instance], in.texel) * in.color.a);
+        return text_paint * (rect_coverage(glyphs[in.instance], in.texel) * in.opacity);
     }
     if ((glyphs[in.instance].flags >> GLYPH_CLUSTER_SHIFT) != 0u) {
-        return cluster_color(in, local, texel_width, text_paint);
+        return cluster_color(in, local, texel_width);
     }
     // The atlas, the paint and the output are premultiplied. Opacity is applied once
     // the glyphs are composited, by the opacity pass below.
     if (in.mode == 1u) {
-        return raster * (in.color.a * text_paint.a);
+        return raster * (in.opacity * text_paint.a);
     }
     var coverage = raster.a;
     if (in.mode == 2u) {
         coverage = clamp(screen_px_range * (median3(field.rgb) - 0.5) + 0.5, 0.0, 1.0);
+        let half_width = bitcast<f32>(paints[fill].paint.stroke);
+        if (half_width > 0.0) {
+            // A stroke's field holds the true distance to the outline in texels in 16 bits split
+            // across red and green, saturating at half its range, which is twice `px_range`
+            // times the power of two in the instance's flags. The stroke reaches at most that
+            // less the widest antialiasing and a texel and a half, keeping in sync with
+            // `field_reach` in `msdf.rs`, so texels that saturate stay uncovered. Antialiasing
+            // follows the fill's and depends on the texel and pixel size alone, so crossing into
+            // a wider range changes nothing else. A band narrower than its antialiasing fades
+            // out with its width rather than keeping the half coverage at its centre.
+            let tier = (glyphs[in.instance].flags >> GLYPH_RANGE_SHIFT) & GLYPH_RANGE_MASK;
+            let range = 2.0 * globals.px_range * exp2(f32(tier));
+            let texels_per_pixel = (in.uv_rect.z - in.uv_rect.x) / glyphs[in.instance].rect.z;
+            let reach = min(half_width * texels_per_pixel, 0.5 * (range - globals.px_range) - 1.5);
+            let aa = 0.5 * globals.px_range / screen_px_range;
+            let encoded = stroke_field(in.texel, in.uv_rect);
+            let distance = abs(range * (encoded - 0.5));
+            coverage = clamp((reach + aa - distance) / (2.0 * aa), 0.0, 1.0) * min(reach / aa, 1.0);
+        }
     }
-    return text_paint * (coverage * in.color.a);
+    let lead_scale = (in.uv_rect.zw - in.uv_rect.xy) / glyphs[in.instance].rect.zw;
+    let filtered = drawable_is_linear(style.transform) || in.transformed != 0u;
+    let alpha = partnered_alpha(in, local, texel_width, lead_scale, filtered);
+    return text_paint * (coverage * alpha);
 }
 
 @group(0) @binding(5) var layer_texture: texture_2d<f32>;
