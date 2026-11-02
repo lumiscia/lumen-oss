@@ -42,3 +42,5 @@
   - `chore: update generated types`
   - `feat(types): add composition types`
   - `fix(node): update schema references`
+- Add a changeset with `pnpm changeset` to any PR that should be released. Rust-only changes need one too, because the Rust workspace version follows the fixed TypeScript package group; name `@lumiscia/lumen-bindings` for them.
+- Prefer squash merging when asked to merge a PR.
