@@ -178,8 +178,30 @@ pub struct Expression {
     pub(super) ast: ExprNode,
     pub references: Vec<ExpressionReference>,
     pub source: String,
+    /// Levels of `ast`, which is how deep evaluating it recurses.
+    pub(super) depth: usize,
     /// How `ast` is evaluated, built from it once.
     pub(super) plan: Arc<super::eval::EvalPlan>,
+}
+
+impl ExprNode {
+    fn depth(&self) -> usize {
+        1 + match self {
+            Self::Unary(_, value) => value.depth(),
+            Self::Binary(lhs, _, rhs) => lhs.depth().max(rhs.depth()),
+            Self::Builtin(_, args) => args.iter().map(Self::depth).max().unwrap_or(0),
+            Self::Conditional(condition, when_true, when_false) => condition
+                .depth()
+                .max(when_true.depth())
+                .max(when_false.depth()),
+            Self::Literal(_)
+            | Self::Global(_)
+            | Self::SymbolicPath(_)
+            | Self::Node(_)
+            | Self::PropertyValue(..)
+            | Self::VirtualProperty(_) => 0,
+        }
+    }
 }
 
 impl Expression {
@@ -189,6 +211,7 @@ impl Expression {
             id: ExpressionId(0),
             references: super::parser::references(&ast),
             plan: Arc::new(super::eval::EvalPlan::new(&ast)),
+            depth: ast.depth(),
             ast,
             source,
         }
