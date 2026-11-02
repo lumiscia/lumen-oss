@@ -55,7 +55,7 @@ A render reads media from one place: a directory created for that job, holding o
 
 Video and audio are only read from containers that keep their data inside the file:
 
-- **Video:** MP4 and MOV, plus Matroska and WebM, MPEG-TS, MPEG-PS, AVI, FLV, ASF/WMV, Ogg, MXF, and IVF. Raw H.264 and HEVC streams carry no duration, so they fail with `unable to determine stream frame count`.
+- **Video:** MP4 and MOV, plus Matroska and WebM, MPEG-TS, MPEG-PS, AVI, FLV, ASF/WMV, Ogg, MXF, and IVF. Raw H.264 and HEVC streams carry no duration, so they fail to open. Put them in a container first.
 - **Audio:** MP3, AAC, WAV, W64, FLAC, AIFF, CAF, AC-3, E-AC-3, DTS, AMR, and WavPack, plus the audio forms of the containers above.
 - **Stills read as video:** PNG, JPEG, WebP, BMP, and TIFF hold one frame for the whole clip. GIF and APNG play their animation. Other image formats, such as TGA, EXR, and SVG, are refused.
 
