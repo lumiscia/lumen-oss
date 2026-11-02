@@ -24,7 +24,25 @@ macro_rules! hash_leaf {
     )*};
 }
 hash_leaf!(
-    bool, u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, str, String
+    bool,
+    u8,
+    u16,
+    u32,
+    u64,
+    usize,
+    i8,
+    i16,
+    i32,
+    i64,
+    isize,
+    str,
+    String,
+    crate::expr::ast::BinaryOp,
+    crate::expr::ast::UnaryOp,
+    crate::expr::ast::GlobalVar,
+    crate::expr::ast::PropertyPath,
+    crate::expr::ast::VirtualPropertyId,
+    crate::expr::spec::BuiltinFn,
 );
 
 impl StructuralHash for f32 {
@@ -104,14 +122,6 @@ impl<K: StructuralHash + Ord, V: StructuralHash, S> StructuralHash for HashMap<K
     }
 }
 
-impl StructuralHash for crate::expr::Expression {
-    fn structural_hash<H: Hasher>(&self, state: &mut H) {
-        // The AST and evaluation plan are derived from this source; expression ids are local
-        // to parsing and must not affect content identity.
-        self.source.structural_hash(state);
-    }
-}
-
 impl StructuralHash for serde_json::Value {
     fn structural_hash<H: Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
@@ -123,7 +133,11 @@ impl StructuralHash for serde_json::Value {
                 // holding its IEEE bits otherwise collide, as do -1 and u64::MAX.
                 value.is_u64().hash(state);
                 value.is_i64().hash(state);
-                value.hash(state);
+                // Number's Hash also equates -0.0 with 0.0, which props display differently.
+                match value.as_f64().filter(|_| value.is_f64()) {
+                    Some(float) => float.to_bits().hash(state),
+                    None => value.hash(state),
+                }
             }
             Self::String(value) => value.structural_hash(state),
             Self::Array(values) => values.structural_hash(state),
@@ -171,6 +185,10 @@ mod tests {
         );
         assert_ne!(fingerprint(&None::<u8>), fingerprint(&Some(0_u8)));
         assert_ne!(fingerprint(&0.0_f64), fingerprint(&-0.0_f64));
+        assert_ne!(
+            fingerprint(&serde_json::json!(0.0)),
+            fingerprint(&serde_json::json!(-0.0))
+        );
         assert_ne!(
             fingerprint(&f32::from_bits(0x7fc00001)),
             fingerprint(&f32::from_bits(0x7fc00002))

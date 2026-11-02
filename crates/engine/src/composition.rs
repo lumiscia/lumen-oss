@@ -497,6 +497,19 @@ mod fingerprint_tests {
     }
 
     #[test]
+    fn composition_function_bodies_change_the_fingerprint() {
+        let mut value = scene();
+        value["functions"] = json!({ "thickness()": "frame / 2" });
+        *value
+            .pointer_mut("/nodes/0/params/content/0/underline/thickness")
+            .unwrap() = json!("=thickness()");
+        let expected = parse(&value).fingerprint();
+        // The call's source is unchanged; only the body it expands to differs.
+        value["functions"]["thickness()"] = json!("frame / 3");
+        assert_ne!(expected, parse(&value).fingerprint());
+    }
+
+    #[test]
     fn connections_are_hashed_even_without_changing_wired_inputs() {
         let composition = parse(&scene());
         let expected = composition.fingerprint();
