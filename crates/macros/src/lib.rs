@@ -5,8 +5,7 @@
 //! turning this crate into one giant parser file again.
 
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{ImplItem, ItemImpl, parse_macro_input};
+use syn::parse_macro_input;
 
 mod common;
 mod delegate;
@@ -22,7 +21,7 @@ pub fn derive_structural_hash(input: TokenStream) -> TokenStream {
     }
 }
 
-#[proc_macro_derive(Node, attributes(node, input, property, params))]
+#[proc_macro_derive(Node, attributes(node, input, params))]
 pub fn derive_node(input: TokenStream) -> TokenStream {
     match schema::expand_node(parse_macro_input!(input as syn::DeriveInput)) {
         Ok(tokens) => tokens.into(),
@@ -44,15 +43,4 @@ pub fn derive_delegate(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
-}
-
-#[proc_macro_attribute]
-pub fn node_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut input = parse_macro_input!(item as ItemImpl);
-    for item in &mut input.items {
-        if let ImplItem::Fn(method) = item {
-            method.attrs.retain(|attr| !attr.path().is_ident("output"));
-        }
-    }
-    quote!(#input).into()
 }

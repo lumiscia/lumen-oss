@@ -22,7 +22,7 @@ use lumen_engine::{
     composition::Composition,
     error::MediaError,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
-    gpu::GpuCompositionRenderer,
+    gpu::{AlphaMode, GpuCompositionRenderer},
     image::ImageFileResolver,
     media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
@@ -782,8 +782,11 @@ fn render_single_png(
         .render_frame(composition, frame, media_store)
         .with_context(|| format!("render failed at frame {frame}"))?;
     let size = rendered.domain.storage_size;
-    let pixels = read_texture_rgba8(renderer.gpu_renderer(), rendered.texture, size)
+    let mut pixels = read_texture_rgba8(renderer.gpu_renderer(), rendered.texture, size)
         .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
+    if rendered.metadata.alpha_mode == AlphaMode::Premultiplied {
+        unpremultiply_rgba8(&mut pixels);
+    }
 
     write_png(output, size.width, size.height, pixels.as_slice())?;
 
@@ -1506,6 +1509,20 @@ fn align_to(value: u32, alignment: u32) -> u32 {
     value.div_ceil(alignment) * alignment
 }
 
+/// PNG holds straight alpha, so colour is divided back out of premultiplied pixels. Fully
+/// transparent pixels stay zero.
+fn unpremultiply_rgba8(pixels: &mut [u8]) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        let alpha = u32::from(pixel[3]);
+        if alpha == 0 || alpha == 255 {
+            continue;
+        }
+        for channel in &mut pixel[..3] {
+            *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+        }
+    }
+}
+
 fn write_png(output: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)
@@ -1642,6 +1659,17 @@ mod tests {
 
     fn argv(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn unpremultiply_restores_straight_colour() {
+        let mut pixels = [
+            64, 32, 0, 128, // half-covered colour
+            0, 0, 0, 0, // transparent stays zero
+            10, 20, 30, 255, // opaque is unchanged
+        ];
+        super::unpremultiply_rgba8(&mut pixels);
+        assert_eq!(pixels, [128, 64, 0, 128, 0, 0, 0, 0, 10, 20, 30, 255]);
     }
 
     #[test]

@@ -132,20 +132,24 @@ impl MetalMediaImporter {
                 0,
             )
             .map_err(|error| error.to_string())?;
-        let texture = Arc::new(lumen_gpu::texture_from_metal(
-            &renderer.device,
-            metal_texture,
-            &lumen_gpu::wgpu::TextureDescriptor {
-                label: Some("lumen Metal decoded media texture"),
-                size: size.as_extent(),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: lumen_gpu::wgpu::TextureDimension::D2,
-                format: lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
-                usage: media_texture_usage(),
-                view_formats: &[],
-            },
-        ));
+        // SAFETY: the texture is a 2D single-layer, single-mip, single-sample BGRA8 Metal texture
+        // on the renderer's device, created at the decoded frame's size.
+        let texture = Arc::new(unsafe {
+            lumen_gpu::texture_from_metal(
+                &renderer.device,
+                metal_texture,
+                &lumen_gpu::wgpu::TextureDescriptor {
+                    label: Some("lumen Metal decoded media texture"),
+                    size: size.as_extent(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: lumen_gpu::wgpu::TextureDimension::D2,
+                    format: lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
+                    usage: media_texture_usage(),
+                    view_formats: &[],
+                },
+            )
+        });
         self.textures.insert(
             upload.texture,
             MetalMediaTexture {

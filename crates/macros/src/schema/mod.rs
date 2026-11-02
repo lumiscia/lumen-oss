@@ -7,13 +7,13 @@
 use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, Data, DeriveInput, Expr, ExprLit, Fields, Ident, LitInt, LitStr, Path, Result,
-    Token, punctuated::Punctuated, spanned::Spanned,
+    Attribute, Data, DeriveInput, Expr, ExprLit, Fields, Ident, LitInt, LitStr, Result, Token,
+    punctuated::Punctuated, spanned::Spanned,
 };
 
 use crate::common::{
-    PropertyConstraintsAttr, PropertyDefTokens, doc_lines, doc_string, ident_value, optional_attr,
-    optional_bool, property_kind_tokens, title_from_ident, to_snake_case,
+    doc_lines, doc_string, ident_value, optional_attr, optional_bool, title_from_ident,
+    to_snake_case,
 };
 
 mod node;
@@ -51,16 +51,6 @@ struct InputAttr {
     kind: Ident,
     optional: bool,
     variadic: bool,
-}
-
-struct PropertyAttr {
-    field: Ident,
-    id: LitStr,
-    name: LitStr,
-    kind: Ident,
-    enum_type: Option<Path>,
-    constraints: PropertyConstraintsAttr,
-    docs: Vec<String>,
 }
 
 struct EnumOptionAttr {
@@ -128,79 +118,6 @@ fn parse_input_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<InputAt
         optional: optional.unwrap_or(false),
         variadic: variadic.unwrap_or(false),
     }))
-}
-
-fn parse_property_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<PropertyAttr>> {
-    parse_property_like_attr(attrs, field, "property")
-}
-
-fn parse_property_like_attr(
-    attrs: &[Attribute],
-    field: &Ident,
-    attr_name: &str,
-) -> Result<Option<PropertyAttr>> {
-    let Some(attr) = optional_attr(attrs, attr_name) else {
-        return Ok(None);
-    };
-    parse_property_attr_body(attr, attrs, field).map(Some)
-}
-
-fn parse_property_attr_body(
-    attr: &Attribute,
-    attrs: &[Attribute],
-    field: &Ident,
-) -> Result<PropertyAttr> {
-    let mut id = None;
-    let mut name = None;
-    let mut kind = None;
-    let mut enum_type = None;
-    let mut constraints = PropertyConstraintsAttr::default();
-
-    attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("id") {
-            id = Some(meta.value()?.parse()?);
-        } else if meta.path.is_ident("name") {
-            name = Some(meta.value()?.parse()?);
-        } else if meta.path.is_ident("kind") {
-            kind = Some(ident_value(&meta)?);
-        } else if meta.path.is_ident("enum_type") {
-            enum_type = Some(meta.value()?.parse()?);
-        } else if !constraints.parse_key(&meta)? {
-            return Err(meta.error("unknown param attribute key"));
-        }
-        Ok(())
-    })?;
-
-    Ok(PropertyAttr {
-        field: field.clone(),
-        id: id.unwrap_or_else(|| LitStr::new(&field.to_string(), field.span())),
-        name: name
-            .unwrap_or_else(|| LitStr::new(&title_from_ident(&field.to_string()), field.span())),
-        kind: required_value(kind, attr, "kind")?,
-        enum_type,
-        constraints,
-        docs: doc_lines(attrs),
-    })
-}
-
-fn property_def_tokens(property: &PropertyAttr) -> proc_macro2::TokenStream {
-    let enum_def = match &property.enum_type {
-        Some(enum_type) => quote!(Some(<#enum_type as ::lumen_engine::node::NodeEnum>::enum_def())),
-        None => quote!(None),
-    };
-    PropertyDefTokens {
-        id: &property.id,
-        name: &property.name,
-        kind: property_kind_tokens(&property.kind),
-        enum_def,
-        docs: &property.docs,
-        constraints: &property.constraints,
-        // `#[property]` fields hold a raw `PropertyExpression` from `parse_property`.
-        accepts_expressions: quote!(true),
-        nullable: quote!(false),
-        required: false,
-    }
-    .tokens()
 }
 
 fn parse_enum_option_attr(

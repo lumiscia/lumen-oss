@@ -406,6 +406,8 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     position: usize,
     budget: functions::Budget,
+    /// Parenthesised groups, call arguments and prefix operators the parser is inside.
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -415,7 +417,28 @@ impl<'a> Parser<'a> {
             tokens: Vec::new(),
             position: 0,
             budget: functions::Budget::default(),
+            depth: 0,
         }
+    }
+
+    /// Runs `parse` one nesting level deeper, so that input cannot recurse the parser without limit.
+    fn nested(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<ExprNode, ExpressionError>,
+    ) -> Result<ExprNode, ExpressionError> {
+        if self.depth >= functions::MAX_EXPANDED_DEPTH {
+            return Err(ExpressionError::Parse {
+                path: None,
+                details: format!(
+                    "expression nests deeper than {} levels",
+                    functions::MAX_EXPANDED_DEPTH
+                ),
+            });
+        }
+        self.depth += 1;
+        let node = parse(self);
+        self.depth -= 1;
+        node
     }
 
     fn parse(&mut self) -> Result<Expression, ExpressionError> {
@@ -550,13 +573,13 @@ impl<'a> Parser<'a> {
 
     fn parse_unary(&mut self) -> Result<ExprNode, ExpressionError> {
         if self.match_token(|kind| matches!(kind, TokenKind::Bang)) {
-            let value = self.parse_unary()?;
+            let value = self.nested(Self::parse_unary)?;
             return self
                 .budget
                 .push(ExprNode::Unary(UnaryOp::Not, Box::new(value)));
         }
         if self.match_token(|kind| matches!(kind, TokenKind::Minus)) {
-            let value = self.parse_unary()?;
+            let value = self.nested(Self::parse_unary)?;
             return self
                 .budget
                 .push(ExprNode::Unary(UnaryOp::Neg, Box::new(value)));
@@ -599,7 +622,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LParen => {
                 self.position += 1;
-                let expr = self.parse_or()?;
+                let expr = self.nested(Self::parse_or)?;
                 self.expect(TokenExpectation::RParen)?;
                 Ok(expr)
             }
@@ -649,7 +672,7 @@ impl<'a> Parser<'a> {
             let mut args = Vec::new();
             if !self.match_token(|kind| matches!(kind, TokenKind::RParen)) {
                 loop {
-                    args.push(self.parse_or()?);
+                    args.push(self.nested(Self::parse_or)?);
                     if self.match_token(|kind| matches!(kind, TokenKind::Comma)) {
                         continue;
                     }
@@ -860,5 +883,47 @@ mod tests {
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], ExprNode::Literal(ExpressionValue::Number(10.0)));
         assert!(matches!(args[1], ExprNode::Binary(..)));
+    }
+
+    fn parse_on_worker_stack(source: String) -> Result<Expression, crate::error::ExpressionError> {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || Expression::parse(&source))
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn nesting_is_bounded_on_every_recursive_edge() {
+        let deep = 100_000;
+        for source in [
+            format!("{}1{}", "(".repeat(deep), ")".repeat(deep)),
+            format!("{}1", "-".repeat(deep)),
+            format!("{}1", "!".repeat(deep)),
+            format!("{}1{}", "abs(".repeat(deep), ")".repeat(deep)),
+            format!("{}1{}", "if(true, 1, ".repeat(deep), ")".repeat(deep)),
+            format!("{}1{}", "-(abs(".repeat(deep), "))".repeat(deep)),
+        ] {
+            let error = parse_on_worker_stack(source).expect_err("too deep");
+            assert!(
+                error.to_string().contains("nests deeper than 64 levels"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn nesting_at_the_limit_parses_on_a_worker_stack() {
+        let source = format!("{}1{}", "-(abs(".repeat(21), "))".repeat(21));
+        parse_on_worker_stack(source).expect("63 levels");
+        let source = format!("{}1{}", "(".repeat(64), ")".repeat(64));
+        parse_on_worker_stack(source).expect("64 levels");
+    }
+
+    #[test]
+    fn wide_calls_are_not_nested() {
+        let args = vec!["1"; 3_000].join(", ");
+        Expression::parse(&format!("max({args})")).expect("wide call");
     }
 }
