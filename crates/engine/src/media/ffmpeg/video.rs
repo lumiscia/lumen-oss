@@ -202,12 +202,10 @@ impl LibavStreamDecoder {
         let fps = resolve_stream_fps(&stream, source)?;
         let width = stream.width;
         let height = stream.height;
-        let frame_count =
-            resolve_frame_count(&stream, input.duration_us(), fps).ok_or_else(|| {
-                MediaError::Decode {
-                    media_source: source.to_string(),
-                    details: "unable to determine stream frame count".to_string(),
-                }
+        let frame_count = resolve_frame_count(&stream, input.presented_duration_us(), fps)
+            .ok_or_else(|| MediaError::Decode {
+                media_source: source.to_string(),
+                details: "unable to determine stream frame count".to_string(),
             })?;
         let (decoder, gpu_decode_status) =
             open_video_decoder(source, &input, &stream, prefer_hardware_decode)?;
@@ -848,14 +846,25 @@ mod tests {
 
     #[test]
     fn frame_count_falls_back_to_the_container_duration() {
-        // Matroska stores no per-stream duration or frame count here.
-        let Some(path) = encode_counting_clip("no_stream_duration.mkv", &[]) else {
-            return;
-        };
-        let metadata = open_cpu(&path).expect("open clip").metadata();
-        assert_eq!(metadata.frame_count, 60);
-        assert!((f64::from(metadata.fps) - 30_000.0 / 1001.0).abs() < 0.001);
-        let _ = fs::remove_file(path);
+        // Matroska stores no per-stream duration or frame count here, and its container duration
+        // includes the start offset.
+        for (name, args) in [
+            ("no_stream_duration.mkv", &[][..]),
+            (
+                "offset_no_stream_duration.mkv",
+                &["-output_ts_offset", "1.4"][..],
+            ),
+        ] {
+            let Some(path) = encode_counting_clip(name, args) else {
+                return;
+            };
+            let resolver = open_cpu(&path).expect("open clip");
+            let metadata = resolver.metadata();
+            assert_eq!(metadata.frame_count, 60, "{name}");
+            assert!((f64::from(metadata.fps) - 30_000.0 / 1001.0).abs() < 0.001);
+            assert_eq!(decoded_frame_index(&resolver, 59), 59, "{name}");
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]

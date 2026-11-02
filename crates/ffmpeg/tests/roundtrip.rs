@@ -463,14 +463,15 @@ fn decodes_rgba_frames_across_resolution_change() {
     let mut stream = Vec::new();
     for (size, _, _) in clips {
         let path = temp_path("resolution_clip", "h264");
-        let status = Command::new("ffmpeg")
-            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
-            .args(["-i", &format!("testsrc=size={size}:rate=10:duration=0.5")])
-            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "h264"])
-            .arg(&path)
-            .status();
-        if !matches!(status, Ok(status) if status.success()) {
-            eprintln!("ffmpeg CLI with libx264 unavailable; skipping resolution change test");
+        let available = run_fixture(
+            Command::new("ffmpeg")
+                .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+                .args(["-i", &format!("testsrc=size={size}:rate=10:duration=0.5")])
+                .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "h264"])
+                .arg(&path),
+            "resolution change test",
+        );
+        if !available {
             return;
         }
         stream.extend(fs::read(&path).expect("read clip"));
@@ -594,6 +595,34 @@ fn patch_frames(width: usize, height: usize, matrix: Matrix, full_range: bool) -
     frame.repeat(2)
 }
 
+/// Runs an ffmpeg fixture command. Returns false, with the reason printed, only when the CLI isn't
+/// installed or lacks a requested encoder; any other failure panics so a broken fixture can't pass.
+fn run_fixture(command: &mut Command, name: &str) -> bool {
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("ffmpeg CLI not installed; skipping {name}");
+            return false;
+        }
+        Err(error) => panic!("{name}: failed to run ffmpeg: {error}"),
+    };
+    if output.status.success() {
+        return true;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("Unknown encoder") || stderr.contains("Encoder not found") {
+        eprintln!(
+            "ffmpeg encoder unavailable; skipping {name}: {}",
+            stderr.trim()
+        );
+        return false;
+    }
+    panic!(
+        "{name}: ffmpeg fixture failed ({}): {stderr}",
+        output.status
+    );
+}
+
 /// Encodes known Y'CbCr values with libx264, passing them through unconverted under the given tags.
 fn encode_patches(
     name: &str,
@@ -605,21 +634,22 @@ fn encode_patches(
     let raw = temp_path(name, "yuv");
     let path = temp_path(name, "h264");
     fs::write(&raw, patch_frames(width, height, matrix, full_range)).expect("write raw frames");
-    let status = Command::new("ffmpeg")
-        .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo"])
-        .args(["-pixel_format", "yuv420p", "-framerate", "30"])
-        .args(["-video_size", &format!("{width}x{height}")])
-        .args(tags)
-        .arg("-i")
-        .arg(&raw)
-        .args(["-c:v", "libx264", "-preset", "ultrafast", "-qp", "1"])
-        .args(tags)
-        .args(["-f", "h264"])
-        .arg(&path)
-        .status();
+    let available = run_fixture(
+        Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo"])
+            .args(["-pixel_format", "yuv420p", "-framerate", "30"])
+            .args(["-video_size", &format!("{width}x{height}")])
+            .args(tags)
+            .arg("-i")
+            .arg(&raw)
+            .args(["-c:v", "libx264", "-preset", "ultrafast", "-qp", "1"])
+            .args(tags)
+            .args(["-f", "h264"])
+            .arg(&path),
+        name,
+    );
     let _ = fs::remove_file(raw);
-    if !matches!(status, Ok(status) if status.success()) {
-        eprintln!("ffmpeg CLI with libx264 unavailable; skipping {name}");
+    if !available {
         return None;
     }
     Some(path)
@@ -865,21 +895,22 @@ fn best_video_stream_prefers_the_default_track_over_stream_order() {
         (&thumbnail, "testsrc=size=16x16:rate=30", "2"),
         (&main, "testsrc=size=64x36:rate=30", "30"),
     ] {
-        let status = Command::new("ffmpeg")
-            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
-            .args(["-i", source, "-frames:v", frames])
-            .args([
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-pix_fmt",
-                "yuv420p",
-            ])
-            .arg(path)
-            .status();
-        if !matches!(status, Ok(status) if status.success()) {
-            eprintln!("ffmpeg CLI with libx264 unavailable; skipping best stream test");
+        let available = run_fixture(
+            Command::new("ffmpeg")
+                .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+                .args(["-i", source, "-frames:v", frames])
+                .args([
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-pix_fmt",
+                    "yuv420p",
+                ])
+                .arg(path),
+            "best stream test",
+        );
+        if !available {
             return;
         }
     }

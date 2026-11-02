@@ -210,6 +210,22 @@ impl InputContext {
         (duration > 0).then_some(duration)
     }
 
+    /// Container duration measured from the first presentation timestamp. Matroska stores its end
+    /// time as the duration, so the start offset is removed there; other formats already exclude it.
+    pub fn presented_duration_us(&self) -> Option<i64> {
+        let duration = self.duration_us()?;
+        let start = unsafe {
+            let start = (*self.ptr).start_time;
+            let format_name = CStr::from_ptr((*(*self.ptr).iformat).name).to_string_lossy();
+            if start == sys::AV_NOPTS_VALUE || !format_name.contains("matroska") {
+                0
+            } else {
+                start
+            }
+        };
+        (duration > start).then_some(duration - start)
+    }
+
     pub fn best_video_stream(&self) -> Result<VideoStreamInfo> {
         self.best_stream_index(AVMEDIA_TYPE_VIDEO)
             .map(|index| self.video_stream_info(index))
