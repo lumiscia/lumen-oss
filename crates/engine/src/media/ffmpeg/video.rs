@@ -781,13 +781,17 @@ mod tests {
 
     /// Encodes frames whose luma is `16 + 3 * n`, so a decoded frame identifies its own index.
     fn encode_counting_clip(name: &str, args: &[&str]) -> Option<PathBuf> {
-        let path = std::env::temp_dir().join(format!("lumen_engine_{}_{name}", std::process::id()));
         let source = format!(
             "nullsrc=s=32x32:r={NTSC_RATE}:d=2,geq=lum='16+3*N':cb=128:cr=128,format=yuv420p"
         );
+        encode_clip(name, &source, args)
+    }
+
+    fn encode_clip(name: &str, source: &str, args: &[&str]) -> Option<PathBuf> {
+        let path = std::env::temp_dir().join(format!("lumen_engine_{}_{name}", std::process::id()));
         let output = Command::new("ffmpeg")
             .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
-            .args(["-i", &source])
+            .args(["-i", source])
             .args(args)
             .args([
                 "-c:v",
@@ -888,8 +892,9 @@ mod tests {
     #[test]
     fn audio_preroll_does_not_add_frames_to_the_container_duration() {
         // AAC priming puts the Matroska start before zero, ahead of a video stream at zero.
-        let Some(path) = encode_counting_clip(
+        let Some(path) = encode_clip(
             "audio_preroll.mkv",
+            "testsrc2=s=32x32:r=20:d=2",
             &[
                 "-f",
                 "lavfi",
@@ -897,8 +902,6 @@ mod tests {
                 "sine=d=2",
                 "-c:a",
                 "aac",
-                "-r",
-                "20",
                 "-avoid_negative_ts",
                 "disabled",
             ],
