@@ -136,9 +136,8 @@ enum ReceiveMode {
 
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 struct CudaRgbaState {
-    converter: lumen_ffmpeg::CudaNv12ToRgbaConverter<'static>,
-    destination: lumen_ffmpeg::CudaDeviceAllocation<'static>,
-    _context: lumen_ffmpeg::CudaContext<'static>,
+    converter: lumen_ffmpeg::CudaNv12ToRgbaConverter,
+    destination: lumen_ffmpeg::CudaDeviceAllocation,
 }
 
 #[cfg(all(feature = "cuda", target_os = "linux"))]
@@ -151,14 +150,12 @@ impl CudaRgbaState {
         if !matches!(receive, ReceiveMode::CudaRgba) {
             return Ok(None);
         }
-        let driver = Box::leak(Box::new(CudaDriver::load()?));
-        let context = driver.create_primary_context()?;
-        let converter = driver.create_nv12_to_rgba_converter(&context)?;
-        let destination = driver.allocate_rgba_frame(width, height)?;
+        let context = CudaDriver::load()?.create_primary_context()?;
+        let converter = context.create_nv12_to_rgba_converter()?;
+        let destination = context.allocate_rgba_frame(width, height)?;
         Ok(Some(Self {
             converter,
             destination,
-            _context: context,
         }))
     }
 

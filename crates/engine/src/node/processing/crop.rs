@@ -96,9 +96,6 @@ impl GpuCompileNode for Crop {
             },
             lumen_gpu::ParamTarget::Buffer(params),
         );
-        // The params buffer holds the region clamped to the source, which is the output's logical
-        // bounds. Only a `resize` wired directly to this node sees them.
-        ctx.publish_raster_bounds(texture, params);
         ctx.register_compiled_node(CompiledCrop {
             node_id: self.id,
             params: self.params.clone(),
@@ -110,6 +107,9 @@ impl GpuCompileNode for Crop {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: source.metadata,
+            // The params buffer holds the region clamped to the source, which is the output's
+            // logical bounds.
+            bounds: Some(params),
         }))
     }
 }

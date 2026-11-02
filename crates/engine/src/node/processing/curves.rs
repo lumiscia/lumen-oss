@@ -148,6 +148,7 @@ impl GpuCompileNode for Curves {
             texture,
             domain: source.domain,
             metadata: source.metadata,
+            bounds: source.bounds,
         }))
     }
 }

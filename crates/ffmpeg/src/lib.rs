@@ -24,14 +24,12 @@ pub use format::{
 };
 #[cfg(feature = "cuda")]
 pub use gpu::CudaDecodedFrame;
+#[cfg(feature = "cuda")]
+pub use gpu::CudaVideoFrame;
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 pub use gpu::{
     CudaContext, CudaDeviceAllocation, CudaDriver, CudaNv12ToRgbaConverter,
-    ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image, import_vulkan_opaque_fd_image,
-};
-#[cfg(feature = "cuda")]
-pub use gpu::{
-    CudaExternalMemoryHandle, CudaExternalSemaphoreHandle, CudaVideoFrame, VulkanToCudaExport,
+    ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image,
 };
 pub use gpu::{GpuBackend, GpuVideoFrame, GpuVideoInput};
 #[cfg(feature = "metal")]

@@ -173,7 +173,6 @@ pub struct CompileContext<'a> {
     compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
     text_atlas_texture: Option<lumen_gpu::TextureId>,
-    raster_bounds: HashMap<lumen_gpu::TextureId, lumen_gpu::BufferId>,
     /// Every frame the plan may bind the current scope at, so animated sources may be sized to
     /// their bounds over them; `None` when that is unknown.
     bound_frames: Option<Arc<[PlanFrame]>>,
@@ -264,7 +263,6 @@ impl<'a> CompileContext<'a> {
             compiled_nodes: HashMap::new(),
             output_format,
             text_atlas_texture: None,
-            raster_bounds: HashMap::new(),
             bound_frames,
             full_frames: HashMap::new(),
             cache: super::cache::CacheRecorder::default(),
@@ -320,27 +318,6 @@ impl<'a> CompileContext<'a> {
                 ),
             )
         })
-    }
-
-    /// Records the uniform holding a raster's logical bounds (`origin: vec2<i32>`,
-    /// `size: vec2<u32>`), written every frame, within its storage texture.
-    ///
-    /// Bounds are looked up by texture, so they survive nodes that pass the same texture through
-    /// and stop at any node that writes a new texture.
-    pub(crate) fn publish_raster_bounds(
-        &mut self,
-        texture: lumen_gpu::TextureId,
-        bounds: lumen_gpu::BufferId,
-    ) {
-        self.raster_bounds.insert(texture, bounds);
-    }
-
-    /// The logical bounds of a raster, or `None` when it fills its whole storage texture.
-    pub(crate) fn raster_bounds(
-        &self,
-        texture: lumen_gpu::TextureId,
-    ) -> Option<lumen_gpu::BufferId> {
-        self.raster_bounds.get(&texture).copied()
     }
 
     pub(crate) fn builder_mut(&mut self) -> &mut lumen_gpu::RenderPlanBuilder {
@@ -578,6 +555,7 @@ impl<'a> CompileContext<'a> {
             texture,
             domain,
             metadata: raster.metadata,
+            bounds: None,
         })
     }
 
@@ -622,6 +600,7 @@ impl<'a> CompileContext<'a> {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: raster.metadata,
+            bounds: None,
         };
         self.full_frames
             .insert((raster.texture, size.width, size.height), full);
@@ -796,6 +775,7 @@ impl<'a> CompileContext<'a> {
             texture,
             domain,
             metadata: RasterMetadata::default(),
+            bounds: None,
         })
     }
 
