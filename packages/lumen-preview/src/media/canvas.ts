@@ -1,3 +1,5 @@
+import type { VideoSample } from "mediabunny";
+
 import type {
   DecodedImageFrame,
   NativeVideoFrameTarget,
@@ -69,6 +71,17 @@ export function createVideoFramePayload(
     height,
     videoFrame,
   };
+}
+
+/** Bakes a sample's rotation into a new frame, because `VideoFrame.copyTo` returns coded pixels. */
+export function createUprightVideoFrame(
+  sample: VideoSample,
+  width: number,
+  height: number,
+): VideoFrame {
+  const { canvas, context } = createCanvas(width, height);
+  sample.draw(context, 0, 0, width, height);
+  return new VideoFrame(canvas, { timestamp: sample.microsecondTimestamp });
 }
 
 export async function syncVideoFrameToTarget(
