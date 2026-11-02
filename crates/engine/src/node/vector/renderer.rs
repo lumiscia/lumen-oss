@@ -635,7 +635,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         {
             return None;
         }
-        let ink = crate::node::source::text::text_system()
+        let ink = crate::node::source::text::text_system(self.ctx.media())
             .ok()?
             .ink_bounds(&constant.shaped)?;
         let reach = constant.stroke_reach;
@@ -751,7 +751,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             return None;
         }
         let shaped = {
-            let mut text_system = crate::node::source::text::text_system().ok()?;
+            let mut text_system = crate::node::source::text::text_system(self.ctx.media()).ok()?;
             crate::node::source::text::load_font_families(
                 &mut text_system,
                 self.ctx.media(),

@@ -1,13 +1,16 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use lumen_engine::{
     error::MediaError,
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
-        VideoFrameRequirement, VideoFrameResolver, VideoMetadata,
+        TextSession, VideoFrameRequirement, VideoFrameResolver, VideoMetadata,
     },
 };
 use wasm_bindgen::prelude::*;
@@ -186,6 +189,7 @@ struct WasmMediaStoreInner {
     fonts: RwLock<HashMap<String, StoredFont>>,
     images: RwLock<HashMap<String, StoredImage>>,
     videos: RwLock<VideoStore>,
+    text: TextSession,
 }
 
 impl WasmMediaStore {
@@ -206,7 +210,10 @@ impl WasmMediaStore {
             .map_err(|_| "media store lock poisoned")?
             .streams
             .clear();
-        Ok(())
+        self.inner
+            .text
+            .reset()
+            .map_err(|_| "media store lock poisoned")
     }
 
     pub fn clear_video_frames(&self) -> Result<(), &'static str> {
@@ -258,7 +265,10 @@ impl WasmMediaStore {
             .write()
             .map_err(|_| "media store lock poisoned")?
             .remove(font_family);
-        Ok(())
+        self.inner
+            .text
+            .remove_family(font_family)
+            .map_err(|_| "media store lock poisoned")
     }
 
     pub fn has_image(&self, image_id: &str) -> bool {
@@ -353,10 +363,9 @@ impl WasmMediaStore {
             .fonts
             .write()
             .map_err(|_| "media store lock poisoned")?;
-        let version = fonts
-            .get(font_family)
-            .map(|font| font.version.saturating_add(1))
-            .unwrap_or(1);
+        // Unique across stores, as resolver IDs from any store with one value share data.
+        static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
+        let version = NEXT_VERSION.fetch_add(1, Ordering::Relaxed);
         fonts.insert(
             font_family.to_string(),
             StoredFont {
@@ -425,6 +434,10 @@ impl MediaStore for WasmMediaStore {
             id: format!("wasm-font:{font_family}:{}", font.version),
             data: Arc::clone(&font.data),
         }))
+    }
+
+    fn text_session(&self) -> Option<&TextSession> {
+        Some(&self.inner.text)
     }
 }
 
@@ -812,6 +825,81 @@ mod tests {
             resolver.frame(0),
             Err(MediaError::FrameOutOfRange { .. })
         ));
+    }
+
+    const INTER: &[u8] = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf");
+
+    /// Roboto under its own name, drawn at half its size by a larger em square.
+    fn half_size_roboto() -> Vec<u8> {
+        let mut font = include_bytes!("../../text/assets/roboto/Roboto-Regular.ttf").to_vec();
+        let tables = u16::from_be_bytes([font[4], font[5]]) as usize;
+        let head = font[12..12 + tables * 16]
+            .chunks(16)
+            .find(|table| &table[..4] == b"head")
+            .unwrap();
+        let units = u32::from_be_bytes(head[8..12].try_into().unwrap()) as usize + 18;
+        let em = u16::from_be_bytes([font[units], font[units + 1]]);
+        font[units..units + 2].copy_from_slice(&(em * 2).to_be_bytes());
+        font
+    }
+
+    fn measured_width(store: &WasmMediaStore, family: &str) -> f64 {
+        lumen_engine::expr::Expression::parse(&format!(
+            "text_width(\"Variable weight\", 16, 0, \"{family}\")"
+        ))
+        .unwrap()
+        .evaluate(&lumen_engine::expr::ExpressionContext {
+            media: Some(store),
+            ..Default::default()
+        })
+        .unwrap()
+        .as_f64()
+        .unwrap()
+    }
+
+    #[test]
+    fn removing_a_font_stops_text_measuring_with_it() {
+        let store = WasmMediaStore::default();
+        let fallback = measured_width(&store, "Inter");
+        store.set_font("Inter".to_string(), INTER.to_vec()).unwrap();
+        let loaded = measured_width(&store, "Inter");
+        assert_ne!(loaded, fallback);
+
+        store.remove_font("Inter").unwrap();
+        assert_eq!(measured_width(&store, "Inter"), fallback);
+
+        store.set_font("Inter".to_string(), INTER.to_vec()).unwrap();
+        assert_eq!(measured_width(&store, "Inter"), loaded);
+    }
+
+    #[test]
+    fn clearing_the_store_returns_text_to_the_bundled_fonts() {
+        let store = WasmMediaStore::default();
+        let fallback = measured_width(&store, "Inter");
+        let roboto = measured_width(&store, "Roboto");
+        store.set_font("Inter".to_string(), INTER.to_vec()).unwrap();
+        store
+            .set_font("Roboto".to_string(), half_size_roboto())
+            .unwrap();
+        assert_ne!(measured_width(&store, "Inter"), fallback);
+        assert_ne!(measured_width(&store, "Roboto"), roboto);
+
+        store.clear().unwrap();
+        assert_eq!(measured_width(&store, "Inter"), fallback);
+        assert_eq!(measured_width(&store, "Roboto"), roboto);
+    }
+
+    #[test]
+    fn removing_a_font_named_like_the_bundled_one_restores_it() {
+        let store = WasmMediaStore::default();
+        let bundled = measured_width(&store, "Roboto");
+        store
+            .set_font("Roboto".to_string(), half_size_roboto())
+            .unwrap();
+        assert_ne!(measured_width(&store, "Roboto"), bundled);
+
+        store.remove_font("Roboto").unwrap();
+        assert_eq!(measured_width(&store, "Roboto"), bundled);
     }
 
     #[test]
