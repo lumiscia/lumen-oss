@@ -220,7 +220,7 @@ impl InputContext {
             if start == sys::AV_NOPTS_VALUE || !format_name.contains("matroska") {
                 0
             } else {
-                start
+                start.max(0)
             }
         };
         (duration > start).then_some(duration - start)

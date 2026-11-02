@@ -785,9 +785,10 @@ mod tests {
         let source = format!(
             "nullsrc=s=32x32:r={NTSC_RATE}:d=2,geq=lum='16+3*N':cb=128:cr=128,format=yuv420p"
         );
-        let status = Command::new("ffmpeg")
+        let output = Command::new("ffmpeg")
             .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
             .args(["-i", &source])
+            .args(args)
             .args([
                 "-c:v",
                 "libx264",
@@ -798,14 +799,31 @@ mod tests {
                 "-bf",
                 "0",
             ])
-            .args(args)
             .arg(&path)
-            .status();
-        if !matches!(status, Ok(status) if status.success()) {
-            eprintln!("ffmpeg CLI with libx264 unavailable; skipping {name}");
+            .output();
+        let output = match output {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("ffmpeg CLI not installed; skipping {name}");
+                return None;
+            }
+            Err(error) => panic!("{name}: failed to run ffmpeg: {error}"),
+        };
+        if output.status.success() {
+            return Some(path);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("Unknown encoder") || stderr.contains("Encoder not found") {
+            eprintln!(
+                "ffmpeg encoder unavailable; skipping {name}: {}",
+                stderr.trim()
+            );
             return None;
         }
-        Some(path)
+        panic!(
+            "{name}: ffmpeg fixture failed ({}): {stderr}",
+            output.status
+        );
     }
 
     fn open_cpu(path: &std::path::Path) -> Result<FfmpegVideoResolver, MediaError> {
@@ -865,6 +883,32 @@ mod tests {
             assert_eq!(decoded_frame_index(&resolver, 59), 59, "{name}");
             let _ = fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn audio_preroll_does_not_add_frames_to_the_container_duration() {
+        // AAC priming puts the Matroska start before zero, ahead of a video stream at zero.
+        let Some(path) = encode_counting_clip(
+            "audio_preroll.mkv",
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=d=2",
+                "-c:a",
+                "aac",
+                "-r",
+                "20",
+                "-avoid_negative_ts",
+                "disabled",
+            ],
+        ) else {
+            return;
+        };
+        let resolver = open_cpu(&path).expect("open clip");
+        assert_eq!(resolver.metadata().frame_count, 40);
+        assert!(resolver.frame(39).is_ok());
+        let _ = fs::remove_file(path);
     }
 
     #[test]
