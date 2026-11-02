@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-#[cfg(any(
-    all(target_os = "linux", feature = "cuda", feature = "vulkan"),
-    all(target_os = "macos", feature = "metal")
-))]
+#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use std::collections::HashMap;
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use std::sync::OnceLock;
@@ -15,8 +12,6 @@ use super::types::MediaTextureUpload;
 pub(super) struct GpuMediaImports {
     #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
     cuda: HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
-    #[cfg(all(target_os = "macos", feature = "metal"))]
-    metal: HashMap<lumen_gpu::TextureId, MetalMediaTexture>,
 }
 
 #[derive(Default)]
@@ -35,11 +30,13 @@ impl GpuMediaFrameImporter {
         upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
+        #[cfg(not(all(target_os = "linux", feature = "cuda", feature = "vulkan")))]
+        let _ = (imports, upload);
         #[cfg(not(any(
             all(target_os = "linux", feature = "cuda", feature = "vulkan"),
             all(target_os = "macos", feature = "metal")
         )))]
-        let _ = (renderer, imports, upload);
+        let _ = renderer;
 
         match frame.frame.backend() {
             #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
@@ -47,9 +44,7 @@ impl GpuMediaFrameImporter {
                 self.import_cuda(renderer, &mut imports.cuda, upload, frame)
             }
             #[cfg(all(target_os = "macos", feature = "metal"))]
-            lumen_ffmpeg::GpuBackend::Metal => {
-                self.import_metal(renderer, &mut imports.metal, upload, frame)
-            }
+            lumen_ffmpeg::GpuBackend::Metal => self.import_metal(renderer, frame),
             backend => Err(format!(
                 "GPU media backend {backend:?} is not supported by this renderer build"
             )),
@@ -89,8 +84,6 @@ impl GpuMediaFrameImporter {
     fn import_metal(
         &mut self,
         renderer: &lumen_gpu::Renderer,
-        textures: &mut HashMap<lumen_gpu::TextureId, MetalMediaTexture>,
-        upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
         if self.metal.is_none() {
@@ -99,20 +92,13 @@ impl GpuMediaFrameImporter {
         self.metal
             .as_mut()
             .ok_or_else(|| "Metal media importer was not initialized".to_string())?
-            .import_frame(renderer, textures, upload, frame)
+            .import_frame(renderer, frame)
     }
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
 struct MetalMediaImporter {
     texture_cache: lumen_ffmpeg::MetalTextureCache,
-}
-
-#[cfg(all(target_os = "macos", feature = "metal"))]
-struct MetalMediaTexture {
-    _size: lumen_gpu::Size,
-    _texture: Arc<lumen_gpu::wgpu::Texture>,
-    _frame: Arc<crate::media::GpuVideoMediaFrame>,
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -125,11 +111,10 @@ impl MetalMediaImporter {
         Ok(Self { texture_cache })
     }
 
+    /// The texture holds `frame` until wgpu releases it, which is after the GPU finishes with it.
     fn import_frame(
         &mut self,
         renderer: &lumen_gpu::Renderer,
-        textures: &mut HashMap<lumen_gpu::TextureId, MetalMediaTexture>,
-        upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
         let lumen_ffmpeg::GpuVideoFrame::Metal(decoded) = &frame.frame else {
@@ -147,6 +132,7 @@ impl MetalMediaImporter {
                 0,
             )
             .map_err(|error| error.to_string())?;
+        let owner = Arc::clone(frame);
         let texture = Arc::new(lumen_gpu::texture_from_metal(
             &renderer.device,
             metal_texture,
@@ -160,15 +146,8 @@ impl MetalMediaImporter {
                 usage: media_texture_usage(),
                 view_formats: &[],
             },
+            Some(Box::new(move || drop(owner))),
         ));
-        textures.insert(
-            upload.texture,
-            MetalMediaTexture {
-                _size: size,
-                _texture: Arc::clone(&texture),
-                _frame: Arc::clone(frame),
-            },
-        );
         Ok(texture)
     }
 }

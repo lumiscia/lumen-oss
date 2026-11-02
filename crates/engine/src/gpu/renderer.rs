@@ -67,6 +67,86 @@ pub const DEFAULT_PLAN_CACHE_BUDGET_BYTES: u64 = 1 << 30;
 /// Rejected plan estimates remembered before they are all forgotten.
 const MAX_REJECTED_PLANS: usize = 256;
 
+/// Estimated GPU memory image textures no plan binds may hold before the least recently used are
+/// freed.
+pub const DEFAULT_MEDIA_TEXTURE_CACHE_BUDGET_BYTES: u64 = 256 << 20;
+
+struct CachedMediaTexture {
+    texture: Arc<lumen_gpu::wgpu::Texture>,
+    last_used: u64,
+}
+
+/// Image textures plans share. Replaced images get new keys, so textures no plan binds are freed
+/// least recently used first once they exceed the budget; textures a plan binds always stay.
+struct MediaTextureCache {
+    textures: HashMap<MediaTextureKey, CachedMediaTexture>,
+    budget: u64,
+    clock: u64,
+    upload_count: u64,
+}
+
+impl MediaTextureCache {
+    fn new() -> Self {
+        Self {
+            textures: HashMap::new(),
+            budget: DEFAULT_MEDIA_TEXTURE_CACHE_BUDGET_BYTES,
+            clock: 0,
+            upload_count: 0,
+        }
+    }
+
+    fn get(&mut self, key: &MediaTextureKey) -> Option<Arc<lumen_gpu::wgpu::Texture>> {
+        self.clock += 1;
+        let cached = self.textures.get_mut(key)?;
+        cached.last_used = self.clock;
+        Some(Arc::clone(&cached.texture))
+    }
+
+    fn insert(&mut self, key: MediaTextureKey, texture: Arc<lumen_gpu::wgpu::Texture>) {
+        self.upload_count += 1;
+        self.evict_to(self.budget.saturating_sub(texture_bytes(&key)));
+        self.clock += 1;
+        self.textures.insert(
+            key,
+            CachedMediaTexture {
+                texture,
+                last_used: self.clock,
+            },
+        );
+    }
+
+    /// Frees unbound textures, least recently used first, until at most `limit` bytes are held.
+    fn evict_to(&mut self, limit: u64) {
+        let mut held: u64 = self.textures.keys().map(texture_bytes).sum();
+        while held > limit {
+            let Some(key) = self
+                .textures
+                .iter()
+                .filter(|(_, cached)| Arc::strong_count(&cached.texture) == 1)
+                .min_by_key(|(_, cached)| cached.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                return;
+            };
+            if let Some(evicted) = self.textures.remove(&key) {
+                evicted.texture.destroy();
+            }
+            held -= texture_bytes(&key);
+        }
+    }
+
+    fn destroy_all(&mut self) {
+        for cached in self.textures.values() {
+            cached.texture.destroy();
+        }
+        self.textures.clear();
+    }
+}
+
+fn texture_bytes(key: &MediaTextureKey) -> u64 {
+    u64::from(key.width) * u64::from(key.height) * 4
+}
+
 struct PreparedComposition {
     renderer: lumen_gpu::Renderer,
     compiled: CompiledComposition,
@@ -107,7 +187,7 @@ pub struct GpuCompositionRenderer {
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
     reuse_static_output: bool,
-    media_texture_cache: HashMap<MediaTextureKey, Arc<lumen_gpu::wgpu::Texture>>,
+    media_texture_cache: MediaTextureCache,
     #[cfg(feature = "ffmpeg")]
     gpu_media_importer: GpuMediaFrameImporter,
 }
@@ -151,7 +231,7 @@ impl GpuCompositionRenderer {
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             reuse_static_output: true,
-            media_texture_cache: HashMap::new(),
+            media_texture_cache: MediaTextureCache::new(),
             #[cfg(feature = "ffmpeg")]
             gpu_media_importer: GpuMediaFrameImporter::default(),
         }
@@ -234,7 +314,19 @@ impl GpuCompositionRenderer {
     /// Number of image textures kept for plans to share.
     #[doc(hidden)]
     pub fn cached_media_texture_count(&self) -> usize {
-        self.media_texture_cache.len()
+        self.media_texture_cache.textures.len()
+    }
+
+    /// Number of image textures created and uploaded, rather than reused from the cache.
+    #[doc(hidden)]
+    pub fn media_texture_upload_count(&self) -> u64 {
+        self.media_texture_cache.upload_count
+    }
+
+    /// Sets the estimated GPU memory image textures no plan binds may hold. Uploading an image
+    /// frees the least recently used ones past it.
+    pub fn set_media_texture_cache_budget(&mut self, bytes: u64) {
+        self.media_texture_cache.budget = bytes;
     }
 
     pub fn compile_with_media<M: MediaStore>(
@@ -253,9 +345,7 @@ impl GpuCompositionRenderer {
     /// Retains the shared text atlas (64 MiB once allocated) and cached glyphs across recompilation.
     pub fn release_resources(&mut self) {
         self.bind_sequence += 1;
-        for texture in self.media_texture_cache.values() {
-            texture.destroy();
-        }
+        self.media_texture_cache.destroy_all();
         for prepared in self.compiled_plans.values() {
             for resource in prepared.compiled.plan.textures() {
                 if let Some(texture) = prepared.renderer.texture_arc(resource.id)
@@ -270,7 +360,6 @@ impl GpuCompositionRenderer {
                 }
             }
         }
-        self.media_texture_cache.clear();
         self.compiled_plans.clear();
         self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
@@ -294,7 +383,7 @@ impl GpuCompositionRenderer {
             target: "lumen_render",
             ?output_format,
             cached_plans = self.compiled_plans.len(),
-            media_textures = self.media_texture_cache.len(),
+            media_textures = self.media_texture_cache.textures.len(),
             "reset compiled composition"
         );
         self.bind_sequence += 1;
@@ -868,7 +957,7 @@ impl GpuCompositionRenderer {
                     source = %key.source,
                     "reuse cached media texture"
                 );
-                Arc::clone(texture)
+                texture
             } else {
                 tracing::debug!(
                     target: "lumen_render",
@@ -902,14 +991,6 @@ impl GpuCompositionRenderer {
                     },
                     upload.size.as_extent(),
                 );
-                // Replaced images get new keys, so free what no plan binds rather than keep them all.
-                media_texture_cache.retain(|_, cached| {
-                    let bound = Arc::strong_count(cached) > 1;
-                    if !bound {
-                        cached.destroy();
-                    }
-                    bound
-                });
                 media_texture_cache.insert(key.clone(), Arc::clone(&texture));
                 texture
             };

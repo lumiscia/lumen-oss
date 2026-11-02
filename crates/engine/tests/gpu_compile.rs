@@ -12793,9 +12793,52 @@ fn replacing_an_image_with_one_of_the_same_size_shows_its_pixels() {
     let pixels = render_rgba8(&mut renderer, &composition, 1, &media);
     assert_eq!(canvas_pixel(&pixels, 1, 1), blue);
 
-    // A replaced image's texture is freed once a newer image is cached.
     media.set("plate", solid_image("plate#3", width, height, red));
     let pixels = render_rgba8(&mut renderer, &composition, 2, &media);
     assert_eq!(canvas_pixel(&pixels, 1, 1), red);
-    assert_eq!(renderer.cached_media_texture_count(), 2);
+}
+
+#[test]
+fn cycling_through_images_uploads_each_once() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    let colors = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]];
+    let images = colors.map(|color| solid_image(&format!("{color:?}"), width, height, color));
+    let media = ReplaceableImages::default();
+    let composition = image_composition(Deferred::value("plate".to_string()));
+    for frame in 0..9 {
+        media.set("plate", images[frame % 3].clone());
+        let pixels = render_rgba8(&mut renderer, &composition, frame as u32, &media);
+        assert_eq!(canvas_pixel(&pixels, 1, 1), colors[frame % 3]);
+    }
+    assert_eq!(renderer.media_texture_upload_count(), 3);
+    assert_eq!(renderer.cached_media_texture_count(), 3);
+}
+
+#[test]
+fn replacing_an_image_repeatedly_keeps_its_textures_within_the_budget() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    let kept = 2;
+    renderer.set_media_texture_cache_budget(kept * u64::from(width * height * 4));
+    let media = ReplaceableImages::default();
+    let composition = image_composition(Deferred::value("plate".to_string()));
+    for frame in 0..20u8 {
+        let color = [frame, 0, 0, 255];
+        media.set(
+            "plate",
+            solid_image(&format!("plate#{frame}"), width, height, color),
+        );
+        let pixels = render_rgba8(&mut renderer, &composition, u32::from(frame), &media);
+        assert_eq!(canvas_pixel(&pixels, 1, 1), color);
+        // Each plan keeps the texture it last bound.
+        assert!(
+            renderer.cached_media_texture_count() <= kept as usize + renderer.cached_plan_count()
+        );
+    }
+    assert_eq!(renderer.media_texture_upload_count(), 20);
 }
