@@ -38,6 +38,23 @@ For anything beyond local or single-process usage, expect to provide the surroun
 
 See [`crates/server`](crates/server/README.md) for the current self-hosted HTTP API, configuration, and limitations.
 
+## Using with AI agents
+
+The [`lumen` agent skill](skills/lumen/SKILL.md) teaches coding agents to build compositions, preview them, and render through Lumiscia or a self-hosted Lumen server. Install it with the [`skills` CLI](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add lumiscia/lumen-oss
+```
+
+Or as a Claude Code plugin:
+
+```text
+/plugin marketplace add lumiscia/lumen-oss
+/plugin install lumen@lumiscia
+```
+
+The docs are also available as plain markdown for agents: [llms.txt](https://docs.lumiscia.com/llms.txt), [llms-full.txt](https://docs.lumiscia.com/llms-full.txt), or any page with `.md` appended (for example, [guides/animation.md](https://docs.lumiscia.com/guides/animation.md)). Compositions can declare `"$schema": "https://lumiscia.com/schema/composition.json"` for editor validation.
+
 ## What's Included
 
 - `crates/engine`: core composition model, nodes, media handling, and GPU render orchestration
