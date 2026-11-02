@@ -12799,13 +12799,15 @@ fn replacing_an_image_with_one_of_the_same_size_shows_its_pixels() {
 }
 
 #[test]
-fn cycling_through_images_uploads_each_once() {
+fn unbound_images_within_the_budget_stay_cached() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
     };
     let (width, height) = CACHE_CANVAS;
     let colors = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]];
     let images = colors.map(|color| solid_image(&format!("{color:?}"), width, height, color));
+    // The two images no plan binds fit exactly; the bound one doesn't count.
+    renderer.set_media_texture_cache_budget(2 * u64::from(width * height * 4));
     let media = ReplaceableImages::default();
     let composition = image_composition(Deferred::value("plate".to_string()));
     for frame in 0..9 {
@@ -12818,27 +12820,78 @@ fn cycling_through_images_uploads_each_once() {
 }
 
 #[test]
-fn replacing_an_image_repeatedly_keeps_its_textures_within_the_budget() {
+fn images_past_the_budget_are_freed_once_no_plan_binds_them() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
     };
     let (width, height) = CACHE_CANVAS;
-    let kept = 2;
-    renderer.set_media_texture_cache_budget(kept * u64::from(width * height * 4));
+    renderer.set_media_texture_cache_budget(0);
     let media = ReplaceableImages::default();
     let composition = image_composition(Deferred::value("plate".to_string()));
-    for frame in 0..20u8 {
-        let color = [frame, 0, 0, 255];
+    for (frame, color) in [[255, 0, 0, 255], [0, 0, 255, 255]].into_iter().enumerate() {
         media.set(
             "plate",
-            solid_image(&format!("plate#{frame}"), width, height, color),
+            solid_image(&format!("{color:?}"), width, height, color),
         );
-        let pixels = render_rgba8(&mut renderer, &composition, u32::from(frame), &media);
-        assert_eq!(canvas_pixel(&pixels, 1, 1), color);
-        // Each plan keeps the texture it last bound.
-        assert!(
-            renderer.cached_media_texture_count() <= kept as usize + renderer.cached_plan_count()
-        );
+        render_rgba8(&mut renderer, &composition, frame as u32, &media);
     }
-    assert_eq!(renderer.media_texture_upload_count(), 20);
+    // Only the image the plan shows is kept.
+    assert_eq!(renderer.cached_media_texture_count(), 1);
+    renderer.set_static_output_reuse(false);
+    assert_eq!(renderer.cached_media_texture_count(), 0);
+}
+
+#[test]
+fn video_frames_do_not_overwrite_cached_images() {
+    #[derive(Debug)]
+    struct ImagesAndVideo {
+        images: ReplaceableImages,
+        video: TestMediaStore,
+    }
+    impl MediaStore for ImagesAndVideo {
+        fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+            self.images.get_image_resolver(source)
+        }
+
+        fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            Some(Box::new(self.video.clone()))
+        }
+    }
+
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    let green = [0, 255, 0, 255];
+    let yellow = [255, 255, 0, 255];
+    let media = ImagesAndVideo {
+        images: ReplaceableImages::default(),
+        video: solid_image("clip", width, height, blue),
+    };
+    media.images.set("a", solid_image("a", width, height, red));
+    media
+        .images
+        .set("b", solid_image("b", width, height, green));
+    media
+        .images
+        .set("c", solid_image("c", width, height, yellow));
+    let composition = cache_composition(vec![
+        NodeKind::MediaIn(MediaIn {
+            id: NodeId::new(1),
+            params: MediaInParamsDelegate {
+                kind: expression("if(frame == 1, 1, 0)"),
+                source: expression(
+                    "if(frame == 1, 'clip', if(frame == 2, 'b', if(frame == 3, 'c', 'a')))",
+                ),
+                ..Default::default()
+            },
+        }),
+        output_node(NodeId::new(2), 1),
+    ]);
+    for (frame, expected) in [red, blue, green, yellow, red].into_iter().enumerate() {
+        let pixels = render_rgba8(&mut renderer, &composition, frame as u32, &media);
+        assert_eq!(canvas_pixel(&pixels, 1, 1), expected, "frame {frame}");
+    }
 }

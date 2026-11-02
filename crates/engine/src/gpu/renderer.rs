@@ -76,8 +76,9 @@ struct CachedMediaTexture {
     last_used: u64,
 }
 
-/// Image textures plans share. Replaced images get new keys, so textures no plan binds are freed
-/// least recently used first once they exceed the budget; textures a plan binds always stay.
+/// Image textures plans share, which are never written once cached. Replaced images get new keys,
+/// so textures no plan binds are freed least recently used first once they exceed the budget;
+/// textures a plan binds don't count against it and always stay.
 struct MediaTextureCache {
     textures: HashMap<MediaTextureKey, CachedMediaTexture>,
     budget: u64,
@@ -104,7 +105,6 @@ impl MediaTextureCache {
 
     fn insert(&mut self, key: MediaTextureKey, texture: Arc<lumen_gpu::wgpu::Texture>) {
         self.upload_count += 1;
-        self.evict_to(self.budget.saturating_sub(texture_bytes(&key)));
         self.clock += 1;
         self.textures.insert(
             key,
@@ -115,17 +115,19 @@ impl MediaTextureCache {
         );
     }
 
-    /// Frees unbound textures, least recently used first, until at most `limit` bytes are held.
-    fn evict_to(&mut self, limit: u64) {
-        let mut held: u64 = self.textures.keys().map(texture_bytes).sum();
-        while held > limit {
-            let Some(key) = self
-                .textures
-                .iter()
-                .filter(|(_, cached)| Arc::strong_count(&cached.texture) == 1)
-                .min_by_key(|(_, cached)| cached.last_used)
-                .map(|(key, _)| key.clone())
-            else {
+    /// Frees unbound textures, least recently used first, until those left fit the budget. Call
+    /// after anything that may have released a plan's binding.
+    fn evict(&mut self) {
+        let mut unbound: Vec<_> = self
+            .textures
+            .iter()
+            .filter(|(_, cached)| Arc::strong_count(&cached.texture) == 1)
+            .map(|(key, cached)| (cached.last_used, key.clone()))
+            .collect();
+        let mut held: u64 = unbound.iter().map(|(_, key)| texture_bytes(key)).sum();
+        unbound.sort_unstable_by_key(|(last_used, _)| std::cmp::Reverse(*last_used));
+        while held > self.budget {
+            let Some((_, key)) = unbound.pop() else {
                 return;
             };
             if let Some(evicted) = self.textures.remove(&key) {
@@ -141,6 +143,24 @@ impl MediaTextureCache {
         }
         self.textures.clear();
     }
+}
+
+fn create_media_texture(
+    device: &lumen_gpu::wgpu::Device,
+    size: lumen_gpu::Size,
+) -> Arc<lumen_gpu::wgpu::Texture> {
+    Arc::new(device.create_texture(&lumen_gpu::wgpu::TextureDescriptor {
+        label: Some("lumen media frame"),
+        size: size.as_extent(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: lumen_gpu::wgpu::TextureDimension::D2,
+        format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+        usage: lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
+            | lumen_gpu::wgpu::TextureUsages::COPY_DST
+            | lumen_gpu::wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    }))
 }
 
 fn texture_bytes(key: &MediaTextureKey) -> u64 {
@@ -323,10 +343,12 @@ impl GpuCompositionRenderer {
         self.media_texture_cache.upload_count
     }
 
-    /// Sets the estimated GPU memory image textures no plan binds may hold. Uploading an image
-    /// frees the least recently used ones past it.
+    /// Sets the estimated GPU memory image textures no plan binds may hold, which textures a plan
+    /// binds don't count against. The least recently used unbound ones past it are freed as plans
+    /// release them.
     pub fn set_media_texture_cache_budget(&mut self, bytes: u64) {
         self.media_texture_cache.budget = bytes;
+        self.media_texture_cache.evict();
     }
 
     pub fn compile_with_media<M: MediaStore>(
@@ -389,6 +411,7 @@ impl GpuCompositionRenderer {
         self.bind_sequence += 1;
         self.output_format = output_format;
         self.compiled_plans.clear();
+        self.media_texture_cache.evict();
         self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
         self.pruned_fingerprint = None;
@@ -451,6 +474,8 @@ impl GpuCompositionRenderer {
             },
         ) {
             self.plan_cache_bytes -= replaced.estimated_bytes;
+            drop(replaced);
+            self.media_texture_cache.evict();
         }
         self.active_key = Some(key);
         Ok(())
@@ -476,6 +501,7 @@ impl GpuCompositionRenderer {
         if self.compiled_plans.len() == cached_plans {
             return;
         }
+        self.media_texture_cache.evict();
         tracing::debug!(
             target: "lumen_render",
             pruned = cached_plans - self.compiled_plans.len(),
@@ -503,7 +529,7 @@ impl GpuCompositionRenderer {
                 .min_by_key(|(_, prepared)| prepared.last_used)
                 .map(|(key, _)| key.clone())
             else {
-                return;
+                break;
             };
             let evicted = self.compiled_plans.remove(&key).expect("cached plan");
             self.plan_cache_bytes -= evicted.estimated_bytes;
@@ -515,6 +541,7 @@ impl GpuCompositionRenderer {
                 "evict least recently used compiled plan"
             );
         }
+        self.media_texture_cache.evict();
     }
 
     /// Compiles the plan for `frame` ahead of rendering it, unless it would not fit the plan cache
@@ -913,6 +940,26 @@ impl GpuCompositionRenderer {
                     texture = ?upload.texture,
                     "upload uncached video frame"
                 );
+                if prepared
+                    .current_media_textures
+                    .remove(&upload.texture)
+                    .is_some()
+                {
+                    // The bound texture is a cached image's, which must not be written.
+                    prepared
+                        .renderer
+                        .replace_texture_arc(
+                            upload.texture,
+                            create_media_texture(&prepared.renderer.device, upload.size),
+                            lumen_gpu::TextureDesc::sampled(
+                                upload.size,
+                                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                            ),
+                        )
+                        .map_err(|error| RenderError::Gpu {
+                            details: error.to_string(),
+                        })?;
+                }
                 let rgba = fit_frame_to_rgba8(frame, upload.size.width, upload.size.height);
                 prepared.renderer.queue.write_texture(
                     lumen_gpu::wgpu::TexelCopyTextureInfo {
@@ -933,7 +980,6 @@ impl GpuCompositionRenderer {
                     },
                     upload.size.as_extent(),
                 );
-                prepared.current_media_textures.remove(&upload.texture);
                 continue;
             };
 
@@ -966,20 +1012,7 @@ impl GpuCompositionRenderer {
                     height = upload.size.height,
                     "cache media texture"
                 );
-                let texture = Arc::new(prepared.renderer.device.create_texture(
-                    &lumen_gpu::wgpu::TextureDescriptor {
-                        label: Some("lumen media cached frame"),
-                        size: upload.size.as_extent(),
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: lumen_gpu::wgpu::TextureDimension::D2,
-                        format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        usage: lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
-                            | lumen_gpu::wgpu::TextureUsages::COPY_DST
-                            | lumen_gpu::wgpu::TextureUsages::COPY_SRC,
-                        view_formats: &[],
-                    },
-                ));
+                let texture = create_media_texture(&prepared.renderer.device, upload.size);
                 let rgba = fit_frame_to_rgba8(frame, upload.size.width, upload.size.height);
                 prepared.renderer.queue.write_texture(
                     texture.as_image_copy(),
@@ -1013,6 +1046,7 @@ impl GpuCompositionRenderer {
                 .current_media_textures
                 .insert(upload.texture, key.clone());
         }
+        self.media_texture_cache.evict();
         Ok(())
     }
 
