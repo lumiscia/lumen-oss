@@ -20,6 +20,36 @@ const TINY_PNG: &[u8] = &[
     0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 ];
 
+/// A grayscale baseline JPEG of flat blocks. At 1280x720 its end marker sits past the 2 KB FFmpeg
+/// probes first, which is what makes the probe pick `image2` over `jpeg_pipe` for a `.jpg`.
+fn flat_jpeg(width: u16, height: u16) -> Vec<u8> {
+    let blocks = usize::from(width.div_ceil(8)) * usize::from(height.div_ceil(8));
+    let mut jpeg = vec![0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00];
+    jpeg.extend([1; 64]);
+    jpeg.extend([0xff, 0xc0, 0x00, 0x0b, 0x08]);
+    jpeg.extend(height.to_be_bytes());
+    jpeg.extend(width.to_be_bytes());
+    jpeg.extend([0x01, 0x01, 0x11, 0x00]);
+    // DC and AC tables holding one 1-bit code, for symbol 0.
+    for class in [0x00, 0x10] {
+        jpeg.extend([0xff, 0xc4, 0x00, 0x14, class, 0x01]);
+        jpeg.extend([0; 16]);
+    }
+    jpeg.extend([0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]);
+    // Each block is "no DC change" and "end of block": two zero bits.
+    jpeg.resize(jpeg.len() + (blocks * 2).div_ceil(8), 0);
+    jpeg.extend([0xff, 0xd9]);
+    jpeg
+}
+
+fn video_size(path: &Path) -> (u32, u32) {
+    let input = InputContext::open(path.to_string_lossy().to_string())
+        .unwrap_or_else(|error| panic!("{} must open: {error}", path.display()));
+    let info = input.media_info();
+    let stream = info.video_streams.first().expect("video stream");
+    (stream.width, stream.height)
+}
+
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -104,6 +134,40 @@ fn inputs_that_name_other_files_are_refused() {
 }
 
 #[test]
+fn image_paths_never_read_a_sibling_file() {
+    let dir = TempDir::new("patterns");
+    fs::write(dir.join("frame1.jpg"), flat_jpeg(1280, 720)).expect("write sibling");
+    for pattern in ["frame%d.jpg", "frame*.jpg", "frame?.jpg", "frame{1,2}.jpg"] {
+        assert_refused(&dir.join(pattern));
+    }
+
+    // A file really named like a pattern is that file, not a sequence of its neighbours.
+    fs::write(dir.join("frame%d.jpg"), flat_jpeg(1280, 736)).expect("write literal");
+    assert_eq!(video_size(&dir.join("frame%d.jpg")), (1280, 736));
+
+    fs::write(dir.join("frame*.jpg"), flat_jpeg(1280, 752)).expect("write literal");
+    assert_eq!(video_size(&dir.join("frame*.jpg")), (1280, 752));
+
+    // `image2` opens `.U` and `.V` beside a `.y` file.
+    for file in ["plane.y", "plane.U", "plane.V"] {
+        fs::write(dir.join(file), vec![0; 4096]).expect("write plane");
+    }
+    assert_refused(&dir.join("plane.y"));
+}
+
+#[test]
+fn normal_sized_jpegs_open_with_any_extension_case() {
+    let dir = TempDir::new("jpeg");
+    let jpeg = flat_jpeg(1280, 720);
+    assert!(jpeg.len() > 2048, "must outgrow FFmpeg's first probe");
+    for file in ["photo.jpg", "photo.jpeg", "PHOTO.JPG", "photo"] {
+        let path = dir.join(file);
+        fs::write(&path, &jpeg).expect("write jpeg");
+        assert_eq!(video_size(&path), (1280, 720), "{file}");
+    }
+}
+
+#[test]
 fn allowlist_leaves_out_every_demuxer_that_opens_other_inputs() {
     let allowed: Vec<_> = ALLOWED_INPUT_FORMATS.split(',').collect();
     for demuxer in [
@@ -153,7 +217,7 @@ fn common_upload_formats_still_open() {
         ),
         (
             "image.jpg",
-            video,
+            "testsrc2=size=1280x720:rate=25:duration=0.3",
             &["-frames:v", "1", "-pix_fmt", "yuvj420p"],
         ),
         ("image.bmp", video, &["-frames:v", "1"]),

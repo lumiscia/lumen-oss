@@ -203,6 +203,12 @@ impl LibavStreamDecoder {
         let width = stream.width;
         let height = stream.height;
         let frame_count = resolve_frame_count(&stream, input.presented_duration_us(), fps)
+            .or_else(|| {
+                input
+                    .is_image()
+                    .then(|| count_frames(source, stream_index))
+                    .flatten()
+            })
             .ok_or_else(|| MediaError::Decode {
                 media_source: source.to_string(),
                 details: "unable to determine stream frame count".to_string(),
@@ -698,6 +704,18 @@ fn resolve_frame_count(
     Some((seconds * fps).round().clamp(1.0, f64::from(u32::MAX)) as u32)
 }
 
+/// Reads `source` through a separate input, so the caller's stays at the start of the file.
+fn count_frames(source: &str, stream_index: usize) -> Option<u32> {
+    let mut input = InputContext::open(source.to_string()).ok()?;
+    let mut frames = 0;
+    while let Some(packet) = input.read_packet().ok()? {
+        if packet.stream_index() == stream_index {
+            frames += 1;
+        }
+    }
+    (frames > 0).then_some(frames)
+}
+
 fn open_video_decoder(
     source: &str,
     input: &InputContext,
@@ -912,6 +930,41 @@ mod tests {
         assert_eq!(resolver.metadata().frame_count, 40);
         assert!(resolver.frame(39).is_ok());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn images_read_as_video_count_their_own_frames() {
+        const ONE_PIXEL_PNG: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0xf8, 0xef, 0xa0, 0xf0, 0x1f, 0x00, 0x06, 0x00, 0x02, 0x5f, 0x34, 0xcd,
+            0x40, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        let still =
+            std::env::temp_dir().join(format!("lumen_engine_{}_still.png", std::process::id()));
+        fs::write(&still, ONE_PIXEL_PNG).expect("write png");
+        let resolver = open_cpu(&still).expect("open png");
+        assert_eq!(resolver.metadata().frame_count, 1);
+        assert!(resolver.frame(0).is_ok());
+        let _ = fs::remove_file(still);
+
+        let animated =
+            std::env::temp_dir().join(format!("lumen_engine_{}_animated.apng", std::process::id()));
+        let Ok(generated) = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", "testsrc2=s=32x32:r=25:d=0.4", "-f", "apng"])
+            .arg(&animated)
+            .status()
+        else {
+            eprintln!("ffmpeg CLI unavailable; skipping APNG frame count");
+            return;
+        };
+        assert!(generated.success(), "generate APNG");
+        let resolver = open_cpu(&animated).expect("open apng");
+        assert_eq!(resolver.metadata().frame_count, 10);
+        assert!(resolver.frame(9).is_ok());
+        let _ = fs::remove_file(animated);
     }
 
     #[test]

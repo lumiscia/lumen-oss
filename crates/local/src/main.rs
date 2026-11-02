@@ -736,19 +736,38 @@ fn run() -> Result<()> {
             if args.frame.is_some() {
                 return Err(anyhow!("--frame is only supported when output is .png"));
             }
-            render_mp4(
-                composition,
-                media_store,
-                &args.output,
-                args.encoder.as_deref(),
-                &args.quality,
-            )
+            render_to_partial(&args.output, |partial| {
+                render_mp4(
+                    composition,
+                    media_store,
+                    partial,
+                    args.encoder.as_deref(),
+                    &args.quality,
+                )
+            })
         }
         _ => Err(anyhow!(
             "unsupported output extension; use .png or .mp4 (got `{}`)",
             args.output.display()
         )),
     }
+}
+
+/// Renders to a path beside `output` and moves the file into place only on success, so a failed
+/// render leaves no partial file and keeps any earlier output.
+fn render_to_partial(output: &Path, render: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+    let stem = output.file_stem().unwrap_or_default().to_string_lossy();
+    let partial = output.with_file_name(format!(".{stem}.partial.mp4"));
+    let result = render(&partial).and_then(|()| {
+        fs::rename(&partial, output)
+            .with_context(|| format!("failed to write output {}", output.display()))
+    });
+    if result.is_err() {
+        let _ = fs::remove_file(&partial);
+    } else {
+        println!("output written to {}", output.display());
+    }
+    result
 }
 
 fn load_composition(path: &Path) -> Result<Composition> {
@@ -835,13 +854,7 @@ fn render_mp4(
     if is_vulkan_video_encoder(&encoder) {
         match start_vulkan_video_encode(&composition, output, &encoder, quality) {
             Ok(session) => {
-                return render_video_gpu_vulkan(
-                    composition,
-                    media_store,
-                    output,
-                    total_frames,
-                    session,
-                );
+                return render_video_gpu_vulkan(composition, media_store, total_frames, session);
             }
             Err(error) => eprintln!(
                 "vulkan zero-copy encode unavailable, uploading frames from the CPU instead: {error}"
@@ -958,8 +971,7 @@ fn render_mp4(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
-        output.display(),
+        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
         total_frames,
         timings.audio_mix_ms,
         timings.bind_ms,
@@ -1072,8 +1084,7 @@ fn render_video_gpu_videotoolbox(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
-        output.display(),
+        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
         total_frames,
         timings.audio_mix_ms,
         timings.bind_ms,
@@ -1203,7 +1214,6 @@ fn start_vulkan_video_encode(
 fn render_video_gpu_vulkan(
     composition: Composition,
     media_store: LocalMediaStore,
-    output: &Path,
     total_frames: u32,
     session: VulkanVideoSession,
 ) -> Result<()> {
@@ -1304,8 +1314,7 @@ fn render_video_gpu_vulkan(
 
     let total_ms = render_started.elapsed().as_millis();
     println!(
-        "render complete output={} frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
-        output.display(),
+        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
         total_frames,
         timings.audio_mix_ms,
         timings.bind_ms,
@@ -1637,8 +1646,41 @@ mod tests {
 
     use super::{
         EncoderQuality, FontCatalog, LocalMediaStore, RateControl, choose_video_encoder,
-        parse_args_from, parse_bitrate, resolve_font_dir, resolve_local_path_with_root,
+        parse_args_from, parse_bitrate, render_to_partial, resolve_font_dir,
+        resolve_local_path_with_root,
     };
+
+    #[test]
+    fn failed_renders_leave_no_partial_file_and_keep_earlier_output() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let output = dir.path().join("out.mp4");
+        let file_names = || {
+            let mut names = fs::read_dir(dir.path())
+                .expect("read dir")
+                .map(|entry| entry.expect("entry").file_name())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+
+        let failed = render_to_partial(&output, |partial| {
+            fs::write(partial, b"partial")?;
+            Err(anyhow::anyhow!("render failed"))
+        });
+        assert!(failed.is_err());
+        assert!(file_names().is_empty(), "{:?}", file_names());
+
+        render_to_partial(&output, |partial| Ok(fs::write(partial, b"first")?)).expect("render");
+        assert_eq!(fs::read(&output).expect("output"), b"first");
+
+        let failed = render_to_partial(&output, |partial| {
+            fs::write(partial, b"partial")?;
+            Err(anyhow::anyhow!("render failed"))
+        });
+        assert!(failed.is_err());
+        assert_eq!(fs::read(&output).expect("output"), b"first");
+        assert_eq!(file_names().len(), 1, "{:?}", file_names());
+    }
 
     fn argv(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
