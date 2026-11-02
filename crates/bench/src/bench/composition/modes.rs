@@ -589,11 +589,11 @@ async fn benchmark_render_vk_cuda_export(
     let output_size = composition_size(composition);
     let exportable = create_exportable_texture(renderer.gpu_renderer(), output_size)?;
     let driver = CudaDriver::load().map_err(|error| anyhow!(error))?;
-    let _context = driver
+    let context = driver
         .create_primary_context()
         .map_err(|error| anyhow!(error))?;
     let imported = import_owned_vulkan_opaque_fd_image(
-        &driver,
+        &context,
         exportable.memory_fd().try_clone()?,
         exportable.allocation_size(),
         output_size.width,
@@ -640,6 +640,7 @@ async fn benchmark_render_vk_cuda_nvenc(
     let target = target_pool.acquire(renderer.gpu_renderer())?;
     let mut config = video_config(composition, VideoCodec::H264)?;
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
+    config.cuda_ordinal = Some(target_pool.cuda_ordinal());
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
 
     let started = Instant::now();

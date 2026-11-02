@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     composition::Composition,
-    error::{GraphValidationError, RenderError},
+    error::RenderError,
     gpu::{
         BoundFrame, CompileContext, CompiledComposition, FrameBindContext, MediaTextureKey,
         RasterHandle, TimeRemapPath,
@@ -556,9 +556,11 @@ impl GpuCompositionRenderer {
         }
         self.bind_sequence += 1;
         // A font loaded while the plan compiles or the frame binds, here or by another renderer,
-        // can widen text past the bounds the plan measured. The plan is then keyed by the new
-        // font generation, so the frame is bound again to it; a font loads once, so this settles.
+        // can widen text past the bounds and glyph counts the plan measured. The plan is then
+        // keyed by the new font generation, so the frame is bound again to it; a font loads
+        // once, so this settles.
         let mut rebinds = 0;
+        let max_rebinds = max_font_rebinds(composition);
         let mut bound = loop {
             let generation = text_font_generation(Some(media));
             self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
@@ -576,21 +578,22 @@ impl GpuCompositionRenderer {
                                 from.compiled.cache.epoch(&from.renderer, fonts) == at
                             })
                     });
-            let bound = FrameBindContext::with_media_at(composition, frame, media)
-                .bind_with_cache(
-                    &prepared.compiled,
-                    Some(BindCache::new(
-                        layout,
-                        &prepared.cache,
-                        epoch,
-                        composition.fingerprint(),
-                        held,
-                    )),
-                )?;
+            let bound = FrameBindContext::with_media_at(composition, frame, media).bind_with_cache(
+                &prepared.compiled,
+                Some(BindCache::new(
+                    layout,
+                    &prepared.cache,
+                    epoch,
+                    composition.fingerprint(),
+                    held,
+                )),
+            );
+            // A failure under fonts that changed may come from what the plan sized for the
+            // old ones, so it is bound again too.
             if text_font_generation(Some(media)) == generation {
-                break bound;
+                break bound?;
             }
-            if rebinds == MAX_FONT_REBINDS {
+            if rebinds == max_rebinds {
                 return Err(RenderError::Gpu {
                     details: format!(
                         "fonts kept loading while frame {frame} was bound; its text bounds could not settle"
@@ -1124,7 +1127,6 @@ impl GpuCompositionRenderer {
             media,
             time_remaps: TimeRemapPath::new(),
             visited: foldhash::HashSet::default(),
-            stack: Vec::new(),
             entries: Vec::new(),
             has_text: false,
         };
@@ -1156,9 +1158,6 @@ struct PlanKeyCollector<'a> {
     media: Option<&'a dyn MediaStore>,
     time_remaps: TimeRemapPath,
     visited: foldhash::HashSet<(NodeId, TimeRemapPath)>,
-    /// Nodes on the current traversal path, with the graph they are in; time remaps and clips
-    /// extend the instance path, so `visited` alone never sees a cycle through one repeat.
-    stack: Vec<(NodeId, *const crate::graph::Graph)>,
     entries: Vec<PlanKeyEntry>,
     /// Whether any text was reached, whose bounds depend on the loaded fonts.
     has_text: bool,
@@ -1174,23 +1173,13 @@ impl<'a> PlanKeyCollector<'a> {
         if port.is_empty() {
             return Ok(());
         }
-        let entry = (port.id, std::ptr::from_ref(scope.graph));
-        if let Some(start) = self.stack.iter().position(|visiting| *visiting == entry) {
-            return Err(GraphValidationError::Cycle {
-                path: self.stack[start..].iter().map(|(id, _)| *id).collect(),
-            }
-            .into());
-        }
         if !self.visited.insert((port.id, self.time_remaps.clone())) {
             return Ok(());
         }
         let Some(node) = scope.node(port.id) else {
             return Ok(());
         };
-        self.stack.push(entry);
-        let result = self.collect_node(scope, node, frame);
-        self.stack.pop();
-        result
+        self.collect_node(scope, node, frame)
     }
 
     fn collect_node(
@@ -1320,8 +1309,18 @@ fn estimated_plan_bytes(compiled: &CompiledComposition) -> u64 {
 }
 
 /// Times a frame is bound again after fonts load during binding, before binding fails rather
-/// than draw text past its bounds.
-const MAX_FONT_REBINDS: u32 = 3;
+/// than draw text past its bounds. A node loads all the fonts it names at once, and a bind can
+/// stop at the first text they outgrow, so this allows each node a bind of its own, with a margin
+/// for fonts other renderers load meanwhile. A node evaluated many times can name more fonts than
+/// this allows, and its frame then fails, but the fonts stay loaded for the next render.
+fn max_font_rebinds(composition: &Composition) -> usize {
+    let templates: usize = composition
+        .compositions()
+        .values()
+        .map(|template| template.graph.nodes.len())
+        .sum();
+    composition.graph().nodes.len() + templates + 3
+}
 
 fn text_font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
     crate::node::source::text::text_system(media)

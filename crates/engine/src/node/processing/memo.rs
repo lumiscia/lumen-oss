@@ -92,7 +92,7 @@ impl GpuCompileNode for Memo {
         ];
         // Every snapshot carries bounds, so plans whose sources differ in publishing them can
         // share it. They are the source's when it publishes any and cover all texels otherwise.
-        let source_bounds = ctx.raster_bounds(source.texture);
+        let source_bounds = source.bounds;
         let bounds = ctx.builder_mut().buffer_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("memo:{}:bounds", self.id.0)),
@@ -140,8 +140,11 @@ impl GpuCompileNode for Memo {
             bindings,
             dispatch: compiler::dispatch_for(size).into(),
         });
-        ctx.publish_raster_bounds(texture, bounds);
         ctx.record_memo(texture, bounds, copy);
-        Ok(CompiledOutput::Raster(RasterHandle { texture, ..source }))
+        Ok(CompiledOutput::Raster(RasterHandle {
+            texture,
+            bounds: Some(bounds),
+            ..source
+        }))
     }
 }

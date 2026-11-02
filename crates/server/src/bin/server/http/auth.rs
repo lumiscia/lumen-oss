@@ -1,36 +1,37 @@
-use axum::{Json, http::HeaderMap, response::IntoResponse};
+use axum::{
+    extract::{Request, State},
+    http::{StatusCode, header::AUTHORIZATION},
+    middleware::Next,
+    response::Response,
+};
+use subtle::ConstantTimeEq;
 
-use crate::server::{RenderJobError, RenderJobResponse};
+use crate::server::RenderJobError;
 
-use super::state::AppState;
+use super::{errors::error_response, state::AppState};
 
-pub(super) fn authorize_response(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Option<axum::response::Response> {
+pub(super) async fn require_token(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
     if let Some(expected_token) = state.api_token.as_deref() {
-        let actual_token = headers
-            .get(axum::http::header::AUTHORIZATION)
+        let authorized = request
+            .headers()
+            .get(AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "));
-        if actual_token != Some(expected_token) {
-            return Some(
-                (
-                    axum::http::StatusCode::UNAUTHORIZED,
-                    Json(RenderJobResponse {
-                        ok: false,
-                        artifact: None,
-                        metrics: None,
-                        error: Some(RenderJobError {
-                            code: "unauthorized".to_string(),
-                            message: "invalid render API token".to_string(),
-                            retryable: false,
-                        }),
-                    }),
-                )
-                    .into_response(),
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .is_some_and(|token| bool::from(token.as_bytes().ct_eq(expected_token.as_bytes())));
+        if !authorized {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                RenderJobError {
+                    code: "unauthorized".to_string(),
+                    message: "invalid render API token".to_string(),
+                    retryable: false,
+                },
             );
         }
     }
-    None
+    next.run(request).await
 }

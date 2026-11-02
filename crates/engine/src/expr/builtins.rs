@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 use crate::{
     error::{ExpressionError, LumenError},
     expr::{
@@ -72,7 +70,7 @@ pub fn evaluate_builtin(
         BuiltinFn::Fract => unary(f64::fract),
         BuiltinFn::Clamp => {
             let (value, min, max) = (number(0)?, number(1)?, number(2)?);
-            if min > max {
+            if min.is_nan() || max.is_nan() || min > max {
                 return Err(error("clamp requires min <= max".to_string()));
             }
             Ok(ExpressionValue::Number(value.clamp(min, max)))
@@ -324,7 +322,6 @@ fn measure_text_node(
     node_id: NodeId,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<lumen_text::TextMeasurement> {
-    let _measurement_guard = TextMeasurementGuard::enter(node_id, ctx)?;
     let ctx = &ctx.without_glyph();
     let graph = ctx.graph.ok_or_else(|| {
         eval_error(
@@ -398,37 +395,6 @@ fn measure_text_node(
         paragraph_spacing,
     };
     measure_text_value(ctx, style.request(&content, &font_features))
-}
-
-thread_local! {
-    static TEXT_MEASUREMENT_STACK: RefCell<Vec<NodeId>> = const { RefCell::new(Vec::new()) };
-}
-
-struct TextMeasurementGuard(NodeId);
-
-impl TextMeasurementGuard {
-    fn enter(node_id: NodeId, ctx: &ExpressionContext<'_>) -> crate::Result<Self> {
-        TEXT_MEASUREMENT_STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
-            if stack.contains(&node_id) {
-                return Err(eval_error(
-                    ctx,
-                    format!("recursive text measurement for node `{}`", node_id.0),
-                ));
-            }
-            stack.push(node_id);
-            Ok(Self(node_id))
-        })
-    }
-}
-
-impl Drop for TextMeasurementGuard {
-    fn drop(&mut self) {
-        TEXT_MEASUREMENT_STACK.with(|stack| {
-            let removed = stack.borrow_mut().pop();
-            debug_assert_eq!(removed, Some(self.0));
-        });
-    }
 }
 
 fn measure_text_value(

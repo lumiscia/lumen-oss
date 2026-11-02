@@ -317,6 +317,7 @@ impl GpuCompileNode for Merge {
                 alpha_mode: AlphaMode::Premultiplied,
                 ..base.metadata
             },
+            bounds: None,
         }))
     }
 }

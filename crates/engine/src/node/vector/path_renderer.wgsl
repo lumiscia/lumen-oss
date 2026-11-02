@@ -102,7 +102,7 @@ fn stroke_span(current: PathPoint, next: PathPoint, is_end: bool) -> StrokeSpan 
     let segment_end = select(next.offset, 1.0, is_end);
     let span = max(segment_end - current.offset, 0.000001);
     let end = clamp((params.trim_end - current.offset) / span, 0.0, 1.0);
-    let next_is_open_end = (next.flags & (POINT_END | POINT_CLOSED)) == POINT_END;
+    let next_is_open_end = is_open_end(next.flags);
     return StrokeSpan(
         clamp((params.trim_start - current.offset) / span, 0.0, 1.0),
         end,
@@ -111,12 +111,15 @@ fn stroke_span(current: PathPoint, next: PathPoint, is_end: bool) -> StrokeSpan 
     );
 }
 
-// Whether segment `a`-`b` can reach `p`. The open end of a contour joins its start only to
-// close the fill.
-fn segment_reaches(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, flags: u32) -> bool {
-    return (flags & (POINT_END | POINT_CLOSED)) != POINT_END
-        && all(p >= min(a, b) - params.reach)
-        && all(p <= max(a, b) + params.reach);
+// Whether `flags` end an open contour, whose segment back to its start only closes the
+// fill and is never stroked.
+fn is_open_end(flags: u32) -> bool {
+    return (flags & (POINT_END | POINT_CLOSED)) == POINT_END;
+}
+
+// Whether segment `a`-`b` can reach `p`.
+fn segment_reaches(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> bool {
+    return all(p >= min(a, b) - params.reach) && all(p <= max(a, b) + params.reach);
 }
 
 fn fill_coverage(signed_distance: f32, inside: bool, edge_antialias: bool) -> f32 {
@@ -170,13 +173,16 @@ fn path_edges(transform: DrawableTransform, p: vec2<f32>, fill_enabled: bool, st
                 edges.inside = !edges.inside;
             }
         }
-        if (!segment_reaches(p, a, b, current.flags)) {
+        if (!segment_reaches(p, a, b)) {
             continue;
         }
         if (fill_enabled) {
             let canvas_a = drawable_vector_to_canvas(transform, a);
             let canvas_b = drawable_vector_to_canvas(transform, b);
             edges.full = min(edges.full, length(segment_offset(canvas_p, canvas_a, canvas_b)));
+        }
+        if (is_open_end(current.flags)) {
+            continue;
         }
         let span = stroke_span(current, next, is_end);
         if (trimmed_stroke_enabled && span.covered) {
@@ -208,7 +214,7 @@ fn path_edges(transform: DrawableTransform, p: vec2<f32>, fill_enabled: bool, st
             let a = current.position;
             let b = next.position;
             let span = stroke_span(current, next, is_end);
-            let reaches = span.covered && segment_reaches(p, a, b, current.flags);
+            let reaches = span.covered && !is_open_end(current.flags) && segment_reaches(p, a, b);
             if (reaches) {
                 let centre = mix(a, b, select(span.start, span.end, at_end));
                 edges.stroke = min(edges.stroke, ellipse_distance((p - centre) * axis_scale, cap).distance);

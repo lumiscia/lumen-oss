@@ -19,10 +19,6 @@ pub const JSON_FIXTURES: &[JsonFixture] = &[
         source: include_str!("../../../local/demo/antialiasing-worst-cases.json"),
     },
     JsonFixture {
-        name: "antialiasing_worst_cases_noaa",
-        source: include_str!("../../../local/demo/antialiasing-worst-cases-noaa.json"),
-    },
-    JsonFixture {
         name: "antialiasing_check",
         source: include_str!("../../../local/demo/antialiasing-check.json"),
     },

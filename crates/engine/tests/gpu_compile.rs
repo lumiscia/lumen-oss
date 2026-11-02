@@ -111,58 +111,8 @@ impl std::ops::DerefMut for TestRenderer {
     }
 }
 
-#[test]
-fn build_rejects_cycle_before_recursive_port_traversal() {
-    let first = NodeId::new(1);
-    let second = NodeId::new(2);
-    let output = NodeId::new(3);
-    let mut graph = Graph::new();
-    graph.nodes.insert(
-        first,
-        NodeKind::Exposure(Exposure {
-            id: first,
-            source: PortRef::new(second, "output".to_string()),
-            ..Exposure::default()
-        }),
-    );
-    graph.nodes.insert(
-        second,
-        NodeKind::Exposure(Exposure {
-            id: second,
-            source: PortRef::new(first, "output".to_string()),
-            ..Exposure::default()
-        }),
-    );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(first, "output".to_string()),
-        }),
-    );
-    for connection in [
-        Connection {
-            from_node: first,
-            from_port: "output".to_string(),
-            to_node: second,
-            to_port: "source".to_string(),
-        },
-        Connection {
-            from_node: second,
-            from_port: "output".to_string(),
-            to_node: first,
-            to_port: "source".to_string(),
-        },
-        Connection {
-            from_node: first,
-            from_port: "output".to_string(),
-            to_node: output,
-            to_port: "source".to_string(),
-        },
-    ] {
-        graph.connect(connection).unwrap();
-    }
-    let errors = CompositionBuilder::new(
+fn build_errors(graph: Graph) -> Vec<LumenError> {
+    CompositionBuilder::new(
         graph,
         TimelineSettings {
             fps: 30.0,
@@ -175,13 +125,111 @@ fn build_rejects_cycle_before_recursive_port_traversal() {
         },
     )
     .build()
-    .expect_err("cyclic graph must be rejected before compilation");
+    .expect_err("invalid graph must be rejected before compilation")
+}
+
+fn assert_cycle_rejected_at_build(graph: Graph) {
     assert!(matches!(
-        errors.as_slice(),
+        build_errors(graph).as_slice(),
         [LumenError::GraphValidation(
             GraphValidationError::Cycle { .. }
         )]
     ));
+}
+
+#[test]
+fn a_missing_input_node_is_not_reported_as_a_cycle() {
+    let mut graph = Graph::new();
+    let output = NodeId::new(1);
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(NodeId::new(999), "output".to_string()),
+        }),
+    );
+    assert!(matches!(
+        build_errors(graph).as_slice(),
+        [LumenError::GraphValidation(
+            GraphValidationError::MissingSourceNode { node_id }
+        )] if *node_id == NodeId::new(999)
+    ));
+}
+
+#[test]
+fn cycles_are_rejected_at_build() {
+    let first = NodeId::new(1);
+    let second = NodeId::new(2);
+    let output = NodeId::new(3);
+    let port = |id| PortRef::new(id, "output".to_string());
+    let connection = |from, to| Connection {
+        from_node: from,
+        from_port: "output".to_string(),
+        to_node: to,
+        to_port: "source".to_string(),
+    };
+    let exposure = |id, source| {
+        NodeKind::Exposure(Exposure {
+            id,
+            source: port(source),
+            ..Exposure::default()
+        })
+    };
+    let media_output = || {
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: port(first),
+        })
+    };
+
+    // Ports and connections agree.
+    let mut graph = Graph::new();
+    graph.nodes.insert(first, exposure(first, second));
+    graph.nodes.insert(second, exposure(second, first));
+    graph.nodes.insert(output, media_output());
+    for edge in [
+        connection(first, second),
+        connection(second, first),
+        connection(first, output),
+    ] {
+        graph.connect(edge).unwrap();
+    }
+    assert_cycle_rejected_at_build(graph);
+
+    // Nodes built directly carry their inputs on ports, with no connections at all.
+    let mut graph = Graph::new();
+    graph.nodes.insert(first, exposure(first, second));
+    graph.nodes.insert(second, exposure(second, first));
+    graph.nodes.insert(output, media_output());
+    assert_cycle_rejected_at_build(graph);
+
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        first,
+        NodeKind::TimeRemap(TimeRemap {
+            id: first,
+            source: port(first),
+            ..TimeRemap::default()
+        }),
+    );
+    graph.nodes.insert(output, media_output());
+    assert_cycle_rejected_at_build(graph);
+
+    // A node stored under another node's id would hide a cycle from the edges.
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        first,
+        NodeKind::TimeRemap(TimeRemap {
+            id: second,
+            source: port(first),
+            ..TimeRemap::default()
+        }),
+    );
+    graph.nodes.insert(output, media_output());
+    assert!(build_errors(graph).iter().any(|error| matches!(
+        error,
+        LumenError::GraphValidation(GraphValidationError::NodeIdMismatch { .. })
+    )));
 }
 
 #[test]
@@ -1336,6 +1384,52 @@ fn opacity_direct_source_is_traversed_for_media_prediction() {
 
     assert_eq!(requirements.images, vec!["plate"]);
     assert!(requirements.videos.is_empty());
+}
+
+#[test]
+fn media_prediction_visits_shared_inputs_once() {
+    let media = NodeId::new(1);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        media,
+        NodeKind::MediaIn(MediaIn {
+            id: media,
+            params: MediaInParamsDelegate {
+                kind: Deferred::value(0),
+                source: Deferred::value("plate".to_string()),
+                ..Default::default()
+            },
+        }),
+    );
+    let mut previous = media;
+    for level in 0..40 {
+        let merge = NodeId::new(2 + level);
+        let input = PortRef::new(previous, "output".to_string());
+        graph.nodes.insert(
+            merge,
+            NodeKind::Merge(Merge {
+                id: merge,
+                base: input.clone(),
+                overlay: input,
+                ..Merge::default()
+            }),
+        );
+        previous = merge;
+    }
+    let output = NodeId::new(100);
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(previous, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let requirements =
+        collect_frame_requirements(&composition, &TestMediaStore::image("plate", 8, 4), 0).unwrap();
+
+    assert_eq!(requirements.images, vec!["plate"]);
 }
 
 #[test]
@@ -5710,6 +5804,65 @@ fn supersampled_alpha(
 }
 
 #[test]
+fn an_open_path_fills_like_the_same_path_closed() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    const SIZE: u32 = 80;
+    let triangle = |data: &str| {
+        NodeKind::Path(Path {
+            id: NodeId::new(1),
+            params: PathParamsDelegate {
+                data: Deferred::value(data.to_string()),
+                ..Default::default()
+            },
+        })
+    };
+    let open = render_drawable_graph(
+        &mut renderer,
+        vec![triangle("M 10.3 10.7 L 60.2 20.1 L 30.4 70.6")],
+        SIZE,
+    );
+    let closed = render_drawable_graph(
+        &mut renderer,
+        vec![triangle("M 10.3 10.7 L 60.2 20.1 L 30.4 70.6 Z")],
+        SIZE,
+    );
+    assert!(
+        closed.iter().skip(3).step_by(4).any(|&a| a > 0 && a < 255),
+        "the closed triangle has antialiased edges"
+    );
+    assert_eq!(open, closed);
+}
+
+#[test]
+fn a_path_stroke_without_width_draws_nothing() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    for stroke_width in [0.0, -2.0] {
+        let rgba = render_drawable_graph(
+            &mut renderer,
+            vec![NodeKind::Path(Path {
+                id: NodeId::new(1),
+                params: PathParamsDelegate {
+                    data: Deferred::value("M 10.5 10.5 L 50.5 10.5".to_string()),
+                    fill_enabled: Deferred::value(false),
+                    stroke_enabled: Deferred::value(true),
+                    stroke_width: Deferred::value(stroke_width),
+                    ..Default::default()
+                },
+            })],
+            64,
+        );
+        assert!(
+            rgba.iter().skip(3).step_by(4).all(|&alpha| alpha == 0),
+            "stroke_width {stroke_width}"
+        );
+    }
+}
+
+#[test]
 fn non_uniform_scale_matches_a_supersampled_outline() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
@@ -6404,6 +6557,38 @@ fn text_transform_in_msdf_mode_matches_larger_and_rotated_text() {
 }
 
 #[test]
+fn malformed_path_data_fails_the_frame_naming_the_data_field() {
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        NodeId::new(1),
+        NodeKind::Path(Path {
+            id: NodeId::new(1),
+            params: PathParamsDelegate {
+                data: Deferred::value("M 0 0 L 10 10 C nope".to_string()),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        NodeId::new(2),
+        NodeKind::MediaOutput(MediaOutput {
+            id: NodeId::new(2),
+            source: PortRef::new(NodeId::new(1), "output".to_string()),
+        }),
+    );
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let error = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("Path node") && error.contains("`data` is malformed"),
+        "{error}"
+    );
+}
+
+#[test]
 fn path_with_more_than_128_points_renders_fully_and_errors_past_the_maximum() {
     let polyline = |count: usize| {
         let mut data = String::from("M 10 10");
@@ -6825,6 +7010,357 @@ fn text_glyphs_larger_than_the_atlas_still_draw() {
         .filter(|pixel| pixel[3] == 255)
         .count();
     assert!(inked > 256 * 256 / 2, "only {inked} pixels inked");
+}
+
+#[test]
+fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // The animated size gives the text the full limit, and the constant one a limit of its own.
+    for font_size in [Deferred::value(8.0), expression("8 + frame * 0")] {
+        let composition = |content: String| {
+            let mut composition = text_test_composition(TextParamsDelegate {
+                content: TextContentDelegate::Text(Deferred::value(content)),
+                font_size: font_size.clone(),
+                ..Default::default()
+            })
+            .into_builder();
+            composition.render_settings.width = 64;
+            composition.render_settings.height = 64;
+            composition.build().unwrap()
+        };
+        // Whitespace is not drawn, so it does not count toward the limit.
+        let spaced = composition(format!("ab{}", " ".repeat(3000)));
+        let pixels = render_rgba8(&mut renderer, &spaced, 0, &EmptyMediaStore);
+        assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+
+        let long = composition("a".repeat(2049));
+        let error = renderer
+            .render_frame(&long, 0, &EmptyMediaStore)
+            .expect_err("2049 glyphs exceed the limit")
+            .to_string();
+        assert!(
+            error.contains("Text node 1") && error.contains("2049") && error.contains("2048"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn text_decorations_split_by_span_paint_fit_the_size_counted_at_compile() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 64, "height": 32 },
+        "nodes": [
+            { "id": 1, "type": "text", "params": {
+                "content": [
+                    { "text": "a", "color": "#ff0000" },
+                    { "text": "b", "color": "#0000ff" }
+                ],
+                "font_size": 24,
+                "position": [4, 2],
+                "underline": {}
+            } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let has = |color: [u8; 3]| {
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] == 255 && pixel[..3] == color)
+    };
+    assert!(has([255, 0, 0]) && has([0, 0, 255]));
+}
+
+/// Inter with its family renamed to `name`, which must have the five letters of "Inter".
+fn renamed_inter(name: &str) -> Vec<u8> {
+    assert_eq!(name.len(), 5);
+    let mut font = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf").to_vec();
+    let utf16 = |text: &str| {
+        text.encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>()
+    };
+    for (from, to) in [
+        ("Inter".as_bytes().to_vec(), name.as_bytes().to_vec()),
+        (utf16("Inter"), utf16(name)),
+    ] {
+        let mut at = 0;
+        while let Some(found) = font[at..].windows(from.len()).position(|w| w == from) {
+            font[at + found..at + found + to.len()].copy_from_slice(&to);
+            at += found + to.len();
+        }
+    }
+    font
+}
+
+/// Resolves "Loader" to a font named "Qzxvj" and "Qzxvj" to no font data.
+#[derive(Debug, Clone)]
+struct LateFont;
+
+impl lumen_engine::media::FontResolver for LateFont {
+    fn id(&self) -> &str {
+        "late-font"
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![renamed_inter("Qzxvj")])
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NoFont;
+
+impl lumen_engine::media::FontResolver for NoFont {
+    fn id(&self) -> &str {
+        "no-font"
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(Vec::new())
+    }
+}
+
+impl MediaStore for LateFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        match family {
+            "Loader" => Some("late-font".to_string()),
+            "Qzxvj" => Some("no-font".to_string()),
+            _ => None,
+        }
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        match family {
+            "Loader" => Some(Box::new(LateFont)),
+            "Qzxvj" => Some(Box::new(NoFont)),
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn a_font_loaded_while_binding_resizes_constant_text_instead_of_failing() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // The first text measures a node whose font loads as the frame binds. That font, unlike the
+    // bundled one, has no "ffi" ligature, so the second text, sized for one glyph, needs three.
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": [
+            { "id": 99, "type": "text", "params": { "content": "x", "font_family": "Loader" } },
+            { "id": 1, "type": "text", "params": {
+                "content": "a",
+                "glyph_offset": "=vec2(0 * text_width(node(99)), 0)"
+            } },
+            { "id": 2, "type": "text", "params": {
+                "content": "ffi", "font_family": "Qzxvj", "font_size": 40, "position": [4, 10]
+            } },
+            { "id": 3, "type": "raster_multimerge" },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &LateFont);
+    assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+}
+
+/// Resolves "LoadN" to a font named "LateN" and "LateN" to no font data, for each digit N.
+#[derive(Debug, Clone)]
+struct LateFonts;
+
+#[derive(Debug, Clone)]
+struct LateFontsResolver(String);
+
+impl lumen_engine::media::FontResolver for LateFontsResolver {
+    fn id(&self) -> &str {
+        &self.0
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(match self.0.strip_prefix("Load") {
+            Some(digit) => vec![renamed_inter(&format!("Late{digit}"))],
+            None => Vec::new(),
+        })
+    }
+}
+
+impl MediaStore for LateFonts {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family.starts_with("Load") || family.starts_with("Late")).then(|| family.to_string())
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        self.font_resolver_id(family)
+            .map(|id| Box::new(LateFontsResolver(id)) as Box<dyn lumen_engine::media::FontResolver>)
+    }
+}
+
+#[test]
+fn many_fonts_loaded_while_binding_settle_in_one_render() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // Each pair is a text measuring a node whose font loads as the frame binds, then a text that
+    // font outgrows, so every font stops a bind.
+    let mut nodes = vec![
+        json!({ "id": 100, "type": "raster_multimerge" }),
+        json!({ "id": 101, "type": "media_output" }),
+    ];
+    let mut connections = vec![json!({ "from_node": 100, "to_node": 101, "to_port": "source" })];
+    for font in 0..5 {
+        let (measured, measuring, outgrown) = (200 + font, 2 * font + 1, 2 * font + 2);
+        nodes.extend([
+            json!({ "id": measured, "type": "text", "params": {
+                "content": "x", "font_family": format!("Load{font}")
+            } }),
+            json!({ "id": measuring, "type": "text", "params": {
+                "content": "a",
+                "glyph_offset": format!("=vec2(0 * text_width(node({measured})), 0)")
+            } }),
+            json!({ "id": outgrown, "type": "text", "params": {
+                "content": "ffi", "font_family": format!("Late{font}"), "font_size": 40
+            } }),
+        ]);
+        for from_node in [measuring, outgrown] {
+            connections.push(json!({
+                "from_node": from_node, "from_port": "output", "to_node": 100, "to_port": "layers"
+            }));
+        }
+    }
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": nodes,
+        "connections": connections
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &LateFonts);
+    assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+}
+
+/// Gives "Churn" a resolver with a new id each time it is asked, so its font never settles.
+#[derive(Debug, Default)]
+struct ChurningFont(std::sync::atomic::AtomicU32);
+
+#[derive(Debug, Clone)]
+struct ChurningFontResolver(String);
+
+impl lumen_engine::media::FontResolver for ChurningFontResolver {
+    fn id(&self) -> &str {
+        &self.0
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![renamed_inter("Churn")])
+    }
+}
+
+impl MediaStore for ChurningFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family == "Churn").then(|| {
+            let id = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            format!("churn-{id}")
+        })
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        self.font_resolver_id(family).map(|id| {
+            Box::new(ChurningFontResolver(id)) as Box<dyn lumen_engine::media::FontResolver>
+        })
+    }
+}
+
+#[test]
+fn a_font_that_never_settles_fails_the_render() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 64, "height": 64 },
+        "nodes": [
+            { "id": 1, "type": "text", "params": { "content": "x", "font_family": "Churn" } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap();
+    let error = renderer
+        .render_frame(&composition, 0, &ChurningFont::default())
+        .expect_err("the font loads again on every bind")
+        .to_string();
+    assert!(error.contains("fonts kept loading"), "{error}");
+}
+
+#[test]
+fn text_dropped_by_a_full_atlas_still_counts_toward_the_instance_limit() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // Glyphs this large overflow the atlas, which drops some of them.
+    let mut composition = text_test_composition(TextParamsDelegate {
+        content: TextContentDelegate::Text(Deferred::value(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(80),
+        )),
+        font_size: expression("1500 + frame * 0"),
+        render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
+        ..Default::default()
+    })
+    .into_builder();
+    composition.render_settings.width = 64;
+    composition.render_settings.height = 64;
+    let composition = composition.build().unwrap();
+    let error = renderer
+        .render_frame(&composition, 0, &EmptyMediaStore)
+        .expect_err("2080 glyphs exceed the limit")
+        .to_string();
+    assert!(
+        error.contains("Text node 1") && error.contains("2080") && error.contains("2048"),
+        "{error}"
+    );
 }
 
 #[cfg(feature = "msdf")]
@@ -8632,43 +9168,6 @@ fn resizing_the_canvas_does_not_reuse_the_old_plan() {
         .unwrap();
     assert_eq!(raster.domain.storage_size, lumen_gpu::Size::new(16, 8));
     assert_eq!(renderer.cached_plan_count(), 1);
-}
-
-#[test]
-fn plan_key_reports_time_remap_cycles() {
-    let Some(mut renderer) = gpu_composition_renderer() else {
-        return;
-    };
-    let (remap, output) = (NodeId::new(1), NodeId::new(2));
-    let mut graph = Graph::new();
-    graph.nodes.insert(
-        remap,
-        NodeKind::TimeRemap(TimeRemap {
-            id: remap,
-            params: TimeRemapParamsDelegate {
-                frame: Deferred::value(0.0),
-                loop_enabled: Deferred::value(false),
-                loop_start: Deferred::value(0),
-                loop_end: Deferred::value(0),
-            },
-            source: PortRef::new(remap, "output".to_string()),
-        }),
-    );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(remap, "output".to_string()),
-        }),
-    );
-    let error = renderer.compile(&test_composition(graph)).unwrap_err();
-    assert!(
-        matches!(
-            error,
-            LumenError::GraphValidation(GraphValidationError::Cycle { .. })
-        ),
-        "{error}"
-    );
 }
 
 #[test]
@@ -11120,7 +11619,7 @@ fn kept_output_reaches_external_output_textures() {
                     composition,
                     frame,
                     &EmptyMediaStore,
-                    lumen_gpu::ExternalTexture::from_texture(texture, desc),
+                    lumen_gpu::ExternalTexture::from_texture(texture, desc.domain),
                 )
                 .unwrap();
             submitted.wait(&renderer.gpu_renderer().device).unwrap();
@@ -11267,6 +11766,63 @@ fn memo_snapshot_is_shared_by_the_plans_its_key_spans() {
         assert!(pixels == first, "frame {frame} shows the memo's frame 0");
     }
     assert!(renderer.cached_plan_count() >= 2);
+}
+
+#[test]
+fn resize_reads_crop_bounds_through_opacity() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = |through_opacity: bool| {
+        let mut nodes = vec![
+            canvas_background(NodeId::new(1), [255, 0, 0, 255]),
+            square(
+                NodeId::new(2),
+                Deferred::value((6.0, 6.0)),
+                6,
+                [20, 40, 220, 255],
+            ),
+            multimerge(NodeId::new(3), &[1, 2]),
+            NodeKind::Crop(Crop {
+                id: NodeId::new(4),
+                params: CropParamsDelegate {
+                    x: Deferred::value(4),
+                    width: Deferred::value(8),
+                    height: Deferred::value(8),
+                    ..Default::default()
+                },
+                source: PortRef::new(NodeId::new(3), "output".to_string()),
+            }),
+        ];
+        let mut last = 4;
+        if through_opacity {
+            nodes.push(NodeKind::Opacity(Opacity {
+                id: NodeId::new(5),
+                source: PortRef::new(NodeId::new(4), "output".to_string()),
+                ..Default::default()
+            }));
+            last = 5;
+        }
+        nodes.push(NodeKind::Resize(Resize {
+            id: NodeId::new(6),
+            params: ResizeParamsDelegate {
+                width: Deferred::value(i64::from(CACHE_CANVAS.0)),
+                height: Deferred::value(i64::from(CACHE_CANVAS.1)),
+                mode: ResizeMode::Fit.into(),
+                sampling: ResizeSampling::Nearest.into(),
+                ..Default::default()
+            },
+            source: PortRef::new(NodeId::new(last), "output".to_string()),
+        }));
+        nodes.push(output_node(NodeId::new(7), 6));
+        cache_composition(nodes)
+    };
+    let direct = render_rgba8(&mut renderer, &composition(false), 0, &EmptyMediaStore);
+    let through_opacity = render_rgba8(&mut renderer, &composition(true), 0, &EmptyMediaStore);
+    assert!(
+        direct == through_opacity,
+        "opacity dropped the crop's bounds"
+    );
 }
 
 #[test]
@@ -11518,11 +12074,10 @@ fn memo_snapshot_dropped_with_its_key_change_is_not_shown_again() {
         NodeKind::Text(Text {
             id: NodeId::new(5),
             params: TextParamsDelegate {
-                content: TextContentDelegate::Text(expression(&format!(
-                    "if(floor(frame) % 2 == 1, '{}', 'W')",
-                    "W".repeat(3000)
-                ))),
-                font_size: Deferred::value(12.0),
+                content: TextContentDelegate::Text(expression(
+                    "if(floor(frame) % 2 == 1, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'W')",
+                )),
+                font_size: Deferred::value(1500.0),
                 scale: Deferred::value((0.001, 0.001)),
                 position: Deferred::value((30.0, 10.0)),
                 render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
@@ -12274,7 +12829,7 @@ fn decoration_extent_runs_on_across_a_line_break() {
     };
     let full = render_text_params(&mut renderer, text(json!([0, 1])), size);
     let partial = render_text_params(&mut renderer, text(json!([0, 0.75])), size);
-    // 6.75 of the 9 bytes: the first line and 1.75 of the second line's 4.
+    // 0.75 of the two lines' width: all of the first line and half of the second.
     let rows = inked_rows(&full, size);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(inked_rows(&partial, size), rows);
@@ -12291,7 +12846,7 @@ fn decoration_extent_runs_on_across_a_line_break() {
     assert_eq!(first, second);
     assert_eq!(first_partial, first);
     assert!(
-        (second_partial / second - 1.75 / 4.0).abs() < 0.05,
+        (second_partial / second - 0.5).abs() < 0.05,
         "{second_partial} of {second}"
     );
     let animated = render_text_frames(

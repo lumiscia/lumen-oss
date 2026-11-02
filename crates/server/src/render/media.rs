@@ -190,9 +190,14 @@ impl LocalMediaStore {
             return Some(Arc::clone(resolver));
         }
 
-        let resolver = Arc::new(
-            FfmpegVideoResolver::open_with_options(source.to_string(), self.video_options).ok()?,
-        );
+        let resolver =
+            match FfmpegVideoResolver::open_with_options(source.to_string(), self.video_options) {
+                Ok(resolver) => Arc::new(resolver),
+                Err(error) => {
+                    tracing::warn!(source, %error, "failed opening video media resolver");
+                    return None;
+                }
+            };
         tracing::info!(
             source,
             width = resolver.metadata().width,

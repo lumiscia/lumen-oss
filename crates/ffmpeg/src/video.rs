@@ -14,12 +14,19 @@ use sys::{
         AV_CODEC_ID_AV1, AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_NONE, AV_CODEC_ID_PRORES,
         AV_CODEC_ID_VP9,
     },
+    AVColorRange::AVCOL_RANGE_JPEG,
+    AVColorSpace::{
+        AVCOL_SPC_BT470BG, AVCOL_SPC_BT709, AVCOL_SPC_BT2020_CL, AVCOL_SPC_BT2020_NCL,
+        AVCOL_SPC_FCC, AVCOL_SPC_SMPTE170M, AVCOL_SPC_SMPTE240M,
+    },
     AVHWDeviceType::{
         AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_VIDEOTOOLBOX, AV_HWDEVICE_TYPE_VULKAN,
     },
     AVPixelFormat::{
         AV_PIX_FMT_BGRA, AV_PIX_FMT_CUDA, AV_PIX_FMT_NONE, AV_PIX_FMT_NV12, AV_PIX_FMT_P010BE,
         AV_PIX_FMT_P010LE, AV_PIX_FMT_RGBA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_VULKAN,
+        AV_PIX_FMT_YUVJ411P, AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ440P,
+        AV_PIX_FMT_YUVJ444P,
     },
 };
 
@@ -87,6 +94,7 @@ pub struct VideoDecoder {
     mode: DecodeMode,
     codec: VideoCodec,
     time_base: Rational,
+    rotation: u32,
     context: *mut sys::AVCodecContext,
     scaler: *mut sys::SwsContext,
     hw_device: Option<HwDeviceContext>,
@@ -168,6 +176,7 @@ impl VideoDecoder {
             mode: config.mode,
             codec: stable_codec,
             time_base: input.stream_time_base(config.stream_index)?.into(),
+            rotation: crate::format::display_rotation(parameters),
             context,
             scaler: ptr::null_mut(),
             hw_device: None,
@@ -280,7 +289,8 @@ impl VideoDecoder {
     /// CPU decoders convert their native software frame with swscale. Hardware decoders first
     /// transfer the decoded frame into software memory, then use the same RGBA8 conversion path.
     /// This keeps callers independent from FFmpeg's platform-specific GPU frame handles while still
-    /// allowing decode itself to use VideoToolbox/NVDEC/Vulkan when available.
+    /// allowing decode itself to use VideoToolbox/NVDEC/Vulkan when available. Frames come out in
+    /// display orientation, with the stream's rotation applied.
     pub fn receive_rgba_frame(&mut self) -> Result<Option<CpuVideoFrame>> {
         let mut frame = AvFrame::new()?;
         match self.receive_frame(&mut frame)? {
@@ -289,6 +299,7 @@ impl VideoDecoder {
         }
     }
 
+    /// Receives the next decoded frame as a GPU texture, in coded orientation.
     pub fn receive_gpu_frame(&mut self) -> Result<Option<GpuVideoFrame>> {
         if self.mode == DecodeMode::Cpu {
             return Err(FfmpegError::new(
@@ -384,6 +395,9 @@ impl VideoDecoder {
                 "failed to create RGBA conversion context",
             ));
         }
+        // Applied per frame because recreating the converter resets these, and tags can change
+        // between frames. swscale returns early when nothing changed.
+        set_source_colorspace(self.scaler, frame)?;
 
         let mut dst_data = [
             data.as_mut_ptr(),
@@ -407,10 +421,11 @@ impl VideoDecoder {
             )?;
         }
 
+        let (width, height, data) = rotate_rgba(width, height, data, self.rotation);
         Ok(CpuVideoFrame {
             width,
             height,
-            stride,
+            stride: width as usize * 4,
             pixel_format: PixelFormat::Rgba8,
             pts: frame.pts(),
             data,
@@ -506,6 +521,73 @@ impl VideoDecoder {
             ),
         ))
     }
+}
+
+/// Tells swscale how to read the frame's YUV. Its default is limited-range BT.601. The destination is
+/// always full-range RGBA.
+fn set_source_colorspace(scaler: *mut sys::SwsContext, frame: &AvFrame) -> Result<()> {
+    const DEFAULT_BRIGHTNESS: i32 = 0;
+    const DEFAULT_CONTRAST: i32 = 1 << 16;
+    const DEFAULT_SATURATION: i32 = 1 << 16;
+
+    let full_range = frame.color_range() == AVCOL_RANGE_JPEG
+        || matches!(
+            frame.format(),
+            AV_PIX_FMT_YUVJ411P
+                | AV_PIX_FMT_YUVJ420P
+                | AV_PIX_FMT_YUVJ422P
+                | AV_PIX_FMT_YUVJ440P
+                | AV_PIX_FMT_YUVJ444P
+        );
+    unsafe {
+        let coefficients = sys::sws_getCoefficients(source_matrix(frame));
+        ffi::check(
+            sys::sws_setColorspaceDetails(
+                scaler,
+                coefficients,
+                i32::from(full_range),
+                coefficients,
+                1,
+                DEFAULT_BRIGHTNESS,
+                DEFAULT_CONTRAST,
+                DEFAULT_SATURATION,
+            ),
+            "sws_setColorspaceDetails",
+        )
+    }
+}
+
+/// Picks swscale's `SWS_CS_*` index, whose values match `AVColorSpace`.
+fn source_matrix(frame: &AvFrame) -> i32 {
+    match frame.colorspace() {
+        colorspace @ (AVCOL_SPC_BT709 | AVCOL_SPC_FCC | AVCOL_SPC_BT470BG | AVCOL_SPC_SMPTE170M
+        | AVCOL_SPC_SMPTE240M | AVCOL_SPC_BT2020_NCL) => colorspace as i32,
+        AVCOL_SPC_BT2020_CL => AVCOL_SPC_BT2020_NCL as i32,
+        // Heuristic for untagged video, not a fact about the source: HD is usually BT.709 and SD
+        // usually BT.601.
+        _ if frame.height() >= 720 => AVCOL_SPC_BT709 as i32,
+        _ => AVCOL_SPC_BT470BG as i32,
+    }
+}
+
+/// Rotates tightly packed RGBA clockwise, returning the new width, height and pixels.
+fn rotate_rgba(width: u32, height: u32, data: Vec<u8>, rotation: u32) -> (u32, u32, Vec<u8>) {
+    if rotation == 0 {
+        return (width, height, data);
+    }
+    let (w, h) = (width as usize, height as usize);
+    let (out_width, out_height) = if rotation == 180 { (w, h) } else { (h, w) };
+    let mut out = vec![0; data.len()];
+    for (index, pixel) in data.as_chunks::<4>().0.iter().enumerate() {
+        let (x, y) = (index % w, index / w);
+        let (out_x, out_y) = match rotation {
+            90 => (h - 1 - y, x),
+            180 => (w - 1 - x, h - 1 - y),
+            _ => (y, w - 1 - x),
+        };
+        out[(out_y * out_width + out_x) * 4..][..4].copy_from_slice(pixel);
+    }
+    (out_width as u32, out_height as u32, out)
 }
 
 unsafe extern "C" fn force_metal_pixel_format(

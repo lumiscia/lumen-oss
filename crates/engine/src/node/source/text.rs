@@ -136,7 +136,9 @@ impl From<TextTransform> for lumen_text::TextTransform {
 /// Produces a text source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TextParams {
-    /// Text to render: a string, or spans that each override the style these params give.
+    /// Text to render: a string, or spans that each override the style these params give. A
+    /// node draws at most 2048 glyphs, counting a stroked glyph twice and each decoration rect
+    /// once; whitespace is not drawn, and more is a render error.
     #[meta(multiline, recommended_rows = 4)]
     pub content: TextContent,
     /// Font family name.
@@ -360,7 +362,9 @@ pub(crate) struct CompiledText {
     pub(crate) paints_buffer: lumen_gpu::BufferId,
     /// The number of span paints.
     pub(crate) paint_count: usize,
-    pub(crate) max_glyphs: usize,
+    /// The most glyph, stroke and decoration instances the text can draw, which sizes
+    /// `instances_buffer`.
+    pub(crate) capacity: usize,
     pub(crate) size: lumen_gpu::Size,
     /// The size of what the glyphs are drawn to: the layer of blurred text, else the output.
     pub(crate) layer_size: lumen_gpu::Size,
@@ -384,6 +388,25 @@ impl GpuCompiledNode for CompiledText {
 }
 
 impl CompiledText {
+    /// Fails when the text draws `drawn` glyph, stroke and decoration instances, more than it
+    /// has room for.
+    fn check_capacity(&self, ctx: &FrameBindContext<'_>, drawn: usize) -> crate::Result<()> {
+        if drawn <= self.capacity {
+            return Ok(());
+        }
+        Err(RenderError::NodeEvaluation {
+            frame: ctx.frame(),
+            node_id: self.node_id,
+            node_kind: "Text",
+            details: format!(
+                "text draws {drawn} glyphs, strokes and decorations, more than the {} a text node \
+                 can draw; split it across nodes or shorten it",
+                self.capacity
+            ),
+        }
+        .into())
+    }
+
     /// Binds the text, stopping once its glyphs are placed when `kept` and the output kept from
     /// an earlier frame still matches: no glyph was dropped or placed again. Returns whether it
     /// bound fully.
@@ -521,34 +544,20 @@ impl CompiledText {
         // paints, each with the half width of its stroke.
         let mut decoration_paints = Vec::new();
         let mut before_glyphs = 0;
-        let mut dropped_decorations = 0;
         state.strokes.clear();
         state.half_widths.clear();
         if self.decorated {
-            // Spans without a color of their own share the first one's paint, so a line
-            // runs along them as one rect.
-            let plain = spans
-                .iter()
-                .position(|span| span.color.is_none())
-                .unwrap_or(0) as u32;
-            before_glyphs = decorate(
+            let own;
+            (before_glyphs, own) = decorate(
                 shaped,
                 &decorations,
                 spans,
                 origin,
-                |span| match spans.get(span) {
-                    Some(TextSpan { color: Some(_), .. }) => span as u32,
-                    _ => plain,
-                },
-                |paint, span| {
-                    decoration_paints.push((paint, span, 0.0));
-                    (self.paint_count + decoration_paints.len() - 1) as u32
-                },
+                self.paint_count,
                 &mut state.decorations,
             );
-            dropped_decorations = state.decorations.len().saturating_sub(self.max_glyphs);
-            state.decorations.truncate(self.max_glyphs);
-            before_glyphs = before_glyphs.min(state.decorations.len());
+            decoration_paints.extend(own.into_iter().map(|(paint, span)| (paint, span, 0.0)));
+            self.check_capacity(ctx, state.decorations.len())?;
             if self.stroked {
                 span_strokes(
                     decorations.stroke.as_ref(),
@@ -594,7 +603,6 @@ impl CompiledText {
             &mut atlas,
             &layout,
             mode,
-            self.max_glyphs - state.decorations.len(),
             &state.half_widths,
             &mut state.overfull,
         );
@@ -607,7 +615,15 @@ impl CompiledText {
             bound.text_generation_ms += atlas_ms;
         }
 
-        let dropped_glyphs = prepared.dropped_glyphs + dropped_decorations;
+        // Glyphs the atlas dropped are still drawn text, so they count toward the limit.
+        self.check_capacity(
+            ctx,
+            state.decorations.len()
+                + prepared.instances.len()
+                + prepared.strokes.len()
+                + prepared.dropped_glyphs,
+        )?;
+        let dropped_glyphs = prepared.dropped_glyphs;
         let dropping = dropped_glyphs > 0;
         bound.text_dropped_glyphs |= dropping;
         if dropping != state.dropping_glyphs {
@@ -616,9 +632,8 @@ impl CompiledText {
                     target: "lumen_text",
                     node_id = self.node_id.0,
                     dropped_glyphs,
-                    max_glyphs = self.max_glyphs,
                     atlas_size,
-                    "text glyphs dropped: too many glyphs or glyph atlas full"
+                    "text glyphs dropped: glyph atlas full"
                 );
             } else {
                 tracing::info!(
@@ -1326,18 +1341,32 @@ pub(crate) enum NodeDecorations {
 /// the strikethroughs, which are drawn over the glyphs.
 ///
 /// Consecutive spans that take the node's decoration share one run, and a span with its own is
-/// a run alone. A line without its own paint takes the paint index `text_paint` gives each
-/// span; `push_paint` adds a decoration's own paint, with the span whose box it spans if it is
-/// the span's own, and returns its index.
+/// a run alone. A line without its own paint takes its span's paint, among the `paint_count`
+/// of the spans. Spans without a color of their own share the first one's paint, so a line
+/// runs along them as one rect. Each decoration's own paint is returned with the span whose box
+/// it spans if it is the span's own, and has the index `paint_count` and its place in the
+/// returned paints.
 pub(crate) fn decorate<'a>(
     shaped: &lumen_text::ShapedText,
     node: &'a TextDecorations,
     spans: &'a [TextSpan],
     origin: [f32; 2],
-    text_paint: impl Fn(usize) -> u32,
-    mut push_paint: impl FnMut(&'a Paint, Option<usize>) -> u32,
+    paint_count: usize,
     instances: &mut Vec<lumen_text::GpuGlyphInstance>,
-) -> usize {
+) -> (usize, Vec<(&'a Paint, Option<usize>)>) {
+    let plain = spans
+        .iter()
+        .position(|span| span.color.is_none())
+        .unwrap_or(0) as u32;
+    let text_paint = |span: usize| match spans.get(span) {
+        Some(TextSpan { color: Some(_), .. }) => span as u32,
+        _ => plain,
+    };
+    let mut paints = Vec::new();
+    let mut push_paint = |paint: &'a Paint, span: Option<usize>| {
+        paints.push((paint, span));
+        (paint_count + paints.len() - 1) as u32
+    };
     let span_count = shaped.counts.span as usize;
     // A span's own decoration moves with its baseline shift; the node's stays on the line.
     let draw = |instances: &mut Vec<_>,
@@ -1440,7 +1469,7 @@ pub(crate) fn decorate<'a>(
             },
         );
     }
-    before_glyphs
+    (before_glyphs, paints)
 }
 
 /// The number of paints that `params`' decorations with their own and strokes add, or `None`
