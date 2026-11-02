@@ -31,9 +31,6 @@ pub enum PropertyValue {
     TextHighlight(Box<TextHighlightDelegate>),
     FontFeatures(Box<FontFeaturesDelegate>),
     TextStroke(Box<TextStrokeDelegate>),
-    FloatVec(Vec<f64>),
-    IntVec(Vec<i64>),
-    StringVec(Vec<String>),
 }
 
 #[derive(Debug, Clone, lumen_macros::StructuralHash)]
@@ -97,119 +94,6 @@ impl PropertyValue {
             Self::Float(value) => Some(value.to_string()),
             Self::Bool(value) => Some(value.to_string()),
             _ => None,
-        }
-    }
-
-    pub fn resolve_float(
-        &self,
-        node_id: NodeId,
-        property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<f64> {
-        self.coerce_float().ok_or_else(|| {
-            Self::invalid_type(
-                node_id,
-                property_path,
-                "Float",
-                if matches!(self, Self::String(_)) {
-                    "String"
-                } else {
-                    "incompatible value"
-                },
-            )
-        })
-    }
-
-    pub fn resolve_int(
-        &self,
-        node_id: NodeId,
-        property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<i64> {
-        self.coerce_int().ok_or_else(|| {
-            Self::invalid_type(
-                node_id,
-                property_path,
-                "Int",
-                if matches!(self, Self::String(_)) {
-                    "String"
-                } else {
-                    "incompatible value"
-                },
-            )
-        })
-    }
-
-    pub fn resolve_bool(
-        &self,
-        node_id: NodeId,
-        property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<bool> {
-        self.coerce_bool()
-            .ok_or_else(|| Self::invalid_type(node_id, property_path, "Bool", "incompatible value"))
-    }
-
-    pub fn resolve_string(
-        &self,
-        node_id: NodeId,
-        property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<String> {
-        self.coerce_string().ok_or_else(|| {
-            Self::invalid_type(node_id, property_path, "String", "incompatible value")
-        })
-    }
-
-    pub fn resolve_color(
-        &self,
-        node_id: NodeId,
-        property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<[u8; 4]> {
-        match self {
-            Self::Color(value) => Ok(*value),
-            _ => Err(Self::invalid_type(
-                node_id,
-                property_path,
-                "Color",
-                "incompatible value",
-            )),
-        }
-    }
-
-    pub fn resolve_paint(
-        &self,
-        node_id: NodeId,
-        property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<vector::paint::Paint> {
-        match self {
-            Self::Paint(value) => Ok(value.clone()),
-            Self::Color(value) => Ok(vector::paint::Paint::solid(*value)),
-            _ => Err(Self::invalid_type(
-                node_id,
-                property_path,
-                "Paint",
-                "incompatible value",
-            )),
-        }
-    }
-
-    pub fn resolve_vec2(
-        &self,
-        node_id: NodeId,
-        property_path: &str,
-        _ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<(f64, f64)> {
-        match self {
-            Self::Vec2(value) => Ok(*value),
-            _ => Err(Self::invalid_type(
-                node_id,
-                property_path,
-                "Vec2",
-                "incompatible value",
-            )),
         }
     }
 }

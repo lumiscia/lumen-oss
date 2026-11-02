@@ -146,19 +146,11 @@ pub trait NodeParams: Clone + Default {
 
     #[cfg(feature = "json")]
     fn from_json(
-        _node_id: NodeId,
+        node_id: NodeId,
         params: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> anyhow::Result<Self>
     where
-        Self: Sized,
-        Self: serde::de::DeserializeOwned,
-    {
-        let value = params
-            .cloned()
-            .map(serde_json::Value::Object)
-            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-        serde_path_to_error::deserialize(value).map_err(|error| anyhow::anyhow!(error.to_string()))
-    }
+        Self: Sized;
 }
 
 #[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
@@ -327,32 +319,5 @@ impl<D: DelegateValue> OptionalDelegate for Override<D> {
             Self::Clear => Override::Clear,
             Self::Set(value) => Override::Set(value),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Debug, Clone, Copy, Default, lumen_macros::Delegate)]
-    pub enum Spread {
-        #[default]
-        Pad,
-        Repeat,
-    }
-
-    #[test]
-    fn delegate_enums_without_kind_reject_property_values() {
-        let error = SpreadDelegate::from_property_expression(
-            PropertyExpression::Value(PropertyValue::String("repeat".to_string())),
-            NodeId::new(2),
-            "spread",
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "property resolution error: property `spread` on node 2 has invalid type: \
-             expected Spread, got property value"
-        );
     }
 }

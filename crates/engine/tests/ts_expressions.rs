@@ -27,7 +27,6 @@ fn typescript_helper_expressions_round_trip() {
         fps: composition.timeline().fps,
         width: composition.render_settings().width,
         height: composition.render_settings().height,
-        duration_frames: composition.timeline().duration_frames,
         graph: Some(composition.graph()),
         props: Some(&props),
         ..Default::default()

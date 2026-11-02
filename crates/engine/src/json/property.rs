@@ -33,11 +33,7 @@ pub(crate) fn classify_string(text: &str) -> Option<StringParam<'_>> {
 
 /// Converts a JSON param to a property. A string starting with `=` is an
 /// expression, and a leading `==` escapes a literal string starting with `=`.
-pub fn parse_property(
-    val: &Value,
-    def: Option<&PropertyDef>,
-    name: &str,
-) -> Result<PropertyExpression> {
+pub fn parse_property(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyExpression> {
     let escaped;
     let val = match val.as_str().and_then(classify_string) {
         Some(StringParam::Expression(source)) => {
@@ -52,28 +48,7 @@ pub fn parse_property(
         None => val,
     };
 
-    let value = if let Some(def) = def {
-        parse_typed(val, def, name)?
-    } else {
-        parse_inferred(val, name)?
-    };
-    Ok(PropertyExpression::Value(value))
-}
-
-fn parse_inferred(val: &Value, name: &str) -> Result<PropertyValue> {
-    match val {
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(PropertyValue::Int(i))
-            } else {
-                Ok(PropertyValue::Float(n.as_f64().unwrap_or(0.0)))
-            }
-        }
-        Value::Bool(b) => Ok(PropertyValue::Bool(*b)),
-        Value::String(s) => Ok(PropertyValue::String(s.clone())),
-        Value::Array(arr) => parse_color_or_vec(arr, name),
-        _ => bail!("unsupported property value for `{name}`"),
-    }
+    Ok(PropertyExpression::Value(parse_typed(val, def, name)?))
 }
 
 fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyValue> {
@@ -183,7 +158,7 @@ pub(crate) fn parse_nested_field<T: DelegateValue>(
     def: &PropertyDef,
     constant: bool,
 ) -> std::result::Result<T, String> {
-    let parsed = parse_property(value, Some(def), def.id).map_err(|error| format!("{error:#}"))?;
+    let parsed = parse_property(value, def, def.id).map_err(|error| format!("{error:#}"))?;
     if constant && matches!(parsed, PropertyExpression::Expr(_)) {
         return Err(format!("`{}` does not support expressions", def.id));
     }
@@ -232,9 +207,6 @@ pub(crate) fn property_to_json(property: &PropertyExpression, enum_def: Option<&
         PropertyValue::TextHighlight(highlight) => Value::Object(highlight.to_json()),
         PropertyValue::FontFeatures(features) => features.to_json_value(),
         PropertyValue::TextStroke(stroke) => Value::Object(stroke.to_json()),
-        PropertyValue::FloatVec(values) => Value::from(values.clone()),
-        PropertyValue::IntVec(values) => Value::from(values.clone()),
-        PropertyValue::StringVec(values) => Value::from(values.clone()),
     }
 }
 
@@ -259,34 +231,9 @@ pub(crate) fn integer_mismatch(value: &Value) -> String {
     }
 }
 
-/// Params that were renamed or removed, with the hint shown when a composition
-/// still uses them: `(node kind, param, hint)`.
-const RETIRED_PARAMS: &[(&str, &str, &str)] = &[
-    (
-        "wgsl_shader",
-        "bindings",
-        "`wgsl_shader` takes a `uniforms` object instead",
-    ),
-    (
-        "memo",
-        "cache_id",
-        "`memo` takes a `key` expression, and renders its source again when the key changes",
-    ),
-    (
-        "memo",
-        "allow_expressions",
-        "`memo` takes a `key` expression, and renders its source again when the key changes",
-    ),
-];
-
-/// The error for a param a node does not have, with a hint for retired params.
-pub fn unknown_param_error(kind: &str, key: &str, id: NodeId) -> anyhow::Error {
-    let hint = RETIRED_PARAMS
-        .iter()
-        .find(|(retired_kind, retired_key, _)| *retired_kind == kind && *retired_key == key)
-        .map(|(_, _, hint)| format!("; {hint}"))
-        .unwrap_or_default();
-    anyhow!("unknown param `{key}` on node {id}{hint}")
+/// The error for a param a node does not have.
+pub fn unknown_param_error(key: &str, id: NodeId) -> anyhow::Error {
+    anyhow!("unknown param `{key}` on node {id}")
 }
 
 /// Parses `[r, g, b]`, `[r, g, b, a]` with integer components in 0–255, or a
@@ -338,21 +285,6 @@ pub fn try_parse_color(val: &Value) -> Result<[u8; 4], String> {
         byte(2)?,
         if hex.len() == 8 { byte(3)? } else { 255 },
     ])
-}
-
-fn parse_color_or_vec(arr: &[Value], name: &str) -> Result<PropertyValue> {
-    if arr.len() == 2 {
-        let x = arr[0].as_f64().with_context(|| format!("`{name}` vec2"))?;
-        let y = arr[1].as_f64().with_context(|| format!("`{name}` vec2"))?;
-        return Ok(PropertyValue::Vec2((x, y)));
-    }
-    if arr.len() >= 3
-        && arr.len() <= 4
-        && let Some(c) = parse_color(&Value::Array(arr.to_vec()))
-    {
-        return Ok(PropertyValue::Color(c));
-    }
-    bail!("cannot infer type for array property `{name}`")
 }
 
 #[cfg(test)]
@@ -440,22 +372,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn retired_params_get_a_hint() {
-        assert_eq!(
-            unknown_param_error("wgsl_shader", "bindings", NodeId(4)).to_string(),
-            "unknown param `bindings` on node 4; `wgsl_shader` takes a `uniforms` object instead"
-        );
-        assert_eq!(
-            unknown_param_error("wgsl_shader", "nope", NodeId(4)).to_string(),
-            "unknown param `nope` on node 4"
-        );
+    fn float_def() -> PropertyDef {
+        def_of::<crate::node::processing::exposure::ExposureParamsDelegate>("contrast")
+    }
+
+    fn string_def() -> PropertyDef {
+        def_of::<crate::node::source::media_in::MediaInParamsDelegate>("source")
+    }
+
+    fn def_of<P: crate::node::NodeParams>(id: &str) -> PropertyDef {
+        P::property_defs()
+            .into_iter()
+            .find(|def| def.id == id)
+            .unwrap()
     }
 
     #[test]
     fn typed_property() {
         let v = serde_json::json!(1.25);
-        let p = parse_property(&v, None, "test").unwrap();
+        let p = parse_property(&v, &float_def(), "test").unwrap();
         assert!(matches!(
             p,
             PropertyExpression::Value(PropertyValue::Float(f)) if (f - 1.25).abs() < 1e-10
@@ -465,14 +400,14 @@ mod tests {
     #[test]
     fn expression_property() {
         let v = serde_json::json!("=frame * 2");
-        let p = parse_property(&v, None, "test").unwrap();
+        let p = parse_property(&v, &float_def(), "test").unwrap();
         assert!(matches!(p, PropertyExpression::Expr(_)));
     }
 
     #[test]
     fn leading_double_equals_is_a_literal_string() {
         for (input, expected) in [("==wow", "=wow"), ("===", "=="), ("==", "=")] {
-            let p = parse_property(&serde_json::json!(input), None, "test").unwrap();
+            let p = parse_property(&serde_json::json!(input), &string_def(), "test").unwrap();
             assert!(
                 matches!(&p, PropertyExpression::Value(PropertyValue::String(s)) if s == expected),
                 "{input}"

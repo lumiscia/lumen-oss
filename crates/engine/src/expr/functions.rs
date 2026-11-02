@@ -73,10 +73,8 @@ impl Shape {
             }
             ExprNode::Literal(_)
             | ExprNode::Global(_)
-            | ExprNode::SymbolicPath(_)
             | ExprNode::Node(_)
-            | ExprNode::PropertyValue(..)
-            | ExprNode::VirtualProperty(_) => {}
+            | ExprNode::PropertyValue(..) => {}
         }
     }
 
@@ -321,10 +319,8 @@ fn substitute(node: &ExprNode, params: &[String], args: &[ExprNode]) -> ExprNode
         }
         ExprNode::Literal(_)
         | ExprNode::Global(_)
-        | ExprNode::SymbolicPath(_)
         | ExprNode::Node(_)
-        | ExprNode::PropertyValue(..)
-        | ExprNode::VirtualProperty(_) => node.clone(),
+        | ExprNode::PropertyValue(..) => node.clone(),
     }
 }
 
@@ -344,10 +340,8 @@ pub(crate) fn visit(node: &ExprNode, f: &mut impl FnMut(&ExprNode)) {
         }
         ExprNode::Literal(_)
         | ExprNode::Global(_)
-        | ExprNode::SymbolicPath(_)
         | ExprNode::Node(_)
-        | ExprNode::PropertyValue(..)
-        | ExprNode::VirtualProperty(_) => {}
+        | ExprNode::PropertyValue(..) => {}
     }
 }
 
@@ -547,36 +541,6 @@ mod tests {
             error.contains("expression expands deeper than 64 levels"),
             "{error}"
         );
-    }
-
-    #[test]
-    fn references_come_from_the_expanded_ast() {
-        let mut entries = vec![
-            ("discard(x)".to_string(), "0".to_string()),
-            ("twice(x)".to_string(), "x + x".to_string()),
-            (
-                "g0()".to_string(),
-                "discard(node(1, 'opacity'))".to_string(),
-            ),
-        ];
-        for n in 1..=16 {
-            entries.push((
-                format!("g{n}()"),
-                format!("discard(g{}() + g{}())", n - 1, n - 1),
-            ));
-        }
-        let definitions: BTreeMap<_, _> = entries.into_iter().collect();
-        let _scope = FunctionScope::enter(&definitions).unwrap();
-
-        let discarded = Expression::parse("g16()").unwrap();
-        assert!(
-            discarded.references.is_empty(),
-            "{:?}",
-            discarded.references
-        );
-
-        let repeated = Expression::parse("twice(node(1, 'opacity')) + node(2)").unwrap();
-        assert_eq!(repeated.references.len(), 2, "{:?}", repeated.references);
     }
 
     #[test]

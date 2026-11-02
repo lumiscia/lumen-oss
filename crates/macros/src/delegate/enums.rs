@@ -148,45 +148,29 @@ pub(crate) fn expand_enum_delegate(
     let ident = &input.ident;
     let delegate = parse_delegate_attr(input)?;
     let delegate_ident = delegate.name.clone();
-    let has_kind = delegate.kind.is_some();
     let expressions = delegate.expressions;
-    if expressions && !has_kind {
-        return Err(syn::Error::new(
+    let kind = delegate.kind.as_ref().ok_or_else(|| {
+        syn::Error::new(
             ident.span(),
-            "`expressions` requires a delegate `kind`",
-        ));
-    }
-    let is_enum_kind = delegate
-        .kind
-        .as_ref()
-        .is_some_and(|k| k == "enum" || k == "Enum");
-    let node_meta_type_impl = if let Some(kind) = &delegate.kind {
-        let property_kind = property_kind_tokens(kind);
-        let enum_def_method: Option<proc_macro2::TokenStream> = if is_enum_kind {
-            Some(quote! {
-                #[cfg(any(feature = "json", feature = "metadata"))]
-                fn enum_def() -> ::core::option::Option<&'static ::lumen_engine::node::EnumDef> {
-                    ::core::option::Option::Some(<#ident as ::lumen_engine::node::NodeEnum>::enum_def())
-                }
-            })
-        } else {
-            None
-        };
+            "Delegate enums require `#[delegate(kind = ...)]`",
+        )
+    })?;
+    let is_enum_kind = kind == "enum" || kind == "Enum";
+    let property_kind = property_kind_tokens(kind);
+    let enum_def_method: Option<proc_macro2::TokenStream> = is_enum_kind.then(|| {
         quote! {
-            impl ::lumen_engine::node::NodeParamType for #ident {
-                fn property_kind() -> ::lumen_engine::node::PropertyKind {
-                    #property_kind
-                }
-                #enum_def_method
+            #[cfg(any(feature = "json", feature = "metadata"))]
+            fn enum_def() -> ::core::option::Option<&'static ::lumen_engine::node::EnumDef> {
+                ::core::option::Option::Some(<#ident as ::lumen_engine::node::NodeEnum>::enum_def())
             }
         }
-    } else {
-        quote! {
-            impl ::lumen_engine::node::NodeParamType for #ident {
-                fn property_kind() -> ::lumen_engine::node::PropertyKind {
-                    ::lumen_engine::node::PropertyKind::String
-                }
+    });
+    let node_meta_type_impl = quote! {
+        impl ::lumen_engine::node::NodeParamType for #ident {
+            fn property_kind() -> ::lumen_engine::node::PropertyKind {
+                #property_kind
             }
+            #enum_def_method
         }
     };
     let mut delegate_variants = variants
@@ -329,62 +313,40 @@ pub(crate) fn expand_enum_delegate(
     } else {
         quote!(false)
     };
-    let enum_property_methods = if has_kind {
-        quote! {
-            fn to_property_value(&self) -> ::lumen_engine::node::PropertyValue {
-                <#ident as ::lumen_engine::node::DeferredValue>::to_property_value(
-                    &self
-                        .clone()
-                        .into_evaluated()
-                        .expect("delegate enum property values cannot contain expressions"),
-                )
-            }
+    let enum_property_methods = quote! {
+        fn to_property_value(&self) -> ::lumen_engine::node::PropertyValue {
+            <#ident as ::lumen_engine::node::DeferredValue>::to_property_value(
+                &self
+                    .clone()
+                    .into_evaluated()
+                    .expect("delegate enum property values cannot contain expressions"),
+            )
+        }
 
-            fn from_property_expression(
-                value: ::lumen_engine::node::PropertyExpression,
-                node_id: ::lumen_engine::node::NodeId,
-                property_path: &str,
-            ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
-                let expected = <#ident as ::lumen_engine::node::DeferredValue>::property_kind_name();
-                match value {
-                    ::lumen_engine::node::PropertyExpression::Value(value) => {
-                        <#ident as ::lumen_engine::node::DeferredValue>::from_property_value(value)
-                            .map(::core::convert::Into::into)
-                            .ok_or_else(|| {
-                                ::lumen_engine::node::PropertyValue::invalid_type(
-                                    node_id,
-                                    property_path,
-                                    expected,
-                                    "incompatible value",
-                                )
-                            })
-                    }
-                    #expr_arm
+        fn from_property_expression(
+            value: ::lumen_engine::node::PropertyExpression,
+            node_id: ::lumen_engine::node::NodeId,
+            property_path: &str,
+        ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
+            let expected = <#ident as ::lumen_engine::node::DeferredValue>::property_kind_name();
+            match value {
+                ::lumen_engine::node::PropertyExpression::Value(value) => {
+                    <#ident as ::lumen_engine::node::DeferredValue>::from_property_value(value)
+                        .map(::core::convert::Into::into)
+                        .ok_or_else(|| {
+                            ::lumen_engine::node::PropertyValue::invalid_type(
+                                node_id,
+                                property_path,
+                                expected,
+                                "incompatible value",
+                            )
+                        })
                 }
-            }
-
-            #to_property_expression
-        }
-    } else {
-        // Without a `kind` there is no property value mapping, so properties cannot set it.
-        quote! {
-            fn to_property_value(&self) -> ::lumen_engine::node::PropertyValue {
-                ::lumen_engine::node::PropertyValue::String(::std::string::String::new())
-            }
-
-            fn from_property_expression(
-                _value: ::lumen_engine::node::PropertyExpression,
-                node_id: ::lumen_engine::node::NodeId,
-                property_path: &str,
-            ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
-                Err(::lumen_engine::node::PropertyValue::invalid_type(
-                    node_id,
-                    property_path,
-                    ::core::stringify!(#ident),
-                    "property value",
-                ))
+                #expr_arm
             }
         }
+
+        #to_property_expression
     };
 
     Ok(quote! {
