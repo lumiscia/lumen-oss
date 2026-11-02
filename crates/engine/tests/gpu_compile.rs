@@ -11532,11 +11532,10 @@ fn memo_snapshot_dropped_with_its_key_change_is_not_shown_again() {
         NodeKind::Text(Text {
             id: NodeId::new(5),
             params: TextParamsDelegate {
-                content: TextContentDelegate::Text(expression(&format!(
-                    "if(floor(frame) % 2 == 1, '{}', 'W')",
-                    "W".repeat(3000)
-                ))),
-                font_size: Deferred::value(12.0),
+                content: TextContentDelegate::Text(expression(
+                    "if(floor(frame) % 2 == 1, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'W')",
+                )),
+                font_size: Deferred::value(1500.0),
                 scale: Deferred::value((0.001, 0.001)),
                 position: Deferred::value((30.0, 10.0)),
                 render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
@@ -12288,7 +12287,7 @@ fn decoration_extent_runs_on_across_a_line_break() {
     };
     let full = render_text_params(&mut renderer, text(json!([0, 1])), size);
     let partial = render_text_params(&mut renderer, text(json!([0, 0.75])), size);
-    // 6.75 of the 9 bytes: the first line and 1.75 of the second line's 4.
+    // 0.75 of the two lines' width: all of the first line and half of the second.
     let rows = inked_rows(&full, size);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(inked_rows(&partial, size), rows);
@@ -12305,7 +12304,7 @@ fn decoration_extent_runs_on_across_a_line_break() {
     assert_eq!(first, second);
     assert_eq!(first_partial, first);
     assert!(
-        (second_partial / second - 1.75 / 4.0).abs() < 0.05,
+        (second_partial / second - 0.5).abs() < 0.05,
         "{second_partial} of {second}"
     );
     let animated = render_text_frames(
