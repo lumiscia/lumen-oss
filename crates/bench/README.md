@@ -56,7 +56,7 @@ done
 
 Use `--profile` for the bind/upload/submit/poll breakdown.
 
-Each row reports `setup_ms` (renderer, plan compile and encoder open), `first_frame_ms` (one-off uploads, static work and glyph population) and `steady_ms` over the remaining frames on the same renderer, and `fps` is the steady-state rate, `-` for a single frame. `elapsed_ms` is the first frame plus the steady frames. Encoding modes include finishing the encoder in the steady time.
+Each row reports `setup_ms` (renderer, plan compile and encoder open), `first_frame_ms` (one-off uploads, static work and glyph population) and `steady_ms` over the remaining frames on the same renderer, and `fps` is the steady-state rate, `-` for a single frame. `elapsed_ms` is the first frame plus the steady frames. Encoders buffer frames, so no frame is complete until the encoder finishes: encoding modes report `first_frame_ms=-`, and `steady_ms` and `fps` cover every frame through finishing the encoder. Plan diagnostics from `--profile` and the plan-memory line are printed outside every timer.
 
 Nodes without expressions or media keep their output after the first frame, so `simple_pipeline` runs almost no passes after it. Add `--full-render` to disable that automatic reuse of static node output when measuring shader or pass cost; memos whose key is unchanged still hold. The antialiasing pair always renders in full, since it exists to compare edge shader cost, and every row prints the `full_render` policy it ran with. Compare `fps` on the same machine; short runs are noisy on GPUs that change clocks.
 

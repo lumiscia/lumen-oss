@@ -106,13 +106,17 @@ async fn run_async() -> anyhow::Result<()> {
             {
                 let _ = std::fs::remove_file(path);
             }
-            let steady_frames = frames - 1;
+            let steady_frames = times.steady_frames(frames);
             let steady_fps = (steady_frames > 0).then(|| fps(steady_frames, times.steady));
+            let first_frame_ms = times.first_frame.map_or_else(
+                || "-".to_string(),
+                |d| format!("{:.2}", d.as_secs_f64() * 1000.0),
+            );
             println!(
-                "composition_bench composition={name} mode={} frames={frames} full_render={full_render} setup_ms={:.2} first_frame_ms={:.2} steady_ms={:.2} elapsed_ms={} fps={} output={}",
+                "composition_bench composition={name} mode={} frames={frames} full_render={full_render} setup_ms={:.2} first_frame_ms={} steady_ms={:.2} elapsed_ms={} fps={} output={}",
                 mode.name(),
                 times.setup.as_secs_f64() * 1000.0,
-                times.first_frame.as_secs_f64() * 1000.0,
+                first_frame_ms,
                 times.steady.as_secs_f64() * 1000.0,
                 times.loop_total().as_millis(),
                 steady_fps.map_or_else(|| "-".to_string(), |fps| format!("{fps:.2}")),
@@ -128,7 +132,9 @@ async fn run_async() -> anyhow::Result<()> {
                 frames.to_string(),
                 full_render.to_string(),
                 format_duration(times.setup),
-                format_duration(times.first_frame),
+                times
+                    .first_frame
+                    .map_or_else(|| "-".to_string(), format_duration),
                 format_duration(times.steady),
                 steady_fps.map_or_else(|| "-".to_string(), |fps| format!("{fps:.1}")),
                 "ok".to_string(),
@@ -138,7 +144,7 @@ async fn run_async() -> anyhow::Result<()> {
 
     summary.print();
     println!(
-        "setup creates the renderer, compiles the plan and opens any encoder; first frame includes one-off uploads and static work; steady fps covers the remaining frames, and for encoders their finish."
+        "setup creates the renderer, compiles the plan and opens any encoder. render-only and readback complete every frame: first frame includes one-off uploads and static work, and steady fps covers the remaining frames. Encoders buffer frames, so encoding modes have no first-frame time and steady covers every frame through the encoder's finish."
     );
     Ok(())
 }
