@@ -18,25 +18,9 @@ use super::image::{FrameImage, FrameLruCache};
 
 const SEEK_REOPEN_THRESHOLD: u32 = 120;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FfmpegResolverOptions {
     pub prefer_hardware_decode: bool,
-}
-
-impl Default for FfmpegResolverOptions {
-    fn default() -> Self {
-        Self {
-            prefer_hardware_decode: default_hardware_decode(),
-        }
-    }
-}
-
-fn default_hardware_decode() -> bool {
-    cfg!(all(
-        target_os = "linux",
-        feature = "cuda",
-        feature = "vulkan"
-    ))
 }
 
 struct VideoDecodeWorker {
