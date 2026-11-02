@@ -53,6 +53,14 @@ Renders run in submission order, `--max-concurrent-renders` at a time (default 1
 
 A render reads media from one place: a directory created for that job, holding only the files downloaded from its manifest. A composition without a manifest gets an empty directory, so any source that is not a manifest alias fails, including relative paths, absolute paths, and `file://` URLs. Sources are matched after resolving symlinks.
 
+Video and audio are only read from containers that keep their data inside the file:
+
+- **Video:** MP4 and MOV, plus Matroska and WebM, MPEG-TS, MPEG-PS, AVI, FLV, ASF/WMV, Ogg, MXF, IVF, and raw H.264 and HEVC.
+- **Audio:** MP3, AAC, WAV, W64, FLAC, AIFF, CAF, AC-3, E-AC-3, DTS, AMR, and WavPack, plus the audio forms of the containers above.
+- **Stills read as video:** GIF, APNG, PNG, JPEG, WebP, BMP, and TIFF.
+
+Formats that point at other files or hosts are refused, including HLS, DASH, concat lists, image sequences, and SDP, because they could read outside the job directory. Images on `media_in` nodes with `kind: "image"` are decoded from their bytes without FFmpeg.
+
 Each job's manifest is limited to 256 entries, 512 MiB per file, and 2 GiB in total. Aliases can use up to 128 letters, digits, `.`, `_`, and `-`, and can't be only dots. Decoding decides whether a file is usable, so the response `Content-Type` is not checked.
 
 Downloads refuse hosts that resolve to private, loopback, link-local, and other non-public addresses. The check runs on every connection, so it covers DNS rebinding and redirects. Up to 5 redirects are followed. Environment proxy settings are ignored. To download from an internal host, list it as it appears in the URL with `--allow-media-host` (repeatable; `LUMEN_SERVER_ALLOW_MEDIA_HOSTS` takes a comma-separated list).

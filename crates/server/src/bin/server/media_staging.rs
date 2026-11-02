@@ -293,6 +293,7 @@ fn is_non_public_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// Follows the IANA IPv4 special-purpose registry. Its globally reachable blocks stay allowed.
 fn is_non_public_ipv4(ip: Ipv4Addr) -> bool {
     let [first, second, third, _] = ip.octets();
     ip.is_private()
@@ -302,23 +303,24 @@ fn is_non_public_ipv4(ip: Ipv4Addr) -> bool {
         || ip.is_documentation()
         || first == 0
         || first >= 224
-        // Carrier-grade NAT, IETF protocol assignments and benchmarking.
+        // Shared address space, IETF protocol assignments, the 6to4 relay and benchmarking.
         || (first == 100 && (second & 0xc0) == 64)
         || (first == 192 && second == 0 && third == 0)
+        || (first == 192 && second == 88 && third == 99)
         || (first == 198 && (second & 0xfe) == 18)
 }
 
+/// Global unicast is only allocated from `2000::/3`, so everything else is refused, including the
+/// NAT64 prefixes, discard, SRv6, unique-local, link-local and multicast blocks.
 fn is_non_public_ipv6(ip: Ipv6Addr) -> bool {
-    let segments = ip.segments();
-    ip.is_unique_local()
-        || ip.is_unicast_link_local()
-        || ip.is_multicast()
-        // `::/96` holds the unspecified and loopback addresses and IPv4-compatible addresses.
-        || segments[..6] == [0; 6]
-        // Documentation, then the 6to4 and NAT64 prefixes, which reach arbitrary IPv4 addresses.
-        || segments[..2] == [0x2001, 0x0db8]
-        || segments[0] == 0x2002
-        || segments[..6] == [0x0064, 0xff9b, 0, 0, 0, 0]
+    let [first, second, ..] = ip.segments();
+    (first & 0xe000) != 0x2000
+        // IETF protocol assignments, which include Teredo, and documentation.
+        || (first == 0x2001 && (second < 0x0200 || second == 0x0db8))
+        // 6to4, which reaches arbitrary IPv4 addresses.
+        || first == 0x2002
+        // Documentation.
+        || (first == 0x3fff && second < 0x1000)
 }
 
 #[cfg(test)]
@@ -328,23 +330,44 @@ mod tests {
     #[test]
     fn non_public_addresses_are_refused_in_every_form() {
         for address in [
+            "0.1.2.3",
             "10.0.0.1",
             "100.64.0.1",
             "127.0.0.1",
             "169.254.169.254",
             "192.0.0.1",
+            "192.0.2.1",
+            "192.88.99.1",
             "192.168.1.1",
             "198.18.0.1",
+            "198.51.100.1",
+            "203.0.113.1",
+            "240.0.0.1",
             "224.0.0.1",
             "::",
             "::1",
             "::169.254.169.254",
             "::ffff:127.0.0.1",
             "::ffff:169.254.169.254",
+            "::ffff:0:169.254.169.254",
             "64:ff9b::a9fe:a9fe",
+            "64:ff9b:1::a9fe:a9fe",
+            "64:ff9b:1:ffff::1",
+            "100::1",
+            "100:0:0:1::1",
+            "2001::1",
+            "2001:1::1",
+            "2001:2::1",
+            "2001:1ff:ffff::1",
+            "2001:db8::1",
             "2002:a9fe:a9fe::",
+            "3fff::1",
+            "3fff:fff:ffff::1",
+            "4000::1",
+            "5f00::1",
             "fc00::1",
             "fe80::1",
+            "fec0::1",
             "ff02::1",
         ] {
             assert!(
@@ -355,9 +378,14 @@ mod tests {
         for address in [
             "1.1.1.1",
             "100.128.0.1",
+            "192.31.196.1",
+            "192.175.48.1",
             "198.20.0.1",
             "::ffff:1.1.1.1",
+            "2001:200::1",
             "2606:4700:4700::1111",
+            "2620:4f:8000::1",
+            "3fff:1000::1",
         ] {
             assert!(
                 !is_non_public_ip(address.parse().unwrap()),

@@ -15,7 +15,9 @@ use crate::server::{
 
 use super::{
     errors::{error_response, not_found_response},
-    progress::{RenderProgressPatch, broadcast_progress, update_render_progress},
+    progress::{
+        RenderProgressPatch, apply_render_progress, broadcast_progress, update_render_progress,
+    },
     state::{AppState, StoredRender},
     ws::render_socket_session,
 };
@@ -237,49 +239,117 @@ fn spawn_render_task(state: AppState, job: RenderJob) {
 }
 
 fn complete_render(state: &AppState, id: &str, completed: crate::server::CompletedRender) {
-    let artifact_url = completed.artifact.download_url.clone();
-    let output_bytes = completed.artifact.bytes;
-    let duration_ms = completed.metrics.render_ms;
-    if let Ok(mut renders) = state.renders.write()
-        && let Some(stored) = renders.records.get_mut(id)
-    {
-        stored.bytes = Some(Bytes::from(completed.bytes));
-        stored.render.status = "succeeded";
-        renders.retain_finished(id, state.retained_renders);
-    }
-    update_render_progress(
+    let patch = RenderProgressPatch {
+        artifact_url: Some(completed.artifact.download_url),
+        duration_ms: Some(completed.metrics.render_ms),
+        output_bytes: Some(completed.artifact.bytes),
+        progress: Some(1.0),
+        stage: Some("completed"),
+        state: Some("succeeded"),
+        ..RenderProgressPatch::default()
+    };
+    finish_render(
         state,
         id,
-        "completed",
-        RenderProgressPatch {
-            artifact_url: Some(artifact_url),
-            duration_ms: Some(duration_ms),
-            output_bytes: Some(output_bytes),
-            progress: Some(1.0),
-            stage: Some("completed"),
-            state: Some("succeeded"),
-            ..RenderProgressPatch::default()
-        },
+        "succeeded",
+        Some(Bytes::from(completed.bytes)),
+        patch,
     );
 }
 
 fn fail_render(state: &AppState, id: &str, error: RenderJobError) {
-    if let Ok(mut renders) = state.renders.write()
-        && let Some(stored) = renders.records.get_mut(id)
-    {
-        stored.render.status = "failed";
+    let patch = RenderProgressPatch {
+        error: Some(error.message),
+        progress: Some(1.0),
+        stage: Some("failed"),
+        state: Some("failed"),
+        ..RenderProgressPatch::default()
+    };
+    finish_render(state, id, "failed", None, patch);
+}
+
+/// The terminal state and its event are captured under the lock that makes the render evictable, so
+/// another render finishing right after can't drop the record before the event exists.
+fn finish_render(
+    state: &AppState,
+    id: &str,
+    status: &'static str,
+    bytes: Option<Bytes>,
+    patch: RenderProgressPatch,
+) {
+    let notification = state.renders.write().ok().and_then(|mut renders| {
+        let stored = renders.records.get_mut(id)?;
+        stored.bytes = bytes;
+        stored.render.status = status;
+        let notification = apply_render_progress(&mut renders, state, id, "completed", patch);
         renders.retain_finished(id, state.retained_renders);
+        notification
+    });
+    if let Some(notification) = notification {
+        broadcast_progress(state, notification.kind, notification.state);
     }
-    update_render_progress(
-        state,
-        id,
-        "completed",
-        RenderProgressPatch {
-            error: Some(error.message),
-            progress: Some(1.0),
-            stage: Some("failed"),
-            state: Some("failed"),
-            ..RenderProgressPatch::default()
-        },
-    );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashSet, sync::Barrier, thread};
+
+    use clap::Parser;
+
+    use super::*;
+    use crate::server::http::Args;
+
+    fn insert_render(state: &AppState, id: &str) {
+        let render = ApiRenderJob {
+            cost_micros: 0,
+            created_at: String::new(),
+            id: id.to_string(),
+            input_hash: String::new(),
+            organization_id: "self-hosted".to_string(),
+            status: "queued",
+        };
+        state.renders.write().unwrap().records.insert(
+            id.to_string(),
+            StoredRender {
+                bytes: None,
+                last_progress_broadcast: None,
+                progress: None,
+                render,
+            },
+        );
+    }
+
+    #[test]
+    fn renders_finishing_together_all_send_their_terminal_event() {
+        let args = Args::parse_from(["lumen-server", "--retained-renders", "1"]);
+        let state = AppState::new(args).unwrap();
+        let mut events = state.progress_tx.subscribe();
+        let failure = || RenderJobError {
+            code: "render_failed".to_string(),
+            message: "failed".to_string(),
+            retryable: false,
+        };
+
+        for iteration in 0..5_000 {
+            let ids = [format!("a{iteration}"), format!("b{iteration}")];
+            insert_render(&state, &ids[0]);
+            insert_render(&state, &ids[1]);
+            let barrier = Barrier::new(2);
+            thread::scope(|scope| {
+                for id in &ids {
+                    let (state, barrier) = (&state, &barrier);
+                    scope.spawn(move || {
+                        barrier.wait();
+                        fail_render(state, id, failure());
+                    });
+                }
+            });
+
+            let mut finished = HashSet::new();
+            while let Ok(event) = events.try_recv() {
+                finished.insert(event.state.unwrap().render_id);
+            }
+            assert_eq!(finished.len(), 2, "a terminal event was lost: {finished:?}");
+        }
+    }
 }

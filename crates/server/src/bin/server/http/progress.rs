@@ -1,6 +1,6 @@
 use crate::server::{RenderNotification, RenderQueueState, current_timestamp};
 
-use super::state::AppState;
+use super::state::{AppState, RenderRegistry};
 
 #[derive(Default)]
 pub(super) struct RenderProgressPatch {
@@ -19,50 +19,59 @@ pub(super) fn update_render_progress(
     kind: &'static str,
     patch: RenderProgressPatch,
 ) {
-    let notification = if let Ok(mut renders) = state.renders.write() {
-        let Some(stored) = renders.records.get_mut(id) else {
-            return;
-        };
-        let previous_broadcast = stored.last_progress_broadcast.clone();
-        let mut progress = stored.progress.clone().unwrap_or_else(|| RenderQueueState {
-            artifact_url: None,
-            duration_ms: None,
-            error: None,
-            organization_id: "self-hosted".to_string(),
-            output_bytes: None,
-            progress: 0.0,
-            render_id: id.to_string(),
-            resolution: None,
-            stage: Some("queued"),
-            state: "queued",
-            updated_at: current_timestamp(),
-        });
-        progress.artifact_url = patch.artifact_url.or(progress.artifact_url);
-        progress.duration_ms = patch.duration_ms.or(progress.duration_ms);
-        progress.error = patch.error.or(progress.error);
-        progress.output_bytes = patch.output_bytes.or(progress.output_bytes);
-        progress.progress = patch
-            .progress
-            .map(|value| value.clamp(progress.progress, 1.0))
-            .unwrap_or(progress.progress);
-        progress.stage = patch.stage.or(progress.stage);
-        progress.state = patch.state.unwrap_or(progress.state);
-        progress.updated_at = current_timestamp();
-        stored.progress = Some(progress.clone());
-        if should_broadcast_progress(kind, previous_broadcast.as_ref(), &progress, state) {
-            stored.last_progress_broadcast = Some(progress.clone());
-            Some(RenderNotification {
-                state: Some(progress),
-                kind,
-            })
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let notification = state
+        .renders
+        .write()
+        .ok()
+        .and_then(|mut renders| apply_render_progress(&mut renders, state, id, kind, patch));
     if let Some(notification) = notification {
         broadcast_progress(state, notification.kind, notification.state);
+    }
+}
+
+/// Applies a patch to the stored progress and returns the notification to broadcast, if any.
+pub(super) fn apply_render_progress(
+    renders: &mut RenderRegistry,
+    state: &AppState,
+    id: &str,
+    kind: &'static str,
+    patch: RenderProgressPatch,
+) -> Option<RenderNotification> {
+    let stored = renders.records.get_mut(id)?;
+    let previous_broadcast = stored.last_progress_broadcast.clone();
+    let mut progress = stored.progress.clone().unwrap_or_else(|| RenderQueueState {
+        artifact_url: None,
+        duration_ms: None,
+        error: None,
+        organization_id: "self-hosted".to_string(),
+        output_bytes: None,
+        progress: 0.0,
+        render_id: id.to_string(),
+        resolution: None,
+        stage: Some("queued"),
+        state: "queued",
+        updated_at: current_timestamp(),
+    });
+    progress.artifact_url = patch.artifact_url.or(progress.artifact_url);
+    progress.duration_ms = patch.duration_ms.or(progress.duration_ms);
+    progress.error = patch.error.or(progress.error);
+    progress.output_bytes = patch.output_bytes.or(progress.output_bytes);
+    progress.progress = patch
+        .progress
+        .map(|value| value.clamp(progress.progress, 1.0))
+        .unwrap_or(progress.progress);
+    progress.stage = patch.stage.or(progress.stage);
+    progress.state = patch.state.unwrap_or(progress.state);
+    progress.updated_at = current_timestamp();
+    stored.progress = Some(progress.clone());
+    if should_broadcast_progress(kind, previous_broadcast.as_ref(), &progress, state) {
+        stored.last_progress_broadcast = Some(progress.clone());
+        Some(RenderNotification {
+            state: Some(progress),
+            kind,
+        })
+    } else {
+        None
     }
 }
 

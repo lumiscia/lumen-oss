@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
 use reqwest::{
     StatusCode,
     blocking::{Client, Response},
@@ -145,8 +146,8 @@ fn server_command() -> Command {
     command
 }
 
-/// Serves `/image.png`, a redirect to the literal loopback address, and `/held`, which answers only
-/// once the test releases it.
+/// Serves `/image.png`, a redirect to the literal loopback address, `/held`, which answers only once
+/// the test releases it, and `/stream.m3u8` with the given playlist.
 struct MediaServer {
     port: u16,
     requests: Arc<AtomicUsize>,
@@ -155,17 +156,23 @@ struct MediaServer {
 
 impl MediaServer {
     fn start() -> Self {
+        Self::start_with_playlist(String::new())
+    }
+
+    fn start_with_playlist(playlist: String) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind media server");
         let port = listener.local_addr().expect("media server addr").port();
         let requests = Arc::new(AtomicUsize::new(0));
         let (release, released) = channel();
         let released = Arc::new(Mutex::new(released));
+        let playlist = Arc::new(playlist);
         let request_count = Arc::clone(&requests);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 request_count.fetch_add(1, Ordering::SeqCst);
                 let released = Arc::clone(&released);
-                thread::spawn(move || serve_media(stream, port, &released));
+                let playlist = Arc::clone(&playlist);
+                thread::spawn(move || serve_media(stream, port, &released, &playlist));
             }
         });
         Self {
@@ -180,7 +187,7 @@ impl MediaServer {
     }
 }
 
-fn serve_media(mut stream: TcpStream, port: u16, released: &Mutex<Receiver<()>>) {
+fn serve_media(mut stream: TcpStream, port: u16, released: &Mutex<Receiver<()>>, playlist: &str) {
     let mut request = Vec::new();
     let mut buffer = [0; 1024];
     while !request.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -191,18 +198,27 @@ fn serve_media(mut stream: TcpStream, port: u16, released: &Mutex<Receiver<()>>)
     }
     let request = String::from_utf8_lossy(&request);
     let path = request.split_whitespace().nth(1).unwrap_or_default();
-    let head = if path.starts_with("/redirect") {
-        format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/image.png\r\n")
-    } else {
-        if path.starts_with("/held") {
-            let _ = released.lock().expect("release lock").recv();
-        }
-        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n", TINY_PNG.len())
-    };
-    let _ = stream.write_all(format!("{head}Connection: close\r\n\r\n").as_bytes());
-    if !path.starts_with("/redirect") {
-        let _ = stream.write_all(TINY_PNG);
+    if path.starts_with("/redirect") {
+        let _ = write!(
+            stream,
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/image.png\r\nConnection: close\r\n\r\n"
+        );
+        return;
     }
+    if path.starts_with("/held") {
+        let _ = released.lock().expect("release lock").recv();
+    }
+    let body = if path.starts_with("/stream.m3u8") {
+        playlist.as_bytes()
+    } else {
+        TINY_PNG
+    };
+    let _ = write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(body);
 }
 
 fn solid_composition() -> Value {
@@ -218,11 +234,15 @@ fn solid_composition() -> Value {
 }
 
 fn image_composition(source: &str) -> Value {
+    media_composition("image", source)
+}
+
+fn media_composition(kind: &str, source: &str) -> Value {
     json!({
         "timeline": { "fps": 24, "duration_frames": 1 },
         "render_settings": { "width": 16, "height": 16 },
         "nodes": [
-            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": source } },
+            { "id": 1, "type": "media_in", "params": { "kind": kind, "source": source } },
             { "id": 2, "type": "media_output" }
         ],
         "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
@@ -515,6 +535,57 @@ fn renders_read_only_manifest_media_with_gpu() {
     let artifact = server.get(&format!("/renders/{id}/artifact"));
     assert_eq!(artifact.status(), StatusCode::OK);
     assert!(!artifact.bytes().expect("artifact bytes").is_empty());
+}
+
+#[test]
+fn staged_playlists_cannot_reach_files_outside_the_job_with_gpu() {
+    let fixtures = tempfile::tempdir().expect("fixture directory");
+    let segment = fixtures.path().join("outside.ts");
+    if !write_video(&segment) {
+        eprintln!("no H.264 encoder; skipping lumen-server playlist containment test");
+        return;
+    }
+    let media = MediaServer::start_with_playlist(format!(
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:1.0,\n{}\n#EXT-X-ENDLIST\n",
+        segment.display()
+    ));
+    let server = Server::start(&["--allow-media-host", "localhost"]);
+
+    let Some((id, progress)) = render_outcome(
+        &server,
+        &json!({
+            "composition": media_composition("video", "stream.m3u8"),
+            "media": { "stream.m3u8": media.url("localhost", "/stream.m3u8") },
+        }),
+    ) else {
+        return;
+    };
+    assert_eq!(progress["state"], "failed", "{progress}");
+    assert_eq!(
+        server.get(&format!("/renders/{id}/artifact")).status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+fn write_video(path: &Path) -> bool {
+    let config = VideoEncoderConfig::cpu_rgba(32, 24, 24, VideoCodec::H264);
+    let Ok(mut encoder) = MuxedEncoder::create(path.to_string_lossy().to_string(), config) else {
+        return false;
+    };
+    for pts in 0..6 {
+        encoder
+            .write_video_frame(&CpuVideoFrame {
+                width: 32,
+                height: 24,
+                stride: 32 * 4,
+                pixel_format: PixelFormat::Rgba8,
+                pts: Some(pts),
+                data: vec![128; 32 * 24 * 4],
+            })
+            .expect("write frame");
+    }
+    encoder.finish().expect("finish encode");
+    true
 }
 
 fn serving_from(directory: &Path, args: &[&str]) -> Server {
