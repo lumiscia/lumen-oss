@@ -872,6 +872,12 @@ impl GpuCompositionRenderer {
     }
 
     fn upload_media_textures(&mut self, bound: &BoundFrame) -> crate::Result<()> {
+        let result = self.write_media_textures(bound);
+        self.media_texture_cache.evict();
+        result
+    }
+
+    fn write_media_textures(&mut self, bound: &BoundFrame) -> crate::Result<()> {
         let key = self.active_key.clone().ok_or_else(|| RenderError::Gpu {
             details: "composition has not been compiled".to_string(),
         })?;
@@ -1046,7 +1052,6 @@ impl GpuCompositionRenderer {
                 .current_media_textures
                 .insert(upload.texture, key.clone());
         }
-        self.media_texture_cache.evict();
         Ok(())
     }
 

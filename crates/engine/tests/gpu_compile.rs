@@ -12842,6 +12842,79 @@ fn images_past_the_budget_are_freed_once_no_plan_binds_them() {
 }
 
 #[test]
+fn images_replaced_before_a_failed_upload_are_still_freed() {
+    #[derive(Debug)]
+    struct UnsupportedVideo;
+    impl VideoFrameResolver for UnsupportedVideo {
+        fn id(&self) -> &str {
+            "unsupported"
+        }
+        fn metadata(&self) -> VideoMetadata {
+            VideoMetadata {
+                width: 1,
+                height: 1,
+                frame_count: 1,
+                fps: 24.0,
+            }
+        }
+        fn frame(&self, _: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+            Ok(MediaFrame::ExternalTexture(
+                lumen_engine::media::ExternalTextureFrame {
+                    width: 1,
+                    height: 1,
+                    format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                    handle: lumen_engine::media::ExternalTextureHandle::Platform(String::new()),
+                },
+            ))
+        }
+    }
+    #[derive(Debug, Default)]
+    struct ImagesAndUnsupportedVideo(ReplaceableImages);
+    impl MediaStore for ImagesAndUnsupportedVideo {
+        fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+            self.0.get_image_resolver(source)
+        }
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            Some(Box::new(UnsupportedVideo))
+        }
+    }
+
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    renderer.set_media_texture_cache_budget(0);
+    let (width, height) = CACHE_CANVAS;
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 10 },
+        "render_settings": { "width": width, "height": height },
+        "nodes": [
+            { "id": 1, "type": "media_in", "params": { "source": "plate" } },
+            { "id": 2, "type": "media_in", "params": { "source": "clip", "kind": "video" } },
+            { "id": 3, "type": "raster_multimerge" },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let media = ImagesAndUnsupportedVideo::default();
+    for frame in 0..5u8 {
+        media.0.set(
+            "plate",
+            solid_image(&format!("plate-{frame}"), width, height, [frame, 0, 0, 255]),
+        );
+        renderer
+            .render_frame(&composition, u32::from(frame), &media)
+            .expect_err("the video's frame can't be uploaded");
+    }
+    // Only the image the plan still binds is kept.
+    assert_eq!(renderer.cached_media_texture_count(), 1);
+}
+
+#[test]
 fn video_frames_do_not_overwrite_cached_images() {
     #[derive(Debug)]
     struct ImagesAndVideo {
