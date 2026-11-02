@@ -102,6 +102,7 @@ impl GpuCompileNode for Opacity {
             texture,
             domain: source.domain,
             metadata: source.metadata,
+            bounds: source.bounds,
         }))
     }
 }

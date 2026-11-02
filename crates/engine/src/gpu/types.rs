@@ -34,6 +34,9 @@ pub struct RasterHandle {
     pub texture: lumen_gpu::TextureId,
     pub domain: lumen_gpu::TextureDomain,
     pub metadata: RasterMetadata,
+    /// Uniform holding the raster's logical bounds (`origin: vec2<i32>`, `size: vec2<u32>`)
+    /// within its storage texture, or `None` when it fills the whole texture.
+    pub bounds: Option<lumen_gpu::BufferId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,10 +198,11 @@ enum TextureUpload {
     },
 }
 
+/// Identifies the cached texture of an image.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MediaTextureKey {
+    /// The image's resolver ID, which changes when its pixels do.
     pub source: String,
-    pub frame: Option<u32>,
     pub width: u32,
     pub height: u32,
 }
@@ -206,7 +210,8 @@ pub struct MediaTextureKey {
 #[derive(Debug, Clone)]
 pub struct MediaTextureUpload {
     pub texture: lumen_gpu::TextureId,
-    pub key: MediaTextureKey,
+    /// `None` for a video frame, which is never cached.
+    pub key: Option<MediaTextureKey>,
     pub frame: MediaFrame,
     pub size: lumen_gpu::Size,
 }
@@ -272,7 +277,7 @@ impl BoundFrame {
     pub fn use_media_texture(
         &mut self,
         texture: lumen_gpu::TextureId,
-        key: MediaTextureKey,
+        key: Option<MediaTextureKey>,
         frame: MediaFrame,
         size: lumen_gpu::Size,
     ) {

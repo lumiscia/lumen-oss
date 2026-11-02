@@ -7,6 +7,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     name: Check
@@ -36,6 +40,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
             libavcodec-dev \
             libavdevice-dev \
             libavfilter-dev \
@@ -57,6 +62,9 @@ jobs:
       - name: Check generated TypeScript artifacts
         run: just verify-typescript-artifacts
 
+      - name: Build TypeScript workspace
+        run: pnpm build
+
       - name: Check TypeScript workspace
         run: pnpm check
 
@@ -77,11 +85,14 @@ jobs:
           vulkaninfo --summary
           pnpm test:integration
 
-      - name: Build TypeScript workspace
-        run: pnpm build
-
-      - name: Check generated definitions
-        run: just verify-definitions
+      - name: Test lumen-server HTTP API
+        env:
+          LUMEN_GPU_FORCE_FALLBACK_ADAPTER: "1"
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+          WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER: "1"
+          WGPU_BACKEND: vulkan
+          WGPU_POWER_PREF: none
+        run: cargo test -p lumen-server --features cli,vulkan --bin lumen-server --test http_api
 
       - name: Check Rust formatting
         run: cargo fmt -- --check
@@ -100,10 +111,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends cuda-nvcc-13-4 cuda-cudart-dev-13-4
           echo /usr/local/cuda-13.4/bin >> "$GITHUB_PATH"
 
-      - name: Check CUDA ffmpeg crate
+      - name: Check hosted CUDA and Vulkan server
         env:
           LUMEN_CUDA_ARCH: sm_75
-        run: cargo check -p lumen-engine-ffmpeg --features cuda
+        run: cargo check -p lumen-server --features cli,vulkan,cuda
 
       - name: Test Rust workspace
         env:

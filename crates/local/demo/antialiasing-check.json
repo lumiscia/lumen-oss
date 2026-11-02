@@ -86,7 +86,7 @@
       "id": 4,
       "type": "path",
       "params": {
-        "data": "0,0 246,35 190,198 55,150",
+        "data": "M 0 0 L 246 35 L 190 198 L 55 150 Z",
         "position": [122.2, 318.4],
         "fill_enabled": true,
         "fill_paint": {

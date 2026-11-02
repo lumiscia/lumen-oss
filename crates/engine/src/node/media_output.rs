@@ -41,9 +41,20 @@ impl GpuCompileNode for MediaOutput {
             ctx.composition().render_settings().height.max(1),
         );
         let output_format = ctx.output_format();
-        // A memo's copy stays its own, since external output textures stand in for the output.
+        let source_is_written =
+            ctx.builder_mut()
+                .texture_desc(source.texture)
+                .is_some_and(|desc| {
+                    desc.usage.intersects(
+                        lumen_gpu::wgpu::TextureUsages::STORAGE_BINDING
+                            | lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    )
+                });
+        // External output textures stand in for the output, so a pass has to write it: uploaded
+        // media is copied, and a memo's copy stays its own.
         if output_format == lumen_gpu::wgpu::TextureFormat::Rgba8Unorm
             && source.domain == lumen_gpu::TextureDomain::full_frame(size)
+            && source_is_written
             && !ctx.is_memo_texture(source.texture)
         {
             return Ok(CompiledOutput::Raster(source));
@@ -152,6 +163,7 @@ impl GpuCompileNode for MediaOutput {
             texture: output,
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: source.metadata,
+            bounds: None,
         }))
     }
 }

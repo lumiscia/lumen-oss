@@ -18,39 +18,31 @@ export const EMPTY_PREVIEW_STATS: LumenPreviewStats = {
 
 const FPS_WINDOW_MS = 1_000;
 
+/** Counts the distinct frames presented over the last second. */
 export class PlaybackFpsMeter {
   #fps = 0;
-  #samples: Array<{ frame: number; time: number }> = [];
+  #frame: number | null = null;
+  #times: number[] = [];
 
   sample(frame: number, isPlaying: boolean, now: number = performance.now()): number {
     if (!isPlaying) {
       return this.#fps;
     }
 
-    const previous = this.#samples.at(-1);
-    if (!previous || frame !== previous.frame) {
-      this.#samples.push({ frame, time: now });
+    if (frame !== this.#frame) {
+      this.#frame = frame;
+      this.#times.push(now);
     }
 
     const windowStart = now - FPS_WINDOW_MS;
-    while (this.#samples.length > 1) {
-      const oldest = this.#samples[0];
-      if (!oldest || oldest.time >= windowStart) {
-        break;
-      }
-      this.#samples.shift();
+    while (this.#times.length > 1 && (this.#times[0] ?? now) < windowStart) {
+      this.#times.shift();
     }
 
-    const first = this.#samples[0];
-    const last = this.#samples.at(-1);
-    if (!first || !last || first === last) {
-      return this.#fps;
-    }
-
-    const frameDelta = last.frame - first.frame;
-    const timeDelta = last.time - first.time;
-    if (frameDelta > 0 && timeDelta > 0) {
-      this.#fps = (frameDelta * 1_000) / timeDelta;
+    const first = this.#times[0];
+    const last = this.#times.at(-1);
+    if (first !== undefined && last !== undefined && last > first) {
+      this.#fps = ((this.#times.length - 1) * FPS_WINDOW_MS) / (last - first);
     }
 
     return this.#fps;
@@ -58,6 +50,7 @@ export class PlaybackFpsMeter {
 
   reset(): void {
     this.#fps = 0;
-    this.#samples = [];
+    this.#frame = null;
+    this.#times = [];
   }
 }

@@ -114,6 +114,7 @@ impl GpuCompileNode for HueSaturation {
             texture,
             domain: source.domain,
             metadata: source.metadata,
+            bounds: source.bounds,
         }))
     }
 }

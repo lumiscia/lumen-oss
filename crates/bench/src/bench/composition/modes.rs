@@ -508,6 +508,7 @@ async fn vk_cuda_nvenc(
     let target = target_pool.acquire(renderer.gpu_renderer())?;
     let mut config = video_config(workload.composition, VideoCodec::H264)?;
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
+    config.cuda_ordinal = Some(target_pool.cuda_ordinal());
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
 
     let setup = setup_started.elapsed();

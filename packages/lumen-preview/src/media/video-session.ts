@@ -3,11 +3,10 @@ import {
   Input,
   VideoSampleSink,
   type InputVideoTrack,
-  type Source,
   type VideoSample,
 } from "mediabunny";
 
-import { createVideoFramePayload } from "./canvas.js";
+import { createUprightVideoFrame, createVideoFramePayload } from "./canvas.js";
 import { LumenMediaError, toMediaError } from "./errors.js";
 import { createInputSource } from "./source.js";
 import { createVideoTimeline, normalizeFps, type VideoTimeline } from "./timeline.js";
@@ -27,8 +26,6 @@ const VIDEO_SAMPLE_TIMESTAMP_EPSILON_SECONDS = 1e-10;
 
 type VideoSetup = {
   input: Input;
-  inputOwned: boolean;
-  source: Source;
   track: InputVideoTrack;
   sink: VideoSampleSink;
   timeline: VideoTimeline;
@@ -48,6 +45,8 @@ type SequentialDecodeState = {
 };
 
 export class VideoSession {
+  private disposed = false;
+  private input: Input | null = null;
   private operationQueue = Promise.resolve();
   private sequentialDecodeState: SequentialDecodeState | null = null;
   private setupPromise: Promise<VideoSetup> | null = null;
@@ -58,25 +57,21 @@ export class VideoSession {
     private readonly options: Required<LumenMediaBridgeOptions>,
   ) {}
 
+  /**
+   * Cancels reads straight away, because a decode holding the queue may be stalled on one. Its
+   * samples are dropped once that decode has unwound.
+   */
   dispose(): void {
-    this.resetSequentialDecodeState();
-    if (this.setupPromise) {
-      void this.setupPromise.then(
-        (setup) => {
-          if (setup.inputOwned) {
-            setup.input.dispose();
-          }
-        },
-        () => undefined,
-      );
-    }
+    this.disposed = true;
+    this.input?.dispose();
+    void this.serialize(async () => this.resetSequentialDecodeState());
   }
 
   clearFrames(): void {
     // The wasm-side store owns uploaded frames, but the sequential decoder
     // keeps a couple of decoded samples alive to avoid restarting from the
     // previous keyframe on every playback tick.
-    this.resetSequentialDecodeState();
+    void this.serialize(async () => this.resetSequentialDecodeState());
   }
 
   async loadMetadata(): Promise<VideoFrameMetadata> {
@@ -84,10 +79,15 @@ export class VideoSession {
     return setup.timeline.metadata;
   }
 
+  /** The caller owns every returned frame. A failed decode closes what it had collected. */
   async decodeFrames(frames: Iterable<number>): Promise<Map<number, VideoFramePayload>> {
     return this.serialize(async () => {
-      const setup = await this.ensureSetup();
       const results = new Map<number, VideoFramePayload>();
+      if (this.disposed) {
+        return results;
+      }
+
+      const setup = await this.ensureSetup();
       const pending: PendingFrameRequest[] = [];
 
       for (const frame of dedupeFrameNumbers(frames)) {
@@ -105,30 +105,48 @@ export class VideoSession {
         return results;
       }
 
-      if (!this.shouldUseSequentialDecode(setup, pending)) {
-        this.resetSequentialDecodeState();
-        return this.decodeFramesRandomAccess(setup, pending);
+      try {
+        if (this.shouldUseSequentialDecode(setup, pending)) {
+          await this.decodeFramesSequential(setup, pending, results);
+        } else {
+          this.resetSequentialDecodeState();
+          await this.decodeFramesRandomAccess(setup, pending, results);
+        }
+        return results;
+      } catch (error) {
+        for (const payload of results.values()) {
+          payload.videoFrame.close();
+        }
+        throw error;
       }
-
-      return this.decodeFramesSequential(setup, pending);
     });
   }
 
-  private async ensureSetup(): Promise<VideoSetup> {
-    this.setupPromise ??= this.createSetup();
+  private ensureSetup(): Promise<VideoSetup> {
+    this.setupPromise ??= this.createSetup().catch((error: unknown) => {
+      this.setupPromise = null;
+      throw error;
+    });
     return this.setupPromise;
   }
 
   private async createSetup(): Promise<VideoSetup> {
+    let input: Input | undefined;
     try {
-      const sourceResult = createInputSource(this.registration.source, {
-        blobCacheBytes: this.options.blobCacheBytes,
-        urlCacheBytes: this.options.urlCacheBytes,
-      });
-      const input = new Input({
+      if (this.disposed) {
+        throw new LumenMediaError(
+          "source_not_registered",
+          `video source "${this.streamId}" was removed`,
+        );
+      }
+      input = new Input({
         formats: this.registration.formats ?? this.options.formats,
-        source: sourceResult.source,
+        source: createInputSource(this.registration.source, {
+          blobCacheBytes: this.options.blobCacheBytes,
+          urlCacheBytes: this.options.urlCacheBytes,
+        }),
       });
+      this.input = input;
 
       const track = await this.resolveTrack(input);
       if (!(await track.canDecode())) {
@@ -138,26 +156,21 @@ export class VideoSession {
         );
       }
 
-      const mimeType = await input.getMimeType().catch(() => null);
       const timeline = await createVideoTimeline({
         fps: normalizeFps(this.registration.fps),
-        input,
-        mimeType,
-        ...(this.registration.timelineMode !== undefined
-          ? { mode: this.registration.timelineMode }
-          : {}),
+        mimeType: await input.getMimeType().catch(() => null),
+        streamId: this.streamId,
         track,
       });
 
       return {
         input,
-        inputOwned: sourceResult.owned,
-        source: sourceResult.source,
         track,
         sink: new VideoSampleSink(track),
         timeline,
       };
     } catch (error) {
+      input?.dispose();
       throw toMediaError(
         "unsupported_container",
         `video source "${this.streamId}" could not be opened`,
@@ -194,10 +207,14 @@ export class VideoSession {
     sample: VideoSample,
     metadata: VideoFrameMetadata,
   ): VideoFramePayload {
+    const width = Math.max(1, Math.round(sample.displayWidth ?? metadata.width));
+    const height = Math.max(1, Math.round(sample.displayHeight ?? metadata.height));
+    if (sample.rotation !== 0) {
+      return createVideoFramePayload(createUprightVideoFrame(sample, width, height), width, height);
+    }
+
     const retainedSample = sample.clone();
     try {
-      const width = Math.max(1, Math.round(sample.displayWidth ?? metadata.width));
-      const height = Math.max(1, Math.round(sample.displayHeight ?? metadata.height));
       return createVideoFramePayload(retainedSample.toVideoFrame(), width, height);
     } finally {
       retainedSample.close();
@@ -207,8 +224,8 @@ export class VideoSession {
   private async decodeFramesRandomAccess(
     setup: VideoSetup,
     pending: PendingFrameRequest[],
-  ): Promise<Map<number, VideoFramePayload>> {
-    const results = new Map<number, VideoFramePayload>();
+    results: Map<number, VideoFramePayload>,
+  ): Promise<void> {
     let index = 0;
     let activeFrame: number | undefined;
 
@@ -256,19 +273,17 @@ export class VideoSession {
         );
       }
     }
-
-    return results;
   }
 
   private async decodeFramesSequential(
     setup: VideoSetup,
     pending: PendingFrameRequest[],
-  ): Promise<Map<number, VideoFramePayload>> {
-    const results = new Map<number, VideoFramePayload>();
-    const state = await this.ensureSequentialDecodeState(setup, pending[0]?.timestamp ?? 0);
+    results: Map<number, VideoFramePayload>,
+  ): Promise<void> {
     let activeFrame: number | undefined;
 
     try {
+      const state = await this.ensureSequentialDecodeState(setup, pending[0]?.timestamp ?? 0);
       for (const request of pending) {
         activeFrame = request.frame;
         const sample = await this.readSequentialSample(state, request.timestamp);
@@ -294,8 +309,6 @@ export class VideoSession {
         error,
       );
     }
-
-    return results;
   }
 
   private async ensureSequentialDecodeState(
@@ -307,18 +320,25 @@ export class VideoSession {
     }
 
     const iterator = setup.sink.samples(startTimestamp);
-    const currentSample = await this.readNextSequentialSample(iterator);
-    const nextSample = await this.readNextSequentialSample(iterator);
-    const state: SequentialDecodeState = {
-      currentSample,
-      iterator,
-      lastFrame: -1,
-      lastTimestamp: -Infinity,
-      nextSample,
-    };
+    let currentSample: VideoSample | null = null;
+    try {
+      currentSample = await this.readNextSequentialSample(iterator);
+      const nextSample = await this.readNextSequentialSample(iterator);
+      const state: SequentialDecodeState = {
+        currentSample,
+        iterator,
+        lastFrame: -1,
+        lastTimestamp: -Infinity,
+        nextSample,
+      };
 
-    this.sequentialDecodeState = state;
-    return state;
+      this.sequentialDecodeState = state;
+      return state;
+    } catch (error) {
+      currentSample?.close();
+      void iterator.return(undefined);
+      throw error;
+    }
   }
 
   private async readNextSequentialSample(

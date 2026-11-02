@@ -86,7 +86,7 @@ describe("Composition audio helpers", () => {
     });
     expect(clip).toEqual({
       duration_ms: 2_500,
-      id: "audio-clip-1",
+      id: "music-clip-1",
       name: "Intro",
       source_id: "audio:intro",
       source_start_ms: 1_250,
@@ -98,6 +98,16 @@ describe("Composition audio helpers", () => {
       clips: [clip],
       tracks: [track.toJSON()],
     });
+  });
+
+  test("gives clips on different tracks different default ids", () => {
+    const music = new AudioTrack({ id: "music" });
+    const voice = new AudioTrack({ id: "voice" });
+
+    const first = music.addClip({ durationMs: 100, sourceId: "audio:intro" });
+    const second = voice.addClip({ durationMs: 100, sourceId: "audio:line" });
+
+    expect(first.id).not.toBe(second.id);
   });
 
   test("keeps canonical clip input intact when it belongs to the track", () => {

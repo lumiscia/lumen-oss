@@ -1,3 +1,5 @@
+import type { VideoSample } from "mediabunny";
+
 import type {
   DecodedImageFrame,
   NativeVideoFrameTarget,
@@ -71,26 +73,42 @@ export function createVideoFramePayload(
   };
 }
 
+/** Bakes a sample's rotation into a new frame, because `VideoFrame.copyTo` returns coded pixels. */
+export function createUprightVideoFrame(
+  sample: VideoSample,
+  width: number,
+  height: number,
+): VideoFrame {
+  const { canvas, context } = createCanvas(width, height);
+  sample.draw(context, 0, 0, width, height);
+  return new VideoFrame(canvas, { timestamp: sample.microsecondTimestamp });
+}
+
 export async function syncVideoFrameToTarget(
   target: NativeVideoFrameTarget,
   streamId: string,
   frame: number,
   payload: VideoFramePayload,
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
   try {
     if (typeof target.setVideoFrameObject === "function") {
-      await target.setVideoFrameObject(
-        streamId,
-        frame,
-        payload.videoFrame,
-        payload.width,
-        payload.height,
-      );
+      if (isCurrent()) {
+        await target.setVideoFrameObject(
+          streamId,
+          frame,
+          payload.videoFrame,
+          payload.width,
+          payload.height,
+        );
+      }
       return;
     }
 
     const pixels = await decodeVideoFramePixels(payload);
-    target.setVideoFrame(streamId, frame, pixels.width, pixels.height, pixels.rgba);
+    if (isCurrent()) {
+      target.setVideoFrame(streamId, frame, pixels.width, pixels.height, pixels.rgba);
+    }
   } finally {
     closeVideoFrame(payload.videoFrame);
   }

@@ -156,6 +156,7 @@ impl GpuCompileNode for Background {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: RasterMetadata::default(),
+            bounds: None,
         }))
     }
 }

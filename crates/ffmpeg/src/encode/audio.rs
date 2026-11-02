@@ -1,7 +1,7 @@
 use std::ptr;
 
 use crate::audio::{AudioFrame, SampleFormat};
-use crate::ffi::{self, AvFrame, AvPacket, sys};
+use crate::ffi::{self, AvFrame, AvPacket, CodecContextGuard, sys};
 use crate::{FfmpegError, Result};
 use sys::AVMediaType::AVMEDIA_TYPE_AUDIO;
 use sys::AVSampleFormat::{AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_FLTP};
@@ -60,7 +60,8 @@ impl AudioEncoder {
                 "failed to allocate audio output stream",
             ));
         }
-        let context = unsafe { sys::avcodec_alloc_context3(codec) };
+        let mut context_guard = CodecContextGuard(unsafe { sys::avcodec_alloc_context3(codec) });
+        let context = context_guard.0;
         if context.is_null() {
             return Err(FfmpegError::new(
                 "avcodec_alloc_context3",
@@ -97,7 +98,7 @@ impl AudioEncoder {
         Ok(Self {
             stream_index: unsafe { (*stream).index as usize },
             stream_time_base: time_base,
-            context,
+            context: context_guard.release(),
             sample_format,
             sample_rate: config.sample_rate,
             channels: config.channels,

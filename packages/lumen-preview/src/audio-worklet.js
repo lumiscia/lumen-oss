@@ -1,55 +1,48 @@
 const DEFAULT_CHANNEL_COUNT = 2;
 const DEFAULT_SAMPLE_RATE = 48_000;
+const RECOVERY_RAMP_FRAMES = 240;
 
-class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor {
+export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor {
   constructor() {
     super();
     this.channelCount = DEFAULT_CHANNEL_COUNT;
     this.currentSample = 0;
     this.generation = 0;
     this.chunks = new Map();
+    this.heardAudio = false;
+    this.holdOnUnderrun = true;
     this.playing = false;
+    this.recoveryFrames = 0;
+    this.stalled = true;
     this.sampleRate = DEFAULT_SAMPLE_RATE;
-    this.needChunksCountdown = 0;
+    this.reportCountdown = 0;
     this.port.onmessage = (event) => this.handleMessage(event.data);
-    this.port.postMessage({ type: "ready" });
   }
 
   handleMessage(message) {
     try {
       switch (message.type) {
-        case "reset":
-          this.reset(message.generation, message.startSample ?? 0);
-          break;
         case "chunk":
           this.storeChunk(message);
           break;
         case "play":
           this.generation = message.generation;
           this.currentSample = Number(message.startSample);
+          this.chunks.clear();
+          this.heardAudio = false;
+          this.holdOnUnderrun = message.holdOnUnderrun;
+          this.recoveryFrames = 0;
           this.playing = true;
-          this.requestChunks();
+          this.stalled = true;
+          this.reportPosition(0);
           break;
         case "pause":
           this.playing = false;
-          break;
-        case "seek":
-          this.generation = message.generation;
-          this.currentSample = Number(message.startSample);
-          this.chunks.clear();
-          this.requestChunks();
           break;
       }
     } catch (error) {
       this.port.postMessage({ type: "error", message: String(error) });
     }
-  }
-
-  reset(generation, startSample) {
-    this.generation = generation;
-    this.currentSample = Number(startSample);
-    this.chunks.clear();
-    this.needChunksCountdown = 0;
   }
 
   storeChunk(message) {
@@ -79,26 +72,38 @@ class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor {
       return true;
     }
 
+    // When holding, the position only covers samples that were heard. Otherwise it follows elapsed
+    // time, missing samples play as silence, and audio returning from an underrun ramps up. The gap
+    // before the first chunk after `play` isn't an underrun.
     const frames = left.length;
-    for (let frame = 0; frame < frames; frame += 1) {
-      const sample = this.currentSample + frame;
+    let written = 0;
+    for (; written < frames; written += 1) {
+      const sample = this.currentSample + written;
       const chunk = this.findChunk(sample);
-      if (!chunk) {
-        continue;
-      }
-      const chunkFrame = sample - chunk.startSample;
-      const base = chunkFrame * this.channelCount;
-      for (let channel = 0; channel < output.length; channel += 1) {
-        const sourceChannel = Math.min(channel, this.channelCount - 1);
-        output[channel][frame] = chunk.samples[base + sourceChannel] || 0;
+      if (chunk) {
+        const chunkFrame = sample - chunk.startSample;
+        const base = chunkFrame * this.channelCount;
+        const gain = 1 - this.recoveryFrames / RECOVERY_RAMP_FRAMES;
+        for (let channel = 0; channel < output.length; channel += 1) {
+          const sourceChannel = Math.min(channel, this.channelCount - 1);
+          output[channel][written] = (chunk.samples[base + sourceChannel] || 0) * gain;
+        }
+        this.heardAudio = true;
+        this.recoveryFrames = Math.max(0, this.recoveryFrames - 1);
+      } else if (this.holdOnUnderrun) {
+        break;
+      } else if (this.heardAudio) {
+        this.recoveryFrames = RECOVERY_RAMP_FRAMES;
       }
     }
 
-    this.currentSample += frames;
+    this.currentSample += written;
     this.pruneChunks();
-    this.needChunksCountdown -= frames;
-    if (this.needChunksCountdown <= 0) {
-      this.requestChunks();
+    this.reportCountdown -= frames;
+    const stalled = written < frames;
+    if (stalled !== this.stalled || this.reportCountdown <= 0) {
+      this.stalled = stalled;
+      this.reportPosition(frames);
     }
     return true;
   }
@@ -121,12 +126,14 @@ class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor {
     }
   }
 
-  requestChunks() {
-    this.needChunksCountdown = Math.max(128, Math.floor(this.sampleRate / 20));
+  reportPosition(framesRendered) {
+    this.reportCountdown = Math.max(128, Math.floor(this.sampleRate / 20));
     this.port.postMessage({
+      contextTime: globalThis.currentTime + framesRendered / this.sampleRate,
       currentSample: this.currentSample,
       generation: this.generation,
-      type: "need-chunks",
+      stalled: this.stalled,
+      type: "position",
     });
   }
 }
