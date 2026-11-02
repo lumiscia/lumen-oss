@@ -38,6 +38,10 @@ impl CompositionFixture for AntialiasingStress {
         composition.timeline().duration_frames.min(120)
     }
 
+    fn full_render(&self) -> bool {
+        true
+    }
+
     fn build(&self) -> Composition {
         let background = NodeId::new(1);
         let diagonal_a = NodeId::new(2);

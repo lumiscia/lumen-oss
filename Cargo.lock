@@ -1611,7 +1611,6 @@ name = "lumen-bench"
 version = "0.3.1"
 dependencies = [
  "anyhow",
- "libc",
  "lumen-engine",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",

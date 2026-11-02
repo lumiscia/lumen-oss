@@ -3,18 +3,16 @@ mod antialiasing_stress;
 mod many_elements;
 mod simple_pipeline;
 mod small_media_transform;
-mod vector_showcase;
 
 use lumen_engine::composition::{RenderSettings, TimelineSettings};
 
-use super::CompositionFixture;
+use crate::bench::CompositionFixture;
 
 pub fn all() -> Vec<Box<dyn CompositionFixture>> {
     vec![
         Box::new(simple_pipeline::SimplePipeline),
         Box::new(small_media_transform::SmallMediaTransform),
         Box::new(small_media_transform::SmallMediaTransformExposure),
-        Box::new(vector_showcase::VectorShowcase),
         Box::new(animated_showcase::AnimatedShowcase),
         Box::new(antialiasing_stress::AntialiasingStress {
             edge_antialias: true,
