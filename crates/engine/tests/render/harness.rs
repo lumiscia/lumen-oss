@@ -286,3 +286,11 @@ fn rounding_oracle_allows_only_rare_single_steps() {
     assert!(within_rounding(&reference[..4], &reference).is_err());
     assert!(within_rounding(&[], &[]).is_err());
 }
+
+#[test]
+#[should_panic(expected = "a case needs at least one frame")]
+fn a_case_with_no_frames_fails() {
+    check(vec![
+        Case::new("no frames", solid((8, 8), RED), Expect::Nonblank).frames([]),
+    ]);
+}

@@ -376,6 +376,7 @@ impl Case {
     }
 
     fn run(&self, gpu: &Gpu) {
+        assert!(!self.frames.is_empty(), "a case needs at least one frame");
         let frames = self.render_frames(&mut gpu.renderer(), self.bounded);
         self.expect.assert(self, gpu, &frames);
         let reference = self.render_frames(&mut gpu.reference(), self.bounded.map(|_| false));
