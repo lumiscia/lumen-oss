@@ -5405,6 +5405,33 @@ fn an_open_path_fills_like_the_same_path_closed() {
 }
 
 #[test]
+fn a_path_stroke_without_width_draws_nothing() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    for stroke_width in [0.0, -2.0] {
+        let rgba = render_drawable_graph(
+            &mut renderer,
+            vec![NodeKind::Path(Path {
+                id: NodeId::new(1),
+                params: PathParamsDelegate {
+                    data: Deferred::value("M 10.5 10.5 L 50.5 10.5".to_string()),
+                    fill_enabled: Deferred::value(false),
+                    stroke_enabled: Deferred::value(true),
+                    stroke_width: Deferred::value(stroke_width),
+                    ..Default::default()
+                },
+            })],
+            64,
+        );
+        assert!(
+            rgba.iter().skip(3).step_by(4).all(|&alpha| alpha == 0),
+            "stroke_width {stroke_width}"
+        );
+    }
+}
+
+#[test]
 fn non_uniform_scale_matches_a_supersampled_outline() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;

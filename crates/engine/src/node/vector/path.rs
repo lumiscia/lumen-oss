@@ -188,7 +188,7 @@ pub(super) fn path_frame(
         stroke_width: evaluated.stroke_width.max(0.0) as f32,
         flags: style_flags(
             evaluated.fill_enabled,
-            evaluated.stroke_enabled,
+            evaluated.stroke_enabled && evaluated.stroke_width > 0.0,
             evaluated.edge_antialias,
         ),
         point_count: points.len() as u32,
@@ -271,7 +271,9 @@ impl PathBuffers {
 /// the local tolerance shrinks as the path is scaled up.
 const PATH_FLATTENING_TOLERANCE: f32 = 0.25;
 const PATH_MAX_FLATTENING_ATTEMPTS: usize = 12;
-const NON_FINITE: &str = "has a coordinate that is not a finite number";
+/// f32 loses whole pixels above this, and the limit keeps relative sums and arc arithmetic
+/// finite without tracking the current point.
+const MAX_PATH_COORDINATE: f64 = 1e7;
 // Bits of `PathPoint::flags`; keep in sync with `path_renderer.wgsl`.
 pub(super) const POINT_END: u32 = 1;
 pub(super) const POINT_CLOSED: u32 = 2;
@@ -293,7 +295,7 @@ pub(super) fn point_capacity(data: &Deferred<String>, scale: &Deferred<(f64, f64
 }
 
 /// Flattens path data, coarsening `tolerance` until it fits `max_points`. Empty data is
-/// empty geometry. The error says why data is malformed, has a non-finite coordinate, or
+/// empty geometry. The error says why data is malformed, has an out-of-range coordinate, or
 /// exceeds `max_points` even at the coarsest tolerance.
 fn parse_path_points(
     data: &str,
@@ -305,13 +307,7 @@ fn parse_path_points(
     let mut tolerance = tolerance;
     for _ in 0..PATH_MAX_FLATTENING_ATTEMPTS {
         if let Some(points) = flatten_path(&path, tolerance, max_points) {
-            let finite =
-                |point: &super::renderer::PathPoint| point.position.iter().all(|c| c.is_finite());
-            return if points.iter().all(finite) {
-                Ok(points)
-            } else {
-                Err(NON_FINITE.to_string())
-            };
+            return Ok(points);
         }
         tolerance *= 2.0;
     }
@@ -350,7 +346,7 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
         let segment = segment.map_err(|error| format!("is malformed: {error}"))?;
         match segment {
             PathSegment::MoveTo { abs, x, y } => {
-                finite(&[x, y])?;
+                in_range(&[x, y])?;
                 if abs {
                     builder.move_to(point(x as f32, y as f32));
                 } else {
@@ -358,7 +354,7 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                 }
             }
             PathSegment::LineTo { abs, x, y } => {
-                finite(&[x, y])?;
+                in_range(&[x, y])?;
                 if abs {
                     builder.line_to(point(x as f32, y as f32));
                 } else {
@@ -366,7 +362,7 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                 }
             }
             PathSegment::HorizontalLineTo { abs, x } => {
-                finite(&[x])?;
+                in_range(&[x])?;
                 if abs {
                     builder.horizontal_line_to(x as f32);
                 } else {
@@ -374,7 +370,7 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                 }
             }
             PathSegment::VerticalLineTo { abs, y } => {
-                finite(&[y])?;
+                in_range(&[y])?;
                 if abs {
                     builder.vertical_line_to(y as f32);
                 } else {
@@ -390,7 +386,7 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                 x,
                 y,
             } => {
-                finite(&[x1, y1, x2, y2, x, y])?;
+                in_range(&[x1, y1, x2, y2, x, y])?;
                 if abs {
                     builder.cubic_bezier_to(
                         point(x1 as f32, y1 as f32),
@@ -406,7 +402,7 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                 }
             }
             PathSegment::SmoothCurveTo { abs, x2, y2, x, y } => {
-                finite(&[x2, y2, x, y])?;
+                in_range(&[x2, y2, x, y])?;
                 if abs {
                     builder.smooth_cubic_bezier_to(
                         point(x2 as f32, y2 as f32),
@@ -420,7 +416,7 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                 }
             }
             PathSegment::Quadratic { abs, x1, y1, x, y } => {
-                finite(&[x1, y1, x, y])?;
+                in_range(&[x1, y1, x, y])?;
                 if abs {
                     builder.quadratic_bezier_to(
                         point(x1 as f32, y1 as f32),
@@ -434,7 +430,7 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                 }
             }
             PathSegment::SmoothQuadratic { abs, x, y } => {
-                finite(&[x, y])?;
+                in_range(&[x, y])?;
                 if abs {
                     builder.smooth_quadratic_bezier_to(point(x as f32, y as f32));
                 } else {
@@ -451,7 +447,7 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                 x,
                 y,
             } => {
-                finite(&[rx, ry, x_axis_rotation, x, y])?;
+                in_range(&[rx, ry, x_axis_rotation, x, y])?;
                 let from = builder.current_position();
                 let to = if abs {
                     point(x as f32, y as f32)
@@ -468,9 +464,19 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                 if arc.is_straight_line() {
                     builder.line_to(to);
                 } else {
+                    let mut finite = true;
                     arc.for_each_quadratic_bezier(&mut |curve| {
-                        builder.quadratic_bezier_to(curve.ctrl, curve.to);
+                        finite &= curve.ctrl.x.is_finite()
+                            && curve.ctrl.y.is_finite()
+                            && curve.to.x.is_finite()
+                            && curve.to.y.is_finite();
+                        if finite {
+                            builder.quadratic_bezier_to(curve.ctrl, curve.to);
+                        }
                     });
+                    if !finite {
+                        return Err("has an arc too extreme to flatten".to_string());
+                    }
                     builder.line_to(to);
                 }
             }
@@ -480,11 +486,14 @@ fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
     Ok(builder.build())
 }
 
-fn finite(values: &[f64]) -> Result<(), String> {
-    if values.iter().all(|&value| (value as f32).is_finite()) {
+fn in_range(values: &[f64]) -> Result<(), String> {
+    if values
+        .iter()
+        .all(|&value| value.abs() <= MAX_PATH_COORDINATE)
+    {
         Ok(())
     } else {
-        Err(NON_FINITE.to_string())
+        Err(format!("has a coordinate outside +/-{MAX_PATH_COORDINATE}"))
     }
 }
 
@@ -686,14 +695,38 @@ mod tests {
         for data in ["M 0 0 C nope", "M 1e999 0 L 10 10"] {
             assert!(error(data).contains("malformed"), "{data}");
         }
-        for data in ["M 0 0 L 1e300 0", "M 0 0 A 1e300 5 0 0 1 10 10"] {
-            assert!(error(data).contains("finite"), "{data}");
+        for data in [
+            "M 0 0 L 1e300 0",
+            "M 3e38 0 l 3e38 0",
+            "M 0 0 A 1e20 1e20 0 0 1 10 10",
+        ] {
+            assert!(error(data).contains("outside"), "{data}");
         }
         assert!(
             parse_path_points("", PATH_FLATTENING_TOLERANCE, 128)
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn paths_at_the_coordinate_limit_are_finite_or_errors() {
+        for data in [
+            "M 1e7 1e7 l 1e7 1e7 l 1e7 -1e7 Z",
+            "M 0 0 A 1e7 1e7 0 1 1 1e7 1e7",
+            "M 0 0 A 1e-30 1e-30 0 0 1 1e7 1e7",
+        ] {
+            let points = parse_path_points(data, PATH_FLATTENING_TOLERANCE, 65536).unwrap();
+            assert!(
+                points
+                    .iter()
+                    .all(|p| p.position.iter().all(|c| c.is_finite())),
+                "{data}"
+            );
+        }
+        let extreme = "M 0 0 A 1e-3 1e7 45 1 0 -1e7 1e7 a 1e7 1e-3 1e7 0 1 1e7 -1e7";
+        let error = parse_path_points(extreme, PATH_FLATTENING_TOLERANCE, 65536).unwrap_err();
+        assert!(error.contains("too extreme"), "{error}");
     }
 
     #[test]
