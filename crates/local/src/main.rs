@@ -764,11 +764,19 @@ fn render_to_partial(output: &Path, render: impl FnOnce(&Path) -> Result<()>) ->
     fs::create_dir_all(directory)
         .with_context(|| format!("failed to create output dir {}", directory.display()))?;
 
+    let existing = fs::metadata(&destination).ok();
     let mut partial = tempfile::Builder::new();
     partial.prefix(".lumen-local-").suffix(".partial.mp4");
-    // Without this the rename would leave the output readable only by its owner.
+    // Without this the rename would leave a new output readable only by its owner, and a render
+    // replacing a private output would be readable by others while it runs.
     #[cfg(unix)]
-    partial.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = existing
+            .as_ref()
+            .map_or(0o666, |existing| existing.permissions().mode() & 0o777);
+        partial.permissions(fs::Permissions::from_mode(mode));
+    }
     let partial = partial
         .tempfile_in(directory)
         .with_context(|| format!("failed to create a file in {}", directory.display()))?
@@ -776,7 +784,7 @@ fn render_to_partial(output: &Path, render: impl FnOnce(&Path) -> Result<()>) ->
 
     render(&partial)?;
 
-    if let Ok(existing) = fs::metadata(&destination) {
+    if let Some(existing) = existing {
         fs::set_permissions(&partial, existing.permissions())
             .with_context(|| format!("failed to set permissions for {}", output.display()))?;
     }
@@ -1803,6 +1811,15 @@ mod tests {
         fs::set_permissions(&restricted, fs::Permissions::from_mode(0o640)).expect("chmod");
         render_to_partial(&restricted, render).expect("render");
         assert_eq!(mode(&restricted) & 0o777, 0o640);
+
+        let private = dir.path().join("private.mp4");
+        fs::write(&private, b"old").expect("write output");
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o600)).expect("chmod");
+        render_to_partial(&private, |partial| {
+            assert_eq!(mode(partial) & 0o777, 0o600);
+            render(partial)
+        })
+        .expect("render");
 
         let target = dir.path().join("target.mp4");
         let link = dir.path().join("link.mp4");
