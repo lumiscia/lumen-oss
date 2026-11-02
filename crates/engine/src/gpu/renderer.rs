@@ -559,9 +559,10 @@ impl GpuCompositionRenderer {
         // can widen text past the bounds and glyph counts the plan measured. The plan is then
         // keyed by the new font generation, so the frame is bound again to it; a font loads
         // once, so this settles.
-        let mut rebinds = 0;
+        let mut reloads = 0;
         let mut bound = loop {
             let generation = text_font_generation();
+            let families = crate::node::source::text::loaded_font_families()?;
             self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
             self.memo_snapshots
                 .retain_composition(composition.fingerprint());
@@ -589,15 +590,19 @@ impl GpuCompositionRenderer {
             if text_font_generation() == generation {
                 break bound?;
             }
-            if rebinds == MAX_FONT_REBINDS {
-                return Err(RenderError::Gpu {
-                    details: format!(
-                        "fonts kept loading while frame {frame} was bound; its text bounds could not settle"
-                    ),
+            // A composition names finitely many families, so only fonts loading again for a
+            // family already loaded could go on forever.
+            if crate::node::source::text::loaded_font_families()? == families {
+                if reloads == MAX_FONT_RELOADS {
+                    return Err(RenderError::Gpu {
+                        details: format!(
+                            "fonts kept loading while frame {frame} was bound; its text bounds could not settle"
+                        ),
+                    }
+                    .into());
                 }
-                .into());
+                reloads += 1;
             }
-            rebinds += 1;
         };
         bound.renderer_binding = self.active_key.clone().map(|key| (self.bind_sequence, key));
         self.pinned_plans = bound
@@ -1315,10 +1320,9 @@ fn estimated_plan_bytes(compiled: &CompiledComposition) -> u64 {
     textures + buffers
 }
 
-/// Times a frame is bound again after fonts load during binding, before binding fails rather
-/// than draw text past its bounds. A bind can stop at the first text a new font outgrows, so each
-/// late font may take a bind of its own; only a store whose fonts never settle reaches this.
-const MAX_FONT_REBINDS: u32 = 64;
+/// Times a frame is bound again after a family it had already loaded loads again, before binding
+/// fails rather than draw text past its bounds.
+const MAX_FONT_RELOADS: u32 = 3;
 
 fn text_font_generation() -> Option<u64> {
     crate::node::source::text::text_system()

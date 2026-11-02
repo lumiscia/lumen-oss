@@ -6750,6 +6750,68 @@ fn many_fonts_loaded_while_binding_settle_in_one_render() {
     assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
 }
 
+/// Gives "Churn" a resolver with a new id each time it is asked, so its font never settles.
+#[derive(Debug, Default)]
+struct ChurningFont(std::sync::atomic::AtomicU32);
+
+#[derive(Debug, Clone)]
+struct ChurningFontResolver(String);
+
+impl lumen_engine::media::FontResolver for ChurningFontResolver {
+    fn id(&self) -> &str {
+        &self.0
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![renamed_inter("Churn")])
+    }
+}
+
+impl MediaStore for ChurningFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family == "Churn").then(|| {
+            let id = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            format!("churn-{id}")
+        })
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        self.font_resolver_id(family).map(|id| {
+            Box::new(ChurningFontResolver(id)) as Box<dyn lumen_engine::media::FontResolver>
+        })
+    }
+}
+
+#[test]
+fn a_font_that_never_settles_fails_the_render() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 64, "height": 64 },
+        "nodes": [
+            { "id": 1, "type": "text", "params": { "content": "x", "font_family": "Churn" } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap();
+    let error = renderer
+        .render_frame(&composition, 0, &ChurningFont::default())
+        .expect_err("the font loads again on every bind")
+        .to_string();
+    assert!(error.contains("fonts kept loading"), "{error}");
+}
+
 #[test]
 fn text_dropped_by_a_full_atlas_still_counts_toward_the_instance_limit() {
     let _guard = TEXT_TEST_LOCK.lock().unwrap();

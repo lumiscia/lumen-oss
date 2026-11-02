@@ -1650,6 +1650,11 @@ pub(crate) fn load_font_family(
     Ok(())
 }
 
+/// How many font families have been loaded.
+pub(crate) fn loaded_font_families() -> crate::Result<usize> {
+    Ok(loaded_fonts()?.len())
+}
+
 fn loaded_fonts() -> crate::Result<std::sync::MutexGuard<'static, HashMap<String, String>>> {
     static LOADED_FONTS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     LOADED_FONTS
