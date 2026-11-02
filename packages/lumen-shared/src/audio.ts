@@ -71,7 +71,7 @@ function audioClipFromOptions(
   return {
     ...rest,
     ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
-    id: input.id ?? `audio-clip-${index + 1}`,
+    id: input.id ?? `${trackId}-clip-${index + 1}`,
     source_id: input.sourceId,
     ...(sourceStartMs === undefined ? {} : { source_start_ms: sourceStartMs }),
     start_ms: audioTimeMs(input.startMs, input.startSeconds) ?? 0,

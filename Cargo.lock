@@ -1636,6 +1636,7 @@ dependencies = [
  "lumen-engine-macros",
  "lumen-engine-text",
  "lyon_path",
+ "naga",
  "objc2-metal",
  "pollster",
  "serde",

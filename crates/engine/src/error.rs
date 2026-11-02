@@ -56,6 +56,8 @@ pub enum GraphValidationError {
         node_id: NodeId,
         details: String,
     },
+    #[error("audio: {details}")]
+    InvalidAudio { details: String },
     #[error("compositions instantiate themselves: {}", .templates.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(" -> "))]
     TemplateCycle {
         /// The templates along the cycle, ending with the one it returns to.
@@ -112,6 +114,8 @@ pub enum MediaError {
         frame: u32,
         frame_count: u32,
     },
+    #[error("audio clip `{clip}` names unknown track `{track}`")]
+    UnknownAudioTrack { clip: String, track: String },
 }
 
 #[derive(Debug, Error, Clone)]

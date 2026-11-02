@@ -478,10 +478,11 @@ fn compiles_media_input_as_frame_texture_boundary() {
 
     let compiled = CompileContext::new(&composition).compile().unwrap();
 
-    assert_eq!(compiled.plan.textures().len(), 1);
+    // The upload is sampled, so one pass copies it into an output that can be written.
+    assert_eq!(compiled.plan.textures().len(), 2);
     assert_eq!(compiled.plan.buffers().len(), 0);
-    assert_eq!(compiled.plan.programs().len(), 0);
-    assert_eq!(compiled.plan.passes().len(), 0);
+    assert_eq!(compiled.plan.programs().len(), 1);
+    assert_eq!(compiled.plan.passes().len(), 1);
     assert_eq!(compiled.compiled_nodes.len(), 1);
     assert_eq!(compiled.plan.params().len(), 1);
     assert_eq!(
@@ -13519,5 +13520,343 @@ fn faded_strokes_and_clusters_keep_their_supersampled_paint() {
             .map(|(&opaque, &faded)| (opaque as f32 * 0.5 - faded as f32).abs())
             .fold(0.0, f32::max);
         assert!(most <= 2.0, "{content:?} {stroke}: off by {most}");
+    }
+}
+
+fn solid_image(id: &str, width: u32, height: u32, color: [u8; 4]) -> TestMediaStore {
+    TestMediaStore {
+        id: id.to_string(),
+        frame: Arc::new(CpuMediaFrame {
+            rgba: Arc::new(color.repeat(width as usize * height as usize)),
+            width,
+            height,
+            row_bytes: width as usize * 4,
+        }),
+    }
+}
+
+/// Images by source, which their owner replaces while they are rendered.
+#[derive(Debug, Default)]
+struct ReplaceableImages(std::sync::Mutex<std::collections::HashMap<String, TestMediaStore>>);
+
+impl ReplaceableImages {
+    fn set(&self, source: &str, image: TestMediaStore) {
+        self.0.lock().unwrap().insert(source.to_string(), image);
+    }
+}
+
+impl MediaStore for ReplaceableImages {
+    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+        let images = self.0.lock().unwrap();
+        let image = images.get(source)?.clone();
+        Some(Box::new(image))
+    }
+
+    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+}
+
+fn image_composition(source: Deferred<String>) -> Composition {
+    cache_composition(vec![
+        NodeKind::MediaIn(MediaIn {
+            id: NodeId::new(1),
+            params: MediaInParamsDelegate {
+                source,
+                ..Default::default()
+            },
+        }),
+        output_node(NodeId::new(2), 1),
+    ])
+}
+
+/// The RGBA of the pixel at `(x, y)` of a `CACHE_CANVAS`-sized render.
+fn canvas_pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let start = (y * CACHE_CANVAS.0 + x) as usize * 4;
+    pixels[start..start + 4].try_into().unwrap()
+}
+
+#[test]
+fn canvas_sized_media_passthrough_writes_external_targets() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let color = [40, 120, 200, 255];
+    let media = solid_image("plate", CACHE_CANVAS.0, CACHE_CANVAS.1, color);
+    for kind in [0, 1] {
+        let composition = cache_composition(vec![
+            NodeKind::MediaIn(MediaIn {
+                id: NodeId::new(1),
+                params: MediaInParamsDelegate {
+                    kind: Deferred::value(kind),
+                    source: Deferred::value("plate".to_string()),
+                    ..Default::default()
+                },
+            }),
+            output_node(NodeId::new(2), 1),
+        ]);
+        render_rgba8(&mut renderer, &composition, 0, &media);
+        let output = renderer.compiled().unwrap().output;
+        let gpu = renderer.gpu_renderer();
+        let desc = gpu.texture_desc(output.texture).unwrap();
+        let texture = gpu
+            .device
+            .create_texture(&lumen_gpu::wgpu::TextureDescriptor {
+                label: Some("external output"),
+                size: desc.domain.storage_size.as_extent(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: lumen_gpu::wgpu::TextureDimension::D2,
+                format: desc.format,
+                usage: desc.usage | lumen_gpu::wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+        let submitted = renderer
+            .render_frame_into_external(
+                &composition,
+                0,
+                &media,
+                lumen_gpu::ExternalTexture::from_texture(texture, desc.domain),
+            )
+            .unwrap();
+        submitted.wait(&renderer.gpu_renderer().device).unwrap();
+        let pixels = read_texture_rgba8(
+            renderer.gpu_renderer(),
+            submitted.texture(),
+            desc.domain.storage_size,
+        );
+        assert!(
+            pixels == color.repeat((CACHE_CANVAS.0 * CACHE_CANVAS.1) as usize),
+            "media kind {kind} left its external target at {:?}",
+            canvas_pixel(&pixels, 0, 0)
+        );
+    }
+}
+
+#[test]
+fn media_of_another_size_renders_at_its_own_size() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    let (width, height) = CACHE_CANVAS;
+    let inside = (1, 1);
+    let outside = (width - 1, height - 1);
+
+    // A source expression that picks an image of another size.
+    let media = ReplaceableImages::default();
+    media.set("large", solid_image("large", width, height, red));
+    media.set("small", solid_image("small", 2, 2, blue));
+    let chosen = image_composition(expression("if(frame < 1, 'large', 'small')"));
+    let pixels = render_rgba8(&mut renderer, &chosen, 0, &media);
+    assert_eq!(canvas_pixel(&pixels, outside.0, outside.1), red);
+    let pixels = render_rgba8(&mut renderer, &chosen, 1, &media);
+    assert_eq!(canvas_pixel(&pixels, inside.0, inside.1), blue);
+    assert_eq!(canvas_pixel(&pixels, outside.0, outside.1), [0; 4]);
+
+    // The same source replaced by an image of another size.
+    renderer.release_resources();
+    media.set("plate", solid_image("plate", width, height, red));
+    let replaced = image_composition(Deferred::value("plate".to_string()));
+    let pixels = render_rgba8(&mut renderer, &replaced, 0, &media);
+    assert_eq!(canvas_pixel(&pixels, outside.0, outside.1), red);
+    media.set("plate", solid_image("plate", 2, 2, blue));
+    let pixels = render_rgba8(&mut renderer, &replaced, 1, &media);
+    assert_eq!(canvas_pixel(&pixels, inside.0, inside.1), blue);
+    assert_eq!(canvas_pixel(&pixels, outside.0, outside.1), [0; 4]);
+}
+
+#[test]
+fn replacing_an_image_with_one_of_the_same_size_shows_its_pixels() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    let media = ReplaceableImages::default();
+    media.set("plate", solid_image("plate#1", width, height, red));
+    let composition = image_composition(Deferred::value("plate".to_string()));
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &media);
+    assert_eq!(canvas_pixel(&pixels, 1, 1), red);
+
+    media.set("plate", solid_image("plate#2", width, height, blue));
+    let pixels = render_rgba8(&mut renderer, &composition, 1, &media);
+    assert_eq!(canvas_pixel(&pixels, 1, 1), blue);
+
+    media.set("plate", solid_image("plate#3", width, height, red));
+    let pixels = render_rgba8(&mut renderer, &composition, 2, &media);
+    assert_eq!(canvas_pixel(&pixels, 1, 1), red);
+}
+
+#[test]
+fn unbound_images_within_the_budget_stay_cached() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    let colors = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]];
+    let images = colors.map(|color| solid_image(&format!("{color:?}"), width, height, color));
+    // The two images no plan binds fit exactly; the bound one doesn't count.
+    renderer.set_media_texture_cache_budget(2 * u64::from(width * height * 4));
+    let media = ReplaceableImages::default();
+    let composition = image_composition(Deferred::value("plate".to_string()));
+    for frame in 0..9 {
+        media.set("plate", images[frame % 3].clone());
+        let pixels = render_rgba8(&mut renderer, &composition, frame as u32, &media);
+        assert_eq!(canvas_pixel(&pixels, 1, 1), colors[frame % 3]);
+    }
+    assert_eq!(renderer.media_texture_upload_count(), 3);
+    assert_eq!(renderer.cached_media_texture_count(), 3);
+}
+
+#[test]
+fn images_past_the_budget_are_freed_once_no_plan_binds_them() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    renderer.set_media_texture_cache_budget(0);
+    let media = ReplaceableImages::default();
+    let composition = image_composition(Deferred::value("plate".to_string()));
+    for (frame, color) in [[255, 0, 0, 255], [0, 0, 255, 255]].into_iter().enumerate() {
+        media.set(
+            "plate",
+            solid_image(&format!("{color:?}"), width, height, color),
+        );
+        render_rgba8(&mut renderer, &composition, frame as u32, &media);
+    }
+    // Only the image the plan shows is kept.
+    assert_eq!(renderer.cached_media_texture_count(), 1);
+    renderer.set_static_output_reuse(false);
+    assert_eq!(renderer.cached_media_texture_count(), 0);
+}
+
+#[test]
+fn images_replaced_before_a_failed_upload_are_still_freed() {
+    #[derive(Debug)]
+    struct UnsupportedVideo;
+    impl VideoFrameResolver for UnsupportedVideo {
+        fn id(&self) -> &str {
+            "unsupported"
+        }
+        fn metadata(&self) -> VideoMetadata {
+            VideoMetadata {
+                width: 1,
+                height: 1,
+                frame_count: 1,
+                fps: 24.0,
+            }
+        }
+        fn frame(&self, _: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+            Ok(MediaFrame::ExternalTexture(
+                lumen_engine::media::ExternalTextureFrame {
+                    width: 1,
+                    height: 1,
+                    format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                    handle: lumen_engine::media::ExternalTextureHandle::Platform(String::new()),
+                },
+            ))
+        }
+    }
+    #[derive(Debug, Default)]
+    struct ImagesAndUnsupportedVideo(ReplaceableImages);
+    impl MediaStore for ImagesAndUnsupportedVideo {
+        fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+            self.0.get_image_resolver(source)
+        }
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            Some(Box::new(UnsupportedVideo))
+        }
+    }
+
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    renderer.set_media_texture_cache_budget(0);
+    let (width, height) = CACHE_CANVAS;
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 10 },
+        "render_settings": { "width": width, "height": height },
+        "nodes": [
+            { "id": 1, "type": "media_in", "params": { "source": "plate" } },
+            { "id": 2, "type": "media_in", "params": { "source": "clip", "kind": "video" } },
+            { "id": 3, "type": "raster_multimerge" },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let media = ImagesAndUnsupportedVideo::default();
+    for frame in 0..5u8 {
+        media.0.set(
+            "plate",
+            solid_image(&format!("plate-{frame}"), width, height, [frame, 0, 0, 255]),
+        );
+        renderer
+            .render_frame(&composition, u32::from(frame), &media)
+            .expect_err("the video's frame can't be uploaded");
+    }
+    // Only the image the plan still binds is kept.
+    assert_eq!(renderer.cached_media_texture_count(), 1);
+}
+
+#[test]
+fn video_frames_do_not_overwrite_cached_images() {
+    #[derive(Debug)]
+    struct ImagesAndVideo {
+        images: ReplaceableImages,
+        video: TestMediaStore,
+    }
+    impl MediaStore for ImagesAndVideo {
+        fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+            self.images.get_image_resolver(source)
+        }
+
+        fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            Some(Box::new(self.video.clone()))
+        }
+    }
+
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    let green = [0, 255, 0, 255];
+    let yellow = [255, 255, 0, 255];
+    let media = ImagesAndVideo {
+        images: ReplaceableImages::default(),
+        video: solid_image("clip", width, height, blue),
+    };
+    media.images.set("a", solid_image("a", width, height, red));
+    media
+        .images
+        .set("b", solid_image("b", width, height, green));
+    media
+        .images
+        .set("c", solid_image("c", width, height, yellow));
+    let composition = cache_composition(vec![
+        NodeKind::MediaIn(MediaIn {
+            id: NodeId::new(1),
+            params: MediaInParamsDelegate {
+                kind: expression("if(frame == 1, 1, 0)"),
+                source: expression(
+                    "if(frame == 1, 'clip', if(frame == 2, 'b', if(frame == 3, 'c', 'a')))",
+                ),
+                ..Default::default()
+            },
+        }),
+        output_node(NodeId::new(2), 1),
+    ]);
+    for (frame, expected) in [red, blue, green, yellow, red].into_iter().enumerate() {
+        let pixels = render_rgba8(&mut renderer, &composition, frame as u32, &media);
+        assert_eq!(canvas_pixel(&pixels, 1, 1), expected, "frame {frame}");
     }
 }

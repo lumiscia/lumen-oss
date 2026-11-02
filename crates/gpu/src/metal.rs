@@ -22,6 +22,7 @@ pub unsafe fn texture_from_metal(
     device: &wgpu::Device,
     texture: Retained<Objc2MetalTexture>,
     desc: &wgpu::TextureDescriptor<'_>,
+    drop_callback: Option<wgpu::hal::DropCallback>,
 ) -> wgpu::Texture {
     let hal_texture = unsafe {
         wgpu::hal::metal::Device::texture_from_raw(
@@ -35,7 +36,7 @@ pub unsafe fn texture_from_metal(
                 height: desc.size.height,
                 depth: desc.size.depth_or_array_layers,
             },
-            None,
+            drop_callback,
         )
     };
     unsafe {

@@ -1,6 +1,6 @@
 //! Audio timeline, source, and mixing primitives.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
 use crate::{error::MediaError, media::MediaStore};
 
@@ -12,6 +12,63 @@ const CLIP_EDGE_FADE_SAMPLES: u64 = 384;
 pub struct AudioTimeline {
     pub tracks: Vec<AudioTrack>,
     pub clips: Vec<AudioClip>,
+}
+
+impl AudioTimeline {
+    /// What stops the timeline from playing as written: repeated ids, clips on tracks it doesn't
+    /// declare, gains that aren't finite and at least 0, and clips without a duration.
+    pub(crate) fn problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        let mut tracks = HashSet::new();
+        for track in &self.tracks {
+            if !tracks.insert(track.id.as_str()) {
+                problems.push(format!("duplicate track id `{}`", track.id));
+            }
+            if !is_valid_gain(track.volume) {
+                problems.push(format!(
+                    "track `{}` volume must be a finite number of at least 0",
+                    track.id
+                ));
+            }
+        }
+        let declared = match self.tracks.as_slice() {
+            [] => "none".to_string(),
+            tracks => tracks
+                .iter()
+                .map(|track| format!("`{}`", track.id))
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        let mut clips = HashSet::new();
+        for clip in &self.clips {
+            if !clips.insert(clip.id.as_str()) {
+                problems.push(format!("duplicate clip id `{}`", clip.id));
+            }
+            if !tracks.contains(clip.track_id.as_str()) {
+                problems.push(format!(
+                    "clip `{}` names unknown track `{}`; declared tracks: {declared}",
+                    clip.id, clip.track_id
+                ));
+            }
+            if !is_valid_gain(clip.volume) {
+                problems.push(format!(
+                    "clip `{}` volume must be a finite number of at least 0",
+                    clip.id
+                ));
+            }
+            if clip.duration_ms == 0 {
+                problems.push(format!(
+                    "clip `{}` duration must be greater than zero",
+                    clip.id
+                ));
+            }
+        }
+        problems
+    }
+}
+
+fn is_valid_gain(gain: f32) -> bool {
+    gain.is_finite() && gain >= 0.0
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,17 +192,17 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
         }
 
         let has_solo = self.timeline.tracks.iter().any(|track| track.solo);
-        let tracks = self
-            .timeline
-            .tracks
-            .iter()
-            .map(|track| (track.id.as_str(), track))
-            .collect::<HashMap<_, _>>();
 
         for clip in &self.timeline.clips {
-            let Some(track) = tracks.get(clip.track_id.as_str()) else {
-                continue;
-            };
+            let track = self
+                .timeline
+                .tracks
+                .iter()
+                .find(|track| track.id == clip.track_id)
+                .ok_or_else(|| MediaError::UnknownAudioTrack {
+                    clip: clip.id.clone(),
+                    track: clip.track_id.clone(),
+                })?;
             if track.muted || (has_solo && !track.solo) || track.volume <= 0.0 || clip.volume <= 0.0
             {
                 continue;
@@ -238,6 +295,8 @@ fn clip_envelope(clip_sample: u64, clip_duration: u64) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[derive(Debug)]
@@ -404,6 +463,31 @@ mod tests {
             .unwrap();
         assert_eq!(mixed.channels()[0], vec![0.25; 4]);
         assert_eq!(mixed.channels()[1], vec![0.125; 4]);
+    }
+
+    #[test]
+    fn a_clip_on_an_undeclared_track_is_an_error_rather_than_silence() {
+        let provider = TestProvider {
+            sources: HashMap::new(),
+        };
+        let timeline = AudioTimeline {
+            tracks: vec![track("main")],
+            clips: vec![AudioClip {
+                id: "clip".to_string(),
+                source_id: "tone".to_string(),
+                track_id: "typo".to_string(),
+                name: "tone".to_string(),
+                start_ms: 0,
+                duration_ms: 1_000,
+                source_start_ms: 0,
+                volume: 1.0,
+            }],
+        };
+
+        let error = AudioMixer::new(&timeline, &provider)
+            .mix_range(0, 4)
+            .unwrap_err();
+        assert!(matches!(error, MediaError::UnknownAudioTrack { .. }));
     }
 
     #[test]

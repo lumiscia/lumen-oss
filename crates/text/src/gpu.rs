@@ -133,7 +133,7 @@ impl GpuGlyphInstance {
 
 /// Peak displacement of a wavy line from its stroke, in thicknesses; keep in sync with
 /// `text.wgsl`.
-const RECT_WAVY_AMPLITUDE: f32 = 1.5;
+pub const RECT_WAVY_AMPLITUDE: f32 = 1.5;
 
 #[cfg(test)]
 mod tests {
