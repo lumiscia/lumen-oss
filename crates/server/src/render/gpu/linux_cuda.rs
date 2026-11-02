@@ -107,6 +107,7 @@ pub(super) fn render_project_mp4_cuda(
     let mut config = VideoEncoderConfig::cpu_rgba(width, height, frame_rate, codec);
     config.encoder_name = Some(encoder_name.to_string());
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
+    config.cuda_ordinal = Some(target_pool.cuda_ordinal());
     config.bit_rate = 14_000_000;
     let audio = include_audio.then(|| {
         AudioEncoderConfig::aac(

@@ -162,13 +162,17 @@ impl InputContext {
                 "avformat_open_input",
             )
             .map_err(|error| error.with_path(path.clone()))?;
+        }
+        // Owning the context from here closes it if reading the stream info fails.
+        let input = Self { path, ptr };
+        unsafe {
             ffi::check(
-                sys::avformat_find_stream_info(ptr, ptr::null_mut()),
+                sys::avformat_find_stream_info(input.ptr, ptr::null_mut()),
                 "avformat_find_stream_info",
             )
-            .map_err(|error| error.with_path(path.clone()))?;
+            .map_err(|error| error.with_path(input.path.clone()))?;
         }
-        Ok(Self { path, ptr })
+        Ok(input)
     }
 
     pub fn path(&self) -> &str {

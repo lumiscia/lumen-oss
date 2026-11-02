@@ -132,24 +132,20 @@ fn make_cuda_video_with_nvenc(path: &PathBuf, width: u32, height: u32) -> bool {
             return false;
         }
     };
-    let _context = match driver.create_primary_context() {
+    let context = match driver.create_primary_context() {
         Ok(context) => context,
         Err(error) => {
             eprintln!("CUDA context unavailable; skipping CUDA NVENC test: {error}");
             return false;
         }
     };
-    let frame = match driver.allocate_rgba_frame(width, height) {
+    let frame = match context.allocate_rgba_frame(width, height) {
         Ok(frame) => frame,
         Err(error) => {
             eprintln!("CUDA frame allocation failed; skipping CUDA NVENC test: {error}");
             return false;
         }
     };
-    if let Err(error) = _context.set_current() {
-        eprintln!("CUDA context restore failed; skipping CUDA NVENC test: {error}");
-        return false;
-    }
     if let Err(error) = frame.clear(0x7f) {
         eprintln!("CUDA frame clear failed; skipping CUDA NVENC test: {error}");
         return false;
@@ -188,17 +184,13 @@ fn make_cuda_video_with_nvenc_and_audio(path: &PathBuf, width: u32, height: u32)
             return false;
         }
     };
-    let frame = match driver.allocate_rgba_frame(width, height) {
+    let frame = match context.allocate_rgba_frame(width, height) {
         Ok(frame) => frame,
         Err(error) => {
             eprintln!("CUDA frame allocation failed; skipping CUDA NVENC audio mux test: {error}");
             return false;
         }
     };
-    if let Err(error) = context.set_current() {
-        eprintln!("CUDA context restore failed; skipping CUDA NVENC audio mux test: {error}");
-        return false;
-    }
     if let Err(error) = frame.clear(0x7f) {
         eprintln!("CUDA frame clear failed; skipping CUDA NVENC audio mux test: {error}");
         return false;
