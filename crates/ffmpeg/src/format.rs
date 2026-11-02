@@ -97,13 +97,21 @@ pub struct MediaInfo {
 pub struct VideoStreamInfo {
     pub stream_index: usize,
     pub codec: VideoCodec,
+    /// Display width, with `rotation` applied.
     pub width: u32,
+    /// Display height, with `rotation` applied.
     pub height: u32,
+    /// Clockwise rotation in degrees (0, 90, 180 or 270) that RGBA decode applies to each frame.
+    pub rotation: u32,
     pub pixel_format: PixelFormat,
     pub time_base: Rational,
     pub avg_frame_rate: Rational,
+    /// `avg_frame_rate`, or FFmpeg's guess when the stream has no average.
+    pub frame_rate: Option<Rational>,
     pub frame_count: Option<u64>,
     pub duration_ts: Option<i64>,
+    /// First presentation timestamp in `time_base` units, or 0 when the stream doesn't report one.
+    pub start_time: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -181,65 +189,96 @@ impl InputContext {
         unsafe {
             for index in 0..(*self.ptr).nb_streams as usize {
                 let stream = *(*self.ptr).streams.add(index);
-                let params = (*stream).codecpar;
-                match (*params).codec_type {
-                    AVMEDIA_TYPE_VIDEO => {
-                        video_streams.push(VideoStreamInfo {
-                            stream_index: index,
-                            codec: VideoCodec::from_av_codec_id((*params).codec_id),
-                            width: (*params).width.max(0) as u32,
-                            height: (*params).height.max(0) as u32,
-                            pixel_format: PixelFormat::from_av_pixel_format(std::mem::transmute::<
-                                i32,
-                                sys::AVPixelFormat,
-                            >(
-                                (*params).format
-                            )),
-                            time_base: (*stream).time_base.into(),
-                            avg_frame_rate: (*stream).avg_frame_rate.into(),
-                            frame_count: ((*stream).nb_frames > 0)
-                                .then_some((*stream).nb_frames as u64),
-                            duration_ts: ((*stream).duration > 0).then_some((*stream).duration),
-                        });
-                    }
-                    AVMEDIA_TYPE_AUDIO => {
-                        audio_streams.push(AudioStreamInfo {
-                            stream_index: index,
-                            sample_rate: (*params).sample_rate.max(0) as u32,
-                            channels: (*params).ch_layout.nb_channels.max(0) as u16,
-                            time_base: (*stream).time_base.into(),
-                            frame_count: ((*stream).nb_frames > 0)
-                                .then_some((*stream).nb_frames as u64),
-                            duration_ts: ((*stream).duration > 0).then_some((*stream).duration),
-                        });
-                    }
+                match (*(*stream).codecpar).codec_type {
+                    AVMEDIA_TYPE_VIDEO => video_streams.push(self.video_stream_info(index)),
+                    AVMEDIA_TYPE_AUDIO => audio_streams.push(self.audio_stream_info(index)),
                     _ => {}
                 }
             }
-            MediaInfo {
-                path: self.path.clone(),
-                duration_us: ((*self.ptr).duration > 0).then_some((*self.ptr).duration),
-                bit_rate: ((*self.ptr).bit_rate > 0).then_some((*self.ptr).bit_rate),
-                video_streams,
-                audio_streams,
-            }
+        }
+        MediaInfo {
+            path: self.path.clone(),
+            duration_us: self.duration_us(),
+            bit_rate: unsafe { ((*self.ptr).bit_rate > 0).then_some((*self.ptr).bit_rate) },
+            video_streams,
+            audio_streams,
         }
     }
 
+    pub fn duration_us(&self) -> Option<i64> {
+        let duration = unsafe { (*self.ptr).duration };
+        (duration > 0).then_some(duration)
+    }
+
     pub fn best_video_stream(&self) -> Result<VideoStreamInfo> {
-        self.media_info()
-            .video_streams
-            .into_iter()
-            .next()
+        self.best_stream_index(AVMEDIA_TYPE_VIDEO)
+            .map(|index| self.video_stream_info(index))
             .ok_or_else(|| crate::FfmpegError::new("best_video_stream", "no video stream found"))
     }
 
     pub fn best_audio_stream(&self) -> Result<AudioStreamInfo> {
-        self.media_info()
-            .audio_streams
-            .into_iter()
-            .next()
+        self.best_stream_index(AVMEDIA_TYPE_AUDIO)
+            .map(|index| self.audio_stream_info(index))
             .ok_or_else(|| crate::FfmpegError::new("best_audio_stream", "no audio stream found"))
+    }
+
+    fn best_stream_index(&self, media_type: sys::AVMediaType) -> Option<usize> {
+        let index =
+            unsafe { sys::av_find_best_stream(self.ptr, media_type, -1, -1, ptr::null_mut(), 0) };
+        usize::try_from(index).ok()
+    }
+
+    fn video_stream_info(&self, index: usize) -> VideoStreamInfo {
+        unsafe {
+            let stream = *(*self.ptr).streams.add(index);
+            let params = (*stream).codecpar;
+            let rotation = display_rotation(params);
+            let (coded_width, coded_height) = (
+                (*params).width.max(0) as u32,
+                (*params).height.max(0) as u32,
+            );
+            let (width, height) = if rotation.is_multiple_of(180) {
+                (coded_width, coded_height)
+            } else {
+                (coded_height, coded_width)
+            };
+            VideoStreamInfo {
+                stream_index: index,
+                codec: VideoCodec::from_av_codec_id((*params).codec_id),
+                width,
+                height,
+                rotation,
+                pixel_format: PixelFormat::from_av_pixel_format(std::mem::transmute::<
+                    i32,
+                    sys::AVPixelFormat,
+                >((*params).format)),
+                time_base: (*stream).time_base.into(),
+                avg_frame_rate: (*stream).avg_frame_rate.into(),
+                frame_rate: stream_frame_rate(self.ptr, stream),
+                frame_count: ((*stream).nb_frames > 0).then_some((*stream).nb_frames as u64),
+                duration_ts: ((*stream).duration > 0).then_some((*stream).duration),
+                start_time: if (*stream).start_time == sys::AV_NOPTS_VALUE {
+                    0
+                } else {
+                    (*stream).start_time
+                },
+            }
+        }
+    }
+
+    fn audio_stream_info(&self, index: usize) -> AudioStreamInfo {
+        unsafe {
+            let stream = *(*self.ptr).streams.add(index);
+            let params = (*stream).codecpar;
+            AudioStreamInfo {
+                stream_index: index,
+                sample_rate: (*params).sample_rate.max(0) as u32,
+                channels: (*params).ch_layout.nb_channels.max(0) as u16,
+                time_base: (*stream).time_base.into(),
+                frame_count: ((*stream).nb_frames > 0).then_some((*stream).nb_frames as u64),
+                duration_ts: ((*stream).duration > 0).then_some((*stream).duration),
+            }
+        }
     }
 
     pub fn read_packet(&mut self) -> Result<Option<Packet>> {
@@ -317,6 +356,46 @@ impl Drop for InputContext {
     fn drop(&mut self) {
         unsafe {
             sys::avformat_close_input(&mut self.ptr);
+        }
+    }
+}
+
+/// Prefers the measured average: on variable frame rate files FFmpeg's guess can be a peak rate that
+/// disagrees with the stream's frame count.
+unsafe fn stream_frame_rate(
+    context: *mut sys::AVFormatContext,
+    stream: *mut sys::AVStream,
+) -> Option<Rational> {
+    let average = unsafe { (*stream).avg_frame_rate };
+    if average.num > 0 && average.den > 0 {
+        return Some(average.into());
+    }
+    let guess = unsafe { sys::av_guess_frame_rate(context, stream, ptr::null_mut()) };
+    let time_base = unsafe { (*stream).time_base };
+    // With nothing better to go on, FFmpeg reports the inverted time base, which is not a frame rate.
+    let inverted_time_base = guess.num == time_base.den && guess.den == time_base.num;
+    (guess.num > 0 && guess.den > 0 && !inverted_time_base).then(|| guess.into())
+}
+
+/// Reads the clockwise quarter turn a stream's display matrix asks for. Any other matrix reads as 0.
+pub(crate) fn display_rotation(params: *const sys::AVCodecParameters) -> u32 {
+    const DISPLAY_MATRIX_BYTES: usize = 9 * size_of::<i32>();
+    unsafe {
+        let side_data = sys::av_packet_side_data_get(
+            (*params).coded_side_data,
+            (*params).nb_coded_side_data,
+            sys::AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX,
+        );
+        if side_data.is_null() || (*side_data).size < DISPLAY_MATRIX_BYTES {
+            return 0;
+        }
+        // Returns counterclockwise degrees, or NaN for a singular matrix, which casts to 0.
+        let counterclockwise = sys::av_display_rotation_get((*side_data).data.cast::<i32>());
+        let clockwise = (-counterclockwise.round() as i32).rem_euclid(360) as u32;
+        if clockwise.is_multiple_of(90) {
+            clockwise
+        } else {
+            0
         }
     }
 }
