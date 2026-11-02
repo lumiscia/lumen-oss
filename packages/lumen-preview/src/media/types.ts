@@ -1,4 +1,4 @@
-import type { BlobSourceOptions, InputFormat, Source, UrlSourceOptions } from "mediabunny";
+import type { BlobSourceOptions, InputFormat, UrlSourceOptions } from "mediabunny";
 
 export interface FrameRequirementsPayload {
   images: string[];
@@ -16,10 +16,8 @@ export type MediaSourceInput =
   | Request
   | Blob
   | BufferSource
-  | Source
   | BlobMediaSourceInput
   | BufferMediaSourceInput
-  | SourceMediaSourceInput
   | UrlMediaSourceInput;
 
 export interface BlobMediaSourceInput {
@@ -33,24 +31,17 @@ export interface BufferMediaSourceInput {
   bytes: BufferSource;
 }
 
-export interface SourceMediaSourceInput {
-  kind: "source";
-  source: Source;
-}
-
 export interface UrlMediaSourceInput {
   kind: "url";
   url: string | URL | Request;
   options?: UrlSourceOptions;
 }
 
-export type VideoTimelineMode = "fixed-fps" | "native-samples";
-
 export interface VideoSourceRegistration {
   source: MediaSourceInput;
+  /** The rate source frames are numbered at. Defaults to the stream's own rate. */
   fps?: number | null;
   formats?: InputFormat[];
-  timelineMode?: VideoTimelineMode;
   track?: number | "primary";
 }
 
@@ -100,7 +91,6 @@ export interface VideoFrameMetadata {
   trackId: number;
   trackNumber: number;
   codec: string | null;
-  timelineMode: VideoTimelineMode;
 }
 
 export interface LumenMediaTarget {

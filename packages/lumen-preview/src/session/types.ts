@@ -1,8 +1,4 @@
-import type {
-  AudioEngineTimeline,
-  AudioSourceRegistration,
-  LumenAudioEngineOptions,
-} from "../audio-engine.js";
+import type { AudioSourceRegistration, LumenAudioEngineOptions } from "../audio-engine.js";
 import type {
   LumenBindings,
   LumenLogLevel,
@@ -15,7 +11,6 @@ import type { LumenPreviewStats, LumenPreviewStatsCallback } from "./stats.js";
 
 export interface LumenPreviewSessionInputs {
   audioSources: readonly AudioSourceRegistration[];
-  audioTimeline: AudioEngineTimeline | null;
   bindings: LumenPreviewBindingSource;
   compositionJson: string | null;
   lookaheadCount: number;

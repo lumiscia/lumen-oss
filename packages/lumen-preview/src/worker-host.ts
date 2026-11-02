@@ -25,6 +25,7 @@ export type LumenPreviewWorkerCommand =
   | {
       canvas: OffscreenCanvas;
       compositionJson: string | null;
+      loadId: number;
       lookaheadCount: number;
       logLevel: LumenLogLevel;
       mediaSources: readonly MediaRegistration[];
@@ -32,6 +33,7 @@ export type LumenPreviewWorkerCommand =
     }
   | {
       compositionJson: string | null;
+      loadId: number;
       mediaSources: readonly MediaRegistration[];
       type: "set-composition";
     }
@@ -59,6 +61,12 @@ export type LumenPreviewWorkerCommand =
     };
 
 export type LumenPreviewWorkerEvent =
+  | {
+      /** Answers the command with this `loadId`, and the driver ignores any older answer. */
+      loadId: number;
+      timelineJson: string | null;
+      type: "audio-timeline";
+    }
   | {
       patch: LumenPreviewPatch;
       type: "state";
@@ -93,6 +101,7 @@ export function createLumenPreviewWorkerHost({
   let lookaheadCount = 8;
   let lastRenderMs = 0;
   let loadGeneration = 0;
+  let loadId = 0;
   let mediaSources: readonly MediaRegistration[] = [];
   let playbackFps = new PlaybackFpsMeter();
   let playing = false;
@@ -118,6 +127,7 @@ export function createLumenPreviewWorkerHost({
         break;
       case "set-composition":
         compositionJson = message.compositionJson;
+        loadId = message.loadId;
         mediaSources = message.mediaSources;
         await loadComposition();
         break;
@@ -142,6 +152,7 @@ export function createLumenPreviewWorkerHost({
     dispose();
     canvas = message.canvas;
     compositionJson = message.compositionJson;
+    loadId = message.loadId;
     lookaheadCount = message.lookaheadCount;
     mediaSources = message.mediaSources;
 
@@ -169,6 +180,7 @@ export function createLumenPreviewWorkerHost({
     if (!compositionJson) {
       activeController.clear();
       lastRenderMs = 0;
+      postAudioTimeline(null);
       postState({
         frame: 0,
         totalFrames: 0,
@@ -190,6 +202,7 @@ export function createLumenPreviewWorkerHost({
       activeController.setLookaheadCount(lookaheadCount);
       canvas.width = activeController.width() || 1;
       canvas.height = activeController.height() || 1;
+      postAudioTimeline(activeController.audioTimeline() ?? null);
       postState({
         error: null,
         frame: activeController.currentFrame(),
@@ -202,8 +215,12 @@ export function createLumenPreviewWorkerHost({
       postStats(statsFromController(activeController, 0));
       queueRender();
     } catch (error) {
+      if (generation !== loadGeneration) {
+        return;
+      }
       lastRenderMs = 0;
       playbackFps.reset();
+      postAudioTimeline(null);
       postState({
         error: describeError(error),
         isLoaded: false,
@@ -326,6 +343,10 @@ export function createLumenPreviewWorkerHost({
     queuedRender = false;
     playbackFps.reset();
     lastRenderMs = 0;
+  }
+
+  function postAudioTimeline(timelineJson: string | null): void {
+    scope.postMessage({ loadId, timelineJson, type: "audio-timeline" });
   }
 
   function postState(patch: LumenPreviewPatch): void {

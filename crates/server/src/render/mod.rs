@@ -61,7 +61,7 @@ pub fn convert_project_payload(payload: &serde_json::Value) -> Result<ProjectBun
 
     let composition = lumen_engine::json::parse(&project).map_err(|err| RenderError {
         code: "invalid_project_payload",
-        message: err.to_string(),
+        message: format!("{err:#}"),
         retryable: false,
     })?;
     Ok(ProjectBundle {
@@ -81,6 +81,32 @@ mod tests {
     use super::convert_project_payload;
 
     #[test]
+    fn invalid_payload_message_includes_the_nested_cause() {
+        let payload = json!({
+            "timeline": { "fps": 24, "duration_frames": 120 },
+            "render_settings": { "width": 64, "height": 64 },
+            "compositions": {
+                "card": {
+                    "nodes": [{ "id": 1, "type": "merge", "params": { "blend_mode": "not_real" } }],
+                    "connections": []
+                }
+            },
+            "nodes": [],
+            "connections": []
+        });
+
+        let Err(error) = convert_project_payload(&payload) else {
+            panic!("the payload should be rejected");
+        };
+        assert!(
+            error.message.contains("composition `card`"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("not_real"), "{}", error.message);
+    }
+
+    #[test]
     fn convert_current_composition_preserves_duration_frames() {
         let payload = json!({
             "timeline": {
@@ -96,7 +122,7 @@ mod tests {
                 {
                     "id": 1,
                     "type": "background",
-                    "properties": {
+                    "params": {
                         "paint": [255, 255, 255, 255],
                         "width": 64,
                         "height": 64
@@ -105,7 +131,7 @@ mod tests {
                 {
                     "id": 2,
                     "type": "media_output",
-                    "properties": {}
+                    "params": {}
                 }
             ],
             "connections": [

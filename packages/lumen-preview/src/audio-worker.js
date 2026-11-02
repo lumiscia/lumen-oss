@@ -8,9 +8,6 @@ const sources = new Map();
 globalThis.onmessage = (event) => {
   const message = event.data;
   switch (message.type) {
-    case "clear-sources":
-      sources.clear();
-      break;
     case "remove-source":
       sources.delete(message.id);
       break;
@@ -20,38 +17,36 @@ globalThis.onmessage = (event) => {
     case "set-timeline":
       timeline = message.timeline;
       break;
-    case "request-chunks":
-      queueChunks(message);
+    case "request-chunk":
+      postChunk(message);
       break;
   }
 };
 
-function queueChunks(message) {
-  if (!timeline || timeline.clips.length === 0) {
+function postChunk({ chunkFrames, generation, startSample }) {
+  if (!timeline) {
     return;
   }
-  for (
-    let startSample = message.startSample;
-    startSample <= message.throughSample;
-    startSample += message.chunkFrames
-  ) {
-    const samples = mixTimelineChunk(timeline, sources, startSample, message.chunkFrames);
-    globalThis.postMessage(
-      {
-        type: "chunk",
-        generation: message.generation,
-        startSample,
-        frames: message.chunkFrames,
-        sampleRate: SAMPLE_RATE,
-        channelCount: CHANNELS,
-        samples,
-      },
-      [samples.buffer],
-    );
-  }
+  const samples = mixTimelineChunk(timeline, sources, startSample, chunkFrames);
+  globalThis.postMessage(
+    {
+      type: "chunk",
+      generation,
+      startSample,
+      frames: chunkFrames,
+      sampleRate: SAMPLE_RATE,
+      channelCount: CHANNELS,
+      samples,
+    },
+    [samples.buffer],
+  );
 }
 
-function mixTimelineChunk(nextTimeline, nextSources, startSample, frames) {
+/**
+ * Mixes interleaved stereo for the export mixer's rules, looping over the timeline's duration.
+ * `crates/engine/src/audio.rs` writes the fixtures `audio-worker.test.ts` checks this against.
+ */
+export function mixTimelineChunk(nextTimeline, nextSources, startSample, frames) {
   const output = new Float32Array(frames * CHANNELS);
   const durationMs = (nextTimeline.durationFrames / Math.max(nextTimeline.fps, 1)) * 1_000;
   const loopSamples =
@@ -76,6 +71,9 @@ function mixTimelineChunk(nextTimeline, nextSources, startSample, frames) {
     outputFrame += segmentFrames;
   }
 
+  for (let index = 0; index < output.length; index += 1) {
+    output[index] = Math.min(1, Math.max(-1, output[index]));
+  }
   return output;
 }
 
@@ -117,31 +115,25 @@ function mixTimelineRange(
     }
 
     const baseGain = track.volume * clip.volume;
-    const fadeSamples = Math.min(
-      CLIP_EDGE_FADE_SAMPLES,
-      Math.max(0, Math.floor(clipDurationSamples / 4)),
-    );
     const sourceStartSample = msToSample(clip.sourceStartMs);
     for (let sample = overlapStartSample; sample < overlapEndSample; sample += 1) {
       const clipOffset = sample - clipStartSample;
       const sourceFrame = sourceStartSample + clipOffset;
-      if (sourceFrame < 0 || sourceFrame * CHANNELS >= source.length) {
-        continue;
+      if (sourceFrame * CHANNELS >= source.length) {
+        break;
       }
 
-      const gain = baseGain * edgeFadeGain(clipOffset, clipDurationSamples, fadeSamples);
+      const gain = baseGain * clipEnvelope(clipOffset, clipDurationSamples);
       const outputFrame = outputStartFrame + sample - startSample;
       for (let channel = 0; channel < CHANNELS; channel += 1) {
-        const outputIndex = outputFrame * CHANNELS + channel;
-        const sourceIndex = sourceFrame * CHANNELS + channel;
-        output[outputIndex] = clampSample(
-          (output[outputIndex] ?? 0) + (source[sourceIndex] ?? 0) * gain,
-        );
+        output[outputFrame * CHANNELS + channel] += source[sourceFrame * CHANNELS + channel] * gain;
       }
     }
   }
 }
 
+// Loop k covers playback samples [floor(k * loopSamples), floor((k + 1) * loopSamples)), so a
+// fractional loop length stays in phase with the millisecond clock across repetitions.
 function loopBounds(sample, loopSamples) {
   if (!Number.isFinite(loopSamples)) {
     return [0, Number.POSITIVE_INFINITY];
@@ -157,21 +149,14 @@ function msToSample(ms) {
   return Math.floor((Math.max(0, ms) * SAMPLE_RATE) / 1_000);
 }
 
-function edgeFadeGain(offset, duration, fadeSamples) {
-  if (fadeSamples <= 0) {
+function clipEnvelope(clipSample, clipDuration) {
+  const fade = Math.min(CLIP_EDGE_FADE_SAMPLES, Math.floor(clipDuration / 2));
+  if (fade === 0) {
     return 1;
   }
-  const fadeIn = Math.min(1, offset / fadeSamples);
-  const fadeOut = Math.min(1, (duration - offset) / fadeSamples);
-  return Math.max(0, Math.min(fadeIn, fadeOut));
-}
-
-function clampSample(sample) {
-  if (sample > 1) {
-    return 1;
+  if (clipSample < fade) {
+    return clipSample / fade;
   }
-  if (sample < -1) {
-    return -1;
-  }
-  return sample;
+  const remaining = clipDuration - clipSample;
+  return remaining < fade ? remaining / fade : 1;
 }
