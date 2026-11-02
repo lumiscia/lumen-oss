@@ -81,7 +81,7 @@ export class Composition {
     const nextNode = {
       ...input,
       id,
-      ...(input.params === undefined ? {} : { params: lowerParams(input.params) }),
+      ...(input.params === undefined ? {} : { params: lower(input.params) }),
     } as CompositionNode<TKind>;
 
     this.#nodeIds.add(id);
@@ -257,13 +257,32 @@ export class Composition {
   }
 }
 
-function lowerParams(params: object): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(params).map(([name, value]) => [
-      name,
-      value instanceof Expr ? value.toString() : value,
-    ]),
-  );
+/**
+ * Turns every `Expr` in plain objects and arrays into its `=...` string. Objects with their own
+ * `toJSON` are left for it to serialize.
+ */
+function lower(value: unknown): unknown {
+  if (value instanceof Expr) {
+    return value.toString();
+  }
+  if (typeof (value as { toJSON?: unknown } | null)?.toJSON === "function") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(lower);
+  }
+  if (isPlainObject(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, lower(entry)]));
+  }
+  return value;
+}
+
+function isPlainObject(value: unknown): value is object {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function nodeId(node: NodeReference): number {
