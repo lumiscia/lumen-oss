@@ -1,21 +1,20 @@
-use std::sync::Arc;
-
 use axum::{
     Json,
+    body::Bytes,
     extract::{Path, State, ws::WebSocketUpgrade},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::IntoResponse,
 };
+use lumen_server::render::convert_project_payload;
 
 use crate::server::{
-    ApiRenderJob, CreateRenderResponse, GetRenderResponse, RenderJobError, RenderJobInput,
-    RenderJobResponse, RenderProgressResponse, RenderQueueState, current_timestamp,
-    execute_render_job, input_hash, new_render_id,
+    ApiRenderJob, CreateRenderResponse, GetRenderResponse, RenderJob, RenderJobError,
+    RenderJobInput, RenderProgressResponse, RenderQueueState, current_timestamp,
+    execute_render_job, input_hash, map_execution_error, new_render_id, validate_media_manifest,
 };
 
 use super::{
-    auth::authorize_response,
-    errors::not_found_response,
+    errors::{error_response, not_found_response},
     progress::{RenderProgressPatch, broadcast_progress, update_render_progress},
     state::{AppState, StoredRender},
     ws::render_socket_session,
@@ -36,17 +35,29 @@ pub(super) async fn health() -> Json<HealthResponse> {
 
 pub(super) async fn create_render(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(mut input): Json<RenderJobInput>,
+    Json(input): Json<RenderJobInput>,
 ) -> impl IntoResponse {
-    if let Some(response) = authorize_response(&state, &headers) {
-        return response;
+    if input.webhook_url.is_some() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            RenderJobError {
+                code: "webhooks_unsupported".to_string(),
+                message: "lumen-server does not deliver webhooks; remove webhookUrl and poll the render or use its socket".to_string(),
+                retryable: false,
+            },
+        );
     }
+    if let Err(error) = validate_media_manifest(&input.media) {
+        return error_response(StatusCode::UNPROCESSABLE_ENTITY, error);
+    }
+    let bundle = match convert_project_payload(&input.composition) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            return error_response(StatusCode::UNPROCESSABLE_ENTITY, map_execution_error(error));
+        }
+    };
 
-    if input.job_id.is_none() {
-        input.job_id = Some(new_render_id());
-    }
-    let id = input.job_id.clone().unwrap_or_else(new_render_id);
+    let id = new_render_id();
     let render = ApiRenderJob {
         cost_micros: 0,
         created_at: current_timestamp(),
@@ -69,7 +80,7 @@ pub(super) async fn create_render(
         updated_at: current_timestamp(),
     };
     if let Ok(mut renders) = state.renders.write() {
-        renders.insert(
+        renders.records.insert(
             id.clone(),
             StoredRender {
                 bytes: None,
@@ -81,7 +92,14 @@ pub(super) async fn create_render(
     }
     broadcast_progress(&state, "started", Some(progress));
 
-    spawn_render_task(state.clone(), id.clone(), input);
+    spawn_render_task(
+        state.clone(),
+        RenderJob {
+            id,
+            bundle,
+            media: input.media,
+        },
+    );
 
     (
         StatusCode::ACCEPTED,
@@ -95,51 +113,31 @@ pub(super) async fn create_render(
 
 pub(super) async fn get_render(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(response) = authorize_response(&state, &headers) {
-        return response;
-    }
-
     let render = state
         .renders
         .read()
         .ok()
-        .and_then(|renders| renders.get(&id).map(|stored| stored.render.clone()));
+        .and_then(|renders| renders.records.get(&id).map(|stored| stored.render.clone()));
     match render {
         Some(render) => (StatusCode::OK, Json(GetRenderResponse { render })).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(RenderJobResponse {
-                ok: false,
-                artifact: None,
-                metrics: None,
-                error: Some(RenderJobError {
-                    code: "render_not_found".to_string(),
-                    message: "render was not found".to_string(),
-                    retryable: false,
-                }),
-            }),
-        )
-            .into_response(),
+        None => not_found_response(),
     }
 }
 
 pub(super) async fn get_render_progress(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(response) = authorize_response(&state, &headers) {
-        return response;
-    }
-
     let result = state.renders.read().ok().and_then(|renders| {
-        renders.get(&id).map(|stored| RenderProgressResponse {
-            progress: stored.progress.clone(),
-            render: stored.render.clone(),
-        })
+        renders
+            .records
+            .get(&id)
+            .map(|stored| RenderProgressResponse {
+                progress: stored.progress.clone(),
+                render: stored.render.clone(),
+            })
     });
     match result {
         Some(result) => (StatusCode::OK, Json(result)).into_response(),
@@ -149,12 +147,15 @@ pub(super) async fn get_render_progress(
 
 pub(super) async fn render_socket(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    if let Some(response) = authorize_response(&state, &headers) {
-        return response;
+    let known = state
+        .renders
+        .read()
+        .is_ok_and(|renders| renders.records.contains_key(&id));
+    if !known {
+        return not_found_response();
     }
 
     ws.on_upgrade(move |socket| render_socket_session(socket, state, id))
@@ -162,18 +163,14 @@ pub(super) async fn render_socket(
 
 pub(super) async fn get_render_artifact(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(response) = authorize_response(&state, &headers) {
-        return response;
-    }
-
-    let bytes = state
-        .renders
-        .read()
-        .ok()
-        .and_then(|renders| renders.get(&id).and_then(|stored| stored.bytes.clone()));
+    let bytes = state.renders.read().ok().and_then(|renders| {
+        renders
+            .records
+            .get(&id)
+            .and_then(|stored| stored.bytes.clone())
+    });
     match bytes {
         Some(bytes) => {
             let mut headers = HeaderMap::new();
@@ -183,19 +180,25 @@ pub(super) async fn get_render_artifact(
                 HeaderValue::from_str(&format!("attachment; filename=\"{id}.mp4\""))
                     .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
             );
-            (StatusCode::OK, headers, bytes.as_ref().clone()).into_response()
+            (StatusCode::OK, headers, bytes).into_response()
         }
         None => not_found_response(),
     }
 }
 
-fn spawn_render_task(state: AppState, id: String, input: RenderJobInput) {
+fn spawn_render_task(state: AppState, job: RenderJob) {
     tokio::spawn(async move {
+        let _render_slot = state
+            .render_slots
+            .acquire()
+            .await
+            .expect("render slots are never closed");
+        let id = job.id.clone();
         let artifact_url = format!("/renders/{id}/artifact");
         update_render_progress(
             &state,
             &id,
-            "progress",
+            "started",
             RenderProgressPatch {
                 progress: Some(0.01),
                 stage: Some("accepted"),
@@ -205,19 +208,25 @@ fn spawn_render_task(state: AppState, id: String, input: RenderJobInput) {
         );
         let progress_state = state.clone();
         let progress_id = id.clone();
-        let result = execute_render_job(input, artifact_url, state.verbose_debug, move |event| {
-            update_render_progress(
-                &progress_state,
-                &progress_id,
-                "progress",
-                RenderProgressPatch {
-                    progress: Some((0.05 + 0.90 * event.ratio).clamp(0.0, 0.99)),
-                    stage: Some(event.stage),
-                    state: Some("processing"),
-                    ..RenderProgressPatch::default()
-                },
-            );
-        })
+        let result = execute_render_job(
+            job,
+            &state.media_client,
+            artifact_url,
+            state.verbose_debug,
+            move |event| {
+                update_render_progress(
+                    &progress_state,
+                    &progress_id,
+                    "progress",
+                    RenderProgressPatch {
+                        progress: Some((0.05 + 0.90 * event.ratio).clamp(0.0, 0.99)),
+                        stage: Some(event.stage),
+                        state: Some("processing"),
+                        ..RenderProgressPatch::default()
+                    },
+                );
+            },
+        )
         .await;
 
         match result {
@@ -232,11 +241,11 @@ fn complete_render(state: &AppState, id: &str, completed: crate::server::Complet
     let output_bytes = completed.artifact.bytes;
     let duration_ms = completed.metrics.render_ms;
     if let Ok(mut renders) = state.renders.write()
-        && let Some(stored) = renders.get_mut(id)
+        && let Some(stored) = renders.records.get_mut(id)
     {
-        stored.bytes = Some(Arc::new(completed.bytes));
-        stored.render = completed.render;
+        stored.bytes = Some(Bytes::from(completed.bytes));
         stored.render.status = "succeeded";
+        renders.retain_finished(id, state.retained_renders);
     }
     update_render_progress(
         state,
@@ -256,9 +265,10 @@ fn complete_render(state: &AppState, id: &str, completed: crate::server::Complet
 
 fn fail_render(state: &AppState, id: &str, error: RenderJobError) {
     if let Ok(mut renders) = state.renders.write()
-        && let Some(stored) = renders.get_mut(id)
+        && let Some(stored) = renders.records.get_mut(id)
     {
         stored.render.status = "failed";
+        renders.retain_finished(id, state.retained_renders);
     }
     update_render_progress(
         state,

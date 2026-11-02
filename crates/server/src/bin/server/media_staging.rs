@@ -1,356 +1,378 @@
 use std::{
-    collections::HashMap,
-    net::IpAddr,
-    path::{Path, PathBuf},
+    collections::{HashMap, HashSet},
+    error::Error,
+    fmt::Display,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
-use serde_json::Value;
+use futures_util::{TryStreamExt, stream};
+use reqwest::{
+    Url,
+    dns::{Addrs, Name, Resolve, Resolving},
+    redirect,
+};
+use tempfile::TempDir;
+use tokio::io::AsyncWriteExt;
 
 use super::{RenderJobError, util::sanitize_error_message};
 
+const MAX_MEDIA_ENTRIES: usize = 256;
 const MAX_REMOTE_MEDIA_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_STAGED_MEDIA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_MEDIA_REDIRECTS: usize = 5;
 const MEDIA_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MEDIA_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MEDIA_DOWNLOAD_CONCURRENCY: usize = 4;
+const NON_PUBLIC_HOST: &str =
+    "host has no public address; allow it with --allow-media-host if this is intended";
 
-pub(super) struct StagedMedia {
-    pub project: Value,
-    dir: Option<tempfile::TempDir>,
+/// Downloads manifest media, refusing non-public addresses on every connection, including
+/// redirects, unless the host is listed in `--allow-media-host`.
+#[derive(Clone)]
+pub struct MediaClient {
+    client: reqwest::Client,
+    allowed_hosts: Arc<HashSet<String>>,
 }
 
-impl StagedMedia {
-    pub fn media_root(&self) -> Option<PathBuf> {
-        self.dir.as_ref().map(|dir| dir.path().to_path_buf())
+impl MediaClient {
+    pub fn new(allowed_hosts: Vec<String>) -> anyhow::Result<Self> {
+        let allowed_hosts: Arc<HashSet<String>> = Arc::new(
+            allowed_hosts
+                .iter()
+                .map(|host| host.to_ascii_lowercase())
+                .collect(),
+        );
+        let redirect_allowed_hosts = Arc::clone(&allowed_hosts);
+        let client = reqwest::Client::builder()
+            .connect_timeout(MEDIA_CONNECT_TIMEOUT)
+            .dns_resolver(Arc::new(PublicAddressResolver {
+                allowed_hosts: Arc::clone(&allowed_hosts),
+            }))
+            // A proxy would resolve the media host itself, out of reach of the resolver.
+            .no_proxy()
+            .redirect(redirect::Policy::custom(move |attempt| {
+                if attempt.previous().len() >= MAX_MEDIA_REDIRECTS {
+                    return attempt.error("too many redirects");
+                }
+                match check_media_url(attempt.url(), &redirect_allowed_hosts) {
+                    Ok(()) => attempt.follow(),
+                    Err(cause) => attempt.error(cause),
+                }
+            }))
+            .tcp_nodelay(true)
+            .timeout(MEDIA_REQUEST_TIMEOUT)
+            .build()?;
+        Ok(Self {
+            client,
+            allowed_hosts,
+        })
+    }
+
+    async fn download(
+        &self,
+        alias: &str,
+        url: &str,
+        path: &Path,
+        staged_bytes: &AtomicU64,
+    ) -> Result<(), RenderJobError> {
+        let parsed = Url::parse(url).map_err(|err| {
+            media_error(
+                "media_download_failed",
+                alias,
+                None,
+                format!("invalid URL: {err}"),
+                false,
+            )
+        })?;
+        let host = parsed.host_str().map(str::to_string);
+        let host = host.as_deref();
+        let failed = |code: &str, cause: &dyn Display, retryable| {
+            media_error(code, alias, host, cause, retryable)
+        };
+        check_media_url(&parsed, &self.allowed_hosts)
+            .map_err(|cause| failed("media_download_forbidden_host", &cause, false))?;
+
+        let started = Instant::now();
+        let mut response =
+            self.client.get(parsed).send().await.map_err(|err| {
+                failed("media_download_failed", &request_failure_cause(err), true)
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(failed(
+                "media_download_failed",
+                &format!("server returned status {status}"),
+                status.is_server_error() || status.as_u16() == 429,
+            ));
+        }
+        let too_large = || {
+            failed(
+                "media_download_too_large",
+                &format!("file exceeds the {MAX_REMOTE_MEDIA_BYTES} byte limit"),
+                false,
+            )
+        };
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_REMOTE_MEDIA_BYTES)
+        {
+            return Err(too_large());
+        }
+
+        let write_failed = |err: std::io::Error| {
+            failed("media_stage_failed", &format!("write failed: {err}"), true)
+        };
+        let mut file = tokio::fs::File::create(path).await.map_err(write_failed)?;
+        let mut downloaded = 0_u64;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|err| failed("media_download_failed", &request_failure_cause(err), true))?
+        {
+            let length = chunk.len() as u64;
+            downloaded += length;
+            if downloaded > MAX_REMOTE_MEDIA_BYTES {
+                return Err(too_large());
+            }
+            if staged_bytes.fetch_add(length, Ordering::Relaxed) + length > MAX_STAGED_MEDIA_BYTES {
+                return Err(failed(
+                    "media_download_too_large",
+                    &format!("job exceeds the {MAX_STAGED_MEDIA_BYTES} byte total media limit"),
+                    false,
+                ));
+            }
+            file.write_all(&chunk).await.map_err(write_failed)?;
+        }
+        file.flush().await.map_err(write_failed)?;
+        tracing::info!(
+            alias,
+            media_url_host = host,
+            total_ms = started.elapsed().as_millis(),
+            bytes = downloaded,
+            "downloaded render media source"
+        );
+        Ok(())
     }
 }
 
+struct PublicAddressResolver {
+    allowed_hosts: Arc<HashSet<String>>,
+}
+
+impl Resolve for PublicAddressResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let allowed = self
+            .allowed_hosts
+            .contains(&name.as_str().to_ascii_lowercase());
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .filter(|address| allowed || !is_non_public_ip(address.ip()))
+                .collect::<Vec<SocketAddr>>();
+            if addresses.is_empty() {
+                return Err(NON_PUBLIC_HOST.into());
+            }
+            Ok(Box::new(addresses.into_iter()) as Addrs)
+        })
+    }
+}
+
+/// Staging always yields a directory of its own, even with an empty manifest, because the render's
+/// media store can only read sources inside the directory it is given.
 pub(super) async fn stage_remote_media(
-    project: Value,
+    client: &MediaClient,
     media: HashMap<String, String>,
-) -> Result<StagedMedia, RenderJobError> {
-    reject_inline_remote_media(&project, None)?;
-    tracing::info!(media_count = media.len(), "staging render media manifest");
-    if media.is_empty() {
-        return Ok(StagedMedia { project, dir: None });
-    }
-
+) -> Result<TempDir, RenderJobError> {
     let dir = tempfile::tempdir().map_err(|err| RenderJobError {
         code: "media_stage_failed".to_string(),
         message: format!("failed to create media staging directory: {err}"),
         retryable: true,
     })?;
-
-    let client = reqwest::Client::builder()
-        .connect_timeout(MEDIA_CONNECT_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .tcp_nodelay(true)
-        .timeout(MEDIA_REQUEST_TIMEOUT)
-        .build()
-        .map_err(|err| RenderJobError {
-            code: "media_download_failed".to_string(),
-            message: sanitize_error_message(&err.to_string()),
-            retryable: true,
-        })?;
-    let mut downloads = tokio::task::JoinSet::new();
-    let mut media = media.into_iter();
-
-    loop {
-        while downloads.len() < MEDIA_DOWNLOAD_CONCURRENCY {
-            let Some((alias, url)) = media.next() else {
-                break;
-            };
-            validate_media_alias(&alias)?;
+    let staged_bytes = AtomicU64::new(0);
+    stream::iter(media.into_iter().map(Ok))
+        .try_for_each_concurrent(MEDIA_DOWNLOAD_CONCURRENCY, |(alias, url)| {
             let path = dir.path().join(&alias);
-            let client = client.clone();
-            downloads.spawn(async move {
-                let bytes = download_remote_media(&client, &alias, &url, &path).await?;
-                Ok::<_, RenderJobError>((alias, path, bytes))
-            });
-        }
+            let staged_bytes = &staged_bytes;
+            async move { client.download(&alias, &url, &path, staged_bytes).await }
+        })
+        .await?;
+    Ok(dir)
+}
 
-        let Some(result) = downloads.join_next().await else {
-            break;
-        };
-        let (alias, path, bytes) = result.map_err(|err| RenderJobError {
-            code: "media_stage_failed".to_string(),
-            message: format!("media download task failed: {err}"),
-            retryable: true,
-        })??;
-        tracing::info!(
-            alias,
-            staged_path = %path.display(),
-            bytes,
-            "staged render media source"
-        );
+pub(crate) fn validate_media_manifest(
+    media: &HashMap<String, String>,
+) -> Result<(), RenderJobError> {
+    if media.len() > MAX_MEDIA_ENTRIES {
+        return Err(RenderJobError {
+            code: "media_manifest_too_large".to_string(),
+            message: format!("media manifest exceeds the {MAX_MEDIA_ENTRIES} entry limit"),
+            retryable: false,
+        });
     }
-
-    Ok(StagedMedia {
-        project,
-        dir: Some(dir),
-    })
-}
-
-fn reject_inline_remote_media(value: &Value, key: Option<&str>) -> Result<(), RenderJobError> {
-    match value {
-        Value::String(source)
-            if is_media_source_key(key)
-                && (is_http_url(source) || source.starts_with("lumen:")) =>
-        {
-            Err(RenderJobError {
-                code: "inline_media_reference_rejected".to_string(),
-                message: "media references must use the render media manifest".to_string(),
-                retryable: false,
-            })
-        }
-        Value::Array(items) => {
-            for item in items {
-                reject_inline_remote_media(item, None)?;
-            }
-            Ok(())
-        }
-        Value::Object(object) => {
-            for (key, value) in object {
-                reject_inline_remote_media(value, Some(key))?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-fn is_media_source_key(key: Option<&str>) -> bool {
-    matches!(key, Some("source" | "url" | "path" | "source_id"))
-}
-
-fn is_http_url(source: &str) -> bool {
-    source.starts_with("http://") || source.starts_with("https://")
-}
-
-fn validate_media_alias(alias: &str) -> Result<(), RenderJobError> {
-    let valid = !alias.is_empty()
-        && alias.len() <= 128
-        && alias
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'));
-    if valid {
+    if media.keys().all(|alias| is_valid_media_alias(alias)) {
         Ok(())
     } else {
         Err(RenderJobError {
             code: "invalid_media_alias".to_string(),
-            message: "media manifest contains an invalid alias".to_string(),
+            message: "media aliases must be at most 128 letters, digits, `.`, `_` or `-`, and not only dots"
+                .to_string(),
             retryable: false,
         })
     }
 }
 
-async fn download_remote_media(
-    client: &reqwest::Client,
-    alias: &str,
-    url: &str,
-    path: &Path,
-) -> Result<u64, RenderJobError> {
-    if url.starts_with("lumen:") {
-        return Err(RenderJobError {
-            code: "media_download_unresolved_lumen_media".to_string(),
-            message: "self-hosted renders require direct media URLs in the media manifest"
-                .to_string(),
-            retryable: false,
-        });
-    }
-
-    let parsed = reqwest::Url::parse(url).map_err(|err| RenderJobError {
-        code: "media_download_failed".to_string(),
-        message: format!("invalid media URL: {err}"),
-        retryable: false,
-    })?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(RenderJobError {
-            code: "media_download_failed".to_string(),
-            message: format!("unsupported media URL scheme: {}", parsed.scheme()),
-            retryable: false,
-        });
-    }
-    tracing::info!(
-        alias,
-        media_url_host = parsed.host_str().unwrap_or_default(),
-        media_url_path = parsed.path(),
-        "downloading render media source"
-    );
-    validate_remote_media_host(&parsed).await?;
-
-    let media_url_host = parsed.host_str().unwrap_or_default().to_string();
-    let started = Instant::now();
-    let response = client.get(parsed).send().await.map_err(|err| {
-        tracing::warn!(
-            alias,
-            media_url_host,
-            "render media download request failed: {err}"
-        );
-        RenderJobError {
-            code: "media_download_failed".to_string(),
-            message: sanitize_error_message(&err.to_string()),
-            retryable: true,
-        }
-    })?;
-    let response_headers_ms = started.elapsed().as_millis();
-    let status = response.status();
-    if !status.is_success() {
-        return Err(RenderJobError {
-            code: "media_download_failed".to_string(),
-            message: sanitize_error_message(&format!("media download returned status {status}")),
-            retryable: status.is_server_error() || status.as_u16() == 429,
-        });
-    }
-
-    if let Some(content_length) = response.content_length()
-        && content_length > MAX_REMOTE_MEDIA_BYTES
-    {
-        return Err(RenderJobError {
-            code: "media_download_too_large".to_string(),
-            message: "remote media exceeds the maximum allowed size".to_string(),
-            retryable: false,
-        });
-    }
-    if let Some(content_type) = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-    {
-        let content_type = content_type.to_ascii_lowercase();
-        if !content_type.starts_with("image/")
-            && !content_type.starts_with("video/")
-            && !content_type.starts_with("audio/")
-            && content_type != "application/octet-stream"
-        {
-            return Err(RenderJobError {
-                code: "media_download_unsupported_type".to_string(),
-                message: "remote media content type is not supported".to_string(),
-                retryable: false,
-            });
-        }
-    }
-
-    let mut file = tokio::fs::File::create(path)
-        .await
-        .map_err(|err| RenderJobError {
-            code: "media_stage_failed".to_string(),
-            message: format!("failed to write staged media: {err}"),
-            retryable: true,
-        })?;
-    let mut downloaded = 0_u64;
-    let mut response = response;
-    let body_started = Instant::now();
-    while let Some(chunk) = response.chunk().await.map_err(|err| RenderJobError {
-        code: "media_download_failed".to_string(),
-        message: sanitize_error_message(&err.to_string()),
-        retryable: true,
-    })? {
-        downloaded += chunk.len() as u64;
-        if downloaded > MAX_REMOTE_MEDIA_BYTES {
-            return Err(RenderJobError {
-                code: "media_download_too_large".to_string(),
-                message: "remote media exceeds the maximum allowed size".to_string(),
-                retryable: false,
-            });
-        }
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
-            .await
-            .map_err(|err| RenderJobError {
-                code: "media_stage_failed".to_string(),
-                message: format!("failed to write staged media: {err}"),
-                retryable: true,
-            })?;
-    }
-    tracing::info!(
-        alias,
-        media_url_host,
-        response_headers_ms,
-        body_ms = body_started.elapsed().as_millis(),
-        total_ms = started.elapsed().as_millis(),
-        bytes = downloaded,
-        "downloaded render media source"
-    );
-    Ok(downloaded)
+/// Aliases become file names in the staging directory, so they cannot name a subdirectory, a parent
+/// or a symlink target.
+fn is_valid_media_alias(alias: &str) -> bool {
+    !alias.is_empty()
+        && alias.len() <= 128
+        && alias.chars().any(|ch| ch != '.')
+        && alias
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
-async fn validate_remote_media_host(url: &reqwest::Url) -> Result<(), RenderJobError> {
-    let Some(host) = url.host_str() else {
-        return Err(RenderJobError {
-            code: "media_download_failed".to_string(),
-            message: "remote media URL requires a host".to_string(),
-            retryable: false,
-        });
-    };
-
-    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
-        return Err(forbidden_media_host_error());
+/// Connections to a literal IP skip the resolver, so those hosts are checked here.
+fn check_media_url(url: &Url, allowed_hosts: &HashSet<String>) -> Result<(), &'static str> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("media manifests take direct http and https URLs");
     }
-
-    let port = url.port_or_known_default().unwrap_or(443);
-    let addresses = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|err| RenderJobError {
-            code: "media_download_failed".to_string(),
-            message: sanitize_error_message(&err.to_string()),
-            retryable: true,
-        })?;
-
-    for address in addresses {
-        if is_private_ip(address.ip()) {
-            return Err(forbidden_media_host_error());
-        }
+    let host = url.host_str().ok_or("URL has no host")?;
+    let literal_ip = host
+        .trim_matches(['[', ']'])
+        .parse::<IpAddr>()
+        .is_ok_and(is_non_public_ip);
+    if literal_ip && !allowed_hosts.contains(host) {
+        return Err(NON_PUBLIC_HOST);
     }
-
     Ok(())
 }
 
-fn forbidden_media_host_error() -> RenderJobError {
+fn media_error(
+    code: &str,
+    alias: &str,
+    host: Option<&str>,
+    cause: impl Display,
+    retryable: bool,
+) -> RenderJobError {
+    let message = match host {
+        Some(host) => format!("media '{alias}' ({host}): {cause}"),
+        None => format!("media '{alias}': {cause}"),
+    };
     RenderJobError {
-        code: "media_download_forbidden_host".to_string(),
-        message: "remote media URL host is not allowed".to_string(),
-        retryable: false,
+        code: code.to_string(),
+        message: sanitize_error_message(&message),
+        retryable,
     }
 }
 
-fn is_private_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || ip.octets()[0] == 0
-                || ip.octets()[0] >= 224
-        }
-        IpAddr::V6(ip) => {
-            ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-        }
+/// The URL is dropped because it may carry signed query parameters. The cause is only in the source
+/// chain, not in reqwest's own message.
+fn request_failure_cause(error: reqwest::Error) -> String {
+    let error = error.without_url();
+    let mut cause = error.to_string();
+    let mut source = error.source();
+    while let Some(next) = source {
+        cause.push_str(": ");
+        cause.push_str(&next.to_string());
+        source = next.source();
     }
+    cause
+}
+
+fn is_non_public_ip(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(ip) => is_non_public_ipv4(ip),
+        IpAddr::V6(ip) => is_non_public_ipv6(ip),
+    }
+}
+
+fn is_non_public_ipv4(ip: Ipv4Addr) -> bool {
+    let [first, second, third, _] = ip.octets();
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || first == 0
+        || first >= 224
+        // Carrier-grade NAT, IETF protocol assignments and benchmarking.
+        || (first == 100 && (second & 0xc0) == 64)
+        || (first == 192 && second == 0 && third == 0)
+        || (first == 198 && (second & 0xfe) == 18)
+}
+
+fn is_non_public_ipv6(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    ip.is_unique_local()
+        || ip.is_unicast_link_local()
+        || ip.is_multicast()
+        // `::/96` holds the unspecified and loopback addresses and IPv4-compatible addresses.
+        || segments[..6] == [0; 6]
+        // Documentation, then the 6to4 and NAT64 prefixes, which reach arbitrary IPv4 addresses.
+        || segments[..2] == [0x2001, 0x0db8]
+        || segments[0] == 0x2002
+        || segments[..6] == [0x0064, 0xff9b, 0, 0, 0, 0]
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
-    use super::{is_media_source_key, reject_inline_remote_media};
+    use super::{is_non_public_ip, is_valid_media_alias};
 
     #[test]
-    fn audio_source_ids_are_media_references() {
-        assert!(is_media_source_key(Some("source_id")));
+    fn non_public_addresses_are_refused_in_every_form() {
+        for address in [
+            "10.0.0.1",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "192.0.0.1",
+            "192.168.1.1",
+            "198.18.0.1",
+            "224.0.0.1",
+            "::",
+            "::1",
+            "::169.254.169.254",
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "64:ff9b::a9fe:a9fe",
+            "2002:a9fe:a9fe::",
+            "fc00::1",
+            "fe80::1",
+            "ff02::1",
+        ] {
+            assert!(
+                is_non_public_ip(address.parse().unwrap()),
+                "{address} should be refused"
+            );
+        }
+        for address in [
+            "1.1.1.1",
+            "100.128.0.1",
+            "198.20.0.1",
+            "::ffff:1.1.1.1",
+            "2606:4700:4700::1111",
+        ] {
+            assert!(
+                !is_non_public_ip(address.parse().unwrap()),
+                "{address} should be allowed"
+            );
+        }
     }
 
     #[test]
-    fn inline_remote_media_is_rejected() {
-        let project = json!({
-            "nodes": [{ "properties": { "source": "https://example.com/video.mp4" } }],
-            "audio": { "clips": [{ "source_id": "lumen:media_test" }] }
-        });
-
-        assert!(reject_inline_remote_media(&project, None).is_err());
+    fn aliases_cannot_leave_the_staging_directory() {
+        for alias in ["", ".", "..", "a/b", "../hero", "a\\b"] {
+            assert!(!is_valid_media_alias(alias), "{alias:?} should be refused");
+        }
+        for alias in ["hero", "hero.final-2_v1.png", ".hidden"] {
+            assert!(is_valid_media_alias(alias), "{alias:?} should be allowed");
+        }
     }
 }

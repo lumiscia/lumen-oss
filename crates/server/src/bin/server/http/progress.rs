@@ -20,7 +20,7 @@ pub(super) fn update_render_progress(
     patch: RenderProgressPatch,
 ) {
     let notification = if let Ok(mut renders) = state.renders.write() {
-        let Some(stored) = renders.get_mut(id) else {
+        let Some(stored) = renders.records.get_mut(id) else {
             return;
         };
         let previous_broadcast = stored.last_progress_broadcast.clone();
