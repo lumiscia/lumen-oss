@@ -442,12 +442,7 @@ fn libx264_crf_controls_output_size() {
     assert!(sizes[0] > sizes[1], "lower CRF should be larger: {sizes:?}");
 }
 
-/// Missing encoder, no Vulkan device, or a device without video encode support.
-fn vulkan_encode_unavailable(error: &FfmpegError) -> bool {
-    error.operation == "avcodec_find_encoder_by_name"
-        || error.operation == "av_hwdevice_ctx_create"
-        || error.code == Some(-libc::ENOSYS)
-}
+const VULKAN_TEST_VARIABLE: &str = "LUMEN_FFMPEG_TEST_VULKAN";
 
 fn av1_vulkan(width: u32, height: u32) -> VideoEncoderConfig {
     let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::Av1);
@@ -455,43 +450,93 @@ fn av1_vulkan(width: u32, height: u32) -> VideoEncoderConfig {
     config
 }
 
+/// Needs Vulkan AV1 encode and decode. On RADV, set `RADV_PERFTEST=video_encode,video_decode`.
 #[test]
 fn vulkan_encoder_uploads_cpu_frames() {
-    let (width, height) = (256, 144);
+    if !hardware_test_enabled(VULKAN_TEST_VARIABLE, "Vulkan encode") {
+        return;
+    }
+    const FRAMES: usize = 10;
+    let (width, height) = (256_usize, 144_usize);
     let path = temp_path("vulkan_upload", "mkv");
-    let mut encoder = match MuxedEncoder::create(
+    let mut encoder = MuxedEncoder::create(
         path.to_string_lossy().to_string(),
-        av1_vulkan(width, height),
-    ) {
-        Ok(encoder) => encoder,
-        Err(error) if vulkan_encode_unavailable(&error) => {
-            eprintln!("av1_vulkan unavailable ({error}); skipping Vulkan upload test");
-            return;
+        av1_vulkan(width as u32, height as u32),
+    )
+    .expect("create av1_vulkan encoder");
+    let mut patches = Vec::with_capacity(width * height * 4);
+    for _ in 0..height {
+        for x in 0..width {
+            let [r, g, b] = PATCHES[x * PATCHES.len() / width];
+            patches.extend([r, g, b, 255]);
         }
-        Err(error) => panic!("av1_vulkan is available but failed to initialise: {error}"),
-    };
-    for seed in 0..10 {
+    }
+    for _ in 0..FRAMES {
         encoder
-            .write_video_frame(&noisy_frame(width, height, seed))
+            .write_video_frame(&CpuVideoFrame {
+                data: patches.clone(),
+                ..noisy_frame(width as u32, height as u32, 0)
+            })
             .expect("upload and encode frame");
     }
     encoder.finish().expect("finish encode");
 
-    let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open file");
-    let stream = input.media_info().video_streams[0].clone();
+    let stream = InputContext::open(path.to_string_lossy().to_string())
+        .expect("open file")
+        .media_info()
+        .video_streams[0]
+        .clone();
     assert_eq!(stream.codec, VideoCodec::Av1);
-    assert_eq!((stream.width, stream.height), (width, height));
-    let mut packets = 0;
-    while let Some(packet) = input.read_packet().expect("read packet") {
-        packets += usize::from(packet.stream_index() == stream.stream_index);
+    assert_eq!(
+        (stream.width as usize, stream.height as usize),
+        (width, height)
+    );
+
+    let raw = temp_path("vulkan_upload", "rgba");
+    assert!(
+        run_fixture(
+            Command::new("ffmpeg")
+                .args(["-y", "-hide_banner", "-loglevel", "error"])
+                .args(["-init_hw_device", "vulkan=gpu", "-hwaccel", "vulkan"])
+                .args(["-hwaccel_output_format", "vulkan", "-hwaccel_device", "gpu"])
+                .arg("-i")
+                .arg(&path)
+                .args(["-vf", "hwdownload,format=nv12,format=rgba"])
+                .args(["-f", "rawvideo"])
+                .arg(&raw),
+            "decode av1_vulkan output",
+        ),
+        "the ffmpeg CLI is required to check {VULKAN_TEST_VARIABLE} output"
+    );
+    let decoded = fs::read(&raw).expect("read decoded frames");
+    assert_eq!(
+        decoded.len(),
+        FRAMES * width * height * 4,
+        "flush must emit every submitted frame"
+    );
+    let last_frame = &decoded[(FRAMES - 1) * width * height * 4..];
+    for (index, expected) in PATCHES.iter().enumerate() {
+        let x = (2 * index + 1) * width / (2 * PATCHES.len());
+        let offset = (height / 2 * width + x) * 4;
+        let actual = &last_frame[offset..offset + 3];
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(a, e)| (i32::from(*a) - i32::from(*e)).abs() <= 12),
+            "patch {index}: decoded {actual:?}, expected {expected:?}"
+        );
     }
-    assert_eq!(packets, 10, "flush must emit every submitted frame");
 
     let _ = fs::remove_file(path);
+    let _ = fs::remove_file(raw);
 }
 
 #[test]
 fn vulkan_encoder_supports_qp_and_rejects_crf() {
+    if !hardware_test_enabled(VULKAN_TEST_VARIABLE, "Vulkan encode") {
+        return;
+    }
     let path = temp_path("vulkan_qp", "mkv");
     let mut config = av1_vulkan(256, 144);
     config.rate_control = Some(RateControl::Crf(23));
@@ -499,21 +544,10 @@ fn vulkan_encoder_supports_qp_and_rejects_crf() {
         Ok(_) => panic!("av1_vulkan has no CRF mode"),
         Err(error) => error,
     };
-    if vulkan_encode_unavailable(&error) {
-        eprintln!("av1_vulkan unavailable ({error}); skipping Vulkan QP test");
-        return;
-    }
     assert!(error.message.contains("CRF"), "{error}");
 
     config.rate_control = Some(RateControl::Qp(100));
-    match encode_noise(&path, config) {
-        Ok(()) => {}
-        Err(error) if vulkan_encode_unavailable(&error) => {
-            eprintln!("av1_vulkan unavailable ({error}); skipping Vulkan QP test");
-            return;
-        }
-        Err(error) => panic!("av1_vulkan QP encode failed: {error}"),
-    }
+    encode_noise(&path, config).expect("av1_vulkan QP encode");
     let _ = fs::remove_file(path);
 }
 

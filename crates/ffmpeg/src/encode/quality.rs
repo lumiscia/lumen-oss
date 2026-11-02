@@ -184,6 +184,52 @@ mod tests {
     }
 
     #[test]
+    fn rate_control_maps_to_each_encoders_options() {
+        for (encoder, rate_control, preset, expected) in [
+            (
+                "libx264",
+                RateControl::Crf(23),
+                Some("fast"),
+                &[("preset", "fast"), ("crf", "23")][..],
+            ),
+            ("libx264", RateControl::Qp(20), None, &[("qp", "20")]),
+            (
+                "h264_nvenc",
+                RateControl::Crf(28),
+                Some("p5"),
+                &[("preset", "p5"), ("rc", "vbr"), ("cq", "28")],
+            ),
+            (
+                "av1_nvenc",
+                RateControl::Qp(30),
+                None,
+                &[("rc", "constqp"), ("qp", "30")],
+            ),
+            (
+                "av1_vulkan",
+                RateControl::Qp(100),
+                None,
+                &[("rc_mode", "cqp"), ("qp", "100")],
+            ),
+            (
+                "h264_vaapi",
+                RateControl::Qp(24),
+                None,
+                &[("rc_mode", "CQP"), ("qp", "24")],
+            ),
+        ] {
+            let quality = options(encoder, rate_control, preset).unwrap();
+            assert_eq!(quality.bit_rate, 0, "{encoder}");
+            let actual: Vec<_> = quality
+                .options
+                .iter()
+                .map(|(name, value)| (*name, value.as_str()))
+                .collect();
+            assert_eq!(actual, expected, "{encoder}");
+        }
+    }
+
+    #[test]
     fn zero_quality_that_means_automatic_errors() {
         assert!(options("h264_nvenc", RateControl::Crf(0), None).is_err());
         for encoder in ["h264_vaapi", "av1_vaapi", "vp9_vaapi"] {
