@@ -58,6 +58,17 @@ impl LumenFfmpegEncoder {
         let writer_handle = thread::spawn(move || {
             let mut encoder = match MuxedEncoder::create_with_audio(output, config, audio) {
                 Ok(encoder) => {
+                    if let Some(crop) = encoder.container_crop() {
+                        tracing::warn!(
+                            coded_width = crop.coded_width,
+                            coded_height = crop.coded_height,
+                            width = crop.width,
+                            height = crop.height,
+                            "encoder padded the canvas and the container crops it back; players \
+                             that ignore the crop (including Chromium) show the padding, so render \
+                             at the coded size to avoid this"
+                        );
+                    }
                     let _ = startup_tx.send(Ok(()));
                     encoder
                 }

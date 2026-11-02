@@ -20,4 +20,4 @@ pub use quality::RateControl;
 pub use telemetry::{
     GpuEncodeEvent, GpuEncodeOutcome, GpuEncodeStage, GpuEncodeTelemetry, GpuUploadDescriptor,
 };
-pub use video::{VideoEncoder, VideoEncoderConfig};
+pub use video::{ContainerCrop, VideoEncoder, VideoEncoderConfig};

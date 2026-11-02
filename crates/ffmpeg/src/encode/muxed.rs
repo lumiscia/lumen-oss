@@ -6,7 +6,7 @@ use crate::{FfmpegError, Result};
 use super::audio::{AudioEncoder, AudioEncoderConfig};
 use super::output::OutputContext;
 use super::telemetry::GpuEncodeTelemetry;
-use super::video::{VideoEncoder, VideoEncoderConfig};
+use super::video::{ContainerCrop, VideoEncoder, VideoEncoderConfig};
 
 pub struct MuxedEncoder {
     output: OutputContext,
@@ -63,6 +63,10 @@ impl MuxedEncoder {
 
     pub fn gpu_telemetry(&self) -> &GpuEncodeTelemetry {
         self.video.gpu_telemetry()
+    }
+
+    pub fn container_crop(&self) -> Option<ContainerCrop> {
+        self.video.container_crop()
     }
 
     pub fn finish(mut self) -> Result<()> {

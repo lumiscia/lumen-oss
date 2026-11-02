@@ -14,9 +14,9 @@ pub mod video;
 pub use ash;
 pub use audio::{AudioDecoder, AudioFrame, AudioResampler, AudioResamplerConfig, SampleFormat};
 pub use encode::{
-    AudioEncoder, AudioEncoderConfig, GpuEncodeEvent, GpuEncodeOutcome, GpuEncodeStage,
-    GpuEncodeTelemetry, GpuTextureEncodeSupport, GpuUploadDescriptor, MuxedEncoder, OutputContext,
-    VideoEncoder, VideoEncoderConfig, gpu_texture_encode_support,
+    AudioEncoder, AudioEncoderConfig, ContainerCrop, GpuEncodeEvent, GpuEncodeOutcome,
+    GpuEncodeStage, GpuEncodeTelemetry, GpuTextureEncodeSupport, GpuUploadDescriptor, MuxedEncoder,
+    OutputContext, VideoEncoder, VideoEncoderConfig, gpu_texture_encode_support,
 };
 pub use format::{AudioStreamInfo, InputContext, MediaInfo, Rational, VideoStreamInfo};
 #[cfg(feature = "cuda")]

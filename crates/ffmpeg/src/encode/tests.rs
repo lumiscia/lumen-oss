@@ -196,6 +196,59 @@ fn vulkan_encoder_uploads_cpu_frames() {
     let _ = fs::remove_file(path);
 }
 
+#[cfg(ffmpeg_frame_cropping)]
+#[test]
+fn vulkan_av1_crops_coded_padding_in_the_container() {
+    let (width, height) = (256, 138);
+    let path = temp_path("vulkan_crop", "mp4");
+    let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::Av1);
+    config.encoder_name = Some("av1_vulkan".to_string());
+    let mut encoder = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+        Ok(encoder) => encoder,
+        Err(error) if vulkan_encode_unavailable(&error) => {
+            eprintln!("av1_vulkan unavailable ({error}); skipping Vulkan crop test");
+            return;
+        }
+        Err(error) => panic!("av1_vulkan is available but failed to initialise: {error}"),
+    };
+    let Some(crop) = encoder.container_crop() else {
+        eprintln!("av1_vulkan codes {width}x{height} exactly; skipping Vulkan crop test");
+        return;
+    };
+    encoder
+        .write_video_frame(&noisy_frame(width, height, 0))
+        .expect("encode frame");
+    encoder.finish().expect("finish encode");
+
+    let input = InputContext::open(path.to_string_lossy().to_string()).expect("open encoded file");
+    let stream = &input.media_info().video_streams[0];
+    assert_eq!(
+        (stream.width, stream.height),
+        (crop.coded_width, crop.coded_height)
+    );
+    let sides: [u32; 4] = unsafe {
+        let params = (**(*input.ptr).streams.add(stream.stream_index)).codecpar;
+        let side_data = sys::av_packet_side_data_get(
+            (*params).coded_side_data,
+            (*params).nb_coded_side_data,
+            sys::AVPacketSideDataType::AV_PKT_DATA_FRAME_CROPPING,
+        );
+        assert!(!side_data.is_null(), "stream has no cropping side data");
+        std::slice::from_raw_parts((*side_data).data, 16)
+            .chunks_exact(4)
+            .map(|side| u32::from_le_bytes(side.try_into().unwrap()))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    };
+    assert_eq!(
+        sides,
+        [0, crop.coded_height - height, 0, crop.coded_width - width]
+    );
+
+    let _ = fs::remove_file(path);
+}
+
 fn noisy_frame(width: u32, height: u32, seed: u32) -> CpuVideoFrame {
     let stride = width as usize * 4;
     let data = (0..stride * height as usize)
