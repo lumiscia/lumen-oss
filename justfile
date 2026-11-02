@@ -2,10 +2,12 @@ definitions_out := justfile_directory() / "definitions"
 wasm_bindings_out := justfile_directory() / "packages/lumen-bindings/src"
 generated_types_out := justfile_directory() / "packages/lumen-types/src/generated"
 
-ready: verify-typescript-artifacts verify-definitions
+# The TypeScript half of CI's Check job. CI also runs Rust formatting, checks and tests, and the
+# lavapipe-backed SDK integration test.
+ready: verify-typescript-artifacts
+    pnpm build
     pnpm check
     pnpm test
-    pnpm build
 
 wasm-bindings-debug:
     pnpm --filter @lumiscia/generate-bindings generate -- debug --out-dir {{ wasm_bindings_out }}
@@ -16,9 +18,8 @@ wasm-bindings-release:
 generate-types: generate-definitions
     pnpm --filter @lumiscia/generate-types generate
 
-ci-typescript-artifacts: generate-types wasm-bindings-debug
-
-verify-typescript-artifacts: ci-typescript-artifacts
+# Also covers verify-definitions, since the generated schema is among the checked paths.
+verify-typescript-artifacts: generate-types wasm-bindings-debug
     #!/usr/bin/env bash
     set -euo pipefail
     paths=({{ definitions_out }}/composition.schema.json {{ generated_types_out }} {{ wasm_bindings_out }})
