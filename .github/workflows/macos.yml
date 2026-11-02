@@ -1,0 +1,39 @@
+name: macOS
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/macos.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/macos.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  metal:
+    name: Metal (compile only)
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: brew install ffmpeg pkg-config
+
+      - name: Check Metal paths
+        run: cargo check -p lumen-server -p lumen-local --features metal
