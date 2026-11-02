@@ -11,7 +11,9 @@ use crate::{
     node::{
         DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
         source::{
-            text::{TextAlignmentHorizontal, TextFontStyle, TextLayoutStyle, TextLimits},
+            text::{
+                TextAlignmentHorizontal, TextFontStyle, TextLayoutStyle, TextLimits, TextTransform,
+            },
             text_content::TextContent,
         },
     },
@@ -304,6 +306,8 @@ pub fn evaluate_text_measure_builtin(
         line_height: 0.0,
         alignment_horizontal: TextAlignmentHorizontal::Left,
         limits: TextLimits::default(),
+        text_transform: TextTransform::None,
+        paragraph_spacing: 0.0,
     };
     let measurement = measure_text_value(
         ctx,
@@ -371,6 +375,15 @@ fn measure_text_node(
             property_path: "alignment_horizontal",
             expr: ctx,
         })?;
+    let text_transform = text.params.text_transform.eval(&DelegateEvalContext {
+        node_id,
+        property_path: "text_transform",
+        expr: ctx,
+    })?;
+    let paragraph_spacing =
+        text.params
+            .paragraph_spacing
+            .eval(node_id, "paragraph_spacing", ctx)?;
     let style = TextLayoutStyle {
         font_family,
         font_size,
@@ -381,6 +394,8 @@ fn measure_text_node(
         line_height,
         alignment_horizontal,
         limits: TextLimits::eval(&text.params, node_id, ctx)?,
+        text_transform,
+        paragraph_spacing,
     };
     measure_text_value(ctx, style.request(&content, &font_features))
 }

@@ -4,6 +4,7 @@
 //! and WGSL-facing buffer formats. Lumen nodes should depend on this layer
 //! rather than coupling directly to a specific renderer such as glyphon.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -278,12 +279,19 @@ impl TextSystem {
             .map(|width| width + widening);
         buffer.set_size(layout_width, None);
         buffer.set_wrap(if wraps { wrap } else { Wrap::None });
-        let text: String = spans.iter().map(|span| span.text.as_str()).collect();
-        let span_ranges: Vec<Range<usize>> = spans
+        let transformed = spans
             .iter()
-            .scan(0, |end, span| {
+            .any(|span| span.transform != TextTransform::None)
+            .then(|| transformed_texts(spans));
+        let span_text = |index: usize| match &transformed {
+            Some(texts) => texts[index].as_ref(),
+            None => spans[index].text.as_str(),
+        };
+        let text: String = (0..spans.len()).map(span_text).collect();
+        let span_ranges: Vec<Range<usize>> = (0..spans.len())
+            .scan(0, |end, index| {
                 let start = *end;
-                *end += span.text.len();
+                *end += span_text(index).len();
                 Some(start..*end)
             })
             .collect();
@@ -337,6 +345,7 @@ impl TextSystem {
                 .get(glyph.metadata)
                 .map_or(0.0, |span| span.letter_spacing)
         };
+        let lift = |span: usize| spans.get(span).map_or(0.0, |span| span.baseline_shift);
         let align_factor = match request.align {
             TextAlign::Center => 0.5,
             TextAlign::Right => 1.0,
@@ -355,6 +364,9 @@ impl TextSystem {
         let mut height: f32 = 0.0;
         let mut x_min = f32::INFINITY;
         let mut x_max = f32::NEG_INFINITY;
+        // The vertical extent of the line boxes, which spans with a baseline shift move.
+        let mut y_min: f32 = 0.0;
+        let mut y_max: f32 = 0.0;
         let runs: Vec<_> = buffer.layout_runs().collect();
         let max_width = request.max_width.filter(|_| wraps);
         let shown = if limit && (request.max_lines.is_some() || request.max_height.is_some()) {
@@ -362,7 +374,8 @@ impl TextSystem {
                 .take(request.max_lines.map_or(usize::MAX, |lines| lines as usize))
                 .take_while(|run| {
                     request.max_height.is_none_or(|height| {
-                        run.line_top + run.line_height <= height + FIT_TOLERANCE
+                        let paragraph_offset = request.paragraph_spacing * run.line_i as f32;
+                        run.line_top + paragraph_offset + run.line_height <= height + FIT_TOLERANCE
                     })
                 })
                 .count()
@@ -450,9 +463,13 @@ impl TextSystem {
             if !line_glyphs.is_empty() {
                 width = width.max(ink_width);
             }
-            height = height.max(run.line_top + run.line_height);
+            // Paragraph spacing pushes each paragraph down by that of the ones before it.
+            let paragraph_offset = request.paragraph_spacing * run.line_i as f32;
+            let line_y = run.line_y + paragraph_offset;
+            let line_top = run.line_top + paragraph_offset;
+            height = height.max(line_top + run.line_height);
             words.enter(run.line_i, run.text);
-            let line_middle = run.line_top + run.line_height * 0.5;
+            let line_middle = line_top + run.line_height * 0.5;
             let paragraph_start = paragraphs[run.line_i].start;
             let first = glyphs.len();
             for (index, mut glyph) in line_glyphs.into_iter().enumerate() {
@@ -472,15 +489,16 @@ impl TextSystem {
                     let font = self.font_metrics(&mut fonts, &glyph);
                     span_metrics[span] = Some(font.decorations(spans[span].font_size.max(1.0)));
                 }
+                let lift = lift(span);
                 glyphs.push(ShapedGlyph {
-                    line_y: run.line_y,
+                    line_y: line_y - lift,
                     item: TextItem {
                         glyph: 0,
                         word: words.word_at(&run.text[glyph.start..glyph.end], glyph.start),
                         line: lines,
                         span: span as u32,
                     },
-                    pivot: [0.0, line_middle],
+                    pivot: [0.0, line_middle - lift],
                     glyph,
                 });
             }
@@ -514,6 +532,7 @@ impl TextSystem {
             }) {
                 let lead = &glyphs[run_glyphs[0]];
                 let span_range = &span_ranges[lead.item.span as usize];
+                let shift = lift(lead.item.span as usize);
                 let bytes = |glyph: &LayoutGlyph| {
                     let clamp = |byte: usize| {
                         (paragraph_start + byte).clamp(span_range.start, span_range.end)
@@ -525,8 +544,9 @@ impl TextSystem {
                     span: lead.item.span,
                     line: lines,
                     x: [f32::INFINITY, f32::NEG_INFINITY],
-                    baseline: run.line_y,
-                    line_top: run.line_top,
+                    baseline: line_y - shift,
+                    shift,
+                    line_top,
                     line_height: run.line_height,
                     ascent: 0.0,
                     descent: 0.0,
@@ -548,6 +568,8 @@ impl TextSystem {
                         ..segment.bytes.end.max(glyph_bytes.end);
                 }
                 segment.x[1] = segment.x[1].max(segment.x[0]);
+                y_min = y_min.min(line_top - shift);
+                y_max = y_max.max(line_top + run.line_height - shift);
                 segments.push(segment);
             }
             lines += 1;
@@ -578,15 +600,16 @@ impl TextSystem {
         for (shaped, cluster) in glyphs.iter_mut().zip(&clusters) {
             shaped.item.glyph = ordered.binary_search(cluster).unwrap_or_else(|index| index) as u32;
         }
+        let y_max = y_max.max(height);
         let bounds = if glyphs.is_empty() {
-            [0.0, 0.0, 0.0, height]
+            [0.0, y_min, 0.0, y_max - y_min]
         } else {
-            [x_min, 0.0, x_max - x_min, height]
+            [x_min, y_min, x_max - x_min, y_max - y_min]
         };
 
         let mut span_boxes: Vec<Option<[f32; 4]>> = vec![None; request.spans.len()];
         for segment in &segments {
-            let top = segment.line_top;
+            let top = segment.line_top - segment.shift;
             let edges = [segment.x[0], top, segment.x[1], top + segment.line_height];
             if let Some(span) = span_boxes.get_mut(segment.span as usize) {
                 *span = Some(span.map_or(edges, |a| {
@@ -1164,6 +1187,11 @@ pub struct TextSpan {
     /// OpenType features to shape with. Text of the same word takes the features of the first
     /// span that starts it.
     pub font_features: Vec<FontFeature>,
+    /// Case applied to the text before shaping. Everything the shaped text reports, such as
+    /// byte ranges, refers to the transformed text.
+    pub transform: TextTransform,
+    /// Pixels the span's glyphs sit above the baseline. The line keeps its height.
+    pub baseline_shift: f32,
 }
 
 /// An OpenType feature setting.
@@ -1173,6 +1201,101 @@ pub struct FontFeature {
     pub tag: [u8; 4],
     /// 0 is off and 1 is on; larger values select an alternate.
     pub value: u32,
+}
+
+/// A case mapping of a span's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextTransform {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+    /// Uppercases the first letter or digit of each word, where words are separated by
+    /// whitespace and continue across spans.
+    Capitalize,
+}
+
+/// The text of each span after its transform. Untransformed text is borrowed.
+fn transformed_texts(spans: &[TextSpan]) -> Vec<Cow<'_, str>> {
+    let joined: String = if spans
+        .iter()
+        .any(|span| span.transform == TextTransform::Lowercase)
+    {
+        spans.iter().map(|span| span.text.as_str()).collect()
+    } else {
+        String::new()
+    };
+    let mut start = 0;
+    let mut at_word_start = true;
+    spans
+        .iter()
+        .map(|span| {
+            let span_start = start;
+            start += span.text.len();
+            let mut capitalized = String::new();
+            let capitalize = span.transform == TextTransform::Capitalize;
+            for char in span.text.chars() {
+                let starts_word = at_word_start && char.is_alphanumeric();
+                if char.is_whitespace() {
+                    at_word_start = true;
+                } else if char.is_alphanumeric() {
+                    at_word_start = false;
+                }
+                if capitalize {
+                    if starts_word {
+                        capitalized.extend(char.to_uppercase());
+                    } else {
+                        capitalized.push(char);
+                    }
+                }
+            }
+            match span.transform {
+                TextTransform::None => Cow::Borrowed(span.text.as_str()),
+                TextTransform::Uppercase => Cow::Owned(span.text.to_uppercase()),
+                TextTransform::Lowercase => {
+                    Cow::Owned(lowercase_in_context(&joined, span_start, &span.text))
+                }
+                TextTransform::Capitalize => Cow::Owned(capitalized),
+            }
+        })
+        .collect()
+}
+
+/// Lowercases `text`, which starts at byte `start` of `joined`, like `str::to_lowercase` on
+/// `joined`: a capital sigma is final when a cased letter precedes it and none follows it,
+/// ignoring case-ignorable characters, even when that context is in a neighbouring span.
+fn lowercase_in_context(joined: &str, start: usize, text: &str) -> String {
+    let mut lowered = String::with_capacity(text.len());
+    for (offset, char) in text.char_indices() {
+        if char != '\u{3A3}' {
+            lowered.extend(char.to_lowercase());
+            continue;
+        }
+        let at = start + offset;
+        let is_final = cased_after_ignorable(joined[..at].chars().rev())
+            && !cased_after_ignorable(joined[at + char.len_utf8()..].chars());
+        lowered.push(if is_final { '\u{3C2}' } else { '\u{3C3}' });
+    }
+    lowered
+}
+
+fn cased_after_ignorable(mut chars: impl Iterator<Item = char>) -> bool {
+    chars
+        .find(|&char| !is_case_ignorable(char))
+        .is_some_and(is_cased)
+}
+
+// `char` has no stable cased or case-ignorable predicates, so ask `str::to_lowercase`, whose
+// final-sigma rule is defined by them.
+fn is_cased(char: char) -> bool {
+    format!("{char}\u{3A3}").to_lowercase().ends_with('\u{3C2}')
+}
+
+fn is_case_ignorable(char: char) -> bool {
+    !is_cased(char)
+        && format!("A{char}\u{3A3}")
+            .to_lowercase()
+            .ends_with('\u{3C2}')
 }
 
 impl TextSpan {
@@ -1185,6 +1308,8 @@ impl TextSpan {
             font_style: TextFontStyle::Normal,
             letter_spacing: 0.0,
             font_features: Vec::new(),
+            transform: TextTransform::None,
+            baseline_shift: 0.0,
         }
     }
 }
@@ -1196,6 +1321,8 @@ pub struct TextLayoutRequest {
     pub max_width: Option<f32>,
     /// Line pitch in pixels; `None` is 1.2 × the largest font size on each line.
     pub line_height: Option<f32>,
+    /// Extra space in pixels after each paragraph but the last.
+    pub paragraph_spacing: f32,
     pub align: TextAlign,
     pub origin: [f32; 2],
     pub color: [f32; 4],
@@ -1208,8 +1335,8 @@ pub struct TextLayoutRequest {
     pub overflow: TextOverflow,
     /// When set, every size shrinks by the largest factor down to this one that fits the text
     /// in `max_width`, `max_lines` and `max_height` without breaking a word, before lines are
-    /// dropped. Font sizes, letter spacing, `line_height` and the decorations' own sizes all
-    /// scale.
+    /// dropped. Font sizes, letter spacing, `line_height`, baseline shifts, paragraph spacing and
+    /// the decorations' own sizes all scale.
     pub min_fit_scale: Option<f32>,
 }
 
@@ -1224,6 +1351,7 @@ impl TextLayoutRequest {
             spans,
             max_width: None,
             line_height: None,
+            paragraph_spacing: 0.0,
             align: TextAlign::Left,
             origin: [0.0, 0.0],
             color: [1.0, 1.0, 1.0, 1.0],
@@ -1247,8 +1375,10 @@ impl TextLayoutRequest {
         for span in &mut request.spans {
             span.font_size *= scale;
             span.letter_spacing *= scale;
+            span.baseline_shift *= scale;
         }
         request.line_height = self.line_height.map(|height| height * scale);
+        request.paragraph_spacing *= scale;
         request
     }
 
@@ -1408,13 +1538,16 @@ pub struct TextSegment {
     pub line: u32,
     /// Left and right edges of the glyph advances, without the line's trailing tracking.
     pub x: [f32; 2],
+    /// Where the span's glyphs sit, which its baseline shift has moved off the line's.
     pub baseline: f32,
+    /// Pixels the span's baseline is above the line's.
+    pub shift: f32,
     pub line_top: f32,
     pub line_height: f32,
     /// Largest ascent and descent of the segment's fonts, as distances from the baseline.
     pub ascent: f32,
     pub descent: f32,
-    /// Bytes of the span's text the segment covers, in reading order. They run from
+    /// Bytes of the span's transformed text the segment covers, in reading order. They run from
     /// `x[1]` to `x[0]` when `rtl`.
     pub bytes: Range<usize>,
     pub rtl: bool,
@@ -1436,6 +1569,9 @@ pub struct TextDecoration {
     pub kind: TextDecorationKind,
     /// The spans of the request it runs along.
     pub spans: Range<usize>,
+    /// Whether the decoration moves with the baseline shift of the spans, or else stays on
+    /// the line's baseline.
+    pub shifted: bool,
     /// Start and end along the run's text in reading order, as fractions of its bytes. It
     /// continues from line to line.
     pub extent: [f32; 2],
@@ -1600,6 +1736,11 @@ impl ShapedText {
                 continue;
             };
             let metrics = self.span_metrics[tallest.span as usize];
+            let baseline = if decoration.shifted {
+                tallest.baseline
+            } else {
+                tallest.baseline + tallest.shift
+            };
             let (top, bottom, shape, padding, radius) = match decoration.kind {
                 TextDecorationKind::Highlight { padding, radius } => {
                     let (padding, radius) = (
@@ -1608,10 +1749,10 @@ impl ShapedText {
                     );
                     let ascent = in_run().map(|segment| segment.ascent).fold(0.0, f32::max);
                     let descent = in_run().map(|segment| segment.descent).fold(0.0, f32::max);
-                    let top = tallest.baseline - ascent - padding[1];
+                    let top = baseline - ascent - padding[1];
                     (
                         top,
-                        tallest.baseline + descent + padding[1],
+                        baseline + descent + padding[1],
                         RECT_BOX,
                         padding[0],
                         radius,
@@ -1630,8 +1771,8 @@ impl ShapedText {
                     if thickness <= 0.0 {
                         continue;
                     }
-                    let top = tallest.baseline
-                        + line.offset.map_or(offset, |offset| offset * self.fit_scale);
+                    let top =
+                        baseline + line.offset.map_or(offset, |offset| offset * self.fit_scale);
                     let shape = match line.style {
                         TextLineStyle::Solid => RECT_SOLID,
                         TextLineStyle::Double => RECT_DOUBLE,
@@ -3288,6 +3429,7 @@ mod tests {
     fn decorations_run_along_spans_and_extents_follow_reading_order() {
         let mut system = TextSystem::new();
         let underline = |spans: Range<usize>, extent: [f32; 2]| TextDecoration {
+            shifted: false,
             kind: TextDecorationKind::Underline(TextLineDecoration {
                 style: TextLineStyle::Solid,
                 thickness: None,
@@ -3358,6 +3500,7 @@ mod tests {
         // A highlight box covers each line's ascent and descent and its padding.
         let shaped = system.shape(&TextLayoutRequest::new("ab\ncd"));
         let highlight = TextDecoration {
+            shifted: false,
             kind: TextDecorationKind::Highlight {
                 padding: [4.0, 2.0],
                 radius: 3.0,
@@ -3728,6 +3871,7 @@ mod tests {
         };
         let mut instances = Vec::new();
         let highlight = TextDecoration {
+            shifted: false,
             kind: TextDecorationKind::Highlight {
                 padding: [0.0; 2],
                 radius: 0.0,
@@ -3755,6 +3899,7 @@ mod tests {
         assert_eq!((ellipsis.span, ellipsis.bytes.clone()), (0, 5..5));
         let underline = |spans: Range<usize>, extent: [f32; 2]| {
             let decoration = TextDecoration {
+                shifted: false,
                 kind: TextDecorationKind::Underline(TextLineDecoration {
                     style: TextLineStyle::Solid,
                     thickness: None,
@@ -3883,5 +4028,238 @@ mod tests {
         };
         assert_eq!(glyphs(&[]), 1);
         assert_eq!(glyphs(&[(b"liga", 0)]), 2);
+    }
+
+    #[test]
+    fn uppercase_keeps_numbering_and_extents_in_the_transformed_text() {
+        let mut system = TextSystem::new();
+        let shaped = system.shape(&TextLayoutRequest::from_spans(vec![
+            TextSpan {
+                transform: TextTransform::Uppercase,
+                ..span("Maßﬁ ", 30.0)
+            },
+            span("end", 30.0),
+        ]));
+        // "ß" becomes "SS" and "ﬁ" "FI", so the span is "MASSFI " in seven bytes, not eight.
+        let layout = shaped.place([0.0; 2], [1.0; 4]);
+        assert_eq!(shaped.span_starts, [0, 7, 10]);
+        assert_eq!(shaped.counts.glyph, 10);
+        assert_eq!(shaped.counts.word, 2);
+        let items: Vec<_> = layout
+            .glyphs
+            .iter()
+            .map(|glyph| (glyph.item.glyph, glyph.item.word, glyph.item.span))
+            .collect();
+        let expected: Vec<_> = (0..10)
+            .map(|glyph| (glyph, u32::from(glyph >= 7), u32::from(glyph >= 7)))
+            .collect();
+        assert_eq!(items, expected);
+        assert_eq!(shaped.segments[0].bytes, 0..7);
+        assert_eq!(shaped.segments[1].bytes, 0..3);
+
+        // An underline over the second span starts where its first glyph does, and one over
+        // the first span's first four bytes covers four sevenths of it.
+        let underline = |spans, extent| TextDecoration {
+            kind: TextDecorationKind::Underline(TextLineDecoration {
+                style: TextLineStyle::Solid,
+                thickness: None,
+                offset: None,
+            }),
+            spans,
+            shifted: false,
+            extent,
+        };
+        let rect = |decoration| {
+            let mut instances = Vec::new();
+            shaped.decorate(&decoration, [0.0; 2], |_| 0, &mut instances);
+            instances[0].rect
+        };
+        let [second, first] = [
+            rect(underline(1..2, [0.0, 1.0])),
+            rect(underline(0..1, [0.0, 4.0 / 7.0])),
+        ];
+        assert!((second[0] - shaped.segments[1].x[0]).abs() < 0.01);
+        let width = shaped.segments[0].x[1] - shaped.segments[0].x[0];
+        assert!((first[2] - width * 4.0 / 7.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn capitalize_uppercases_each_word_across_spans() {
+        let capitalized = |texts: &[&str], transform| {
+            let spans: Vec<_> = texts
+                .iter()
+                .map(|text| TextSpan {
+                    transform,
+                    ..TextSpan::new(*text)
+                })
+                .collect();
+            transformed_texts(&spans).concat()
+        };
+        assert_eq!(
+            capitalized(
+                &["hello wor", "ld, don't (stop)"],
+                TextTransform::Capitalize
+            ),
+            "Hello World, Don't (Stop)"
+        );
+        assert_eq!(
+            capitalized(&["Hello ", "WORLD"], TextTransform::Lowercase),
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn lowercase_decides_final_sigma_across_spans() {
+        let lowercased = |texts: &[&str]| {
+            let spans: Vec<_> = texts
+                .iter()
+                .map(|text| TextSpan {
+                    transform: TextTransform::Lowercase,
+                    ..TextSpan::new(*text)
+                })
+                .collect();
+            transformed_texts(&spans).concat()
+        };
+        for whole in ["ΟΣ", "ΣΑ", "Ο.Σ.Α", "ΟΣ\u{301}", "ΣΣ", "İΣ", "A\u{345}Σ"] {
+            let expected = whole.to_lowercase();
+            for (split, _) in whole.char_indices().skip(1) {
+                let (first, second) = whole.split_at(split);
+                assert_eq!(lowercased(&[first, second]), expected);
+            }
+        }
+        assert_eq!(lowercased(&["Ο", "Σ"]), "ος");
+        assert_eq!(lowercased(&["Σ", "Α"]), "σα");
+    }
+
+    #[test]
+    fn baseline_shift_moves_a_span_but_not_the_line() {
+        let mut system = TextSystem::new();
+        let request = |shift| {
+            TextLayoutRequest::from_spans(vec![
+                span("ab", 30.0),
+                TextSpan {
+                    baseline_shift: shift,
+                    ..span("cd", 30.0)
+                },
+            ])
+        };
+        let plain = system.shape(&request(0.0));
+        let raised = system.shape(&request(12.0));
+        assert_eq!(raised.measurement, plain.measurement);
+        let (plain_layout, raised_layout) = (
+            plain.place([0.0; 2], [1.0; 4]),
+            raised.place([0.0; 2], [1.0; 4]),
+        );
+        for (index, (before, after)) in plain_layout
+            .glyphs
+            .iter()
+            .zip(&raised_layout.glyphs)
+            .enumerate()
+        {
+            let lifted = if index < 2 { 0.0 } else { 12.0 };
+            assert!((before.position[1] - after.position[1] - lifted).abs() < 0.01);
+            assert_eq!(before.position[0], after.position[0]);
+        }
+        assert_eq!(
+            raised.segments[1].baseline,
+            plain.segments[1].baseline - 12.0
+        );
+        assert_eq!(raised.segments[0].baseline, plain.segments[0].baseline);
+
+        // The bounds and the span's box rise with it, and its own underline does too, while
+        // the node's stays on the line.
+        assert_eq!(raised.bounds[1], -12.0);
+        assert!((raised.bounds[3] - (plain.bounds[3] + 12.0)).abs() < 0.01);
+        let [x, y, ..] = raised.span_boxes[1].unwrap();
+        let [plain_x, plain_y, ..] = plain.span_boxes[1].unwrap();
+        assert_eq!((x, y), (plain_x, plain_y - 12.0));
+        let underline_top = |shifted| {
+            let decoration = TextDecoration {
+                kind: TextDecorationKind::Underline(TextLineDecoration {
+                    style: TextLineStyle::Solid,
+                    thickness: None,
+                    offset: None,
+                }),
+                spans: 1..2,
+                shifted,
+                extent: [0.0, 1.0],
+            };
+            let mut instances = Vec::new();
+            raised.decorate(&decoration, [0.0; 2], |_| 0, &mut instances);
+            instances[0].rect[1]
+        };
+        assert!((underline_top(false) - underline_top(true) - 12.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn limits_and_fit_count_paragraph_spacing_and_baseline_shifts() {
+        let mut system = TextSystem::new();
+        // Two 24 px lines fit 50 px, but not with 20 px between their paragraphs.
+        let mut request = TextLayoutRequest::from_spans(vec![
+            span("a\n", 20.0),
+            TextSpan {
+                baseline_shift: 10.0,
+                ..span("b", 20.0)
+            },
+        ]);
+        request.paragraph_spacing = 20.0;
+        request.max_height = Some(50.0);
+        assert_eq!(system.shape(&request).counts.line, 1);
+
+        // Shrinking scales the spacing and the shift with the text.
+        request.min_fit_scale = Some(0.1);
+        let fitted = system.shape(&request);
+        let scale = fitted.fit_scale;
+        assert_eq!(fitted.counts.line, 2);
+        assert!(fitted.measurement.height <= 50.01);
+        assert!(
+            (fitted.measurement.height - (48.0 + 20.0) * scale).abs() < 0.05,
+            "{} at {scale}",
+            fitted.measurement.height
+        );
+        let shift = fitted
+            .segments
+            .iter()
+            .find(|segment| segment.span == 1)
+            .unwrap()
+            .shift;
+        assert!((shift - 10.0 * scale).abs() < 0.01, "{shift} at {scale}");
+    }
+
+    #[test]
+    fn paragraph_spacing_separates_paragraphs_only() {
+        let mut system = TextSystem::new();
+        let mut shape = |text: &str, spacing: f32, max_width: Option<f32>| {
+            let mut request = TextLayoutRequest::from_spans(vec![span(text, 20.0)]);
+            request.paragraph_spacing = spacing;
+            request.max_width = max_width;
+            system.shape(&request)
+        };
+        let base = shape("a", 0.0, None).measurement.height;
+        assert_eq!(shape("a", 9.0, None).measurement.height, base);
+        assert_eq!(
+            shape("a\nb\nc", 9.0, None).measurement.height,
+            shape("a\nb\nc", 0.0, None).measurement.height + 18.0
+        );
+        // A wrapped paragraph's lines are not separated.
+        let wrapped = shape("aaa bbb", 9.0, Some(40.0));
+        assert_eq!(wrapped.counts.line, 2);
+        assert_eq!(wrapped.measurement.height, base * 2.0);
+        // Later paragraphs, their glyphs and boxes move down together.
+        let spaced = shape("a\nb", 9.0, None);
+        let plain = shape("a\nb", 0.0, None);
+        assert_eq!(
+            spaced.segments[1].line_top,
+            plain.segments[1].line_top + 9.0
+        );
+        let (spaced, plain) = (
+            spaced.place([0.0; 2], [1.0; 4]),
+            plain.place([0.0; 2], [1.0; 4]),
+        );
+        assert_eq!(
+            spaced.glyphs[1].position[1],
+            plain.glyphs[1].position[1] + 9.0
+        );
+        assert_eq!(spaced.glyphs[1].pivot[1], plain.glyphs[1].pivot[1] + 9.0);
     }
 }

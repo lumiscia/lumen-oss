@@ -1184,6 +1184,40 @@ mod tests {
         assert!(matches!(width, Ok(ExpressionValue::Number(value)) if value > 10.0));
     }
 
+    #[cfg(feature = "json")]
+    #[test]
+    fn span_baseline_shifts_may_read_the_measurement_of_their_text() {
+        let text_id = NodeId::new(8);
+        let content = crate::node::source::text_content::TextContentDelegate::from_json_value(
+            &serde_json::json!([{
+                "text": "Morning",
+                "baseline_shift": "=text_height(node(8)) / 2"
+            }]),
+        )
+        .unwrap();
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            text_id,
+            NodeKind::Text(Text {
+                id: text_id,
+                params: crate::node::source::text::TextParamsDelegate {
+                    content,
+                    ..Default::default()
+                },
+            }),
+        );
+        let ctx = ExpressionContext {
+            graph: Some(&graph),
+            ..test_context()
+        };
+
+        let height = Expression::parse("text_height(node(8))")
+            .unwrap()
+            .evaluate(&ctx);
+
+        assert!(matches!(height, Ok(ExpressionValue::Number(value)) if value > 0.0));
+    }
+
     #[test]
     fn recursive_text_measurement_returns_error_instead_of_panicking() {
         let text_id = NodeId::new(8);

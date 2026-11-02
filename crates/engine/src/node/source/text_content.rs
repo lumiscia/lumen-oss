@@ -8,7 +8,7 @@ use crate::node::{
     NodeId, Override, PropertyExpression, PropertyValue, vector::paint::Paint,
 };
 
-use super::text::TextFontStyle;
+use super::text::{TextFontStyle, TextTransform};
 
 /// Text to render: a string, or spans that each override the node's text style. In JSON a
 /// string is the shorthand for unstyled text, and an `=expression` evaluates to one.
@@ -65,6 +65,14 @@ pub struct TextSpan {
     /// expressions, but the whole highlight cannot be an expression.
     #[meta()]
     pub highlight: Override<TextHighlight>,
+    /// Case applied to the span's text.
+    #[meta()]
+    pub text_transform: Option<TextTransform>,
+    /// Pixels the span's glyphs and its own decorations sit above the baseline; negative
+    /// values sit below it. The line keeps its height, so shifted text can overlap the
+    /// lines around it.
+    #[meta(step = 0.5)]
+    pub baseline_shift: Option<f64>,
 }
 
 /// OpenType features by four-character tag. A value of 0 turns a feature off, 1 turns it on and
@@ -311,8 +319,8 @@ impl<'de> serde::Deserialize<'de> for TextContentDelegate {
 }
 
 impl TextContentDelegate {
-    /// Evaluates the text and what shapes it, leaving the spans' colors and decorations, which a
-    /// measurement of the text may be an input of, unevaluated.
+    /// Evaluates the text and what shapes it, leaving the spans' colors, decorations and baseline
+    /// shifts, which a measurement of the text may be an input of, unevaluated.
     pub(crate) fn eval_layout(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<TextContent> {
         let Self::Spans(spans) = self else {
             return self.eval(ctx);
@@ -331,6 +339,8 @@ impl TextContentDelegate {
                     font_style: span.font_style.clone(),
                     letter_spacing: span.letter_spacing.clone(),
                     font_features: span.font_features.clone(),
+                    text_transform: span.text_transform.clone(),
+                    baseline_shift: None,
                     color: None,
                     underline: Override::Inherit,
                     strikethrough: Override::Inherit,
@@ -506,6 +516,8 @@ mod tests {
                 "text": "world",
                 "font_weight": "=frame * 50",
                 "font_style": "italic",
+                "text_transform": "uppercase",
+                "baseline_shift": "=frame / 2",
                 "color": "#ff0000",
                 "underline": { "style": "wavy", "thickness": 2, "extent": "=vec2(0, frame / 24)" },
                 "strikethrough": null,
@@ -525,6 +537,8 @@ mod tests {
         );
         assert_eq!(spans[1].font_weight, Some(600));
         assert_eq!(spans[1].font_style, Some(TextFontStyle::Italic));
+        assert_eq!(spans[1].text_transform, Some(TextTransform::Uppercase));
+        assert_eq!(spans[1].baseline_shift, Some(6.0));
         assert_eq!(spans[1].color, Some(Paint::solid([255, 0, 0, 255])));
         assert_eq!(
             spans[1].underline,

@@ -764,6 +764,22 @@
     "textSpan": {
       "additionalProperties": false,
       "properties": {
+        "baseline_shift": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Pixels the span's glyphs and its own decorations sit above the baseline; negative\nvalues sit below it. The line keeps its height, so shifted text can overlap the\nlines around it.",
+          "title": "Baseline Shift",
+          "x-lumen-constraints": {
+            "step": 0.5
+          },
+          "x-lumen-kind": "float"
+        },
         "color": {
           "anyOf": [
             {
@@ -927,6 +943,41 @@
           },
           "x-lumen-kind": "string"
         },
+        "text_transform": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/textTransform"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Case applied to the span's text.",
+          "title": "Text Transform",
+          "x-lumen-enumOptions": [
+            {
+              "label": "None",
+              "name": "none",
+              "value": 0
+            },
+            {
+              "label": "Uppercase",
+              "name": "uppercase",
+              "value": 1
+            },
+            {
+              "label": "Lowercase",
+              "name": "lowercase",
+              "value": 2
+            },
+            {
+              "label": "Capitalize",
+              "name": "capitalize",
+              "value": 3
+            }
+          ],
+          "x-lumen-kind": "enum"
+        },
         "underline": {
           "anyOf": [
             {
@@ -944,6 +995,11 @@
       "required": ["text"],
       "type": "object",
       "x-lumen-type": "TextSpan"
+    },
+    "textTransform": {
+      "enum": ["none", "uppercase", "lowercase", "capitalize"],
+      "type": "string",
+      "x-lumen-type": "TextTransform"
     },
     "vec2": {
       "items": false,
@@ -3862,7 +3918,7 @@
                   },
                   "fit": {
                     "default": "none",
-                    "description": "Whether the text shrinks to fit `max_width`, `max_lines` and `max_height` without breaking\na word, before any lines are dropped. Every font size, letter spacing, `line_height` and\ndecoration size scales by the largest factor up to 1 that fits.",
+                    "description": "Whether the text shrinks to fit `max_width`, `max_lines` and `max_height` without breaking\na word, before any lines are dropped. Every font size, letter spacing, `line_height`,\nbaseline shift, paragraph spacing and decoration size scales by the largest factor up to 1\nthat fits.",
                     "enum": ["none", "shrink"],
                     "title": "Fit",
                     "type": "string",
@@ -4253,6 +4309,25 @@
                     "title": "Paint Supersample",
                     "x-lumen-kind": "bool"
                   },
+                  "paragraph_spacing": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Extra space in pixels after each paragraph, but the last. A line break starts a new\nparagraph.",
+                    "title": "Paragraph Spacing",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "position": {
                     "anyOf": [
                       {
@@ -4328,6 +4403,43 @@
                     "description": "Line through the text, and through spans that leave theirs unset. Off when absent.",
                     "title": "Strikethrough",
                     "x-lumen-kind": "text_line"
+                  },
+                  "text_transform": {
+                    "anyOf": [
+                      {
+                        "enum": ["none", "uppercase", "lowercase", "capitalize"],
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "none",
+                    "description": "Case applied to the text, and to spans that leave theirs unset.",
+                    "title": "Text Transform",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "None",
+                        "name": "none",
+                        "value": 0
+                      },
+                      {
+                        "label": "Uppercase",
+                        "name": "uppercase",
+                        "value": 1
+                      },
+                      {
+                        "label": "Lowercase",
+                        "name": "lowercase",
+                        "value": 2
+                      },
+                      {
+                        "label": "Capitalize",
+                        "name": "capitalize",
+                        "value": 3
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   },
                   "underline": {
                     "$ref": "#/$defs/textLine",
