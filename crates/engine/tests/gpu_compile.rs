@@ -1339,6 +1339,52 @@ fn opacity_direct_source_is_traversed_for_media_prediction() {
 }
 
 #[test]
+fn media_prediction_visits_shared_inputs_once() {
+    let media = NodeId::new(1);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        media,
+        NodeKind::MediaIn(MediaIn {
+            id: media,
+            params: MediaInParamsDelegate {
+                kind: Deferred::value(0),
+                source: Deferred::value("plate".to_string()),
+                ..Default::default()
+            },
+        }),
+    );
+    let mut previous = media;
+    for level in 0..40 {
+        let merge = NodeId::new(2 + level);
+        let input = PortRef::new(previous, "output".to_string());
+        graph.nodes.insert(
+            merge,
+            NodeKind::Merge(Merge {
+                id: merge,
+                base: input.clone(),
+                overlay: input,
+                ..Merge::default()
+            }),
+        );
+        previous = merge;
+    }
+    let output = NodeId::new(100);
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(previous, "output".to_string()),
+        }),
+    );
+
+    let composition = test_composition(graph);
+    let requirements =
+        collect_frame_requirements(&composition, &TestMediaStore::image("plate", 8, 4), 0).unwrap();
+
+    assert_eq!(requirements.images, vec!["plate"]);
+}
+
+#[test]
 fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
     let solid_id = NodeId::new(1);
     let transform = NodeId::new(2);
