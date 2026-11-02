@@ -194,6 +194,7 @@ impl GpuCompileNode for Boolean {
                 alpha_mode: AlphaMode::Premultiplied,
                 ..a.metadata
             },
+            bounds: None,
         }))
     }
 }

@@ -111,58 +111,8 @@ impl std::ops::DerefMut for TestRenderer {
     }
 }
 
-#[test]
-fn build_rejects_cycle_before_recursive_port_traversal() {
-    let first = NodeId::new(1);
-    let second = NodeId::new(2);
-    let output = NodeId::new(3);
-    let mut graph = Graph::new();
-    graph.nodes.insert(
-        first,
-        NodeKind::Exposure(Exposure {
-            id: first,
-            source: PortRef::new(second, "output".to_string()),
-            ..Exposure::default()
-        }),
-    );
-    graph.nodes.insert(
-        second,
-        NodeKind::Exposure(Exposure {
-            id: second,
-            source: PortRef::new(first, "output".to_string()),
-            ..Exposure::default()
-        }),
-    );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(first, "output".to_string()),
-        }),
-    );
-    for connection in [
-        Connection {
-            from_node: first,
-            from_port: "output".to_string(),
-            to_node: second,
-            to_port: "source".to_string(),
-        },
-        Connection {
-            from_node: second,
-            from_port: "output".to_string(),
-            to_node: first,
-            to_port: "source".to_string(),
-        },
-        Connection {
-            from_node: first,
-            from_port: "output".to_string(),
-            to_node: output,
-            to_port: "source".to_string(),
-        },
-    ] {
-        graph.connect(connection).unwrap();
-    }
-    let errors = CompositionBuilder::new(
+fn build_errors(graph: Graph) -> Vec<LumenError> {
+    CompositionBuilder::new(
         graph,
         TimelineSettings {
             fps: 30.0,
@@ -175,13 +125,111 @@ fn build_rejects_cycle_before_recursive_port_traversal() {
         },
     )
     .build()
-    .expect_err("cyclic graph must be rejected before compilation");
+    .expect_err("invalid graph must be rejected before compilation")
+}
+
+fn assert_cycle_rejected_at_build(graph: Graph) {
     assert!(matches!(
-        errors.as_slice(),
+        build_errors(graph).as_slice(),
         [LumenError::GraphValidation(
             GraphValidationError::Cycle { .. }
         )]
     ));
+}
+
+#[test]
+fn a_missing_input_node_is_not_reported_as_a_cycle() {
+    let mut graph = Graph::new();
+    let output = NodeId::new(1);
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(NodeId::new(999), "output".to_string()),
+        }),
+    );
+    assert!(matches!(
+        build_errors(graph).as_slice(),
+        [LumenError::GraphValidation(
+            GraphValidationError::MissingSourceNode { node_id }
+        )] if *node_id == NodeId::new(999)
+    ));
+}
+
+#[test]
+fn cycles_are_rejected_at_build() {
+    let first = NodeId::new(1);
+    let second = NodeId::new(2);
+    let output = NodeId::new(3);
+    let port = |id| PortRef::new(id, "output".to_string());
+    let connection = |from, to| Connection {
+        from_node: from,
+        from_port: "output".to_string(),
+        to_node: to,
+        to_port: "source".to_string(),
+    };
+    let exposure = |id, source| {
+        NodeKind::Exposure(Exposure {
+            id,
+            source: port(source),
+            ..Exposure::default()
+        })
+    };
+    let media_output = || {
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: port(first),
+        })
+    };
+
+    // Ports and connections agree.
+    let mut graph = Graph::new();
+    graph.nodes.insert(first, exposure(first, second));
+    graph.nodes.insert(second, exposure(second, first));
+    graph.nodes.insert(output, media_output());
+    for edge in [
+        connection(first, second),
+        connection(second, first),
+        connection(first, output),
+    ] {
+        graph.connect(edge).unwrap();
+    }
+    assert_cycle_rejected_at_build(graph);
+
+    // Nodes built directly carry their inputs on ports, with no connections at all.
+    let mut graph = Graph::new();
+    graph.nodes.insert(first, exposure(first, second));
+    graph.nodes.insert(second, exposure(second, first));
+    graph.nodes.insert(output, media_output());
+    assert_cycle_rejected_at_build(graph);
+
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        first,
+        NodeKind::TimeRemap(TimeRemap {
+            id: first,
+            source: port(first),
+            ..TimeRemap::default()
+        }),
+    );
+    graph.nodes.insert(output, media_output());
+    assert_cycle_rejected_at_build(graph);
+
+    // A node stored under another node's id would hide a cycle from the edges.
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        first,
+        NodeKind::TimeRemap(TimeRemap {
+            id: second,
+            source: port(first),
+            ..TimeRemap::default()
+        }),
+    );
+    graph.nodes.insert(output, media_output());
+    assert!(build_errors(graph).iter().any(|error| matches!(
+        error,
+        LumenError::GraphValidation(GraphValidationError::NodeIdMismatch { .. })
+    )));
 }
 
 #[test]
@@ -8435,43 +8483,6 @@ fn resizing_the_canvas_does_not_reuse_the_old_plan() {
 }
 
 #[test]
-fn plan_key_reports_time_remap_cycles() {
-    let Some(mut renderer) = gpu_composition_renderer() else {
-        return;
-    };
-    let (remap, output) = (NodeId::new(1), NodeId::new(2));
-    let mut graph = Graph::new();
-    graph.nodes.insert(
-        remap,
-        NodeKind::TimeRemap(TimeRemap {
-            id: remap,
-            params: TimeRemapParamsDelegate {
-                frame: Deferred::value(0.0),
-                loop_enabled: Deferred::value(false),
-                loop_start: Deferred::value(0),
-                loop_end: Deferred::value(0),
-            },
-            source: PortRef::new(remap, "output".to_string()),
-        }),
-    );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(remap, "output".to_string()),
-        }),
-    );
-    let error = renderer.compile(&test_composition(graph)).unwrap_err();
-    assert!(
-        matches!(
-            error,
-            LumenError::GraphValidation(GraphValidationError::Cycle { .. })
-        ),
-        "{error}"
-    );
-}
-
-#[test]
 fn wgsl_shader_source_keys_follow_time_remap_branches() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
@@ -10920,7 +10931,7 @@ fn kept_output_reaches_external_output_textures() {
                     composition,
                     frame,
                     &EmptyMediaStore,
-                    lumen_gpu::ExternalTexture::from_texture(texture, desc),
+                    lumen_gpu::ExternalTexture::from_texture(texture, desc.domain),
                 )
                 .unwrap();
             submitted.wait(&renderer.gpu_renderer().device).unwrap();
@@ -11067,6 +11078,63 @@ fn memo_snapshot_is_shared_by_the_plans_its_key_spans() {
         assert!(pixels == first, "frame {frame} shows the memo's frame 0");
     }
     assert!(renderer.cached_plan_count() >= 2);
+}
+
+#[test]
+fn resize_reads_crop_bounds_through_opacity() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = |through_opacity: bool| {
+        let mut nodes = vec![
+            canvas_background(NodeId::new(1), [255, 0, 0, 255]),
+            square(
+                NodeId::new(2),
+                Deferred::value((6.0, 6.0)),
+                6,
+                [20, 40, 220, 255],
+            ),
+            multimerge(NodeId::new(3), &[1, 2]),
+            NodeKind::Crop(Crop {
+                id: NodeId::new(4),
+                params: CropParamsDelegate {
+                    x: Deferred::value(4),
+                    width: Deferred::value(8),
+                    height: Deferred::value(8),
+                    ..Default::default()
+                },
+                source: PortRef::new(NodeId::new(3), "output".to_string()),
+            }),
+        ];
+        let mut last = 4;
+        if through_opacity {
+            nodes.push(NodeKind::Opacity(Opacity {
+                id: NodeId::new(5),
+                source: PortRef::new(NodeId::new(4), "output".to_string()),
+                ..Default::default()
+            }));
+            last = 5;
+        }
+        nodes.push(NodeKind::Resize(Resize {
+            id: NodeId::new(6),
+            params: ResizeParamsDelegate {
+                width: Deferred::value(i64::from(CACHE_CANVAS.0)),
+                height: Deferred::value(i64::from(CACHE_CANVAS.1)),
+                mode: ResizeMode::Fit.into(),
+                sampling: ResizeSampling::Nearest.into(),
+                ..Default::default()
+            },
+            source: PortRef::new(NodeId::new(last), "output".to_string()),
+        }));
+        nodes.push(output_node(NodeId::new(7), 6));
+        cache_composition(nodes)
+    };
+    let direct = render_rgba8(&mut renderer, &composition(false), 0, &EmptyMediaStore);
+    let through_opacity = render_rgba8(&mut renderer, &composition(true), 0, &EmptyMediaStore);
+    assert!(
+        direct == through_opacity,
+        "opacity dropped the crop's bounds"
+    );
 }
 
 #[test]

@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     composition::Composition,
-    error::{GraphValidationError, RenderError},
+    error::RenderError,
     gpu::{
         BoundFrame, CompileContext, CompiledComposition, FrameBindContext, MediaTextureKey,
         RasterHandle, TimeRemapPath,
@@ -1121,7 +1121,6 @@ impl GpuCompositionRenderer {
             media,
             time_remaps: TimeRemapPath::new(),
             visited: foldhash::HashSet::default(),
-            stack: Vec::new(),
             entries: Vec::new(),
             has_text: false,
         };
@@ -1150,9 +1149,6 @@ struct PlanKeyCollector<'a> {
     media: Option<&'a dyn MediaStore>,
     time_remaps: TimeRemapPath,
     visited: foldhash::HashSet<(NodeId, TimeRemapPath)>,
-    /// Nodes on the current traversal path, with the graph they are in; time remaps and clips
-    /// extend the instance path, so `visited` alone never sees a cycle through one repeat.
-    stack: Vec<(NodeId, *const crate::graph::Graph)>,
     entries: Vec<PlanKeyEntry>,
     /// Whether any text was reached, whose bounds depend on the loaded fonts.
     has_text: bool,
@@ -1168,23 +1164,13 @@ impl<'a> PlanKeyCollector<'a> {
         if port.is_empty() {
             return Ok(());
         }
-        let entry = (port.id, std::ptr::from_ref(scope.graph));
-        if let Some(start) = self.stack.iter().position(|visiting| *visiting == entry) {
-            return Err(GraphValidationError::Cycle {
-                path: self.stack[start..].iter().map(|(id, _)| *id).collect(),
-            }
-            .into());
-        }
         if !self.visited.insert((port.id, self.time_remaps.clone())) {
             return Ok(());
         }
         let Some(node) = scope.node(port.id) else {
             return Ok(());
         };
-        self.stack.push(entry);
-        let result = self.collect_node(scope, node, frame);
-        self.stack.pop();
-        result
+        self.collect_node(scope, node, frame)
     }
 
     fn collect_node(

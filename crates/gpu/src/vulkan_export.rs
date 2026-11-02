@@ -103,11 +103,17 @@ impl Renderer {
         let image = unsafe { raw_device.create_image(&image_info, None) }
             .map_err(|err| anyhow!("vkCreateImage for exportable texture failed: {err:?}"))?;
         let requirements = unsafe { raw_device.get_image_memory_requirements(image) };
-        let memory_type_index = find_device_local_memory_type(
+        let memory_type_index = match find_device_local_memory_type(
             raw_instance,
             physical_device,
             requirements.memory_type_bits,
-        )?;
+        ) {
+            Ok(index) => index,
+            Err(err) => {
+                unsafe { raw_device.destroy_image(image, None) };
+                return Err(err);
+            }
+        };
         let mut export_allocate = vk::ExportMemoryAllocateInfo::default()
             .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
         let allocate_info = vk::MemoryAllocateInfo::default()

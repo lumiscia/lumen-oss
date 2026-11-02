@@ -189,6 +189,7 @@ impl GpuCompileNode for Shadow {
                 alpha_mode: AlphaMode::Premultiplied,
                 ..source.metadata
             },
+            bounds: None,
         }))
     }
 }
