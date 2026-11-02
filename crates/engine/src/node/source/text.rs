@@ -1614,7 +1614,7 @@ pub(crate) fn load_font_family(
         return Ok(());
     }
     let files = match resolver {
-        Some(resolver) => font_files(&*resolver)?,
+        Some(resolver) => font_files(font_family, &*resolver)?,
         None => Vec::new(),
     };
     text_system
@@ -1635,10 +1635,10 @@ pub(crate) fn load_font_family(
     Ok(())
 }
 
-/// The data of `resolver`'s font files, shared with every text system still holding that resolver
-/// ID's, so that jobs using one font hold and read it once.
-fn font_files(resolver: &dyn FontResolver) -> crate::Result<Vec<Arc<Vec<u8>>>> {
-    type Files = HashMap<String, Vec<Weak<Vec<u8>>>>;
+/// The data of `resolver`'s font files, shared with every text system still holding that family
+/// and resolver ID's, so that jobs using one font hold and read it once.
+fn font_files(family: &str, resolver: &dyn FontResolver) -> crate::Result<Vec<Arc<Vec<u8>>>> {
+    type Files = HashMap<(String, String), Vec<Weak<Vec<u8>>>>;
     static FILES: LazyLock<Mutex<Files>> = LazyLock::new(Mutex::default);
     let lock = || {
         FILES.lock().map_err(|_| {
@@ -1647,8 +1647,9 @@ fn font_files(resolver: &dyn FontResolver) -> crate::Result<Vec<Arc<Vec<u8>>>> {
             })
         })
     };
+    let key = (family.to_string(), resolver.id().to_string());
     if let Some(files) = lock()?
-        .get(resolver.id())
+        .get(&key)
         .and_then(|files| files.iter().map(Weak::upgrade).collect())
     {
         return Ok(files);
@@ -1661,10 +1662,7 @@ fn font_files(resolver: &dyn FontResolver) -> crate::Result<Vec<Arc<Vec<u8>>>> {
         .collect();
     let mut cache = lock()?;
     cache.retain(|_, files| files.iter().all(|file| file.strong_count() > 0));
-    cache.insert(
-        resolver.id().to_string(),
-        files.iter().map(Arc::downgrade).collect(),
-    );
+    cache.insert(key, files.iter().map(Arc::downgrade).collect());
     Ok(files)
 }
 
@@ -1808,9 +1806,48 @@ mod tests {
         assert_eq!(store.0.load(Ordering::Relaxed), 1);
     }
 
+    /// Serves another font for each family, all under one ID.
+    #[derive(Debug, Default)]
+    struct OneIdStore(Arc<AtomicU64>);
+
+    impl MediaStore for OneIdStore {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
+            None
+        }
+
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
+            None
+        }
+
+        fn font_resolver_id(&self, _: &str) -> Option<String> {
+            Some("one-id-store-test-font".to_string())
+        }
+
+        fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
+            let data: &[u8] = match family {
+                "Inter" => include_bytes!("../../../../text/assets/inter/InterVariable-Latin.ttf"),
+                _ => lumen_text::ROBOTO_REGULAR_BYTES,
+            };
+            Some(Box::new(CountingResolver {
+                id: "one-id-store-test-font",
+                data: data.to_vec(),
+                reads: Arc::clone(&self.0),
+            }))
+        }
+    }
+
+    #[test]
+    fn a_resolver_id_only_shares_a_font_within_its_family() {
+        let store = OneIdStore::default();
+        let mut system = lumen_text::TextSystem::new();
+        load_font_family(&mut system, Some(&store), "Inter").unwrap();
+        load_font_family(&mut system, Some(&store), "Other").unwrap();
+        assert!(system.has_family("Inter"));
+        assert_eq!(store.0.load(Ordering::Relaxed), 2);
+    }
+
     #[test]
     fn text_systems_share_a_font_while_one_holds_it() {
-        // Not Roboto, whose face would give way to the bundled one and not be held.
         let store = CountingStore {
             data: Some(
                 include_bytes!("../../../../text/assets/inter/InterVariable-Latin.ttf").to_vec(),

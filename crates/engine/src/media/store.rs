@@ -20,9 +20,8 @@ impl TextSession {
         })
     }
 
-    /// Drops the fonts loaded for `family`, restoring the bundled ones it replaced. A store calls
-    /// this when it stops serving a family, as text that no longer names it can still fall back
-    /// to its faces.
+    /// Drops the fonts loaded under the name `family`. A store calls this when it stops serving a
+    /// family, as text that no longer names it can still fall back to its faces.
     pub fn remove_family(&self, family: &str) -> crate::Result<()> {
         self.lock()?.remove_family(family);
         Ok(())
@@ -52,9 +51,9 @@ pub trait MediaStore: Send + Sync + Debug {
     }
 
     /// Returns the current font resolver ID without loading font data. Must match the resolver's
-    /// ID and change whenever its font data changes. Resolvers with one ID, from any store, must
-    /// serve the same data, as they may share it. Without an ID, `get_font_resolver` is asked
-    /// each time the family is used, so a store should give one if that is slow.
+    /// ID and change whenever its font data changes. Resolvers of one family with one ID, from any
+    /// store, must serve the same data, as they may share it. Without an ID, `get_font_resolver`
+    /// is asked each time the family is used, so a store should give one if that is slow.
     fn font_resolver_id(&self, _source: &str) -> Option<String> {
         None
     }

@@ -2168,6 +2168,125 @@ fn jobs_draw_one_family_name_with_their_own_font_files() {
     });
 }
 
+/// A job whose fonts change as it runs.
+#[derive(Debug, Default)]
+struct ChangingFonts {
+    fonts: std::sync::Mutex<std::collections::HashMap<String, (String, Vec<u8>)>>,
+    session: lumen_engine::media::TextSession,
+}
+
+impl ChangingFonts {
+    fn set(&self, family: &str, id: &str, data: Vec<u8>) {
+        let font = (id.to_string(), data);
+        self.fonts.lock().unwrap().insert(family.to_string(), font);
+    }
+}
+
+impl MediaStore for ChangingFonts {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        Some(self.fonts.lock().unwrap().get(family)?.0.clone())
+    }
+
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        let (id, data) = self.fonts.lock().unwrap().get(family)?.clone();
+        Some(Box::new(JobFontResolver { id, data }))
+    }
+
+    fn text_session(&self) -> Option<&lumen_engine::media::TextSession> {
+        Some(&self.session)
+    }
+}
+
+#[test]
+fn replacing_a_font_mid_job_leaves_no_stale_glyph_on_screen() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let glyph = text_test_composition(TextParamsDelegate {
+        content: TextContentDelegate::Text(Deferred::value("W".to_string())),
+        font_family: Deferred::value("Sizing".to_string()),
+        font_size: Deferred::value(64.0),
+        position: Deferred::value((16.0, 40.0)),
+        ..Default::default()
+    });
+    let data = |scale: u16| ScaledFontStore::new("Sizing", scale).data;
+    let alone = [1, 2].map(|scale| {
+        let job = JobFont::new("Sizing", &format!("alone-{scale}"), data(scale));
+        render_rgba8(&mut gpu_composition_renderer().unwrap(), &glyph, 0, &job)
+    });
+    assert_ne!(alone[0], alone[1]);
+
+    // Rebuilt fonts number their faces alike and these their glyphs alike, so only the rebuild
+    // tells one font's atlas keys from the other's.
+    let job = ChangingFonts::default();
+    for (turn, scale) in [1, 2, 1].into_iter().enumerate() {
+        job.set("Sizing", &format!("turn-{turn}"), data(scale));
+        let pixels = render_rgba8(&mut renderer, &glyph, 0, &job);
+        assert!(pixels == alone[usize::from(scale) - 1], "turn {turn}");
+    }
+
+    // Only the merge asks for this font, once the text has placed its glyphs. It goes by the name
+    // the text draws in, and being the latest load it takes over the text.
+    let both = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 10, "duration_frames": 10 },
+        "render_settings": { "width": 256, "height": 128 },
+        "nodes": [
+            {
+                "id": 1,
+                "type": "text",
+                "params": {
+                    "content": "W",
+                    "font_family": "Sizing",
+                    "font_size": 64,
+                    "position": [16, 40]
+                }
+            },
+            {
+                "id": 2,
+                "type": "text",
+                "params": {
+                    "content": "W",
+                    "font_family": "Sizing",
+                    "font_size": 64,
+                    "position": [128, 40]
+                }
+            },
+            {
+                "id": 3,
+                "type": "merge",
+                "params": { "opacity": "=min(text_width(\"W\", 32, 0, \"Second\"), 1)" }
+            },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 3, "to_port": "base" },
+            { "from_node": 2, "to_node": 3, "to_port": "overlay" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let job = ChangingFonts::default();
+    job.set("Sizing", "both-sizing", data(1));
+    job.set("Second", "both-second", data(2));
+    let mut renderer = gpu_composition_renderer().unwrap();
+    let first = render_rgba8(&mut renderer, &both, 0, &job);
+    let settled = render_rgba8(&mut renderer, &both, 0, &job);
+    assert!(first == settled);
+    assert!(first.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+}
+
 fn text_test_composition(params: TextParamsDelegate) -> Composition {
     let mut graph = Graph::new();
     graph.nodes.insert(
