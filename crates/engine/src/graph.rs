@@ -104,6 +104,18 @@ impl Graph {
             );
         }
 
+        for (key, node) in &self.nodes {
+            if node.id() != *key {
+                errors.push(
+                    GraphValidationError::NodeIdMismatch {
+                        key: *key,
+                        node_id: node.id(),
+                    }
+                    .into(),
+                );
+            }
+        }
+
         for connection in &self.connections {
             let Some(from_node) = self.nodes.get(&connection.from_node) else {
                 errors.push(

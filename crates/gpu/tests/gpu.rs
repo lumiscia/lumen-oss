@@ -707,6 +707,29 @@ fn execute_rejects_unprepared_or_changed_plans() {
 }
 
 #[test]
+fn rejected_buffer_upload_is_not_cached_as_written() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let mut builder = RenderPlan::builder();
+    let buffer = builder.buffer(None, BufferDesc::uniform(16));
+    let plan = builder.build();
+    renderer.prepare_plan(&plan).unwrap();
+
+    // Not a multiple of 4 bytes, so the write fails validation.
+    let bytes = [1, 2, 3];
+    let mut update = FrameUpdate::new();
+    update.write_buffer(buffer, 0, &bytes);
+    for _ in 0..2 {
+        let err = renderer.execute(&plan, &update).unwrap_err();
+        assert!(
+            err.to_string().contains("validation"),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
 fn execute_rejects_buffer_uploads_past_declared_size() {
     let Some(mut renderer) = renderer() else {
         return;

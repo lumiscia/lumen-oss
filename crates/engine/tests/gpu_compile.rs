@@ -111,8 +111,8 @@ impl std::ops::DerefMut for TestRenderer {
     }
 }
 
-fn assert_cycle_rejected_at_build(graph: Graph) {
-    let errors = CompositionBuilder::new(
+fn build_errors(graph: Graph) -> Vec<LumenError> {
+    CompositionBuilder::new(
         graph,
         TimelineSettings {
             fps: 30.0,
@@ -125,9 +125,12 @@ fn assert_cycle_rejected_at_build(graph: Graph) {
         },
     )
     .build()
-    .expect_err("cyclic graph must be rejected before compilation");
+    .expect_err("invalid graph must be rejected before compilation")
+}
+
+fn assert_cycle_rejected_at_build(graph: Graph) {
     assert!(matches!(
-        errors.as_slice(),
+        build_errors(graph).as_slice(),
         [LumenError::GraphValidation(
             GraphValidationError::Cycle { .. }
         )]
@@ -192,6 +195,22 @@ fn cycles_are_rejected_at_build() {
     );
     graph.nodes.insert(output, media_output());
     assert_cycle_rejected_at_build(graph);
+
+    // A node stored under another node's id would hide a cycle from the edges.
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        first,
+        NodeKind::TimeRemap(TimeRemap {
+            id: second,
+            source: port(first),
+            ..TimeRemap::default()
+        }),
+    );
+    graph.nodes.insert(output, media_output());
+    assert!(build_errors(graph).iter().any(|error| matches!(
+        error,
+        LumenError::GraphValidation(GraphValidationError::NodeIdMismatch { .. })
+    )));
 }
 
 #[test]

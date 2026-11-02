@@ -69,7 +69,7 @@ pub fn remap_frame(node_id: NodeId, settings: TimeRemapSettings) -> crate::Resul
         .into());
     }
     let frame = settings.frame.max(0.0);
-    let mut whole = i128::from(frame.floor() as i64);
+    let mut whole = frame.floor() as i128;
     let fraction = frame - frame.floor();
     if settings.loop_enabled && settings.loop_end > settings.loop_start {
         let start = i128::from(settings.loop_start);
@@ -77,6 +77,9 @@ pub fn remap_frame(node_id: NodeId, settings: TimeRemapSettings) -> crate::Resul
         whole = start + (whole - start).rem_euclid(span);
     }
     let whole = whole.max(0) as f64;
+    if fraction == 0.0 {
+        return Ok(whole);
+    }
     Ok((whole + fraction).min((whole + 1.0).next_down()))
 }
 
@@ -184,6 +187,14 @@ mod tests {
         assert_eq!(
             remap(settings(4_294_967_296.0, false, 0, 10)).unwrap(),
             4_294_967_296.0
+        );
+        assert_eq!(
+            remap(settings(9_007_199_254_740_992.0, false, 0, 10)).unwrap(),
+            9_007_199_254_740_992.0
+        );
+        assert_eq!(
+            remap(settings(9_223_372_036_854_775_808.0, true, 0, 10)).unwrap(),
+            8.0
         );
         assert!(remap(settings(1e30, true, i64::MIN, i64::MAX)).is_ok());
         assert_eq!(remap(settings(9.0, true, i64::MIN, i64::MAX)).unwrap(), 9.0);

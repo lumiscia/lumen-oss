@@ -541,8 +541,14 @@ impl Renderer {
             "apply frame update"
         );
         let scope = ValidationScope::push(&self.device);
-        self.apply_uploads(update)?;
-        scope.finish()
+        let result = self.apply_uploads(update).and_then(|()| scope.finish());
+        if result.is_err() {
+            // A rejected write may still have been cached as uploaded, which would skip its retry.
+            for buffer in &mut self.buffers {
+                buffer.uploaded = None;
+            }
+        }
+        result
     }
 
     pub fn submit_plan(&mut self, plan: &RenderPlan) -> Result<wgpu::SubmissionIndex> {
