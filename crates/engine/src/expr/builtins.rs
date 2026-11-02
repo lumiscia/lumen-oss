@@ -305,7 +305,10 @@ pub fn evaluate_text_measure_builtin(
         alignment_horizontal: TextAlignmentHorizontal::Left,
         limits: TextLimits::default(),
     };
-    let measurement = measure_text_value(ctx, style.request(&TextContent::Text(text)))?;
+    let measurement = measure_text_value(
+        ctx,
+        style.request(&TextContent::Text(text), &Default::default()),
+    )?;
     Ok(ExpressionValue::Number(match builtin {
         BuiltinFn::TextHeight => f64::from(measurement.height),
         BuiltinFn::TextWidth => f64::from(measurement.width),
@@ -354,6 +357,11 @@ fn measure_text_node(
         .params
         .letter_spacing
         .eval(node_id, "letter_spacing", ctx)?;
+    let font_features = text.params.font_features.eval(&DelegateEvalContext {
+        node_id,
+        property_path: "font_features",
+        expr: ctx,
+    })?;
     let line_height = text.params.line_height.eval(node_id, "line_height", ctx)?;
     let alignment_horizontal = text
         .params
@@ -374,7 +382,7 @@ fn measure_text_node(
         alignment_horizontal,
         limits: TextLimits::eval(&text.params, node_id, ctx)?,
     };
-    measure_text_value(ctx, style.request(&content))
+    measure_text_value(ctx, style.request(&content, &font_features))
 }
 
 thread_local! {

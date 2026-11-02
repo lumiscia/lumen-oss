@@ -515,6 +515,20 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         } else {
             NodeDecorations::Constant(decorations.eval(text.id, &expr)?)
         };
+        let font_features =
+            if crate::node::DelegateEvaluable::has_expressions(&params.font_features) {
+                None
+            } else {
+                let features = std::mem::take(&mut params.font_features);
+                Some(crate::node::DelegateEvaluable::eval(
+                    &features,
+                    &crate::node::DelegateEvalContext {
+                        node_id: text.id,
+                        property_path: "font_features",
+                        expr: &expr,
+                    },
+                )?)
+            };
         let content = if crate::node::DelegateEvaluable::has_expressions(&params.content) {
             None
         } else {
@@ -534,6 +548,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             glyph,
             content,
             decorations,
+            font_features,
             decorated: decoration_paints.is_some(),
             atlas_texture,
             globals_buffer,
@@ -597,6 +612,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             || params.font_size.is_expr()
             || params.font_weight.is_expr()
             || crate::node::DelegateEvaluable::has_expressions(&params.font_style)
+            || crate::node::DelegateEvaluable::has_expressions(&params.font_features)
             || params.max_width.is_expr()
             || params.letter_spacing.is_expr()
             || params.line_height.is_expr()
@@ -616,7 +632,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             })
             .ok()?;
         let style = TextLayoutStyle::take(&mut evaluated);
-        let request = style.request(&evaluated.content);
+        let request = style.request(&evaluated.content, &evaluated.font_features);
         let unresolved = request.spans.iter().any(|span| {
             let family = span.font_family.as_str();
             !family.is_empty()

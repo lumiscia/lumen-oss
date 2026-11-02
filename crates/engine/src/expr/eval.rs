@@ -533,6 +533,7 @@ fn node_property_type_name(value: &PropertyValue) -> &'static str {
         PropertyValue::TextContent(_) => "text content",
         PropertyValue::TextLine(_) => "text line",
         PropertyValue::TextHighlight(_) => "text highlight",
+        PropertyValue::FontFeatures(_) => "font features",
         PropertyValue::FloatVec(_) => "float[]",
         PropertyValue::IntVec(_) => "int[]",
         PropertyValue::StringVec(_) => "string[]",
@@ -1068,6 +1069,48 @@ mod tests {
 
         assert!(matches!(width, ExpressionValue::Number(value) if value > 0.0));
         assert!(matches!(height, ExpressionValue::Number(value) if value > 32.0));
+    }
+
+    #[test]
+    fn text_measure_builtins_apply_font_features() {
+        use crate::node::source::text_content::FontFeatures;
+
+        let text_id = NodeId::new(8);
+        let width = |features: &[(&[u8; 4], u32)]| {
+            let features = FontFeatures(
+                features
+                    .iter()
+                    .map(|(tag, value)| (**tag, *value))
+                    .collect(),
+            );
+            let mut graph = Graph::new();
+            graph.nodes.insert(
+                text_id,
+                NodeKind::Text(Text {
+                    id: text_id,
+                    params: crate::node::source::text::TextParamsDelegate {
+                        content: crate::node::source::text_content::TextContentDelegate::Text(
+                            crate::node::Deferred::value("1111".to_string()),
+                        ),
+                        font_size: crate::node::Deferred::value(32.0),
+                        font_features: crate::node::Delegated::into_delegate(features),
+                        ..Default::default()
+                    },
+                }),
+            );
+            let ctx = ExpressionContext {
+                graph: Some(&graph),
+                ..test_context()
+            };
+            match Expression::parse("text_width(node(8))")
+                .unwrap()
+                .evaluate(&ctx)
+            {
+                Ok(ExpressionValue::Number(width)) => width,
+                other => panic!("expected a width, got {other:?}"),
+            }
+        };
+        assert!(width(&[(b"pnum", 1)]) < width(&[]));
     }
 
     #[test]

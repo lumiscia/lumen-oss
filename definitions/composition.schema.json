@@ -260,6 +260,28 @@
       "pattern": "^=([^=]|$)",
       "type": "string"
     },
+    "fontFeatures": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "$ref": "#/$defs/expression"
+          }
+        ]
+      },
+      "description": "OpenType features by four-character tag. 0 turns a feature off, 1 turns it on and larger values select an alternate.",
+      "propertyNames": {
+        "maxLength": 4,
+        "minLength": 4,
+        "pattern": "^[\\x20-\\x7E]+$"
+      },
+      "type": "object",
+      "x-lumen-type": "FontFeatures"
+    },
     "gradientInterpolation": {
       "enum": ["srgb", "linear_srgb", "linear"],
       "type": "string",
@@ -773,6 +795,12 @@
             "format": "font_family"
           },
           "x-lumen-kind": "string"
+        },
+        "font_features": {
+          "$ref": "#/$defs/fontFeatures",
+          "description": "OpenType features, merged over the node's: a feature set here wins and the others are\nkept. Within a word, the first span's features apply to all of it.",
+          "title": "Font Features",
+          "x-lumen-kind": "font_features"
         },
         "font_size": {
           "anyOf": [
@@ -3868,6 +3896,13 @@
                       "format": "font_family"
                     },
                     "x-lumen-kind": "string"
+                  },
+                  "font_features": {
+                    "$ref": "#/$defs/fontFeatures",
+                    "default": {},
+                    "description": "OpenType features by four-character tag, such as `{ \"tnum\": 1, \"liga\": 0 }`. 0 turns a\nfeature off, 1 turns it on and larger values select an alternate. Values take literals\nor expressions, but the whole map cannot be an expression.",
+                    "title": "Font Features",
+                    "x-lumen-kind": "font_features"
                   },
                   "font_size": {
                     "anyOf": [

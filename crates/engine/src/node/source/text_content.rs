@@ -1,5 +1,7 @@
-//! Rich text params: content as a string or styled spans, and the underline, strikethrough and
-//! highlight decorations spans draw.
+//! Rich text params: content as a string or styled spans, the underline, strikethrough and
+//! highlight decorations spans draw, and OpenType font features.
+
+use std::collections::BTreeMap;
 
 use crate::node::{
     Deferred, DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated,
@@ -44,6 +46,10 @@ pub struct TextSpan {
     /// Extra space after every glyph in pixels. Negative values tighten the text.
     #[meta(step = 0.1)]
     pub letter_spacing: Option<f64>,
+    /// OpenType features, merged over the node's: a feature set here wins and the others are
+    /// kept. Within a word, the first span's features apply to all of it.
+    #[meta()]
+    pub font_features: Option<FontFeatures>,
     /// Text color.
     #[meta(role = "color")]
     pub color: Option<Paint>,
@@ -59,6 +65,25 @@ pub struct TextSpan {
     /// expressions, but the whole highlight cannot be an expression.
     #[meta()]
     pub highlight: Override<TextHighlight>,
+}
+
+/// OpenType features by four-character tag. A value of 0 turns a feature off, 1 turns it on and
+/// larger values select an alternate.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FontFeatures(pub BTreeMap<[u8; 4], u32>);
+
+impl FontFeatures {
+    /// These features overridden by `over`'s, for shaping.
+    pub(crate) fn merged(&self, over: Option<&Self>) -> Vec<lumen_text::FontFeature> {
+        let mut merged = std::borrow::Cow::Borrowed(&self.0);
+        if let Some(over) = over.filter(|over| !over.0.is_empty()) {
+            merged.to_mut().extend(&over.0);
+        }
+        merged
+            .iter()
+            .map(|(&tag, &value)| lumen_text::FontFeature { tag, value })
+            .collect()
+    }
 }
 
 #[derive(
@@ -143,6 +168,102 @@ impl Default for TextHighlight {
     }
 }
 
+/// [`FontFeatures`] whose values take literals or expressions. The whole map cannot be an
+/// expression.
+#[derive(Debug, Clone, Default)]
+pub struct FontFeaturesDelegate(pub BTreeMap<[u8; 4], Deferred<u32>>);
+
+impl Delegated for FontFeatures {
+    type Delegate = FontFeaturesDelegate;
+
+    fn into_delegate(self) -> Self::Delegate {
+        FontFeaturesDelegate(
+            self.0
+                .into_iter()
+                .map(|(tag, value)| (tag, Deferred::Value(value)))
+                .collect(),
+        )
+    }
+}
+
+impl DelegateEvaluable for FontFeaturesDelegate {
+    type Evaluated = FontFeatures;
+
+    fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
+        self.0
+            .iter()
+            .map(|(tag, value)| {
+                let field = String::from_utf8_lossy(tag);
+                ctx.eval_field(&field, value).map(|value| (*tag, value))
+            })
+            .collect::<crate::Result<_>>()
+            .map(FontFeatures)
+    }
+
+    fn has_expressions(&self) -> bool {
+        self.0.values().any(Deferred::is_expr)
+    }
+}
+
+#[cfg(feature = "json")]
+impl FontFeaturesDelegate {
+    /// Parses a JSON object of tags to non-negative integers or `=expression`s.
+    pub fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| format!("expected an object of feature values, got {value}"))?;
+        object
+            .iter()
+            .map(|(tag, value)| {
+                let parsed = <[u8; 4]>::try_from(tag.as_bytes())
+                    .ok()
+                    .filter(|tag| tag.iter().all(|byte| (b' '..=b'~').contains(byte)))
+                    .ok_or_else(|| {
+                        format!(
+                            "`{tag}` is not a feature tag, which is 4 printable ASCII characters"
+                        )
+                    })?;
+                let value = match serde_json::from_value::<Deferred<i64>>(value.clone())
+                    .map_err(|error| format!("`{tag}`: {error}"))?
+                {
+                    Deferred::Value(number) => {
+                        u32::try_from(number).map(Deferred::Value).map_err(|_| {
+                            format!("`{tag}` must be a non-negative integer, got {number}")
+                        })?
+                    }
+                    Deferred::Expr(expr) => Deferred::Expr(expr),
+                };
+                Ok((parsed, value))
+            })
+            .collect::<Result<_, String>>()
+            .map(Self)
+    }
+
+    pub fn to_json_value(&self) -> serde_json::Value {
+        self.0
+            .iter()
+            .map(|(tag, value)| {
+                (
+                    String::from_utf8_lossy(tag).into_owned(),
+                    crate::json::property_to_json(&value.to_property_expression(), None),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+    }
+}
+
+#[cfg(feature = "json")]
+impl<'de> serde::Deserialize<'de> for FontFeaturesDelegate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        Self::from_json_value(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TextContentDelegate {
     Text(Deferred<String>),
@@ -209,6 +330,7 @@ impl TextContentDelegate {
                     font_weight: span.font_weight.clone(),
                     font_style: span.font_style.clone(),
                     letter_spacing: span.letter_spacing.clone(),
+                    font_features: span.font_features.clone(),
                     color: None,
                     underline: Override::Inherit,
                     strikethrough: Override::Inherit,
@@ -338,6 +460,7 @@ macro_rules! impl_struct_kind_value {
 
 impl_struct_kind_value!(TextLineDelegate, TextLine);
 impl_struct_kind_value!(TextHighlightDelegate, TextHighlight);
+impl_struct_kind_value!(FontFeaturesDelegate, FontFeatures);
 
 #[cfg(all(test, feature = "json"))]
 mod tests {
@@ -560,6 +683,88 @@ mod tests {
             panic!("expected invalid type error");
         };
         assert_eq!(property_path, "content[0].font_size");
+    }
+
+    #[test]
+    fn font_features_check_tags_and_values_and_merge_over_the_node() {
+        let features = |json: serde_json::Value| FontFeaturesDelegate::from_json_value(&json);
+        for (json, expected) in [
+            (
+                serde_json::json!({ "tnu": 1 }),
+                "`tnu` is not a feature tag",
+            ),
+            (
+                serde_json::json!({ "tnum1": 1 }),
+                "`tnum1` is not a feature tag",
+            ),
+            (
+                serde_json::json!({ "tnüm": 1 }),
+                "`tnüm` is not a feature tag",
+            ),
+            (
+                serde_json::json!({ "tnum": -1 }),
+                "`tnum` must be a non-negative integer",
+            ),
+            (serde_json::json!({ "tnum": 1.5 }), "whole number"),
+            (serde_json::json!([1]), "expected an object"),
+        ] {
+            let error = features(json.clone()).unwrap_err();
+            assert!(error.contains(expected), "{json}: {error}");
+        }
+
+        let node = features(serde_json::json!({ "tnum": 1, "liga": 1, "ss01": 2 }))
+            .unwrap()
+            .eval(&DelegateEvalContext {
+                node_id: NodeId::new(3),
+                property_path: "font_features",
+                expr: &ExpressionContext::default(),
+            })
+            .unwrap();
+        let content = parse(serde_json::json!([
+            { "text": "a" },
+            { "text": "b", "font_features": { "liga": 0, "onum": "=frame - 11", "ss01": "=frame / 6" } }
+        ]))
+        .unwrap();
+        let TextContent::Spans(spans) = eval(&content).unwrap() else {
+            panic!("expected spans");
+        };
+        let merged = |over: Option<&FontFeatures>| {
+            node.merged(over)
+                .into_iter()
+                .map(|feature| {
+                    (
+                        String::from_utf8(feature.tag.to_vec()).unwrap(),
+                        feature.value,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let tags = |features: &[(&str, u32)]| {
+            features
+                .iter()
+                .map(|(tag, value)| (tag.to_string(), *value))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            merged(spans[0].font_features.as_ref()),
+            tags(&[("liga", 1), ("ss01", 2), ("tnum", 1)])
+        );
+        assert_eq!(
+            merged(spans[1].font_features.as_ref()),
+            tags(&[("liga", 0), ("onum", 1), ("ss01", 2), ("tnum", 1)])
+        );
+
+        for value in ["=vec2(1, 2)", "=0 - frame"] {
+            let content =
+                parse(serde_json::json!([{ "text": "a", "font_features": { "tnum": value } }]))
+                    .unwrap();
+            let LumenError::Property(PropertyError::InvalidType { property_path, .. }) =
+                eval(&content).unwrap_err()
+            else {
+                panic!("expected invalid type error");
+            };
+            assert_eq!(property_path, "content[0].font_features.tnum", "{value}");
+        }
     }
 
     #[test]

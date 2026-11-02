@@ -9,9 +9,9 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 use cosmic_text::{
-    Align, Attrs, AttrsList, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, LayoutGlyph,
-    LineEnding, LineIter, Metrics, Shaping, Style, SwashCache, SwashContent, SwashImage, Weight,
-    Wrap,
+    Align, Attrs, AttrsList, Buffer, CacheKey, CacheKeyFlags, Family, FeatureTag, FontFeatures,
+    FontSystem, LayoutGlyph, LineEnding, LineIter, Metrics, Shaping, Style, SwashCache,
+    SwashContent, SwashImage, Weight, Wrap,
 };
 use etagere::{AllocId, size2};
 use swash::scale::Source;
@@ -223,7 +223,8 @@ impl TextSystem {
         // cosmic-text 0.19 merges adjacent spans with the same family, weight, style and
         // stretch into one shaping run, so a ligature or grapheme cluster that crosses a span
         // boundary takes the first span's size and spacing, and the later span gets no glyphs
-        // from that cluster.
+        // from that cluster. Features are not compared either, so a run takes those of its
+        // first span.
         let attrs: Vec<Attrs> = spans
             .iter()
             .enumerate()
@@ -245,6 +246,13 @@ impl TextSystem {
                     // Each line is as tall as its tallest glyph's line height.
                     .metrics(metrics)
                     .metadata(index);
+                if !span.font_features.is_empty() {
+                    let mut features = FontFeatures::new();
+                    for feature in &span.font_features {
+                        features.set(FeatureTag::new(&feature.tag), feature.value);
+                    }
+                    attrs = attrs.font_features(features);
+                }
                 if span.letter_spacing != 0.0 {
                     // cosmic-text takes tracking in em and adds it to every glyph advance.
                     attrs = attrs.letter_spacing(span.letter_spacing / metrics.font_size);
@@ -1153,6 +1161,18 @@ pub struct TextSpan {
     pub font_style: TextFontStyle,
     /// Extra advance in pixels after every glyph. May be negative.
     pub letter_spacing: f32,
+    /// OpenType features to shape with. Text of the same word takes the features of the first
+    /// span that starts it.
+    pub font_features: Vec<FontFeature>,
+}
+
+/// An OpenType feature setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FontFeature {
+    /// Four ASCII characters, such as `*b"tnum"`.
+    pub tag: [u8; 4],
+    /// 0 is off and 1 is on; larger values select an alternate.
+    pub value: u32,
 }
 
 impl TextSpan {
@@ -1164,6 +1184,7 @@ impl TextSpan {
             font_weight: 400,
             font_style: TextFontStyle::Normal,
             letter_spacing: 0.0,
+            font_features: Vec::new(),
         }
     }
 }
@@ -3818,5 +3839,49 @@ mod tests {
         let shaped = system.shape(&request);
         assert_eq!(shaped.fit_scale, 1.0);
         assert_eq!(shaped.counts.line, 1);
+    }
+
+    fn featured(text: &str, features: &[(&[u8; 4], u32)]) -> TextSpan {
+        TextSpan {
+            font_features: features
+                .iter()
+                .map(|(tag, value)| FontFeature {
+                    tag: **tag,
+                    value: *value,
+                })
+                .collect(),
+            ..span(text, 40.0)
+        }
+    }
+
+    #[test]
+    fn features_change_advances_per_span() {
+        let mut system = TextSystem::new();
+        let mut width =
+            |spans: Vec<TextSpan>| system.measure(&TextLayoutRequest::from_spans(spans)).width;
+        // Roboto's digits are tabular unless `pnum` asks for proportional ones.
+        let tabular = width(vec![featured("1111 1111", &[])]);
+        let proportional = width(vec![featured("1111 1111", &[(b"pnum", 1)])]);
+        assert!(proportional < tabular - 1.0);
+        let mixed = width(vec![
+            featured("1111 ", &[(b"pnum", 1)]),
+            featured("1111", &[]),
+        ]);
+        assert!(proportional < mixed && mixed < tabular);
+    }
+
+    #[test]
+    fn disabling_ligatures_keeps_both_glyphs() {
+        let mut system = TextSystem::new();
+        let mut glyphs = |features| {
+            system
+                .layout(&TextLayoutRequest::from_spans(vec![featured(
+                    "fi", features,
+                )]))
+                .glyphs
+                .len()
+        };
+        assert_eq!(glyphs(&[]), 1);
+        assert_eq!(glyphs(&[(b"liga", 0)]), 2);
     }
 }
