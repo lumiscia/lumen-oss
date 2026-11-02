@@ -210,7 +210,10 @@ impl WasmMediaStore {
             .map_err(|_| "media store lock poisoned")?
             .streams
             .clear();
-        Ok(())
+        self.inner
+            .text
+            .reset()
+            .map_err(|_| "media store lock poisoned")
     }
 
     pub fn clear_video_frames(&self) -> Result<(), &'static str> {
@@ -262,7 +265,10 @@ impl WasmMediaStore {
             .write()
             .map_err(|_| "media store lock poisoned")?
             .remove(font_family);
-        Ok(())
+        self.inner
+            .text
+            .remove_family(font_family)
+            .map_err(|_| "media store lock poisoned")
     }
 
     pub fn has_image(&self, image_id: &str) -> bool {
@@ -819,6 +825,67 @@ mod tests {
             resolver.frame(0),
             Err(MediaError::FrameOutOfRange { .. })
         ));
+    }
+
+    const INTER: &[u8] = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf");
+
+    fn measured_width(store: &WasmMediaStore, family: &str) -> f64 {
+        lumen_engine::expr::Expression::parse(&format!(
+            "text_width(\"Variable weight\", 16, 0, \"{family}\")"
+        ))
+        .unwrap()
+        .evaluate(&lumen_engine::expr::ExpressionContext {
+            media: Some(store),
+            ..Default::default()
+        })
+        .unwrap()
+        .as_f64()
+        .unwrap()
+    }
+
+    #[test]
+    fn removing_a_font_stops_text_measuring_with_it() {
+        let store = WasmMediaStore::default();
+        let fallback = measured_width(&store, "Inter");
+        store.set_font("Inter".to_string(), INTER.to_vec()).unwrap();
+        let loaded = measured_width(&store, "Inter");
+        assert_ne!(loaded, fallback);
+
+        store.remove_font("Inter").unwrap();
+        assert_eq!(measured_width(&store, "Inter"), fallback);
+
+        store.set_font("Inter".to_string(), INTER.to_vec()).unwrap();
+        assert_eq!(measured_width(&store, "Inter"), loaded);
+    }
+
+    #[test]
+    fn clearing_the_store_returns_text_to_the_bundled_fonts() {
+        let store = WasmMediaStore::default();
+        let fallback = measured_width(&store, "Inter");
+        let roboto = measured_width(&store, "Roboto");
+        store.set_font("Inter".to_string(), INTER.to_vec()).unwrap();
+        store
+            .set_font("Roboto".to_string(), INTER.to_vec())
+            .unwrap();
+        assert_ne!(measured_width(&store, "Inter"), fallback);
+        assert_ne!(measured_width(&store, "Roboto"), roboto);
+
+        store.clear().unwrap();
+        assert_eq!(measured_width(&store, "Inter"), fallback);
+        assert_eq!(measured_width(&store, "Roboto"), roboto);
+    }
+
+    #[test]
+    fn removing_a_font_named_like_the_bundled_one_restores_it() {
+        let store = WasmMediaStore::default();
+        let bundled = measured_width(&store, "Roboto");
+        store
+            .set_font("Roboto".to_string(), INTER.to_vec())
+            .unwrap();
+        assert_ne!(measured_width(&store, "Roboto"), bundled);
+
+        store.remove_font("Roboto").unwrap();
+        assert_eq!(measured_width(&store, "Roboto"), bundled);
     }
 
     #[test]

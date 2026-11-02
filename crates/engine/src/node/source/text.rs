@@ -1580,14 +1580,10 @@ pub(crate) fn text_system<'a>(
     media: Option<&'a dyn MediaStore>,
 ) -> crate::Result<std::sync::MutexGuard<'a, lumen_text::TextSystem>> {
     static SHARED: LazyLock<TextSession> = LazyLock::new(TextSession::default);
-    let session = media
+    media
         .and_then(|store| store.text_session())
-        .unwrap_or(&SHARED);
-    session.0.lock().map_err(|_| {
-        LumenError::Render(RenderError::Gpu {
-            details: "text system lock was poisoned".to_string(),
-        })
-    })
+        .unwrap_or(&SHARED)
+        .lock()
 }
 
 pub(crate) fn load_font_family(
@@ -1601,14 +1597,23 @@ pub(crate) fn load_font_family(
     let Some(store) = media else {
         return Ok(());
     };
-    let Some(resolver_id) = store.font_resolver_id(font_family) else {
+    let current_id = store.font_resolver_id(font_family);
+    if current_id.is_some() && text_system.family_resolver(font_family) == current_id.as_deref() {
+        return Ok(());
+    }
+    let resolver = store.get_font_resolver(font_family);
+    // An ID that no resolver comes with is remembered too, so later binds do not ask again.
+    let Some(resolver_id) = resolver
+        .as_ref()
+        .map(|resolver| resolver.id().to_string())
+        .or(current_id)
+    else {
         return Ok(());
     };
     if text_system.family_resolver(font_family) == Some(resolver_id.as_str()) {
         return Ok(());
     }
-    // A resolver that does not come is remembered too, so later binds do not ask again.
-    let files = match store.get_font_resolver(font_family) {
+    let files = match resolver {
         Some(resolver) => font_files(&*resolver)?,
         None => Vec::new(),
     };
@@ -1712,16 +1717,20 @@ mod tests {
         reads: Arc<AtomicU64>,
     }
 
-    struct CountingResolver(Vec<u8>, Arc<AtomicU64>);
+    struct CountingResolver {
+        id: &'static str,
+        data: Vec<u8>,
+        reads: Arc<AtomicU64>,
+    }
 
     impl FontResolver for CountingResolver {
         fn id(&self) -> &str {
-            "counting-store-test-font"
+            self.id
         }
 
         fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
-            self.1.fetch_add(1, Ordering::Relaxed);
-            Ok(vec![self.0.clone()])
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            Ok(vec![self.data.clone()])
         }
     }
 
@@ -1741,7 +1750,11 @@ mod tests {
         fn get_font_resolver(&self, _: &str) -> Option<Box<dyn FontResolver>> {
             self.resolvers.fetch_add(1, Ordering::Relaxed);
             let data = self.data.clone()?;
-            Some(Box::new(CountingResolver(data, Arc::clone(&self.reads))))
+            Some(Box::new(CountingResolver {
+                id: "counting-store-test-font",
+                data,
+                reads: Arc::clone(&self.reads),
+            }))
         }
     }
 
@@ -1751,15 +1764,57 @@ mod tests {
         let mut system = lumen_text::TextSystem::new();
         for _ in 0..3 {
             load_font_family(&mut system, Some(&store), "Known").unwrap();
-            load_font_family(&mut system, Some(&store), "Unknown").unwrap();
         }
         assert_eq!(store.resolvers.load(Ordering::Relaxed), 1);
     }
 
+    /// Serves one font under the default `font_resolver_id`, which gives no ID.
+    #[derive(Debug, Default)]
+    struct NoIdStore(Arc<AtomicU64>);
+
+    impl MediaStore for NoIdStore {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
+            None
+        }
+
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
+            None
+        }
+
+        fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
+            (family == "Known").then(|| {
+                Box::new(CountingResolver {
+                    id: "no-id-store-test-font",
+                    data: lumen_text::ROBOTO_REGULAR_BYTES.to_vec(),
+                    reads: Arc::clone(&self.0),
+                }) as _
+            })
+        }
+    }
+
+    #[test]
+    fn stores_without_resolver_ids_still_load_fonts_once() {
+        let store = NoIdStore::default();
+        let mut system = lumen_text::TextSystem::new();
+        for _ in 0..3 {
+            load_font_family(&mut system, Some(&store), "Known").unwrap();
+            load_font_family(&mut system, Some(&store), "Unknown").unwrap();
+        }
+        assert_eq!(
+            system.family_resolver("Known"),
+            Some("no-id-store-test-font")
+        );
+        assert_eq!(system.family_resolver("Unknown"), None);
+        assert_eq!(store.0.load(Ordering::Relaxed), 1);
+    }
+
     #[test]
     fn text_systems_share_a_font_while_one_holds_it() {
+        // Not Roboto, whose face would give way to the bundled one and not be held.
         let store = CountingStore {
-            data: Some(lumen_text::ROBOTO_REGULAR_BYTES.to_vec()),
+            data: Some(
+                include_bytes!("../../../../text/assets/inter/InterVariable-Latin.ttf").to_vec(),
+            ),
             ..Default::default()
         };
         let reads = || store.reads.load(Ordering::Relaxed);

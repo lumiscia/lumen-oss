@@ -1,14 +1,40 @@
 use std::fmt::Debug;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::audio::AudioResolver;
+use crate::error::{LumenError, RenderError};
 
 use super::{FontResolver, ImageResolver, VideoFrameResolver};
 
 /// The fonts one store has loaded and what was shaped and measured with them. Nothing rendered
 /// with another store reads them.
 #[derive(Debug)]
-pub struct TextSession(pub(crate) Mutex<lumen_text::TextSystem>);
+pub struct TextSession(Mutex<lumen_text::TextSystem>);
+
+impl TextSession {
+    pub(crate) fn lock(&self) -> crate::Result<MutexGuard<'_, lumen_text::TextSystem>> {
+        self.0.lock().map_err(|_| {
+            LumenError::Render(RenderError::Gpu {
+                details: "text system lock was poisoned".to_string(),
+            })
+        })
+    }
+
+    /// Drops the fonts loaded for `family`, restoring the bundled ones it replaced. A store calls
+    /// this when it stops serving a family, as text that no longer names it can still fall back
+    /// to its faces.
+    pub fn remove_family(&self, family: &str) -> crate::Result<()> {
+        self.lock()?.remove_family(family);
+        Ok(())
+    }
+
+    /// Returns to only the bundled fonts, freeing the rest. Do not call this while holding a lock
+    /// that `font_resolver_id` or `get_font_resolver` take.
+    pub fn reset(&self) -> crate::Result<()> {
+        *self.lock()? = lumen_text::TextSystem::new();
+        Ok(())
+    }
+}
 
 impl Default for TextSession {
     fn default() -> Self {
@@ -25,9 +51,10 @@ pub trait MediaStore: Send + Sync + Debug {
         None
     }
 
-    /// Returns the current font resolver ID without loading font data, or `None` when the store
-    /// has no such font. Must match the resolver's ID and change whenever its font data changes.
-    /// Resolvers with one ID, from any store, must serve the same data, as they may share it.
+    /// Returns the current font resolver ID without loading font data. Must match the resolver's
+    /// ID and change whenever its font data changes. Resolvers with one ID, from any store, must
+    /// serve the same data, as they may share it. Without an ID, `get_font_resolver` is asked
+    /// each time the family is used, so a store should give one if that is slow.
     fn font_resolver_id(&self, _source: &str) -> Option<String> {
         None
     }

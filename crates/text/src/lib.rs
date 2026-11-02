@@ -108,11 +108,25 @@ fn unique_font_token() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// A family loaded by name: the resolver it came from and the faces that came with it.
+/// A family loaded by name: the resolver it came from and the faces that came with it. The
+/// bundled family has no resolver.
 #[derive(Debug)]
 struct LoadedFamily {
     resolver_id: String,
     faces: Vec<fontdb::ID>,
+}
+
+fn load_bundled_family(db: &mut fontdb::Database) -> LoadedFamily {
+    let faces = db.load_font_source(fontdb::Source::Binary(Arc::new(ROBOTO_REGULAR_BYTES)));
+    LoadedFamily {
+        resolver_id: String::new(),
+        faces: faces.to_vec(),
+    }
+}
+
+/// Whether text asking for `family` can match `face`, whatever name it was loaded under.
+fn answers_to(face: &fontdb::FaceInfo, family: &str) -> bool {
+    face.families.iter().any(|(name, _)| name == family)
 }
 
 /// Font data that holds no readable face.
@@ -138,11 +152,7 @@ impl TextSystem {
     /// `load_family` or `load_font_data`, so text renders the same on every machine.
     pub fn new() -> Self {
         let mut db = fontdb::Database::new();
-        let faces = db.load_font_source(fontdb::Source::Binary(Arc::new(ROBOTO_REGULAR_BYTES)));
-        let bundled = LoadedFamily {
-            resolver_id: String::new(),
-            faces: faces.to_vec(),
-        };
+        let bundled = load_bundled_family(&mut db);
         Self {
             id: unique_font_token(),
             font_system: new_font_system(db),
@@ -171,12 +181,13 @@ impl TextSystem {
         self.font_system
             .db()
             .faces()
-            .any(|face| face.families.iter().any(|(name, _)| name == family))
+            .any(|face| answers_to(face, family))
     }
 
-    /// Makes the faces of `files` those of `family`, in place of any it had, bundled ones
-    /// included. On failure, or with no files, the family keeps its faces. Replaced data is freed
-    /// once no other text system holds it.
+    /// Makes the faces of `files` those of `family`, in place of any it had and any answering to
+    /// its name, bundled ones included. On failure, or with no files, the family keeps its faces.
+    /// A face of `files` going by another name gives way to a face already answering to that name
+    /// in the same style. Replaced data is freed once no other text system holds it.
     pub fn load_family(
         &mut self,
         family: &str,
@@ -206,22 +217,80 @@ impl TextSystem {
         if faces.is_empty() {
             return Ok(());
         }
-        let replaced = std::mem::replace(&mut loaded.faces, faces);
-        if !replaced.is_empty() {
-            let db = self.font_system.db_mut();
-            for face in replaced {
-                db.remove_face(face);
-            }
-            // The font system keeps what it parsed from a face for as long as it lives.
-            let (_, db) = std::mem::replace(
-                &mut self.font_system,
-                new_font_system(fontdb::Database::new()),
-            )
-            .into_locale_and_db();
-            self.font_system = new_font_system(db);
+        let owned = std::mem::take(&mut loaded.faces);
+        let db = self.font_system.db();
+        let mut removed: Vec<fontdb::ID> = db
+            .faces()
+            .filter(|face| {
+                !faces.contains(&face.id) && (owned.contains(&face.id) || answers_to(face, family))
+            })
+            .map(|face| face.id)
+            .collect();
+        // Matching breaks ties by slot, which says nothing of which face came first.
+        let (kept, yielding): (Vec<_>, Vec<_>) = faces.iter().partition(|id| {
+            let Some(face) = db.face(**id) else {
+                return false;
+            };
+            answers_to(face, family)
+                || !db.faces().any(|other| {
+                    !faces.contains(&other.id)
+                        && !removed.contains(&other.id)
+                        && (other.style, other.weight, other.stretch)
+                            == (face.style, face.weight, face.stretch)
+                        && face
+                            .families
+                            .iter()
+                            .any(|(name, _)| answers_to(other, name))
+                })
+        });
+        removed.extend(yielding);
+        for loaded in self.families.values_mut() {
+            loaded.faces.retain(|face| !removed.contains(face));
         }
+        if let Some(loaded) = self.families.get_mut(family) {
+            loaded.faces = kept;
+        }
+        self.forget_faces(removed);
         self.fonts_changed();
         Ok(())
+    }
+
+    /// Removes the faces loaded for `family`, restoring the bundled ones it replaced. Text
+    /// asking for it falls back to the other fonts until it is loaded again.
+    pub fn remove_family(&mut self, family: &str) {
+        if self
+            .family_resolver(family)
+            .is_none_or(|resolver_id| resolver_id.is_empty())
+        {
+            return;
+        }
+        let faces = self
+            .families
+            .remove(family)
+            .map_or(Vec::new(), |loaded| loaded.faces);
+        self.forget_faces(faces);
+        if family == DEFAULT_FONT_FAMILY {
+            let bundled = load_bundled_family(self.font_system.db_mut());
+            self.families.insert(family.to_string(), bundled);
+        }
+        self.fonts_changed();
+    }
+
+    fn forget_faces(&mut self, faces: Vec<fontdb::ID>) {
+        if faces.is_empty() {
+            return;
+        }
+        let db = self.font_system.db_mut();
+        for face in faces {
+            db.remove_face(face);
+        }
+        // The font system keeps what it parsed from a face for as long as it lives.
+        let (_, db) = std::mem::replace(
+            &mut self.font_system,
+            new_font_system(fontdb::Database::new()),
+        )
+        .into_locale_and_db();
+        self.font_system = new_font_system(db);
     }
 
     fn fonts_changed(&mut self) {
@@ -2766,6 +2835,74 @@ mod tests {
         assert!((system.measure(&request).width * 4.0 - bundled).abs() < 1.0);
         assert_eq!(system.font_system.db().len(), 1);
         assert!(half_data.upgrade().is_none());
+    }
+
+    /// `font` declaring the weight `weight`.
+    fn with_weight(font: &[u8], weight: u16) -> Arc<Vec<u8>> {
+        let mut font = font.to_vec();
+        let tables = u16::from_be_bytes([font[4], font[5]]) as usize;
+        let os2 = font[12..12 + tables * 16]
+            .chunks(16)
+            .find(|table| &table[..4] == b"OS/2")
+            .unwrap();
+        let at = u32::from_be_bytes(os2[8..12].try_into().unwrap()) as usize + 4;
+        font[at..at + 2].copy_from_slice(&weight.to_be_bytes());
+        Arc::new(font)
+    }
+
+    #[test]
+    fn replacing_a_family_removes_faces_another_name_brought() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("WWW");
+        let bundled = system.measure(&request).width;
+
+        // A font asked for by path goes by its internal name, not the one it was asked for by.
+        system
+            .load_family("fonts/Roboto.ttf", "half", vec![scaled_roboto(2)])
+            .unwrap();
+        system
+            .load_family(DEFAULT_FONT_FAMILY, "quarter", vec![scaled_roboto(4)])
+            .unwrap();
+        assert!((system.measure(&request).width * 4.0 - bundled).abs() < 1.0);
+
+        // A heavier face matches heavier text better, so it must go too.
+        let bold = with_weight(&scaled_roboto(2), 700);
+        system.load_family("Bold", "bold", vec![bold]).unwrap();
+        request.spans[0].font_weight = 700;
+        assert!((system.measure(&request).width * 2.0 - bundled).abs() < 1.0);
+        system
+            .load_family(DEFAULT_FONT_FAMILY, "quarter again", vec![scaled_roboto(4)])
+            .unwrap();
+        assert!((system.measure(&request).width * 4.0 - bundled).abs() < 1.0);
+        assert_eq!(system.font_system.db().len(), 1);
+
+        // The name it was loaded under remembers the resolver, so it is not loaded again.
+        assert_eq!(system.family_resolver("Bold"), Some("bold"));
+    }
+
+    #[test]
+    fn a_family_keeps_its_faces_when_another_name_brings_the_same_style() {
+        let mut system = TextSystem::new();
+        let request = TextLayoutRequest::new("WWW");
+        let bundled = system.measure(&request).width;
+        system
+            .load_family(DEFAULT_FONT_FAMILY, "quarter", vec![scaled_roboto(4)])
+            .unwrap();
+
+        // Replacing the bundled face freed the lowest slot, and matching breaks ties by slot.
+        system
+            .load_family("fonts/Roboto.ttf", "half", vec![scaled_roboto(2)])
+            .unwrap();
+        assert!((system.measure(&request).width * 4.0 - bundled).abs() < 1.0);
+        assert_eq!(system.family_resolver("fonts/Roboto.ttf"), Some("half"));
+
+        // Another style is not in the way of any, so it stays for text that asks for it.
+        let bold = with_weight(&scaled_roboto(2), 700);
+        system.load_family("Bold", "bold", vec![bold]).unwrap();
+        assert!((system.measure(&request).width * 4.0 - bundled).abs() < 1.0);
+        let mut bold_request = TextLayoutRequest::new("WWW");
+        bold_request.spans[0].font_weight = 700;
+        assert!((system.measure(&bold_request).width * 2.0 - bundled).abs() < 1.0);
     }
 
     #[test]

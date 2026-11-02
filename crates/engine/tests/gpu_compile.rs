@@ -2043,6 +2043,36 @@ fn font_named(font: &[u8], family: &str) -> Vec<u8> {
 }
 
 #[test]
+fn a_family_only_one_job_has_does_not_reach_another_jobs_measurements() {
+    let measure = |job: &JobFont| {
+        Expression::parse("text_width(\"WWW\", 32, 0, \"OnlyIn\")")
+            .unwrap()
+            .evaluate(&lumen_engine::expr::ExpressionContext {
+                media: Some(job),
+                ..Default::default()
+            })
+            .unwrap()
+            .as_f64()
+            .unwrap()
+    };
+    let with_font = JobFont::new(
+        "OnlyIn",
+        "job-font-only-in-one",
+        ScaledFontStore::new("OnlyIn", 2).data,
+    );
+    let without = JobFont::new("Absent", "job-font-absent", Vec::new());
+
+    let fallback = measure(&without);
+    let own = measure(&with_font);
+    assert!(
+        own > fallback * 1.5,
+        "{own} should differ from fallback {fallback}"
+    );
+    assert_eq!(measure(&without), fallback);
+    assert_eq!(measure(&with_font), own);
+}
+
+#[test]
 fn jobs_draw_one_family_name_with_their_own_font_files() {
     const ROBOTO: &[u8] = lumen_text::ROBOTO_REGULAR_BYTES;
     const INTER: &[u8] = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf");
