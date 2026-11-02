@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
 };
 
 use crate::{
@@ -244,20 +244,19 @@ fn check_names(
     Ok(())
 }
 
-/// Orders functions so each comes after those it calls, rejecting cycles.
+/// Orders functions so each comes after those it calls, rejecting cycles and call chains
+/// deeper than `MAX_EXPANDED_DEPTH`.
 fn dependency_order(
     signatures: &BTreeMap<String, (Vec<String>, &str)>,
 ) -> Result<Vec<String>, ExpressionError> {
+    /// Returns the length of the longest call chain starting at `name`.
     fn visit_function(
         name: &str,
         signatures: &BTreeMap<String, (Vec<String>, &str)>,
         stack: &mut Vec<String>,
         order: &mut Vec<String>,
-        done: &mut HashSet<String>,
-    ) -> Result<(), ExpressionError> {
-        if done.contains(name) {
-            return Ok(());
-        }
+        heights: &mut HashMap<String, usize>,
+    ) -> Result<usize, ExpressionError> {
         if let Some(start) = stack.iter().position(|open| open == name) {
             let mut cycle = stack[start..].to_vec();
             cycle.push(name.to_string());
@@ -266,31 +265,37 @@ fn dependency_order(
                 cycle.join(" -> ")
             )));
         }
-        if stack.len() >= MAX_EXPANDED_DEPTH {
+        let finished = heights.get(name).copied();
+        if stack.len() + finished.unwrap_or(1) > MAX_EXPANDED_DEPTH {
             return Err(parse_error(format!(
                 "functions call each other more than {MAX_EXPANDED_DEPTH} levels deep: {} -> {name}",
                 stack.join(" -> ")
             )));
         }
+        if let Some(height) = finished {
+            return Ok(height);
+        }
         let body = signatures[name].1;
         stack.push(name.to_string());
         let callees =
             called_names(body).map_err(|error| function_error(name, body, error_details(error)))?;
+        let mut height = 1;
         for callee in callees {
             if signatures.contains_key(&callee) {
-                visit_function(&callee, signatures, stack, order, done)?;
+                height =
+                    height.max(1 + visit_function(&callee, signatures, stack, order, heights)?);
             }
         }
         stack.pop();
-        done.insert(name.to_string());
+        heights.insert(name.to_string(), height);
         order.push(name.to_string());
-        Ok(())
+        Ok(height)
     }
 
     let mut order = Vec::new();
-    let mut done = HashSet::new();
+    let mut heights = HashMap::new();
     for name in signatures.keys() {
-        visit_function(name, signatures, &mut Vec::new(), &mut order, &mut done)?;
+        visit_function(name, signatures, &mut Vec::new(), &mut order, &mut heights)?;
     }
     Ok(order)
 }
@@ -582,15 +587,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_call_chains_deeper_than_the_expansion_limit() {
-        let entries: Vec<(String, String)> = (0..200)
+    fn call_chain_limit_does_not_depend_on_name_order() {
+        let scope_error_for = |functions: Vec<(String, String)>| {
+            let entries: Vec<(&str, &str)> = functions
+                .iter()
+                .map(|(signature, body)| (signature.as_str(), body.as_str()))
+                .collect();
+            scope_error(&entries)
+        };
+        let callee_sorts_after_caller: Vec<_> = (0..200)
             .map(|index| (format!("f{index:03}(x)"), format!("f{:03}(x)", index + 1)))
+            .chain([("f200(x)".to_string(), "x".to_string())])
             .collect();
-        let entries: Vec<(&str, &str)> = entries
+        let callee_sorts_before_caller: Vec<_> = (1..=200)
+            .map(|index| (format!("f{index:03}(x)"), format!("f{:03}(x)", index - 1)))
+            .chain([("f000(x)".to_string(), "x".to_string())])
+            .collect();
+        for functions in [callee_sorts_after_caller, callee_sorts_before_caller] {
+            assert!(scope_error_for(functions).contains("more than 64 levels deep"));
+        }
+
+        let chain: Vec<(String, String)> = (1..64)
+            .map(|index| (format!("f{index:03}(x)"), format!("f{:03}(x)", index - 1)))
+            .chain([("f000(x)".to_string(), "x".to_string())])
+            .collect();
+        let entries: Vec<(&str, &str)> = chain
             .iter()
             .map(|(signature, body)| (signature.as_str(), body.as_str()))
             .collect();
-
-        assert!(scope_error(&entries).contains("more than 64 levels deep"));
+        assert!(FunctionScope::enter(&definitions(&entries)).is_ok());
     }
 }
