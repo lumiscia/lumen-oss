@@ -63,7 +63,9 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
     });
 
     await this.#loadComposition();
-    this.#startLoop();
+    if (!this.#disposed) {
+      this.#startLoop();
+    }
   }
 
   update(inputs: LumenPreviewSessionInputs): void {
@@ -104,6 +106,8 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
 
     const generation = ++this.#loadGeneration;
     this.#isLoaded = false;
+    // The video is frozen until the load finishes and installs the new timeline.
+    this.#audio.loadAudioTimeline(null);
 
     if (!this.#inputs.compositionJson) {
       controller.clear();

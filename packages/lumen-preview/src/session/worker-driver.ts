@@ -27,7 +27,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
     this.#host = host;
     this.#inputs = inputs;
     this.#bindings = bindings;
-    this.#audio = new LumenAudioEngine(options.audio);
+    this.#audio = new LumenAudioEngine(options.audio, "elapsed");
   }
 
   async attach(canvas: HTMLCanvasElement): Promise<void> {
@@ -104,6 +104,8 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
       previous.compositionJson !== inputs.compositionJson ||
       previous.mediaSources !== inputs.mediaSources
     ) {
+      // The video is frozen until the worker answers with the new timeline.
+      this.#audio.loadAudioTimeline(null);
       this.#post({
         type: "set-composition",
         compositionJson: inputs.compositionJson,

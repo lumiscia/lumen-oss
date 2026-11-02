@@ -52,7 +52,7 @@ describe("LumenAudioWorkletProcessor", () => {
 
   it("holds the position until the first chunk arrives", async () => {
     const { chunk, render, reports, worklet } = await createWorklet();
-    worklet.handleMessage({ generation: 1, startSample: 500, type: "play" });
+    worklet.handleMessage({ generation: 1, holdOnUnderrun: true, startSample: 500, type: "play" });
 
     render();
     render();
@@ -68,7 +68,7 @@ describe("LumenAudioWorkletProcessor", () => {
 
   it("stops at the last available sample during an underrun and resumes from it", async () => {
     const { chunk, render, reports, worklet } = await createWorklet();
-    worklet.handleMessage({ generation: 1, startSample: 0, type: "play" });
+    worklet.handleMessage({ generation: 1, holdOnUnderrun: true, startSample: 0, type: "play" });
     chunk(0, QUANTUM + 10, 0.25);
     render();
     reports.length = 0;
@@ -88,9 +88,25 @@ describe("LumenAudioWorkletProcessor", () => {
     expect(reports.at(-1)).toMatchObject({ stalled: false });
   });
 
+  it("plays silence through missing samples without losing its place when not holding", async () => {
+    const { chunk, render, reports, worklet } = await createWorklet();
+    worklet.handleMessage({ generation: 1, holdOnUnderrun: false, startSample: 0, type: "play" });
+
+    const [missing] = render();
+    expect(missing?.every((sample) => sample === 0)).toBe(true);
+    expect(worklet.currentSample).toBe(QUANTUM);
+    expect(reports.at(-1)).toMatchObject({ currentSample: QUANTUM, stalled: false });
+
+    chunk(QUANTUM + 10, 12_000, 0.75);
+    const [partial] = render();
+    expect(partial?.slice(0, 10).every((sample) => sample === 0)).toBe(true);
+    expect(partial?.slice(10).every((sample) => sample === 0.75)).toBe(true);
+    expect(worklet.currentSample).toBe(QUANTUM * 2);
+  });
+
   it("drops chunks from an older generation", async () => {
     const { chunk, render, worklet } = await createWorklet();
-    worklet.handleMessage({ generation: 2, startSample: 0, type: "play" });
+    worklet.handleMessage({ generation: 2, holdOnUnderrun: true, startSample: 0, type: "play" });
     chunk(0, 12_000, 0.5);
 
     const [left] = render();

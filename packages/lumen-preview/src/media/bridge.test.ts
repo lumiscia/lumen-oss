@@ -320,6 +320,23 @@ describe("LumenMediaBridge", () => {
       expect(target.setVideoFrame).toHaveBeenCalledTimes(2);
     });
 
+    it("drops a frame load whose source is removed and whose read is cancelled", async () => {
+      const bridge = new LumenMediaBridge(fakeTarget().target);
+      await bridge.registerVideoSource("clip", "clip.mp4", FPS);
+      const gate = deferred();
+      mock.sampleStream = async function* () {
+        await gate.promise;
+        yield fakeSample(0);
+      };
+
+      const loading = bridge.loadVideoFrame("clip", 0);
+      await new Promise((resolve) => setTimeout(resolve));
+      bridge.removeVideoSource("clip");
+      gate.reject(new Error("Input has been disposed."));
+
+      await expect(loading).resolves.toBeUndefined();
+    });
+
     it("keeps a session for equal inputs and replaces it for a different request", async () => {
       const bridge = new LumenMediaBridge(fakeTarget().target);
 
@@ -333,6 +350,112 @@ describe("LumenMediaBridge", () => {
       expect(mock.inputs).toHaveLength(2);
       await bridge.registerVideoSource("clip", request("b"), FPS);
       expect(mock.inputs).toHaveLength(3);
+    });
+  });
+
+  describe("whole syncs", () => {
+    function stubImages(decodes: Map<string, Promise<void>>) {
+      vi.stubGlobal("createImageBitmap", async (blob: Blob) => {
+        const name = await blob.text();
+        await decodes.get(name);
+        return { close: () => {}, height: 1, width: Number(name) };
+      });
+      vi.stubGlobal(
+        "OffscreenCanvas",
+        class {
+          getContext() {
+            return {
+              drawImage: () => {},
+              getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+            };
+          }
+        },
+      );
+    }
+    const image = (id: string, name: string) => ({
+      id,
+      kind: "image" as const,
+      source: new Blob([name]),
+    });
+    const video = (id: string, url: string) => ({
+      id,
+      kind: "video" as const,
+      source: url,
+      ...FPS,
+    });
+    const uploads = (target: ReturnType<typeof fakeTarget>["target"]) =>
+      vi.mocked(target.setImage).mock.calls.map(([id, width]) => [id, width]);
+
+    it("stops an older sync from overwriting a newer image", async () => {
+      const slow = deferred();
+      stubImages(new Map([["1", slow.promise]]));
+      const { target } = fakeTarget();
+      const bridge = new LumenMediaBridge(target);
+
+      const older = bridge.syncMediaSources([image("slow", "1"), image("logo", "2")]);
+      await new Promise((resolve) => setTimeout(resolve));
+      await bridge.syncMediaSources([image("logo", "3")]);
+      slow.resolve();
+      await older;
+
+      expect(uploads(target)).toEqual([["logo", 3]]);
+    });
+
+    it("stops an older sync from overwriting a newer video", async () => {
+      const slow = deferred();
+      stubImages(new Map([["1", slow.promise]]));
+      const bridge = new LumenMediaBridge(fakeTarget().target);
+
+      const older = bridge.syncMediaSources([image("slow", "1"), video("clip", "old.mp4")]);
+      await new Promise((resolve) => setTimeout(resolve));
+      await bridge.syncMediaSources([video("clip", "new.mp4")]);
+      slow.resolve();
+      await older;
+
+      expect(mock.inputs).toHaveLength(1);
+      expect(mock.inputs[0]?.disposed).toBe(false);
+    });
+
+    it("registers and uploads nothing after clear", async () => {
+      const slow = deferred();
+      stubImages(new Map([["1", slow.promise]]));
+      const { target } = fakeTarget();
+      const bridge = new LumenMediaBridge(target);
+
+      const older = bridge.syncMediaSources([
+        image("slow", "1"),
+        image("logo", "2"),
+        video("clip", "clip.mp4"),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve));
+      bridge.clear();
+      slow.resolve();
+      await older;
+
+      expect(uploads(target)).toEqual([]);
+      expect(mock.inputs).toEqual([]);
+    });
+
+    it("doesn't report a registration it abandoned", async () => {
+      const failing = deferred();
+      stubImages(
+        new Map([["1", failing.promise.then(() => Promise.reject(new Error("offline")))]]),
+      );
+      const bridge = new LumenMediaBridge(fakeTarget().target);
+
+      const older = bridge.syncMediaSources([image("slow", "1")]);
+      await new Promise((resolve) => setTimeout(resolve));
+      bridge.clear();
+      failing.resolve();
+
+      await expect(older).resolves.toBeUndefined();
+    });
+
+    it("still reports a failure from the latest sync", async () => {
+      stubImages(new Map([["1", Promise.reject(new Error("offline"))]]));
+      const bridge = new LumenMediaBridge(fakeTarget().target);
+
+      await expect(bridge.syncMediaSources([image("slow", "1")])).rejects.toThrow("offline");
     });
   });
 

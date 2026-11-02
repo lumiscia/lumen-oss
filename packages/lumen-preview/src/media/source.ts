@@ -75,7 +75,10 @@ export function createInputSource(
   }
 }
 
-export async function sourceInputToBlob(input: MediaSourceInput): Promise<Blob> {
+export async function sourceInputToBlob(
+  input: MediaSourceInput,
+  signal?: AbortSignal,
+): Promise<Blob> {
   if (isBlob(input)) {
     return input;
   }
@@ -85,7 +88,7 @@ export async function sourceInputToBlob(input: MediaSourceInput): Promise<Blob> 
   }
 
   if (isUrlLike(input)) {
-    return fetchBlob(input);
+    return fetchBlob(input, undefined, signal);
   }
 
   if (!input || typeof input !== "object" || !("kind" in input)) {
@@ -98,7 +101,7 @@ export async function sourceInputToBlob(input: MediaSourceInput): Promise<Blob> 
     case "buffer":
       return bytesToBlob(toUint8Array(input.bytes));
     case "url":
-      return fetchBlob(input.url, input.options?.requestInit);
+      return fetchBlob(input.url, input.options?.requestInit, signal);
     default:
       throw new LumenMediaError("invalid_source", "media source kind is unsupported");
   }
@@ -135,8 +138,14 @@ function mediaInputIdentity(input: MediaSourceInput): [payload: unknown, options
 export async function fetchBlob(
   source: string | URL | Request,
   requestInit?: RequestInit,
+  signal?: AbortSignal,
 ): Promise<Blob> {
-  const response = await fetch(source, requestInit);
+  // A signal passed to `fetch` replaces the one on a `Request`.
+  const combined = signal && isRequest(source) ? AbortSignal.any([source.signal, signal]) : signal;
+  const response = await fetch(
+    source,
+    combined ? { ...requestInit, signal: combined } : requestInit,
+  );
   if (!response.ok) {
     throw new LumenMediaError(
       "invalid_source",

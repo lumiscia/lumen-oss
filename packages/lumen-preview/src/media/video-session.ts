@@ -46,6 +46,7 @@ type SequentialDecodeState = {
 
 export class VideoSession {
   private disposed = false;
+  private input: Input | null = null;
   private operationQueue = Promise.resolve();
   private sequentialDecodeState: SequentialDecodeState | null = null;
   private setupPromise: Promise<VideoSetup> | null = null;
@@ -56,14 +57,14 @@ export class VideoSession {
     private readonly options: Required<LumenMediaBridgeOptions>,
   ) {}
 
-  /** Takes its turn behind any decode in flight, which is left to finish on a live input. */
+  /**
+   * Cancels reads straight away, because a decode holding the queue may be stalled on one. Its
+   * samples are dropped once that decode has unwound.
+   */
   dispose(): void {
     this.disposed = true;
-    void this.serialize(async () => {
-      this.resetSequentialDecodeState();
-      const setup = await this.setupPromise?.catch(() => null);
-      setup?.input.dispose();
-    });
+    this.input?.dispose();
+    void this.serialize(async () => this.resetSequentialDecodeState());
   }
 
   clearFrames(): void {
@@ -132,6 +133,12 @@ export class VideoSession {
   private async createSetup(): Promise<VideoSetup> {
     let input: Input | undefined;
     try {
+      if (this.disposed) {
+        throw new LumenMediaError(
+          "source_not_registered",
+          `video source "${this.streamId}" was removed`,
+        );
+      }
       input = new Input({
         formats: this.registration.formats ?? this.options.formats,
         source: createInputSource(this.registration.source, {
@@ -139,6 +146,7 @@ export class VideoSession {
           urlCacheBytes: this.options.urlCacheBytes,
         }),
       });
+      this.input = input;
 
       const track = await this.resolveTrack(input);
       if (!(await track.canDecode())) {

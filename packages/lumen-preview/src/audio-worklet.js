@@ -8,6 +8,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     this.currentSample = 0;
     this.generation = 0;
     this.chunks = new Map();
+    this.holdOnUnderrun = true;
     this.playing = false;
     this.stalled = true;
     this.sampleRate = DEFAULT_SAMPLE_RATE;
@@ -25,6 +26,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
           this.generation = message.generation;
           this.currentSample = Number(message.startSample);
           this.chunks.clear();
+          this.holdOnUnderrun = message.holdOnUnderrun;
           this.playing = true;
           this.stalled = true;
           this.reportPosition(0);
@@ -65,20 +67,22 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
       return true;
     }
 
-    // The position only covers samples that were heard, so it waits out an underrun.
+    // When holding, the position only covers samples that were heard. Otherwise it follows elapsed
+    // time, and missing samples play as silence.
     const frames = left.length;
     let written = 0;
     for (; written < frames; written += 1) {
       const sample = this.currentSample + written;
       const chunk = this.findChunk(sample);
-      if (!chunk) {
+      if (chunk) {
+        const chunkFrame = sample - chunk.startSample;
+        const base = chunkFrame * this.channelCount;
+        for (let channel = 0; channel < output.length; channel += 1) {
+          const sourceChannel = Math.min(channel, this.channelCount - 1);
+          output[channel][written] = chunk.samples[base + sourceChannel] || 0;
+        }
+      } else if (this.holdOnUnderrun) {
         break;
-      }
-      const chunkFrame = sample - chunk.startSample;
-      const base = chunkFrame * this.channelCount;
-      for (let channel = 0; channel < output.length; channel += 1) {
-        const sourceChannel = Math.min(channel, this.channelCount - 1);
-        output[channel][written] = chunk.samples[base + sourceChannel] || 0;
       }
     }
 

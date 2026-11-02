@@ -41,11 +41,31 @@ export interface LumenAudioEngineOptions {
   workletModuleUrl?: string | URL;
 }
 
+/**
+ * What the playback position follows.
+ *
+ * `audio` is for video that follows this engine: the position holds through an underrun, and the
+ * video waits with it. `elapsed` is for video on its own clock: the position follows time since
+ * `play`, and audio that isn't ready is skipped.
+ */
+type AudioEngineClock = "audio" | "elapsed";
+
 /** The last position the worklet played, or the requested start until it plays anything. */
 type PlaybackClock = {
   contextTime: number;
   ms: number;
   stalled: boolean;
+  startedAt: number;
+};
+
+// Async work holds on to its entry and publishes only while the map still holds that same object.
+type AudioSourceEntry = {
+  abort: AbortController;
+  /** Resolves to a failure message, or null once loaded or superseded. */
+  failure: Promise<string | null>;
+  /** The mixer holds samples under this id, possibly from the source this entry replaced. */
+  mixed: boolean;
+  source: MediaSourceInput;
 };
 
 type WorkletMessage =
@@ -60,6 +80,7 @@ type WorkletMessage =
     }
   | {
       generation: number;
+      holdOnUnderrun: boolean;
       startSample: number;
       type: "play";
     }
@@ -116,14 +137,15 @@ export class LumenAudioEngine {
   #pausedMs = 0;
   #playback: PlaybackClock | null = null;
   #queuedChunkStarts = new Set<number>();
-  #sources = new Map<string, MediaSourceInput>();
-  #sourceSync: Promise<void> = Promise.resolve();
+  #sources = new Map<string, AudioSourceEntry>();
   #timeline: AudioEngineTimeline | null = null;
   #timelineJson: string | null = null;
   #worker: Worker | null = null;
+  readonly #clock: AudioEngineClock;
   readonly #options: LumenAudioEngineOptions;
 
-  constructor(options: LumenAudioEngineOptions = {}) {
+  constructor(options: LumenAudioEngineOptions = {}, clock: AudioEngineClock = "audio") {
+    this.#clock = clock;
     this.#options = options;
   }
 
@@ -145,58 +167,86 @@ export class LumenAudioEngine {
 
   /**
    * Rejects naming every source that failed to load. Those play silent and are retried by the
-   * next sync; the others still sync.
+   * next sync; the others still sync. A source being loaded is shared by overlapping syncs, and
+   * replacing or removing it aborts the load without waiting for it.
    */
-  syncAudioSources(registrations: Iterable<AudioSourceRegistration>): Promise<void> {
+  async syncAudioSources(registrations: Iterable<AudioSourceRegistration>): Promise<void> {
+    if (this.#disposed) {
+      return;
+    }
+
     const desired = new Map<string, AudioSourceRegistration>();
     for (const registration of registrations) {
       desired.set(registration.id, registration);
     }
 
-    // Serialized so overlapping syncs never decode the same source twice.
-    const sync = this.#sourceSync
-      .catch(() => {})
-      .then(() => (this.#disposed ? undefined : this.#syncAudioSources(desired)));
-    this.#sourceSync = sync;
-    return sync;
-  }
-
-  async #syncAudioSources(desired: Map<string, AudioSourceRegistration>): Promise<void> {
-    let changed = false;
+    let removedMixed = false;
     for (const id of this.#sources.keys()) {
       if (!desired.has(id)) {
-        changed = this.#removeSource(id) || changed;
+        removedMixed = this.#removeSource(id) || removedMixed;
       }
     }
+    if (removedMixed) {
+      this.#restartMix();
+    }
 
-    const failures: string[] = [];
+    const loads: Promise<string | null>[] = [];
     for (const { id, source } of this.#hasClips() ? desired.values() : []) {
-      const cached = this.#sources.get(id);
-      if (cached !== undefined && sameMediaInput(cached, source)) {
-        continue;
-      }
-      try {
-        const samples = await decodeStereo(source);
-        if (this.#disposed) {
-          return;
-        }
-        this.#sources.set(id, source);
-        this.#postWorker({ type: "set-source", id, samples }, [samples.buffer as ArrayBuffer]);
-        changed = true;
-      } catch (error) {
-        if (this.#disposed) {
-          return;
-        }
-        failures.push(`audio source "${id}" could not be loaded: ${errorMessage(error)}`);
-        changed = this.#removeSource(id) || changed;
-      }
+      const current = this.#sources.get(id);
+      const entry =
+        current && sameMediaInput(current.source, source)
+          ? current
+          : this.#startSourceLoad(id, source, current);
+      loads.push(entry.failure);
     }
 
-    if (changed && this.isPlaying()) {
-      this.play(this.currentTimeMs());
-    }
+    const failures = (await Promise.all(loads)).filter((failure) => failure !== null);
     if (failures.length > 0) {
       throw new Error(failures.join("\n"));
+    }
+  }
+
+  #startSourceLoad(
+    id: string,
+    source: MediaSourceInput,
+    replaced: AudioSourceEntry | undefined,
+  ): AudioSourceEntry {
+    replaced?.abort.abort();
+    const entry: AudioSourceEntry = {
+      abort: new AbortController(),
+      failure: Promise.resolve(null),
+      mixed: replaced?.mixed ?? false,
+      source,
+    };
+    this.#sources.set(id, entry);
+    entry.failure = this.#loadSource(id, entry);
+    return entry;
+  }
+
+  async #loadSource(id: string, entry: AudioSourceEntry): Promise<string | null> {
+    try {
+      const samples = await decodeStereo(entry.source, entry.abort.signal);
+      if (this.#sources.get(id) !== entry) {
+        return null;
+      }
+      this.#postWorker({ type: "set-source", id, samples }, [samples.buffer as ArrayBuffer]);
+      entry.mixed = true;
+    } catch (error) {
+      if (this.#sources.get(id) !== entry) {
+        return null;
+      }
+      if (this.#removeSource(id)) {
+        this.#restartMix();
+      }
+      return `audio source "${id}" could not be loaded: ${errorMessage(error)}`;
+    }
+    this.#restartMix();
+    return null;
+  }
+
+  #restartMix(): void {
+    if (this.isPlaying()) {
+      this.play(this.currentTimeMs());
     }
   }
 
@@ -208,15 +258,20 @@ export class LumenAudioEngine {
     }
 
     const generation = this.#generation;
-    const startSample = msToLumenAudioSample(this.#pausedMs);
-    this.#playback = { contextTime: 0, ms: this.#pausedMs, stalled: true };
-    void this.#getContext().resume();
-    void this.#ensureWorklet()
-      .then((node) => {
+    this.#playback = {
+      contextTime: 0,
+      ms: this.#pausedMs,
+      stalled: true,
+      startedAt: performance.now(),
+    };
+    void Promise.all([this.#ensureWorklet(), this.#getContext().resume()])
+      .then(([node]) => {
         if (!node || generation !== this.#generation) {
           return;
         }
-        this.#post(node, { type: "play", generation, startSample });
+        const startSample = msToLumenAudioSample(this.currentTimeMs());
+        const holdOnUnderrun = this.#clock === "audio";
+        this.#post(node, { type: "play", generation, holdOnUnderrun, startSample });
         this.#queueChunks(startSample);
       })
       .catch((error: unknown) => {
@@ -246,6 +301,9 @@ export class LumenAudioEngine {
     if (!playback) {
       return this.#pausedMs;
     }
+    if (this.#clock === "elapsed") {
+      return this.#wrapMs(playback.ms + performance.now() - playback.startedAt);
+    }
     if (playback.stalled || !this.#context) {
       return this.#wrapMs(playback.ms);
     }
@@ -264,7 +322,7 @@ export class LumenAudioEngine {
     this.#node?.disconnect();
     this.#node = null;
     this.#initialization = null;
-    this.#sources.clear();
+    this.#clearSources();
     this.#worker?.terminate();
     this.#worker = null;
     void this.#context?.close();
@@ -284,12 +342,23 @@ export class LumenAudioEngine {
     return (this.#timeline?.clips.length ?? 0) > 0;
   }
 
+  /** Returns whether the mix changed. */
   #removeSource(id: string): boolean {
-    if (!this.#sources.delete(id)) {
+    const entry = this.#sources.get(id);
+    this.#sources.delete(id);
+    entry?.abort.abort();
+    if (!entry?.mixed) {
       return false;
     }
     this.#postWorker({ type: "remove-source", id });
     return true;
+  }
+
+  #clearSources(): void {
+    for (const entry of this.#sources.values()) {
+      entry.abort.abort();
+    }
+    this.#sources.clear();
   }
 
   #ensureWorklet(): Promise<AudioWorkletNode | null> {
@@ -327,11 +396,14 @@ export class LumenAudioEngine {
       if (message.type === "error") {
         console.error("[LumenAudioEngine]", message.message ?? "audio worklet failed");
       } else if (message.generation === this.#generation && this.#playback) {
-        this.#playback = {
-          contextTime: message.contextTime,
-          ms: (message.currentSample / LUMEN_AUDIO_SAMPLE_RATE) * MS_PER_SECOND,
-          stalled: message.stalled,
-        };
+        if (this.#clock === "audio") {
+          this.#playback = {
+            ...this.#playback,
+            contextTime: message.contextTime,
+            ms: (message.currentSample / LUMEN_AUDIO_SAMPLE_RATE) * MS_PER_SECOND,
+            stalled: message.stalled,
+          };
+        }
         this.#queueChunks(message.currentSample);
       }
     };
@@ -372,7 +444,7 @@ export class LumenAudioEngine {
       this.#halt();
       worker.terminate();
       this.#worker = null;
-      this.#sources.clear();
+      this.#clearSources();
     };
     worker.postMessage({ type: "set-timeline", timeline: this.#timeline });
     this.#worker = worker;
@@ -438,8 +510,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function decodeStereo(source: MediaSourceInput): Promise<Float32Array> {
-  const blob = await sourceInputToBlob(source);
+async function decodeStereo(source: MediaSourceInput, signal: AbortSignal): Promise<Float32Array> {
+  const blob = await sourceInputToBlob(source, signal);
   const decoder = new OfflineAudioContext(LUMEN_AUDIO_CHANNELS, 1, LUMEN_AUDIO_SAMPLE_RATE);
   const decoded = await decoder.decodeAudioData(await blob.arrayBuffer());
   const stereo =

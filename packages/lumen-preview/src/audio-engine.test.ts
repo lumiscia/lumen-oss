@@ -17,6 +17,7 @@ function installFakes() {
     contexts: [] as { closed: boolean; currentTime: number }[],
     decoded: [] as number[],
     decodeError: null as Error | null,
+    decodeGates: new Map<number, Promise<void>>(),
     nodes: [] as { connected: boolean; onmessage: (message: unknown) => void; posted: Posted[] }[],
     workers: [] as {
       onmessage: (message: unknown) => void;
@@ -67,6 +68,7 @@ function installFakes() {
     class {
       decodeAudioData = async (bytes: ArrayBuffer) => {
         const marker = new Uint8Array(bytes)[0] ?? 0;
+        await fakes.decodeGates.get(marker);
         if (marker === 0) {
           throw new DOMException("Unable to decode audio data", "EncodingError");
         }
@@ -293,6 +295,123 @@ describe("LumenAudioEngine", () => {
     );
 
     expect(postedOfType(fakes.workers[0]?.posted, "remove-source")).toHaveLength(1);
+  });
+
+  describe("when a source is replaced or removed while loading", () => {
+    function gate(marker: number) {
+      let release = () => {};
+      fakes.decodeGates.set(marker, new Promise((resolve) => (release = resolve)));
+      return release;
+    }
+    const setSources = () => postedOfType(fakes.workers[0]?.posted, "set-source");
+    const plays = () => postedOfType(fakes.nodes[0]?.posted, "play");
+
+    it("publishes only the latest source, whichever decode finishes first", async () => {
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+      engine.play(0);
+      await settled(fakes);
+      const releaseOld = gate(1);
+      const releaseNew = gate(2);
+
+      const obsolete = engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+      const current = engine.syncAudioSources([source("a", new Uint8Array([2]))]);
+      await vi.waitFor(() => expect(fakes.decodeGates.size).toBe(2));
+      const playsBefore = plays().length;
+
+      releaseOld();
+      await obsolete;
+      await new Promise((resolve) => setTimeout(resolve));
+      expect(setSources()).toEqual([]);
+      expect(plays()).toHaveLength(playsBefore);
+
+      releaseNew();
+      await current;
+      expect(setSources()).toHaveLength(1);
+      expect(plays()).toHaveLength(playsBefore + 1);
+    });
+
+    it("aborts a superseded fetch and doesn't wait for it", async () => {
+      let signal: AbortSignal | undefined;
+      vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+        signal = init.signal ?? undefined;
+        return new Promise(() => {});
+      });
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+
+      void engine.syncAudioSources([source("a", "https://a.test/hung.wav")]);
+      await vi.waitFor(() => expect(signal).toBeDefined());
+      expect(signal?.aborted).toBe(false);
+
+      await engine.syncAudioSources([source("a", new Uint8Array([2]))]);
+
+      expect(signal?.aborted).toBe(true);
+      expect(fakes.decoded).toEqual([2]);
+      expect(setSources()).toHaveLength(1);
+    });
+
+    it("keeps the abort signal on a caller's request working", async () => {
+      let signal: AbortSignal | undefined;
+      vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+        signal = init.signal ?? undefined;
+        return new Promise(() => {});
+      });
+      const own = new AbortController();
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+
+      void engine.syncAudioSources([
+        source("a", new Request("https://a.test/hung.wav", { signal: own.signal })),
+      ]);
+      await vi.waitFor(() => expect(signal).toBeDefined());
+      own.abort();
+
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it("ignores the failure of a superseded source", async () => {
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+      const releaseBad = gate(0);
+
+      const obsolete = engine.syncAudioSources([source("a", new Uint8Array([0]))]);
+      await engine.syncAudioSources([source("a", new Uint8Array([2]))]);
+      releaseBad();
+
+      await expect(obsolete).resolves.toBeUndefined();
+      expect(postedOfType(fakes.workers[0]?.posted, "remove-source")).toEqual([]);
+      expect(setSources()).toHaveLength(1);
+    });
+
+    it("publishes nothing for a source removed before its decode finished", async () => {
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+      const release = gate(1);
+
+      const obsolete = engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+      await engine.syncAudioSources([]);
+      release();
+      await obsolete;
+
+      expect(setSources()).toEqual([]);
+      expect(postedOfType(fakes.workers[0]?.posted, "remove-source")).toEqual([]);
+    });
+
+    it("shares one decode between overlapping syncs of the same source", async () => {
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+      const input = new Uint8Array([1]);
+      const release = gate(1);
+
+      const first = engine.syncAudioSources([source("a", input)]);
+      const second = engine.syncAudioSources([source("a", input)]);
+      release();
+      await Promise.all([first, second]);
+
+      expect(fakes.decoded).toEqual([1]);
+      expect(setSources()).toHaveLength(1);
+    });
   });
 
   it("sends the mixer a timeline only when it changes, and rewinds on every load", async () => {

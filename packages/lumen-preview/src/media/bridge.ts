@@ -18,6 +18,7 @@ import type {
   RegisteredImageSource,
   RegisteredVideoSource,
   VideoFrameMetadata,
+  VideoFramePayload,
   VideoSourceRegistration,
 } from "./types.js";
 import {
@@ -45,6 +46,7 @@ type VideoEntry = {
 export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   private readonly images = new Map<string, ImageEntry>();
   private readonly options: NormalizedBridgeOptions;
+  private syncGeneration = 0;
   private readonly videos = new Map<string, VideoEntry>();
 
   constructor(
@@ -56,6 +58,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   }
 
   clear(): void {
+    this.syncGeneration += 1;
     this.images.clear();
     for (const video of this.videos.values()) {
       video.session.dispose();
@@ -93,7 +96,9 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     }
   }
 
+  /** A newer sync or `clear` abandons this one, which then resolves without registering more. */
   async syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void> {
+    const generation = ++this.syncGeneration;
     const desiredImages = new Map<string, RegisteredImageSource>();
     const desiredVideos = new Map<string, RegisteredVideoSource>();
 
@@ -117,13 +122,25 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
       }
     }
 
-    for (const image of desiredImages.values()) {
-      await this.registerImageSource(image.id, image.source);
-    }
+    try {
+      for (const image of desiredImages.values()) {
+        if (generation !== this.syncGeneration) {
+          return;
+        }
+        await this.registerImageSource(image.id, image.source);
+      }
 
-    for (const video of desiredVideos.values()) {
-      const { id, source, ...options } = video;
-      await this.registerVideoSource(id, source, options);
+      for (const video of desiredVideos.values()) {
+        if (generation !== this.syncGeneration) {
+          return;
+        }
+        const { id, source, ...options } = video;
+        await this.registerVideoSource(id, source, options);
+      }
+    } catch (error) {
+      if (generation === this.syncGeneration) {
+        throw error;
+      }
     }
   }
 
@@ -252,9 +269,18 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
       return;
     }
 
-    await this.loadVideoMetadata(streamId);
-    const decodedFrames = await entry.session.decodeFrames(wantedFrames);
     const isCurrent = () => this.videos.get(streamId) === entry;
+    let decodedFrames: Map<number, VideoFramePayload>;
+    try {
+      await this.loadVideoMetadata(streamId);
+      decodedFrames = await entry.session.decodeFrames(wantedFrames);
+    } catch (error) {
+      // Removing a source cancels its reads, which is not a failure of this load.
+      if (!isCurrent()) {
+        return;
+      }
+      throw error;
+    }
 
     try {
       for (const [frame, payload] of decodedFrames) {
