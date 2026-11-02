@@ -45,6 +45,8 @@ const FIT_SHAPES: usize = 12;
 const MIN_FIT_SCALE: f32 = 0.01;
 /// Most recent fits a text system keeps.
 const FIT_CACHE: usize = 32;
+/// Most recent measurements a text system keeps.
+const MEASUREMENT_CACHE: usize = 32;
 /// Pixels by which lines may pass a limit and still fit it.
 const FIT_TOLERANCE: f32 = 0.01;
 /// Stands in for the byte offset of an ellipsis' cluster, which is past every other.
@@ -101,6 +103,8 @@ pub struct TextSystem {
     /// Recent fits as the request, without its origin and color, the factor it chose and how
     /// text wraps at it, newest last.
     fits: Vec<(TextLayoutRequest, f32, Wrap)>,
+    /// Recent measurements keyed without origin and color, newest last.
+    measurements: Vec<(TextLayoutRequest, TextMeasurement)>,
 }
 
 impl TextSystem {
@@ -118,6 +122,7 @@ impl TextSystem {
             swash_cache: SwashCache::new(),
             font_generation: 0,
             fits: Vec::new(),
+            measurements: Vec::new(),
         }
     }
 
@@ -125,6 +130,7 @@ impl TextSystem {
         self.font_system.db_mut().load_font_data(data);
         self.font_generation += 1;
         self.fits.clear();
+        self.measurements.clear();
     }
 
     /// Changes whenever fonts are loaded, so shaped text can be invalidated.
@@ -133,7 +139,17 @@ impl TextSystem {
     }
 
     pub fn measure(&mut self, request: &TextLayoutRequest) -> TextMeasurement {
-        self.shape(request).measurement
+        let key = request.cache_key();
+        if let Some((_, measurement)) = self.measurements.iter().find(|(cached, _)| *cached == key)
+        {
+            return *measurement;
+        }
+        let measurement = self.shape(request).measurement;
+        if self.measurements.len() == MEASUREMENT_CACHE {
+            self.measurements.remove(0);
+        }
+        self.measurements.push((key, measurement));
+        measurement
     }
 
     pub fn layout(&mut self, request: &TextLayoutRequest) -> TextLayout {
@@ -146,11 +162,7 @@ impl TextSystem {
             return self.shape_lines(request, Wrap::WordOrGlyph, true);
         };
         // Measurement, bounds and drawing each shape the same text, so they share its fit.
-        let key = TextLayoutRequest {
-            origin: [0.0; 2],
-            color: [1.0; 4],
-            ..request.clone()
-        };
+        let key = request.cache_key();
         let cached = self.fits.iter().find(|(fitted, ..)| *fitted == key);
         let (scale, wrap, fitted) = match cached {
             Some(&(_, scale, wrap)) => (scale, wrap, None),
@@ -1531,6 +1543,15 @@ impl TextLayoutRequest {
         }
     }
 
+    /// Placement and color cannot affect shaping, fitting or measurement.
+    fn cache_key(&self) -> Self {
+        Self {
+            origin: [0.0; 2],
+            color: [1.0; 4],
+            ..self.clone()
+        }
+    }
+
     fn is_limited(&self) -> bool {
         self.max_width.is_some_and(|width| width > 0.0)
             || self.max_lines.is_some()
@@ -2541,6 +2562,89 @@ mod tests {
 
         assert!(measurement.width > 100.0);
         assert!(measurement.height > 40.0);
+    }
+
+    #[test]
+    fn repeated_measurement_uses_cache_without_affecting_layout() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("Cached text");
+        let measurement = system.measure(&request);
+        assert_eq!(system.measure(&request), measurement);
+        assert_eq!(system.measurements.len(), 1);
+
+        // A distinctive cached value proves a hit does not shape again.
+        let cached = TextMeasurement {
+            width: measurement.width + 1.0,
+            ..measurement
+        };
+        system.measurements[0].1 = cached;
+        assert_eq!(system.measure(&request), cached);
+        request.origin = [24.0, 48.0];
+        assert_eq!(system.measure(&request), cached);
+        request.color = [0.2, 0.4, 0.6, 0.8];
+        assert_eq!(system.measure(&request), cached);
+        assert_eq!(system.measurements.len(), 1);
+
+        let layout = system.layout(&request);
+        assert_eq!(layout.measurement, measurement);
+        assert!(!layout.glyphs.is_empty());
+    }
+
+    #[test]
+    fn measurement_cache_tracks_spacing_wrapping_limits_and_fit() {
+        let mut system = TextSystem::new();
+        let mut request =
+            TextLayoutRequest::from_spans(vec![span("Hello ", 40.0), span("world\nagain", 40.0)]);
+        request.max_width = Some(200.0);
+        request.max_lines = Some(2);
+        let original = system.measure(&request);
+        let mut changed = vec![request.clone(); 7];
+        changed[0].spans[0].letter_spacing = 8.0;
+        changed[1].max_width = Some(400.0);
+        changed[2].max_lines = Some(1);
+        changed[3].max_height = Some(48.0);
+        changed[4].min_fit_scale = Some(0.1);
+        changed[5].overflow = TextOverflow::Ellipsis;
+        changed[6].line_height = Some(60.0);
+        for changed in changed {
+            let measured = system.measure(&changed);
+            assert_eq!(measured, system.shape(&changed).measurement, "{changed:?}");
+            assert_ne!(measured, original, "{changed:?}");
+            assert_eq!(system.measure(&request), original);
+        }
+        assert_eq!(system.measurements.len(), 8);
+    }
+
+    #[test]
+    fn measurement_cache_evicts_the_oldest_request() {
+        let mut system = TextSystem::new();
+        let first = TextLayoutRequest::new("First");
+        system.measure(&first);
+        for index in 0..MEASUREMENT_CACHE {
+            system.measure(&TextLayoutRequest::new(format!("Text {index}")));
+        }
+        assert_eq!(system.measurements.len(), MEASUREMENT_CACHE);
+        assert!(system.measurements.iter().all(|(key, _)| *key != first));
+        assert_eq!(system.measure(&first), system.shape(&first).measurement);
+        assert_eq!(system.measurements.len(), MEASUREMENT_CACHE);
+    }
+
+    #[test]
+    fn loading_fonts_invalidates_measurements() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new("Variable weight");
+        request.spans[0].font_family = "Inter".to_string();
+        let fallback = system.measure(&request);
+        let generation = system.font_generation();
+
+        system.load_font_data(include_bytes!("../assets/inter/InterVariable-Latin.ttf").to_vec());
+
+        assert_eq!(system.font_generation(), generation + 1);
+        assert!(system.measurements.is_empty());
+        let loaded = system.measure(&request);
+        assert_ne!(loaded.width, fallback.width);
+        assert_eq!(loaded, system.shape(&request).measurement);
+        assert_eq!(system.measure(&request), loaded);
     }
 
     #[test]
