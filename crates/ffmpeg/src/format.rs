@@ -132,7 +132,7 @@ impl Packet {
 
 pub struct InputContext {
     path: String,
-    ptr: *mut sys::AVFormatContext,
+    pub(crate) ptr: *mut sys::AVFormatContext,
 }
 
 unsafe impl Send for InputContext {}

@@ -69,9 +69,20 @@ impl VideoEncoderConfig {
     }
 }
 
+/// A coded frame larger than the requested canvas, cropped back only by container metadata.
+/// Players that ignore that metadata display the padding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerCrop {
+    pub coded_width: u32,
+    pub coded_height: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub struct VideoEncoder {
     pub(in crate::encode) width: u32,
     pub(in crate::encode) height: u32,
+    container_crop: Option<ContainerCrop>,
     stream_index: usize,
     stream_time_base: sys::AVRational,
     pub(in crate::encode) context: *mut sys::AVCodecContext,
@@ -188,6 +199,7 @@ impl VideoEncoder {
             _ => AV_PIX_FMT_YUV420P,
         };
 
+        let mut container_crop = None;
         unsafe {
             (*context).codec_id = config.codec.to_av_codec_id();
             (*context).codec_type = AVMEDIA_TYPE_VIDEO;
@@ -233,6 +245,9 @@ impl VideoEncoder {
                 sys::avcodec_parameters_from_context((*stream).codecpar, context),
                 "avcodec_parameters_from_context",
             )?;
+            if encoder_name == "av1_vulkan" {
+                container_crop = crop_coded_padding(context, (*stream).codecpar)?;
+            }
             (*stream).time_base = time_base;
         }
 
@@ -303,6 +318,7 @@ impl VideoEncoder {
         Ok(Self {
             width: config.width,
             height: config.height,
+            container_crop,
             stream_index: unsafe { (*stream).index as usize },
             stream_time_base: time_base,
             context: context_guard.release(),
@@ -322,6 +338,10 @@ impl VideoEncoder {
 
     pub fn gpu_telemetry(&self) -> &GpuEncodeTelemetry {
         &self.gpu_telemetry
+    }
+
+    pub fn container_crop(&self) -> Option<ContainerCrop> {
+        self.container_crop
     }
 
     pub(in crate::encode) fn refresh_stream_time_base(
@@ -434,6 +454,56 @@ impl VideoEncoder {
         }
         Ok(())
     }
+}
+
+/// `av1_vulkan` pads frames to the hardware's coded alignment and AV1 has no crop window, so the
+/// stream declares the coded size and the container crops back to the requested one.
+#[cfg(ffmpeg_frame_cropping)]
+unsafe fn crop_coded_padding(
+    context: *const sys::AVCodecContext,
+    params: *mut sys::AVCodecParameters,
+) -> Result<Option<ContainerCrop>> {
+    unsafe {
+        let (width, height) = ((*context).width, (*context).height);
+        let (coded_width, coded_height) = ((*context).coded_width, (*context).coded_height);
+        if coded_width == width && coded_height == height {
+            return Ok(None);
+        }
+        let crop: Vec<u8> = [0, coded_height - height, 0, coded_width - width]
+            .into_iter()
+            .flat_map(|side| side.to_le_bytes())
+            .collect();
+        let side_data = sys::av_packet_side_data_new(
+            &mut (*params).coded_side_data,
+            &mut (*params).nb_coded_side_data,
+            sys::AVPacketSideDataType::AV_PKT_DATA_FRAME_CROPPING,
+            crop.len(),
+            0,
+        );
+        if side_data.is_null() {
+            return Err(FfmpegError::new(
+                "av_packet_side_data_new",
+                "failed to allocate stream cropping side data",
+            ));
+        }
+        ptr::copy_nonoverlapping(crop.as_ptr(), (*side_data).data, crop.len());
+        (*params).width = coded_width;
+        (*params).height = coded_height;
+        Ok(Some(ContainerCrop {
+            coded_width: coded_width as u32,
+            coded_height: coded_height as u32,
+            width: width as u32,
+            height: height as u32,
+        }))
+    }
+}
+
+#[cfg(not(ffmpeg_frame_cropping))]
+unsafe fn crop_coded_padding(
+    _context: *const sys::AVCodecContext,
+    _params: *mut sys::AVCodecParameters,
+) -> Result<Option<ContainerCrop>> {
+    Ok(None)
 }
 
 fn apply_private_options(

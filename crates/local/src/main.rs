@@ -445,6 +445,7 @@ impl LumenFfmpegEncoder {
         let writer_handle = thread::spawn(move || {
             let mut encoder = match MuxedEncoder::create_with_audio(output, config, audio) {
                 Ok(encoder) => {
+                    warn_if_container_cropped(&encoder);
                     let _ = startup_tx.send(Ok(()));
                     encoder
                 }
@@ -513,6 +514,20 @@ impl LumenFfmpegEncoder {
             .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer thread missing"))?
             .join()
             .map_err(|_| anyhow!("lumen-ffmpeg encoder writer thread panicked"))?
+    }
+}
+
+fn warn_if_container_cropped(encoder: &MuxedEncoder) {
+    if let Some(crop) = encoder.container_crop() {
+        eprintln!(
+            "warning: the encoder coded {coded_width}x{coded_height} for a {width}x{height} canvas; \
+             the container crops it back, but players that ignore the crop (including Chromium) \
+             show the padding. Render at {coded_width}x{coded_height} to avoid this.",
+            coded_width = crop.coded_width,
+            coded_height = crop.coded_height,
+            width = crop.width,
+            height = crop.height,
+        );
     }
 }
 
@@ -1176,6 +1191,7 @@ fn start_vulkan_video_encode(
     let encoder =
         MuxedEncoder::create_with_audio(output.to_string_lossy().to_string(), config, audio)
             .map_err(|error| anyhow!("lumen-ffmpeg Vulkan encoder failed to start: {error}"))?;
+    warn_if_container_cropped(&encoder);
     Ok(VulkanVideoSession {
         renderer,
         target,

@@ -391,7 +391,7 @@ fn video_encoder_selection(name: &str) -> anyhow::Result<VideoEncoderSelection> 
         "hevc" | "h265" | "libx265" | "hevc_videotoolbox" | "hevc_vulkan" | "hevc_nvenc" => {
             VideoCodec::Hevc
         }
-        "av1" | "libaom-av1" | "av1_nvenc" => VideoCodec::Av1,
+        "av1" | "libaom-av1" | "av1_nvenc" | "av1_vulkan" => VideoCodec::Av1,
         _ => anyhow::bail!(
             "unsupported video encoder `{name}`; expected a known H.264, HEVC, or AV1 encoder"
         ),
@@ -420,6 +420,13 @@ mod tests {
         let av1 = video_encoder_selection("av1_nvenc").unwrap();
         assert_eq!(av1.name, "av1_nvenc");
         assert_eq!(av1.codec, VideoCodec::Av1);
+    }
+
+    #[test]
+    fn vulkan_av1_encoder_is_selectable() {
+        let av1 = video_encoder_selection("av1_vulkan").unwrap();
+        assert_eq!(av1.codec, VideoCodec::Av1);
+        assert!(!av1.cuda_fast_path);
     }
 
     #[test]
