@@ -600,6 +600,11 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             || params.max_width.is_expr()
             || params.letter_spacing.is_expr()
             || params.line_height.is_expr()
+            || crate::node::DelegateEvaluable::has_expressions(&params.max_lines)
+            || crate::node::DelegateEvaluable::has_expressions(&params.max_height)
+            || crate::node::DelegateEvaluable::has_expressions(&params.overflow)
+            || crate::node::DelegateEvaluable::has_expressions(&params.fit)
+            || params.min_font_size.is_expr()
         {
             return None;
         }

@@ -3832,6 +3832,26 @@
                     },
                     "x-lumen-kind": "text_content"
                   },
+                  "fit": {
+                    "default": "none",
+                    "description": "Whether the text shrinks to fit `max_width`, `max_lines` and `max_height` without breaking\na word, before any lines are dropped. Every font size, letter spacing, `line_height` and\ndecoration size scales by the largest factor up to 1 that fits.",
+                    "enum": ["none", "shrink"],
+                    "title": "Fit",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "None",
+                        "name": "none",
+                        "value": 0
+                      },
+                      {
+                        "label": "Shrink",
+                        "name": "shrink",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
                   "font_family": {
                     "anyOf": [
                       {
@@ -4028,6 +4048,42 @@
                     },
                     "x-lumen-kind": "float"
                   },
+                  "max_height": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "description": "Most height in pixels of the lines to show. Unlimited when absent.",
+                    "title": "Max Height",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "max_lines": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "description": "Most lines to show. Unlimited when absent.",
+                    "title": "Max Lines",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
                   "max_width": {
                     "anyOf": [
                       {
@@ -4043,6 +4099,25 @@
                     "title": "Max Width",
                     "x-lumen-constraints": {
                       "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "min_font_size": {
+                    "anyOf": [
+                      {
+                        "minimum": 1.0,
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 8.0,
+                    "description": "Smallest `font_size` that `fit` shrinks the text to. Lines that still do not fit are\ndropped by `overflow`.",
+                    "title": "Min Font Size",
+                    "x-lumen-constraints": {
+                      "min": 1.0,
                       "step": 1.0
                     },
                     "x-lumen-kind": "float"
@@ -4088,6 +4163,26 @@
                       "step": 0.01
                     },
                     "x-lumen-kind": "float"
+                  },
+                  "overflow": {
+                    "default": "clip",
+                    "description": "How the last line shown ends when lines past `max_lines` or `max_height` are dropped: as\nit is, or in an ellipsis. Clusters at that line's end are dropped until the ellipsis fits\n`max_width`. The ellipsis takes the style and paint of the text it follows, and is one\nglyph, numbered after the last one shown.",
+                    "enum": ["clip", "ellipsis"],
+                    "title": "Overflow",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Clip",
+                        "name": "clip",
+                        "value": 0
+                      },
+                      {
+                        "label": "Ellipsis",
+                        "name": "ellipsis",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   },
                   "paint_space": {
                     "default": "span",

@@ -1699,6 +1699,7 @@ dependencies = [
  "image",
  "kurbo",
  "swash",
+ "unicode-bidi",
  "unicode-script",
 ]
 

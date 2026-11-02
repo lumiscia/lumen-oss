@@ -22,4 +22,5 @@ image = { version = "0.25.10", default-features = false, optional = true }
 kurbo = { version = "0.13.1", optional = true }
 foldhash = "0.2.0"
 swash = { version = "0.2.10", default-features = false, features = ["scale"] }
+unicode-bidi = { version = "0.3.18", default-features = false }
 unicode-script = "0.5.8"

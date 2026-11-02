@@ -12034,3 +12034,96 @@ fn bounded_text_holds_wavy_lines_and_highlight_padding() {
         assert!(bounded == full, "{decoration}");
     }
 }
+
+#[test]
+fn text_overflow_ellipsis_ends_the_last_line_shown() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let text = |content: &str, extra: serde_json::Value| {
+        let mut params = decorated_text(
+            json!(content),
+            json!({ "position": [8, 8], "line_height": 40, "max_lines": 2 }),
+        );
+        for (key, value) in extra.as_object().unwrap() {
+            params[key] = value.clone();
+        }
+        params
+    };
+    let content = "II II\nII II\nII II";
+    // `max_lines` alone drops the lines past it.
+    let clipped = render_text_params(&mut renderer, text(content, json!({})), size);
+    let ellipsis = json!({ "overflow": "ellipsis" });
+    let ellipsized = render_text_params(&mut renderer, text(content, ellipsis.clone()), size);
+    let rows = inked_rows(&clipped, size);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(inked_rows(&ellipsized, size).len(), 2);
+    // The ellipsis follows the second line.
+    let second_line_end = (0..size as usize)
+        .filter(|&x| rows[1].clone().any(|y| alpha_of(&clipped, size, x, y) > 0))
+        .max()
+        .unwrap();
+    let [x0, y0, ..] = diff_box(&clipped, &ellipsized, size).expect("an ellipsis");
+    assert!(x0 > second_line_end && y0 >= rows[1].start, "{x0}, {y0}");
+    // It is the last glyph, so hiding it leaves the clipped text.
+    let hidden = render_text_params(
+        &mut renderer,
+        text(
+            content,
+            json!({ "overflow": "ellipsis", "glyph_opacity": "=min(1, glyph_count - 1 - glyph)" }),
+        ),
+        size,
+    );
+    assert!(hidden == clipped);
+    // Its bounds hold the ellipsis.
+    let unbounded = render_text_params(
+        &mut renderer,
+        text(&format!("={content:?}"), ellipsis),
+        size,
+    );
+    assert!(unbounded == ellipsized);
+}
+
+#[test]
+fn text_fit_shrinks_into_its_box_and_measures_as_drawn() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    let text = |min_font_size: f64| {
+        decorated_text(
+            json!("IIIIIIIIIIIIIIII"),
+            json!({
+                "position": "=vec2(100 - text_width(node(1)), 20)",
+                "max_width": 64,
+                "max_lines": 1,
+                "fit": "shrink",
+                "min_font_size": min_font_size
+            }),
+        )
+    };
+    let fitted = render_text_params(&mut renderer, text(4.0), size);
+    let columns = inked_columns(&fitted, size);
+    assert_eq!(columns.len(), 16, "{columns:?}");
+    let [start, end] = [columns[0].start, columns[15].end];
+    assert!(end - start <= 64, "{start}..{end}");
+    // `text_width` measures the shrunk text, which ends where it says.
+    assert!(end.abs_diff(100) <= 2, "{end}");
+    let fitted_rows = inked_rows(&fitted, size);
+    assert_eq!(fitted_rows.len(), 1, "{fitted_rows:?}");
+
+    // At its smallest size it still overflows, so the lines past the first are clipped.
+    let clipped = render_text_params(&mut renderer, text(30.0), size);
+    let rows = inked_rows(&clipped, size);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(2 * rows[0].len() > 3 * fitted_rows[0].len(), "{rows:?}");
+    let columns = inked_columns(&clipped, size);
+    assert!(columns.len() < 16, "{columns:?}");
+    assert!(
+        columns.last().unwrap().end.abs_diff(100) <= 2,
+        "{columns:?}"
+    );
+}
