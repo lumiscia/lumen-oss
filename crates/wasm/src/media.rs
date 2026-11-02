@@ -1,13 +1,16 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use lumen_engine::{
     error::MediaError,
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
-        VideoFrameRequirement, VideoFrameResolver, VideoMetadata,
+        TextSession, VideoFrameRequirement, VideoFrameResolver, VideoMetadata,
     },
 };
 use wasm_bindgen::prelude::*;
@@ -186,6 +189,7 @@ struct WasmMediaStoreInner {
     fonts: RwLock<HashMap<String, StoredFont>>,
     images: RwLock<HashMap<String, StoredImage>>,
     videos: RwLock<VideoStore>,
+    text: TextSession,
 }
 
 impl WasmMediaStore {
@@ -353,10 +357,9 @@ impl WasmMediaStore {
             .fonts
             .write()
             .map_err(|_| "media store lock poisoned")?;
-        let version = fonts
-            .get(font_family)
-            .map(|font| font.version.saturating_add(1))
-            .unwrap_or(1);
+        // Unique across stores, as resolver IDs from any store with one value share data.
+        static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
+        let version = NEXT_VERSION.fetch_add(1, Ordering::Relaxed);
         fonts.insert(
             font_family.to_string(),
             StoredFont {
@@ -425,6 +428,10 @@ impl MediaStore for WasmMediaStore {
             id: format!("wasm-font:{font_family}:{}", font.version),
             data: Arc::clone(&font.data),
         }))
+    }
+
+    fn text_session(&self) -> Option<&TextSession> {
+        Some(&self.inner.text)
     }
 }
 

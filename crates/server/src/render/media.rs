@@ -10,7 +10,7 @@ use lumen_engine::{
     audio::{AudioBuffer, AudioResolver},
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
-    media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
+    media::{FontResolver, ImageResolver, MediaFrame, MediaStore, TextSession, VideoFrameResolver},
 };
 
 pub const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
@@ -23,6 +23,16 @@ pub(super) struct LocalMediaStore {
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
     videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
+    /// What each family asked for resolved to, so a job probes the filesystem once per family.
+    fonts: RwLock<HashMap<String, Option<Arc<ResolvedFont>>>>,
+    text: TextSession,
+}
+
+/// The files a font family resolved to and the identity of their current contents.
+#[derive(Debug)]
+struct ResolvedFont {
+    id: String,
+    paths: Vec<String>,
 }
 
 impl LocalMediaStore {
@@ -46,6 +56,8 @@ impl LocalMediaStore {
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
             videos: RwLock::new(HashMap::new()),
+            fonts: RwLock::new(HashMap::new()),
+            text: TextSession::default(),
         }
     }
 
@@ -57,6 +69,27 @@ impl LocalMediaStore {
         resolve_local_path_with_root(source, &self.root)
             .ok()
             .map(|path| path.to_string_lossy().to_string())
+    }
+
+    fn resolved_font(&self, font_family: &str) -> Option<Arc<ResolvedFont>> {
+        if let Ok(cache) = self.fonts.read()
+            && let Some(resolved) = cache.get(font_family)
+        {
+            return resolved.clone();
+        }
+
+        let resolved = self.resolve_font_family(font_family).map(|paths| {
+            Arc::new(ResolvedFont {
+                id: font_file_identity(&paths),
+                paths,
+            })
+        });
+        if let Ok(mut cache) = self.fonts.write() {
+            cache
+                .entry(font_family.to_string())
+                .or_insert_with(|| resolved.clone());
+        }
+        resolved
     }
 
     fn resolve_font_family(&self, font_family: &str) -> Option<Vec<String>> {
@@ -303,45 +336,64 @@ impl MediaStore for LocalMediaStore {
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {
-        Some(font_family.to_string())
+        Some(self.resolved_font(font_family)?.id.clone())
     }
 
     fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
-        let paths = self.resolve_font_family(font_family)?;
+        let font = self.resolved_font(font_family)?;
         tracing::info!(
             font_family,
-            sources = paths.len(),
+            sources = font.paths.len(),
             "opened font media resolver"
         );
         Some(Box::new(LocalFontResolver {
-            id: font_family.to_string(),
-            paths,
+            family: font_family.to_string(),
+            font,
         }))
+    }
+
+    fn text_session(&self) -> Option<&TextSession> {
+        Some(&self.text)
     }
 }
 
 #[derive(Debug)]
 struct LocalFontResolver {
-    id: String,
-    paths: Vec<String>,
+    family: String,
+    font: Arc<ResolvedFont>,
 }
 
 impl FontResolver for LocalFontResolver {
     fn id(&self) -> &str {
-        &self.id
+        &self.font.id
     }
 
     fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
-        self.paths
+        self.font
+            .paths
             .iter()
             .map(|path| {
                 std::fs::read(path).map_err(|err| lumen_engine::error::MediaError::Decode {
-                    media_source: self.id.clone(),
+                    media_source: self.family.clone(),
                     details: format!("failed reading font data `{path}`: {err}"),
                 })
             })
             .collect()
     }
+}
+
+/// Names the current contents of `paths`, so that an ID stops matching once a file changes.
+fn font_file_identity(paths: &[String]) -> String {
+    let files: Vec<String> = paths
+        .iter()
+        .map(|path| {
+            let metadata = std::fs::metadata(path).ok();
+            let len = metadata.as_ref().map(std::fs::Metadata::len);
+            let modified = metadata.and_then(|metadata| metadata.modified().ok());
+            format!("{path}:{len:?}:{modified:?}")
+        })
+        .collect();
+    format!("local-font:{}", files.join(";"))
 }
 
 pub(super) fn media_root(override_root: Option<&Path>) -> anyhow::Result<PathBuf> {
@@ -405,4 +457,88 @@ fn resolve_local_path_with_root(source: &str, root: &Path) -> anyhow::Result<Pat
 
 fn is_http_url(source: &str) -> bool {
     source.starts_with("http://") || source.starts_with("https://")
+}
+
+#[cfg(test)]
+mod tests {
+    use lumen_engine::expr::{Expression, ExpressionContext};
+
+    use super::*;
+
+    const ROBOTO: &[u8] = include_bytes!("../../../text/assets/roboto/Roboto-Regular.ttf");
+
+    /// A media root holding `font` as the job's `Roboto`.
+    fn job_with_roboto(font: &[u8]) -> (tempfile::TempDir, LocalMediaStore) {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("fonts")).unwrap();
+        std::fs::write(root.path().join("fonts/Roboto.ttf"), font).unwrap();
+        let store = LocalMediaStore::new(root.path().canonicalize().unwrap());
+        (root, store)
+    }
+
+    fn roboto_width(store: &LocalMediaStore) -> f64 {
+        Expression::parse("text_width(\"WWW\", 32, 0, \"Roboto\")")
+            .unwrap()
+            .evaluate(&ExpressionContext {
+                media: Some(store),
+                ..Default::default()
+            })
+            .unwrap()
+            .as_f64()
+            .unwrap()
+    }
+
+    #[test]
+    fn jobs_measure_one_family_with_their_own_font_files() {
+        // A larger em square draws the same outlines at half the size.
+        let mut half_size = ROBOTO.to_vec();
+        let tables = u16::from_be_bytes([half_size[4], half_size[5]]) as usize;
+        let head = half_size[12..12 + tables * 16]
+            .chunks(16)
+            .find(|table| &table[..4] == b"head")
+            .unwrap();
+        let units = u32::from_be_bytes(head[8..12].try_into().unwrap()) as usize + 18;
+        let em = u16::from_be_bytes([half_size[units], half_size[units + 1]]);
+        half_size[units..units + 2].copy_from_slice(&(em * 2).to_be_bytes());
+
+        let (_full_root, full) = job_with_roboto(ROBOTO);
+        let (_half_root, half) = job_with_roboto(&half_size);
+        let full_width = roboto_width(&full);
+        assert!((roboto_width(&half) * 2.0 - full_width).abs() < 1.0);
+
+        // Jobs running together keep to their own files too.
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..100 {
+                    assert_eq!(roboto_width(&full), full_width);
+                }
+            });
+            scope.spawn(|| {
+                for _ in 0..100 {
+                    assert!((roboto_width(&half) * 2.0 - full_width).abs() < 1.0);
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn a_job_resolves_each_font_family_once() {
+        let (root, store) = job_with_roboto(ROBOTO);
+        assert_eq!(store.font_resolver_id("Late"), None);
+        std::fs::write(root.path().join("fonts/Late.ttf"), ROBOTO).unwrap();
+        assert_eq!(store.font_resolver_id("Late"), None);
+
+        let next_job = LocalMediaStore::new(root.path().canonicalize().unwrap());
+        assert!(next_job.font_resolver_id("Late").is_some());
+    }
+
+    #[test]
+    fn a_changed_font_file_changes_the_resolver_id() {
+        let (root, store) = job_with_roboto(ROBOTO);
+        let before = store.font_resolver_id("Roboto").unwrap();
+        std::fs::write(root.path().join("fonts/Roboto.ttf"), &ROBOTO[..1024]).unwrap();
+
+        let next_job = LocalMediaStore::new(root.path().canonicalize().unwrap());
+        assert_ne!(next_job.font_resolver_id("Roboto").unwrap(), before);
+    }
 }

@@ -655,7 +655,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             return None;
         }
         let (shaped, ink) = {
-            let mut text_system = crate::node::source::text::text_system().ok()?;
+            let mut text_system = crate::node::source::text::text_system(self.ctx.media()).ok()?;
             crate::node::source::text::load_font_families(
                 &mut text_system,
                 self.ctx.media(),

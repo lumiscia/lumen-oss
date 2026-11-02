@@ -1952,6 +1952,192 @@ fn text_msdf_coverage_matches_raster_for_plain_italic_and_variable_weight() {
     }
 }
 
+/// A job's fonts: one file under one family name, in a text session of its own.
+#[derive(Debug)]
+struct JobFont {
+    family: &'static str,
+    id: String,
+    data: Vec<u8>,
+    session: lumen_engine::media::TextSession,
+}
+
+impl JobFont {
+    fn new(family: &'static str, id: &str, data: Vec<u8>) -> Self {
+        Self {
+            family,
+            id: id.to_string(),
+            data,
+            session: Default::default(),
+        }
+    }
+}
+
+struct JobFontResolver {
+    id: String,
+    data: Vec<u8>,
+}
+
+impl lumen_engine::media::FontResolver for JobFontResolver {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![self.data.clone()])
+    }
+}
+
+impl MediaStore for JobFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family == self.family).then(|| self.id.clone())
+    }
+
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        (family == self.family).then(|| {
+            Box::new(JobFontResolver {
+                id: self.id.clone(),
+                data: self.data.clone(),
+            }) as _
+        })
+    }
+
+    fn text_session(&self) -> Option<&lumen_engine::media::TextSession> {
+        Some(&self.session)
+    }
+}
+
+/// `font` with the family name `family`, which fits in its names' space.
+fn font_named(font: &[u8], family: &str) -> Vec<u8> {
+    let mut font = font.to_vec();
+    let read = |font: &[u8], at: usize| u16::from_be_bytes([font[at], font[at + 1]]) as usize;
+    let tables = read(&font, 4);
+    let name = font[12..12 + tables * 16]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .find(|table| &table[..4] == b"name")
+        .unwrap();
+    let table = u32::from_be_bytes(name[8..12].try_into().unwrap()) as usize;
+    let strings = table + read(&font, table + 4);
+    let encoded: Vec<u8> = family.encode_utf16().flat_map(u16::to_be_bytes).collect();
+    for record in 0..read(&font, table + 2) {
+        let at = table + 6 + record * 12;
+        if read(&font, at) == 3 && matches!(read(&font, at + 6), 1 | 16) {
+            let start = strings + read(&font, at + 10);
+            font[start..start + encoded.len()].copy_from_slice(&encoded);
+            font[at + 8..at + 10].copy_from_slice(&(encoded.len() as u16).to_be_bytes());
+        }
+    }
+    font
+}
+
+#[test]
+fn jobs_draw_one_family_name_with_their_own_font_files() {
+    const ROBOTO: &[u8] = lumen_text::ROBOTO_REGULAR_BYTES;
+    const INTER: &[u8] = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf");
+
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // What is drawn and where both depend on the font: measuring must read the job's too.
+    let composition = |family: &str| {
+        text_test_composition(TextParamsDelegate {
+            content: TextContentDelegate::Text(Deferred::value("Rag Wave 28".to_string())),
+            font_family: Deferred::value(family.to_string()),
+            font_size: Deferred::value(64.0),
+            position: Deferred::Expr(
+                Expression::parse(&format!(
+                    "vec2(text_width(\"WWWWWW\", 32, 0, \"{family}\"), 40)"
+                ))
+                .unwrap(),
+            ),
+            ..Default::default()
+        })
+    };
+    let jobs = || {
+        [
+            JobFont::new("Face", "job-font-roboto", font_named(ROBOTO, "Face")),
+            JobFont::new("Face", "job-font-inter", font_named(INTER, "Face")),
+        ]
+    };
+    let shared_family = composition("Face");
+
+    // The true faces under their own names, which is how each file must draw under the shared one.
+    let roboto = render_rgba8(&mut renderer, &composition("Roboto"), 0, &EmptyMediaStore);
+    let inter = render_rgba8(
+        &mut gpu_composition_renderer().unwrap(),
+        &composition("Inter"),
+        0,
+        &JobFont::new("Inter", "job-font-true-inter", INTER.to_vec()),
+    );
+    assert!(roboto.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+    assert_ne!(roboto, inter);
+    let expected = [&roboto, &inter];
+
+    // In turns on one renderer, whose plans and atlas outlive each store's frame.
+    let turns = jobs();
+    for job in [0, 1, 0, 1, 1, 0] {
+        let pixels = render_rgba8(&mut renderer, &shared_family, 0, &turns[job]);
+        assert!(pixels == *expected[job], "job {job} drew another's font");
+    }
+
+    // Files alike in all but size number their glyphs alike, so their atlas keys match.
+    let sized = |scale: u16| {
+        JobFont::new(
+            "Sizing",
+            &format!("job-font-sized-{scale}"),
+            ScaledFontStore::new("Sizing", scale).data,
+        )
+    };
+    let [large, larger] = [sized(1), sized(2)];
+    let glyphs = text_test_composition(TextParamsDelegate {
+        content: TextContentDelegate::Text(Deferred::value("W".to_string())),
+        font_family: Deferred::value("Sizing".to_string()),
+        font_size: Deferred::value(64.0),
+        position: Deferred::value((16.0, 40.0)),
+        ..Default::default()
+    });
+    let alone = [&sized(1), &sized(2)]
+        .map(|job| render_rgba8(&mut gpu_composition_renderer().unwrap(), &glyphs, 0, job));
+    assert_ne!(alone[0], alone[1]);
+    for (job, expected) in [
+        (&large, &alone[0]),
+        (&larger, &alone[1]),
+        (&large, &alone[0]),
+    ] {
+        let pixels = render_rgba8(&mut renderer, &glyphs, 0, job);
+        assert!(pixels == *expected, "{} drew another's glyphs", job.id);
+    }
+
+    // At once in one process, each on its own renderer as `lumen-server` runs jobs.
+    let together = jobs();
+    std::thread::scope(|scope| {
+        for (job, expected) in together.iter().zip(expected) {
+            let shared_family = &shared_family;
+            scope.spawn(move || {
+                let mut renderer =
+                    pollster::block_on(lumen_engine::gpu::GpuCompositionRenderer::new()).unwrap();
+                for _ in 0..8 {
+                    let pixels = render_rgba8(&mut renderer, shared_family, 0, job);
+                    assert!(pixels == *expected, "{} drew another's font", job.id);
+                }
+            });
+        }
+    });
+}
+
 fn text_test_composition(params: TextParamsDelegate) -> Composition {
     let mut graph = Graph::new();
     graph.nodes.insert(
@@ -3053,9 +3239,11 @@ fn bounded_text_is_remeasured_after_another_renderer_loads_a_font() {
     render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
 
     // A wider bold Roboto, loaded into the text system that every renderer shares.
-    let wide = ScaledFontStore::new("Roboto", 2).with_weight(700);
+    let wide = ScaledFontStore::new("Roboto", 2)
+        .with_weight(700)
+        .resolved_as("Remote");
     let mut loader = gpu_composition_renderer().unwrap();
-    render_rgba8(&mut loader, &composition, 0, &wide);
+    render_rgba8(&mut loader, &wide.composition(0.0, true), 0, &wide);
 
     let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
     let mut reference = gpu_composition_renderer().unwrap();

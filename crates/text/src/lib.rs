@@ -8,11 +8,13 @@ use std::borrow::Cow;
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cosmic_text::{
     Align, Attrs, AttrsList, Buffer, CacheKey, CacheKeyFlags, Family, FeatureTag, FontFeatures,
     FontSystem, LayoutGlyph, LineEnding, LineIter, Metrics, Shaping, Style, SwashCache,
-    SwashContent, SwashImage, Weight, Wrap,
+    SwashContent, SwashImage, Weight, Wrap, fontdb,
 };
 use etagere::{AllocId, size2};
 use swash::scale::Source;
@@ -95,11 +97,35 @@ impl cosmic_text::Fallback for NoPlatformFallback {
     }
 }
 
+fn new_font_system(db: fontdb::Database) -> FontSystem {
+    FontSystem::new_with_locale_and_db_and_fallback("en-US".to_string(), db, NoPlatformFallback)
+}
+
+/// A value no text system has used, for what must not match across text systems: font IDs and
+/// the fonts behind a generation mean nothing to any other.
+fn unique_font_token() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A family loaded by name: the resolver it came from and the faces that came with it.
+#[derive(Debug)]
+struct LoadedFamily {
+    resolver_id: String,
+    faces: Vec<fontdb::ID>,
+}
+
+/// Font data that holds no readable face.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoFontFaces;
+
 #[derive(Debug)]
 pub struct TextSystem {
+    id: u64,
     font_system: FontSystem,
     swash_cache: SwashCache,
     font_generation: u64,
+    families: HashMap<String, LoadedFamily>,
     /// Recent fits as the request, without its origin and color, the factor it chose and how
     /// text wraps at it, newest last.
     fits: Vec<(TextLayoutRequest, f32, Wrap)>,
@@ -109,18 +135,20 @@ pub struct TextSystem {
 
 impl TextSystem {
     /// A text system with only the bundled fonts. Other fonts must be loaded with
-    /// `load_font_data`, so text renders the same on every machine.
+    /// `load_family` or `load_font_data`, so text renders the same on every machine.
     pub fn new() -> Self {
-        let mut font_system = FontSystem::new_with_locale_and_db_and_fallback(
-            "en-US".to_string(),
-            cosmic_text::fontdb::Database::new(),
-            NoPlatformFallback,
-        );
-        load_default_fonts(&mut font_system);
+        let mut db = fontdb::Database::new();
+        let faces = db.load_font_source(fontdb::Source::Binary(Arc::new(ROBOTO_REGULAR_BYTES)));
+        let bundled = LoadedFamily {
+            resolver_id: String::new(),
+            faces: faces.to_vec(),
+        };
         Self {
-            font_system,
+            id: unique_font_token(),
+            font_system: new_font_system(db),
             swash_cache: SwashCache::new(),
-            font_generation: 0,
+            font_generation: unique_font_token(),
+            families: HashMap::from([(DEFAULT_FONT_FAMILY.to_string(), bundled)]),
             fits: Vec::new(),
             measurements: Vec::new(),
         }
@@ -128,12 +156,82 @@ impl TextSystem {
 
     pub fn load_font_data(&mut self, data: Vec<u8>) {
         self.font_system.db_mut().load_font_data(data);
-        self.font_generation += 1;
+        self.fonts_changed();
+    }
+
+    /// The resolver `family` was last loaded from.
+    pub fn family_resolver(&self, family: &str) -> Option<&str> {
+        self.families
+            .get(family)
+            .map(|loaded| loaded.resolver_id.as_str())
+    }
+
+    /// Whether any loaded face answers to `family`.
+    pub fn has_family(&self, family: &str) -> bool {
+        self.font_system
+            .db()
+            .faces()
+            .any(|face| face.families.iter().any(|(name, _)| name == family))
+    }
+
+    /// Makes the faces of `files` those of `family`, in place of any it had, bundled ones
+    /// included. On failure, or with no files, the family keeps its faces. Replaced data is freed
+    /// once no other text system holds it.
+    pub fn load_family(
+        &mut self,
+        family: &str,
+        resolver_id: &str,
+        files: Vec<Arc<Vec<u8>>>,
+    ) -> Result<(), NoFontFaces> {
+        let db = self.font_system.db_mut();
+        let mut faces = Vec::new();
+        for file in files {
+            let loaded = db.load_font_source(fontdb::Source::Binary(file));
+            if loaded.is_empty() {
+                for face in faces {
+                    db.remove_face(face);
+                }
+                return Err(NoFontFaces);
+            }
+            faces.extend(loaded);
+        }
+        let loaded = self
+            .families
+            .entry(family.to_string())
+            .or_insert_with(|| LoadedFamily {
+                resolver_id: String::new(),
+                faces: Vec::new(),
+            });
+        loaded.resolver_id = resolver_id.to_string();
+        if faces.is_empty() {
+            return Ok(());
+        }
+        let replaced = std::mem::replace(&mut loaded.faces, faces);
+        if !replaced.is_empty() {
+            let db = self.font_system.db_mut();
+            for face in replaced {
+                db.remove_face(face);
+            }
+            // The font system keeps what it parsed from a face for as long as it lives.
+            let (_, db) = std::mem::replace(
+                &mut self.font_system,
+                new_font_system(fontdb::Database::new()),
+            )
+            .into_locale_and_db();
+            self.font_system = new_font_system(db);
+        }
+        self.fonts_changed();
+        Ok(())
+    }
+
+    fn fonts_changed(&mut self) {
+        self.font_generation = unique_font_token();
         self.fits.clear();
         self.measurements.clear();
     }
 
-    /// Changes whenever fonts are loaded, so shaped text can be invalidated.
+    /// Changes whenever fonts are loaded and differs between text systems, so shaped text can be
+    /// invalidated.
     pub fn font_generation(&self) -> u64 {
         self.font_generation
     }
@@ -976,6 +1074,13 @@ impl TextSystem {
         strokes: &[f32],
         overfull: &mut Option<u64>,
     ) -> PreparedGlyphs {
+        if atlas
+            .text_system
+            .replace(self.id)
+            .is_some_and(|prior| prior != self.id)
+        {
+            atlas.clear();
+        }
         // The instances past `max_glyphs`: those of the glyphs after the last that fits.
         let (visible_len, past_budget) = if strokes.is_empty() {
             let visible = layout.glyphs.len().min(max_glyphs);
@@ -1346,12 +1451,6 @@ fn outline_bounds(commands: &[swash::zeno::Command]) -> Option<[f32; 4]> {
         }
     }
     bounds
-}
-
-fn load_default_fonts(font_system: &mut FontSystem) {
-    let db = font_system.db_mut();
-    db.load_font_data(ROBOTO_REGULAR_BYTES.to_vec());
-    db.set_sans_serif_family(DEFAULT_FONT_FAMILY);
 }
 
 /// A run of text with one font and spacing.
@@ -2096,6 +2195,8 @@ pub struct GlyphAtlas {
     stale: Option<Vec<AtlasKey>>,
     /// Counts inserted `Oversized` and `RasterOnly` markers, which change [`Self::key_for`].
     markers: u64,
+    /// The text system the glyphs are from, as another's font IDs may name different fonts.
+    text_system: Option<u64>,
 }
 
 /// Raster glyphs are keyed by size and subpixel bin; distance fields only by
@@ -2177,6 +2278,7 @@ impl GlyphAtlas {
             layouts_this_frame: 0,
             stale: None,
             markers: 0,
+            text_system: None,
         }
     }
 
@@ -2629,6 +2731,109 @@ mod tests {
         assert_eq!(system.measurements.len(), MEASUREMENT_CACHE);
     }
 
+    /// Roboto under its own name, drawn at `1 / scale` of its size by a larger em square.
+    fn scaled_roboto(scale: u16) -> Arc<Vec<u8>> {
+        let mut font = ROBOTO_REGULAR_BYTES.to_vec();
+        let tables = u16::from_be_bytes([font[4], font[5]]) as usize;
+        let head = font[12..12 + tables * 16]
+            .chunks(16)
+            .find(|table| &table[..4] == b"head")
+            .unwrap();
+        let units = u32::from_be_bytes(head[8..12].try_into().unwrap()) as usize + 18;
+        let value = u16::from_be_bytes([font[units], font[units + 1]]);
+        font[units..units + 2].copy_from_slice(&(value * scale).to_be_bytes());
+        Arc::new(font)
+    }
+
+    #[test]
+    fn replacing_a_family_changes_its_text_and_frees_the_old_font() {
+        let mut system = TextSystem::new();
+        let request = TextLayoutRequest::new("WWW");
+        let bundled = system.measure(&request).width;
+
+        let half = scaled_roboto(2);
+        let half_data = Arc::downgrade(&half);
+        system
+            .load_family(DEFAULT_FONT_FAMILY, "half", vec![half])
+            .unwrap();
+        assert_eq!(system.family_resolver(DEFAULT_FONT_FAMILY), Some("half"));
+        assert!((system.measure(&request).width * 2.0 - bundled).abs() < 1.0);
+        assert!(half_data.upgrade().is_some());
+
+        system
+            .load_family(DEFAULT_FONT_FAMILY, "quarter", vec![scaled_roboto(4)])
+            .unwrap();
+        assert!((system.measure(&request).width * 4.0 - bundled).abs() < 1.0);
+        assert_eq!(system.font_system.db().len(), 1);
+        assert!(half_data.upgrade().is_none());
+    }
+
+    #[test]
+    fn a_font_without_faces_fails_and_leaves_the_family_as_it_was() {
+        let mut system = TextSystem::new();
+        let request = TextLayoutRequest::new("WWW");
+        let bundled = system.measure(&request).width;
+        let generation = system.font_generation();
+
+        assert_eq!(
+            system.load_family(
+                DEFAULT_FONT_FAMILY,
+                "bad",
+                vec![scaled_roboto(2), Arc::new(vec![1, 2, 3])]
+            ),
+            Err(NoFontFaces)
+        );
+
+        assert_eq!(system.family_resolver(DEFAULT_FONT_FAMILY), Some(""));
+        assert_eq!(system.font_generation(), generation);
+        assert_eq!(system.font_system.db().len(), 1);
+        assert_eq!(system.measure(&request).width, bundled);
+
+        // A store with no data for the family has nothing to replace its faces with.
+        system
+            .load_family(DEFAULT_FONT_FAMILY, "empty", Vec::new())
+            .unwrap();
+        assert_eq!(system.family_resolver(DEFAULT_FONT_FAMILY), Some("empty"));
+        assert_eq!(system.font_generation(), generation);
+        assert_eq!(system.measure(&request).width, bundled);
+    }
+
+    #[test]
+    fn an_atlas_keeps_no_glyphs_of_another_text_system() {
+        let mut systems = [2, 4].map(|scale| {
+            let mut system = TextSystem::new();
+            system
+                .load_family(DEFAULT_FONT_FAMILY, "scaled", vec![scaled_roboto(scale)])
+                .unwrap();
+            system
+        });
+        // Text shaped under one generation must not pass for another system's.
+        assert_ne!(systems[0].font_generation(), systems[1].font_generation());
+        let request = TextLayoutRequest::new("W");
+        let [first, mut second] = systems.each_mut().map(|system| system.layout(&request));
+        // Each text system numbers its fonts alike, so only the baseline's bin differs.
+        assert_eq!(
+            first.glyphs[0].key.0.font_id,
+            second.glyphs[0].key.0.font_id
+        );
+        second.glyphs[0].key = first.glyphs[0].key;
+
+        let mut atlas = GlyphAtlas::new(1024);
+        atlas.begin_frame();
+        let [system_first, system_second] = &mut systems;
+        let prepared = prepare(system_first, &mut atlas, &first, TextRenderMode::Raster);
+        assert_eq!(prepared.uploads.len(), 1);
+        atlas.commit(prepared.frame);
+        atlas.begin_frame();
+        let again = prepare(system_first, &mut atlas, &first, TextRenderMode::Raster);
+        assert!(again.uploads.is_empty());
+
+        atlas.begin_frame();
+        let other = prepare(system_second, &mut atlas, &second, TextRenderMode::Raster);
+        assert_eq!(other.uploads.len(), 1);
+        assert_ne!(other.instances[0].rect[2], prepared.instances[0].rect[2]);
+    }
+
     #[test]
     fn loading_fonts_invalidates_measurements() {
         let mut system = TextSystem::new();
@@ -2639,7 +2844,7 @@ mod tests {
 
         system.load_font_data(include_bytes!("../assets/inter/InterVariable-Latin.ttf").to_vec());
 
-        assert_eq!(system.font_generation(), generation + 1);
+        assert_ne!(system.font_generation(), generation);
         assert!(system.measurements.is_empty());
         let loaded = system.measure(&request);
         assert_ne!(loaded.width, fallback.width);

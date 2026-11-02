@@ -32,7 +32,7 @@ pub struct CompiledPlanKey {
     /// Whether the frame is a whole frame of the timeline, so animated sources may be sized to
     /// their bounds over it.
     on_timeline: bool,
-    /// The fonts the shared text system held once the literal font families of the frame's text
+    /// The fonts the store's text system held once the literal font families of the frame's text
     /// were loaded, which text bounds are measured with; loading any face may change how text is
     /// shaped. `None` without text, or when the text system is unavailable.
     text_font_generation: Option<u64>,
@@ -560,18 +560,21 @@ impl GpuCompositionRenderer {
         // font generation, so the frame is bound again to it; a font loads once, so this settles.
         let mut rebinds = 0;
         let mut bound = loop {
-            let generation = text_font_generation();
+            let generation = text_font_generation(Some(media));
             self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
             self.memo_snapshots
                 .retain_composition(composition.fingerprint());
             let prepared = self.active_prepared()?;
             let layout = &prepared.compiled.cache;
-            let epoch = layout.epoch(&prepared.renderer);
+            let fonts = text_font_generation(Some(media));
+            let epoch = layout.epoch(&prepared.renderer, fonts);
             let held =
                 self.memo_snapshots
                     .held(layout, prepared.cache.plan(), epoch, |plan, at, memo| {
                         self.memo_source(prepared, plan, memo)
-                            .is_some_and(|(epoch, ..)| epoch == at)
+                            .is_some_and(|(from, ..)| {
+                                from.compiled.cache.epoch(&from.renderer, fonts) == at
+                            })
                     });
             let bound = FrameBindContext::with_media_at(composition, frame, media)
                 .bind_with_cache(
@@ -584,7 +587,7 @@ impl GpuCompositionRenderer {
                         held,
                     )),
                 )?;
-            if text_font_generation() == generation {
+            if text_font_generation(Some(media)) == generation {
                 break bound;
             }
             if rebinds == MAX_FONT_REBINDS {
@@ -655,7 +658,7 @@ impl GpuCompositionRenderer {
         self.copy_memo_snapshots(bound)
     }
 
-    /// The epoch of plan `plan` and the texture and bounds buffer holding its snapshot of `to`'s
+    /// Plan `plan` and the texture and bounds buffer holding its snapshot of `to`'s
     /// memo `memo`, if `to` can copy them.
     fn memo_source<'a>(
         &'a self,
@@ -663,7 +666,7 @@ impl GpuCompositionRenderer {
         plan: u64,
         memo: &LayoutMemo,
     ) -> Option<(
-        u64,
+        &'a PreparedComposition,
         &'a lumen_gpu::wgpu::Texture,
         &'a lumen_gpu::wgpu::Buffer,
     )> {
@@ -677,7 +680,7 @@ impl GpuCompositionRenderer {
             return None;
         }
         Some((
-            from.compiled.cache.epoch(&from.renderer),
+            from,
             from.renderer.texture(source.texture)?,
             from.renderer.buffer(source.bounds)?,
         ))
@@ -1132,7 +1135,10 @@ impl GpuCompositionRenderer {
         Ok(CompiledPlanKey {
             composition: composition.fingerprint(),
             on_timeline: super::compiler::on_timeline(composition, frame),
-            text_font_generation: collector.has_text.then(text_font_generation).flatten(),
+            text_font_generation: collector
+                .has_text
+                .then(|| text_font_generation(media))
+                .flatten(),
             entries,
         })
     }
@@ -1275,7 +1281,7 @@ impl<'a> PlanKeyCollector<'a> {
     /// font generation is taken once every font the frame's text names is loaded. Failures are
     /// left to the compile and bind, which load it again.
     fn load_font_family(&self, family: &str) {
-        if let Ok(mut text_system) = crate::node::source::text::text_system() {
+        if let Ok(mut text_system) = crate::node::source::text::text_system(self.media) {
             let _ =
                 crate::node::source::text::load_font_family(&mut text_system, self.media, family);
         }
@@ -1317,8 +1323,8 @@ fn estimated_plan_bytes(compiled: &CompiledComposition) -> u64 {
 /// than draw text past its bounds.
 const MAX_FONT_REBINDS: u32 = 3;
 
-fn text_font_generation() -> Option<u64> {
-    crate::node::source::text::text_system()
+fn text_font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
+    crate::node::source::text::text_system(media)
         .ok()
         .map(|text_system| text_system.font_generation())
 }

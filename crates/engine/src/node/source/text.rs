@@ -1,16 +1,16 @@
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, LazyLock, Mutex, OnceLock, Weak},
 };
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 
-use crate::error::{LumenError, RenderError};
+use crate::error::{LumenError, MediaError, RenderError};
 use crate::expr::{ExprNode, ExpressionContext, GlobalVar, GlyphScope};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
-use crate::media::MediaStore;
+use crate::media::{FontResolver, MediaStore, TextSession};
 use crate::node::vector::{
     drawable::{DeferredTransform, DrawableMotion, DrawableTransform},
     paint::Paint,
@@ -436,7 +436,7 @@ impl CompiledText {
             }
         };
 
-        let mut text_system = text_system()?;
+        let mut text_system = text_system(ctx.media())?;
         load_font_families(
             &mut text_system,
             ctx.media(),
@@ -1574,19 +1574,20 @@ pub(crate) fn load_font_families(
     Ok(())
 }
 
-/// Shared by rendering and text measurement so both see the same loaded fonts.
-/// Do not hold the guard while evaluating expressions, which may measure text.
-pub(crate) fn text_system() -> crate::Result<std::sync::MutexGuard<'static, lumen_text::TextSystem>>
-{
-    static TEXT_SYSTEM: OnceLock<Mutex<lumen_text::TextSystem>> = OnceLock::new();
-    TEXT_SYSTEM
-        .get_or_init(|| Mutex::new(lumen_text::TextSystem::new()))
-        .lock()
-        .map_err(|_| {
-            LumenError::Render(RenderError::Gpu {
-                details: "text system lock was poisoned".to_string(),
-            })
+/// The text system of `media`'s fonts, which rendering and text measurement share so both see
+/// them. Do not hold the guard while evaluating expressions, which may measure text.
+pub(crate) fn text_system<'a>(
+    media: Option<&'a dyn MediaStore>,
+) -> crate::Result<std::sync::MutexGuard<'a, lumen_text::TextSystem>> {
+    static SHARED: LazyLock<TextSession> = LazyLock::new(TextSession::default);
+    let session = media
+        .and_then(|store| store.text_session())
+        .unwrap_or(&SHARED);
+    session.0.lock().map_err(|_| {
+        LumenError::Render(RenderError::Gpu {
+            details: "text system lock was poisoned".to_string(),
         })
+    })
 }
 
 pub(crate) fn load_font_family(
@@ -1600,37 +1601,66 @@ pub(crate) fn load_font_family(
     let Some(store) = media else {
         return Ok(());
     };
-
-    let mut loaded = loaded_fonts()?;
-    if let Some(resolver_id) = store.font_resolver_id(font_family)
-        && loaded.get(font_family) == Some(&resolver_id)
-    {
-        return Ok(());
-    }
-    let Some(resolver) = store.get_font_resolver(font_family) else {
+    let Some(resolver_id) = store.font_resolver_id(font_family) else {
         return Ok(());
     };
-    let resolver_id = resolver.id().to_string();
-    if loaded.get(font_family) == Some(&resolver_id) {
+    if text_system.family_resolver(font_family) == Some(resolver_id.as_str()) {
         return Ok(());
     }
-    for data in resolver.data().map_err(LumenError::Media)? {
-        text_system.load_font_data(data);
+    // A resolver that does not come is remembered too, so later binds do not ask again.
+    let files = match store.get_font_resolver(font_family) {
+        Some(resolver) => font_files(&*resolver)?,
+        None => Vec::new(),
+    };
+    text_system
+        .load_family(font_family, &resolver_id, files)
+        .map_err(|_| {
+            LumenError::Media(MediaError::Decode {
+                media_source: font_family.to_string(),
+                details: "its font data holds no readable face".to_string(),
+            })
+        })?;
+    if !text_system.has_family(font_family) {
+        tracing::warn!(
+            target: "lumen_text",
+            font_family,
+            "no face of the font loaded for this family goes by its name; text falls back to other fonts"
+        );
     }
-    loaded.insert(font_family.to_string(), resolver_id);
     Ok(())
 }
 
-fn loaded_fonts() -> crate::Result<std::sync::MutexGuard<'static, HashMap<String, String>>> {
-    static LOADED_FONTS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    LOADED_FONTS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .map_err(|_| {
+/// The data of `resolver`'s font files, shared with every text system still holding that resolver
+/// ID's, so that jobs using one font hold and read it once.
+fn font_files(resolver: &dyn FontResolver) -> crate::Result<Vec<Arc<Vec<u8>>>> {
+    type Files = HashMap<String, Vec<Weak<Vec<u8>>>>;
+    static FILES: LazyLock<Mutex<Files>> = LazyLock::new(Mutex::default);
+    let lock = || {
+        FILES.lock().map_err(|_| {
             LumenError::Render(RenderError::Gpu {
-                details: "loaded fonts lock was poisoned".to_string(),
+                details: "font file cache lock was poisoned".to_string(),
             })
         })
+    };
+    if let Some(files) = lock()?
+        .get(resolver.id())
+        .and_then(|files| files.iter().map(Weak::upgrade).collect())
+    {
+        return Ok(files);
+    }
+    let files: Vec<_> = resolver
+        .data()
+        .map_err(LumenError::Media)?
+        .into_iter()
+        .map(Arc::new)
+        .collect();
+    let mut cache = lock()?;
+    cache.retain(|_, files| files.iter().all(|file| file.strong_count() > 0));
+    cache.insert(
+        resolver.id().to_string(),
+        files.iter().map(Arc::downgrade).collect(),
+    );
+    Ok(files)
 }
 
 fn trace_text_bind(
@@ -1668,4 +1698,82 @@ fn trace_now_ms() -> f64 {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn trace_now_ms() -> f64 {
     js_sys::Date::now()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Default)]
+    struct CountingStore {
+        /// `None` serves no resolver under the ID it still gives.
+        data: Option<Vec<u8>>,
+        resolvers: AtomicU64,
+        reads: Arc<AtomicU64>,
+    }
+
+    struct CountingResolver(Vec<u8>, Arc<AtomicU64>);
+
+    impl FontResolver for CountingResolver {
+        fn id(&self) -> &str {
+            "counting-store-test-font"
+        }
+
+        fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            Ok(vec![self.0.clone()])
+        }
+    }
+
+    impl MediaStore for CountingStore {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
+            None
+        }
+
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
+            None
+        }
+
+        fn font_resolver_id(&self, family: &str) -> Option<String> {
+            (family == "Known").then(|| "counting-store-test-font".to_string())
+        }
+
+        fn get_font_resolver(&self, _: &str) -> Option<Box<dyn FontResolver>> {
+            self.resolvers.fetch_add(1, Ordering::Relaxed);
+            let data = self.data.clone()?;
+            Some(Box::new(CountingResolver(data, Arc::clone(&self.reads))))
+        }
+    }
+
+    #[test]
+    fn stores_are_asked_once_for_a_font_they_do_not_serve() {
+        let store = CountingStore::default();
+        let mut system = lumen_text::TextSystem::new();
+        for _ in 0..3 {
+            load_font_family(&mut system, Some(&store), "Known").unwrap();
+            load_font_family(&mut system, Some(&store), "Unknown").unwrap();
+        }
+        assert_eq!(store.resolvers.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn text_systems_share_a_font_while_one_holds_it() {
+        let store = CountingStore {
+            data: Some(lumen_text::ROBOTO_REGULAR_BYTES.to_vec()),
+            ..Default::default()
+        };
+        let reads = || store.reads.load(Ordering::Relaxed);
+        let load = |system: &mut lumen_text::TextSystem| {
+            load_font_family(system, Some(&store), "Known").unwrap();
+        };
+
+        let mut first = lumen_text::TextSystem::new();
+        load(&mut first);
+        load(&mut lumen_text::TextSystem::new());
+        assert_eq!(reads(), 1);
+
+        drop(first);
+        load(&mut lumen_text::TextSystem::new());
+        assert_eq!(reads(), 2);
+    }
 }
