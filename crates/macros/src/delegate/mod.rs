@@ -10,14 +10,16 @@ use crate::common::{
 };
 
 pub(crate) fn expand_delegate(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
-    match &input.data {
+    let structural_hash = crate::structural_hash::expand(&input)?;
+    let delegate = match &input.data {
         Data::Struct(data) => structure::expand_struct_delegate(&input, &data.fields),
         Data::Enum(data) => enums::expand_enum_delegate(&input, &data.variants),
         Data::Union(_) => Err(syn::Error::new(
             input.ident.span(),
             "Delegate derive does not support unions",
         )),
-    }
+    }?;
+    Ok(quote!(#structural_hash #delegate))
 }
 
 mod enums;

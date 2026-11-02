@@ -12,10 +12,10 @@ use crate::expr::Expression;
 
 use super::Deferred;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
 pub struct ShaderUniforms(pub BTreeMap<String, ShaderUniformValue>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub enum ShaderUniformValue {
     Number(f64),
     /// One expression for the whole field; a `vec2` result fills two components.

@@ -388,7 +388,7 @@ pub(crate) fn expand_enum_delegate(
     };
 
     Ok(quote! {
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, ::lumen_engine::fingerprint::StructuralHash)]
         #[cfg_attr(feature = "json", derive(::serde::Deserialize))]
         pub enum #delegate_ident {
             #(#delegate_variants,)*

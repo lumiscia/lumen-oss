@@ -1,6 +1,7 @@
 use super::*;
 
 pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
+    let structural_hash = crate::structural_hash::expand(&input)?;
     let ident = input.ident;
     let node = parse_node_attr(&input.attrs)?;
     let fields = named_fields(&input.data)?;
@@ -133,6 +134,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let category = category_tokens(&node.category);
 
     Ok(quote! {
+        #structural_hash
         const #input_static: &[::lumen_engine::node::InputPortDef] = &[#(#input_defs),*];
         #(#assert_no_vec_fields)*
 

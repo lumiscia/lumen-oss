@@ -13,7 +13,7 @@ use super::text::{TextFontStyle, TextTransform};
 
 /// Text to render: a string, or spans that each override the node's text style. In JSON a
 /// string is the shorthand for unstyled text, and an `=expression` evaluates to one.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
 pub enum TextContent {
     Text(String),
     Spans(Vec<TextSpan>),
@@ -82,7 +82,7 @@ pub struct TextSpan {
 
 /// OpenType features by four-character tag. A value of 0 turns a feature off, 1 turns it on and
 /// larger values select an alternate.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, lumen_macros::StructuralHash)]
 pub struct FontFeatures(pub BTreeMap<[u8; 4], u32>);
 
 impl FontFeatures {
@@ -183,7 +183,7 @@ impl Default for TextHighlight {
 
 /// [`FontFeatures`] whose values take literals or expressions. The whole map cannot be an
 /// expression.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
 pub struct FontFeaturesDelegate(pub BTreeMap<[u8; 4], Deferred<u32>>);
 
 impl Delegated for FontFeatures {
@@ -330,7 +330,7 @@ impl TextStroke {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub enum TextContentDelegate {
     Text(Deferred<String>),
     Spans(DelegateVec<TextSpan>),

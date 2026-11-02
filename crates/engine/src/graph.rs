@@ -9,7 +9,7 @@ use crate::{
     node::{Node, NodeId, NodeKind},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, lumen_macros::StructuralHash)]
 pub struct Connection {
     pub from_node: NodeId,
     pub from_port: String,
@@ -17,10 +17,11 @@ pub struct Connection {
     pub to_port: String,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, lumen_macros::StructuralHash)]
 pub struct Graph {
     pub nodes: HashMap<NodeId, NodeKind>,
     pub connections: Vec<Connection>,
+    #[structural_hash(skip)] // Derived bookkeeping, not composition content.
     outgoing_connection_counts: HashMap<NodeId, usize>,
 }
 

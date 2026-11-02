@@ -11,6 +11,16 @@ use syn::{ImplItem, ItemImpl, parse_macro_input};
 mod common;
 mod delegate;
 mod schema;
+mod structural_hash;
+
+/// Hashes every field structurally, including enum variant discriminants.
+#[proc_macro_derive(StructuralHash, attributes(structural_hash))]
+pub fn derive_structural_hash(input: TokenStream) -> TokenStream {
+    match structural_hash::expand(&parse_macro_input!(input as syn::DeriveInput)) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
 
 #[proc_macro_derive(Node, attributes(node, input, property, params))]
 pub fn derive_node(input: TokenStream) -> TokenStream {

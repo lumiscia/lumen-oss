@@ -5,7 +5,7 @@ use super::{
     ids::NodeId, media_output, ports::SINGLE_RASTER_OUTPUT, processing, source, vector,
 };
 
-#[derive(Debug)]
+#[derive(Debug, lumen_macros::StructuralHash)]
 #[allow(clippy::large_enum_variant)]
 pub enum NodeKind {
     MediaIn(source::media_in::MediaIn),

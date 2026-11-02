@@ -21,7 +21,7 @@ pub enum PortKind {
     Vector = 1,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, lumen_macros::StructuralHash)]
 pub struct PortRef {
     pub id: NodeId,
     pub port: String,

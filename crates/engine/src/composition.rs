@@ -8,7 +8,7 @@ use crate::{
     node::{ClipPropValue, NodeKind, compositing::clip::Clip},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub struct TimelineSettings {
     pub fps: f32,
     pub duration_frames: u32,
@@ -23,7 +23,7 @@ impl TimelineSettings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub struct RenderSettings {
     pub width: u32,
     pub height: u32,
@@ -46,12 +46,14 @@ pub struct Composition {
 
 /// The parts of a composition, assembled or edited before [`CompositionBuilder::build`] validates
 /// them into a [`Composition`].
-#[derive(Debug)]
+#[derive(Debug, lumen_macros::StructuralHash)]
 pub struct CompositionBuilder {
     pub graph: Graph,
     pub timeline: TimelineSettings,
     pub render_settings: RenderSettings,
+    #[structural_hash(skip)] // Display metadata does not affect rendering.
     pub metadata: Option<CompositionMetadata>,
+    #[structural_hash(skip)] // Audio is independent of compiled video plans and GPU caches.
     pub audio: Option<AudioTimeline>,
     /// Templates that `clip` nodes instantiate, by name.
     pub compositions: BTreeMap<String, CompositionTemplate>,
@@ -59,7 +61,7 @@ pub struct CompositionBuilder {
 
 /// A reusable composition with its own canvas, timeline and props. Its node ids are its own, so
 /// they never collide with the root's or another template's.
-#[derive(Debug)]
+#[derive(Debug, lumen_macros::StructuralHash)]
 pub struct CompositionTemplate {
     pub graph: Graph,
     pub timeline: TimelineSettings,
@@ -68,14 +70,14 @@ pub struct CompositionTemplate {
 }
 
 /// A prop a template declares, which `prop('name')` reads inside it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub struct PropDef {
     pub kind: PropKind,
     /// The value an instance that doesn't set the prop gets.
     pub default: ExpressionValue,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::StructuralHash)]
 pub enum PropKind {
     String,
     Number,
@@ -392,44 +394,7 @@ impl CompositionBuilder {
 /// Identifies the exact content of a composition and its templates: their canvases, timelines,
 /// props, connections and every node's params, literal values and expression sources.
 fn fingerprint(composition: &CompositionBuilder) -> u64 {
-    use std::fmt::Write;
-    use std::hash::{BuildHasher, Hasher};
-
-    // Debug output spells out every param, expression and input. A fixed seed keeps fingerprints
-    // comparable across calls.
-    struct HashWriter(foldhash::quality::FoldHasher<'static>);
-    impl Write for HashWriter {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            self.0.write(text.as_bytes());
-            Ok(())
-        }
-    }
-
-    fn write_graph(out: &mut HashWriter, graph: &Graph) {
-        let mut nodes = graph.nodes.iter().collect::<Vec<_>>();
-        nodes.sort_unstable_by_key(|(id, _)| id.0);
-        let _ = write!(out, "{:?}", graph.connections);
-        for (id, node) in nodes {
-            let _ = write!(out, "{}{:?}", id.0, node);
-        }
-    }
-
-    let mut out = HashWriter(foldhash::quality::FixedState::with_seed(0).build_hasher());
-    let _ = write!(
-        out,
-        "{:?}{:?}",
-        composition.render_settings, composition.timeline
-    );
-    write_graph(&mut out, &composition.graph);
-    for (name, template) in &composition.compositions {
-        let _ = write!(
-            out,
-            "{name:?}{:?}{:?}{:?}",
-            template.render_settings, template.timeline, template.props
-        );
-        write_graph(&mut out, &template.graph);
-    }
-    out.0.finish()
+    crate::fingerprint::fingerprint(composition)
 }
 
 fn as_clip(node: &NodeKind) -> Option<&Clip> {
@@ -450,4 +415,120 @@ pub(crate) fn declared_props(props: &BTreeMap<String, PropDef>) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("the template declares {names}")
+}
+
+#[cfg(all(test, feature = "json"))]
+mod fingerprint_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn scene() -> Value {
+        let nodes = json!([
+            { "id": 1, "type": "text", "params": { "content": [{
+                "text": "Hello", "baseline_shift": 2,
+                "font_features": { "liga": 1, "tnum": "=frame / 2" },
+                "underline": { "style": "solid", "thickness": "=frame / 2" },
+                "color": { "type": "linear_gradient", "stops": [
+                    { "offset": 0, "color": "#000000" },
+                    { "offset": 1, "color": "#ffffff" }
+                ] }
+            }] } },
+            { "id": 2, "type": "background" },
+            { "id": 3, "type": "media_output" }
+        ]);
+        json!({
+            "timeline": { "fps": 30, "duration_frames": 90 },
+            "render_settings": { "width": 640, "height": 360 },
+            "nodes": nodes,
+            "connections": [{ "from_node": 1, "to_node": 3, "to_port": "source" }],
+            "compositions": {
+                "card": {
+                    "render_settings": { "width": 640, "height": 360 },
+                    "timeline": { "fps": 30, "duration_frames": 90 },
+                    "nodes": nodes,
+                    "connections": [{ "from_node": 1, "to_node": 3, "to_port": "source" }],
+                    "props": { "title": { "type": "string", "default": "Card" } }
+                }
+            }
+        })
+    }
+
+    fn parse(value: &Value) -> Composition {
+        crate::json::parse_value(value).unwrap()
+    }
+
+    #[test]
+    fn equal_parts_have_equal_fingerprints_regardless_of_node_map_order() {
+        let value = scene();
+        let expected = parse(&value).fingerprint();
+        assert_eq!(expected, parse(&value).fingerprint());
+        let mut builder = parse(&value).into_builder();
+        for graph in std::iter::once(&mut builder.graph).chain(
+            builder
+                .compositions
+                .values_mut()
+                .map(|template| &mut template.graph),
+        ) {
+            let mut nodes = graph.nodes.drain().collect::<Vec<_>>();
+            nodes.sort_unstable_by_key(|(id, _)| std::cmp::Reverse(*id));
+            graph.nodes = std::collections::HashMap::with_capacity(128);
+            graph.nodes.extend(nodes);
+        }
+        assert_eq!(expected, builder.build().unwrap().fingerprint());
+    }
+
+    #[test]
+    fn nested_text_fields_and_expression_sources_change_the_fingerprint() {
+        let value = scene();
+        let expected = parse(&value).fingerprint();
+        for (field, replacement) in [
+            ("baseline_shift", json!(3)),
+            ("font_features/tnum", json!("=frame / 3")),
+            ("underline/style", json!("wavy")),
+            // Same evaluated value, different source text.
+            ("underline/thickness", json!("=frame / 2 + 0")),
+            ("color/stops/1/offset", json!(0.75)),
+        ] {
+            let mut changed = value.clone();
+            let path = format!("/nodes/0/params/content/0/{field}");
+            *changed.pointer_mut(&path).unwrap() = replacement;
+            assert_ne!(expected, parse(&changed).fingerprint(), "{path}");
+        }
+    }
+
+    #[test]
+    fn connections_are_hashed_even_without_changing_wired_inputs() {
+        let composition = parse(&scene());
+        let expected = composition.fingerprint();
+        let mut builder = composition.into_builder();
+        builder.graph.connections[0].from_node = crate::node::NodeId::new(2);
+        assert_ne!(expected, builder.build().unwrap().fingerprint());
+    }
+
+    #[test]
+    fn canvas_timeline_and_template_content_change_the_fingerprint() {
+        let value = scene();
+        let expected = parse(&value).fingerprint();
+        for (path, replacement) in [
+            ("/render_settings/width", json!(800)),
+            ("/timeline/fps", json!(60)),
+            (
+                "/compositions/card/render_settings",
+                json!({ "width": 800, "height": 360 }),
+            ),
+            (
+                "/compositions/card/timeline",
+                json!({ "fps": 60, "duration_frames": 90 }),
+            ),
+            ("/compositions/card/props/title/default", json!("New title")),
+            (
+                "/compositions/card/nodes/0/params/content/0/text",
+                json!("New text"),
+            ),
+        ] {
+            let mut changed = value.clone();
+            *changed.pointer_mut(path).unwrap() = replacement;
+            assert_ne!(expected, parse(&changed).fingerprint(), "{path}");
+        }
+    }
 }

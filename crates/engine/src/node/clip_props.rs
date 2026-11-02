@@ -10,10 +10,10 @@ use serde_json::Value;
 
 use crate::expr::Expression;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
 pub struct ClipProps(pub BTreeMap<String, ClipPropValue>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub enum ClipPropValue {
     /// A literal, read against the prop's declared kind.
     Literal(Value),

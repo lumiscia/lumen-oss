@@ -25,7 +25,7 @@ impl VirtualPropertyId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
 pub enum ExpressionValue {
     Number(f64),
     Boolean(bool),
