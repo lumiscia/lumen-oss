@@ -1,0 +1,816 @@
+[
+  {
+    "name": "start position and source offset",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "clip",
+          "startMs": 100,
+          "durationMs": 1000,
+          "sourceStartMs": 2,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 6000,
+    "frames": 16,
+    "expected": [
+      0.25, 0.75, -0.5, 0.125, 0.75, -0.75, -0.125, 0.5, 0.375, -0.375, -0.75, 0.25, 0.5, -0.25,
+      0.25, 0.75, -0.5, 0.125, 0.75, -0.75, -0.125, 0.5, 0.375, -0.375, -0.75, 0.25, 0.5, -0.25,
+      0.25, 0.75, -0.5, 0.125
+    ]
+  },
+  {
+    "name": "track and clip gain multiply",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 0.5
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "clip",
+          "startMs": 100,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 0.25
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 6000,
+    "frames": 16,
+    "expected": [
+      0.09375, -0.09375, -0.015625, 0.0625, 0.046875, -0.046875, -0.09375, 0.03125, 0.0625,
+      -0.03125, 0.03125, 0.09375, -0.0625, 0.015625, 0.09375, -0.09375, -0.015625, 0.0625, 0.046875,
+      -0.046875, -0.09375, 0.03125, 0.0625, -0.03125, 0.03125, 0.09375, -0.0625, 0.015625, 0.09375,
+      -0.09375, -0.015625, 0.0625
+    ]
+  },
+  {
+    "name": "fades in over 384 samples from the clip start",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "clip",
+          "startMs": 100,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 4796,
+    "frames": 16,
+    "expected": [
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0006510417, 0.001953125, -0.0026041667,
+      0.0006510417, 0.005859375, -0.005859375, -0.0013020834, 0.0052083335, 0.0048828125,
+      -0.0048828125, -0.01171875, 0.00390625, 0.009114583, -0.0045572915, 0.0052083335, 0.015625,
+      -0.01171875, 0.0029296875, 0.01953125, -0.01953125, -0.0035807292, 0.014322917
+    ]
+  },
+  {
+    "name": "fade-in reaches full gain",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "clip",
+          "startMs": 100,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 5176,
+    "frames": 16,
+    "expected": [
+      0.3671875, -0.3671875, -0.7363281, 0.2454427, 0.4921875, -0.24609375, 0.2467448, 0.7402344,
+      -0.49479166, 0.123697914, 0.7441406, -0.7441406, -0.12434896, 0.49739584, 0.37402344,
+      -0.37402344, -0.75, 0.25, 0.5, -0.25, 0.25, 0.75, -0.5, 0.125, 0.75, -0.75, -0.125, 0.5,
+      0.375, -0.375, -0.75, 0.25
+    ]
+  },
+  {
+    "name": "fades out over the last 384 samples",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "clip",
+          "startMs": 100,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 52416,
+    "frames": 16,
+    "expected": [
+      -0.5, 0.125, 0.7480469, -0.7480469, -0.12434896, 0.49739584, 0.3720703, -0.3720703,
+      -0.7421875, 0.24739583, 0.4934896, -0.2467448, 0.24609375, 0.73828125, -0.4908854, 0.12272135,
+      0.734375, -0.734375, -0.12207031, 0.48828125, 0.36523438, -0.36523438, -0.7285156, 0.24283855,
+      0.484375, -0.2421875, 0.24153645, 0.7246094, -0.48177084, 0.12044271, 0.7207031, -0.7207031
+    ]
+  },
+  {
+    "name": "reaches silence at the clip end",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "clip",
+          "startMs": 100,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 52792,
+    "frames": 16,
+    "expected": [
+      0.010416667, -0.0052083335, 0.0045572915, 0.013671875, -0.0078125, 0.001953125, 0.009765625,
+      -0.009765625, -0.0013020834, 0.0052083335, 0.0029296875, -0.0029296875, -0.00390625,
+      0.0013020834, 0.0013020834, -0.0006510417, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+  },
+  {
+    "name": "a short clip fades over half its length",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "clip",
+          "startMs": 0,
+          "durationMs": 10,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 232,
+    "frames": 16,
+    "expected": [
+      0.24166666, 0.72499996, -0.48541668, 0.12135417, 0.73125005, -0.73125005, -0.122395836,
+      0.48958334, 0.36875, -0.36875, -0.740625, 0.246875, 0.49583334, -0.24791667, 0.24895833,
+      0.746875, -0.5, 0.125, 0.746875, -0.746875, -0.123958334, 0.49583334, 0.3703125, -0.3703125,
+      -0.7375, 0.24583334, 0.48958334, -0.24479167, 0.24375, 0.73125005, -0.48541668, 0.12135417
+    ]
+  },
+  {
+    "name": "a very short clip fades over half its length",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "clip",
+          "startMs": 0,
+          "durationMs": 1,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 16,
+    "frames": 40,
+    "expected": [
+      -0.33333334, 0.083333336, 0.53125, -0.53125, -0.09375, 0.375, 0.296875, -0.296875, -0.625,
+      0.20833333, 0.4375, -0.21875, 0.22916667, 0.6875, -0.47916666, 0.119791664, 0.75, -0.75,
+      -0.119791664, 0.47916666, 0.34375, -0.34375, -0.65625, 0.21875, 0.41666666, -0.20833333,
+      0.19791667, 0.59375, -0.375, 0.09375, 0.53125, -0.53125, -0.083333336, 0.33333334, 0.234375,
+      -0.234375, -0.4375, 0.14583333, 0.27083334, -0.13541667, 0.125, 0.375, -0.22916667,
+      0.057291668, 0.3125, -0.3125, -0.046875, 0.1875, 0.125, -0.125, -0.21875, 0.072916664, 0.125,
+      -0.0625, 0.052083332, 0.15625, -0.083333336, 0.020833334, 0.09375, -0.09375, -0.010416667,
+      0.041666668, 0.015625, -0.015625, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0
+    ]
+  },
+  {
+    "name": "a solo track silences the others",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "solo",
+          "name": "solo",
+          "muted": false,
+          "solo": true,
+          "volume": 1.0
+        },
+        {
+          "id": "other",
+          "name": "other",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "kept",
+          "sourceId": "tone",
+          "trackId": "solo",
+          "name": "kept",
+          "startMs": 0,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        },
+        {
+          "id": "dropped",
+          "sourceId": "tone",
+          "trackId": "other",
+          "name": "dropped",
+          "startMs": 0,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 1000,
+    "frames": 16,
+    "expected": [
+      -0.75, 0.25, 0.5, -0.25, 0.25, 0.75, -0.5, 0.125, 0.75, -0.75, -0.125, 0.5, 0.375, -0.375,
+      -0.75, 0.25, 0.5, -0.25, 0.25, 0.75, -0.5, 0.125, 0.75, -0.75, -0.125, 0.5, 0.375, -0.375,
+      -0.75, 0.25, 0.5, -0.25
+    ]
+  },
+  {
+    "name": "a muted track is silent",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "muted",
+          "name": "muted",
+          "muted": true,
+          "solo": false,
+          "volume": 1.0
+        },
+        {
+          "id": "audible",
+          "name": "audible",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "dropped",
+          "sourceId": "tone",
+          "trackId": "muted",
+          "name": "dropped",
+          "startMs": 0,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        },
+        {
+          "id": "kept",
+          "sourceId": "tone",
+          "trackId": "audible",
+          "name": "kept",
+          "startMs": 0,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 1000,
+    "frames": 16,
+    "expected": [
+      -0.75, 0.25, 0.5, -0.25, 0.25, 0.75, -0.5, 0.125, 0.75, -0.75, -0.125, 0.5, 0.375, -0.375,
+      -0.75, 0.25, 0.5, -0.25, 0.25, 0.75, -0.5, 0.125, 0.75, -0.75, -0.125, 0.5, 0.375, -0.375,
+      -0.75, 0.25, 0.5, -0.25
+    ]
+  },
+  {
+    "name": "a silent track adds nothing",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 0.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "clip",
+          "startMs": 100,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 6000,
+    "frames": 16,
+    "expected": [
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+  },
+  {
+    "name": "overlaps sum before clamping once",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "a",
+          "sourceId": "up",
+          "trackId": "main",
+          "name": "a",
+          "startMs": 0,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        },
+        {
+          "id": "b",
+          "sourceId": "up",
+          "trackId": "main",
+          "name": "b",
+          "startMs": 0,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        },
+        {
+          "id": "c",
+          "sourceId": "down",
+          "trackId": "main",
+          "name": "c",
+          "startMs": 0,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "up": {
+        "pattern": [[0.8, -0.8]],
+        "frames": 96000
+      },
+      "down": {
+        "pattern": [[-0.8, 0.8]],
+        "frames": 96000
+      }
+    },
+    "startSample": 1000,
+    "frames": 4,
+    "expected": [0.8, -0.8, 0.8, -0.8, 0.8, -0.8, 0.8, -0.8]
+  },
+  {
+    "name": "the mix clamps in both directions",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "a",
+          "sourceId": "up",
+          "trackId": "main",
+          "name": "a",
+          "startMs": 0,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        },
+        {
+          "id": "b",
+          "sourceId": "up",
+          "trackId": "main",
+          "name": "b",
+          "startMs": 0,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "up": {
+        "pattern": [[0.8, -0.8]],
+        "frames": 96000
+      },
+      "down": {
+        "pattern": [[-0.8, 0.8]],
+        "frames": 96000
+      }
+    },
+    "startSample": 1000,
+    "frames": 4,
+    "expected": [1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0]
+  },
+  {
+    "name": "a source shorter than its clip ends in silence",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "clip",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "clip",
+          "startMs": 0,
+          "durationMs": 1000,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 1000
+      }
+    },
+    "startSample": 992,
+    "frames": 16,
+    "expected": [
+      0.375, -0.375, -0.75, 0.25, 0.5, -0.25, 0.25, 0.75, -0.5, 0.125, 0.75, -0.75, -0.125, 0.5,
+      0.375, -0.375, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    ]
+  },
+  {
+    "name": "a window can span the gap between two clips",
+    "timeline": {
+      "tracks": [
+        {
+          "id": "main",
+          "name": "main",
+          "muted": false,
+          "solo": false,
+          "volume": 1.0
+        }
+      ],
+      "clips": [
+        {
+          "id": "first",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "first",
+          "startMs": 0,
+          "durationMs": 10,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        },
+        {
+          "id": "second",
+          "sourceId": "tone",
+          "trackId": "main",
+          "name": "second",
+          "startMs": 11,
+          "durationMs": 10,
+          "sourceStartMs": 0,
+          "volume": 1.0
+        }
+      ],
+      "durationFrames": 60,
+      "fps": 1
+    },
+    "sources": {
+      "tone": {
+        "pattern": [
+          [0.5, -0.25],
+          [0.25, 0.75],
+          [-0.5, 0.125],
+          [0.75, -0.75],
+          [-0.125, 0.5],
+          [0.375, -0.375],
+          [-0.75, 0.25]
+        ],
+        "frames": 96000
+      }
+    },
+    "startSample": 470,
+    "frames": 80,
+    "expected": [
+      0.010416667, 0.03125, -0.01875, 0.0046875, 0.025000002, -0.025000002, -0.0036458333,
+      0.014583333, 0.009375, -0.009375, -0.015625, 0.0052083335, 0.008333334, -0.004166667,
+      0.003125, 0.009375, -0.004166667, 0.0010416667, 0.0031250003, -0.0031250003, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+      0.0010416667, 0.0031250003, -0.004166667, 0.0010416667, 0.009375, -0.009375, -0.0020833334,
+      0.008333334, 0.0078125, -0.0078125, -0.01875, 0.00625, 0.014583333, -0.0072916667,
+      0.008333334, 0.025000002, -0.01875, 0.0046875, 0.03125, -0.03125, -0.005729167, 0.022916667,
+      0.01875, -0.01875, -0.040625, 0.013541667, 0.029166667, -0.014583333, 0.015625, 0.046875,
+      -0.033333335, 0.008333334, 0.053125, -0.053125, -0.009375, 0.0375, 0.0296875, -0.0296875,
+      -0.0625, 0.020833334, 0.04375, -0.021875
+    ]
+  }
+]
