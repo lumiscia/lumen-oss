@@ -1,6 +1,6 @@
 //! Directed graph model, validation, and topological evaluation ordering.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[cfg(feature = "json")]
 use crate::node::PortRef;
@@ -213,13 +213,30 @@ impl Graph {
     }
 
     fn validate_no_cycle(&self) -> Result<(), GraphValidationError> {
+        // A node reads its input ports whether or not a connection mirrors them.
+        let mut edges = HashSet::new();
+        for node in self.nodes.values() {
+            edges.extend(
+                node.input_ports()
+                    .into_iter()
+                    .filter(|port| !port.is_empty())
+                    .map(|port| (port.id, node.id())),
+            );
+        }
+        edges.extend(
+            self.connections
+                .iter()
+                .map(|edge| (edge.from_node, edge.to_node)),
+        );
+
         let mut indegree: HashMap<NodeId, usize> =
             self.nodes.keys().copied().map(|id| (id, 0)).collect();
-
-        for edge in &self.connections {
-            if let Some(entry) = indegree.get_mut(&edge.to_node) {
+        let mut outgoing: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for &(from, to) in &edges {
+            if let Some(entry) = indegree.get_mut(&to) {
                 *entry += 1;
             }
+            outgoing.entry(from).or_default().push(to);
         }
 
         let mut queue: VecDeque<NodeId> = indegree
@@ -230,15 +247,11 @@ impl Graph {
         let mut visited = 0_usize;
         while let Some(node_id) = queue.pop_front() {
             visited += 1;
-            for edge in self
-                .connections
-                .iter()
-                .filter(|edge| edge.from_node == node_id)
-            {
-                if let Some(entry) = indegree.get_mut(&edge.to_node) {
+            for &to in outgoing.get(&node_id).into_iter().flatten() {
+                if let Some(entry) = indegree.get_mut(&to) {
                     *entry -= 1;
                     if *entry == 0 {
-                        queue.push_back(edge.to_node);
+                        queue.push_back(to);
                     }
                 }
             }

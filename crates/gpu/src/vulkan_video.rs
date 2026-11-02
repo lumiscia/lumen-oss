@@ -31,7 +31,7 @@ impl Renderer {
     /// Creates a Vulkan renderer whose device also has Vulkan Video encode queues, extensions and
     /// features, so an encoder can share it.
     pub async fn new_vulkan_video() -> Result<(Self, VulkanVideoDevice)> {
-        let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        let mut instance_desc = crate::renderer::instance_descriptor();
         instance_desc.backends = wgpu::Backends::VULKAN;
         let instance = wgpu::Instance::new(instance_desc);
         let adapter = instance

@@ -13,7 +13,8 @@ use crate::{
     BindGroupLayoutSpec, Binding, BindingResource, BufferDesc, BufferId, BufferResource,
     ComputeDispatch, ComputePassDesc, ComputeProgramDesc, CopyTextureDesc, DrawCommand,
     FrameUpdate, LoadOp, PassDesc, ProgramDesc, ProgramId, RenderPassDesc, RenderPlan,
-    RenderProgramDesc, SamplerId, TextureDesc, TextureId, TextureResource, Upload,
+    RenderProgramDesc, SamplerId, Size, TextureDesc, TextureDomain, TextureId, TextureResource,
+    Upload,
 };
 
 struct RuntimeTexture {
@@ -78,6 +79,8 @@ pub struct Renderer {
     buffers: Vec<RuntimeBuffer>,
     samplers: Vec<RuntimeSampler>,
     programs: Vec<Arc<RuntimeProgram>>,
+    /// The plan whose resources the vectors above hold.
+    prepared_plan: Option<u64>,
     program_cache: ProgramCache,
     /// Indexed by pass.
     bind_groups: Vec<Option<CachedBindGroups>>,
@@ -100,12 +103,22 @@ impl std::fmt::Debug for ExternalTexture {
 }
 
 impl ExternalTexture {
-    pub fn new(texture: Arc<wgpu::Texture>, desc: TextureDesc) -> Self {
+    /// Wraps `texture` as a render target laid out as `domain`, whose storage size is the
+    /// texture's own.
+    pub fn new(texture: Arc<wgpu::Texture>, domain: TextureDomain) -> Self {
+        let desc = TextureDesc {
+            domain: TextureDomain {
+                storage_size: Size::new(texture.width(), texture.height()),
+                ..domain
+            },
+            format: texture.format(),
+            usage: texture.usage(),
+        };
         Self { texture, desc }
     }
 
-    pub fn from_texture(texture: wgpu::Texture, desc: TextureDesc) -> Self {
-        Self::new(Arc::new(texture), desc)
+    pub fn from_texture(texture: wgpu::Texture, domain: TextureDomain) -> Self {
+        Self::new(Arc::new(texture), domain)
     }
 
     pub fn texture(&self) -> &wgpu::Texture {
@@ -177,7 +190,7 @@ impl From<wgpu::AdapterInfo> for GpuAdapterInfo {
 /// crash inside the Vulkan loader in `vkSetDebugUtilsObjectNameEXT` more often with them
 /// (https://github.com/gfx-rs/wgpu/issues/5270). Set `WGPU_DISCARD_HAL_LABELS=0` to keep
 /// resource names in GPU captures.
-fn instance_descriptor() -> wgpu::InstanceDescriptor {
+pub(crate) fn instance_descriptor() -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
     if std::env::var_os("WGPU_DISCARD_HAL_LABELS").is_none() {
         descriptor.flags |= wgpu::InstanceFlags::DISCARD_HAL_LABELS;
@@ -252,6 +265,7 @@ impl Renderer {
             buffers: Vec::new(),
             samplers: Vec::new(),
             programs: Vec::new(),
+            prepared_plan: None,
             program_cache: ProgramCache::default(),
             bind_groups: Vec::new(),
             texture_generation: 0,
@@ -290,6 +304,7 @@ impl Renderer {
             passes = plan.passes.len(),
             "prepare render plan"
         );
+        self.prepared_plan = None;
         let scope = ValidationScope::push(&self.device);
         self.textures = plan
             .textures
@@ -346,6 +361,8 @@ impl Renderer {
             for desc in created {
                 cache.remove(desc);
             }
+        } else {
+            self.prepared_plan = Some(plan.id);
         }
         cache.retain(|_, runtime| runtime.strong_count() > 0);
         drop(cache);
@@ -523,7 +540,9 @@ impl Renderer {
             uploads = update.uploads().len(),
             "apply frame update"
         );
-        self.apply_uploads(update)
+        let scope = ValidationScope::push(&self.device);
+        self.apply_uploads(update)?;
+        scope.finish()
     }
 
     pub fn submit_plan(&mut self, plan: &RenderPlan) -> Result<wgpu::SubmissionIndex> {
@@ -722,11 +741,7 @@ impl Renderer {
     }
 
     fn validate_prepared(&self, plan: &RenderPlan) -> Result<()> {
-        if self.textures.len() != plan.textures.len()
-            || self.buffers.len() != plan.buffers.len()
-            || self.samplers.len() != plan.samplers.len()
-            || self.programs.len() != plan.programs.len()
-        {
+        if self.prepared_plan != Some(plan.id) {
             bail!("render plan has not been prepared or has changed since prepare_plan");
         }
         Ok(())

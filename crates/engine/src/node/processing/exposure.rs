@@ -108,6 +108,7 @@ impl GpuCompileNode for Exposure {
             texture,
             domain: source.domain,
             metadata: source.metadata,
+            bounds: source.bounds,
         }))
     }
 }

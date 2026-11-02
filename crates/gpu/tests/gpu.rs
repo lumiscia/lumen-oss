@@ -623,7 +623,7 @@ fn submit_plan_with_external_texture_restores_slot_and_retains_target() {
         .submit_plan_with_external_texture(
             &plan,
             output,
-            ExternalTexture::new(Arc::clone(&external), desc),
+            ExternalTexture::new(Arc::clone(&external), desc.domain),
         )
         .unwrap();
 
@@ -680,14 +680,26 @@ fn execute_rejects_unprepared_or_changed_plans() {
     let Some(mut renderer) = renderer() else {
         return;
     };
-    let plan = RenderPlan::builder().build();
+    let one_buffer = || {
+        let mut builder = RenderPlan::builder();
+        builder.buffer(None, BufferDesc::uniform(16));
+        builder.build()
+    };
+    let (prepared, same_shape) = (one_buffer(), one_buffer());
 
-    assert!(renderer.execute(&plan, &FrameUpdate::new()).is_ok());
+    let unprepared = renderer
+        .execute(&prepared, &FrameUpdate::new())
+        .unwrap_err();
+    assert!(
+        unprepared.to_string().contains("not been prepared"),
+        "unexpected error: {unprepared}"
+    );
 
-    let mut changed = RenderPlan::builder();
-    changed.buffer(None, BufferDesc::uniform(16));
-    let changed = changed.build();
-    let err = renderer.execute(&changed, &FrameUpdate::new()).unwrap_err();
+    renderer.prepare_plan(&prepared).unwrap();
+    assert!(renderer.execute(&prepared, &FrameUpdate::new()).is_ok());
+    let err = renderer
+        .execute(&same_shape, &FrameUpdate::new())
+        .unwrap_err();
     assert!(
         err.to_string().contains("not been prepared"),
         "unexpected error: {err}"

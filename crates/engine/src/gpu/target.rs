@@ -299,11 +299,7 @@ impl CudaNvencTargetPool {
             .map_err(|details| RenderError::Gpu { details })?;
         let external = lumen_gpu::ExternalTexture::new(
             exportable.texture_arc(),
-            lumen_gpu::TextureDesc {
-                domain: lumen_gpu::TextureDomain::full_frame(self.size),
-                format: self.format,
-                usage: cuda_nvenc_usage(),
-            },
+            lumen_gpu::TextureDomain::full_frame(self.size),
         );
         Ok(CudaNvencTarget {
             driver: self.driver,
@@ -460,29 +456,29 @@ impl MetalVideoToolboxTargetPool {
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        let texture = lumen_gpu::texture_from_metal(
-            &renderer.device,
-            metal_texture,
-            &lumen_gpu::wgpu::TextureDescriptor {
-                label: Some("lumen VideoToolbox render target"),
-                size: self.size.as_extent(),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: lumen_gpu::wgpu::TextureDimension::D2,
-                format: self.format,
-                usage: external_output_usage(),
-                view_formats: &[],
-            },
-        );
+        // SAFETY: the texture is a 2D single-layer, single-mip, single-sample Metal texture on the
+        // renderer's device, created at this size and format.
+        let texture = unsafe {
+            lumen_gpu::texture_from_metal(
+                &renderer.device,
+                metal_texture,
+                &lumen_gpu::wgpu::TextureDescriptor {
+                    label: Some("lumen VideoToolbox render target"),
+                    size: self.size.as_extent(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: lumen_gpu::wgpu::TextureDimension::D2,
+                    format: self.format,
+                    usage: external_output_usage(),
+                    view_formats: &[],
+                },
+            )
+        };
         Ok(MetalVideoToolboxTarget {
             pixel_frame,
             external: lumen_gpu::ExternalTexture::from_texture(
                 texture,
-                lumen_gpu::TextureDesc {
-                    domain: lumen_gpu::TextureDomain::full_frame(self.size),
-                    format: self.format,
-                    usage: external_output_usage(),
-                },
+                lumen_gpu::TextureDomain::full_frame(self.size),
             ),
         })
     }
