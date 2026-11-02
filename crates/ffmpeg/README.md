@@ -13,6 +13,10 @@ Supported render/media targets today are:
 
 CPU decode/encode helpers exist, but Lumen's production renderer is GPU-first and should be treated as requiring GPU-capable machines.
 
+## Media input
+
+`InputContext::open` reads local files only, through an allowlist of demuxers in `ALLOWED_INPUT_FORMATS`. A demuxer goes on the list only if a file's data stays inside that file. Formats that open other files or hosts named by the input, such as HLS, DASH, concat lists, image sequences, and SDP, are refused. `mov` data references stay off. Anything that opens media by another route, such as the `ffmpeg` CLI, must pass the same list as `format_whitelist` and `protocol_whitelist`.
+
 ## Features
 
 - `avcodec`, `avformat`, `swresample`, `swscale`: FFmpeg component features enabled by default.

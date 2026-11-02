@@ -7,7 +7,7 @@ import {
   type VideoSample,
 } from "mediabunny";
 
-import { createVideoFramePayload } from "./canvas.js";
+import { createUprightVideoFrame, createVideoFramePayload } from "./canvas.js";
 import { LumenMediaError, toMediaError } from "./errors.js";
 import { createInputSource } from "./source.js";
 import { createVideoTimeline, normalizeFps, type VideoTimeline } from "./timeline.js";
@@ -194,10 +194,14 @@ export class VideoSession {
     sample: VideoSample,
     metadata: VideoFrameMetadata,
   ): VideoFramePayload {
+    const width = Math.max(1, Math.round(sample.displayWidth ?? metadata.width));
+    const height = Math.max(1, Math.round(sample.displayHeight ?? metadata.height));
+    if (sample.rotation !== 0) {
+      return createVideoFramePayload(createUprightVideoFrame(sample, width, height), width, height);
+    }
+
     const retainedSample = sample.clone();
     try {
-      const width = Math.max(1, Math.round(sample.displayWidth ?? metadata.width));
-      const height = Math.max(1, Math.round(sample.displayHeight ?? metadata.height));
       return createVideoFramePayload(retainedSample.toVideoFrame(), width, height);
     } finally {
       retainedSample.close();
