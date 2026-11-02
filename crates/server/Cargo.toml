@@ -16,7 +16,7 @@ path = "src/bin/lumen-server.rs"
 required-features = ["cli"]
 
 [features]
-cli = ["dep:axum", "dep:clap", "dep:tracing-subscriber"]
+cli = ["dep:axum", "dep:clap", "dep:subtle", "dep:tracing-subscriber", "dep:uuid"]
 legacy-decode-tests = []
 metal = ["lumen-engine/metal", "lumen-ffmpeg/metal"]
 vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
@@ -46,3 +46,5 @@ reqwest = { version = "0.12.24", default-features = false, features = [
 tempfile = "3.25.0"
 clap = { version = "4.6.1", features = ["derive", "env"], optional = true }
 futures-util = "0.3.32"
+subtle = { version = "2.6.1", optional = true }
+uuid = { version = "1.18.1", features = ["v4"], optional = true }

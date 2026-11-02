@@ -57,6 +57,21 @@ pub(crate) fn av_error_string(code: i32) -> String {
     }
 }
 
+/// Frees the codec context on early returns until ownership moves into a decoder or encoder.
+pub(crate) struct CodecContextGuard(pub(crate) *mut sys::AVCodecContext);
+
+impl CodecContextGuard {
+    pub(crate) fn release(&mut self) -> *mut sys::AVCodecContext {
+        std::mem::replace(&mut self.0, std::ptr::null_mut())
+    }
+}
+
+impl Drop for CodecContextGuard {
+    fn drop(&mut self) {
+        unsafe { sys::avcodec_free_context(&mut self.0) };
+    }
+}
+
 pub(crate) struct AvPacket {
     ptr: NonNull<sys::AVPacket>,
 }
@@ -127,6 +142,14 @@ impl AvFrame {
     pub(crate) fn pts(&self) -> Option<i64> {
         let pts = unsafe { (*self.ptr.as_ptr()).pts };
         (pts != sys::AV_NOPTS_VALUE).then_some(pts)
+    }
+
+    pub(crate) fn colorspace(&self) -> sys::AVColorSpace {
+        unsafe { (*self.ptr.as_ptr()).colorspace }
+    }
+
+    pub(crate) fn color_range(&self) -> sys::AVColorRange {
+        unsafe { (*self.ptr.as_ptr()).color_range }
     }
 
     pub(crate) fn data(&self, plane: usize) -> *mut u8 {

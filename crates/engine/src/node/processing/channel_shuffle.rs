@@ -145,6 +145,7 @@ impl GpuCompileNode for ChannelShuffle {
             texture,
             domain: source.domain,
             metadata: source.metadata,
+            bounds: source.bounds,
         }))
     }
 }

@@ -85,6 +85,15 @@ jobs:
           vulkaninfo --summary
           pnpm test:integration
 
+      - name: Test lumen-server HTTP API
+        env:
+          LUMEN_GPU_FORCE_FALLBACK_ADAPTER: "1"
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+          WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER: "1"
+          WGPU_BACKEND: vulkan
+          WGPU_POWER_PREF: none
+        run: cargo test -p lumen-server --features cli,vulkan --bin lumen-server --test http_api
+
       - name: Check Rust formatting
         run: cargo fmt -- --check
 

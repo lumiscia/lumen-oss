@@ -1,17 +1,23 @@
 #![cfg(target_os = "linux")]
 
-use std::{ffi::CStr, mem::MaybeUninit, os::fd::OwnedFd};
+use std::{
+    ffi::CStr,
+    os::fd::{AsRawFd, IntoRawFd, OwnedFd},
+    ptr,
+};
 
 use cudarc::driver::{result, sys};
 
-use super::CudaExternalMemoryHandle;
+use super::CudaContext;
 
 use cudarc::driver::sys::CUarray_format_enum::CU_AD_FORMAT_UNSIGNED_INT8;
 const CUDA_ARRAY3D_COLOR_ATTACHMENT: u32 = 0x20;
 use cudarc::driver::sys::CUmemorytype_enum::{CU_MEMORYTYPE_ARRAY, CU_MEMORYTYPE_DEVICE};
 
 pub struct ImportedCudaExternalImage {
+    context: CudaContext,
     external_memory: sys::CUexternalMemory,
+    /// Null until the external memory has been mapped.
     mipmapped_array: sys::CUmipmappedArray,
     level_zero: sys::CUarray,
 }
@@ -28,20 +34,35 @@ impl ImportedCudaExternalImage {
 
 impl Drop for ImportedCudaExternalImage {
     fn drop(&mut self) {
+        let _ = self.context.set_current();
+        if !self.mipmapped_array.is_null() {
+            let _ = unsafe { sys::cuMipmappedArrayDestroy(self.mipmapped_array) };
+        }
         let _ = unsafe { result::external_memory::destroy_external_memory(self.external_memory) };
     }
 }
 
-pub fn import_vulkan_opaque_fd_image(
-    memory: CudaExternalMemoryHandle,
+/// Maps Vulkan memory exported as an opaque fd into `context`. CUDA owns `fd` once the import
+/// succeeds; on failure it is closed here.
+pub fn import_owned_vulkan_opaque_fd_image(
+    context: &CudaContext,
+    fd: OwnedFd,
     allocation_size: u64,
     width: u32,
     height: u32,
 ) -> Result<ImportedCudaExternalImage, String> {
-    let CudaExternalMemoryHandle::OpaqueFd(fd) = memory;
-    let external_memory =
-        unsafe { result::external_memory::import_external_memory_opaque_fd(fd, allocation_size) }
-            .map_err(driver_error)?;
+    context.set_current()?;
+    let external_memory = unsafe {
+        result::external_memory::import_external_memory_opaque_fd(fd.as_raw_fd(), allocation_size)
+    }
+    .map_err(driver_error)?;
+    let _ = fd.into_raw_fd();
+    let mut image = ImportedCudaExternalImage {
+        context: context.clone(),
+        external_memory,
+        mipmapped_array: ptr::null_mut(),
+        level_zero: ptr::null_mut(),
+    };
 
     let array_desc = sys::CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC {
         offset: 0,
@@ -56,50 +77,19 @@ pub fn import_vulkan_opaque_fd_image(
         numLevels: 1,
         reserved: [0; 16],
     };
-
-    let mut mipmapped_array = MaybeUninit::<sys::CUmipmappedArray>::uninit();
-    if let Err(error) = unsafe {
+    unsafe {
         sys::cuExternalMemoryGetMappedMipmappedArray(
-            mipmapped_array.as_mut_ptr(),
+            &mut image.mipmapped_array,
             external_memory,
             &array_desc,
         )
         .result()
-    } {
-        let _ = unsafe { result::external_memory::destroy_external_memory(external_memory) };
-        return Err(driver_error(error));
+        .map_err(driver_error)?;
+        sys::cuMipmappedArrayGetLevel(&mut image.level_zero, image.mipmapped_array, 0)
+            .result()
+            .map_err(driver_error)?;
     }
-    let mipmapped_array = unsafe { mipmapped_array.assume_init() };
-
-    let mut level_zero = MaybeUninit::<sys::CUarray>::uninit();
-    if let Err(error) = unsafe {
-        sys::cuMipmappedArrayGetLevel(level_zero.as_mut_ptr(), mipmapped_array, 0).result()
-    } {
-        let _ = unsafe { result::external_memory::destroy_external_memory(external_memory) };
-        return Err(driver_error(error));
-    }
-
-    Ok(ImportedCudaExternalImage {
-        external_memory,
-        mipmapped_array,
-        level_zero: unsafe { level_zero.assume_init() },
-    })
-}
-
-pub fn import_owned_vulkan_opaque_fd_image(
-    fd: OwnedFd,
-    allocation_size: u64,
-    width: u32,
-    height: u32,
-) -> Result<ImportedCudaExternalImage, String> {
-    use std::os::fd::IntoRawFd;
-
-    import_vulkan_opaque_fd_image(
-        CudaExternalMemoryHandle::OpaqueFd(fd.into_raw_fd()),
-        allocation_size,
-        width,
-        height,
-    )
+    Ok(image)
 }
 
 pub fn copy_image_to_rgba_frame(
