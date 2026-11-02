@@ -35,6 +35,8 @@ Known required packages on Debian/Ubuntu-style systems:
 - `pkg-config`
 - `vulkan-tools`
 
+Native audio decoding runs the `ffmpeg` executable, which must be on `PATH` (the `ffmpeg` package on Debian/Ubuntu). CI doesn't install it. Renders without audio don't need it.
+
 Hardware Vulkan rendering on AMD, Intel, and NVIDIA should use the same renderer family, but hardware-specific behavior is not fully represented by CI today.
 
 ### macOS

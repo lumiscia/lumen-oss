@@ -159,6 +159,15 @@ pub const ALLOWED_INPUT_PROTOCOLS: &str = "file";
 /// `.y` makes it open `.U` and `.V` siblings, and `.svg` and `.raw` pick decoders by name alone.
 const IMAGE2_EXTENSIONS: [&str; 3] = ["jpg", "jpeg", "bmp"];
 
+/// Codecs `image2` may read. It picks one by probing the file's bytes, without consulting
+/// `format_whitelist`, so a renamed file could otherwise reach any image decoder FFmpeg has.
+const IMAGE2_CODECS: [sys::AVCodecID; 2] = [
+    sys::AVCodecID::AV_CODEC_ID_MJPEG,
+    sys::AVCodecID::AV_CODEC_ID_BMP,
+];
+
+const UNSUPPORTED_INPUT: &str = "container format or protocol is not supported";
+
 /// The demuxers `path` can be opened with. `image2` is only safe with `pattern_type=none`, which makes
 /// it read `path` itself instead of expanding `%d` and globs. Given a name with no file behind it,
 /// that option leaves an empty stream that opens successfully, so `image2` also needs a real file.
@@ -176,6 +185,19 @@ fn input_formats(path: &str) -> String {
         format!("{ALLOWED_INPUT_FORMATS},image2")
     } else {
         ALLOWED_INPUT_FORMATS.to_string()
+    }
+}
+
+/// Whether an opened input is `image2` holding a codec outside `IMAGE2_CODECS`.
+unsafe fn is_refused_image2(input: *const sys::AVFormatContext) -> bool {
+    unsafe {
+        if CStr::from_ptr((*(*input).iformat).name).to_bytes() != b"image2" {
+            return false;
+        }
+        (0..(*input).nb_streams as usize).any(|index| {
+            let params = (**(*input).streams.add(index)).codecpar;
+            !IMAGE2_CODECS.contains(&(*params).codec_id)
+        })
     }
 }
 
@@ -231,10 +253,17 @@ impl InputContext {
             opened.map_err(|mut error| {
                 // FFmpeg reports a format or protocol outside the allowlists as EINVAL.
                 if error.code == Some(-libc::EINVAL) {
-                    error.message = "container format or protocol is not supported".to_string();
+                    error.message = UNSUPPORTED_INPUT.to_string();
                 }
                 error.with_path(path.clone())
             })?;
+            if is_refused_image2(ptr) {
+                sys::avformat_close_input(&mut ptr);
+                return Err(
+                    crate::FfmpegError::new("avformat_open_input", UNSUPPORTED_INPUT)
+                        .with_path(path),
+                );
+            }
             ffi::check(
                 sys::avformat_find_stream_info(ptr, ptr::null_mut()),
                 "avformat_find_stream_info",

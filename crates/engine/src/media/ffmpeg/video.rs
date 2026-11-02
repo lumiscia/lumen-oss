@@ -180,10 +180,7 @@ impl LibavStreamDecoder {
         source: &str,
         prefer_hardware_decode: bool,
     ) -> Result<DecoderComponents, MediaError> {
-        let input = InputContext::open(source.to_string()).map_err(|err| MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!("failed opening media source: {err}"),
-        })?;
+        let mut input = open_input(source)?;
         let stream = input
             .best_video_stream()
             .map_err(|err| MediaError::Decode {
@@ -202,17 +199,22 @@ impl LibavStreamDecoder {
         let fps = resolve_stream_fps(&stream, source)?;
         let width = stream.width;
         let height = stream.height;
-        let frame_count = resolve_frame_count(&stream, input.presented_duration_us(), fps)
-            .or_else(|| {
-                input
-                    .is_image()
-                    .then(|| count_frames(source, stream_index))
-                    .flatten()
-            })
-            .ok_or_else(|| MediaError::Decode {
-                media_source: source.to_string(),
-                details: "unable to determine stream frame count".to_string(),
-            })?;
+        let frame_count = match resolve_frame_count(&stream, input.presented_duration_us(), fps) {
+            Some(frame_count) => Some(frame_count),
+            None if input.is_image() => {
+                let frame_count = count_frames(&mut input, stream_index);
+                // An image packet can hold the whole file, so the spent input goes before the next
+                // one reads it again.
+                drop(input);
+                input = open_input(source)?;
+                frame_count
+            }
+            None => None,
+        }
+        .ok_or_else(|| MediaError::Decode {
+            media_source: source.to_string(),
+            details: "unable to determine stream frame count".to_string(),
+        })?;
         let (decoder, gpu_decode_status) =
             open_video_decoder(source, &input, &stream, prefer_hardware_decode)?;
 
@@ -704,9 +706,15 @@ fn resolve_frame_count(
     Some((seconds * fps).round().clamp(1.0, f64::from(u32::MAX)) as u32)
 }
 
-/// Reads `source` through a separate input, so the caller's stays at the start of the file.
-fn count_frames(source: &str, stream_index: usize) -> Option<u32> {
-    let mut input = InputContext::open(source.to_string()).ok()?;
+fn open_input(source: &str) -> Result<InputContext, MediaError> {
+    InputContext::open(source.to_string()).map_err(|err| MediaError::Decode {
+        media_source: source.to_string(),
+        details: format!("failed opening media source: {err}"),
+    })
+}
+
+/// Reads `input` to its end, releasing each packet before reading the next.
+fn count_frames(input: &mut InputContext, stream_index: usize) -> Option<u32> {
     let mut frames = 0;
     while let Some(packet) = input.read_packet().ok()? {
         if packet.stream_index() == stream_index {

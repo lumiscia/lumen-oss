@@ -42,6 +42,20 @@ fn flat_jpeg(width: u16, height: u16) -> Vec<u8> {
     jpeg
 }
 
+/// A 16x16 RGB PCX. The non-zero filler byte drops `pcx_pipe`'s probe score below `image2`'s, which
+/// is what lets a renamed PCX reach `image2`.
+fn low_score_pcx() -> Vec<u8> {
+    let mut pcx = vec![0; 128];
+    pcx[..4].copy_from_slice(&[10, 5, 1, 8]);
+    pcx[8] = 15;
+    pcx[10] = 15;
+    pcx[65] = 3;
+    pcx[66] = 16;
+    pcx[74] = 1;
+    pcx.resize(128 + 16 * 3 * 16, 0x40);
+    pcx
+}
+
 fn video_size(path: &Path) -> (u32, u32) {
     let input = InputContext::open(path.to_string_lossy().to_string())
         .unwrap_or_else(|error| panic!("{} must open: {error}", path.display()));
@@ -153,6 +167,16 @@ fn image_paths_never_read_a_sibling_file() {
         fs::write(dir.join(file), vec![0; 4096]).expect("write plane");
     }
     assert_refused(&dir.join("plane.y"));
+}
+
+#[test]
+fn renamed_images_cannot_reach_other_decoders_through_image2() {
+    let dir = TempDir::new("renamed");
+    for file in ["image.pcx", "image.jpg", "image.jpeg", "image.bmp"] {
+        let path = dir.join(file);
+        fs::write(&path, low_score_pcx()).expect("write pcx");
+        assert_refused(&path);
+    }
 }
 
 #[test]
