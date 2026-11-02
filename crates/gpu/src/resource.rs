@@ -1,4 +1,4 @@
-use crate::{BufferId, NodeKey, SamplerId, Size, TextureDomain, TextureId};
+use crate::{BufferId, SamplerId, Size, TextureDomain, TextureId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureDesc {
@@ -66,27 +66,6 @@ impl BufferDesc {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         }
     }
-
-    pub fn vertex(size: u64) -> Self {
-        Self {
-            size,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        }
-    }
-
-    pub fn index(size: u64) -> Self {
-        Self {
-            size,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-        }
-    }
-
-    pub fn indirect(size: u64) -> Self {
-        Self {
-            size,
-            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +73,6 @@ pub struct TextureResource {
     pub id: TextureId,
     pub label: Option<String>,
     pub desc: TextureDesc,
-    pub owner: Option<NodeKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +80,6 @@ pub struct BufferResource {
     pub id: BufferId,
     pub label: Option<String>,
     pub desc: BufferDesc,
-    pub owner: Option<NodeKey>,
 }
 
 #[derive(Debug, Clone)]

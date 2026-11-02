@@ -114,28 +114,21 @@ impl GpuCompileNode for Shadow {
             "shadow",
             source,
             shadow_domain,
-            gaussian::GaussianOptions {
-                param_slot: 1,
-                shifted: true,
-            },
+            gaussian::GaussianOptions { shifted: true },
         );
-        let owner = lumen_gpu::NodeKey(self.id.0);
         let builder = ctx.builder_mut();
-        let output = builder.texture_for(
-            owner,
+        let output = builder.texture(
             Some(format!("shadow:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
                 .with_domain(domain),
         );
-        let params = builder.buffer_for(
-            owner,
+        let params = builder.buffer(
             Some(format!("shadow:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ShadowParams>() as u64),
         );
         let stage = lumen_gpu::wgpu::ShaderStages::COMPUTE;
-        let program = builder.program_for(
-            owner,
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+        let program = builder.program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some("shadow-composite".to_string()),
                 shader: COMPOSITE_SHADER.to_string(),
                 entry: "composite_main".to_string(),
@@ -150,11 +143,10 @@ impl GpuCompileNode for Shadow {
                         lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
                     ),
                 ]),
-            }),
-        );
+            },
+        ));
         builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("shadow:{}:composite", self.id.0)),
-            owner: Some(owner),
             program,
             bindings: vec![
                 lumen_gpu::Binding::sampled_texture(0, 0, blurred.output),
@@ -162,12 +154,8 @@ impl GpuCompileNode for Shadow {
                 lumen_gpu::Binding::uniform(0, 2, params),
                 lumen_gpu::Binding::storage_texture(0, 3, output),
             ],
-            dispatch: compiler::dispatch_for(size).into(),
+            dispatch: compiler::dispatch_for(size),
         });
-        builder.param(
-            lumen_gpu::ParamKey { owner, slot: 0 },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
         ctx.register_compiled_node(CompiledShadow {
             node_id: self.id,
             params: self.params.clone(),

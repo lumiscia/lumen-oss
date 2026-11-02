@@ -77,27 +77,23 @@ impl GpuCompileNode for ColorGrade {
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
         let size = source.domain.storage_size;
-        let texture = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let texture = ctx.builder_mut().texture(
             Some(format!("color-grade:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
         let params =
-            ctx.builder_mut().buffer_for(
-                lumen_gpu::NodeKey(self.id.0),
+            ctx.builder_mut().buffer(
                 Some(format!("color-grade:{}:params", self.id.0)),
                 lumen_gpu::BufferDesc::uniform(
                     std::mem::size_of::<compiler::ColorGradeParams>() as u64
                 ),
             );
-        let lut = ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let lut = ctx.builder_mut().buffer(
             Some(format!("color-grade:{}:lut", self.id.0)),
             lumen_gpu::BufferDesc::storage(std::mem::size_of::<compiler::ColorGradeLut>() as u64),
         );
-        let program = ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(self.id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some("color-grade".to_string()),
                 shader: SHADER.to_string(),
                 entry: "cs_main".to_string(),
@@ -122,11 +118,10 @@ impl GpuCompileNode for ColorGrade {
                         lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
                     ),
                 ]),
-            }),
-        );
+            },
+        ));
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("color-grade:{}:apply", self.id.0)),
-            owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
             bindings: vec![
                 lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
@@ -134,22 +129,8 @@ impl GpuCompileNode for ColorGrade {
                 lumen_gpu::Binding::storage_buffer(0, 2, lut),
                 lumen_gpu::Binding::storage_texture(0, 3, texture),
             ],
-            dispatch: compiler::dispatch_for(size).into(),
+            dispatch: compiler::dispatch_for(size),
         });
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 1,
-            },
-            lumen_gpu::ParamTarget::Buffer(lut),
-        );
         ctx.register_compiled_node(CompiledColorGrade {
             node_id: self.id,
             params: self.params.clone(),

@@ -111,6 +111,33 @@ impl std::ops::DerefMut for TestRenderer {
     }
 }
 
+/// Uniform buffers bound by the passes compiled for `node`, whose labels carry its id.
+fn uniform_buffers_of(plan: &lumen_gpu::RenderPlan, node: NodeId) -> Vec<lumen_gpu::BufferId> {
+    let marker = format!(":{}:", node.0);
+    plan.passes()
+        .iter()
+        .filter_map(|pass| match &pass.desc {
+            lumen_gpu::PassDesc::Compute(desc)
+                if desc
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.contains(&marker)) =>
+            {
+                Some(desc)
+            }
+            _ => None,
+        })
+        .flat_map(|desc| &desc.bindings)
+        .filter_map(|binding| match binding.resource {
+            lumen_gpu::BindingResource::Buffer {
+                id,
+                access: lumen_gpu::BufferAccess::Uniform,
+            } => Some(id),
+            _ => None,
+        })
+        .collect()
+}
+
 fn build_errors(graph: Graph) -> Vec<LumenError> {
     CompositionBuilder::new(
         graph,
@@ -483,7 +510,6 @@ fn compiles_media_input_as_frame_texture_boundary() {
     assert_eq!(compiled.plan.programs().len(), 0);
     assert_eq!(compiled.plan.passes().len(), 0);
     assert_eq!(compiled.compiled_nodes.len(), 1);
-    assert_eq!(compiled.plan.params().len(), 1);
     assert_eq!(
         compiled.output.domain.storage_size,
         lumen_gpu::Size::new(16, 9)
@@ -1045,19 +1071,7 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
         CompileContext::with_frame(&composition, 2, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
             .compile()
             .unwrap();
-    let exposure_buffer = compiled
-        .plan
-        .params()
-        .iter()
-        .find_map(|param| match param.target {
-            lumen_gpu::ParamTarget::Buffer(buffer)
-                if param.key.owner == lumen_gpu::NodeKey(exposure.0) =>
-            {
-                Some(buffer)
-            }
-            _ => None,
-        })
-        .unwrap();
+    let exposure_buffer = uniform_buffers_of(&compiled.plan, exposure)[0];
     let bound = FrameBindContext::new(&composition, 2)
         .bind(&compiled)
         .unwrap();
@@ -1134,19 +1148,7 @@ fn time_remap_binds_shared_source_once_per_frame_branch() {
         CompileContext::with_frame(&composition, 2, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
             .compile()
             .unwrap();
-    let exposure_buffers = compiled
-        .plan
-        .params()
-        .iter()
-        .filter_map(|param| match param.target {
-            lumen_gpu::ParamTarget::Buffer(buffer)
-                if param.key.owner == lumen_gpu::NodeKey(exposure.0) =>
-            {
-                Some(buffer)
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let exposure_buffers = uniform_buffers_of(&compiled.plan, exposure);
     assert_eq!(exposure_buffers.len(), 2);
 
     // Bind at a different frame than the compile frame, as cached plans are reused across frames.
@@ -1204,19 +1206,7 @@ fn opacity_compiles_and_binds_animated_multiplier() {
 
     let composition = test_composition(graph);
     let compiled = CompileContext::new(&composition).compile().unwrap();
-    let opacity_buffer = compiled
-        .plan
-        .params()
-        .iter()
-        .find_map(|param| match param.target {
-            lumen_gpu::ParamTarget::Buffer(buffer)
-                if param.key.owner == lumen_gpu::NodeKey(opacity.0) =>
-            {
-                Some(buffer)
-            }
-            _ => None,
-        })
-        .unwrap();
+    let opacity_buffer = uniform_buffers_of(&compiled.plan, opacity)[0];
     let opacity_raster = compiled
         .node_outputs
         .get(&PortRef::new(opacity, "output".to_string()))
@@ -1297,19 +1287,7 @@ fn opacity_preserves_unpremultiplied_rgb_representation() {
 
     let composition = test_composition(graph);
     let compiled = CompileContext::new(&composition).compile().unwrap();
-    let opacity_buffer = compiled
-        .plan
-        .params()
-        .iter()
-        .find_map(|param| match param.target {
-            lumen_gpu::ParamTarget::Buffer(buffer)
-                if param.key.owner == lumen_gpu::NodeKey(opacity.0) =>
-            {
-                Some(buffer)
-            }
-            _ => None,
-        })
-        .unwrap();
+    let opacity_buffer = uniform_buffers_of(&compiled.plan, opacity)[0];
     let opacity_raster = compiled
         .node_outputs
         .get(&PortRef::new(opacity, "output".to_string()))
@@ -1622,7 +1600,6 @@ fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
     assert_eq!(compiled.plan.buffers().len(), 7);
     assert_eq!(compiled.plan.programs().len(), 6);
     assert_eq!(compiled.plan.passes().len(), 6);
-    assert_eq!(compiled.plan.params().len(), 7);
     assert_eq!(compiled.compiled_nodes.len(), 6);
     assert!(compiled.compiled_nodes.contains_key(&alpha));
     assert!(compiled.compiled_nodes.contains_key(&shuffle));
@@ -2817,11 +2794,11 @@ fn small_shape_compiles_to_a_texture_and_dispatch_around_its_bounds() {
     assert_eq!(texture.desc.domain.storage_size, data.size());
     assert_eq!(
         dispatch,
-        lumen_gpu::ComputeDispatch::Direct(lumen_gpu::Dispatch {
+        lumen_gpu::Dispatch {
             x: data.width.div_ceil(8),
             y: data.height.div_ceil(8),
             z: 1,
-        })
+        }
     );
     assert_eq!(
         compiled.output.domain.storage_size,
@@ -10808,8 +10785,7 @@ fn replacing_a_kept_texture_renders_it_again() {
             usage: desc.usage,
             view_formats: &[],
         });
-    gpu.replace_texture_discard_old(kept.texture, blank, desc)
-        .unwrap();
+    gpu.replace_texture(kept.texture, blank, desc).unwrap();
     let pixels = render_rgba8(&mut renderer, &composition, 2, &EmptyMediaStore);
     assert!(pixels == uncached_rgba8(&mut reference, &composition, 2, &EmptyMediaStore));
 }

@@ -66,24 +66,20 @@ impl GpuCompileNode for Curves {
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
         let size = source.domain.storage_size;
-        let texture = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let texture = ctx.builder_mut().texture(
             Some(format!("curves:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let params = ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let params = ctx.builder_mut().buffer(
             Some(format!("curves:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::CurvesParams>() as u64),
         );
-        let curve = ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let curve = ctx.builder_mut().buffer(
             Some(format!("curves:{}:table", self.id.0)),
             lumen_gpu::BufferDesc::storage(std::mem::size_of::<compiler::CurvesTable>() as u64),
         );
-        let program = ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(self.id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some("curves".to_string()),
                 shader: SHADER.to_string(),
                 entry: "cs_main".to_string(),
@@ -108,11 +104,10 @@ impl GpuCompileNode for Curves {
                         lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
                     ),
                 ]),
-            }),
-        );
+            },
+        ));
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("curves:{}:apply", self.id.0)),
-            owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
             bindings: vec![
                 lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
@@ -120,22 +115,8 @@ impl GpuCompileNode for Curves {
                 lumen_gpu::Binding::storage_buffer(0, 2, curve),
                 lumen_gpu::Binding::storage_texture(0, 3, texture),
             ],
-            dispatch: compiler::dispatch_for(size).into(),
+            dispatch: compiler::dispatch_for(size),
         });
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 1,
-            },
-            lumen_gpu::ParamTarget::Buffer(curve),
-        );
         ctx.register_compiled_node(CompiledCurves {
             node_id: self.id,
             params: self.params.clone(),

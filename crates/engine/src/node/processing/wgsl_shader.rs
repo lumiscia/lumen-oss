@@ -175,21 +175,17 @@ impl GpuCompileNode for WgslShader {
         )?;
         let shader = interface.assemble(&user_source, inputs.len());
 
-        let owner = lumen_gpu::NodeKey(self.id.0);
         let size = first.domain.storage_size;
         let builder = ctx.builder_mut();
-        let output = builder.texture_for(
-            owner,
+        let output = builder.texture(
             Some(format!("wgsl-shader:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let params_buffer = builder.buffer_for(
-            owner,
+        let params_buffer = builder.buffer(
             Some(format!("wgsl-shader:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(interface.uniform_size as u64),
         );
-        let globals_buffer = builder.buffer_for(
-            owner,
+        let globals_buffer = builder.buffer(
             Some(format!("wgsl-shader:{}:globals", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<LumenGlobals>() as u64),
         );
@@ -233,31 +229,20 @@ impl GpuCompileNode for WgslShader {
             layout.push(lumen_gpu::BindingLayoutEntry::texture(binding, stage));
             bindings.push(lumen_gpu::Binding::sampled_texture(0, binding, texture));
         }
-        let program = builder.program_for(
-            owner,
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+        let program = builder.program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some(format!("wgsl-shader:{}", self.id.0)),
                 shader,
                 entry: "cs_main".to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
-            }),
-        );
+            },
+        ));
         builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("wgsl-shader:{}:apply", self.id.0)),
-            owner: Some(owner),
             program,
             bindings,
-            dispatch: compiler::dispatch_for(size).into(),
+            dispatch: compiler::dispatch_for(size),
         });
-        for (slot, buffer) in [params_buffer, globals_buffer].into_iter().enumerate() {
-            builder.param(
-                lumen_gpu::ParamKey {
-                    owner,
-                    slot: slot as u32,
-                },
-                lumen_gpu::ParamTarget::Buffer(buffer),
-            );
-        }
 
         ctx.register_compiled_node(CompiledWgslShader {
             node_id: self.id,
@@ -289,10 +274,8 @@ fn premultiplied_input(
     if input.metadata.alpha_mode == AlphaMode::Premultiplied {
         return input.texture;
     }
-    let owner = lumen_gpu::NodeKey(node_id.0);
     let size = input.domain.storage_size;
-    let texture = builder.texture_for(
-        owner,
+    let texture = builder.texture(
         Some(format!(
             "wgsl-shader:{}:input{index}:premultiplied",
             node_id.0
@@ -300,9 +283,8 @@ fn premultiplied_input(
         lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
     );
     let stage = lumen_gpu::wgpu::ShaderStages::COMPUTE;
-    let program = builder.program_for(
-        owner,
-        lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+    let program = builder.program(lumen_gpu::ProgramDesc::Compute(
+        lumen_gpu::ComputeProgramDesc {
             label: Some("wgsl-shader-premultiply".to_string()),
             shader: PREMULTIPLY_SHADER.to_string(),
             entry: "cs_main".to_string(),
@@ -315,20 +297,19 @@ fn premultiplied_input(
                     lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
                 ),
             ]),
-        }),
-    );
+        },
+    ));
     builder.compute_pass(lumen_gpu::ComputePassDesc {
         label: Some(format!(
             "wgsl-shader:{}:premultiply-input{index}",
             node_id.0
         )),
-        owner: Some(owner),
         program,
         bindings: vec![
             lumen_gpu::Binding::sampled_texture(0, 0, input.texture),
             lumen_gpu::Binding::storage_texture(0, OUTPUT_BINDING, texture),
         ],
-        dispatch: compiler::dispatch_for(size).into(),
+        dispatch: compiler::dispatch_for(size),
     });
     texture
 }

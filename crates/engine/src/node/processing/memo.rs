@@ -71,8 +71,7 @@ impl GpuCompileNode for Memo {
             .into());
         }
         let size = source.domain.storage_size;
-        let texture = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let texture = ctx.builder_mut().texture(
             Some(format!("memo:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
                 .with_domain(source.domain),
@@ -93,8 +92,7 @@ impl GpuCompileNode for Memo {
         // Every snapshot carries bounds, so plans whose sources differ in publishing them can
         // share it. They are the source's when it publishes any and cover all texels otherwise.
         let source_bounds = source.bounds;
-        let bounds = ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let bounds = ctx.builder_mut().buffer(
             Some(format!("memo:{}:bounds", self.id.0)),
             lumen_gpu::BufferDesc {
                 size: std::mem::size_of::<compiler::CropParams>() as u64,
@@ -117,9 +115,8 @@ impl GpuCompileNode for Memo {
             false,
         ));
         bindings.push(lumen_gpu::Binding::storage_buffer(0, 3, bounds));
-        let program = ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(self.id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some("memo".to_string()),
                 shader: if source_bounds.is_some() {
                     SHADER
@@ -129,16 +126,15 @@ impl GpuCompileNode for Memo {
                 .to_string(),
                 entry: "cs_main".to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
-            }),
-        );
+            },
+        ));
         // Loads rather than copies texels, since media textures may be replaced by ones of
         // another format.
         let copy = ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("memo:{}:copy", self.id.0)),
-            owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
             bindings,
-            dispatch: compiler::dispatch_for(size).into(),
+            dispatch: compiler::dispatch_for(size),
         });
         ctx.record_memo(texture, bounds, copy);
         Ok(CompiledOutput::Raster(RasterHandle {

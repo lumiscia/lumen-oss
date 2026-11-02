@@ -267,17 +267,9 @@ impl GpuCompileNode for MediaIn {
         }
 
         let size = self.native_size(ctx).unwrap_or_else(|| ctx.canvas_size());
-        let texture = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let texture = ctx.builder_mut().texture(
             Some(format!("media-in:{}:frame", self.id.0)),
             lumen_gpu::TextureDesc::sampled(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
-        );
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Texture(texture),
         );
         ctx.register_compiled_node(CompiledMediaInput {
             node_id: self.id,

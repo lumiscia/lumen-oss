@@ -680,14 +680,6 @@ fn pass_accesses(pass: &lumen_gpu::Pass) -> PassAccess {
     match &pass.desc {
         lumen_gpu::PassDesc::Render(desc) => {
             bindings(&desc.bindings);
-            access
-                .reads
-                .extend(desc.vertex_buffers.iter().map(|id| Resource::Buffer(*id)));
-            access.reads.extend(
-                desc.index_buffer
-                    .iter()
-                    .map(|(id, _)| Resource::Buffer(*id)),
-            );
             for target in &desc.targets {
                 access.writes.push(Resource::Texture(target.texture));
                 if target.load == lumen_gpu::LoadOp::Load {
@@ -697,9 +689,6 @@ fn pass_accesses(pass: &lumen_gpu::Pass) -> PassAccess {
         }
         lumen_gpu::PassDesc::Compute(desc) => {
             bindings(&desc.bindings);
-            if let lumen_gpu::ComputeDispatch::Indirect { buffer, .. } = desc.dispatch {
-                access.reads.push(Resource::Buffer(buffer));
-            }
         }
         lumen_gpu::PassDesc::CopyTexture(desc) => {
             access.reads.push(Resource::Texture(desc.source));
