@@ -12553,3 +12553,32 @@ fn shrink_to_fit_narrows_the_stroke_with_the_text() {
         "{reach} at scale {scale}"
     );
 }
+
+#[test]
+fn faded_glyph_fades_its_stroke_and_fill_as_one() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    for render_mode in ["raster", "msdf"] {
+        for align in ["outside", "center"] {
+            let params = json!({
+                "font_size": 64,
+                "position": [40, 20],
+                "render_mode": render_mode,
+                "glyph_opacity": 0.5,
+                "stroke": { "paint": [255, 0, 0, 255], "width": 4, "align": align }
+            });
+            let pixels =
+                render_text_params(&mut renderer, decorated_text(json!("I"), params), size);
+            // Where the fill and stroke overlap, the pair shows at half opacity, not as two
+            // layers at half opacity each.
+            let most = pixels.chunks_exact(4).map(|pixel| pixel[3]).max().unwrap();
+            assert!(
+                most.abs_diff(128) <= 2,
+                "{render_mode} {align}: alpha {most}"
+            );
+        }
+    }
+}

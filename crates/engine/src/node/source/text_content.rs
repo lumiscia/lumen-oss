@@ -293,10 +293,8 @@ pub enum TextStrokeAlign {
 /// An outline along glyphs. Decorations are not stroked. Its fields take literals or
 /// expressions, but the whole stroke cannot be an expression.
 ///
-/// `glyph_opacity` fades a glyph's stroke and fill separately, and strokes are outside the
-/// cluster fade grouping. A faded glyph's outside stroke shows through its fill, and where
-/// the two overlap they add up to more than the glyph's opacity: at 0.5 their overlap is
-/// 0.75 opaque.
+/// `glyph_opacity` fades a glyph's stroke and fill as one, so the fill hides the stroke under it.
+/// Neighbouring glyphs fade separately, so where one's stroke overlaps another both show.
 #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
 #[delegate(properties)]
 pub struct TextStroke {

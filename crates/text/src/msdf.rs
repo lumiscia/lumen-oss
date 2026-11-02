@@ -26,6 +26,7 @@ pub(crate) fn msdf_key(key: CacheKey) -> CacheKey {
 /// The highest range tier. Its field's range, 12288 texels, is wider than the largest atlas, so
 /// strokes that need more are dropped as too large.
 const MAX_STROKE_TIER: u32 = 10;
+const _: () = assert!(MAX_STROKE_TIER <= crate::GLYPH_RANGE_MASK);
 
 /// The distance range in texels of a stroke field of range `tier`.
 fn stroke_range(tier: u32) -> f32 {

@@ -2401,7 +2401,9 @@ impl PlacedGlyph {
         GpuGlyphInstance {
             rect,
             uv_rect,
-            color: glyph.color,
+            opacity: glyph.color[3],
+            partner: 0,
+            _padding: [0; 2],
             mode: self.mode,
             flags,
             offset: [0.0; 2],

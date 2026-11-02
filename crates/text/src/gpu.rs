@@ -34,7 +34,11 @@ pub const GLYPH_CLUSTER_FOLLOWER: u32 = 2;
 /// [`GLYPH_RANGE_MASK`], hold the power of two that its field's distance range is twice
 /// [`MSDF_PX_RANGE`](crate::MSDF_PX_RANGE) times.
 pub const GLYPH_RANGE_SHIFT: u32 = 2;
-pub const GLYPH_RANGE_MASK: u32 = 0x3f;
+pub const GLYPH_RANGE_MASK: u32 = 0xf;
+/// Bit of [`GpuGlyphInstance::flags`] set on a faded glyph's fill or stroke that is drawn
+/// under its other layer, [`GpuGlyphInstance::partner`]. It is drawn at the opacity that
+/// leaves the pair as if composited opaque and then faded.
+pub const GLYPH_PARTNER: u32 = 64;
 /// The bits of [`GpuGlyphInstance::flags`] from here up count the follower instances after a
 /// cluster's lead, which draws the cluster's instances as one.
 pub const GLYPH_CLUSTER_SHIFT: u32 = 8;
@@ -54,7 +58,11 @@ pub struct GpuGlyphInstance {
     pub rect: [f32; 4],
     /// Atlas texel rectangle as `[x0, y0, x1, y1]`.
     pub uv_rect: [f32; 4],
-    pub color: [f32; 4],
+    /// Opacity the instance is drawn at.
+    pub opacity: f32,
+    /// With [`GLYPH_PARTNER`], the index of the instance drawn over this one.
+    pub partner: u32,
+    pub(crate) _padding: [u32; 2],
     /// The glyph's `GLYPH_MODE_*` value in the bits of [`GLYPH_MODE_MASK`], and the index of the
     /// paint it is filled with from [`GLYPH_PAINT_SHIFT`] up. Use [`Self::render_mode`] and
     /// [`Self::paint`] to read them.
@@ -98,7 +106,9 @@ impl GpuGlyphInstance {
         let mut instance = Self {
             rect,
             uv_rect: [radius, phase, 0.0, 0.0],
-            color: [1.0; 4],
+            opacity: 1.0,
+            partner: 0,
+            _padding: [0; 2],
             mode: GLYPH_MODE_RECT,
             flags: flags | shape << RECT_SHAPE_SHIFT,
             offset: [0.0; 2],

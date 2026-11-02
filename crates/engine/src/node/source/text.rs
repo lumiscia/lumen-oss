@@ -222,8 +222,7 @@ pub struct TextParams {
     pub highlight: Option<TextHighlight>,
     /// Outline along the glyphs, and along those of spans that leave theirs unset. Off when
     /// absent. It does not change the layout or the measured size. `glyph_opacity` fades a
-    /// glyph's stroke and fill separately, so a faded glyph's outside stroke shows through its
-    /// fill and the two overlap at more than the glyph's opacity (0.75 at 0.5).
+    /// glyph's stroke and fill as one.
     #[meta()]
     pub stroke: Option<TextStroke>,
     /// Horizontal text alignment.
@@ -682,7 +681,7 @@ impl CompiledText {
                 continue;
             };
             instance.set_paint(stroke.paint);
-            instance.color = fill.color;
+            instance.opacity = fill.opacity;
             if fill.flags & lumen_text::GLYPH_TRANSFORMED != 0 {
                 instance.flags |= lumen_text::GLYPH_TRANSFORMED;
                 instance.linear = fill.linear;
@@ -701,6 +700,52 @@ impl CompiledText {
                 state.over_strokes.push(instance);
             } else {
                 state.under_strokes.push(instance);
+            }
+        }
+        // A faded glyph's lower layer reads its partner's coverage, so the pair fades as one,
+        // and the strokes of a fading cluster fade as one like its fills.
+        if prepared.instances.iter().any(|fill| fill.opacity < 1.0) {
+            let fills = before_glyphs + state.under_strokes.len();
+            let overs = fills + prepared.instances.len();
+            let mut stroke_at = vec![None; prepared.instances.len()];
+            let (mut under, mut over) = (0, 0);
+            for &glyph in &prepared.stroke_glyphs {
+                let span = layout.glyphs[prepared.sources[glyph]].item.span as usize;
+                let Some(stroke) = state.strokes[span] else {
+                    continue;
+                };
+                let count = if stroke.over { &mut over } else { &mut under };
+                stroke_at[glyph] = Some((stroke.over, *count));
+                *count += 1;
+            }
+            let mut index = 0;
+            while index < prepared.instances.len() {
+                let lead = index;
+                index += 1
+                    + (prepared.instances[lead].flags >> lumen_text::GLYPH_CLUSTER_SHIFT) as usize;
+                if prepared.instances[lead].opacity >= 1.0 {
+                    continue;
+                }
+                let mut strokes = stroke_at[lead..index].iter().flatten();
+                let Some(&(over, first)) = strokes.next() else {
+                    continue;
+                };
+                let list = if over {
+                    &mut state.over_strokes
+                } else {
+                    &mut state.under_strokes
+                };
+                for &(_, at) in strokes.filter(|(other, _)| *other == over) {
+                    list[at].flags |= lumen_text::GLYPH_CLUSTER_FOLLOWER;
+                    list[first].flags += 1 << lumen_text::GLYPH_CLUSTER_SHIFT;
+                }
+                let (lower, partner) = if over {
+                    (&mut prepared.instances[lead], overs + first)
+                } else {
+                    (&mut list[first], fills + lead)
+                };
+                lower.flags |= lumen_text::GLYPH_PARTNER;
+                lower.partner = partner as u32;
             }
         }
         let stroke_count = state.under_strokes.len() + state.over_strokes.len();
@@ -861,7 +906,7 @@ impl GlyphParams {
             .to_gpu();
             let (offset_x, offset_y) = offset.eval(node_id, expr)?;
             let instance = &mut instances[index];
-            instance.color[3] *= transform.opacity;
+            instance.opacity *= transform.opacity;
             if transform.flags != 0 || (offset_x, offset_y) != (0.0, 0.0) {
                 instance.flags |= lumen_text::GLYPH_TRANSFORMED;
                 instance.linear = transform.linear;
@@ -936,13 +981,13 @@ fn transformed_bounds(instance: &lumen_text::GpuGlyphInstance) -> [f32; 4] {
     )
 }
 
-/// Whether two glyph instances draw with the same transform and colour.
+/// Whether two glyph instances draw with the same transform, opacity and paint.
 fn same_draw(a: &lumen_text::GpuGlyphInstance, b: &lumen_text::GpuGlyphInstance) -> bool {
     let transformed =
         |glyph: &lumen_text::GpuGlyphInstance| glyph.flags & lumen_text::GLYPH_TRANSFORMED != 0;
     transformed(a) == transformed(b)
         && (!transformed(a) || (a.linear == b.linear && a.offset == b.offset))
-        && a.color == b.color
+        && a.opacity == b.opacity
         && a.paint() == b.paint()
 }
 
