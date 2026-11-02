@@ -18,10 +18,8 @@ pub struct CudaNv12ToRgbaConverter {
 
 impl CudaNv12ToRgbaConverter {
     pub fn new(context: Arc<CudaContext>) -> Result<Self, String> {
-        let ptx_src = std::fs::read_to_string(env!("LUMEN_CUDA_NV12_PTX"))
-            .map_err(|error| format!("failed to read NV12 conversion PTX: {error}"))?;
         let module = context
-            .load_module(Ptx::from_src(ptx_src))
+            .load_module(Ptx::from_src(include_str!(env!("LUMEN_CUDA_NV12_PTX"))))
             .map_err(|error| error.to_string())?;
         let function = module
             .load_function("nv12_to_rgba8")

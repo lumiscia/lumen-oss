@@ -129,6 +129,14 @@ impl AvFrame {
         (pts != sys::AV_NOPTS_VALUE).then_some(pts)
     }
 
+    pub(crate) fn colorspace(&self) -> sys::AVColorSpace {
+        unsafe { (*self.ptr.as_ptr()).colorspace }
+    }
+
+    pub(crate) fn color_range(&self) -> sys::AVColorRange {
+        unsafe { (*self.ptr.as_ptr()).color_range }
+    }
+
     pub(crate) fn data(&self, plane: usize) -> *mut u8 {
         unsafe { (*self.ptr.as_ptr()).data[plane] }
     }
