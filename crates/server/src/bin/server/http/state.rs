@@ -1,34 +1,62 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, RwLock},
 };
 
-use crate::server::{ApiRenderJob, RenderNotification, RenderQueueState};
+use axum::body::Bytes;
+use tokio::sync::Semaphore;
+
+use crate::server::{ApiRenderJob, MediaClient, RenderNotification, RenderQueueState};
+
+use super::Args;
 
 #[derive(Clone)]
 pub(super) struct AppState {
     pub api_token: Option<String>,
+    pub media_client: MediaClient,
     pub progress_min_delta: f32,
-    pub renders: Arc<RwLock<HashMap<String, StoredRender>>>,
+    pub render_slots: Arc<Semaphore>,
+    pub renders: Arc<RwLock<RenderRegistry>>,
+    pub retained_renders: usize,
     pub progress_tx: tokio::sync::broadcast::Sender<RenderNotification>,
     pub verbose_debug: bool,
 }
 
 impl AppState {
-    pub fn new(api_token: Option<String>, progress_min_delta: f32, verbose_debug: bool) -> Self {
-        Self {
-            api_token,
-            progress_min_delta: progress_min_delta.clamp(0.0, 1.0),
-            renders: Arc::new(RwLock::new(HashMap::new())),
+    pub fn new(args: Args) -> anyhow::Result<Self> {
+        Ok(Self {
+            api_token: args.token,
+            media_client: MediaClient::new(args.allowed_media_hosts)?,
+            progress_min_delta: args.progress_min_delta.clamp(0.0, 1.0),
+            render_slots: Arc::new(Semaphore::new(args.max_concurrent_renders.get())),
+            renders: Arc::new(RwLock::new(RenderRegistry::default())),
+            retained_renders: args.retained_renders.get(),
             progress_tx: tokio::sync::broadcast::channel(256).0,
-            verbose_debug,
+            verbose_debug: args.verbose_debug,
+        })
+    }
+}
+
+#[derive(Default)]
+pub(super) struct RenderRegistry {
+    pub records: HashMap<String, StoredRender>,
+    finished: VecDeque<String>,
+}
+
+impl RenderRegistry {
+    /// Marks a render finished and drops the oldest finished renders beyond `retained`.
+    pub fn retain_finished(&mut self, id: &str, retained: usize) {
+        self.finished.push_back(id.to_string());
+        while self.finished.len() > retained {
+            if let Some(oldest) = self.finished.pop_front() {
+                self.records.remove(&oldest);
+            }
         }
     }
 }
 
-#[derive(Clone)]
 pub(super) struct StoredRender {
-    pub bytes: Option<Arc<Vec<u8>>>,
+    pub bytes: Option<Bytes>,
     pub last_progress_broadcast: Option<RenderQueueState>,
     pub progress: Option<RenderQueueState>,
     pub render: ApiRenderJob,

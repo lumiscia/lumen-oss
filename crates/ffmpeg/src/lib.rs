@@ -18,7 +18,10 @@ pub use encode::{
     GpuEncodeStage, GpuEncodeTelemetry, GpuTextureEncodeSupport, GpuUploadDescriptor, MuxedEncoder,
     OutputContext, VideoEncoder, VideoEncoderConfig, gpu_texture_encode_support,
 };
-pub use format::{AudioStreamInfo, InputContext, MediaInfo, Rational, VideoStreamInfo};
+pub use format::{
+    ALLOWED_INPUT_FORMATS, ALLOWED_INPUT_PROTOCOLS, AudioStreamInfo, InputContext, MediaInfo,
+    Rational, VideoStreamInfo,
+};
 #[cfg(feature = "cuda")]
 pub use gpu::CudaDecodedFrame;
 #[cfg(all(feature = "cuda", target_os = "linux"))]

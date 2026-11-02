@@ -1,10 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::{
     composition::Composition,
     error::{LumenError, MediaError},
     expr::ExpressionContext,
-    node::{NodeKind, PortRef, source::media_in},
+    node::{NodeId, NodeKind, PortRef, source::media_in},
     scope::{FrameTime, Routed, Scope},
 };
 
@@ -75,14 +75,14 @@ pub fn collect_frame_requirements<M: MediaStore>(
     tracing::trace!(target: "lumen_media", frame, "collect frame requirements");
     let scope = Scope::root(composition);
     let output_port = PortRef::new(scope.media_output()?, "output".to_string());
-    let mut collector = RenderRequirements::default();
+    let mut walk = Walk::default();
     let context = RequirementContext {
         scope,
         media_store,
         frame: f64::from(frame).into(),
     };
-    context.collect_port(&output_port, &mut collector)?;
-    let requirements = FrameRequirements::from(collector);
+    context.collect_port(&output_port, &mut walk)?;
+    let requirements = FrameRequirements::from(walk.requirements);
     tracing::trace!(
         target: "lumen_media",
         frame,
@@ -93,6 +93,15 @@ pub fn collect_frame_requirements<M: MediaStore>(
     Ok(requirements)
 }
 
+/// What a traversal has gathered and visited. The time remaps and clips above a node determine
+/// its scope and frame, so reaching a node again by the same path requires nothing new.
+#[derive(Default)]
+struct Walk {
+    requirements: RenderRequirements,
+    visited: HashSet<(NodeId, Vec<NodeId>)>,
+    instances: Vec<NodeId>,
+}
+
 struct RequirementContext<'a, M: MediaStore> {
     scope: Scope<'a>,
     media_store: &'a M,
@@ -100,12 +109,8 @@ struct RequirementContext<'a, M: MediaStore> {
 }
 
 impl<'a, M: MediaStore> RequirementContext<'a, M> {
-    fn collect_port(
-        &self,
-        port: &PortRef,
-        collector: &mut RenderRequirements,
-    ) -> Result<(), LumenError> {
-        if port.is_empty() {
+    fn collect_port(&self, port: &PortRef, walk: &mut Walk) -> Result<(), LumenError> {
+        if port.is_empty() || !walk.visited.insert((port.id, walk.instances.clone())) {
             return Ok(());
         }
 
@@ -113,10 +118,13 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
             return Ok(());
         };
         if let NodeKind::MediaIn(media_in_node) = node {
-            return self.collect_media_in(media_in_node, collector);
+            return self.collect_media_in(media_in_node, &mut walk.requirements);
         }
         for Routed {
-            port, frame, scope, ..
+            port,
+            frame,
+            scope,
+            instance,
         } in crate::scope::route(&self.scope, node, self.frame, Some(self.media_store))?
         {
             let context = RequirementContext {
@@ -124,7 +132,12 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 media_store: self.media_store,
                 frame,
             };
-            context.collect_port(&port, collector)?;
+            walk.instances.extend(instance);
+            let result = context.collect_port(&port, walk);
+            if instance.is_some() {
+                walk.instances.pop();
+            }
+            result?;
         }
         Ok(())
     }
