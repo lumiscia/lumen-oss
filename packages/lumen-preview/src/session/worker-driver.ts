@@ -1,4 +1,4 @@
-import { LumenAudioEngine, audioTimelineFromCompositionJson } from "../audio-engine.js";
+import { LumenAudioEngine } from "../audio-engine.js";
 import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../worker-host.js";
 import type {
   LumenPreviewDriverHost,
@@ -12,6 +12,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
   #audio: LumenAudioEngine;
   #host: LumenPreviewDriverHost;
   #inputs: LumenPreviewSessionInputs;
+  #loadId = 0;
   #offscreenTransferred = false;
   #timelineFps = 0;
   #worker: Worker | null = null;
@@ -40,6 +41,13 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
     this.#worker = worker;
 
     worker.onmessage = (event: MessageEvent<LumenPreviewWorkerEvent>) => {
+      if (event.data.type === "audio-timeline") {
+        if (event.data.loadId === this.#loadId) {
+          this.#audio.loadAudioTimeline(event.data.timelineJson);
+          this.#syncAudioSources();
+        }
+        return;
+      }
       if (event.data.type === "state") {
         this.#host.updateState(event.data.patch);
         return;
@@ -57,6 +65,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
         type: "initialize",
         canvas: offscreen,
         compositionJson: this.#inputs.compositionJson,
+        loadId: this.#loadId,
         lookaheadCount: this.#inputs.lookaheadCount,
         logLevel: this.#inputs.logLevel,
         mediaSources: this.#inputs.mediaSources,
@@ -64,7 +73,6 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
       [offscreen],
     );
 
-    this.#syncAudio();
     this.#host.attachController(null, (frame) => this.#post({ type: "seek", frame }), {
       pause: () => {
         this.#audio.pause();
@@ -88,7 +96,9 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
     this.#inputs = inputs;
     this.#post({ type: "set-log-level", logLevel: inputs.logLevel });
     this.#post({ type: "set-lookahead-count", lookaheadCount: inputs.lookaheadCount });
-    this.#syncAudio();
+    if (previous.audioSources !== inputs.audioSources) {
+      this.#syncAudioSources();
+    }
 
     if (
       previous.compositionJson !== inputs.compositionJson ||
@@ -97,6 +107,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
       this.#post({
         type: "set-composition",
         compositionJson: inputs.compositionJson,
+        loadId: ++this.#loadId,
         mediaSources: inputs.mediaSources,
       });
     }
@@ -110,10 +121,7 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
     this.#host.detachController();
   }
 
-  #syncAudio(): void {
-    const timeline =
-      this.#inputs.audioTimeline ?? audioTimelineFromCompositionJson(this.#inputs.compositionJson);
-    this.#audio.setAudioTimeline(timeline);
+  #syncAudioSources(): void {
     void this.#audio.syncAudioSources(this.#inputs.audioSources).catch((error: unknown) => {
       this.#host.reportError("sync audio sources", error);
     });

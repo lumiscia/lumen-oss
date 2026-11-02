@@ -6,6 +6,7 @@ import { ImageSession } from "./image-session.js";
 import {
   DEFAULT_BLOB_CACHE_BYTES,
   DEFAULT_URL_CACHE_BYTES,
+  sameMediaInput,
   type MediaSourceDefaults,
 } from "./source.js";
 import type {
@@ -28,20 +29,17 @@ import {
 
 type NormalizedBridgeOptions = Required<LumenMediaBridgeOptions>;
 
+// Async work holds on to its entry and uploads only while the map still holds that same object,
+// so nothing from a removed source can land on a later source with the same id.
 type ImageEntry = {
   session: ImageSession;
   source: MediaSourceInput;
-  syncedVersion: number;
-  version: number;
 };
 
 type VideoEntry = {
   registration: VideoSourceRegistration;
   session: VideoSession;
-  syncedFrames: Set<number>;
   syncedMetadata: VideoFrameMetadata | null;
-  syncedMetadataVersion: number;
-  version: number;
 };
 
 export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
@@ -140,8 +138,6 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     this.images.set(imageId, {
       session: new ImageSession(imageId, source),
       source,
-      syncedVersion: 0,
-      version: (existing?.version ?? 0) + 1,
     });
     await this.loadImageSource(imageId);
   }
@@ -162,14 +158,10 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     }
 
     this.removeVideoSource(streamId);
-    const version = (existing?.version ?? 0) + 1;
     this.videos.set(streamId, {
       registration,
       session: new VideoSession(streamId, registration, this.options),
-      syncedFrames: new Set<number>(),
       syncedMetadata: null,
-      syncedMetadataVersion: 0,
-      version,
     });
     return this.loadVideoMetadata(streamId);
   }
@@ -190,31 +182,24 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
         `image source "${imageId}" is not registered`,
       );
     }
-    if (entry.syncedVersion === entry.version) {
+    if (this.target.hasImage(imageId)) {
       return;
     }
 
-    const version = entry.version;
     const frame = await entry.session.load();
-    const current = this.images.get(imageId);
-    if (!current || current.version !== version) {
-      return;
+    if (this.images.get(imageId) === entry) {
+      this.target.setImage(imageId, frame.width, frame.height, frame.rgba);
     }
-
-    this.target.setImage(imageId, frame.width, frame.height, frame.rgba);
-    current.syncedVersion = version;
   }
 
   async loadVideoMetadata(streamId: string): Promise<VideoFrameMetadata> {
     const entry = this.requireVideoEntry(streamId);
-    if (entry.syncedMetadataVersion === entry.version && entry.syncedMetadata) {
+    if (entry.syncedMetadata) {
       return entry.syncedMetadata;
     }
 
-    const version = entry.version;
     const metadata = await entry.session.loadMetadata();
-    const current = this.videos.get(streamId);
-    if (!current || current.version !== version) {
+    if (this.videos.get(streamId) !== entry) {
       return metadata;
     }
 
@@ -225,19 +210,12 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
       metadata.frameCount,
       metadata.fps,
     );
-    current.syncedMetadata = metadata;
-    current.syncedMetadataVersion = version;
-    current.syncedFrames.clear();
+    entry.syncedMetadata = metadata;
     return metadata;
   }
 
   async loadVideoFrame(streamId: string, frame: number): Promise<void> {
-    const entry = this.requireVideoEntry(streamId);
-    if (!this.needsVideoFrameSync(streamId, entry, frame)) {
-      return;
-    }
-
-    await this.syncDecodedFrames(streamId, entry, [frame]);
+    await this.syncDecodedFrames(streamId, [frame]);
   }
 
   async loadFrameRequirements(requirements: FrameRequirementsPayload | string): Promise<void> {
@@ -245,13 +223,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
 
     await Promise.all(parsed.images.map((imageId) => this.loadImageSource(imageId)));
     await Promise.all(
-      parsed.videos.map(async (video) => {
-        const entry = this.requireVideoEntry(video.streamId);
-        const frames = dedupeFrameNumbers(video.frames).filter((frame) =>
-          this.needsVideoFrameSync(video.streamId, entry, frame),
-        );
-        await this.syncDecodedFrames(video.streamId, entry, frames);
-      }),
+      parsed.videos.map((video) => this.syncDecodedFrames(video.streamId, video.frames)),
     );
   }
 
@@ -268,51 +240,32 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
 
   private resetVideoEntry(entry: VideoEntry): void {
     entry.session.clearFrames();
-    entry.syncedFrames.clear();
-    entry.syncedMetadataVersion = 0;
     entry.syncedMetadata = null;
   }
 
-  private async syncDecodedFrames(
-    streamId: string,
-    entry: VideoEntry,
-    frames: Iterable<number>,
-  ): Promise<void> {
-    const wantedFrames = dedupeFrameNumbers(frames).filter((frame) =>
-      this.needsVideoFrameSync(streamId, entry, frame),
+  private async syncDecodedFrames(streamId: string, frames: Iterable<number>): Promise<void> {
+    const entry = this.requireVideoEntry(streamId);
+    const wantedFrames = dedupeFrameNumbers(frames).filter(
+      (frame) => !this.target.hasVideoFrame(streamId, frame),
     );
     if (wantedFrames.length === 0) {
       return;
     }
 
-    const version = entry.version;
     await this.loadVideoMetadata(streamId);
     const decodedFrames = await entry.session.decodeFrames(wantedFrames);
-    const current = this.videos.get(streamId);
-    if (!current || current.version !== version) {
+    const isCurrent = () => this.videos.get(streamId) === entry;
+
+    try {
+      for (const [frame, payload] of decodedFrames) {
+        decodedFrames.delete(frame);
+        await syncVideoFrameToTarget(this.target, streamId, frame, payload, isCurrent);
+      }
+    } finally {
       for (const payload of decodedFrames.values()) {
         closeVideoFrame(payload.videoFrame);
       }
-      return;
     }
-
-    for (const [frame, payload] of decodedFrames) {
-      await syncVideoFrameToTarget(this.target, streamId, frame, payload);
-      const latest = this.videos.get(streamId);
-      if (!latest || latest.version !== version) {
-        closeVideoFrame(payload.videoFrame);
-        continue;
-      }
-      latest.syncedFrames.add(frame);
-    }
-  }
-
-  private needsVideoFrameSync(streamId: string, entry: VideoEntry, frame: number): boolean {
-    return (
-      entry.syncedMetadataVersion !== entry.version ||
-      !entry.syncedFrames.has(frame) ||
-      !this.target.hasVideoFrame(streamId, frame)
-    );
   }
 }
 
@@ -333,30 +286,6 @@ function normalizeBridgeOptions(options: LumenMediaBridgeOptions): NormalizedBri
   };
 }
 
-function sameMediaInput(left: MediaSourceInput, right: MediaSourceInput): boolean {
-  if (left === right) {
-    return true;
-  }
-
-  if (typeof left === "string" && typeof right === "string") {
-    return left === right;
-  }
-
-  if (isUrlObject(left) && isUrlObject(right)) {
-    return left.href === right.href;
-  }
-
-  if (isRequestObject(left) && isRequestObject(right)) {
-    return left.url === right.url && left.method === right.method;
-  }
-
-  if (isBufferSource(left) && isBufferSource(right)) {
-    return left === right;
-  }
-
-  return false;
-}
-
 function sameVideoRegistration(
   left: VideoSourceRegistration,
   right: VideoSourceRegistration,
@@ -364,7 +293,6 @@ function sameVideoRegistration(
   return (
     sameMediaInput(left.source, right.source) &&
     left.fps === right.fps &&
-    left.timelineMode === right.timelineMode &&
     left.track === right.track &&
     sameFormats(left.formats, right.formats)
   );
@@ -378,18 +306,6 @@ function sameFormats(left: InputFormat[] | undefined, right: InputFormat[] | und
     return false;
   }
   return left.every((format, index) => format === right[index]);
-}
-
-function isBufferSource(value: unknown): value is BufferSource {
-  return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
-}
-
-function isRequestObject(value: unknown): value is Request {
-  return typeof Request !== "undefined" && value instanceof Request;
-}
-
-function isUrlObject(value: unknown): value is URL {
-  return typeof URL !== "undefined" && value instanceof URL;
 }
 
 export type { MediaSourceDefaults };

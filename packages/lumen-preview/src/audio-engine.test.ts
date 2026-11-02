@@ -1,231 +1,399 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  audioTimelineFromCompositionJson,
-  LUMEN_AUDIO_CHANNELS,
-  LUMEN_AUDIO_CLIP_EDGE_FADE_SAMPLES,
   LUMEN_AUDIO_SAMPLE_RATE,
   LumenAudioEngine,
-  createLumenAudioSchedule,
-  mixTimelineChunk,
-  msToLumenAudioSample,
+  type AudioEngineTimeline,
   type AudioSourceRegistration,
 } from "./audio-engine.js";
 
-describe("createLumenAudioSchedule", () => {
-  it("uses Lumen sample timing for offsets, durations, and fades", () => {
-    const [scheduled] = createLumenAudioSchedule(
-      {
-        durationFrames: 120,
-        fps: 24,
-        tracks: [{ id: "music", muted: false, solo: false, volume: 0.5 }],
-        clips: [
-          {
-            durationMs: 1_000,
-            id: "clip",
-            sourceId: "song",
-            sourceStartMs: 250,
-            startMs: 500,
-            trackId: "music",
-            volume: 0.25,
-          },
-        ],
-      },
-      750,
-    );
+type Posted = { generation?: number; id?: string; startSample?: number; type: string };
 
-    expect(scheduled).toMatchObject({
-      delaySeconds: 0,
-      durationSeconds: 0.75,
-      fadeSeconds: LUMEN_AUDIO_CLIP_EDGE_FADE_SAMPLES / 48_000,
-      gain: 0.125,
-      sourceOffsetSeconds: 0.5,
-    });
-  });
+type Fakes = ReturnType<typeof installFakes>;
 
-  it("matches engine solo and mute filtering", () => {
-    const scheduled = createLumenAudioSchedule(
-      {
-        durationFrames: 1,
-        fps: 24,
-        tracks: [
-          { id: "solo", muted: false, solo: true, volume: 1 },
-          { id: "muted", muted: true, solo: false, volume: 1 },
-          { id: "other", muted: false, solo: false, volume: 1 },
-        ],
-        clips: [clip("a", "solo"), clip("b", "muted"), clip("c", "other")],
-      },
-      0,
-    );
-
-    expect(scheduled.map((entry) => entry.clip.id)).toEqual(["a"]);
-  });
-});
-
-describe("mixTimelineChunk", () => {
-  // 1 second timeline: 48_000 samples.
-  const timeline = {
-    durationFrames: 10,
-    fps: 10,
-    tracks: [{ id: "t", muted: false, solo: false, volume: 1 }],
-    clips: [
-      { ...clip("a", "t"), durationMs: 2_000 },
-      { ...clip("b", "t"), durationMs: 10, startMs: 1_000, sourceStartMs: 0 },
-    ],
+function installFakes() {
+  const fakes = {
+    addModule: (): Promise<void> => Promise.resolve(),
+    contexts: [] as { closed: boolean; currentTime: number }[],
+    decoded: [] as number[],
+    decodeError: null as Error | null,
+    nodes: [] as { connected: boolean; onmessage: (message: unknown) => void; posted: Posted[] }[],
+    workers: [] as {
+      onmessage: (message: unknown) => void;
+      posted: Posted[];
+      terminated: boolean;
+    }[],
   };
-  const sources = new Map([
-    ["a", new Float32Array(96_000 * 2).map((_, index) => (Math.floor(index / 2) % 1000) / 2000)],
-    ["b", new Float32Array(96_000 * 2).fill(1)],
-  ]);
 
-  it("restarts from timeline position 0 when a chunk crosses the loop end", () => {
-    const output = mixTimelineChunk(timeline, sources, 47_990, 20);
-    const frame = (index: number) => output[index * 2];
+  vi.stubGlobal(
+    "AudioContext",
+    class {
+      audioWorklet = { addModule: () => fakes.addModule() };
+      closed = false;
+      currentTime = 0;
+      destination = {};
+      constructor() {
+        fakes.contexts.push(this);
+      }
+      close = async () => {
+        this.closed = true;
+      };
+      resume = async () => {};
+    },
+  );
+  vi.stubGlobal(
+    "AudioWorkletNode",
+    class {
+      connected = false;
+      posted: Posted[] = [];
+      port = {
+        onmessage: null as ((event: { data: unknown }) => void) | null,
+        postMessage: (message: Posted) => this.posted.push(message),
+      };
+      onmessage = (data: unknown) => this.port.onmessage?.({ data });
+      constructor() {
+        fakes.nodes.push(this);
+      }
+      connect() {
+        this.connected = true;
+      }
+      disconnect() {
+        this.connected = false;
+      }
+    },
+  );
+  vi.stubGlobal(
+    "OfflineAudioContext",
+    class {
+      decodeAudioData = async (bytes: ArrayBuffer) => {
+        const marker = new Uint8Array(bytes)[0] ?? 0;
+        if (marker === 0) {
+          throw new DOMException("Unable to decode audio data", "EncodingError");
+        }
+        fakes.decoded.push(marker);
+        const channel = new Float32Array(4).fill(marker / 10);
+        return {
+          length: channel.length,
+          numberOfChannels: 2,
+          sampleRate: LUMEN_AUDIO_SAMPLE_RATE,
+          getChannelData: () => channel,
+        };
+      };
+    },
+  );
+  vi.stubGlobal(
+    "Worker",
+    class {
+      onerror: unknown = null;
+      onmessage: unknown = null;
+      posted: Posted[] = [];
+      terminated = false;
+      constructor() {
+        fakes.workers.push(this as never);
+      }
+      postMessage(message: Posted) {
+        this.posted.push(message);
+      }
+      terminate() {
+        this.terminated = true;
+      }
+    },
+  );
+  return fakes;
+}
 
-    expect(frame(9)).toBeCloseTo((47_999 % 1000) / 2000, 5);
-    expect(frame(10)).toBeCloseTo(0, 5);
-    expect(frame(15)).toBeCloseTo((5 / 2000) * Math.min(1, 5 / 384), 5);
-  });
+function createEngine(): LumenAudioEngine {
+  return new LumenAudioEngine({ workerModuleUrl: "worker.js", workletModuleUrl: "worklet.js" });
+}
 
-  it("maps chunks wholly past the first loop to the wrapped position", () => {
-    const wrapped = mixTimelineChunk(timeline, sources, 1_000, 100);
-    const looped = mixTimelineChunk(timeline, sources, 48_000 * 3 + 1_000, 100);
+function timelineJson(...sourceIds: string[]): string {
+  const timeline: AudioEngineTimeline = {
+    durationFrames: 240,
+    fps: 24,
+    tracks: [{ id: "track", muted: false, solo: false, volume: 1 }],
+    clips: sourceIds.map((sourceId) => ({
+      durationMs: 1_000,
+      id: sourceId,
+      sourceId,
+      sourceStartMs: 0,
+      startMs: 0,
+      trackId: "track",
+      volume: 1,
+    })),
+  };
+  return JSON.stringify(timeline);
+}
 
-    expect(Array.from(looped)).toEqual(Array.from(wrapped));
-    expect(wrapped.some((value) => value !== 0)).toBe(true);
-  });
+function source(id: string, input: AudioSourceRegistration["source"]): AudioSourceRegistration {
+  return { id, kind: "audio", source: input };
+}
 
-  it("keeps fractional loop lengths in phase across repetitions", () => {
-    const fractional = { ...timeline, durationFrames: 3, fps: 29.97 };
-    const loopSamples = (3 / 29.97) * 48_000;
-    const first = mixTimelineChunk(fractional, sources, 0, 100);
-    const later = mixTimelineChunk(fractional, sources, Math.floor(3_000 * loopSamples), 100);
+function postedOfType(posted: readonly Posted[] | undefined, type: string): Posted[] {
+  return (posted ?? []).filter((message) => message.type === type);
+}
 
-    expect(Array.from(later)).toEqual(Array.from(first));
-  });
-});
-
-describe("msToLumenAudioSample", () => {
-  it("uses the engine 48 kHz floor conversion", () => {
-    expect(msToLumenAudioSample(1_000)).toBe(48_000);
-    expect(msToLumenAudioSample(1.5)).toBe(72);
-  });
-});
-
-describe("audioTimelineFromCompositionJson", () => {
-  it("maps the canonical composition audio contract into the preview engine timeline", () => {
-    const timeline = audioTimelineFromCompositionJson(
-      JSON.stringify({
-        timeline: { fps: 24, duration_frames: 120 },
-        audio: {
-          tracks: [{ id: "music", muted: true, volume: 0.75 }],
-          clips: [
-            {
-              id: "intro",
-              source_id: "song",
-              track_id: "music",
-              start_frame: 12,
-              duration_ms: 1_500,
-              source_start_seconds: 0.25,
-              volume: 0.5,
-            },
-          ],
-        },
-      }),
-    );
-
-    expect(timeline).toEqual({
-      durationFrames: 120,
-      fps: 24,
-      tracks: [{ id: "music", muted: true, solo: false, volume: 0.75 }],
-      clips: [
-        {
-          durationMs: 1_500,
-          id: "intro",
-          sourceId: "song",
-          sourceStartMs: 250,
-          startMs: 500,
-          trackId: "music",
-          volume: 0.5,
-        },
-      ],
-    });
-  });
-});
+async function settled(fakes: Fakes): Promise<void> {
+  await vi.waitFor(() => expect(fakes.nodes.length).toBeGreaterThan(0));
+  await vi.waitFor(() =>
+    expect(postedOfType(fakes.nodes[0]?.posted, "play").length).toBeGreaterThan(0),
+  );
+}
 
 describe("LumenAudioEngine", () => {
+  let fakes: Fakes;
+
+  beforeEach(() => {
+    fakes = installFakes();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  it("plays sources without decodable audio as silence and keeps mixing other clips", async () => {
-    const posted: Array<{ type: string; samples?: Float32Array; startSample?: number }> = [];
-    const decodeAudioData = vi.fn(async (bytes: ArrayBuffer) => {
-      if (new Uint8Array(bytes)[0] === 0) {
-        throw new DOMException("Unable to decode audio data", "EncodingError");
-      }
-      const channel = new Float32Array(LUMEN_AUDIO_SAMPLE_RATE).fill(0.5);
-      return {
-        length: channel.length,
-        numberOfChannels: 1,
-        sampleRate: LUMEN_AUDIO_SAMPLE_RATE,
-        getChannelData: () => channel,
-      };
-    });
-    vi.stubGlobal(
-      "AudioContext",
-      class {
-        audioWorklet = { addModule: async () => {} };
-        currentTime = 0;
-        decodeAudioData = decodeAudioData;
-        destination = {};
-        resume = async () => {};
-      },
-    );
-    vi.stubGlobal(
-      "AudioWorkletNode",
-      class {
-        port = { postMessage: (message: (typeof posted)[number]) => posted.push(message) };
-        connect() {}
-      },
-    );
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("touches no Web Audio or worker for a composition without clips", async () => {
+    const engine = createEngine();
 
-    const engine = new LumenAudioEngine({ workerModuleUrl: "", workletModuleUrl: "worklet.js" });
-    engine.setAudioTimeline({
-      durationFrames: 24,
-      fps: 24,
-      tracks: [{ id: "track", muted: false, solo: false, volume: 1 }],
-      clips: [clip("muted-video", "track"), clip("music", "track")],
-    });
-    const sources: AudioSourceRegistration[] = [
-      { id: "muted-video", kind: "audio", source: new Uint8Array([0]) },
-      { id: "music", kind: "audio", source: new Uint8Array([1]) },
-    ];
-    await Promise.all([engine.syncAudioSources(sources), engine.syncAudioSources(sources)]);
-    await engine.syncAudioSources(sources);
+    for (const json of [null, timelineJson()]) {
+      engine.loadAudioTimeline(json);
+      await engine.syncAudioSources([source("unused", new Uint8Array([1]))]);
+      engine.play(0);
+    }
 
-    expect(decodeAudioData).toHaveBeenCalledTimes(2);
-    expect(warn).toHaveBeenCalledOnce();
-    const chunk = posted
-      .filter((message) => message.type === "chunk" && message.startSample === 0)
-      .at(-1);
-    expect(chunk?.samples?.[LUMEN_AUDIO_CLIP_EDGE_FADE_SAMPLES * LUMEN_AUDIO_CHANNELS]).toBe(0.5);
+    expect(engine.isPlaying()).toBe(false);
+    expect(fakes.contexts).toEqual([]);
+    expect(fakes.workers).toEqual([]);
+    expect(fakes.decoded).toEqual([]);
+  });
+
+  it("never starts when paused while the worklet is loading", async () => {
+    let finishLoading = () => {};
+    fakes.addModule = () => new Promise((resolve) => (finishLoading = resolve));
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("a"));
+
+    engine.play(500);
+    engine.pause();
+    finishLoading();
+    await vi.waitFor(() => expect(fakes.nodes).toHaveLength(1));
+    await Promise.resolve();
+
+    expect(engine.isPlaying()).toBe(false);
+    expect(engine.currentTimeMs()).toBe(500);
+    expect(postedOfType(fakes.nodes[0]?.posted, "play")).toEqual([]);
+  });
+
+  it("creates nothing when disposed while the worklet is loading", async () => {
+    let finishLoading = () => {};
+    fakes.addModule = () => new Promise((resolve) => (finishLoading = resolve));
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("a"));
 
     engine.play(0);
-    await vi.waitFor(() => expect(posted.at(-1)).toMatchObject({ type: "play" }));
+    engine.dispose();
+    finishLoading();
+    await new Promise((resolve) => setTimeout(resolve));
+
+    expect(fakes.nodes).toEqual([]);
+    expect(fakes.contexts).toHaveLength(1);
+    expect(fakes.contexts[0]?.closed).toBe(true);
+    expect(fakes.workers).toEqual([]);
+
+    engine.play(0);
+    await engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+    expect(engine.isPlaying()).toBe(false);
+    expect(fakes.contexts).toHaveLength(1);
+    expect(fakes.decoded).toEqual([]);
+  });
+
+  it("retries the worklet after it fails to load", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    fakes.addModule = () => Promise.reject(new Error("blocked"));
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("a"));
+
+    engine.play(0);
+    await vi.waitFor(() => expect(error).toHaveBeenCalledOnce());
+    expect(engine.isPlaying()).toBe(false);
+
+    fakes.addModule = () => Promise.resolve();
+    engine.play(0);
+    await settled(fakes);
+    expect(engine.isPlaying()).toBe(true);
+  });
+
+  it("decodes a source once, and again when its input changes", async () => {
+    vi.stubGlobal("fetch", async () => new Response(new Uint8Array([3])));
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("a"));
+    const first = new Uint8Array([1]);
+
+    await engine.syncAudioSources([source("a", first)]);
+    await engine.syncAudioSources([source("a", first)]);
+    expect(fakes.decoded).toEqual([1]);
+
+    await engine.syncAudioSources([source("a", new Uint8Array([2]))]);
+    expect(fakes.decoded).toEqual([1, 2]);
+    expect(postedOfType(fakes.workers[0]?.posted, "set-source")).toHaveLength(2);
+
+    await engine.syncAudioSources([source("a", { kind: "url", url: "https://a.test/song.wav" })]);
+    await engine.syncAudioSources([source("a", { kind: "url", url: "https://a.test/song.wav" })]);
+    expect(fakes.decoded).toEqual([1, 2, 3]);
+
+    await engine.syncAudioSources([]);
+    expect(postedOfType(fakes.workers[0]?.posted, "remove-source")).toEqual([
+      { id: "a", type: "remove-source" },
+    ]);
+  });
+
+  it("mixes again from the playhead when a source changes during playback", async () => {
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("a"));
+    engine.play(500);
+    await settled(fakes);
+    const requests = postedOfType(fakes.workers[0]?.posted, "request-chunk").length;
+
+    await engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+    await vi.waitFor(() => expect(postedOfType(fakes.nodes[0]?.posted, "play")).toHaveLength(2));
+
+    expect(postedOfType(fakes.nodes[0]?.posted, "play")[1]?.startSample).toBe(24_000);
+    expect(postedOfType(fakes.workers[0]?.posted, "request-chunk").length).toBeGreaterThan(
+      requests,
+    );
+  });
+
+  it("reports fetch and decode failures by source, keeps the rest, and retries them", async () => {
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 503 }));
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("offline", "corrupt", "music"));
+    const sources = [
+      source("offline", { kind: "url", url: "https://a.test/offline.wav" }),
+      source("corrupt", new Uint8Array([0])),
+      source("music", new Uint8Array([1])),
+    ];
+
+    const failure = String(await engine.syncAudioSources(sources).catch((error: unknown) => error));
+    expect(failure).toContain('audio source "offline"');
+    expect(failure).toContain('audio source "corrupt"');
+    expect(failure).not.toContain("music");
+    expect(fakes.decoded).toEqual([1]);
+
+    vi.stubGlobal("fetch", async () => new Response(new Uint8Array([2])));
+    await expect(engine.syncAudioSources(sources)).rejects.toThrow('audio source "corrupt"');
+    expect(fakes.decoded).toEqual([1, 2]);
+  });
+
+  it("stops mixing the old audio when a replacement fails to load", async () => {
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("a"));
+    await engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+
+    await expect(engine.syncAudioSources([source("a", new Uint8Array([0]))])).rejects.toThrow(
+      'audio source "a"',
+    );
+
+    expect(postedOfType(fakes.workers[0]?.posted, "remove-source")).toHaveLength(1);
+  });
+
+  it("sends the mixer a timeline only when it changes, and rewinds on every load", async () => {
+    const engine = createEngine();
+    const json = timelineJson("a");
+    engine.loadAudioTimeline(json);
+    engine.play(500);
+    await settled(fakes);
+    const worker = fakes.workers[0];
+    expect(postedOfType(worker?.posted, "set-timeline")).toHaveLength(1);
+
+    engine.loadAudioTimeline(json);
+    expect(engine.isPlaying()).toBe(false);
+    expect(engine.currentTimeMs()).toBe(0);
+    expect(postedOfType(worker?.posted, "set-timeline")).toHaveLength(1);
+
+    engine.loadAudioTimeline(timelineJson("a", "b"));
+    expect(postedOfType(worker?.posted, "set-timeline")).toHaveLength(2);
+  });
+
+  it("follows the worklet's position, holding through a stall", async () => {
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("a"));
+    engine.play(500);
+    const context = fakes.contexts[0];
+    if (!context) throw new Error("no context");
+    await settled(fakes);
+    const generation = postedOfType(fakes.nodes[0]?.posted, "play")[0]?.generation;
+    const report = (contextTime: number, seconds: number, stalled: boolean) =>
+      fakes.nodes[0]?.onmessage({
+        contextTime,
+        currentSample: seconds * LUMEN_AUDIO_SAMPLE_RATE,
+        generation,
+        stalled,
+        type: "position",
+      });
+
+    context.currentTime = 5;
+    expect(engine.currentTimeMs()).toBe(500);
+
+    report(5, 0.5, false);
+    context.currentTime = 5.25;
+    expect(engine.currentTimeMs()).toBeCloseTo(750);
+
+    report(5.25, 0.75, true);
+    context.currentTime = 7;
+    expect(engine.currentTimeMs()).toBeCloseTo(750);
+
+    report(7, 0.75, false);
+    context.currentTime = 7.1;
+    expect(engine.currentTimeMs()).toBeCloseTo(850);
+  });
+
+  it("drops worker chunks and worklet reports from before a pause", async () => {
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("a"));
+    engine.play(0);
+    await settled(fakes);
+    const generation = postedOfType(fakes.nodes[0]?.posted, "play")[0]?.generation;
+
+    engine.pause();
+    fakes.workers[0]?.onmessage({
+      data: {
+        generation,
+        samples: new Float32Array(2),
+        startSample: 0,
+        type: "chunk",
+      },
+    });
+    fakes.nodes[0]?.onmessage({
+      contextTime: 1,
+      currentSample: 48_000,
+      generation,
+      stalled: false,
+      type: "position",
+    });
+
+    expect(postedOfType(fakes.nodes[0]?.posted, "chunk")).toEqual([]);
+    expect(engine.currentTimeMs()).toBe(0);
+  });
+
+  it("requests each chunk once as the playhead moves", async () => {
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("a"));
+    engine.play(0);
+    await settled(fakes);
+    const generation = postedOfType(fakes.nodes[0]?.posted, "play")[0]?.generation;
+    const requested = () =>
+      postedOfType(fakes.workers[0]?.posted, "request-chunk").map((message) => message.startSample);
+    const before = requested();
+    expect(before.at(0)).toBe(0);
+    expect(before.at(-1)).toBe(96_000);
+
+    fakes.nodes[0]?.onmessage({
+      contextTime: 1,
+      currentSample: 24_000,
+      generation,
+      stalled: false,
+      type: "position",
+    });
+
+    expect(requested().slice(before.length)).toEqual([108_000, 120_000]);
   });
 });
-
-function clip(id: string, trackId: string) {
-  return {
-    durationMs: 1_000,
-    id,
-    sourceId: id,
-    sourceStartMs: 0,
-    startMs: 0,
-    trackId,
-    volume: 1,
-  };
-}

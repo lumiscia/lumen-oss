@@ -11,8 +11,11 @@ export class ImageSession {
     private readonly source: MediaSourceInput,
   ) {}
 
+  /** Joins a decode in flight. Nothing is kept after it, so a failed load can be retried. */
   load(): Promise<DecodedImageFrame> {
-    this.framePromise ??= this.decode();
+    this.framePromise ??= this.decode().finally(() => {
+      this.framePromise = null;
+    });
     return this.framePromise;
   }
 

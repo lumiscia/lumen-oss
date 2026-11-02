@@ -1,4 +1,4 @@
-import { LumenAudioEngine, audioTimelineFromCompositionJson } from "../audio-engine.js";
+import { LumenAudioEngine } from "../audio-engine.js";
 import { createLumenPreviewRuntime, resolveLumenPreviewBindings } from "../index.js";
 import type { LumenPreviewController } from "../index.js";
 import { LumenRenderQueue } from "./render-queue.js";
@@ -46,7 +46,6 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
     controller.setLogLevel(this.#inputs.logLevel);
     controller.setLookaheadCount(this.#inputs.lookaheadCount);
     this.#controller = controller;
-    this.#syncAudio();
 
     this.#host.attachController(controller, (frame) => this.#seek(frame), {
       pause: () => {
@@ -73,7 +72,9 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
 
     this.#controller?.setLogLevel(inputs.logLevel);
     this.#controller?.setLookaheadCount(inputs.lookaheadCount);
-    this.#syncAudio();
+    if (previous.audioSources !== inputs.audioSources) {
+      this.#syncAudioSources();
+    }
 
     if (
       previous.compositionJson !== inputs.compositionJson ||
@@ -106,6 +107,7 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
 
     if (!this.#inputs.compositionJson) {
       controller.clear();
+      this.#loadAudio(null);
       this.#host.updateState({
         frame: 0,
         totalFrames: 0,
@@ -126,6 +128,7 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
       }
       controller.loadComposition(this.#inputs.compositionJson);
       controller.setLookaheadCount(this.#inputs.lookaheadCount);
+      this.#loadAudio(controller.audioTimeline() ?? null);
       this.#isLoaded = true;
       this.#host.updateState({
         totalFrames: controller.durationFrames(),
@@ -139,6 +142,7 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
     } catch (error) {
       if (generation === this.#loadGeneration) {
         this.#isLoaded = false;
+        this.#loadAudio(null);
         this.#playbackFps.reset();
         this.#lastRenderMs = 0;
         this.#host.updateState({ isLoaded: false });
@@ -179,7 +183,7 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
       return;
     }
 
-    if (this.#audio.isPlaying() && this.#audioTimeline()) {
+    if (this.#audio.isPlaying()) {
       const targetFrame = controller.targetFrameForTimeMs(this.#audio.currentTimeMs());
       try {
         controller.setFrame(targetFrame);
@@ -253,18 +257,15 @@ export class MainPreviewDriver implements LumenPreviewRuntimeDriver {
     });
   }
 
-  #syncAudio(): void {
-    const timeline = this.#audioTimeline();
-    this.#audio.setAudioTimeline(timeline);
+  #loadAudio(timelineJson: string | null): void {
+    this.#audio.loadAudioTimeline(timelineJson);
+    this.#syncAudioSources();
+  }
+
+  #syncAudioSources(): void {
     void this.#audio.syncAudioSources(this.#inputs.audioSources).catch((error: unknown) => {
       this.#host.reportError("sync audio sources", error);
     });
-  }
-
-  #audioTimeline() {
-    return (
-      this.#inputs.audioTimeline ?? audioTimelineFromCompositionJson(this.#inputs.compositionJson)
-    );
   }
 
   #frameToMs(frame: number): number {
