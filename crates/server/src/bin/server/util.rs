@@ -1,17 +1,7 @@
-use std::{
-    hash::{Hash, Hasher},
-    sync::atomic::{AtomicU64, Ordering},
-};
-
-static RENDER_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+use std::hash::{Hash, Hasher};
 
 pub(crate) fn new_render_id() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let sequence = RENDER_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("r_{nanos:x}{sequence:04x}")
+    format!("r_{}", uuid::Uuid::new_v4().simple())
 }
 
 pub(crate) fn current_timestamp() -> String {

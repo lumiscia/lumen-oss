@@ -1,6 +1,6 @@
 use std::{ffi::CStr, ptr};
 
-use crate::ffi::{self, AvFrame, AvPacket, SWS_BILINEAR, sys};
+use crate::ffi::{self, AvFrame, AvPacket, CodecContextGuard, SWS_BILINEAR, sys};
 use crate::format::Rational;
 use crate::gpu::GpuBackend;
 use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec};
@@ -39,6 +39,9 @@ pub struct VideoEncoderConfig {
     pub rate_control: Option<RateControl>,
     /// Encoder preset: `ultrafast`..`placebo` for libx264, `p1`..`p7` for NVENC.
     pub preset: Option<String>,
+    /// CUDA device the frames sent in `EncodeMode::GpuTexture(GpuBackend::Cuda)` live on; `None`
+    /// uses the default device.
+    pub cuda_ordinal: Option<i32>,
     /// Device the frames sent in `EncodeMode::GpuTexture(GpuBackend::Vulkan)` live on.
     #[cfg(feature = "vulkan")]
     pub vulkan_device: Option<crate::gpu::VulkanDevice>,
@@ -56,6 +59,7 @@ impl VideoEncoderConfig {
             bit_rate: 8_000_000,
             rate_control: None,
             preset: None,
+            cuda_ordinal: None,
             #[cfg(feature = "vulkan")]
             vulkan_device: None,
         }
@@ -607,21 +611,6 @@ fn validate_cpu_frame(
     }
 
     Ok(ValidatedCpuFrameLayout { stride, height })
-}
-
-/// Frees the codec context on early returns until ownership moves into the encoder.
-struct CodecContextGuard(*mut sys::AVCodecContext);
-
-impl CodecContextGuard {
-    fn release(&mut self) -> *mut sys::AVCodecContext {
-        std::mem::replace(&mut self.0, ptr::null_mut())
-    }
-}
-
-impl Drop for CodecContextGuard {
-    fn drop(&mut self) {
-        unsafe { sys::avcodec_free_context(&mut self.0) };
-    }
 }
 
 impl Drop for VideoEncoder {

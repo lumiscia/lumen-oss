@@ -6,11 +6,12 @@ use crate::server::RenderNotification;
 use super::state::AppState;
 
 pub(super) async fn render_socket_session(mut socket: WebSocket, state: AppState, id: String) {
-    let snapshot = state
-        .renders
-        .read()
-        .ok()
-        .and_then(|renders| renders.get(&id).and_then(|stored| stored.progress.clone()));
+    let snapshot = state.renders.read().ok().and_then(|renders| {
+        renders
+            .records
+            .get(&id)
+            .and_then(|stored| stored.progress.clone())
+    });
     let _ = send_notification(
         &mut socket,
         &RenderNotification {

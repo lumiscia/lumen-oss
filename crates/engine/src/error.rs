@@ -22,6 +22,8 @@ pub enum LumenError {
 pub enum GraphValidationError {
     #[error("graph contains a cycle")]
     Cycle { path: Vec<NodeId> },
+    #[error("node {node_id} is stored under id {key}")]
+    NodeIdMismatch { key: NodeId, node_id: NodeId },
     #[error("connection target node is missing")]
     MissingTargetNode { node_id: NodeId },
     #[error("connection source node is missing")]

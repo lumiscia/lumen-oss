@@ -6,7 +6,6 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let node = parse_node_attr(&input.attrs)?;
     let fields = named_fields(&input.data)?;
     let mut inputs = Vec::new();
-    let mut properties = Vec::new();
     let mut metas = Vec::new();
 
     for field in fields {
@@ -15,9 +14,6 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
         };
         if let Some(input) = parse_input_attr(&field.attrs, field_ident)? {
             inputs.push(input);
-        }
-        if let Some(property) = parse_property_attr(&field.attrs, field_ident)? {
-            properties.push(property);
         }
         if has_attr(&field.attrs, "params") {
             metas.push((field_ident.clone(), field.ty.clone()));
@@ -46,41 +42,16 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             }
         }
     });
-    let property_defs = properties
-        .iter()
-        .map(property_def_tokens)
-        .collect::<Vec<_>>();
     let metas_property_defs = metas
         .iter()
         .map(|(_, ty)| quote!(<#ty as ::lumen_engine::node::NodeParams>::property_defs()));
-    let default_properties = properties.iter().map(|property| {
-        let name = &property.id;
-        let field = &property.field;
-        quote!((#name, defaults.#field.clone()))
-    });
     let metas_default_properties = metas
         .iter()
         .map(|(field, _)| quote!(defaults.#field.default_properties()));
-    let property_matches = properties.iter().map(|property| {
-        let name = &property.id;
-        let field = &property.field;
-        quote!(#name => Some(self.#field.clone()))
-    });
     let metas_property_matches = metas.iter().map(|(field, _)| {
         quote! {
             if let Some(value) = self.#field.get_property(id) {
                 return Ok(Some(value));
-            }
-        }
-    });
-    let json_property_sets = properties.iter().map(|property| {
-        let name = &property.id;
-        let field = &property.field;
-        let property_def = property_def_tokens(property);
-        quote! {
-            if let Some(value) = params.and_then(|params| params.get(#name)) {
-                let def = #property_def;
-                node.#field = ::lumen_engine::json::parse_property(value, Some(&def), #name)?;
             }
         }
     });
@@ -100,10 +71,6 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let json_metas_known = metas
         .iter()
         .map(|(_, ty)| quote!(<#ty as ::lumen_engine::node::NodeParams>::is_property(key)));
-    let json_known_properties = properties.iter().map(|property| {
-        let name = &property.id;
-        quote!(#name => ())
-    });
     let json_input_matches = inputs.iter().map(|input| {
         let name = &input.name;
         let field = &input.field;
@@ -149,12 +116,12 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                     category: #category,
                     inputs: #input_static,
                     properties: {
-                        let mut properties = vec![#(#property_defs),*];
+                        let mut properties = ::std::vec::Vec::new();
                         #(properties.extend(#metas_property_defs);)*
                         properties
                     },
                     default_properties: {
-                        let mut default_properties = vec![#(#default_properties),*];
+                        let mut default_properties = ::std::vec::Vec::new();
                         #(default_properties.extend(#metas_default_properties);)*
                         default_properties
                     },
@@ -174,14 +141,12 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                 if let Some(params) = params {
                     for key in params.keys() {
                         match key.as_str() {
-                            #(#json_known_properties,)*
                             _ if false #(|| #json_metas_known)* => (),
                             _ => return ::core::result::Result::Err(::lumen_engine::json::unknown_param_error(#kind, key, id)),
                         };
                     }
                 }
 
-                #(#json_property_sets)*
                 #(#json_metas_sets)*
                 Ok(node)
             }
@@ -223,10 +188,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                 ::lumen_engine::error::LumenError,
             > {
                 #(#metas_property_matches)*
-                Ok(match id {
-                    #(#property_matches,)*
-                    _ => None,
-                })
+                Ok(None)
             }
         }
     })

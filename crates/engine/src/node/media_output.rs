@@ -163,6 +163,7 @@ impl GpuCompileNode for MediaOutput {
             texture: output,
             domain: lumen_gpu::TextureDomain::full_frame(size),
             metadata: source.metadata,
+            bounds: None,
         }))
     }
 }
