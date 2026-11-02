@@ -33,7 +33,8 @@ export class Lumen {
   constructor(options: LumenOptions) {
     this.#apiKey = options.apiKey;
     this.#baseUrl = new URL(options.baseUrl ?? defaultBaseUrl);
-    this.#fetch = options.fetch ?? globalThis.fetch;
+    const fetchImpl = options.fetch;
+    this.#fetch = (...args) => (fetchImpl ?? globalThis.fetch)(...args);
     this.#websocket = options.websocket;
   }
 
@@ -133,12 +134,17 @@ export class Lumen {
     }
 
     const upload = await this.createMediaUpload(options);
-    const response = await this.#fetch(this.#url(upload.uploadUrl), {
+    const uploadUrl = this.#url(upload.uploadUrl);
+    const response = await this.#fetch(uploadUrl, {
       body: bodyAsRequestBody(options.body),
-      headers: this.#headers({
-        "content-length": options.sizeBytes.toString(),
-        "content-type": options.contentType,
-      }),
+      ...(options.body instanceof ReadableStream ? { duplex: "half" } : {}),
+      headers: this.#headers(
+        {
+          "content-length": options.sizeBytes.toString(),
+          "content-type": options.contentType,
+        },
+        uploadUrl,
+      ),
       method: "PUT",
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
     });
@@ -166,7 +172,7 @@ export class Lumen {
     id: string,
     options: { signal?: AbortSignal } = {},
   ): Promise<CreateMultipartUploadResult> {
-    const response = await this.#fetch(this.#apiUrl(`/media/${id}/multipart`), {
+    const response = await this.#fetch(this.#apiUrl(`/media/${encodeURIComponent(id)}/multipart`), {
       headers: this.#headers(),
       method: "POST",
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
@@ -183,9 +189,9 @@ export class Lumen {
   }): Promise<MediaUploadPart> {
     const response = await this.#fetch(
       this.#apiUrl(
-        `/media/${options.id}/multipart/parts/${options.partNumber}?uploadId=${encodeURIComponent(
+        `/media/${encodeURIComponent(options.id)}/multipart/${encodeURIComponent(
           options.uploadId,
-        )}`,
+        )}/parts/${options.partNumber}`,
       ),
       {
         body: options.body,
@@ -202,7 +208,9 @@ export class Lumen {
   ): Promise<TemporaryMedia> {
     const response = await this.#fetch(
       this.#apiUrl(
-        `/media/${options.id}/multipart/complete?uploadId=${encodeURIComponent(options.uploadId)}`,
+        `/media/${encodeURIComponent(options.id)}/multipart/${encodeURIComponent(
+          options.uploadId,
+        )}/complete`,
       ),
       this.#jsonRequest("POST", { parts: options.parts }, optionalSignal(options.signal)),
     );
@@ -342,9 +350,11 @@ export class Lumen {
     });
   }
 
-  #headers(headers: Record<string, string> = {}): Headers {
+  #headers(headers: Record<string, string> = {}, target: URL = this.#baseUrl): Headers {
     const nextHeaders = new Headers(headers);
-    nextHeaders.set("authorization", `Bearer ${this.#apiKey}`);
+    if (target.origin === this.#baseUrl.origin) {
+      nextHeaders.set("authorization", `Bearer ${this.#apiKey}`);
+    }
     return nextHeaders;
   }
 
