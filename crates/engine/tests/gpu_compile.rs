@@ -6490,6 +6490,42 @@ fn text_glyphs_larger_than_the_atlas_still_draw() {
     assert!(inked > 256 * 256 / 2, "only {inked} pixels inked");
 }
 
+#[test]
+fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // The animated size gives the text the full limit, and the constant one a limit of its own.
+    for font_size in [Deferred::value(8.0), expression("8 + frame * 0")] {
+        let composition = |content: String| {
+            let mut composition = text_test_composition(TextParamsDelegate {
+                content: TextContentDelegate::Text(Deferred::value(content)),
+                font_size: font_size.clone(),
+                ..Default::default()
+            })
+            .into_builder();
+            composition.render_settings.width = 64;
+            composition.render_settings.height = 64;
+            composition.build().unwrap()
+        };
+        // Whitespace is not drawn, so it does not count toward the limit.
+        let spaced = composition(format!("ab{}", " ".repeat(3000)));
+        let pixels = render_rgba8(&mut renderer, &spaced, 0, &EmptyMediaStore);
+        assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+
+        let long = composition("a".repeat(2049));
+        let error = renderer
+            .render_frame(&long, 0, &EmptyMediaStore)
+            .expect_err("2049 glyphs exceed the limit")
+            .to_string();
+        assert!(
+            error.contains("Text node 1") && error.contains("2049") && error.contains("2048"),
+            "{error}"
+        );
+    }
+}
+
 #[cfg(feature = "msdf")]
 #[test]
 fn text_msdf_corners_stay_within_a_pixel_of_raster_at_1000px() {

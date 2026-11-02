@@ -136,7 +136,9 @@ impl From<TextTransform> for lumen_text::TextTransform {
 /// Produces a text source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TextParams {
-    /// Text to render: a string, or spans that each override the style these params give.
+    /// Text to render: a string, or spans that each override the style these params give. A
+    /// node draws at most 2048 glyphs, counting a stroked glyph twice and each decoration rect
+    /// once; whitespace is not drawn, and more is a render error.
     #[meta(multiline, recommended_rows = 4)]
     pub content: TextContent,
     /// Font family name.
@@ -360,7 +362,9 @@ pub(crate) struct CompiledText {
     pub(crate) paints_buffer: lumen_gpu::BufferId,
     /// The number of span paints.
     pub(crate) paint_count: usize,
-    pub(crate) max_glyphs: usize,
+    /// The most glyph, stroke and decoration instances the text can draw, which sizes
+    /// `instances_buffer`.
+    pub(crate) capacity: usize,
     pub(crate) size: lumen_gpu::Size,
     /// The size of what the glyphs are drawn to: the layer of blurred text, else the output.
     pub(crate) layer_size: lumen_gpu::Size,
@@ -384,6 +388,25 @@ impl GpuCompiledNode for CompiledText {
 }
 
 impl CompiledText {
+    /// Fails when the text draws `drawn` glyph, stroke and decoration instances, more than it
+    /// has room for.
+    fn check_capacity(&self, ctx: &FrameBindContext<'_>, drawn: usize) -> crate::Result<()> {
+        if drawn <= self.capacity {
+            return Ok(());
+        }
+        Err(RenderError::NodeEvaluation {
+            frame: ctx.frame(),
+            node_id: self.node_id,
+            node_kind: "Text",
+            details: format!(
+                "text draws {drawn} glyphs, strokes and decorations, more than the {} a text node \
+                 can draw; split it across nodes or shorten it",
+                self.capacity
+            ),
+        }
+        .into())
+    }
+
     /// Binds the text, stopping once its glyphs are placed when `kept` and the output kept from
     /// an earlier frame still matches: no glyph was dropped or placed again. Returns whether it
     /// bound fully.
@@ -521,7 +544,6 @@ impl CompiledText {
         // paints, each with the half width of its stroke.
         let mut decoration_paints = Vec::new();
         let mut before_glyphs = 0;
-        let mut dropped_decorations = 0;
         state.strokes.clear();
         state.half_widths.clear();
         if self.decorated {
@@ -546,9 +568,7 @@ impl CompiledText {
                 },
                 &mut state.decorations,
             );
-            dropped_decorations = state.decorations.len().saturating_sub(self.max_glyphs);
-            state.decorations.truncate(self.max_glyphs);
-            before_glyphs = before_glyphs.min(state.decorations.len());
+            self.check_capacity(ctx, state.decorations.len())?;
             if self.stroked {
                 span_strokes(
                     decorations.stroke.as_ref(),
@@ -594,7 +614,6 @@ impl CompiledText {
             &mut atlas,
             &layout,
             mode,
-            self.max_glyphs - state.decorations.len(),
             &state.half_widths,
             &mut state.overfull,
         );
@@ -607,7 +626,11 @@ impl CompiledText {
             bound.text_generation_ms += atlas_ms;
         }
 
-        let dropped_glyphs = prepared.dropped_glyphs + dropped_decorations;
+        self.check_capacity(
+            ctx,
+            state.decorations.len() + prepared.instances.len() + prepared.strokes.len(),
+        )?;
+        let dropped_glyphs = prepared.dropped_glyphs;
         let dropping = dropped_glyphs > 0;
         bound.text_dropped_glyphs |= dropping;
         if dropping != state.dropping_glyphs {
@@ -616,9 +639,8 @@ impl CompiledText {
                     target: "lumen_text",
                     node_id = self.node_id.0,
                     dropped_glyphs,
-                    max_glyphs = self.max_glyphs,
                     atlas_size,
-                    "text glyphs dropped: too many glyphs or glyph atlas full"
+                    "text glyphs dropped: glyph atlas full"
                 );
             } else {
                 tracing::info!(
