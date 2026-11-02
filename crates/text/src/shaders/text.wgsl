@@ -384,13 +384,16 @@ fn member_coverage(glyph: GlyphInstance, local: vec2<f32>, texel_width: vec2<f32
     return select(0.0, coverage, inside);
 }
 
-// The alpha of `glyph`'s paint at `local`.
-fn member_paint_alpha(glyph: GlyphInstance, local: vec2<f32>) -> f32 {
-    let paint = glyph.mode >> GLYPH_PAINT_SHIFT;
+// The premultiplied colour of `paint` at `in`'s pixel, whose untransformed position is `local`.
+// A solid paint is the same everywhere, so it is read alone and never supersampled.
+fn glyph_paint(in: VertexOut, paint: u32, local: vec2<f32>) -> vec4<f32> {
     if (paints[paint].paint.kind == 0u) {
-        return paints[paint].paint.colors[0].a;
+        return premultiply(paints[paint].paint.colors[0]);
     }
-    return text_paint_at(paint, local).a;
+    if (paints[paint].paint.paint_supersample != 0u) {
+        return text_paint_aa(in, paint);
+    }
+    return text_paint_at(paint, local);
 }
 
 // The instances of a cluster that fades, each in its own paint, composited at full alpha so
@@ -404,11 +407,7 @@ fn cluster_color(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>) -> vec
     var color = vec4<f32>(0.0);
     for (var member = 0u; member <= lead.flags >> GLYPH_CLUSTER_SHIFT; member = member + 1u) {
         let glyph = glyphs[in.instance + member];
-        let paint_index = glyph.mode >> GLYPH_PAINT_SHIFT;
-        var paint = premultiply(paints[paint_index].paint.colors[0]);
-        if (paints[paint_index].paint.kind != 0u) {
-            paint = text_paint_at(paint_index, local);
-        }
+        let paint = glyph_paint(in, glyph.mode >> GLYPH_PAINT_SHIFT, local);
         var source = vec4<f32>(0.0);
         if ((glyph.mode & GLYPH_MODE_MASK) == 1u) {
             let texel = instance_texel(glyph, local);
@@ -426,12 +425,12 @@ fn cluster_color(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>) -> vec
 }
 
 // The composited alpha of the instances of the cluster led by `first` at `local`.
-fn cluster_alpha(first: u32, local: vec2<f32>, texel_width: vec2<f32>, lead_scale: vec2<f32>, filtered: bool) -> f32 {
+fn cluster_alpha(in: VertexOut, first: u32, local: vec2<f32>, texel_width: vec2<f32>, lead_scale: vec2<f32>, filtered: bool) -> f32 {
     var alpha = 0.0;
     for (var member = 0u; member <= glyphs[first].flags >> GLYPH_CLUSTER_SHIFT; member = member + 1u) {
         let glyph = glyphs[first + member];
         let source = member_coverage(glyph, local, texel_width, lead_scale, filtered)
-            * member_paint_alpha(glyph, local);
+            * glyph_paint(in, glyph.mode >> GLYPH_PAINT_SHIFT, local).a;
         alpha = source + alpha * (1.0 - source);
     }
     return alpha;
@@ -446,7 +445,7 @@ fn partnered_alpha(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>, lead
     if ((lead.flags & GLYPH_PARTNER) == 0u || alpha >= 1.0) {
         return alpha;
     }
-    let above = cluster_alpha(lead.partner, local, texel_width, lead_scale, filtered);
+    let above = cluster_alpha(in, lead.partner, local, texel_width, lead_scale, filtered);
     return alpha * (1.0 - above) / max(1.0 - alpha * above, 1.0e-6);
 }
 
@@ -470,14 +469,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // Paint follows the text, so it is evaluated at the untransformed pixel.
     let local = glyph_to_local(in, in.position.xy);
     let fill = glyphs[in.instance].mode >> GLYPH_PAINT_SHIFT;
-    // A solid paint is the same everywhere, so it is read alone and never supersampled.
-    var text_paint = premultiply(paints[fill].paint.colors[0]);
-    if (paints[fill].paint.kind != 0u) {
-        text_paint = text_paint_at(fill, local);
-        if (paints[fill].paint.paint_supersample != 0u) {
-            text_paint = text_paint_aa(in, fill);
-        }
-    }
+    let text_paint = glyph_paint(in, fill, local);
     if (in.mode == GLYPH_MODE_RECT) {
         return text_paint * (rect_coverage(glyphs[in.instance], in.texel) * in.opacity);
     }

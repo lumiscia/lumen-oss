@@ -12582,3 +12582,50 @@ fn faded_glyph_fades_its_stroke_and_fill_as_one() {
         }
     }
 }
+
+#[test]
+fn faded_strokes_and_clusters_keep_their_supersampled_paint() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let size = 128;
+    // Opaque on the left half of the line and clear on the right, switching inside a pixel.
+    let gradient = json!({
+        "type": "linear_gradient",
+        "start": [0, 0],
+        "end": [1, 0],
+        "stops": [
+            [0, [255, 255, 255, 255]],
+            [0.5, [255, 255, 255, 255]],
+            [0.5, [255, 255, 255, 0]],
+            [1, [255, 255, 255, 0]]
+        ]
+    });
+    let stroke = json!({ "paint": [255, 0, 0, 255], "width": 4 });
+    for (content, stroke) in [
+        ("I", stroke.clone()),
+        ("A\u{338}", json!(null)),
+        ("A\u{338}", stroke),
+    ] {
+        let mut render = |opacity: f64| {
+            let mut params = json!({
+                "font_size": 64,
+                "position": [40.8, 20.3],
+                "color": gradient,
+                "glyph_opacity": opacity
+            });
+            if !stroke.is_null() {
+                params["stroke"] = stroke.clone();
+            }
+            render_text_params(&mut renderer, decorated_text(json!(content), params), size)
+        };
+        let (opaque, faded) = (render(1.0), render(0.5));
+        let most = opaque
+            .iter()
+            .zip(&faded)
+            .map(|(&opaque, &faded)| (opaque as f32 * 0.5 - faded as f32).abs())
+            .fold(0.0, f32::max);
+        assert!(most <= 2.0, "{content:?} {stroke}: off by {most}");
+    }
+}
