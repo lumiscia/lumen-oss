@@ -293,7 +293,7 @@ fn is_non_public_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// Follows the IANA IPv4 special-purpose registry. Its globally reachable blocks stay allowed.
+/// Refuses the IANA IPv4 special-purpose blocks, except the globally reachable AS112 and AMT ones.
 fn is_non_public_ipv4(ip: Ipv4Addr) -> bool {
     let [first, second, third, _] = ip.octets();
     ip.is_private()
