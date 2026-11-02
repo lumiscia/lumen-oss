@@ -5373,6 +5373,38 @@ fn supersampled_alpha(
 }
 
 #[test]
+fn an_open_path_fills_like_the_same_path_closed() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    const SIZE: u32 = 80;
+    let triangle = |data: &str| {
+        NodeKind::Path(Path {
+            id: NodeId::new(1),
+            params: PathParamsDelegate {
+                data: Deferred::value(data.to_string()),
+                ..Default::default()
+            },
+        })
+    };
+    let open = render_drawable_graph(
+        &mut renderer,
+        vec![triangle("M 10.3 10.7 L 60.2 20.1 L 30.4 70.6")],
+        SIZE,
+    );
+    let closed = render_drawable_graph(
+        &mut renderer,
+        vec![triangle("M 10.3 10.7 L 60.2 20.1 L 30.4 70.6 Z")],
+        SIZE,
+    );
+    assert!(
+        closed.iter().skip(3).step_by(4).any(|&a| a > 0 && a < 255),
+        "the closed triangle has antialiased edges"
+    );
+    assert_eq!(open, closed);
+}
+
+#[test]
 fn non_uniform_scale_matches_a_supersampled_outline() {
     let Some(mut renderer) = gpu_composition_renderer() else {
         return;
@@ -6064,6 +6096,38 @@ fn text_transform_in_msdf_mode_matches_larger_and_rotated_text() {
     eprintln!("msdf rotation: IoU {turned_iou:.3}");
     assert!(upright.iter().any(|&a| a == 255));
     assert!(turned_iou > 0.97);
+}
+
+#[test]
+fn malformed_path_data_fails_the_frame_naming_the_data_field() {
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        NodeId::new(1),
+        NodeKind::Path(Path {
+            id: NodeId::new(1),
+            params: PathParamsDelegate {
+                data: Deferred::value("M 0 0 L 10 10 C nope".to_string()),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        NodeId::new(2),
+        NodeKind::MediaOutput(MediaOutput {
+            id: NodeId::new(2),
+            source: PortRef::new(NodeId::new(1), "output".to_string()),
+        }),
+    );
+    let composition = test_composition(graph);
+    let compiled = CompileContext::new(&composition).compile().unwrap();
+    let error = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("Path node") && error.contains("`data` is malformed"),
+        "{error}"
+    );
 }
 
 #[test]

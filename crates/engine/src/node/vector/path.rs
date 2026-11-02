@@ -169,11 +169,11 @@ pub(super) fn path_frame(
         flattening_tolerance(peak_scale(evaluated.scale, shutter.as_ref())),
         point_capacity,
     )
-    .ok_or_else(|| RenderError::NodeEvaluation {
+    .map_err(|details| RenderError::NodeEvaluation {
         frame: expr.frame as u32,
         node_id,
         node_kind: "Path",
-        details: format!("path data flattens to more than {point_capacity} points"),
+        details: format!("`data` {details}"),
     })?;
     normalize_contour_offsets(&mut points);
     let (x, y) = evaluated.position;
@@ -185,7 +185,7 @@ pub(super) fn path_frame(
         position: [x as f32, y as f32],
         bounds_min: bounds_min(&points),
         bounds_size: bounds_size(&points),
-        stroke_width: evaluated.stroke_width as f32,
+        stroke_width: evaluated.stroke_width.max(0.0) as f32,
         flags: style_flags(
             evaluated.fill_enabled,
             evaluated.stroke_enabled,
@@ -271,6 +271,7 @@ impl PathBuffers {
 /// the local tolerance shrinks as the path is scaled up.
 const PATH_FLATTENING_TOLERANCE: f32 = 0.25;
 const PATH_MAX_FLATTENING_ATTEMPTS: usize = 12;
+const NON_FINITE: &str = "has a coordinate that is not a finite number";
 // Bits of `PathPoint::flags`; keep in sync with `path_renderer.wgsl`.
 pub(super) const POINT_END: u32 = 1;
 pub(super) const POINT_CLOSED: u32 = 2;
@@ -291,25 +292,30 @@ pub(super) fn point_capacity(data: &Deferred<String>, scale: &Deferred<(f64, f64
     }
 }
 
-/// Flattens path data, coarsening `tolerance` until it fits `max_points`. Malformed
-/// data is empty; `None` means it exceeds `max_points` even at the coarsest tolerance.
+/// Flattens path data, coarsening `tolerance` until it fits `max_points`. Empty data is
+/// empty geometry. The error says why data is malformed, has a non-finite coordinate, or
+/// exceeds `max_points` even at the coarsest tolerance.
 fn parse_path_points(
     data: &str,
     tolerance: f32,
     max_points: usize,
-) -> Option<Vec<super::renderer::PathPoint>> {
-    let Some(path) = build_lyon_path(data) else {
-        return Some(Vec::new());
-    };
+) -> Result<Vec<super::renderer::PathPoint>, String> {
+    let path = build_lyon_path(data)?;
 
     let mut tolerance = tolerance;
     for _ in 0..PATH_MAX_FLATTENING_ATTEMPTS {
         if let Some(points) = flatten_path(&path, tolerance, max_points) {
-            return Some(points);
+            let finite =
+                |point: &super::renderer::PathPoint| point.position.iter().all(|c| c.is_finite());
+            return if points.iter().all(finite) {
+                Ok(points)
+            } else {
+                Err(NON_FINITE.to_string())
+            };
         }
         tolerance *= 2.0;
     }
-    None
+    Err(format!("flattens to more than {max_points} points"))
 }
 
 /// Builds a single closed contour from polygon vertices.
@@ -331,7 +337,7 @@ pub(super) fn closed_contour(vertices: &[[f32; 2]]) -> Vec<super::renderer::Path
     points
 }
 
-fn build_lyon_path(data: &str) -> Option<lyon_path::Path> {
+fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
     use lyon_path::{
         builder::SvgPathBuilder,
         geom::{ArcFlags, SvgArc},
@@ -341,7 +347,7 @@ fn build_lyon_path(data: &str) -> Option<lyon_path::Path> {
 
     let mut builder = lyon_path::Path::svg_builder();
     for segment in svgtypes::PathParser::from(data) {
-        let segment = segment.ok()?;
+        let segment = segment.map_err(|error| format!("is malformed: {error}"))?;
         match segment {
             PathSegment::MoveTo { abs, x, y } => {
                 finite(&[x, y])?;
@@ -471,11 +477,15 @@ fn build_lyon_path(data: &str) -> Option<lyon_path::Path> {
             PathSegment::ClosePath { .. } => builder.close(),
         }
     }
-    Some(builder.build())
+    Ok(builder.build())
 }
 
-fn finite(values: &[f64]) -> Option<()> {
-    values.iter().all(|value| value.is_finite()).then_some(())
+fn finite(values: &[f64]) -> Result<(), String> {
+    if values.iter().all(|&value| (value as f32).is_finite()) {
+        Ok(())
+    } else {
+        Err(NON_FINITE.to_string())
+    }
 }
 
 fn flatten_path(
@@ -670,14 +680,17 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_non_finite_paths_are_empty() {
+    fn malformed_or_non_finite_paths_are_errors() {
+        let error =
+            |data: &str| parse_path_points(data, PATH_FLATTENING_TOLERANCE, 128).unwrap_err();
+        for data in ["M 0 0 C nope", "M 1e999 0 L 10 10"] {
+            assert!(error(data).contains("malformed"), "{data}");
+        }
+        for data in ["M 0 0 L 1e300 0", "M 0 0 A 1e300 5 0 0 1 10 10"] {
+            assert!(error(data).contains("finite"), "{data}");
+        }
         assert!(
-            parse_path_points("M 0 0 C nope", PATH_FLATTENING_TOLERANCE, 128)
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            parse_path_points("M 1e999 0 L 10 10", PATH_FLATTENING_TOLERANCE, 128)
+            parse_path_points("", PATH_FLATTENING_TOLERANCE, 128)
                 .unwrap()
                 .is_empty()
         );
@@ -735,7 +748,8 @@ mod tests {
                 PATH_FLATTENING_TOLERANCE,
                 4
             )
-            .is_none()
+            .unwrap_err()
+            .contains("more than 4 points")
         );
         assert_eq!(
             point_capacity(
