@@ -195,10 +195,11 @@ enum TextureUpload {
     },
 }
 
+/// Identifies the cached texture of an image.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MediaTextureKey {
+    /// The image's resolver ID, which changes when its pixels do.
     pub source: String,
-    pub frame: Option<u32>,
     pub width: u32,
     pub height: u32,
 }
@@ -206,7 +207,8 @@ pub struct MediaTextureKey {
 #[derive(Debug, Clone)]
 pub struct MediaTextureUpload {
     pub texture: lumen_gpu::TextureId,
-    pub key: MediaTextureKey,
+    /// `None` for a video frame, which is never cached.
+    pub key: Option<MediaTextureKey>,
     pub frame: MediaFrame,
     pub size: lumen_gpu::Size,
 }
@@ -272,7 +274,7 @@ impl BoundFrame {
     pub fn use_media_texture(
         &mut self,
         texture: lumen_gpu::TextureId,
-        key: MediaTextureKey,
+        key: Option<MediaTextureKey>,
         frame: MediaFrame,
         size: lumen_gpu::Size,
     ) {

@@ -266,7 +266,10 @@ impl GpuCompileNode for MediaIn {
             return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let size = self.native_size(ctx).unwrap_or_else(|| ctx.canvas_size());
+        let size = ctx
+            .media()
+            .and_then(|media| self.native_size(&ctx.expr_context(self.id, "source"), media))
+            .unwrap_or_else(|| ctx.canvas_size());
         let texture = ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(self.id.0),
             Some(format!("media-in:{}:frame", self.id.0)),
@@ -295,10 +298,13 @@ impl GpuCompileNode for MediaIn {
 }
 
 impl MediaIn {
-    fn native_size(&self, ctx: &crate::gpu::CompileContext<'_>) -> Option<lumen_gpu::Size> {
-        let media = ctx.media()?;
-        let kind = resolve_for_context(self, &ctx.expr_context(self.id, "source")).ok()?;
-        match kind {
+    /// The size of the media the node shows at `ctx`'s frame, which its texture is compiled to.
+    pub(crate) fn native_size(
+        &self,
+        ctx: &crate::expr::ExpressionContext<'_>,
+        media: &dyn crate::media::MediaStore,
+    ) -> Option<lumen_gpu::Size> {
+        match resolve_for_context(self, ctx).ok()? {
             MediaInKind::Image { image_id } => {
                 let metadata = media.get_image_resolver(&image_id)?.metadata();
                 Some(lumen_gpu::Size::new(
@@ -342,14 +348,20 @@ impl GpuCompiledNode for CompiledMediaInput {
             params: self.params.clone(),
         };
         let kind = resolve_for_context(&node, &ctx.expr_context(self.node_id, "source"))?;
-        let (frame, key_source, key_frame) = match kind {
-            MediaInKind::Image { image_id } => media
-                .get_image_resolver(&image_id)
-                .ok_or_else(|| MediaError::SourceNotFound {
-                    media_source: image_id.clone(),
-                })?
-                .frame()
-                .map(|frame| (frame, image_id, None))?,
+        let (frame, key) = match kind {
+            MediaInKind::Image { image_id } => {
+                let resolver = media.get_image_resolver(&image_id).ok_or_else(|| {
+                    MediaError::SourceNotFound {
+                        media_source: image_id.clone(),
+                    }
+                })?;
+                let key = MediaTextureKey {
+                    source: resolver.id().to_string(),
+                    width: self.size.width,
+                    height: self.size.height,
+                };
+                (resolver.frame()?, Some(key))
+            }
             MediaInKind::Video {
                 stream_id,
                 range,
@@ -376,22 +388,10 @@ impl GpuCompiledNode for CompiledMediaInput {
                     frame: ctx.frame(),
                     frame_count: metadata.frame_count,
                 })?;
-                resolver
-                    .frame(source_frame)
-                    .map(|frame| (frame, stream_id, Some(source_frame)))?
+                (resolver.frame(source_frame)?, None)
             }
         };
-        bound.use_media_texture(
-            self.texture,
-            MediaTextureKey {
-                source: key_source,
-                frame: key_frame,
-                width: self.size.width,
-                height: self.size.height,
-            },
-            frame,
-            self.size,
-        );
+        bound.use_media_texture(self.texture, key, frame, self.size);
         Ok(())
     }
 }

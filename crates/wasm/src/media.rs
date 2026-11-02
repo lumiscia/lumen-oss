@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use lumen_engine::{
@@ -160,6 +163,7 @@ impl VideoStore {
 struct StoredImage {
     metadata: ImageMetadata,
     frame: Arc<CpuMediaFrame>,
+    version: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -185,6 +189,8 @@ pub(crate) struct WasmMediaStore {
 struct WasmMediaStoreInner {
     fonts: RwLock<HashMap<String, StoredFont>>,
     images: RwLock<HashMap<String, StoredImage>>,
+    /// Images set so far, which versions each without repeating after one is removed.
+    images_set: AtomicU64,
     videos: RwLock<VideoStore>,
 }
 
@@ -334,6 +340,7 @@ impl WasmMediaStore {
                 StoredImage {
                     metadata,
                     frame: Arc::new(frame),
+                    version: self.inner.images_set.fetch_add(1, Ordering::Relaxed),
                 },
             );
         Ok(())
@@ -399,8 +406,19 @@ impl WasmMediaStore {
 
 impl MediaStore for WasmMediaStore {
     fn get_image_resolver(&self, image_id: &str) -> Option<Box<dyn ImageResolver>> {
+        let version = self
+            .inner
+            .images
+            .read()
+            .ok()?
+            .get(image_id)
+            .map(|image| image.version);
         Some(Box::new(WasmImageResolver {
-            id: image_id.to_string(),
+            id: match version {
+                Some(version) => format!("wasm-image:{image_id}:{version}"),
+                None => format!("wasm-image:{image_id}"),
+            },
+            source: image_id.to_string(),
             store: Arc::clone(&self.inner),
         }))
     }
@@ -432,7 +450,9 @@ impl MediaStore for WasmMediaStore {
 
 #[derive(Clone)]
 struct WasmImageResolver {
+    /// Changes when the image at `source` is replaced.
     id: String,
+    source: String,
     store: Arc<WasmMediaStoreInner>,
 }
 
@@ -446,7 +466,7 @@ impl ImageResolver for WasmImageResolver {
             .images
             .read()
             .ok()
-            .and_then(|images| images.get(&self.id).map(|entry| entry.metadata))
+            .and_then(|images| images.get(&self.source).map(|entry| entry.metadata))
             .unwrap_or_default()
     }
 
@@ -455,12 +475,12 @@ impl ImageResolver for WasmImageResolver {
             .images
             .read()
             .map_err(|_| MediaError::SourceNotFound {
-                media_source: self.id.clone(),
+                media_source: self.source.clone(),
             })?
-            .get(&self.id)
+            .get(&self.source)
             .map(|entry| Arc::clone(&entry.frame))
             .ok_or_else(|| MediaError::SourceNotFound {
-                media_source: self.id.clone(),
+                media_source: self.source.clone(),
             })
             .map(MediaFrame::CpuRgba)
     }
@@ -839,6 +859,27 @@ mod tests {
             Some(second.id())
         );
         assert_eq!(second.data().expect("font data"), vec![vec![4, 5, 6]]);
+    }
+
+    #[test]
+    fn image_resolver_id_changes_when_the_image_is_replaced_or_set_again() {
+        let image = || crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).unwrap();
+        let id = |store: &WasmMediaStore| {
+            let resolver = store.get_image_resolver("plate").unwrap();
+            resolver.id().to_string()
+        };
+        let store = WasmMediaStore::default();
+        store.set_image("plate".to_string(), image()).unwrap();
+        let first = id(&store);
+        assert_eq!(id(&store), first);
+
+        store.set_image("plate".to_string(), image()).unwrap();
+        let second = id(&store);
+        assert_ne!(second, first);
+
+        store.remove_image("plate").unwrap();
+        store.set_image("plate".to_string(), image()).unwrap();
+        assert_ne!(id(&store), second);
     }
 
     const FRAME_BYTES: usize = 4;

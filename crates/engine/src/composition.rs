@@ -234,7 +234,7 @@ impl CompositionBuilder {
     }
 
     /// Validates the composition's structure: its graphs, the clips that instantiate templates,
-    /// and that no template instantiates itself.
+    /// that no template instantiates itself, and its audio timeline.
     pub fn build(self) -> Result<Composition, Vec<LumenError>> {
         self.validate()?;
         Ok(Composition {
@@ -275,6 +275,14 @@ impl CompositionBuilder {
                     );
                 }
             }
+        }
+        if let Some(audio) = &self.audio {
+            errors.extend(
+                audio
+                    .problems()
+                    .into_iter()
+                    .map(|details| GraphValidationError::InvalidAudio { details }.into()),
+            );
         }
         if let Some(templates) = self.template_cycle() {
             errors.push(GraphValidationError::TemplateCycle { templates }.into());

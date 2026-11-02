@@ -20,7 +20,7 @@ use crate::{
 };
 
 #[cfg(feature = "ffmpeg")]
-use super::media::GpuMediaFrameImporter;
+use super::media::{GpuMediaFrameImporter, GpuMediaImports};
 
 /// Everything a frame can change that alters the compiled plan's structure, plus the composition
 /// it was compiled from, whose params the plan binds.
@@ -57,6 +57,8 @@ enum PlanChoice {
     /// bounds were measured with.
     TextFont(String),
     ShaderSource(u64),
+    /// The size of the media a media input shows, which its texture is compiled to.
+    MediaSize(u32, u32),
 }
 
 /// Estimated GPU memory compiled plans may hold before least recently used ones are dropped.
@@ -71,6 +73,8 @@ struct PreparedComposition {
     /// Output kept from frames submitted to this plan.
     cache: CacheState,
     current_media_textures: HashMap<lumen_gpu::TextureId, MediaTextureKey>,
+    #[cfg(feature = "ffmpeg")]
+    media_imports: GpuMediaImports,
     estimated_bytes: u64,
     last_used: u64,
 }
@@ -227,6 +231,12 @@ impl GpuCompositionRenderer {
         self.rejected_plan_bytes.len()
     }
 
+    /// Number of image textures kept for plans to share.
+    #[doc(hidden)]
+    pub fn cached_media_texture_count(&self) -> usize {
+        self.media_texture_cache.len()
+    }
+
     pub fn compile_with_media<M: MediaStore>(
         &mut self,
         composition: &Composition,
@@ -345,6 +355,8 @@ impl GpuCompositionRenderer {
                 compiled,
                 cache: CacheState::new(self.prepared_plan_count),
                 current_media_textures: HashMap::new(),
+                #[cfg(feature = "ffmpeg")]
+                media_imports: GpuMediaImports::default(),
                 estimated_bytes,
                 last_used: self.plan_use_clock,
             },
@@ -760,8 +772,7 @@ impl GpuCompositionRenderer {
             tracing::trace!(
                 target: "lumen_render",
                 texture = ?upload.texture,
-                source = %upload.key.source,
-                frame = ?upload.key.frame,
+                key = ?upload.key,
                 width = upload.size.width,
                 height = upload.size.height,
                 "resolve media texture upload"
@@ -769,12 +780,18 @@ impl GpuCompositionRenderer {
             #[cfg(feature = "ffmpeg")]
             if let MediaFrame::GpuVideo(frame) = &upload.frame {
                 let texture = gpu_media_importer
-                    .import(&prepared.renderer, upload, frame)
+                    .import(
+                        &prepared.renderer,
+                        &mut prepared.media_imports,
+                        upload,
+                        frame,
+                    )
                     .map_err(|details| RenderError::Gpu {
                         details: format!("failed to import GPU media frame: {details}"),
                     })?;
+                let size = texture.size();
                 let desc = lumen_gpu::TextureDesc::sampled(
-                    upload.size,
+                    lumen_gpu::Size::new(size.width, size.height),
                     match frame.frame.backend() {
                         #[cfg(all(target_os = "macos", feature = "metal"))]
                         lumen_ffmpeg::GpuBackend::Metal => {
@@ -801,12 +818,10 @@ impl GpuCompositionRenderer {
                 .into());
             };
 
-            if upload.key.frame.is_some() {
+            let Some(key) = &upload.key else {
                 tracing::trace!(
                     target: "lumen_render",
                     texture = ?upload.texture,
-                    source = %upload.key.source,
-                    frame = ?upload.key.frame,
                     "upload uncached video frame"
                 );
                 let rgba = fit_frame_to_rgba8(frame, upload.size.width, upload.size.height);
@@ -831,36 +846,33 @@ impl GpuCompositionRenderer {
                 );
                 prepared.current_media_textures.remove(&upload.texture);
                 continue;
-            }
+            };
 
             if prepared
                 .current_media_textures
                 .get(&upload.texture)
-                .is_some_and(|current| current == &upload.key)
+                .is_some_and(|current| current == key)
             {
                 tracing::trace!(
                     target: "lumen_render",
                     texture = ?upload.texture,
-                    source = %upload.key.source,
-                    frame = ?upload.key.frame,
+                    source = %key.source,
                     "reuse current media texture binding"
                 );
                 continue;
             }
 
-            let texture = if let Some(texture) = media_texture_cache.get(&upload.key) {
+            let texture = if let Some(texture) = media_texture_cache.get(key) {
                 tracing::trace!(
                     target: "lumen_render",
-                    source = %upload.key.source,
-                    frame = ?upload.key.frame,
+                    source = %key.source,
                     "reuse cached media texture"
                 );
                 Arc::clone(texture)
             } else {
                 tracing::debug!(
                     target: "lumen_render",
-                    source = %upload.key.source,
-                    frame = ?upload.key.frame,
+                    source = %key.source,
                     width = upload.size.width,
                     height = upload.size.height,
                     "cache media texture"
@@ -890,7 +902,15 @@ impl GpuCompositionRenderer {
                     },
                     upload.size.as_extent(),
                 );
-                media_texture_cache.insert(upload.key.clone(), Arc::clone(&texture));
+                // Replaced images get new keys, so free what no plan binds rather than keep them all.
+                media_texture_cache.retain(|_, cached| {
+                    let bound = Arc::strong_count(cached) > 1;
+                    if !bound {
+                        cached.destroy();
+                    }
+                    bound
+                });
+                media_texture_cache.insert(key.clone(), Arc::clone(&texture));
                 texture
             };
 
@@ -910,7 +930,7 @@ impl GpuCompositionRenderer {
             }
             prepared
                 .current_media_textures
-                .insert(upload.texture, upload.key.clone());
+                .insert(upload.texture, key.clone());
         }
         Ok(())
     }
@@ -1231,6 +1251,15 @@ impl<'a> PlanKeyCollector<'a> {
                     }
                 }
                 self.has_text = true;
+            }
+            NodeKind::MediaIn(media_in) => {
+                let ctx = scope.expr_context(frame, format!("{}.params", media_in.id), self.media);
+                if let Some(size) = self
+                    .media
+                    .and_then(|media| media_in.native_size(&ctx, media))
+                {
+                    self.push_entry(media_in.id, PlanChoice::MediaSize(size.width, size.height));
+                }
             }
             NodeKind::WgslShader(shader) => {
                 let ctx = scope.expr_context(frame, format!("{}.params", shader.id), self.media);

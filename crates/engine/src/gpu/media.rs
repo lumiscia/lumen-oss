@@ -10,6 +10,15 @@ use std::sync::OnceLock;
 
 use super::types::MediaTextureUpload;
 
+/// The textures a plan's imported frames are held in, by the plan's texture they stand in for.
+#[derive(Default)]
+pub(super) struct GpuMediaImports {
+    #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+    cuda: HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
+    #[cfg(all(target_os = "macos", feature = "metal"))]
+    metal: HashMap<lumen_gpu::TextureId, MetalMediaTexture>,
+}
+
 #[derive(Default)]
 pub(super) struct GpuMediaFrameImporter {
     #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
@@ -22,6 +31,7 @@ impl GpuMediaFrameImporter {
     pub(super) fn import(
         &mut self,
         renderer: &lumen_gpu::Renderer,
+        imports: &mut GpuMediaImports,
         upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
@@ -29,13 +39,17 @@ impl GpuMediaFrameImporter {
             all(target_os = "linux", feature = "cuda", feature = "vulkan"),
             all(target_os = "macos", feature = "metal")
         )))]
-        let _ = (renderer, upload);
+        let _ = (renderer, imports, upload);
 
         match frame.frame.backend() {
             #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-            lumen_ffmpeg::GpuBackend::Cuda => self.import_cuda(renderer, upload, frame),
+            lumen_ffmpeg::GpuBackend::Cuda => {
+                self.import_cuda(renderer, &mut imports.cuda, upload, frame)
+            }
             #[cfg(all(target_os = "macos", feature = "metal"))]
-            lumen_ffmpeg::GpuBackend::Metal => self.import_metal(renderer, upload, frame),
+            lumen_ffmpeg::GpuBackend::Metal => {
+                self.import_metal(renderer, &mut imports.metal, upload, frame)
+            }
             backend => Err(format!(
                 "GPU media backend {backend:?} is not supported by this renderer build"
             )),
@@ -46,6 +60,7 @@ impl GpuMediaFrameImporter {
     fn import_cuda(
         &mut self,
         renderer: &lumen_gpu::Renderer,
+        textures: &mut HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
         upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
@@ -67,13 +82,14 @@ impl GpuMediaFrameImporter {
         self.cuda
             .as_mut()
             .ok_or_else(|| "CUDA media importer was not initialized".to_string())?
-            .import_frame(renderer, upload, frame)
+            .import_frame(renderer, textures, upload, frame)
     }
 
     #[cfg(all(target_os = "macos", feature = "metal"))]
     fn import_metal(
         &mut self,
         renderer: &lumen_gpu::Renderer,
+        textures: &mut HashMap<lumen_gpu::TextureId, MetalMediaTexture>,
         upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
@@ -83,14 +99,13 @@ impl GpuMediaFrameImporter {
         self.metal
             .as_mut()
             .ok_or_else(|| "Metal media importer was not initialized".to_string())?
-            .import_frame(renderer, upload, frame)
+            .import_frame(renderer, textures, upload, frame)
     }
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
 struct MetalMediaImporter {
     texture_cache: lumen_ffmpeg::MetalTextureCache,
-    textures: HashMap<lumen_gpu::TextureId, MetalMediaTexture>,
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -107,15 +122,13 @@ impl MetalMediaImporter {
             .map_err(|error| error.to_string())?;
         let texture_cache =
             lumen_ffmpeg::MetalTextureCache::create(&device).map_err(|error| error.to_string())?;
-        Ok(Self {
-            texture_cache,
-            textures: HashMap::new(),
-        })
+        Ok(Self { texture_cache })
     }
 
     fn import_frame(
         &mut self,
         renderer: &lumen_gpu::Renderer,
+        textures: &mut HashMap<lumen_gpu::TextureId, MetalMediaTexture>,
         upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
@@ -148,7 +161,7 @@ impl MetalMediaImporter {
                 view_formats: &[],
             },
         ));
-        self.textures.insert(
+        textures.insert(
             upload.texture,
             MetalMediaTexture {
                 _size: size,
@@ -163,7 +176,6 @@ impl MetalMediaImporter {
 #[cfg(all(target_os = "macos", feature = "metal"))]
 impl Drop for MetalMediaImporter {
     fn drop(&mut self) {
-        self.textures.clear();
         self.texture_cache.flush();
     }
 }
@@ -180,15 +192,23 @@ struct CudaMediaImporter {
     driver: &'static lumen_ffmpeg::CudaDriver,
     context: lumen_ffmpeg::CudaContext<'static>,
     converter: lumen_ffmpeg::CudaNv12ToRgbaConverter<'static>,
-    textures: HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
 }
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 struct CudaMediaTexture {
+    /// Made current while the texture's CUDA resources are freed, on whichever thread drops it.
+    context: lumen_ffmpeg::CudaContext<'static>,
     size: lumen_gpu::Size,
     imported: lumen_ffmpeg::ImportedCudaExternalImage,
     rgba: lumen_ffmpeg::CudaDeviceAllocation<'static>,
     exportable: lumen_gpu::ExportableVulkanTexture,
+}
+
+#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+impl Drop for CudaMediaTexture {
+    fn drop(&mut self) {
+        let _ = self.context.set_current();
+    }
 }
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
@@ -208,13 +228,13 @@ impl CudaMediaImporter {
             driver,
             context,
             converter,
-            textures: HashMap::new(),
         })
     }
 
     fn import_frame(
         &mut self,
         renderer: &lumen_gpu::Renderer,
+        textures: &mut HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
         upload: &MediaTextureUpload,
         frame: &crate::media::GpuVideoMediaFrame,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
@@ -227,16 +247,17 @@ impl CudaMediaImporter {
         let (decoded_width, decoded_height) = decoded.dimensions();
         let decoded_size = lumen_gpu::Size::new(decoded_width.max(1), decoded_height.max(1));
 
-        let needs_texture = self
-            .textures
+        let needs_texture = textures
             .get(&upload.texture)
             .is_none_or(|texture| texture.size != decoded_size);
         if needs_texture {
-            let texture = create_cuda_media_texture(renderer, self.driver, decoded_size)?;
-            self.textures.insert(upload.texture, texture);
+            let context = self
+                .driver
+                .create_primary_context_for_ordinal(self.context.ordinal())?;
+            let texture = create_cuda_media_texture(renderer, self.driver, context, decoded_size)?;
+            textures.insert(upload.texture, texture);
         }
-        let texture = self
-            .textures
+        let texture = textures
             .get_mut(&upload.texture)
             .ok_or_else(|| "CUDA media texture cache entry was not initialized".to_string())?;
 
@@ -246,14 +267,6 @@ impl CudaMediaImporter {
             .copy_rgba_frame_to_image(&texture.rgba, &texture.imported)?;
         self.driver.synchronize_context()?;
         Ok(texture.exportable.texture_arc())
-    }
-}
-
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-impl Drop for CudaMediaImporter {
-    fn drop(&mut self) {
-        let _ = self.context.set_current();
-        self.textures.clear();
     }
 }
 
@@ -273,6 +286,7 @@ fn cuda_driver() -> Result<&'static lumen_ffmpeg::CudaDriver, String> {
 fn create_cuda_media_texture(
     renderer: &lumen_gpu::Renderer,
     driver: &'static lumen_ffmpeg::CudaDriver,
+    context: lumen_ffmpeg::CudaContext<'static>,
     size: lumen_gpu::Size,
 ) -> Result<CudaMediaTexture, String> {
     use lumen_ffmpeg::import_owned_vulkan_opaque_fd_image;
@@ -299,6 +313,7 @@ fn create_cuda_media_texture(
         size.height,
     )?;
     Ok(CudaMediaTexture {
+        context,
         size,
         imported,
         rgba,
