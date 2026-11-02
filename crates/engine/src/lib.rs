@@ -13,6 +13,8 @@ pub mod audio;
 pub mod composition;
 pub mod error;
 pub mod expr;
+#[doc(hidden)]
+pub mod fingerprint;
 pub mod gpu;
 pub mod graph;
 pub mod media;

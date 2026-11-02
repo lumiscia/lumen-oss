@@ -161,7 +161,7 @@ pub trait NodeParams: Clone + Default {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
 pub struct DelegateVec<T: Delegated> {
     pub items: Vec<T::Delegate>,
 }
@@ -219,7 +219,7 @@ where
 
 /// A field that inherits its parent's value when absent, is switched off by JSON `null`, or is
 /// set.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::StructuralHash)]
 pub enum Override<T> {
     #[default]
     Inherit,

@@ -25,7 +25,7 @@ impl VirtualPropertyId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
 pub enum ExpressionValue {
     Number(f64),
     Boolean(bool),
@@ -141,7 +141,7 @@ pub enum GlobalVar {
     Custom(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
 pub enum ExprNode {
     Literal(ExpressionValue),
     Binary(Box<ExprNode>, BinaryOp, Box<ExprNode>),
@@ -206,6 +206,16 @@ impl PartialEq for Expression {
             && self.ast == other.ast
             && self.references == other.references
             && self.source == other.source
+    }
+}
+
+impl crate::fingerprint::StructuralHash for Expression {
+    fn structural_hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // The AST holds composition functions expanded at parse time, which the source names
+        // only by call. Its evaluation plan is derived from it, and expression ids are local to
+        // parsing.
+        self.source.structural_hash(state);
+        self.ast.structural_hash(state);
     }
 }
 

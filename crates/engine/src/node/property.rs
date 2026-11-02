@@ -14,7 +14,7 @@ use super::{
     vector,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub enum PropertyValue {
     Float(f64),
     Int(i64),
@@ -36,7 +36,7 @@ pub enum PropertyValue {
     StringVec(Vec<String>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub enum PropertyExpression {
     Value(PropertyValue),
     Expr(Expression),

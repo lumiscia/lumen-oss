@@ -319,7 +319,7 @@ pub(crate) fn expand_struct_delegate(
         .collect::<Vec<_>>();
 
     Ok(quote! {
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, ::lumen_engine::fingerprint::StructuralHash)]
         #serde_derive
         pub struct #delegate_ident {
             #(#delegate_fields,)*

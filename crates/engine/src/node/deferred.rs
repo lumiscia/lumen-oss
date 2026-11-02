@@ -9,7 +9,7 @@ use super::{
     vector,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub enum Deferred<T> {
     Value(T),
     Expr(Expression),
