@@ -138,6 +138,25 @@ fn assert_cycle_rejected_at_build(graph: Graph) {
 }
 
 #[test]
+fn a_missing_input_node_is_not_reported_as_a_cycle() {
+    let mut graph = Graph::new();
+    let output = NodeId::new(1);
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: PortRef::new(NodeId::new(999), "output".to_string()),
+        }),
+    );
+    assert!(matches!(
+        build_errors(graph).as_slice(),
+        [LumenError::GraphValidation(
+            GraphValidationError::MissingSourceNode { node_id }
+        )] if *node_id == NodeId::new(999)
+    ));
+}
+
+#[test]
 fn cycles_are_rejected_at_build() {
     let first = NodeId::new(1);
     let second = NodeId::new(2);

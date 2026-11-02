@@ -181,6 +181,14 @@ impl Graph {
         }
 
         for node in self.nodes.values() {
+            errors.extend(
+                node.input_ports()
+                    .into_iter()
+                    .filter(|port| !port.is_empty() && !self.nodes.contains_key(&port.id))
+                    .map(|port| {
+                        GraphValidationError::MissingSourceNode { node_id: port.id }.into()
+                    }),
+            );
             let mut direct_inputs = node.input_ports().into_iter();
             for input in node.input_port_defs() {
                 if input.optional {
@@ -244,11 +252,12 @@ impl Graph {
         let mut indegree: HashMap<NodeId, usize> =
             self.nodes.keys().copied().map(|id| (id, 0)).collect();
         let mut outgoing: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        // A missing endpoint is its own validation error, not part of a cycle.
         for &(from, to) in &edges {
-            if let Some(entry) = indegree.get_mut(&to) {
-                *entry += 1;
+            if self.nodes.contains_key(&from) && self.nodes.contains_key(&to) {
+                *indegree.entry(to).or_default() += 1;
+                outgoing.entry(from).or_default().push(to);
             }
-            outgoing.entry(from).or_default().push(to);
         }
 
         let mut queue: VecDeque<NodeId> = indegree

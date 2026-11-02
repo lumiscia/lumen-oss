@@ -49,21 +49,26 @@ impl Default for TimeRemap {
     }
 }
 
+const MAX_FRAME: f64 = 9_007_199_254_740_992.0;
+
 /// Returns the (possibly fractional) source frame. Consumers that index media floor it themselves.
 ///
 /// Looping runs on the whole frame, exactly as for integer frames, and the fraction is carried
 /// separately so rounding can never cross into the next frame or the excluded loop end. Frames
-/// below zero clamp to zero; a frame that is not finite is an error.
+/// below zero clamp to zero; a frame that is not finite, or above 2^53 where an `f64` no longer
+/// holds every whole frame, is an error.
 pub fn remap_frame(node_id: NodeId, settings: TimeRemapSettings) -> crate::Result<f64> {
-    if !settings.frame.is_finite() {
+    if !settings.frame.is_finite() || settings.frame > MAX_FRAME {
         return Err(crate::error::PropertyError::InvalidType {
             node_id,
             property_path: "frame".to_string(),
-            expected: "a finite number",
+            expected: "a finite number up to 2^53",
             actual: if settings.frame.is_nan() {
                 "NaN"
-            } else {
+            } else if settings.frame.is_infinite() {
                 "infinity"
+            } else {
+                "a larger number"
             },
         }
         .into());
@@ -80,7 +85,7 @@ pub fn remap_frame(node_id: NodeId, settings: TimeRemapSettings) -> crate::Resul
     if fraction == 0.0 {
         return Ok(whole);
     }
-    Ok((whole + fraction).min((whole + 1.0).next_down()))
+    Ok((whole + fraction).min((whole + 1.0).next_down()).max(whole))
 }
 
 impl GpuCompileNode for TimeRemap {
@@ -193,10 +198,21 @@ mod tests {
             9_007_199_254_740_992.0
         );
         assert_eq!(
-            remap(settings(9_223_372_036_854_775_808.0, true, 0, 10)).unwrap(),
-            8.0
+            remap(settings(9_007_199_254_740_992.0, true, 0, 10)).unwrap(),
+            2.0
         );
-        assert!(remap(settings(1e30, true, i64::MIN, i64::MAX)).is_ok());
+        assert_eq!(
+            remap(settings(
+                0.5,
+                true,
+                9_007_199_254_740_992,
+                9_007_199_254_740_994
+            ))
+            .unwrap(),
+            9_007_199_254_740_992.0
+        );
+        assert!(remap(settings(9_223_372_036_854_775_808.0, true, 0, 10)).is_err());
+        assert!(remap(settings(1e40, false, 0, 10)).is_err());
         assert_eq!(remap(settings(9.0, true, i64::MIN, i64::MAX)).unwrap(), 9.0);
         assert!(remap(settings(f64::INFINITY, true, 0, 10)).is_err());
         assert!(remap(settings(f64::NAN, false, 0, 10)).is_err());
