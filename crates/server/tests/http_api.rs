@@ -4,7 +4,7 @@
 //! `*_with_gpu` tests, which skip like the engine's GPU tests when no adapter is available.
 
 use std::{
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::Path,
     process::{Child, Command, Stdio},
@@ -46,33 +46,37 @@ impl Server {
     }
 
     fn start_with(args: &[&str], configure: impl FnOnce(&mut Command)) -> Self {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .and_then(|listener| listener.local_addr())
-            .expect("free port")
-            .port();
         let mut command = server_command();
         command
-            .args(["--bind", &format!("127.0.0.1:{port}"), "--token", TOKEN])
+            .args(["--bind", "127.0.0.1:0", "--token", TOKEN])
             .args(args)
+            .env("RUST_LOG", "lumen_server=info")
+            .env("NO_COLOR", "1")
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         configure(&mut command);
-        let server = Self {
-            base: format!("http://127.0.0.1:{port}"),
-            child: command.spawn().expect("spawn lumen-server"),
-            http: Client::new(),
+        let mut child = command.spawn().expect("spawn lumen-server");
+        let mut stderr = BufReader::new(child.stderr.take().expect("server stderr"));
+        let address = loop {
+            let mut line = String::new();
+            let read = stderr.read_line(&mut line).expect("read server stderr");
+            assert_ne!(read, 0, "lumen-server exited before listening");
+            eprint!("{line}");
+            if let Some((_, address)) = line.split_once("listening address=") {
+                break address.trim().to_string();
+            }
         };
-        let started = Instant::now();
-        while server
-            .http
-            .get(format!("{}/health", server.base))
-            .send()
-            .is_err()
-        {
-            assert!(started.elapsed() < TIMEOUT, "lumen-server did not start");
-            thread::sleep(Duration::from_millis(20));
+        // The server blocks on a full pipe, and printing keeps its log with a failing test's output.
+        thread::spawn(move || {
+            for line in stderr.lines().map_while(Result::ok) {
+                eprintln!("{line}");
+            }
+        });
+        Self {
+            base: format!("http://{address}"),
+            child,
+            http: Client::new(),
         }
-        server
     }
 
     fn get(&self, path: &str) -> Response {
