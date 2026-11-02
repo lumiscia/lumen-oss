@@ -5,8 +5,6 @@ use std::sync::Arc;
     all(target_os = "macos", feature = "metal")
 ))]
 use std::collections::HashMap;
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-use std::sync::OnceLock;
 
 use super::types::MediaTextureUpload;
 
@@ -181,9 +179,8 @@ fn media_texture_usage() -> lumen_gpu::wgpu::TextureUsages {
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 struct CudaMediaImporter {
-    driver: &'static lumen_ffmpeg::CudaDriver,
-    context: lumen_ffmpeg::CudaContext<'static>,
-    converter: lumen_ffmpeg::CudaNv12ToRgbaConverter<'static>,
+    context: lumen_ffmpeg::CudaContext,
+    converter: lumen_ffmpeg::CudaNv12ToRgbaConverter,
     textures: HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
 }
 
@@ -191,14 +188,14 @@ struct CudaMediaImporter {
 struct CudaMediaTexture {
     size: lumen_gpu::Size,
     imported: lumen_ffmpeg::ImportedCudaExternalImage,
-    rgba: lumen_ffmpeg::CudaDeviceAllocation<'static>,
+    rgba: lumen_ffmpeg::CudaDeviceAllocation,
     exportable: lumen_gpu::ExportableVulkanTexture,
 }
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 impl CudaMediaImporter {
     fn new(exportable: &lumen_gpu::ExportableVulkanTexture) -> Result<Self, String> {
-        let driver = cuda_driver()?;
+        let driver = lumen_ffmpeg::CudaDriver::load()?;
         let vulkan_uuid = exportable.device_info().device_uuid;
         let cuda_ordinal = driver
             .devices()?
@@ -207,9 +204,8 @@ impl CudaMediaImporter {
             .map(|device| device.ordinal)
             .unwrap_or(0);
         let context = driver.create_primary_context_for_ordinal(cuda_ordinal)?;
-        let converter = driver.create_nv12_to_rgba_converter(&context)?;
+        let converter = context.create_nv12_to_rgba_converter()?;
         Ok(Self {
-            driver,
             context,
             converter,
             textures: HashMap::new(),
@@ -236,7 +232,7 @@ impl CudaMediaImporter {
             .get(&upload.texture)
             .is_none_or(|texture| texture.size != decoded_size);
         if needs_texture {
-            let texture = create_cuda_media_texture(renderer, self.driver, decoded_size)?;
+            let texture = create_cuda_media_texture(renderer, &self.context, decoded_size)?;
             self.textures.insert(upload.texture, texture);
         }
         let texture = self
@@ -244,39 +240,18 @@ impl CudaMediaImporter {
             .get_mut(&upload.texture)
             .ok_or_else(|| "CUDA media texture cache entry was not initialized".to_string())?;
 
-        self.context.set_current()?;
         self.converter.convert(decoded, &texture.rgba)?;
-        self.driver
+        self.context
             .copy_rgba_frame_to_image(&texture.rgba, &texture.imported)?;
-        self.driver.synchronize_context()?;
+        self.context.synchronize()?;
         Ok(texture.exportable.texture_arc())
     }
 }
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-impl Drop for CudaMediaImporter {
-    fn drop(&mut self) {
-        let _ = self.context.set_current();
-        self.textures.clear();
-    }
-}
-
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-fn cuda_driver() -> Result<&'static lumen_ffmpeg::CudaDriver, String> {
-    static CUDA_DRIVER: OnceLock<lumen_ffmpeg::CudaDriver> = OnceLock::new();
-    if let Some(driver) = CUDA_DRIVER.get() {
-        return Ok(driver);
-    }
-    let _ = CUDA_DRIVER.set(lumen_ffmpeg::CudaDriver::load()?);
-    CUDA_DRIVER
-        .get()
-        .ok_or_else(|| "CUDA driver was not initialized".to_string())
-}
-
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 fn create_cuda_media_texture(
     renderer: &lumen_gpu::Renderer,
-    driver: &'static lumen_ffmpeg::CudaDriver,
+    context: &lumen_ffmpeg::CudaContext,
     size: lumen_gpu::Size,
 ) -> Result<CudaMediaTexture, String> {
     use lumen_ffmpeg::import_owned_vulkan_opaque_fd_image;
@@ -291,9 +266,9 @@ fn create_cuda_media_texture(
         )
         .map_err(|error| error.to_string())?;
 
-    let rgba = driver.allocate_rgba_frame(size.width, size.height)?;
+    let rgba = context.allocate_rgba_frame(size.width, size.height)?;
     let imported = import_owned_vulkan_opaque_fd_image(
-        driver,
+        context,
         exportable
             .memory_fd()
             .try_clone()

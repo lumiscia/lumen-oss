@@ -75,6 +75,7 @@ impl MuxedEncoder {
             audio.flush(&mut self.output)?;
         }
         self.wrote_header = false;
-        self.output.write_trailer()
+        self.output.write_trailer()?;
+        self.output.close()
     }
 }

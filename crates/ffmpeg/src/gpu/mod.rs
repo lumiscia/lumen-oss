@@ -7,14 +7,12 @@ pub mod vulkan;
 
 #[cfg(feature = "cuda")]
 pub use cuda::CudaDecodedFrame;
+#[cfg(feature = "cuda")]
+pub use cuda::CudaVideoFrame;
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 pub use cuda::{
     CudaContext, CudaDeviceAllocation, CudaDriver, CudaNv12ToRgbaConverter,
-    ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image, import_vulkan_opaque_fd_image,
-};
-#[cfg(feature = "cuda")]
-pub use cuda::{
-    CudaExternalMemoryHandle, CudaExternalSemaphoreHandle, CudaVideoFrame, VulkanToCudaExport,
+    ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image,
 };
 #[cfg(feature = "metal")]
 pub use metal::{

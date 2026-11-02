@@ -20,13 +20,11 @@ anyhow = "1.0.101"
 fontdb = "0.23.0"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 tempfile = "3.23.0"
-lumen-engine = { path = "../engine", features = ["ffmpeg", "image", "json"] }
-lumen-gpu = { package = "lumen-engine-gpu", path = "../gpu" }
-lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.3.1", path = "../ffmpeg", features = [
-  "vulkan",
-] }
+lumen-engine = { workspace = true, features = ["ffmpeg", "image", "json"] }
+lumen-gpu = { workspace = true }
+lumen-ffmpeg = { workspace = true, features = ["vulkan"] }
 pollster = "1.0.1"
 serde_json = "1.0.145"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-lumen-engine = { path = "../engine", features = ["vulkan"] }
+lumen-engine = { workspace = true, features = ["vulkan"] }
