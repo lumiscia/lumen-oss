@@ -4,7 +4,7 @@
 //! `*_with_gpu` tests, which skip like the engine's GPU tests when no adapter is available.
 
 use std::{
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::Path,
     process::{Child, Command, Stdio},
@@ -46,33 +46,37 @@ impl Server {
     }
 
     fn start_with(args: &[&str], configure: impl FnOnce(&mut Command)) -> Self {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .and_then(|listener| listener.local_addr())
-            .expect("free port")
-            .port();
         let mut command = server_command();
         command
-            .args(["--bind", &format!("127.0.0.1:{port}"), "--token", TOKEN])
+            .args(["--bind", "127.0.0.1:0", "--token", TOKEN])
             .args(args)
+            .env("RUST_LOG", "lumen_server=info")
+            .env("NO_COLOR", "1")
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         configure(&mut command);
-        let server = Self {
-            base: format!("http://127.0.0.1:{port}"),
-            child: command.spawn().expect("spawn lumen-server"),
-            http: Client::new(),
+        let mut child = command.spawn().expect("spawn lumen-server");
+        let mut stderr = BufReader::new(child.stderr.take().expect("server stderr"));
+        let address = loop {
+            let mut line = String::new();
+            let read = stderr.read_line(&mut line).expect("read server stderr");
+            assert_ne!(read, 0, "lumen-server exited before listening");
+            eprint!("{line}");
+            if let Some((_, address)) = line.split_once("listening address=") {
+                break address.trim().to_string();
+            }
         };
-        let started = Instant::now();
-        while server
-            .http
-            .get(format!("{}/health", server.base))
-            .send()
-            .is_err()
-        {
-            assert!(started.elapsed() < TIMEOUT, "lumen-server did not start");
-            thread::sleep(Duration::from_millis(20));
+        // The server blocks on a full pipe, and printing keeps its log with a failing test's output.
+        thread::spawn(move || {
+            for line in stderr.lines().map_while(Result::ok) {
+                eprintln!("{line}");
+            }
+        });
+        Self {
+            base: format!("http://{address}"),
+            child,
+            http: Client::new(),
         }
-        server
     }
 
     fn get(&self, path: &str) -> Response {
@@ -146,8 +150,30 @@ fn server_command() -> Command {
     command
 }
 
-/// Serves `/image.png`, a redirect to the literal loopback address, `/held`, which answers only once
-/// the test releases it, and `/stream.m3u8` with the given playlist.
+/// A grayscale baseline JPEG of flat blocks, big enough that FFmpeg's probe picks `image2` for a `.jpg`.
+fn normal_sized_jpeg() -> Vec<u8> {
+    let (width, height) = (1280_u16, 720_u16);
+    let mut jpeg = vec![0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00];
+    jpeg.extend([1; 64]);
+    jpeg.extend([0xff, 0xc0, 0x00, 0x0b, 0x08]);
+    jpeg.extend(height.to_be_bytes());
+    jpeg.extend(width.to_be_bytes());
+    jpeg.extend([0x01, 0x01, 0x11, 0x00]);
+    // DC and AC tables holding one 1-bit code, for symbol 0.
+    for class in [0x00, 0x10] {
+        jpeg.extend([0xff, 0xc4, 0x00, 0x14, class, 0x01]);
+        jpeg.extend([0; 16]);
+    }
+    jpeg.extend([0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]);
+    // Each block is "no DC change" and "end of block": two zero bits.
+    let blocks = usize::from(width.div_ceil(8)) * usize::from(height.div_ceil(8));
+    jpeg.resize(jpeg.len() + (blocks * 2).div_ceil(8), 0);
+    jpeg.extend([0xff, 0xd9]);
+    jpeg
+}
+
+/// Serves `/image.png`, `/photo.jpg`, a redirect to the literal loopback address, `/held`, which
+/// answers only once the test releases it, and `/stream.m3u8` with the given playlist.
 struct MediaServer {
     port: u16,
     requests: Arc<AtomicUsize>,
@@ -208,8 +234,12 @@ fn serve_media(mut stream: TcpStream, port: u16, released: &Mutex<Receiver<()>>,
     if path.starts_with("/held") {
         let _ = released.lock().expect("release lock").recv();
     }
+    let photo;
     let body = if path.starts_with("/stream.m3u8") {
         playlist.as_bytes()
+    } else if path.starts_with("/photo.jpg") {
+        photo = normal_sized_jpeg();
+        &photo
     } else {
         TINY_PNG
     };
@@ -535,6 +565,24 @@ fn renders_read_only_manifest_media_with_gpu() {
     let artifact = server.get(&format!("/renders/{id}/artifact"));
     assert_eq!(artifact.status(), StatusCode::OK);
     assert!(!artifact.bytes().expect("artifact bytes").is_empty());
+}
+
+#[test]
+fn renders_stills_read_as_video_with_gpu() {
+    let media = MediaServer::start();
+    let server = Server::start(&["--allow-media-host", "localhost"]);
+    for (alias, path) in [("photo.jpg", "/photo.jpg"), ("image.png", "/image.png")] {
+        let Some((_, progress)) = render_outcome(
+            &server,
+            &json!({
+                "composition": media_composition("video", alias),
+                "media": { alias: media.url("localhost", path) },
+            }),
+        ) else {
+            return;
+        };
+        assert_eq!(progress["state"], "succeeded", "{alias}: {progress}");
+    }
 }
 
 #[test]

@@ -8,7 +8,7 @@ use crate::{
 use crate::node::source::{
     text::{
         CompiledText, DecorationParams, GlyphParams, NodeDecorations, Text, TextDecorations,
-        TextLayoutStyle, TextState,
+        TextLayoutStyle, TextParamsDelegate, TextState,
     },
     text_content::{TextContent, TextContentDelegate, TextLineDelegate, TextSpanDelegate},
 };
@@ -42,7 +42,18 @@ fn text_shader() -> String {
     ]
     .concat()
 }
+/// The most glyph, stroke and decoration instances one text node can draw.
 pub(crate) const MAX_TEXT_GLYPHS: usize = 2048;
+
+/// A text node's layout and decorations when none of them are animated.
+struct ConstantText {
+    shaped: lumen_text::ShapedText,
+    alignment: crate::node::source::text::TextAlignmentVertical,
+    /// The rect instances of its decorations, placed at the origin.
+    decorations: Vec<lumen_text::GpuGlyphInstance>,
+    /// How far its strokes reach past the glyph edges.
+    stroke_reach: f32,
+}
 /// Times the canvas, along each axis, that the layer of animated, motion-blurred text spans,
 /// so that text may sweep the canvas by that much less one canvas over its shutter.
 /// Plans are cached and textures are fixed in them, so the layer cannot follow the sweep of
@@ -258,11 +269,17 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             && matches!(params.scale, Deferred::Value(_))
             && matches!(params.rotation, Deferred::Value(_))
             && matches!(params.anchor, Deferred::Value(_)));
+        let constant = self.constant_text(text);
         let bounds = if blurred {
             None
         } else {
-            self.text_bounds(text)
+            self.text_bounds(text, constant.as_ref())
         };
+        let capacity = constant.as_ref().map_or(MAX_TEXT_GLYPHS, |constant| {
+            let strokes = 1 + usize::from(crate::node::source::text::stroked(params));
+            (constant.shaped.glyph_count() * strokes + constant.decorations.len())
+                .clamp(1, MAX_TEXT_GLYPHS)
+        });
         let domain = self.ctx.source_domain(bounds);
         let texture = self.ctx.builder_mut().texture_for(
             lumen_gpu::NodeKey(text.id.0),
@@ -311,7 +328,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             lumen_gpu::NodeKey(text.id.0),
             Some(format!("text:{}:instances", text.id.0)),
             lumen_gpu::BufferDesc::storage(
-                (MAX_TEXT_GLYPHS * std::mem::size_of::<lumen_text::GpuGlyphInstance>()) as u64,
+                (capacity * std::mem::size_of::<lumen_text::GpuGlyphInstance>()) as u64,
             ),
         );
         let style_buffer = self.ctx.builder_mut().buffer_for(
@@ -448,7 +465,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             bindings.clone(),
             lumen_gpu::Draw {
                 vertices: 0..6,
-                instances: 0..MAX_TEXT_GLYPHS as u32,
+                instances: 0..capacity as u32,
             },
             viewport,
         ));
@@ -557,7 +574,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             style_buffer,
             paints_buffer,
             paint_count,
-            max_glyphs: MAX_TEXT_GLYPHS,
+            capacity,
             size,
             layer_size,
             state: std::sync::Arc::new(std::sync::Mutex::new(TextState::default())),
@@ -575,12 +592,15 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
     /// canvas: the ink of its glyphs, as the font that will draw it measures them, and its
     /// decorations.
     ///
-    /// Only text whose layout, decorations and strokes are constant and whose paints are solid
-    /// colours is bounded: its paint is evaluated at the pixel it is drawn to, which a viewport offset
-    /// moves. Text in a font that the media store has not resolved is not bounded either, since
-    /// the font drawn later may be wider than the one measured here, nor text with `glyph_*`
-    /// params, which move glyphs off the layout and fade clusters across their union.
-    fn text_bounds(&self, text: &Text) -> Option<lumen_gpu::RectI> {
+    /// Only text whose paints are solid colours is bounded, besides the constant text that
+    /// `constant` holds: its paint is evaluated at the pixel it is drawn to, which a viewport
+    /// offset moves. Text with `glyph_*` params is not bounded either, since they move glyphs
+    /// off the layout and fade clusters across their union.
+    fn text_bounds(
+        &self,
+        text: &Text,
+        constant: Option<&ConstantText>,
+    ) -> Option<lumen_gpu::RectI> {
         let params = &text.params;
         let solid = |paint: &super::paint::PaintDelegate| {
             matches!(paint, super::paint::PaintDelegate::SolidColor(..))
@@ -594,15 +614,11 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 && !matches!(&span.highlight, Override::Set(highlight) if !solid(&highlight.paint))
                 && !matches!(&span.stroke, Override::Set(stroke) if !solid(&stroke.paint))
         };
+        let constant = constant?;
         if GlyphParams::any(params)
             || !solid(&params.color)
-            || crate::node::DelegateEvaluable::has_expressions(&params.content)
             || matches!(&params.content, TextContentDelegate::Spans(spans)
                 if !spans.items.iter().all(solid_span))
-            || crate::node::DelegateEvaluable::has_expressions(&params.underline)
-            || crate::node::DelegateEvaluable::has_expressions(&params.strikethrough)
-            || crate::node::DelegateEvaluable::has_expressions(&params.highlight)
-            || crate::node::DelegateEvaluable::has_expressions(&params.stroke)
             || !params
                 .stroke
                 .as_ref()
@@ -616,103 +632,28 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 .highlight
                 .as_ref()
                 .is_none_or(|highlight| solid(&highlight.paint))
-            || params.font_family.is_expr()
-            || params.font_size.is_expr()
-            || params.font_weight.is_expr()
-            || crate::node::DelegateEvaluable::has_expressions(&params.font_style)
-            || crate::node::DelegateEvaluable::has_expressions(&params.font_features)
-            || params.max_width.is_expr()
-            || params.letter_spacing.is_expr()
-            || params.line_height.is_expr()
-            || crate::node::DelegateEvaluable::has_expressions(&params.max_lines)
-            || crate::node::DelegateEvaluable::has_expressions(&params.max_height)
-            || crate::node::DelegateEvaluable::has_expressions(&params.overflow)
-            || crate::node::DelegateEvaluable::has_expressions(&params.fit)
-            || params.min_font_size.is_expr()
-            || params.paragraph_spacing.is_expr()
-            || crate::node::DelegateEvaluable::has_expressions(&params.text_transform)
         {
             return None;
         }
-        let expr = self.ctx.expr_context(text.id, "params");
-        let mut evaluated = params
-            .eval(&crate::node::NodeParamEvalContext {
-                node_id: text.id,
-                expr: &expr,
-            })
-            .ok()?;
-        let style = TextLayoutStyle::take(&mut evaluated);
-        let request = style.request(&evaluated.content, &evaluated.font_features);
-        let unresolved = request.spans.iter().any(|span| {
-            let family = span.font_family.as_str();
-            !family.is_empty()
-                && family != lumen_text::DEFAULT_FONT_FAMILY
-                && !self
-                    .ctx
-                    .media()
-                    .is_some_and(|media| media.font_resolver_id(family).is_some())
-        });
-        if unresolved {
-            return None;
-        }
-        let (shaped, ink) = {
-            let mut text_system = crate::node::source::text::text_system().ok()?;
-            crate::node::source::text::load_font_families(
-                &mut text_system,
-                self.ctx.media(),
-                &style,
-                Some(&evaluated.content),
-            )
-            .ok()?;
-            let shaped = text_system.shape(&request);
-            let ink = text_system.ink_bounds(&shaped)?;
-            (shaped, ink)
-        };
-        let decorations = TextDecorations {
-            underline: evaluated.underline.take(),
-            strikethrough: evaluated.strikethrough.take(),
-            highlight: evaluated.highlight.take(),
-            stroke: evaluated.stroke.take(),
-        };
-        let spans = match &evaluated.content {
-            TextContent::Spans(spans) => &spans[..],
-            TextContent::Text(_) => &[],
-        };
-        let mut rects = Vec::new();
-        crate::node::source::text::decorate(
-            &shaped,
-            &decorations,
-            spans,
-            [0.0; 2],
-            |_| 0,
-            |_, _| 0,
-            &mut rects,
-        );
-        let mut strokes = Vec::new();
-        crate::node::source::text::span_strokes(
-            decorations.stroke.as_ref(),
-            spans,
-            &shaped,
-            |_, _, _| 0,
-            &mut strokes,
-        );
-        let reach = strokes
-            .iter()
-            .flatten()
-            .map(|stroke| lumen_text::stroke_reach(stroke.half_width))
-            .fold(0.0, f32::max);
+        let ink = crate::node::source::text::text_system(self.ctx.media())
+            .ok()?
+            .ink_bounds(&constant.shaped)?;
+        let reach = constant.stroke_reach;
         let ink = [
             ink[0] - reach,
             ink[1] - reach,
             ink[2] + reach,
             ink[3] + reach,
         ];
-        let ink = rects.iter().fold(ink, |[x0, y0, x1, y1], rect| {
-            let [min_x, min_y, max_x, max_y] = rect.rect_bounds();
-            [x0.min(min_x), y0.min(min_y), x1.max(max_x), y1.max(max_y)]
-        });
-        let line_height = shaped.measurement.height;
-        let alignment = evaluated.alignment_vertical;
+        let ink = constant
+            .decorations
+            .iter()
+            .fold(ink, |[x0, y0, x1, y1], rect| {
+                let [min_x, min_y, max_x, max_y] = rect.rect_bounds();
+                [x0.min(min_x), y0.min(min_y), x1.max(max_x), y1.max(max_y)]
+            });
+        let line_height = constant.shaped.measurement.height;
+        let alignment = constant.alignment;
         let animated = params.position.is_expr()
             || params.scale.is_expr()
             || params.rotation.is_expr()
@@ -740,6 +681,123 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             };
             let [x0, y0, x1, y1] = transform.to_gpu().canvas_bounds(min, max);
             Ok(Some([x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0]))
+        })
+    }
+
+    /// The layout and decorations of `text`, shaped as the font that will draw it shapes
+    /// them, when nothing that sets them is animated. Text in a font that the media store has
+    /// not resolved has none, since the font drawn later may shape it differently.
+    fn constant_text(&self, text: &Text) -> Option<ConstantText> {
+        let params = &text.params;
+        if crate::node::DelegateEvaluable::has_expressions(&params.content)
+            || crate::node::DelegateEvaluable::has_expressions(&params.underline)
+            || crate::node::DelegateEvaluable::has_expressions(&params.strikethrough)
+            || crate::node::DelegateEvaluable::has_expressions(&params.highlight)
+            || crate::node::DelegateEvaluable::has_expressions(&params.stroke)
+            || params.font_family.is_expr()
+            || params.font_size.is_expr()
+            || params.font_weight.is_expr()
+            || crate::node::DelegateEvaluable::has_expressions(&params.font_style)
+            || crate::node::DelegateEvaluable::has_expressions(&params.font_features)
+            || params.max_width.is_expr()
+            || params.letter_spacing.is_expr()
+            || params.line_height.is_expr()
+            || crate::node::DelegateEvaluable::has_expressions(&params.max_lines)
+            || crate::node::DelegateEvaluable::has_expressions(&params.max_height)
+            || crate::node::DelegateEvaluable::has_expressions(&params.overflow)
+            || crate::node::DelegateEvaluable::has_expressions(&params.fit)
+            || params.min_font_size.is_expr()
+            || params.paragraph_spacing.is_expr()
+            || crate::node::DelegateEvaluable::has_expressions(&params.text_transform)
+        {
+            return None;
+        }
+        // What sets how the text is drawn, not laid out, may read other nodes, so it is left
+        // for binding to evaluate.
+        let drawn = TextParamsDelegate::default();
+        let layout_params = TextParamsDelegate {
+            position: drawn.position,
+            scale: drawn.scale,
+            rotation: drawn.rotation,
+            anchor: drawn.anchor,
+            opacity: drawn.opacity,
+            motion_blur: drawn.motion_blur,
+            glyph_offset: drawn.glyph_offset,
+            glyph_scale: drawn.glyph_scale,
+            glyph_rotation: drawn.glyph_rotation,
+            glyph_opacity: drawn.glyph_opacity,
+            color: drawn.color,
+            ..params.clone()
+        };
+        let expr = self.ctx.expr_context(text.id, "params");
+        let mut evaluated = layout_params
+            .eval(&crate::node::NodeParamEvalContext {
+                node_id: text.id,
+                expr: &expr,
+            })
+            .ok()?;
+        let style = TextLayoutStyle::take(&mut evaluated);
+        let request = style.request(&evaluated.content, &evaluated.font_features);
+        let unresolved = request.spans.iter().any(|span| {
+            let family = span.font_family.as_str();
+            !family.is_empty()
+                && family != lumen_text::DEFAULT_FONT_FAMILY
+                && !self
+                    .ctx
+                    .media()
+                    .is_some_and(|media| media.font_resolver_id(family).is_some())
+        });
+        if unresolved {
+            return None;
+        }
+        let shaped = {
+            let mut text_system = crate::node::source::text::text_system(self.ctx.media()).ok()?;
+            crate::node::source::text::load_font_families(
+                &mut text_system,
+                self.ctx.media(),
+                &style,
+                Some(&evaluated.content),
+            )
+            .ok()?;
+            text_system.shape(&request)
+        };
+        let decorations = TextDecorations {
+            underline: evaluated.underline.take(),
+            strikethrough: evaluated.strikethrough.take(),
+            highlight: evaluated.highlight.take(),
+            stroke: evaluated.stroke.take(),
+        };
+        let spans = match &evaluated.content {
+            TextContent::Spans(spans) => &spans[..],
+            TextContent::Text(_) => &[],
+        };
+        let mut rects = Vec::new();
+        crate::node::source::text::decorate(
+            &shaped,
+            &decorations,
+            spans,
+            [0.0; 2],
+            spans.len().max(1),
+            &mut rects,
+        );
+        let mut strokes = Vec::new();
+        crate::node::source::text::span_strokes(
+            decorations.stroke.as_ref(),
+            spans,
+            &shaped,
+            |_, _, _| 0,
+            &mut strokes,
+        );
+        let stroke_reach = strokes
+            .iter()
+            .flatten()
+            .map(|stroke| lumen_text::stroke_reach(stroke.half_width))
+            .fold(0.0, f32::max);
+        Some(ConstantText {
+            shaped,
+            alignment: evaluated.alignment_vertical,
+            decorations: rects,
+            stroke_reach,
         })
     }
 

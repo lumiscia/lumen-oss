@@ -6,14 +6,19 @@ on:
     paths:
       - .github/workflows/dry-release.yml
       - .github/workflows/publish-packages.yml
+      - .cargo/config.toml
       - .changeset/**
       - Cargo.toml
       - Cargo.lock
       - crates/**
       - packages/**
+      - tooling/generate-bindings/**
+      - tooling/generate-types/**
       - tooling/release/**
       - package.json
       - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.base.json
       - justfile
 
 concurrency:
@@ -90,10 +95,10 @@ jobs:
           fi
 
           pnpm sync:cargo-version
+          cargo update --workspace --locked
           if [ "${{ github.event_name }}" != "pull_request" ]; then
-            git diff --exit-code Cargo.toml pnpm-lock.yaml packages/*/package.json
+            git diff --exit-code Cargo.toml Cargo.lock crates/*/Cargo.toml pnpm-lock.yaml packages/*/package.json
           fi
-          cargo metadata --no-deps --format-version 1 > /dev/null
 
-      - name: Dry-run release build and crate publish verification
+      - name: Dry-run release build and crate publish
         run: pnpm release:dry-run

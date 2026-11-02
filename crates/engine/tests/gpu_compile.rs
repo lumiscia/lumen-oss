@@ -2047,6 +2047,341 @@ fn text_msdf_coverage_matches_raster_for_plain_italic_and_variable_weight() {
     }
 }
 
+/// A job's fonts: one file under one family name, in a text session of its own.
+#[derive(Debug)]
+struct JobFont {
+    family: &'static str,
+    id: String,
+    data: Vec<u8>,
+    session: lumen_engine::media::TextSession,
+}
+
+impl JobFont {
+    fn new(family: &'static str, id: &str, data: Vec<u8>) -> Self {
+        Self {
+            family,
+            id: id.to_string(),
+            data,
+            session: Default::default(),
+        }
+    }
+}
+
+struct JobFontResolver {
+    id: String,
+    data: Vec<u8>,
+}
+
+impl lumen_engine::media::FontResolver for JobFontResolver {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![self.data.clone()])
+    }
+}
+
+impl MediaStore for JobFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family == self.family).then(|| self.id.clone())
+    }
+
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        (family == self.family).then(|| {
+            Box::new(JobFontResolver {
+                id: self.id.clone(),
+                data: self.data.clone(),
+            }) as _
+        })
+    }
+
+    fn text_session(&self) -> Option<&lumen_engine::media::TextSession> {
+        Some(&self.session)
+    }
+}
+
+/// `font` with the family name `family`, which fits in its names' space.
+fn font_named(font: &[u8], family: &str) -> Vec<u8> {
+    let mut font = font.to_vec();
+    let read = |font: &[u8], at: usize| u16::from_be_bytes([font[at], font[at + 1]]) as usize;
+    let tables = read(&font, 4);
+    let name = font[12..12 + tables * 16]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .find(|table| &table[..4] == b"name")
+        .unwrap();
+    let table = u32::from_be_bytes(name[8..12].try_into().unwrap()) as usize;
+    let strings = table + read(&font, table + 4);
+    let encoded: Vec<u8> = family.encode_utf16().flat_map(u16::to_be_bytes).collect();
+    for record in 0..read(&font, table + 2) {
+        let at = table + 6 + record * 12;
+        if read(&font, at) == 3 && matches!(read(&font, at + 6), 1 | 16) {
+            let start = strings + read(&font, at + 10);
+            font[start..start + encoded.len()].copy_from_slice(&encoded);
+            font[at + 8..at + 10].copy_from_slice(&(encoded.len() as u16).to_be_bytes());
+        }
+    }
+    font
+}
+
+#[test]
+fn a_family_only_one_job_has_does_not_reach_another_jobs_measurements() {
+    let measure = |job: &JobFont| {
+        Expression::parse("text_width(\"WWW\", 32, 0, \"OnlyIn\")")
+            .unwrap()
+            .evaluate(&lumen_engine::expr::ExpressionContext {
+                media: Some(job),
+                ..Default::default()
+            })
+            .unwrap()
+            .as_f64()
+            .unwrap()
+    };
+    let with_font = JobFont::new(
+        "OnlyIn",
+        "job-font-only-in-one",
+        ScaledFontStore::new("OnlyIn", 2).data,
+    );
+    let without = JobFont::new("Absent", "job-font-absent", Vec::new());
+
+    let fallback = measure(&without);
+    let own = measure(&with_font);
+    assert!(
+        own > fallback * 1.5,
+        "{own} should differ from fallback {fallback}"
+    );
+    assert_eq!(measure(&without), fallback);
+    assert_eq!(measure(&with_font), own);
+}
+
+#[test]
+fn jobs_draw_one_family_name_with_their_own_font_files() {
+    const ROBOTO: &[u8] = lumen_text::ROBOTO_REGULAR_BYTES;
+    const INTER: &[u8] = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf");
+
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // What is drawn and where both depend on the font: measuring must read the job's too.
+    let composition = |family: &str| {
+        text_test_composition(TextParamsDelegate {
+            content: TextContentDelegate::Text(Deferred::value("Rag Wave 28".to_string())),
+            font_family: Deferred::value(family.to_string()),
+            font_size: Deferred::value(64.0),
+            position: Deferred::Expr(
+                Expression::parse(&format!(
+                    "vec2(text_width(\"WWWWWW\", 32, 0, \"{family}\"), 40)"
+                ))
+                .unwrap(),
+            ),
+            ..Default::default()
+        })
+    };
+    let jobs = || {
+        [
+            JobFont::new("Face", "job-font-roboto", font_named(ROBOTO, "Face")),
+            JobFont::new("Face", "job-font-inter", font_named(INTER, "Face")),
+        ]
+    };
+    let shared_family = composition("Face");
+
+    // The true faces under their own names, which is how each file must draw under the shared one.
+    let roboto = render_rgba8(&mut renderer, &composition("Roboto"), 0, &EmptyMediaStore);
+    let inter = render_rgba8(
+        &mut gpu_composition_renderer().unwrap(),
+        &composition("Inter"),
+        0,
+        &JobFont::new("Inter", "job-font-true-inter", INTER.to_vec()),
+    );
+    assert!(roboto.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+    assert_ne!(roboto, inter);
+    let expected = [&roboto, &inter];
+
+    // In turns on one renderer, whose plans and atlas outlive each store's frame.
+    let turns = jobs();
+    for job in [0, 1, 0, 1, 1, 0] {
+        let pixels = render_rgba8(&mut renderer, &shared_family, 0, &turns[job]);
+        assert!(pixels == *expected[job], "job {job} drew another's font");
+    }
+
+    // Files alike in all but size number their glyphs alike, so their atlas keys match.
+    let sized = |scale: u16| {
+        JobFont::new(
+            "Sizing",
+            &format!("job-font-sized-{scale}"),
+            ScaledFontStore::new("Sizing", scale).data,
+        )
+    };
+    let [large, larger] = [sized(1), sized(2)];
+    let glyphs = text_test_composition(TextParamsDelegate {
+        content: TextContentDelegate::Text(Deferred::value("W".to_string())),
+        font_family: Deferred::value("Sizing".to_string()),
+        font_size: Deferred::value(64.0),
+        position: Deferred::value((16.0, 40.0)),
+        ..Default::default()
+    });
+    let alone = [&sized(1), &sized(2)]
+        .map(|job| render_rgba8(&mut gpu_composition_renderer().unwrap(), &glyphs, 0, job));
+    assert_ne!(alone[0], alone[1]);
+    for (job, expected) in [
+        (&large, &alone[0]),
+        (&larger, &alone[1]),
+        (&large, &alone[0]),
+    ] {
+        let pixels = render_rgba8(&mut renderer, &glyphs, 0, job);
+        assert!(pixels == *expected, "{} drew another's glyphs", job.id);
+    }
+
+    // At once in one process, each on its own renderer as `lumen-server` runs jobs.
+    let together = jobs();
+    std::thread::scope(|scope| {
+        for (job, expected) in together.iter().zip(expected) {
+            let shared_family = &shared_family;
+            scope.spawn(move || {
+                let mut renderer =
+                    pollster::block_on(lumen_engine::gpu::GpuCompositionRenderer::new()).unwrap();
+                for _ in 0..8 {
+                    let pixels = render_rgba8(&mut renderer, shared_family, 0, job);
+                    assert!(pixels == *expected, "{} drew another's font", job.id);
+                }
+            });
+        }
+    });
+}
+
+/// A job whose fonts change as it runs.
+#[derive(Debug, Default)]
+struct ChangingFonts {
+    fonts: std::sync::Mutex<std::collections::HashMap<String, (String, Vec<u8>)>>,
+    session: lumen_engine::media::TextSession,
+}
+
+impl ChangingFonts {
+    fn set(&self, family: &str, id: &str, data: Vec<u8>) {
+        let font = (id.to_string(), data);
+        self.fonts.lock().unwrap().insert(family.to_string(), font);
+    }
+}
+
+impl MediaStore for ChangingFonts {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        Some(self.fonts.lock().unwrap().get(family)?.0.clone())
+    }
+
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        let (id, data) = self.fonts.lock().unwrap().get(family)?.clone();
+        Some(Box::new(JobFontResolver { id, data }))
+    }
+
+    fn text_session(&self) -> Option<&lumen_engine::media::TextSession> {
+        Some(&self.session)
+    }
+}
+
+#[test]
+fn replacing_a_font_mid_job_leaves_no_stale_glyph_on_screen() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let glyph = text_test_composition(TextParamsDelegate {
+        content: TextContentDelegate::Text(Deferred::value("W".to_string())),
+        font_family: Deferred::value("Sizing".to_string()),
+        font_size: Deferred::value(64.0),
+        position: Deferred::value((16.0, 40.0)),
+        ..Default::default()
+    });
+    let data = |scale: u16| ScaledFontStore::new("Sizing", scale).data;
+    let alone = [1, 2].map(|scale| {
+        let job = JobFont::new("Sizing", &format!("alone-{scale}"), data(scale));
+        render_rgba8(&mut gpu_composition_renderer().unwrap(), &glyph, 0, &job)
+    });
+    assert_ne!(alone[0], alone[1]);
+
+    // Rebuilt fonts number their faces alike and these their glyphs alike, so only the rebuild
+    // tells one font's atlas keys from the other's.
+    let job = ChangingFonts::default();
+    for (turn, scale) in [1, 2, 1].into_iter().enumerate() {
+        job.set("Sizing", &format!("turn-{turn}"), data(scale));
+        let pixels = render_rgba8(&mut renderer, &glyph, 0, &job);
+        assert!(pixels == alone[usize::from(scale) - 1], "turn {turn}");
+    }
+
+    // Only the merge asks for this font, once the text has placed its glyphs. It goes by the name
+    // the text draws in, and being the latest load it takes over the text.
+    let both = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 10, "duration_frames": 10 },
+        "render_settings": { "width": 256, "height": 128 },
+        "nodes": [
+            {
+                "id": 1,
+                "type": "text",
+                "params": {
+                    "content": "W",
+                    "font_family": "Sizing",
+                    "font_size": 64,
+                    "position": [16, 40]
+                }
+            },
+            {
+                "id": 2,
+                "type": "text",
+                "params": {
+                    "content": "W",
+                    "font_family": "Sizing",
+                    "font_size": 64,
+                    "position": [128, 40]
+                }
+            },
+            {
+                "id": 3,
+                "type": "merge",
+                "params": { "opacity": "=min(text_width(\"W\", 32, 0, \"Second\"), 1)" }
+            },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 3, "to_port": "base" },
+            { "from_node": 2, "to_node": 3, "to_port": "overlay" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let job = ChangingFonts::default();
+    job.set("Sizing", "both-sizing", data(1));
+    job.set("Second", "both-second", data(2));
+    let mut renderer = gpu_composition_renderer().unwrap();
+    let first = render_rgba8(&mut renderer, &both, 0, &job);
+    let settled = render_rgba8(&mut renderer, &both, 0, &job);
+    assert!(first == settled);
+    assert!(first.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+}
+
 fn text_test_composition(params: TextParamsDelegate) -> Composition {
     let mut graph = Graph::new();
     graph.nodes.insert(
@@ -3148,9 +3483,11 @@ fn bounded_text_is_remeasured_after_another_renderer_loads_a_font() {
     render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
 
     // A wider bold Roboto, loaded into the text system that every renderer shares.
-    let wide = ScaledFontStore::new("Roboto", 2).with_weight(700);
+    let wide = ScaledFontStore::new("Roboto", 2)
+        .with_weight(700)
+        .resolved_as("Remote");
     let mut loader = gpu_composition_renderer().unwrap();
-    render_rgba8(&mut loader, &composition, 0, &wide);
+    render_rgba8(&mut loader, &wide.composition(0.0, true), 0, &wide);
 
     let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
     let mut reference = gpu_composition_renderer().unwrap();
@@ -6674,6 +7011,357 @@ fn text_glyphs_larger_than_the_atlas_still_draw() {
         .filter(|pixel| pixel[3] == 255)
         .count();
     assert!(inked > 256 * 256 / 2, "only {inked} pixels inked");
+}
+
+#[test]
+fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // The animated size gives the text the full limit, and the constant one a limit of its own.
+    for font_size in [Deferred::value(8.0), expression("8 + frame * 0")] {
+        let composition = |content: String| {
+            let mut composition = text_test_composition(TextParamsDelegate {
+                content: TextContentDelegate::Text(Deferred::value(content)),
+                font_size: font_size.clone(),
+                ..Default::default()
+            })
+            .into_builder();
+            composition.render_settings.width = 64;
+            composition.render_settings.height = 64;
+            composition.build().unwrap()
+        };
+        // Whitespace is not drawn, so it does not count toward the limit.
+        let spaced = composition(format!("ab{}", " ".repeat(3000)));
+        let pixels = render_rgba8(&mut renderer, &spaced, 0, &EmptyMediaStore);
+        assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+
+        let long = composition("a".repeat(2049));
+        let error = renderer
+            .render_frame(&long, 0, &EmptyMediaStore)
+            .expect_err("2049 glyphs exceed the limit")
+            .to_string();
+        assert!(
+            error.contains("Text node 1") && error.contains("2049") && error.contains("2048"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn text_decorations_split_by_span_paint_fit_the_size_counted_at_compile() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 64, "height": 32 },
+        "nodes": [
+            { "id": 1, "type": "text", "params": {
+                "content": [
+                    { "text": "a", "color": "#ff0000" },
+                    { "text": "b", "color": "#0000ff" }
+                ],
+                "font_size": 24,
+                "position": [4, 2],
+                "underline": {}
+            } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let has = |color: [u8; 3]| {
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] == 255 && pixel[..3] == color)
+    };
+    assert!(has([255, 0, 0]) && has([0, 0, 255]));
+}
+
+/// Inter with its family renamed to `name`, which must have the five letters of "Inter".
+fn renamed_inter(name: &str) -> Vec<u8> {
+    assert_eq!(name.len(), 5);
+    let mut font = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf").to_vec();
+    let utf16 = |text: &str| {
+        text.encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>()
+    };
+    for (from, to) in [
+        ("Inter".as_bytes().to_vec(), name.as_bytes().to_vec()),
+        (utf16("Inter"), utf16(name)),
+    ] {
+        let mut at = 0;
+        while let Some(found) = font[at..].windows(from.len()).position(|w| w == from) {
+            font[at + found..at + found + to.len()].copy_from_slice(&to);
+            at += found + to.len();
+        }
+    }
+    font
+}
+
+/// Resolves "Loader" to a font named "Qzxvj" and "Qzxvj" to no font data.
+#[derive(Debug, Clone)]
+struct LateFont;
+
+impl lumen_engine::media::FontResolver for LateFont {
+    fn id(&self) -> &str {
+        "late-font"
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![renamed_inter("Qzxvj")])
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NoFont;
+
+impl lumen_engine::media::FontResolver for NoFont {
+    fn id(&self) -> &str {
+        "no-font"
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(Vec::new())
+    }
+}
+
+impl MediaStore for LateFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        match family {
+            "Loader" => Some("late-font".to_string()),
+            "Qzxvj" => Some("no-font".to_string()),
+            _ => None,
+        }
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        match family {
+            "Loader" => Some(Box::new(LateFont)),
+            "Qzxvj" => Some(Box::new(NoFont)),
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn a_font_loaded_while_binding_resizes_constant_text_instead_of_failing() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // The first text measures a node whose font loads as the frame binds. That font, unlike the
+    // bundled one, has no "ffi" ligature, so the second text, sized for one glyph, needs three.
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": [
+            { "id": 99, "type": "text", "params": { "content": "x", "font_family": "Loader" } },
+            { "id": 1, "type": "text", "params": {
+                "content": "a",
+                "glyph_offset": "=vec2(0 * text_width(node(99)), 0)"
+            } },
+            { "id": 2, "type": "text", "params": {
+                "content": "ffi", "font_family": "Qzxvj", "font_size": 40, "position": [4, 10]
+            } },
+            { "id": 3, "type": "raster_multimerge" },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &LateFont);
+    assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+}
+
+/// Resolves "LoadN" to a font named "LateN" and "LateN" to no font data, for each digit N.
+#[derive(Debug, Clone)]
+struct LateFonts;
+
+#[derive(Debug, Clone)]
+struct LateFontsResolver(String);
+
+impl lumen_engine::media::FontResolver for LateFontsResolver {
+    fn id(&self) -> &str {
+        &self.0
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(match self.0.strip_prefix("Load") {
+            Some(digit) => vec![renamed_inter(&format!("Late{digit}"))],
+            None => Vec::new(),
+        })
+    }
+}
+
+impl MediaStore for LateFonts {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family.starts_with("Load") || family.starts_with("Late")).then(|| family.to_string())
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        self.font_resolver_id(family)
+            .map(|id| Box::new(LateFontsResolver(id)) as Box<dyn lumen_engine::media::FontResolver>)
+    }
+}
+
+#[test]
+fn many_fonts_loaded_while_binding_settle_in_one_render() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // Each pair is a text measuring a node whose font loads as the frame binds, then a text that
+    // font outgrows, so every font stops a bind.
+    let mut nodes = vec![
+        json!({ "id": 100, "type": "raster_multimerge" }),
+        json!({ "id": 101, "type": "media_output" }),
+    ];
+    let mut connections = vec![json!({ "from_node": 100, "to_node": 101, "to_port": "source" })];
+    for font in 0..5 {
+        let (measured, measuring, outgrown) = (200 + font, 2 * font + 1, 2 * font + 2);
+        nodes.extend([
+            json!({ "id": measured, "type": "text", "params": {
+                "content": "x", "font_family": format!("Load{font}")
+            } }),
+            json!({ "id": measuring, "type": "text", "params": {
+                "content": "a",
+                "glyph_offset": format!("=vec2(0 * text_width(node({measured})), 0)")
+            } }),
+            json!({ "id": outgrown, "type": "text", "params": {
+                "content": "ffi", "font_family": format!("Late{font}"), "font_size": 40
+            } }),
+        ]);
+        for from_node in [measuring, outgrown] {
+            connections.push(json!({
+                "from_node": from_node, "from_port": "output", "to_node": 100, "to_port": "layers"
+            }));
+        }
+    }
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": nodes,
+        "connections": connections
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &LateFonts);
+    assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+}
+
+/// Gives "Churn" a resolver with a new id each time it is asked, so its font never settles.
+#[derive(Debug, Default)]
+struct ChurningFont(std::sync::atomic::AtomicU32);
+
+#[derive(Debug, Clone)]
+struct ChurningFontResolver(String);
+
+impl lumen_engine::media::FontResolver for ChurningFontResolver {
+    fn id(&self) -> &str {
+        &self.0
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![renamed_inter("Churn")])
+    }
+}
+
+impl MediaStore for ChurningFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family == "Churn").then(|| {
+            let id = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            format!("churn-{id}")
+        })
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        self.font_resolver_id(family).map(|id| {
+            Box::new(ChurningFontResolver(id)) as Box<dyn lumen_engine::media::FontResolver>
+        })
+    }
+}
+
+#[test]
+fn a_font_that_never_settles_fails_the_render() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 64, "height": 64 },
+        "nodes": [
+            { "id": 1, "type": "text", "params": { "content": "x", "font_family": "Churn" } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap();
+    let error = renderer
+        .render_frame(&composition, 0, &ChurningFont::default())
+        .expect_err("the font loads again on every bind")
+        .to_string();
+    assert!(error.contains("fonts kept loading"), "{error}");
+}
+
+#[test]
+fn text_dropped_by_a_full_atlas_still_counts_toward_the_instance_limit() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // Glyphs this large overflow the atlas, which drops some of them.
+    let mut composition = text_test_composition(TextParamsDelegate {
+        content: TextContentDelegate::Text(Deferred::value(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(80),
+        )),
+        font_size: expression("1500 + frame * 0"),
+        render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
+        ..Default::default()
+    })
+    .into_builder();
+    composition.render_settings.width = 64;
+    composition.render_settings.height = 64;
+    let composition = composition.build().unwrap();
+    let error = renderer
+        .render_frame(&composition, 0, &EmptyMediaStore)
+        .expect_err("2080 glyphs exceed the limit")
+        .to_string();
+    assert!(
+        error.contains("Text node 1") && error.contains("2080") && error.contains("2048"),
+        "{error}"
+    );
 }
 
 #[cfg(feature = "msdf")]
@@ -11387,11 +12075,10 @@ fn memo_snapshot_dropped_with_its_key_change_is_not_shown_again() {
         NodeKind::Text(Text {
             id: NodeId::new(5),
             params: TextParamsDelegate {
-                content: TextContentDelegate::Text(expression(&format!(
-                    "if(floor(frame) % 2 == 1, '{}', 'W')",
-                    "W".repeat(3000)
-                ))),
-                font_size: Deferred::value(12.0),
+                content: TextContentDelegate::Text(expression(
+                    "if(floor(frame) % 2 == 1, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'W')",
+                )),
+                font_size: Deferred::value(1500.0),
                 scale: Deferred::value((0.001, 0.001)),
                 position: Deferred::value((30.0, 10.0)),
                 render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
@@ -12143,7 +12830,7 @@ fn decoration_extent_runs_on_across_a_line_break() {
     };
     let full = render_text_params(&mut renderer, text(json!([0, 1])), size);
     let partial = render_text_params(&mut renderer, text(json!([0, 0.75])), size);
-    // 6.75 of the 9 bytes: the first line and 1.75 of the second line's 4.
+    // 0.75 of the two lines' width: all of the first line and half of the second.
     let rows = inked_rows(&full, size);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(inked_rows(&partial, size), rows);
@@ -12160,7 +12847,7 @@ fn decoration_extent_runs_on_across_a_line_break() {
     assert_eq!(first, second);
     assert_eq!(first_partial, first);
     assert!(
-        (second_partial / second - 1.75 / 4.0).abs() < 0.05,
+        (second_partial / second - 0.5).abs() < 0.05,
         "{second_partial} of {second}"
     );
     let animated = render_text_frames(

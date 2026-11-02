@@ -1,16 +1,16 @@
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, LazyLock, Mutex, OnceLock, Weak},
 };
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 
-use crate::error::{LumenError, RenderError};
+use crate::error::{LumenError, MediaError, RenderError};
 use crate::expr::{ExprNode, ExpressionContext, GlobalVar, GlyphScope};
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
-use crate::media::MediaStore;
+use crate::media::{FontResolver, MediaStore, TextSession};
 use crate::node::vector::{
     drawable::{DeferredTransform, DrawableMotion, DrawableTransform},
     paint::Paint,
@@ -136,7 +136,9 @@ impl From<TextTransform> for lumen_text::TextTransform {
 /// Produces a text source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct TextParams {
-    /// Text to render: a string, or spans that each override the style these params give.
+    /// Text to render: a string, or spans that each override the style these params give. A
+    /// node draws at most 2048 glyphs, counting a stroked glyph twice and each decoration rect
+    /// once; whitespace is not drawn, and more is a render error.
     #[meta(multiline, recommended_rows = 4)]
     pub content: TextContent,
     /// Font family name.
@@ -360,7 +362,9 @@ pub(crate) struct CompiledText {
     pub(crate) paints_buffer: lumen_gpu::BufferId,
     /// The number of span paints.
     pub(crate) paint_count: usize,
-    pub(crate) max_glyphs: usize,
+    /// The most glyph, stroke and decoration instances the text can draw, which sizes
+    /// `instances_buffer`.
+    pub(crate) capacity: usize,
     pub(crate) size: lumen_gpu::Size,
     /// The size of what the glyphs are drawn to: the layer of blurred text, else the output.
     pub(crate) layer_size: lumen_gpu::Size,
@@ -384,6 +388,25 @@ impl GpuCompiledNode for CompiledText {
 }
 
 impl CompiledText {
+    /// Fails when the text draws `drawn` glyph, stroke and decoration instances, more than it
+    /// has room for.
+    fn check_capacity(&self, ctx: &FrameBindContext<'_>, drawn: usize) -> crate::Result<()> {
+        if drawn <= self.capacity {
+            return Ok(());
+        }
+        Err(RenderError::NodeEvaluation {
+            frame: ctx.frame(),
+            node_id: self.node_id,
+            node_kind: "Text",
+            details: format!(
+                "text draws {drawn} glyphs, strokes and decorations, more than the {} a text node \
+                 can draw; split it across nodes or shorten it",
+                self.capacity
+            ),
+        }
+        .into())
+    }
+
     /// Binds the text, stopping once its glyphs are placed when `kept` and the output kept from
     /// an earlier frame still matches: no glyph was dropped or placed again. Returns whether it
     /// bound fully.
@@ -436,7 +459,7 @@ impl CompiledText {
             }
         };
 
-        let mut text_system = text_system()?;
+        let mut text_system = text_system(ctx.media())?;
         load_font_families(
             &mut text_system,
             ctx.media(),
@@ -521,34 +544,20 @@ impl CompiledText {
         // paints, each with the half width of its stroke.
         let mut decoration_paints = Vec::new();
         let mut before_glyphs = 0;
-        let mut dropped_decorations = 0;
         state.strokes.clear();
         state.half_widths.clear();
         if self.decorated {
-            // Spans without a color of their own share the first one's paint, so a line
-            // runs along them as one rect.
-            let plain = spans
-                .iter()
-                .position(|span| span.color.is_none())
-                .unwrap_or(0) as u32;
-            before_glyphs = decorate(
+            let own;
+            (before_glyphs, own) = decorate(
                 shaped,
                 &decorations,
                 spans,
                 origin,
-                |span| match spans.get(span) {
-                    Some(TextSpan { color: Some(_), .. }) => span as u32,
-                    _ => plain,
-                },
-                |paint, span| {
-                    decoration_paints.push((paint, span, 0.0));
-                    (self.paint_count + decoration_paints.len() - 1) as u32
-                },
+                self.paint_count,
                 &mut state.decorations,
             );
-            dropped_decorations = state.decorations.len().saturating_sub(self.max_glyphs);
-            state.decorations.truncate(self.max_glyphs);
-            before_glyphs = before_glyphs.min(state.decorations.len());
+            decoration_paints.extend(own.into_iter().map(|(paint, span)| (paint, span, 0.0)));
+            self.check_capacity(ctx, state.decorations.len())?;
             if self.stroked {
                 span_strokes(
                     decorations.stroke.as_ref(),
@@ -594,7 +603,6 @@ impl CompiledText {
             &mut atlas,
             &layout,
             mode,
-            self.max_glyphs - state.decorations.len(),
             &state.half_widths,
             &mut state.overfull,
         );
@@ -607,7 +615,15 @@ impl CompiledText {
             bound.text_generation_ms += atlas_ms;
         }
 
-        let dropped_glyphs = prepared.dropped_glyphs + dropped_decorations;
+        // Glyphs the atlas dropped are still drawn text, so they count toward the limit.
+        self.check_capacity(
+            ctx,
+            state.decorations.len()
+                + prepared.instances.len()
+                + prepared.strokes.len()
+                + prepared.dropped_glyphs,
+        )?;
+        let dropped_glyphs = prepared.dropped_glyphs;
         let dropping = dropped_glyphs > 0;
         bound.text_dropped_glyphs |= dropping;
         if dropping != state.dropping_glyphs {
@@ -616,9 +632,8 @@ impl CompiledText {
                     target: "lumen_text",
                     node_id = self.node_id.0,
                     dropped_glyphs,
-                    max_glyphs = self.max_glyphs,
                     atlas_size,
-                    "text glyphs dropped: too many glyphs or glyph atlas full"
+                    "text glyphs dropped: glyph atlas full"
                 );
             } else {
                 tracing::info!(
@@ -1326,18 +1341,32 @@ pub(crate) enum NodeDecorations {
 /// the strikethroughs, which are drawn over the glyphs.
 ///
 /// Consecutive spans that take the node's decoration share one run, and a span with its own is
-/// a run alone. A line without its own paint takes the paint index `text_paint` gives each
-/// span; `push_paint` adds a decoration's own paint, with the span whose box it spans if it is
-/// the span's own, and returns its index.
+/// a run alone. A line without its own paint takes its span's paint, among the `paint_count`
+/// of the spans. Spans without a color of their own share the first one's paint, so a line
+/// runs along them as one rect. Each decoration's own paint is returned with the span whose box
+/// it spans if it is the span's own, and has the index `paint_count` and its place in the
+/// returned paints.
 pub(crate) fn decorate<'a>(
     shaped: &lumen_text::ShapedText,
     node: &'a TextDecorations,
     spans: &'a [TextSpan],
     origin: [f32; 2],
-    text_paint: impl Fn(usize) -> u32,
-    mut push_paint: impl FnMut(&'a Paint, Option<usize>) -> u32,
+    paint_count: usize,
     instances: &mut Vec<lumen_text::GpuGlyphInstance>,
-) -> usize {
+) -> (usize, Vec<(&'a Paint, Option<usize>)>) {
+    let plain = spans
+        .iter()
+        .position(|span| span.color.is_none())
+        .unwrap_or(0) as u32;
+    let text_paint = |span: usize| match spans.get(span) {
+        Some(TextSpan { color: Some(_), .. }) => span as u32,
+        _ => plain,
+    };
+    let mut paints = Vec::new();
+    let mut push_paint = |paint: &'a Paint, span: Option<usize>| {
+        paints.push((paint, span));
+        (paint_count + paints.len() - 1) as u32
+    };
     let span_count = shaped.counts.span as usize;
     // A span's own decoration moves with its baseline shift; the node's stays on the line.
     let draw = |instances: &mut Vec<_>,
@@ -1440,7 +1469,7 @@ pub(crate) fn decorate<'a>(
             },
         );
     }
-    before_glyphs
+    (before_glyphs, paints)
 }
 
 /// The number of paints that `params`' decorations with their own and strokes add, or `None`
@@ -1574,19 +1603,16 @@ pub(crate) fn load_font_families(
     Ok(())
 }
 
-/// Shared by rendering and text measurement so both see the same loaded fonts.
-/// Do not hold the guard while evaluating expressions, which may measure text.
-pub(crate) fn text_system() -> crate::Result<std::sync::MutexGuard<'static, lumen_text::TextSystem>>
-{
-    static TEXT_SYSTEM: OnceLock<Mutex<lumen_text::TextSystem>> = OnceLock::new();
-    TEXT_SYSTEM
-        .get_or_init(|| Mutex::new(lumen_text::TextSystem::new()))
+/// The text system of `media`'s fonts, which rendering and text measurement share so both see
+/// them. Do not hold the guard while evaluating expressions, which may measure text.
+pub(crate) fn text_system<'a>(
+    media: Option<&'a dyn MediaStore>,
+) -> crate::Result<std::sync::MutexGuard<'a, lumen_text::TextSystem>> {
+    static SHARED: LazyLock<TextSession> = LazyLock::new(TextSession::default);
+    media
+        .and_then(|store| store.text_session())
+        .unwrap_or(&SHARED)
         .lock()
-        .map_err(|_| {
-            LumenError::Render(RenderError::Gpu {
-                details: "text system lock was poisoned".to_string(),
-            })
-        })
 }
 
 pub(crate) fn load_font_family(
@@ -1600,37 +1626,73 @@ pub(crate) fn load_font_family(
     let Some(store) = media else {
         return Ok(());
     };
-
-    let mut loaded = loaded_fonts()?;
-    if let Some(resolver_id) = store.font_resolver_id(font_family)
-        && loaded.get(font_family) == Some(&resolver_id)
-    {
+    let current_id = store.font_resolver_id(font_family);
+    if current_id.is_some() && text_system.family_resolver(font_family) == current_id.as_deref() {
         return Ok(());
     }
-    let Some(resolver) = store.get_font_resolver(font_family) else {
+    let resolver = store.get_font_resolver(font_family);
+    // An ID that no resolver comes with is remembered too, so later binds do not ask again.
+    let Some(resolver_id) = resolver
+        .as_ref()
+        .map(|resolver| resolver.id().to_string())
+        .or(current_id)
+    else {
         return Ok(());
     };
-    let resolver_id = resolver.id().to_string();
-    if loaded.get(font_family) == Some(&resolver_id) {
+    if text_system.family_resolver(font_family) == Some(resolver_id.as_str()) {
         return Ok(());
     }
-    for data in resolver.data().map_err(LumenError::Media)? {
-        text_system.load_font_data(data);
+    let files = match resolver {
+        Some(resolver) => font_files(font_family, &*resolver)?,
+        None => Vec::new(),
+    };
+    text_system
+        .load_family(font_family, &resolver_id, files)
+        .map_err(|_| {
+            LumenError::Media(MediaError::Decode {
+                media_source: font_family.to_string(),
+                details: "its font data holds no readable face".to_string(),
+            })
+        })?;
+    if !text_system.has_family(font_family) {
+        tracing::warn!(
+            target: "lumen_text",
+            font_family,
+            "no face of the font loaded for this family goes by its name; text falls back to other fonts"
+        );
     }
-    loaded.insert(font_family.to_string(), resolver_id);
     Ok(())
 }
 
-fn loaded_fonts() -> crate::Result<std::sync::MutexGuard<'static, HashMap<String, String>>> {
-    static LOADED_FONTS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    LOADED_FONTS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .map_err(|_| {
+/// The data of `resolver`'s font files, shared with every text system still holding that family
+/// and resolver ID's, so that jobs using one font hold and read it once.
+fn font_files(family: &str, resolver: &dyn FontResolver) -> crate::Result<Vec<Arc<Vec<u8>>>> {
+    type Files = HashMap<(String, String), Vec<Weak<Vec<u8>>>>;
+    static FILES: LazyLock<Mutex<Files>> = LazyLock::new(Mutex::default);
+    let lock = || {
+        FILES.lock().map_err(|_| {
             LumenError::Render(RenderError::Gpu {
-                details: "loaded fonts lock was poisoned".to_string(),
+                details: "font file cache lock was poisoned".to_string(),
             })
         })
+    };
+    let key = (family.to_string(), resolver.id().to_string());
+    if let Some(files) = lock()?
+        .get(&key)
+        .and_then(|files| files.iter().map(Weak::upgrade).collect())
+    {
+        return Ok(files);
+    }
+    let files: Vec<_> = resolver
+        .data()
+        .map_err(LumenError::Media)?
+        .into_iter()
+        .map(Arc::new)
+        .collect();
+    let mut cache = lock()?;
+    cache.retain(|_, files| files.iter().all(|file| file.strong_count() > 0));
+    cache.insert(key, files.iter().map(Arc::downgrade).collect());
+    Ok(files)
 }
 
 fn trace_text_bind(
@@ -1668,4 +1730,171 @@ fn trace_now_ms() -> f64 {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn trace_now_ms() -> f64 {
     js_sys::Date::now()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Default)]
+    struct CountingStore {
+        /// `None` serves no resolver under the ID it still gives.
+        data: Option<Vec<u8>>,
+        resolvers: AtomicU64,
+        reads: Arc<AtomicU64>,
+    }
+
+    struct CountingResolver {
+        id: &'static str,
+        data: Vec<u8>,
+        reads: Arc<AtomicU64>,
+    }
+
+    impl FontResolver for CountingResolver {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            Ok(vec![self.data.clone()])
+        }
+    }
+
+    impl MediaStore for CountingStore {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
+            None
+        }
+
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
+            None
+        }
+
+        fn font_resolver_id(&self, family: &str) -> Option<String> {
+            (family == "Known").then(|| "counting-store-test-font".to_string())
+        }
+
+        fn get_font_resolver(&self, _: &str) -> Option<Box<dyn FontResolver>> {
+            self.resolvers.fetch_add(1, Ordering::Relaxed);
+            let data = self.data.clone()?;
+            Some(Box::new(CountingResolver {
+                id: "counting-store-test-font",
+                data,
+                reads: Arc::clone(&self.reads),
+            }))
+        }
+    }
+
+    #[test]
+    fn stores_are_asked_once_for_a_font_they_do_not_serve() {
+        let store = CountingStore::default();
+        let mut system = lumen_text::TextSystem::new();
+        for _ in 0..3 {
+            load_font_family(&mut system, Some(&store), "Known").unwrap();
+        }
+        assert_eq!(store.resolvers.load(Ordering::Relaxed), 1);
+    }
+
+    /// Serves one font under the default `font_resolver_id`, which gives no ID.
+    #[derive(Debug, Default)]
+    struct NoIdStore(Arc<AtomicU64>);
+
+    impl MediaStore for NoIdStore {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
+            None
+        }
+
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
+            None
+        }
+
+        fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
+            (family == "Known").then(|| {
+                Box::new(CountingResolver {
+                    id: "no-id-store-test-font",
+                    data: lumen_text::ROBOTO_REGULAR_BYTES.to_vec(),
+                    reads: Arc::clone(&self.0),
+                }) as _
+            })
+        }
+    }
+
+    #[test]
+    fn stores_without_resolver_ids_still_load_fonts_once() {
+        let store = NoIdStore::default();
+        let mut system = lumen_text::TextSystem::new();
+        for _ in 0..3 {
+            load_font_family(&mut system, Some(&store), "Known").unwrap();
+            load_font_family(&mut system, Some(&store), "Unknown").unwrap();
+        }
+        assert_eq!(
+            system.family_resolver("Known"),
+            Some("no-id-store-test-font")
+        );
+        assert_eq!(system.family_resolver("Unknown"), None);
+        assert_eq!(store.0.load(Ordering::Relaxed), 1);
+    }
+
+    /// Serves another font for each family, all under one ID.
+    #[derive(Debug, Default)]
+    struct OneIdStore(Arc<AtomicU64>);
+
+    impl MediaStore for OneIdStore {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
+            None
+        }
+
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
+            None
+        }
+
+        fn font_resolver_id(&self, _: &str) -> Option<String> {
+            Some("one-id-store-test-font".to_string())
+        }
+
+        fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
+            let data: &[u8] = match family {
+                "Inter" => include_bytes!("../../../../text/assets/inter/InterVariable-Latin.ttf"),
+                _ => lumen_text::ROBOTO_REGULAR_BYTES,
+            };
+            Some(Box::new(CountingResolver {
+                id: "one-id-store-test-font",
+                data: data.to_vec(),
+                reads: Arc::clone(&self.0),
+            }))
+        }
+    }
+
+    #[test]
+    fn a_resolver_id_only_shares_a_font_within_its_family() {
+        let store = OneIdStore::default();
+        let mut system = lumen_text::TextSystem::new();
+        load_font_family(&mut system, Some(&store), "Inter").unwrap();
+        load_font_family(&mut system, Some(&store), "Other").unwrap();
+        assert!(system.has_family("Inter"));
+        assert_eq!(store.0.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn text_systems_share_a_font_while_one_holds_it() {
+        let store = CountingStore {
+            data: Some(
+                include_bytes!("../../../../text/assets/inter/InterVariable-Latin.ttf").to_vec(),
+            ),
+            ..Default::default()
+        };
+        let reads = || store.reads.load(Ordering::Relaxed);
+        let load = |system: &mut lumen_text::TextSystem| {
+            load_font_family(system, Some(&store), "Known").unwrap();
+        };
+
+        let mut first = lumen_text::TextSystem::new();
+        load(&mut first);
+        load(&mut lumen_text::TextSystem::new());
+        assert_eq!(reads(), 1);
+
+        drop(first);
+        load(&mut lumen_text::TextSystem::new());
+        assert_eq!(reads(), 2);
+    }
 }

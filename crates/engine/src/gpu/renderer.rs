@@ -32,7 +32,7 @@ pub struct CompiledPlanKey {
     /// Whether the frame is a whole frame of the timeline, so animated sources may be sized to
     /// their bounds over it.
     on_timeline: bool,
-    /// The fonts the shared text system held once the literal font families of the frame's text
+    /// The fonts the store's text system held once the literal font families of the frame's text
     /// were loaded, which text bounds are measured with; loading any face may change how text is
     /// shaped. `None` without text, or when the text system is unavailable.
     text_font_generation: Option<u64>,
@@ -684,38 +684,44 @@ impl GpuCompositionRenderer {
         }
         self.bind_sequence += 1;
         // A font loaded while the plan compiles or the frame binds, here or by another renderer,
-        // can widen text past the bounds the plan measured. The plan is then keyed by the new
-        // font generation, so the frame is bound again to it; a font loads once, so this settles.
+        // can widen text past the bounds and glyph counts the plan measured. The plan is then
+        // keyed by the new font generation, so the frame is bound again to it; a font loads
+        // once, so this settles.
         let mut rebinds = 0;
+        let max_rebinds = max_font_rebinds(composition);
         let mut bound = loop {
-            let generation = text_font_generation();
+            let generation = text_font_generation(Some(media));
             self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
             self.memo_snapshots
                 .retain_composition(composition.fingerprint());
             let prepared = self.active_prepared()?;
             let layout = &prepared.compiled.cache;
-            let epoch = layout.epoch(&prepared.renderer);
+            let fonts = text_font_generation(Some(media));
+            let epoch = layout.epoch(&prepared.renderer, fonts);
             let held =
                 self.memo_snapshots
                     .held(layout, prepared.cache.plan(), epoch, |plan, at, memo| {
                         self.memo_source(prepared, plan, memo)
-                            .is_some_and(|(epoch, ..)| epoch == at)
+                            .is_some_and(|(from, ..)| {
+                                from.compiled.cache.epoch(&from.renderer, fonts) == at
+                            })
                     });
-            let bound = FrameBindContext::with_media_at(composition, frame, media)
-                .bind_with_cache(
-                    &prepared.compiled,
-                    Some(BindCache::new(
-                        layout,
-                        &prepared.cache,
-                        epoch,
-                        composition.fingerprint(),
-                        held,
-                    )),
-                )?;
-            if text_font_generation() == generation {
-                break bound;
+            let bound = FrameBindContext::with_media_at(composition, frame, media).bind_with_cache(
+                &prepared.compiled,
+                Some(BindCache::new(
+                    layout,
+                    &prepared.cache,
+                    epoch,
+                    composition.fingerprint(),
+                    held,
+                )),
+            );
+            // A failure under fonts that changed may come from what the plan sized for the
+            // old ones, so it is bound again too.
+            if text_font_generation(Some(media)) == generation {
+                break bound?;
             }
-            if rebinds == MAX_FONT_REBINDS {
+            if rebinds == max_rebinds {
                 return Err(RenderError::Gpu {
                     details: format!(
                         "fonts kept loading while frame {frame} was bound; its text bounds could not settle"
@@ -783,7 +789,7 @@ impl GpuCompositionRenderer {
         self.copy_memo_snapshots(bound)
     }
 
-    /// The epoch of plan `plan` and the texture and bounds buffer holding its snapshot of `to`'s
+    /// Plan `plan` and the texture and bounds buffer holding its snapshot of `to`'s
     /// memo `memo`, if `to` can copy them.
     fn memo_source<'a>(
         &'a self,
@@ -791,7 +797,7 @@ impl GpuCompositionRenderer {
         plan: u64,
         memo: &LayoutMemo,
     ) -> Option<(
-        u64,
+        &'a PreparedComposition,
         &'a lumen_gpu::wgpu::Texture,
         &'a lumen_gpu::wgpu::Buffer,
     )> {
@@ -805,7 +811,7 @@ impl GpuCompositionRenderer {
             return None;
         }
         Some((
-            from.compiled.cache.epoch(&from.renderer),
+            from,
             from.renderer.texture(source.texture)?,
             from.renderer.buffer(source.bounds)?,
         ))
@@ -1271,7 +1277,10 @@ impl GpuCompositionRenderer {
         Ok(CompiledPlanKey {
             composition: composition.fingerprint(),
             on_timeline: super::compiler::on_timeline(composition, frame),
-            text_font_generation: collector.has_text.then(text_font_generation).flatten(),
+            text_font_generation: collector
+                .has_text
+                .then(|| text_font_generation(media))
+                .flatten(),
             entries,
         })
     }
@@ -1410,7 +1419,7 @@ impl<'a> PlanKeyCollector<'a> {
     /// font generation is taken once every font the frame's text names is loaded. Failures are
     /// left to the compile and bind, which load it again.
     fn load_font_family(&self, family: &str) {
-        if let Ok(mut text_system) = crate::node::source::text::text_system() {
+        if let Ok(mut text_system) = crate::node::source::text::text_system(self.media) {
             let _ =
                 crate::node::source::text::load_font_family(&mut text_system, self.media, family);
         }
@@ -1449,11 +1458,21 @@ fn estimated_plan_bytes(compiled: &CompiledComposition) -> u64 {
 }
 
 /// Times a frame is bound again after fonts load during binding, before binding fails rather
-/// than draw text past its bounds.
-const MAX_FONT_REBINDS: u32 = 3;
+/// than draw text past its bounds. A node loads all the fonts it names at once, and a bind can
+/// stop at the first text they outgrow, so this allows each node a bind of its own, with a margin
+/// for fonts other renderers load meanwhile. A node evaluated many times can name more fonts than
+/// this allows, and its frame then fails, but the fonts stay loaded for the next render.
+fn max_font_rebinds(composition: &Composition) -> usize {
+    let templates: usize = composition
+        .compositions()
+        .values()
+        .map(|template| template.graph.nodes.len())
+        .sum();
+    composition.graph().nodes.len() + templates + 3
+}
 
-fn text_font_generation() -> Option<u64> {
-    crate::node::source::text::text_system()
+fn text_font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
+    crate::node::source::text::text_system(media)
         .ok()
         .map(|text_system| text_system.font_generation())
 }
