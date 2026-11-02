@@ -912,6 +912,15 @@ impl TextSystem {
             })
     }
 
+    /// Whether `key` is an outline glyph with nothing to draw, such as whitespace.
+    fn is_blank_outline(&mut self, key: CacheKey) -> bool {
+        self.is_plain_outline(key)
+            && self
+                .swash_cache
+                .get_outline_commands_uncached(&mut self.font_system, key)
+                .is_none_or(|commands| commands.is_empty())
+    }
+
     /// Draws `layout` into a fresh `size`² atlas and returns its pixels.
     #[cfg(test)]
     fn render_atlas(
@@ -919,11 +928,10 @@ impl TextSystem {
         layout: &TextLayout,
         mode: TextRenderMode,
         size: u32,
-        max_glyphs: usize,
     ) -> AtlasRender {
         let mut atlas = GlyphAtlas::new(size);
         atlas.begin_frame();
-        let prepared = self.prepare_glyphs(&mut atlas, layout, mode, max_glyphs, &mut None);
+        let prepared = self.prepare_glyphs(&mut atlas, layout, mode, &mut None);
         let mut pixels = vec![0_u8; size as usize * size as usize * 4];
         for upload in &prepared.uploads {
             let row_len = upload.size[0] as usize * 4;
@@ -947,7 +955,7 @@ impl TextSystem {
     /// When the atlas is full, the least recently used glyphs that no layout
     /// used this frame are evicted. If there is still no room and only this
     /// layout uses the atlas this frame, the atlas is cleared and repacked.
-    /// Glyphs that still do not fit, and glyphs past `max_glyphs`, are dropped.
+    /// Glyphs that still do not fit are dropped.
     /// `overfull` suppresses retries until the working set or reclaimable space
     /// changes. Uploads become resident after [`GlyphAtlas::commit`].
     pub fn prepare_glyphs(
@@ -955,10 +963,9 @@ impl TextSystem {
         atlas: &mut GlyphAtlas,
         layout: &TextLayout,
         mode: TextRenderMode,
-        max_glyphs: usize,
         overfull: &mut Option<u64>,
     ) -> PreparedGlyphs {
-        self.prepare_stroked_glyphs(atlas, layout, mode, max_glyphs, &[], overfull)
+        self.prepare_stroked_glyphs(atlas, layout, mode, &[], overfull)
     }
 
     /// [`Self::prepare_glyphs`], also stroking the outline glyphs of each span `strokes` gives
@@ -966,84 +973,39 @@ impl TextSystem {
     /// glyph takes: a true distance field where the glyph draws one, else the stroked raster
     /// outline, or a true distance field where that is too large for the atlas. A field's range
     /// doubles as often as the stroke needs, and a stroke whose field is too large for the
-    /// atlas is dropped. Each stroke of an outline glyph counts toward `max_glyphs`.
+    /// atlas is dropped.
     pub fn prepare_stroked_glyphs(
         &mut self,
         atlas: &mut GlyphAtlas,
         layout: &TextLayout,
         mode: TextRenderMode,
-        max_glyphs: usize,
         strokes: &[f32],
         overfull: &mut Option<u64>,
     ) -> PreparedGlyphs {
-        // The instances past `max_glyphs`: those of the glyphs after the last that fits.
-        let (visible_len, past_budget) = if strokes.is_empty() {
-            let visible = layout.glyphs.len().min(max_glyphs);
-            (visible, layout.glyphs.len() - visible)
-        } else {
-            let (mut visible, mut past_budget, mut budget) = (layout.glyphs.len(), 0, max_glyphs);
-            // Colour and bitmap glyphs have no stroke, so only outlines' strokes are counted.
-            let mut plain = None;
-            for (index, glyph) in layout.glyphs.iter().enumerate() {
-                let stroked = glyph_stroke(strokes, glyph).is_some() && {
-                    let font = (glyph.key.0.font_id, glyph.key.0.font_weight);
-                    match plain {
-                        Some((last, outline)) if last == font => outline,
-                        _ => plain.insert((font, self.is_plain_outline(glyph.key.0))).1,
-                    }
-                };
-                let cost = 1 + usize::from(stroked);
-                if past_budget == 0 && cost <= budget {
-                    budget -= cost;
-                    continue;
-                }
-                if past_budget == 0 {
-                    visible = index;
-                }
-                past_budget += cost;
-            }
-            (visible, past_budget)
-        };
-        let visible = &layout.glyphs[..visible_len];
-        let overflow_key = |atlas: &GlyphAtlas| {
-            let mut keys: Vec<GlyphKey> = visible.iter().map(|glyph| glyph.key).collect();
+        let glyphs = &layout.glyphs;
+        let overflow_key = |atlas: &mut GlyphAtlas| {
+            let mut keys = atlas.keys_for(glyphs, mode, strokes);
             keys.sort_unstable();
-            keys.dedup();
             let mut hasher = DefaultHasher::new();
-            (keys, mode).hash(&mut hasher);
-            if !strokes.is_empty() {
-                let mut stroke_keys: Vec<AtlasKey> = visible
-                    .iter()
-                    .filter_map(|glyph| {
-                        let half_width = glyph_stroke(strokes, glyph)?;
-                        Some(atlas.stroke_key_for(glyph.key, mode, half_width))
-                    })
-                    .collect();
-                stroke_keys.sort_unstable();
-                stroke_keys.dedup();
-                stroke_keys.hash(&mut hasher);
-            }
-            let working_set = hasher.finish();
-            let mut hasher = DefaultHasher::new();
-            (working_set, atlas.availability).hash(&mut hasher);
+            (keys, atlas.availability).hash(&mut hasher);
             hasher.finish()
         };
         let retry_new = overfull.is_none_or(|key| key != overflow_key(atlas));
         let mut uploads = Vec::new();
-        let compacted = !self.place_glyphs(atlas, visible, mode, strokes, retry_new, &mut uploads)
+        let compacted = !self.place_glyphs(atlas, glyphs, mode, strokes, retry_new, &mut uploads)
             && atlas.layouts_this_frame == 0;
         if compacted {
             atlas.clear();
             uploads.clear();
-            self.place_glyphs(atlas, visible, mode, strokes, true, &mut uploads);
+            self.place_glyphs(atlas, glyphs, mode, strokes, true, &mut uploads);
         }
 
-        let mut instances = Vec::with_capacity(visible.len());
-        let mut sources = Vec::with_capacity(visible.len());
+        let mut instances = Vec::with_capacity(glyphs.len());
+        let mut sources = Vec::with_capacity(glyphs.len());
         let mut stroke_instances = Vec::new();
         let mut stroke_glyphs = Vec::new();
         let mut capacity_dropped = 0;
-        for (index, glyph) in visible.iter().enumerate() {
+        for (index, glyph) in glyphs.iter().enumerate() {
             let key = atlas.key_for(glyph.key, mode);
             match atlas.glyphs.get(&key) {
                 Some(AtlasGlyph {
@@ -1069,6 +1031,9 @@ impl TextSystem {
                     image: AtlasImage::Empty,
                     ..
                 }) => {}
+                None if self.is_blank_outline(glyph.key.0) => {
+                    atlas.insert(key, AtlasImage::Empty);
+                }
                 _ => {
                     // The stroke is omitted along with its glyph.
                     let stroked = glyph_stroke(strokes, glyph).is_some()
@@ -1087,7 +1052,7 @@ impl TextSystem {
             strokes: stroke_instances,
             stroke_glyphs,
             uploads,
-            dropped_glyphs: past_budget + capacity_dropped,
+            dropped_glyphs: capacity_dropped,
             compacted,
         }
     }
@@ -1107,7 +1072,6 @@ impl TextSystem {
         loop {
             let keys = atlas.keys_for(glyphs, mode, strokes);
             atlas.touch(&keys);
-            atlas.touch_oversized(glyphs, strokes);
             let markers = atlas.markers;
             if !self.place_missing(atlas, &keys, retry_new, uploads) {
                 return false;
@@ -1209,7 +1173,11 @@ impl TextSystem {
                 }
                 self.swash_cache
                     .get_image_uncached(&mut self.font_system, key)
-                    .filter(|image| image.placement.width > 0 && image.placement.height > 0)
+                    .filter(|image| {
+                        image.placement.width > 0
+                            && image.placement.height > 0
+                            && image.data.iter().any(|&byte| byte != 0)
+                    })
                     .map_or(RenderedGlyph::Empty, |image| {
                         RenderedGlyph::Pixels(raster_pixels(&image, key))
                     })
@@ -1761,8 +1729,9 @@ pub struct TextDecoration {
     /// Whether the decoration moves with the baseline shift of the spans, or else stays on
     /// the line's baseline.
     pub shifted: bool,
-    /// Start and end along the run's text in reading order, as fractions of its bytes. It
-    /// continues from line to line.
+    /// Start and end along the run's text in reading order, as fractions of its width: the
+    /// widths of its lines added together, so it continues from line to line. Within a line it
+    /// follows the text's logical order, with an ellipsis last.
     pub extent: [f32; 2],
 }
 
@@ -1851,6 +1820,11 @@ struct ShapedGlyph {
 }
 
 impl ShapedText {
+    /// Number of glyphs, whitespace included, that [`Self::place`] returns.
+    pub fn glyph_count(&self) -> usize {
+        self.glyphs.len()
+    }
+
     /// Places glyphs at `origin`. The fractional origin selects each glyph's
     /// subpixel bins, and raster glyph positions are snapped to whole pixels.
     pub fn place(&self, origin: [f32; 2], color: [f32; 4]) -> TextLayout {
@@ -1909,18 +1883,38 @@ impl ShapedText {
     ) {
         let last = self.span_starts.len() - 1;
         let spans = decoration.spans.start.min(last)..decoration.spans.end.min(last);
-        let [run_start, run_end] = [spans.start, spans.end].map(|span| self.span_starts[span]);
-        let [start, end] = decoration.extent.map(|fraction| {
-            run_start as f32 + fraction.clamp(0.0, 1.0) * (run_end - run_start) as f32
-        });
+        let width = |segment: &TextSegment| segment.x[1] - segment.x[0];
+        let run_width: f32 = self
+            .segments
+            .iter()
+            .filter(|segment| spans.contains(&(segment.span as usize)))
+            .map(width)
+            .sum();
+        let [start, end] = decoration
+            .extent
+            .map(|fraction| fraction.clamp(0.0, 1.0) * run_width);
         if start >= end {
             return;
         }
+        // How far along the run the current line starts.
+        let mut line_start = 0.0;
         for line in self.segments.chunk_by(|a, b| a.line == b.line) {
             let in_run = || {
                 line.iter()
                     .filter(|segment| spans.contains(&(segment.span as usize)))
             };
+            // Distances run in logical order, and the rects are then emitted left to right.
+            let segments: Vec<&TextSegment> = in_run().collect();
+            let mut logical: Vec<usize> = (0..segments.len()).collect();
+            logical.sort_by_key(|&index| {
+                let segment = segments[index];
+                (segment.bytes.is_empty(), segment.span, segment.bytes.start)
+            });
+            let mut from = vec![0.0; segments.len()];
+            for index in logical {
+                from[index] = line_start;
+                line_start += width(segments[index]);
+            }
             let Some(tallest) = in_run().max_by(|a, b| a.ascent.total_cmp(&b.ascent)) else {
                 continue;
             };
@@ -1992,30 +1986,12 @@ impl ShapedText {
             };
             // The rect being grown, its paint and its `RECT_JOINED_*` flags so far.
             let mut current: Option<([f32; 2], u32, u32)> = None;
-            for segment in in_run() {
-                let span_start = self.span_starts[segment.span as usize];
-                let bytes =
-                    [segment.bytes.start, segment.bytes.end].map(|byte| (span_start + byte) as f32);
-                let covered = [bytes[0].max(start), bytes[1].min(end)];
-                let width = segment.x[1] - segment.x[0];
-                let along = covered.map(|byte| (byte - bytes[0]) / (bytes[1] - bytes[0]) * width);
-                // An ellipsis alone in its segment covers no bytes. It is decorated when the
-                // decoration covers the text it takes its style from: the text it follows, or
-                // the first it replaced when it is alone on its line.
-                let x = if bytes[0] == bytes[1] {
-                    let byte = bytes[0];
-                    let decorated = if line.len() == 1 {
-                        start <= byte && byte < end
-                    } else {
-                        start < byte && byte <= end
-                    };
-                    if !decorated {
-                        continue;
-                    }
-                    segment.x
-                } else if covered[0] >= covered[1] {
+            for (segment, &from) in segments.iter().zip(&from) {
+                let along = [start.max(from), end.min(from + width(segment))].map(|at| at - from);
+                if along[0] >= along[1] {
                     continue;
-                } else if segment.rtl {
+                }
+                let x = if segment.rtl {
                     [segment.x[1] - along[1], segment.x[1] - along[0]]
                 } else {
                     [segment.x[0] + along[0], segment.x[0] + along[1]]
@@ -2195,15 +2171,8 @@ impl GlyphAtlas {
         }) {
             self.availability += 1;
         }
-        self.glyphs.retain(|key, glyph| {
-            glyph.last_used == previous
-                || !matches!(
-                    (key, glyph.image),
-                    (
-                        AtlasKey::Raster(_) | AtlasKey::RasterStroke(..),
-                        AtlasImage::Empty | AtlasImage::Oversized
-                    )
-                )
+        self.glyphs.retain(|_, glyph| {
+            glyph.last_used == previous || matches!(glyph.image, AtlasImage::Placed(_))
         });
         self.layouts_this_frame = 0;
         self.stale = None;
@@ -2229,92 +2198,94 @@ impl GlyphAtlas {
         self.glyphs.is_empty()
     }
 
+    /// Whether `key` holds a marker of the given kind, which routes the keys it is read for.
+    /// It counts as used this frame.
+    fn mark_used(&mut self, key: &AtlasKey, oversized: bool) -> bool {
+        let Some(glyph) = self.glyphs.get_mut(key) else {
+            return false;
+        };
+        let marker = match glyph.image {
+            AtlasImage::Oversized => oversized,
+            AtlasImage::RasterOnly => !oversized,
+            _ => false,
+        };
+        if marker {
+            glyph.last_used = self.frame;
+        }
+        marker
+    }
+
     /// Distance fields are used where requested, and for raster glyphs too
     /// large for the atlas, unless the glyph can only be rasterized.
-    fn key_for(&self, key: GlyphKey, mode: TextRenderMode) -> AtlasKey {
+    fn key_for(&mut self, key: GlyphKey, mode: TextRenderMode) -> AtlasKey {
         let raster = AtlasKey::Raster(key.0);
+        let oversized = self.mark_used(&raster, true);
         #[cfg(feature = "msdf")]
         {
             let msdf = AtlasKey::Msdf(msdf::msdf_key(key.0));
-            let image = |key| self.glyphs.get(key).map(|glyph| glyph.image);
             let wanted = match mode {
                 TextRenderMode::Raster => false,
                 TextRenderMode::Msdf => true,
                 TextRenderMode::Auto => f32::from_bits(key.0.font_size_bits) >= MSDF_AUTO_MIN_SIZE,
-            } || matches!(image(&raster), Some(AtlasImage::Oversized));
-            if wanted && !matches!(image(&msdf), Some(AtlasImage::RasterOnly)) {
+            } || oversized;
+            if wanted && !self.mark_used(&msdf, false) {
                 return msdf;
             }
         }
         #[cfg(not(feature = "msdf"))]
-        let _ = mode;
+        let _ = (mode, oversized);
         raster
     }
 
     /// The key of the stroke `half_width` pixels to each side of `key`'s outline: a field
     /// where the glyph draws one, or where its stroked raster outline is too large for the
     /// atlas, unless the outline can only be rasterized.
-    fn stroke_key_for(&self, key: GlyphKey, mode: TextRenderMode, half_width: f32) -> AtlasKey {
+    fn stroke_key_for(&mut self, key: GlyphKey, mode: TextRenderMode, half_width: f32) -> AtlasKey {
         let raster = AtlasKey::RasterStroke(key.0, stroke_width_key(half_width));
+        let oversized = self.mark_used(&raster, true);
         #[cfg(feature = "msdf")]
         {
             let (field, tier) = msdf::stroke_key(key.0, half_width);
             let field = AtlasKey::Sdf(field, tier);
-            let image = |key| self.glyphs.get(key).map(|glyph| glyph.image);
-            let wanted = matches!(self.key_for(key, mode), AtlasKey::Msdf(_))
-                || matches!(image(&raster), Some(AtlasImage::Oversized));
-            if wanted && !matches!(image(&field), Some(AtlasImage::RasterOnly)) {
+            let wanted = matches!(self.key_for(key, mode), AtlasKey::Msdf(_)) || oversized;
+            if wanted && !self.mark_used(&field, false) {
                 return field;
             }
         }
         #[cfg(not(feature = "msdf"))]
-        let _ = mode;
+        let _ = (mode, oversized);
         raster
     }
 
-    /// Unique atlas keys of `glyphs` and their `strokes`, in order.
+    /// Unique atlas keys of `glyphs` and their `strokes`, in order. Markers that route the keys
+    /// count as used this frame.
     fn keys_for(
-        &self,
+        &mut self,
         glyphs: &[TextGlyph],
         mode: TextRenderMode,
         strokes: &[f32],
     ) -> Vec<AtlasKey> {
         let mut seen = foldhash::HashSet::default();
-        glyphs
-            .iter()
-            .flat_map(|glyph| {
-                let stroke = glyph_stroke(strokes, glyph)
-                    .map(|half_width| self.stroke_key_for(glyph.key, mode, half_width));
-                [Some(self.key_for(glyph.key, mode)), stroke]
-            })
-            .flatten()
-            .filter(|key| seen.insert(*key))
-            .collect()
+        let mut keys = Vec::new();
+        for glyph in glyphs {
+            let stroke = glyph_stroke(strokes, glyph)
+                .map(|half_width| self.stroke_key_for(glyph.key, mode, half_width));
+            for key in [Some(self.key_for(glyph.key, mode)), stroke]
+                .into_iter()
+                .flatten()
+            {
+                if seen.insert(key) {
+                    keys.push(key);
+                }
+            }
+        }
+        keys
     }
 
     fn touch(&mut self, keys: &[AtlasKey]) {
         for key in keys {
             if let Some(glyph) = self.glyphs.get_mut(key) {
                 glyph.last_used = self.frame;
-            }
-        }
-    }
-
-    /// Keeps the oversized markers that route `glyphs` and their `strokes` to distance fields.
-    fn touch_oversized(&mut self, glyphs: &[TextGlyph], strokes: &[f32]) {
-        for glyph in glyphs {
-            let stroke = glyph_stroke(strokes, glyph).map(|half_width| {
-                AtlasKey::RasterStroke(glyph.key.0, stroke_width_key(half_width))
-            });
-            for key in [Some(AtlasKey::Raster(glyph.key.0)), stroke]
-                .into_iter()
-                .flatten()
-            {
-                if let Some(marker) = self.glyphs.get_mut(&key)
-                    && matches!(marker.image, AtlasImage::Oversized)
-                {
-                    marker.last_used = self.frame;
-                }
             }
         }
     }
@@ -2519,7 +2490,7 @@ pub struct PreparedGlyphs {
     /// Index in `instances` of the glyph each of `strokes` strokes.
     pub stroke_glyphs: Vec<usize>,
     pub uploads: Vec<GlyphUpload>,
-    /// Glyph and stroke instances not drawn because of `max_glyphs` or atlas capacity.
+    /// Glyph and stroke instances not drawn because the atlas is full.
     pub dropped_glyphs: usize,
     /// The atlas was cleared and repacked this frame.
     pub compacted: bool,
@@ -2543,7 +2514,7 @@ mod tests {
         layout: &TextLayout,
         mode: TextRenderMode,
     ) -> PreparedGlyphs {
-        system.prepare_glyphs(atlas, layout, mode, 4096, &mut None)
+        system.prepare_glyphs(atlas, layout, mode, &mut None)
     }
 
     #[test]
@@ -2668,7 +2639,7 @@ mod tests {
         let mut request = TextLayoutRequest::new("A");
         request.spans[0].font_size = 48.0;
         let layout = system.layout(&request);
-        let render = system.render_atlas(&layout, TextRenderMode::Raster, 128, 16);
+        let render = system.render_atlas(&layout, TextRenderMode::Raster, 128);
 
         assert_eq!(render.instances.len(), 1);
         let instance = render.instances[0];
@@ -2784,7 +2755,7 @@ mod tests {
 
         let first = shaped.place([10.1, 5.3], [1.0; 4]);
         let second = shaped.place([10.6, 5.3], [1.0; 4]);
-        let render = system.render_atlas(&second, TextRenderMode::Raster, 1024, 128);
+        let render = system.render_atlas(&second, TextRenderMode::Raster, 1024);
 
         assert_ne!(first.glyphs[0].key, second.glyphs[0].key);
         assert!(
@@ -2811,8 +2782,8 @@ mod tests {
         let second = shaped.place([0.0, 0.5], [1.0; 4]);
 
         assert_ne!(first.glyphs[0].key.0.y_bin, second.glyphs[0].key.0.y_bin);
-        let first = system.render_atlas(&first, TextRenderMode::Raster, 64, 128);
-        let second = system.render_atlas(&second, TextRenderMode::Raster, 64, 128);
+        let first = system.render_atlas(&first, TextRenderMode::Raster, 64);
+        let second = system.render_atlas(&second, TextRenderMode::Raster, 64);
         assert_ne!(first.pixels, second.pixels);
     }
 
@@ -2825,7 +2796,7 @@ mod tests {
         let size = 64;
         let ink_center = |system: &mut TextSystem, y: f32| {
             let layout = shaped.place([4.0, y], [1.0; 4]);
-            let render = system.render_atlas(&layout, TextRenderMode::Raster, size, 8);
+            let render = system.render_atlas(&layout, TextRenderMode::Raster, size);
             let instance = render.instances[0];
             let [left, top] = [instance.uv_rect[0] as usize, instance.uv_rect[1] as usize];
             let (mut weight, mut sum) = (0.0, 0.0);
@@ -2859,13 +2830,8 @@ mod tests {
         request.spans[0].font_size = 40.0;
         let mut layout = system.layout(&request);
         atlas.begin_frame();
-        let full = system.prepare_glyphs(
-            &mut atlas,
-            &layout,
-            TextRenderMode::Raster,
-            128,
-            &mut overfull,
-        );
+        let full =
+            system.prepare_glyphs(&mut atlas, &layout, TextRenderMode::Raster, &mut overfull);
         atlas.commit(full.frame);
         assert!(full.dropped_glyphs > 0);
         let dropped = layout
@@ -2877,16 +2843,31 @@ mod tests {
         layout.glyphs = vec![dropped];
 
         atlas.begin_frame();
-        let recovered = system.prepare_glyphs(
-            &mut atlas,
-            &layout,
-            TextRenderMode::Raster,
-            128,
-            &mut overfull,
-        );
+        let recovered =
+            system.prepare_glyphs(&mut atlas, &layout, TextRenderMode::Raster, &mut overfull);
         assert_eq!(recovered.dropped_glyphs, 0);
         assert!(!recovered.instances.is_empty());
         assert!(!recovered.uploads.is_empty());
+    }
+
+    #[test]
+    fn whitespace_the_full_atlas_never_reached_is_not_dropped() {
+        let mut system = TextSystem::new();
+        let mut dropped = |text: &str| {
+            let mut request = TextLayoutRequest::new(text);
+            request.spans[0].font_size = 40.0;
+            let layout = system.layout(&request);
+            let mut atlas = GlyphAtlas::new(64);
+            atlas.begin_frame();
+            prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster).dropped_glyphs
+        };
+        let letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let without_spaces = dropped(letters);
+        assert!(without_spaces > 0);
+        assert_eq!(
+            dropped(&format!("{letters}{}", " ".repeat(100))),
+            without_spaces
+        );
     }
 
     #[test]
@@ -2903,32 +2884,17 @@ mod tests {
         atlas.begin_frame();
         let placed = prepare(&mut system, &mut atlas, &first, TextRenderMode::Raster);
         assert!(!placed.instances.is_empty());
-        let blocked = system.prepare_glyphs(
-            &mut atlas,
-            &second,
-            TextRenderMode::Raster,
-            128,
-            &mut overfull,
-        );
+        let blocked =
+            system.prepare_glyphs(&mut atlas, &second, TextRenderMode::Raster, &mut overfull);
         assert!(blocked.dropped_glyphs > 0);
         atlas.commit(blocked.frame);
         atlas.begin_frame();
-        let suppressed = system.prepare_glyphs(
-            &mut atlas,
-            &second,
-            TextRenderMode::Raster,
-            128,
-            &mut overfull,
-        );
+        let suppressed =
+            system.prepare_glyphs(&mut atlas, &second, TextRenderMode::Raster, &mut overfull);
         assert!(suppressed.uploads.is_empty());
         atlas.begin_frame();
-        let recovered = system.prepare_glyphs(
-            &mut atlas,
-            &second,
-            TextRenderMode::Raster,
-            128,
-            &mut overfull,
-        );
+        let recovered =
+            system.prepare_glyphs(&mut atlas, &second, TextRenderMode::Raster, &mut overfull);
         assert_eq!(recovered.dropped_glyphs, 0);
         assert!(!recovered.uploads.is_empty());
     }
@@ -3134,6 +3100,18 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_draws_no_instances_at_any_subpixel_bin() {
+        let mut system = TextSystem::new();
+        let mut request = TextLayoutRequest::new(format!("{}ab", " ".repeat(200)));
+        request.spans[0].font_size = 8.0;
+        let layout = system.layout(&request);
+        let mut atlas = GlyphAtlas::new(1024);
+        atlas.begin_frame();
+        let prepared = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster);
+        assert_eq!(prepared.instances.len(), 2);
+    }
+
+    #[test]
     fn layouts_share_the_atlas_within_a_frame() {
         let mut system = TextSystem::new();
         let mut atlas = GlyphAtlas::new(1024);
@@ -3312,26 +3290,21 @@ mod tests {
         }
 
         #[test]
-        fn only_outline_strokes_count_toward_the_glyph_limit() {
+        fn colour_glyphs_are_not_stroked() {
             let mut system = TextSystem::new();
-            let layout = system.layout(&TextLayoutRequest::new("HI"));
-            let mut atlas = GlyphAtlas::new(1024);
-            atlas.begin_frame();
-            let mode = TextRenderMode::Raster;
-            let outline =
-                system.prepare_stroked_glyphs(&mut atlas, &layout, mode, 2, &[1.0], &mut None);
-            assert_eq!((outline.instances.len(), outline.strokes.len()), (1, 1));
-            // The second glyph and its stroke.
-            assert_eq!(outline.dropped_glyphs, 2);
-            atlas.commit(outline.frame);
-
             system.load_font_data(COLR_FONT.to_vec());
             let mut colour = TextLayoutRequest::new("AA");
             colour.spans[0].font_family = "Roboto COLR Test".to_string();
             let colour = system.layout(&colour);
+            let mut atlas = GlyphAtlas::new(1024);
             atlas.begin_frame();
-            let colour =
-                system.prepare_stroked_glyphs(&mut atlas, &colour, mode, 2, &[1.0], &mut None);
+            let colour = system.prepare_stroked_glyphs(
+                &mut atlas,
+                &colour,
+                TextRenderMode::Raster,
+                &[1.0],
+                &mut None,
+            );
             assert_eq!(colour.instances.len(), 2);
             assert_eq!((colour.strokes.len(), colour.dropped_glyphs), (0, 0));
         }
@@ -3346,7 +3319,7 @@ mod tests {
             for mode in [TextRenderMode::Msdf, TextRenderMode::Raster] {
                 atlas.begin_frame();
                 let prepared =
-                    system.prepare_stroked_glyphs(&mut atlas, &layout, mode, 4, &[64.0], &mut None);
+                    system.prepare_stroked_glyphs(&mut atlas, &layout, mode, &[64.0], &mut None);
                 atlas.commit(prepared.frame);
                 let [stroke] = prepared.strokes[..] else {
                     panic!("{mode:?}: expected one stroke");
@@ -3376,7 +3349,6 @@ mod tests {
                     &mut atlas,
                     &layout,
                     mode,
-                    4,
                     &[half_width],
                     &mut None,
                 );
@@ -3394,6 +3366,27 @@ mod tests {
         }
 
         #[test]
+        fn unused_field_markers_are_forgotten() {
+            let mut system = TextSystem::new();
+            let mut atlas = GlyphAtlas::new(256);
+            let mut prepare_text = |atlas: &mut GlyphAtlas, text: &str| {
+                let layout = system.layout(&TextLayoutRequest::new(text));
+                atlas.begin_frame();
+                prepare(&mut system, atlas, &layout, TextRenderMode::Msdf);
+            };
+            prepare_text(&mut atlas, "A B");
+            assert!(atlas.len() > 2);
+            prepare_text(&mut atlas, "A");
+            prepare_text(&mut atlas, "A");
+            assert!(
+                atlas
+                    .glyphs
+                    .values()
+                    .all(|glyph| matches!(glyph.image, AtlasImage::Placed(_)))
+            );
+        }
+
+        #[test]
         fn animated_widths_keep_an_overfull_field_working_set() {
             let mut system = TextSystem::new();
             let mut request = TextLayoutRequest::new("IOH");
@@ -3407,7 +3400,6 @@ mod tests {
                     &mut atlas,
                     &layout,
                     TextRenderMode::Msdf,
-                    usize::MAX,
                     &[half_width],
                     &mut overfull,
                 );
@@ -3415,6 +3407,33 @@ mod tests {
                 assert!(prepared.dropped_glyphs > 0, "frame {frame}");
                 if frame > 0 {
                     assert!(!prepared.compacted, "frame {frame} compacted");
+                    assert!(prepared.uploads.is_empty(), "frame {frame} uploaded");
+                }
+            }
+        }
+
+        #[test]
+        fn moving_the_origin_keeps_an_overfull_field_working_set() {
+            let mut system = TextSystem::new();
+            let mut request = TextLayoutRequest::new("IOH");
+            request.spans[0].font_size = 48.0;
+            let shaped = system.shape(&request);
+            let mut atlas = GlyphAtlas::new(64);
+            let mut overfull = None;
+            for (frame, origin) in [0.0, 0.0, 0.5].into_iter().enumerate() {
+                let layout = shaped.place([origin, 0.0], [1.0; 4]);
+                atlas.begin_frame();
+                let prepared = system.prepare_stroked_glyphs(
+                    &mut atlas,
+                    &layout,
+                    TextRenderMode::Msdf,
+                    &[0.25],
+                    &mut overfull,
+                );
+                atlas.commit(prepared.frame);
+                assert!(prepared.dropped_glyphs > 0, "frame {frame}");
+                // Fields do not depend on the subpixel position, so the working set is the same.
+                if frame > 0 {
                     assert!(prepared.uploads.is_empty(), "frame {frame} uploaded");
                 }
             }
@@ -3435,7 +3454,6 @@ mod tests {
                     &mut atlas,
                     &layout,
                     TextRenderMode::Raster,
-                    usize::MAX,
                     &mut overfull,
                 );
                 atlas.commit(prepared.frame);
@@ -3479,7 +3497,7 @@ mod tests {
             window: [i32; 4],
         ) -> Vec<f32> {
             const ATLAS: u32 = 4096;
-            let render = system.render_atlas(layout, mode, ATLAS, 1);
+            let render = system.render_atlas(layout, mode, ATLAS);
             let [instance] = render.instances[..] else {
                 panic!("expected one glyph");
             };
@@ -3925,17 +3943,19 @@ mod tests {
             [second.rect[1], second.rect[3]]
         );
 
-        // The extent runs on across the line break: bytes 2.25..6.75 of "abcd\nefgh".
+        // The extent runs on across the line break: the quarter to three quarters of the
+        // width of both lines together.
         let shaped = system.shape(&TextLayoutRequest::new("abcd\nefgh"));
         let [top, bottom] = rects(&shaped, &underline(0..1, [0.25, 0.75]), |_| 0)[..] else {
             panic!("expected a rect per line");
         };
         let [first, second] = [&shaped.segments[0], &shaped.segments[1]];
         let width = |segment: &TextSegment| segment.x[1] - segment.x[0];
-        assert!(close(top.rect[0], first.x[0] + width(first) * 2.25 / 4.0));
+        let total = width(first) + width(second);
+        assert!(close(top.rect[0], first.x[0] + total * 0.25));
         assert!(close(top.rect[0] + top.rect[2], first.x[1]));
         assert!(close(bottom.rect[0], second.x[0]));
-        assert!(close(bottom.rect[2], width(second) * 1.75 / 4.0));
+        assert!(close(bottom.rect[2], total * 0.75 - width(first)));
         assert!(bottom.rect[1] > top.rect[1]);
 
         // Right-to-left text is drawn in from the right.
@@ -4339,6 +4359,70 @@ mod tests {
     }
 
     #[test]
+    fn extents_follow_logical_order_in_right_to_left_text() {
+        let mut system = TextSystem::new();
+        let rects = |shaped: &ShapedText, extent: [f32; 2], spans: Range<usize>| {
+            let decoration = TextDecoration {
+                shifted: false,
+                kind: TextDecorationKind::Underline(TextLineDecoration {
+                    style: TextLineStyle::Solid,
+                    thickness: None,
+                    offset: None,
+                }),
+                spans,
+                extent,
+            };
+            let mut instances = Vec::new();
+            shaped.decorate(&decoration, [0.0; 2], |_| 0, &mut instances);
+            instances
+                .iter()
+                .map(|instance| [instance.rect[0], instance.rect[0] + instance.rect[2]])
+                .collect::<Vec<_>>()
+        };
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+
+        // The first span of right-to-left text is on the right, and is reached first.
+        let shaped = system.shape(&TextLayoutRequest::from_spans(vec![
+            span("של", 30.0),
+            span("ום", 30.0),
+        ]));
+        let first = shaped.segments.iter().find(|s| s.span == 0).unwrap();
+        let second = shaped.segments.iter().find(|s| s.span == 1).unwrap();
+        assert!(first.rtl && first.x[0] > second.x[0]);
+        let [rect] = rects(&shaped, [0.0, 0.2], 0..2)[..] else {
+            panic!("expected one rect");
+        };
+        assert!(close(rect[1], first.x[1]) && rect[0] >= first.x[0] - 0.01);
+        let [rect] = rects(&shaped, [0.0, 0.5], 0..2)[..] else {
+            panic!("expected one rect");
+        };
+        assert!(close(rect[0], first.x[0]) && close(rect[1], first.x[1]));
+
+        // An ellipsis ends right-to-left text on its left, and is reached last.
+        let mut request = TextLayoutRequest::from_spans(vec![span("שלום\nשלום", 30.0)]);
+        request.max_lines = Some(1);
+        request.overflow = TextOverflow::Ellipsis;
+        let shaped = system.shape(&request);
+        let ellipsis = shaped.segments.iter().find(|s| s.bytes.is_empty()).unwrap();
+        let text = shaped
+            .segments
+            .iter()
+            .find(|s| !s.bytes.is_empty())
+            .unwrap();
+        assert!(ellipsis.x[0] < text.x[0]);
+        let total = (ellipsis.x[1] - ellipsis.x[0]) + (text.x[1] - text.x[0]);
+        let reach = (text.x[1] - text.x[0]) / total;
+        let [rect] = rects(&shaped, [0.0, reach * 0.5], 0..1)[..] else {
+            panic!("expected one rect");
+        };
+        assert!(close(rect[1], text.x[1]) && rect[0] > text.x[0]);
+        let [rect] = rects(&shaped, [0.0, 1.0], 0..1)[..] else {
+            panic!("expected one rect");
+        };
+        assert!(close(rect[0], ellipsis.x[0]) && close(rect[1], text.x[1]));
+    }
+
+    #[test]
     fn an_ellipsis_at_a_span_boundary_is_decorated_by_extents_reaching_it() {
         let mut system = TextSystem::new();
         let mut request =
@@ -4366,15 +4450,27 @@ mod tests {
                 .map(|instance| instance.rect[0] + instance.rect[2])
                 .collect::<Vec<_>>()
         };
-        // Ending at the boundary reaches the text the ellipsis follows.
-        for (spans, extent) in [(0..1, [0.0, 1.0]), (0..2, [0.0, 0.5])] {
-            let [end] = underline(spans, extent)[..] else {
+        // The ellipsis is part of the run's width, so reaching the end of the text it
+        // follows leaves it undecorated and reaching the end of the run covers it.
+        let text = &shaped.segments[0];
+        let total = ellipsis.x[1] - text.x[0];
+        let before_ellipsis = (text.x[1] - text.x[0]) / total;
+        let [end] = underline(0..2, [0.0, before_ellipsis])[..] else {
+            panic!("expected one rect");
+        };
+        assert!((end - text.x[1]).abs() < 0.01, "{end}");
+        for spans in [0..1, 0..2] {
+            let [end] = underline(spans, [0.0, 1.0])[..] else {
                 panic!("expected one rect");
             };
             assert!((end - ellipsis.x[1]).abs() < 0.01, "{end}");
         }
-        // Starting there covers only the hidden text.
-        assert!(underline(0..2, [0.5, 1.0]).is_empty());
+        // Starting at the end of the text covers the ellipsis alone.
+        let [end] = underline(0..2, [before_ellipsis, 1.0])[..] else {
+            panic!("expected one rect");
+        };
+        assert!((end - ellipsis.x[1]).abs() < 0.01, "{end}");
+        // The second span is hidden, and has no width to decorate.
         assert!(underline(1..2, [0.0, 1.0]).is_empty());
     }
 
@@ -4482,7 +4578,7 @@ mod tests {
     }
 
     #[test]
-    fn uppercase_keeps_numbering_and_extents_in_the_transformed_text() {
+    fn uppercase_keeps_numbering_in_the_transformed_text() {
         let mut system = TextSystem::new();
         let shaped = system.shape(&TextLayoutRequest::from_spans(vec![
             TextSpan {
@@ -4509,7 +4605,7 @@ mod tests {
         assert_eq!(shaped.segments[1].bytes, 0..3);
 
         // An underline over the second span starts where its first glyph does, and one over
-        // the first span's first four bytes covers four sevenths of it.
+        // half of the first covers half of its width.
         let underline = |spans, extent| TextDecoration {
             kind: TextDecorationKind::Underline(TextLineDecoration {
                 style: TextLineStyle::Solid,
@@ -4527,11 +4623,11 @@ mod tests {
         };
         let [second, first] = [
             rect(underline(1..2, [0.0, 1.0])),
-            rect(underline(0..1, [0.0, 4.0 / 7.0])),
+            rect(underline(0..1, [0.0, 0.5])),
         ];
         assert!((second[0] - shaped.segments[1].x[0]).abs() < 0.01);
         let width = shaped.segments[0].x[1] - shaped.segments[0].x[0];
-        assert!((first[2] - width * 4.0 / 7.0).abs() < 0.01);
+        assert!((first[2] - width * 0.5).abs() < 0.01);
     }
 
     #[test]
