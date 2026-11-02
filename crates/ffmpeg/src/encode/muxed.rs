@@ -5,14 +5,12 @@ use crate::{FfmpegError, Result};
 
 use super::audio::{AudioEncoder, AudioEncoderConfig};
 use super::output::OutputContext;
-use super::telemetry::GpuEncodeTelemetry;
 use super::video::{ContainerCrop, VideoEncoder, VideoEncoderConfig};
 
 pub struct MuxedEncoder {
     output: OutputContext,
     video: VideoEncoder,
     audio: Option<AudioEncoder>,
-    wrote_header: bool,
 }
 
 impl MuxedEncoder {
@@ -39,7 +37,6 @@ impl MuxedEncoder {
             output,
             video,
             audio,
-            wrote_header: true,
         })
     }
 
@@ -51,6 +48,7 @@ impl MuxedEncoder {
         self.video.send_gpu_frame(&mut self.output, frame)
     }
 
+    /// Appends interleaved f32 samples to one contiguous audio stream that starts at time zero.
     pub fn write_audio_frame(&mut self, frame: &AudioFrame) -> Result<()> {
         let Some(audio) = self.audio.as_mut() else {
             return Err(FfmpegError::new(
@@ -59,10 +57,6 @@ impl MuxedEncoder {
             ));
         };
         audio.send_audio_frame(&mut self.output, frame)
-    }
-
-    pub fn gpu_telemetry(&self) -> &GpuEncodeTelemetry {
-        self.video.gpu_telemetry()
     }
 
     pub fn container_crop(&self) -> Option<ContainerCrop> {
@@ -74,7 +68,6 @@ impl MuxedEncoder {
         if let Some(audio) = self.audio.as_mut() {
             audio.flush(&mut self.output)?;
         }
-        self.wrote_header = false;
         self.output.write_trailer()?;
         self.output.close()
     }

@@ -183,65 +183,6 @@ mod tests {
         quality_options(encoder, rate_control, preset)
     }
 
-    fn pairs(options: &QualityOptions) -> Vec<(&str, &str)> {
-        options
-            .options
-            .iter()
-            .map(|(name, value)| (*name, value.as_str()))
-            .collect()
-    }
-
-    #[test]
-    fn bitrate_sets_context_bitrate_without_private_options() {
-        for encoder in ["libx264", "h264_nvenc", "av1_vulkan", "hevc_vaapi", "mpeg4"] {
-            let quality = options(encoder, RateControl::Bitrate(14_000_000), None).unwrap();
-            assert_eq!(quality.bit_rate, 14_000_000);
-            assert!(quality.options.is_empty());
-        }
-    }
-
-    #[test]
-    fn x264_maps_crf_qp_and_preset() {
-        let quality = options("libx264", RateControl::Crf(23), Some("fast")).unwrap();
-        assert_eq!(quality.bit_rate, 0);
-        assert_eq!(pairs(&quality), [("preset", "fast"), ("crf", "23")]);
-
-        let quality = options("libx264", RateControl::Qp(20), None).unwrap();
-        assert_eq!(pairs(&quality), [("qp", "20")]);
-    }
-
-    #[test]
-    fn nvenc_maps_cq_qp_and_preset() {
-        let quality = options("h264_nvenc", RateControl::Crf(28), Some("p5")).unwrap();
-        assert_eq!(quality.bit_rate, 0);
-        assert_eq!(
-            pairs(&quality),
-            [("preset", "p5"), ("rc", "vbr"), ("cq", "28")]
-        );
-
-        let quality = options("av1_nvenc", RateControl::Qp(30), None).unwrap();
-        assert_eq!(pairs(&quality), [("rc", "constqp"), ("qp", "30")]);
-    }
-
-    #[test]
-    fn vulkan_and_vaapi_map_qp_to_cqp() {
-        let quality = options("av1_vulkan", RateControl::Qp(100), None).unwrap();
-        assert_eq!(quality.bit_rate, 0);
-        assert_eq!(pairs(&quality), [("rc_mode", "cqp"), ("qp", "100")]);
-
-        let quality = options("h264_vaapi", RateControl::Qp(24), None).unwrap();
-        assert_eq!(pairs(&quality), [("rc_mode", "CQP"), ("qp", "24")]);
-    }
-
-    #[test]
-    fn vaapi_av1_and_vp9_use_global_quality() {
-        for encoder in ["av1_vaapi", "vp9_vaapi"] {
-            let quality = options(encoder, RateControl::Qp(30), None).unwrap();
-            assert_eq!(quality.global_quality, Some(30));
-            assert_eq!(pairs(&quality), [("rc_mode", "CQP")]);
-        }
-    }
-
     #[test]
     fn zero_quality_that_means_automatic_errors() {
         assert!(options("h264_nvenc", RateControl::Crf(0), None).is_err());

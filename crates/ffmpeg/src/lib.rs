@@ -4,7 +4,7 @@
 //! bindings and keeps raw FFmpeg pointers private to the implementation.
 
 pub mod audio;
-pub mod encode;
+mod encode;
 pub(crate) mod ffi;
 pub mod format;
 pub mod gpu;
@@ -12,11 +12,10 @@ pub mod video;
 
 #[cfg(feature = "vulkan")]
 pub use ash;
-pub use audio::{AudioDecoder, AudioFrame, AudioResampler, AudioResamplerConfig, SampleFormat};
+pub use audio::{AudioDecoder, AudioFrame, AudioResampler, AudioResamplerConfig};
 pub use encode::{
-    AudioEncoder, AudioEncoderConfig, ContainerCrop, GpuEncodeEvent, GpuEncodeOutcome,
-    GpuEncodeStage, GpuEncodeTelemetry, GpuTextureEncodeSupport, GpuUploadDescriptor, MuxedEncoder,
-    OutputContext, VideoEncoder, VideoEncoderConfig, gpu_texture_encode_support,
+    AudioEncoderConfig, ContainerCrop, GpuTextureEncodeSupport, MuxedEncoder, RateControl,
+    VideoEncoderConfig, gpu_texture_encode_support,
 };
 pub use format::{
     ALLOWED_INPUT_FORMATS, ALLOWED_INPUT_PROTOCOLS, AudioStreamInfo, InputContext, MediaInfo,

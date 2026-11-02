@@ -10,8 +10,8 @@ use lumen_engine::{
     composition::Composition,
 };
 use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, Rational,
-    SampleFormat, VideoCodec, VideoEncoderConfig,
+    AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, Rational, VideoCodec,
+    VideoEncoderConfig,
 };
 
 use super::media::LocalMediaStore;
@@ -173,7 +173,7 @@ pub(super) fn write_composited_audio_with(
         let mixed = mixer
             .mix_range(start_sample, frames)
             .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
-        write_frame(audio_frame_from_buffer(&mixed, start_sample))?;
+        write_frame(audio_frame_from_buffer(&mixed))?;
         start_sample = start_sample.saturating_add(frames as u64);
     }
 
@@ -187,12 +187,10 @@ pub(super) fn has_audio(composition: &Composition) -> bool {
         .is_some_and(|audio| !audio.clips.is_empty())
 }
 
-fn audio_frame_from_buffer(buffer: &AudioBuffer, start_sample: u64) -> AudioFrame {
+fn audio_frame_from_buffer(buffer: &AudioBuffer) -> AudioFrame {
     AudioFrame {
         sample_rate: buffer.sample_rate(),
         channels: buffer.channel_count() as u16,
-        sample_format: SampleFormat::F32,
-        pts: Some(start_sample as i64),
         samples: buffer.frames(),
         interleaved_f32: buffer.interleaved_f32(),
     }

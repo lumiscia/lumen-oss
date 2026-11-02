@@ -23,31 +23,21 @@ pub struct VideoFrameRequirement {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct RenderRequirements {
+struct RenderRequirements {
     images: BTreeSet<String>,
     videos: BTreeMap<String, BTreeSet<u32>>,
 }
 
 impl RenderRequirements {
-    pub fn add_image(&mut self, image_id: impl Into<String>) {
+    fn add_image(&mut self, image_id: impl Into<String>) {
         self.images.insert(image_id.into());
     }
 
-    pub fn add_video_frame(&mut self, stream_id: impl Into<String>, frame: u32) {
+    fn add_video_frame(&mut self, stream_id: impl Into<String>, frame: u32) {
         self.videos
             .entry(stream_id.into())
             .or_default()
             .insert(frame);
-    }
-
-    pub fn merge(&mut self, other: FrameRequirements) {
-        self.images.extend(other.images);
-        for video in other.videos {
-            self.videos
-                .entry(video.stream_id)
-                .or_default()
-                .extend(video.frames);
-        }
     }
 }
 

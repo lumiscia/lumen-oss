@@ -41,7 +41,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut frames = 0_usize;
     'decode: while let Some(packet) = input.read_packet()? {
         decoder.send_packet(&packet)?;
-        while let Some(frame) = decoder.receive_cpu_frame()? {
+        while let Some(mut frame) = decoder.receive_cpu_frame()? {
+            // Decoder timestamps are in the input time base, so let the encoder number frames.
+            frame.pts = None;
             encoder.write_video_frame(&frame)?;
             frames = frames.saturating_add(1);
             if max_frames.is_some_and(|limit| frames >= limit) {
@@ -52,7 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if max_frames.is_none_or(|limit| frames < limit) {
         decoder.send_eof()?;
-        while let Some(frame) = decoder.receive_cpu_frame()? {
+        while let Some(mut frame) = decoder.receive_cpu_frame()? {
+            frame.pts = None;
             encoder.write_video_frame(&frame)?;
             frames = frames.saturating_add(1);
             if max_frames.is_some_and(|limit| frames >= limit) {

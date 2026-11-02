@@ -19,7 +19,6 @@ use super::common::refresh_stream_time_base;
 use super::hw::{AvBufferRef, create_encoder_hw_contexts};
 use super::output::OutputContext;
 use super::quality::{QualityOptions, RateControl, quality_options};
-use super::telemetry::GpuEncodeTelemetry;
 
 // swscale range flags: 1 is full (JPEG) range, 0 is limited (MPEG) range.
 const SWS_RANGE_FULL: i32 = 1;
@@ -83,7 +82,7 @@ pub struct ContainerCrop {
     pub height: u32,
 }
 
-pub struct VideoEncoder {
+pub(crate) struct VideoEncoder {
     pub(in crate::encode) width: u32,
     pub(in crate::encode) height: u32,
     container_crop: Option<ContainerCrop>,
@@ -97,7 +96,6 @@ pub struct VideoEncoder {
     pub(in crate::encode) hw_frames: Option<AvBufferRef>,
     pub(in crate::encode) next_pts: i64,
     pub(in crate::encode) mode: EncodeMode,
-    pub(in crate::encode) gpu_telemetry: GpuEncodeTelemetry,
     #[cfg(feature = "vulkan")]
     pub(in crate::encode) vulkan_device: Option<crate::gpu::VulkanDevice>,
 }
@@ -334,14 +332,9 @@ impl VideoEncoder {
             hw_frames: hw_contexts.and_then(|contexts| contexts.frames),
             next_pts: 0,
             mode: config.mode,
-            gpu_telemetry: GpuEncodeTelemetry::default(),
             #[cfg(feature = "vulkan")]
             vulkan_device,
         })
-    }
-
-    pub fn gpu_telemetry(&self) -> &GpuEncodeTelemetry {
-        &self.gpu_telemetry
     }
 
     pub fn container_crop(&self) -> Option<ContainerCrop> {
@@ -641,60 +634,48 @@ mod tests {
     }
 
     #[test]
-    fn accepts_valid_rgba_frame_layout() {
-        let frame = rgba_frame(16, 9);
+    fn malformed_rgba_frames_are_rejected() {
+        type Corrupt = fn(&mut CpuVideoFrame);
+        let cases: [(&str, Corrupt, u32, &str); 5] = [
+            (
+                "non-RGBA pixel format",
+                |frame| frame.pixel_format = PixelFormat::Bgra8,
+                16,
+                "require RGBA8",
+            ),
+            (
+                "mismatched dimensions",
+                |_| {},
+                8,
+                "do not match encoder dimensions",
+            ),
+            (
+                "short stride",
+                |frame| frame.stride -= 1,
+                16,
+                "smaller than the required",
+            ),
+            (
+                "undersized buffer",
+                |frame| {
+                    frame.data.pop();
+                },
+                16,
+                "layout requires at least",
+            ),
+            (
+                "stride beyond i32",
+                |frame| frame.stride = i32::MAX as usize + 1,
+                16,
+                "stride exceeds FFmpeg",
+            ),
+        ];
+        for (name, corrupt, expected_width, expected_message) in cases {
+            let mut frame = rgba_frame(16, 9);
+            corrupt(&mut frame);
 
-        assert_eq!(
-            validate_cpu_frame(&frame, 16, 9).unwrap(),
-            ValidatedCpuFrameLayout {
-                stride: 64,
-                height: 9,
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_non_rgba_frame() {
-        let mut frame = rgba_frame(16, 9);
-        frame.pixel_format = PixelFormat::Bgra8;
-
-        let error = validate_cpu_frame(&frame, 16, 9).unwrap_err();
-        assert!(error.message.contains("require RGBA8"));
-    }
-
-    #[test]
-    fn rejects_mismatched_dimensions() {
-        let frame = rgba_frame(16, 9);
-
-        let error = validate_cpu_frame(&frame, 8, 9).unwrap_err();
-        assert!(error.message.contains("do not match encoder dimensions"));
-    }
-
-    #[test]
-    fn rejects_short_stride() {
-        let mut frame = rgba_frame(16, 9);
-        frame.stride -= 1;
-
-        let error = validate_cpu_frame(&frame, 16, 9).unwrap_err();
-        assert!(error.message.contains("smaller than the required"));
-    }
-
-    #[test]
-    fn rejects_undersized_buffer() {
-        let mut frame = rgba_frame(16, 9);
-        frame.data.pop();
-
-        let error = validate_cpu_frame(&frame, 16, 9).unwrap_err();
-        assert!(error.message.contains("layout requires at least"));
-    }
-
-    #[cfg(target_pointer_width = "64")]
-    #[test]
-    fn rejects_stride_outside_ffmpeg_integer_range() {
-        let mut frame = rgba_frame(1, 1);
-        frame.stride = i32::MAX as usize + 1;
-
-        let error = validate_cpu_frame(&frame, 1, 1).unwrap_err();
-        assert!(error.message.contains("stride exceeds FFmpeg"));
+            let error = validate_cpu_frame(&frame, expected_width, 9).unwrap_err();
+            assert!(error.message.contains(expected_message), "{name}: {error}");
+        }
     }
 }

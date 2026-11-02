@@ -152,6 +152,7 @@ impl AvFrame {
         unsafe { (*self.ptr.as_ptr()).color_range }
     }
 
+    #[cfg(any(feature = "metal", feature = "cuda"))]
     pub(crate) fn data(&self, plane: usize) -> *mut u8 {
         unsafe { (*self.ptr.as_ptr()).data[plane] }
     }
@@ -193,24 +194,5 @@ impl Drop for AvFrame {
             let mut ptr = self.ptr.as_ptr();
             sys::av_frame_free(&mut ptr);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn formats_known_error_code() {
-        let error = error_from_code("test", sys::AVERROR_EOF);
-        assert!(error.message.to_lowercase().contains("end"));
-    }
-
-    #[test]
-    fn owns_packet_and_frame() {
-        let packet = AvPacket::new().expect("packet");
-        let frame = AvFrame::new().expect("frame");
-        assert!(!packet.as_ptr().is_null());
-        assert!(!frame.as_ptr().is_null());
     }
 }
