@@ -556,8 +556,9 @@ impl GpuCompositionRenderer {
         }
         self.bind_sequence += 1;
         // A font loaded while the plan compiles or the frame binds, here or by another renderer,
-        // can widen text past the bounds the plan measured. The plan is then keyed by the new
-        // font generation, so the frame is bound again to it; a font loads once, so this settles.
+        // can widen text past the bounds and glyph counts the plan measured. The plan is then
+        // keyed by the new font generation, so the frame is bound again to it; a font loads
+        // once, so this settles.
         let mut rebinds = 0;
         let mut bound = loop {
             let generation = text_font_generation();
@@ -573,19 +574,20 @@ impl GpuCompositionRenderer {
                         self.memo_source(prepared, plan, memo)
                             .is_some_and(|(epoch, ..)| epoch == at)
                     });
-            let bound = FrameBindContext::with_media_at(composition, frame, media)
-                .bind_with_cache(
-                    &prepared.compiled,
-                    Some(BindCache::new(
-                        layout,
-                        &prepared.cache,
-                        epoch,
-                        composition.fingerprint(),
-                        held,
-                    )),
-                )?;
+            let bound = FrameBindContext::with_media_at(composition, frame, media).bind_with_cache(
+                &prepared.compiled,
+                Some(BindCache::new(
+                    layout,
+                    &prepared.cache,
+                    epoch,
+                    composition.fingerprint(),
+                    held,
+                )),
+            );
+            // A failure under fonts that changed may come from what the plan sized for the
+            // old ones, so it is bound again too.
             if text_font_generation() == generation {
-                break bound;
+                break bound?;
             }
             if rebinds == MAX_FONT_REBINDS {
                 return Err(RenderError::Gpu {

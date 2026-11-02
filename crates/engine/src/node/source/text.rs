@@ -547,27 +547,16 @@ impl CompiledText {
         state.strokes.clear();
         state.half_widths.clear();
         if self.decorated {
-            // Spans without a color of their own share the first one's paint, so a line
-            // runs along them as one rect.
-            let plain = spans
-                .iter()
-                .position(|span| span.color.is_none())
-                .unwrap_or(0) as u32;
-            before_glyphs = decorate(
+            let own;
+            (before_glyphs, own) = decorate(
                 shaped,
                 &decorations,
                 spans,
                 origin,
-                |span| match spans.get(span) {
-                    Some(TextSpan { color: Some(_), .. }) => span as u32,
-                    _ => plain,
-                },
-                |paint, span| {
-                    decoration_paints.push((paint, span, 0.0));
-                    (self.paint_count + decoration_paints.len() - 1) as u32
-                },
+                self.paint_count,
                 &mut state.decorations,
             );
+            decoration_paints.extend(own.into_iter().map(|(paint, span)| (paint, span, 0.0)));
             self.check_capacity(ctx, state.decorations.len())?;
             if self.stroked {
                 span_strokes(
@@ -626,9 +615,13 @@ impl CompiledText {
             bound.text_generation_ms += atlas_ms;
         }
 
+        // Glyphs the atlas dropped are still drawn text, so they count toward the limit.
         self.check_capacity(
             ctx,
-            state.decorations.len() + prepared.instances.len() + prepared.strokes.len(),
+            state.decorations.len()
+                + prepared.instances.len()
+                + prepared.strokes.len()
+                + prepared.dropped_glyphs,
         )?;
         let dropped_glyphs = prepared.dropped_glyphs;
         let dropping = dropped_glyphs > 0;
@@ -1348,18 +1341,32 @@ pub(crate) enum NodeDecorations {
 /// the strikethroughs, which are drawn over the glyphs.
 ///
 /// Consecutive spans that take the node's decoration share one run, and a span with its own is
-/// a run alone. A line without its own paint takes the paint index `text_paint` gives each
-/// span; `push_paint` adds a decoration's own paint, with the span whose box it spans if it is
-/// the span's own, and returns its index.
+/// a run alone. A line without its own paint takes its span's paint, among the `paint_count`
+/// of the spans. Spans without a color of their own share the first one's paint, so a line
+/// runs along them as one rect. Each decoration's own paint is returned with the span whose box
+/// it spans if it is the span's own, and has the index `paint_count` and its place in the
+/// returned paints.
 pub(crate) fn decorate<'a>(
     shaped: &lumen_text::ShapedText,
     node: &'a TextDecorations,
     spans: &'a [TextSpan],
     origin: [f32; 2],
-    text_paint: impl Fn(usize) -> u32,
-    mut push_paint: impl FnMut(&'a Paint, Option<usize>) -> u32,
+    paint_count: usize,
     instances: &mut Vec<lumen_text::GpuGlyphInstance>,
-) -> usize {
+) -> (usize, Vec<(&'a Paint, Option<usize>)>) {
+    let plain = spans
+        .iter()
+        .position(|span| span.color.is_none())
+        .unwrap_or(0) as u32;
+    let text_paint = |span: usize| match spans.get(span) {
+        Some(TextSpan { color: Some(_), .. }) => span as u32,
+        _ => plain,
+    };
+    let mut paints = Vec::new();
+    let mut push_paint = |paint: &'a Paint, span: Option<usize>| {
+        paints.push((paint, span));
+        (paint_count + paints.len() - 1) as u32
+    };
     let span_count = shaped.counts.span as usize;
     // A span's own decoration moves with its baseline shift; the node's stays on the line.
     let draw = |instances: &mut Vec<_>,
@@ -1462,7 +1469,7 @@ pub(crate) fn decorate<'a>(
             },
         );
     }
-    before_glyphs
+    (before_glyphs, paints)
 }
 
 /// The number of paints that `params`' decorations with their own and strokes add, or `None`

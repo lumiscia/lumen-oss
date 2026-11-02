@@ -1718,7 +1718,8 @@ pub struct TextDecoration {
     /// the line's baseline.
     pub shifted: bool,
     /// Start and end along the run's text in reading order, as fractions of its width: the
-    /// widths of its lines added together, so it continues from line to line.
+    /// widths of its lines added together, so it continues from line to line. Within a line it
+    /// follows the text's logical order, with an ellipsis last.
     pub extent: [f32; 2],
 }
 
@@ -1890,8 +1891,18 @@ impl ShapedText {
                 line.iter()
                     .filter(|segment| spans.contains(&(segment.span as usize)))
             };
-            let line_distance = line_start;
-            line_start += in_run().map(width).sum::<f32>();
+            // Distances run in logical order, and the rects are then emitted left to right.
+            let segments: Vec<&TextSegment> = in_run().collect();
+            let mut logical: Vec<usize> = (0..segments.len()).collect();
+            logical.sort_by_key(|&index| {
+                let segment = segments[index];
+                (segment.bytes.is_empty(), segment.span, segment.bytes.start)
+            });
+            let mut from = vec![0.0; segments.len()];
+            for index in logical {
+                from[index] = line_start;
+                line_start += width(segments[index]);
+            }
             let Some(tallest) = in_run().max_by(|a, b| a.ascent.total_cmp(&b.ascent)) else {
                 continue;
             };
@@ -1963,11 +1974,8 @@ impl ShapedText {
             };
             // The rect being grown, its paint and its `RECT_JOINED_*` flags so far.
             let mut current: Option<([f32; 2], u32, u32)> = None;
-            let mut distance = line_distance;
-            for segment in in_run() {
-                let from = distance;
-                distance += width(segment);
-                let along = [start.max(from), end.min(distance)].map(|at| at - from);
+            for (segment, &from) in segments.iter().zip(&from) {
+                let along = [start.max(from), end.min(from + width(segment))].map(|at| at - from);
                 if along[0] >= along[1] {
                     continue;
                 }
@@ -3072,28 +3080,6 @@ mod tests {
     }
 
     #[test]
-    fn moving_the_origin_retries_an_overfull_working_set() {
-        let mut system = TextSystem::new();
-        let mut request = TextLayoutRequest::new("HWMBOQ");
-        request.spans[0].font_size = 48.0;
-        let shaped = system.shape(&request);
-        let mut atlas = GlyphAtlas::new(64);
-        let mut overfull = None;
-        let mut uploads = Vec::new();
-        for origin in [0.0, 0.0, 0.5] {
-            let layout = shaped.place([origin, 0.0], [1.0; 4]);
-            atlas.begin_frame();
-            let prepared =
-                system.prepare_glyphs(&mut atlas, &layout, TextRenderMode::Raster, &mut overfull);
-            atlas.commit(prepared.frame);
-            assert!(prepared.dropped_glyphs > 0);
-            uploads.push(prepared.uploads.len());
-        }
-        assert_eq!(uploads[1], 0);
-        assert!(uploads[2] > 0);
-    }
-
-    #[test]
     fn layouts_share_the_atlas_within_a_frame() {
         let mut system = TextSystem::new();
         let mut atlas = GlyphAtlas::new(1024);
@@ -3389,6 +3375,33 @@ mod tests {
                 assert!(prepared.dropped_glyphs > 0, "frame {frame}");
                 if frame > 0 {
                     assert!(!prepared.compacted, "frame {frame} compacted");
+                    assert!(prepared.uploads.is_empty(), "frame {frame} uploaded");
+                }
+            }
+        }
+
+        #[test]
+        fn moving_the_origin_keeps_an_overfull_field_working_set() {
+            let mut system = TextSystem::new();
+            let mut request = TextLayoutRequest::new("IOH");
+            request.spans[0].font_size = 48.0;
+            let shaped = system.shape(&request);
+            let mut atlas = GlyphAtlas::new(64);
+            let mut overfull = None;
+            for (frame, origin) in [0.0, 0.0, 0.5].into_iter().enumerate() {
+                let layout = shaped.place([origin, 0.0], [1.0; 4]);
+                atlas.begin_frame();
+                let prepared = system.prepare_stroked_glyphs(
+                    &mut atlas,
+                    &layout,
+                    TextRenderMode::Msdf,
+                    &[0.25],
+                    &mut overfull,
+                );
+                atlas.commit(prepared.frame);
+                assert!(prepared.dropped_glyphs > 0, "frame {frame}");
+                // Fields do not depend on the subpixel position, so the working set is the same.
+                if frame > 0 {
                     assert!(prepared.uploads.is_empty(), "frame {frame} uploaded");
                 }
             }
@@ -4311,6 +4324,70 @@ mod tests {
         };
         assert!((rect.rect[0] - segment.x[0]).abs() < 0.01);
         assert!((rect.rect[2] - (segment.x[1] - segment.x[0])).abs() < 0.01);
+    }
+
+    #[test]
+    fn extents_follow_logical_order_in_right_to_left_text() {
+        let mut system = TextSystem::new();
+        let rects = |shaped: &ShapedText, extent: [f32; 2], spans: Range<usize>| {
+            let decoration = TextDecoration {
+                shifted: false,
+                kind: TextDecorationKind::Underline(TextLineDecoration {
+                    style: TextLineStyle::Solid,
+                    thickness: None,
+                    offset: None,
+                }),
+                spans,
+                extent,
+            };
+            let mut instances = Vec::new();
+            shaped.decorate(&decoration, [0.0; 2], |_| 0, &mut instances);
+            instances
+                .iter()
+                .map(|instance| [instance.rect[0], instance.rect[0] + instance.rect[2]])
+                .collect::<Vec<_>>()
+        };
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+
+        // The first span of right-to-left text is on the right, and is reached first.
+        let shaped = system.shape(&TextLayoutRequest::from_spans(vec![
+            span("של", 30.0),
+            span("ום", 30.0),
+        ]));
+        let first = shaped.segments.iter().find(|s| s.span == 0).unwrap();
+        let second = shaped.segments.iter().find(|s| s.span == 1).unwrap();
+        assert!(first.rtl && first.x[0] > second.x[0]);
+        let [rect] = rects(&shaped, [0.0, 0.2], 0..2)[..] else {
+            panic!("expected one rect");
+        };
+        assert!(close(rect[1], first.x[1]) && rect[0] >= first.x[0] - 0.01);
+        let [rect] = rects(&shaped, [0.0, 0.5], 0..2)[..] else {
+            panic!("expected one rect");
+        };
+        assert!(close(rect[0], first.x[0]) && close(rect[1], first.x[1]));
+
+        // An ellipsis ends right-to-left text on its left, and is reached last.
+        let mut request = TextLayoutRequest::from_spans(vec![span("שלום\nשלום", 30.0)]);
+        request.max_lines = Some(1);
+        request.overflow = TextOverflow::Ellipsis;
+        let shaped = system.shape(&request);
+        let ellipsis = shaped.segments.iter().find(|s| s.bytes.is_empty()).unwrap();
+        let text = shaped
+            .segments
+            .iter()
+            .find(|s| !s.bytes.is_empty())
+            .unwrap();
+        assert!(ellipsis.x[0] < text.x[0]);
+        let total = (ellipsis.x[1] - ellipsis.x[0]) + (text.x[1] - text.x[0]);
+        let reach = (text.x[1] - text.x[0]) / total;
+        let [rect] = rects(&shaped, [0.0, reach * 0.5], 0..1)[..] else {
+            panic!("expected one rect");
+        };
+        assert!(close(rect[1], text.x[1]) && rect[0] > text.x[0]);
+        let [rect] = rects(&shaped, [0.0, 1.0], 0..1)[..] else {
+            panic!("expected one rect");
+        };
+        assert!(close(rect[0], ellipsis.x[0]) && close(rect[1], text.x[1]));
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::{
 use crate::node::source::{
     text::{
         CompiledText, DecorationParams, GlyphParams, NodeDecorations, Text, TextDecorations,
-        TextLayoutStyle, TextState,
+        TextLayoutStyle, TextParamsDelegate, TextState,
     },
     text_content::{TextContent, TextContentDelegate, TextLineDelegate, TextSpanDelegate},
 };
@@ -711,8 +711,25 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         {
             return None;
         }
+        // What sets how the text is drawn, not laid out, may read other nodes, so it is left
+        // for binding to evaluate.
+        let drawn = TextParamsDelegate::default();
+        let layout_params = TextParamsDelegate {
+            position: drawn.position,
+            scale: drawn.scale,
+            rotation: drawn.rotation,
+            anchor: drawn.anchor,
+            opacity: drawn.opacity,
+            motion_blur: drawn.motion_blur,
+            glyph_offset: drawn.glyph_offset,
+            glyph_scale: drawn.glyph_scale,
+            glyph_rotation: drawn.glyph_rotation,
+            glyph_opacity: drawn.glyph_opacity,
+            color: drawn.color,
+            ..params.clone()
+        };
         let expr = self.ctx.expr_context(text.id, "params");
-        let mut evaluated = params
+        let mut evaluated = layout_params
             .eval(&crate::node::NodeParamEvalContext {
                 node_id: text.id,
                 expr: &expr,
@@ -759,8 +776,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             &decorations,
             spans,
             [0.0; 2],
-            |_| 0,
-            |_, _| 0,
+            spans.len().max(1),
             &mut rects,
         );
         let mut strokes = Vec::new();

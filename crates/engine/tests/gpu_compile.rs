@@ -6526,6 +6526,177 @@ fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
     }
 }
 
+#[test]
+fn text_decorations_split_by_span_paint_fit_the_size_counted_at_compile() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 64, "height": 32 },
+        "nodes": [
+            { "id": 1, "type": "text", "params": {
+                "content": [
+                    { "text": "a", "color": "#ff0000" },
+                    { "text": "b", "color": "#0000ff" }
+                ],
+                "font_size": 24,
+                "position": [4, 2],
+                "underline": {}
+            } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let has = |color: [u8; 3]| {
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] == 255 && pixel[..3] == color)
+    };
+    assert!(has([255, 0, 0]) && has([0, 0, 255]));
+}
+
+/// Inter with its family renamed to `name`, which must have the five letters of "Inter".
+fn renamed_inter(name: &str) -> Vec<u8> {
+    assert_eq!(name.len(), 5);
+    let mut font = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf").to_vec();
+    let utf16 = |text: &str| {
+        text.encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>()
+    };
+    for (from, to) in [
+        ("Inter".as_bytes().to_vec(), name.as_bytes().to_vec()),
+        (utf16("Inter"), utf16(name)),
+    ] {
+        let mut at = 0;
+        while let Some(found) = font[at..].windows(from.len()).position(|w| w == from) {
+            font[at + found..at + found + to.len()].copy_from_slice(&to);
+            at += found + to.len();
+        }
+    }
+    font
+}
+
+/// Resolves "Loader" to a font named "Qzxvj" and "Qzxvj" to no font data.
+#[derive(Debug, Clone)]
+struct LateFont;
+
+impl lumen_engine::media::FontResolver for LateFont {
+    fn id(&self) -> &str {
+        "late-font"
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![renamed_inter("Qzxvj")])
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NoFont;
+
+impl lumen_engine::media::FontResolver for NoFont {
+    fn id(&self) -> &str {
+        "no-font"
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(Vec::new())
+    }
+}
+
+impl MediaStore for LateFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        match family {
+            "Loader" => Some("late-font".to_string()),
+            "Qzxvj" => Some("no-font".to_string()),
+            _ => None,
+        }
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        match family {
+            "Loader" => Some(Box::new(LateFont)),
+            "Qzxvj" => Some(Box::new(NoFont)),
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn a_font_loaded_while_binding_resizes_constant_text_instead_of_failing() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // The first text measures a node whose font loads as the frame binds. That font, unlike the
+    // bundled one, has no "ffi" ligature, so the second text, sized for one glyph, needs three.
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": [
+            { "id": 99, "type": "text", "params": { "content": "x", "font_family": "Loader" } },
+            { "id": 1, "type": "text", "params": {
+                "content": "a",
+                "glyph_offset": "=vec2(0 * text_width(node(99)), 0)"
+            } },
+            { "id": 2, "type": "text", "params": {
+                "content": "ffi", "font_family": "Qzxvj", "font_size": 40, "position": [4, 10]
+            } },
+            { "id": 3, "type": "raster_multimerge" },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &LateFont);
+    assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+}
+
+#[test]
+fn text_dropped_by_a_full_atlas_still_counts_toward_the_instance_limit() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // Glyphs this large overflow the atlas, which drops some of them.
+    let mut composition = text_test_composition(TextParamsDelegate {
+        content: TextContentDelegate::Text(Deferred::value(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(80),
+        )),
+        font_size: expression("1500 + frame * 0"),
+        render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
+        ..Default::default()
+    })
+    .into_builder();
+    composition.render_settings.width = 64;
+    composition.render_settings.height = 64;
+    let composition = composition.build().unwrap();
+    let error = renderer
+        .render_frame(&composition, 0, &EmptyMediaStore)
+        .expect_err("2080 glyphs exceed the limit")
+        .to_string();
+    assert!(
+        error.contains("Text node 1") && error.contains("2080") && error.contains("2048"),
+        "{error}"
+    );
+}
+
 #[cfg(feature = "msdf")]
 #[test]
 fn text_msdf_corners_stay_within_a_pixel_of_raster_at_1000px() {
