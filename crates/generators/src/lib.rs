@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
 use lumen_engine::node::{
-    EnumDef, InputPortDef, NodeCategory, NodeKind, NodeParams, NodeSchemaDef, PortKind,
-    PropertyDef, PropertyKind, PropertyValue, SINGLE_RASTER_OUTPUT,
+    EnumDef, InputPortDef, NodeCategory, NodeKind, NodeParams, NodeSchemaDef, PropertyDef,
+    PropertyKind, PropertyValue,
 };
 use serde_json::{Map, Value, json};
 
@@ -503,10 +503,7 @@ fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
         "description": schema.description,
         "x-lumen-category": category_name(schema.category),
         "x-lumen-inputs": schema.inputs.iter().map(input_port_json).collect::<Vec<_>>(),
-        "x-lumen-outputs": SINGLE_RASTER_OUTPUT
-            .iter()
-            .map(|output| json!({ "name": output.name, "kind": port_kind_name(output.kind) }))
-            .collect::<Vec<_>>(),
+        "x-lumen-outputs": [{ "name": "output", "kind": "raster_frame" }],
         "type": "object",
         "required": ["id", "type"],
         "properties": {
@@ -525,7 +522,7 @@ fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
 fn input_port_json(input: &InputPortDef) -> Value {
     json!({
         "name": input.name,
-        "kind": port_kind_name(input.kind),
+        "kind": "raster_frame",
         "optional": input.optional,
         "variadic": input.variadic,
     })
@@ -673,13 +670,6 @@ fn category_name(category: NodeCategory) -> &'static str {
         NodeCategory::Source => "source",
         NodeCategory::Output => "output",
         NodeCategory::Vector => "vector",
-    }
-}
-
-fn port_kind_name(kind: PortKind) -> &'static str {
-    match kind {
-        PortKind::Raster => "raster_frame",
-        PortKind::Vector => "vector",
     }
 }
 

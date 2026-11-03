@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -44,7 +44,7 @@ pub struct RasterMultiMerge {
     pub params: RasterMultiMergeParamsDelegate,
 
     #[input(optional, variadic)]
-    pub layers: Vec<PortRef>,
+    pub layers: Vec<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,19 +96,13 @@ impl GpuCompileNode for RasterMultiMerge {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
         let layers = self
             .layers
             .iter()
-            .filter(|layer| !layer.is_empty())
-            .map(|layer| {
+            .map(|&layer| {
                 ctx.compile_bounded_port(layer)
-                    .and_then(|output| output.into_raster(layer.id, &layer.port))
+                    .and_then(|output| output.into_raster(layer))
             })
             .collect::<crate::Result<Vec<_>>>()?;
         let Some((&first, overlays)) = layers.split_first() else {

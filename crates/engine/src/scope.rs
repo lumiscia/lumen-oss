@@ -13,8 +13,9 @@ use crate::{
     graph::Graph,
     media::MediaStore,
     node::{
-        DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, PortRef,
+        DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
         processing::time_remap::{TimeRemap, TimeRemapSettings, remap_frame},
+        required_input,
     },
 };
 
@@ -162,7 +163,7 @@ impl<'a> Scope<'a> {
 /// An input a node reads, with the frame and scope it is read in.
 #[derive(Debug, Clone)]
 pub struct Routed<'a> {
-    pub port: PortRef,
+    pub node: NodeId,
     pub frame: FrameTime,
     pub scope: Scope<'a>,
     /// The time remap or clip that instances the input, which then compiles once per path of
@@ -171,9 +172,9 @@ pub struct Routed<'a> {
 }
 
 impl<'a> Routed<'a> {
-    fn same(scope: &Scope<'a>, port: PortRef, frame: FrameTime) -> Self {
+    fn same(scope: &Scope<'a>, node: NodeId, frame: FrameTime) -> Self {
         Self {
-            port,
+            node,
             frame,
             scope: scope.clone(),
             instance: None,
@@ -196,14 +197,15 @@ pub fn route<'a>(
             let ctx = scope.expr_context(frame, media);
             crate::node::compositing::switch::selected_layer_for_frame(node, &ctx)?
                 .and_then(|index| node.layers.get(index))
-                .map(|port| vec![Routed::same(scope, port.clone(), frame)])
+                .map(|&layer| vec![Routed::same(scope, layer, frame)])
                 .unwrap_or_default()
         }
         NodeKind::Clip(node) => node.route(scope, frame, media)?.into_iter().collect(),
         _ => node
             .input_ports()
             .into_iter()
-            .map(|port| Routed::same(scope, port, frame))
+            .flatten()
+            .map(|input| Routed::same(scope, input, frame))
             .collect(),
     })
 }
@@ -230,6 +232,10 @@ pub(crate) fn route_time_remap<'a>(
     )?;
     Ok(Routed {
         instance: Some(node.id),
-        ..Routed::same(scope, node.source.clone(), frame.into())
+        ..Routed::same(
+            scope,
+            required_input(node.id, "source", node.source)?,
+            frame.into(),
+        )
     })
 }

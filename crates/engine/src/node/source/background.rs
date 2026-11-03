@@ -74,12 +74,7 @@ impl GpuCompileNode for Background {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &crate::node::PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &ctx.expr_context(),

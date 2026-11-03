@@ -1,4 +1,4 @@
-use super::{ids::NodeId, ports::PortRef};
+use super::ids::NodeId;
 use super::{ports::InputPortDef, property::PropertyValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -111,6 +111,6 @@ pub trait JsonNode: Default {
     fn set_input_json(
         &mut self,
         port: &str,
-        source: PortRef,
+        source: NodeId,
     ) -> Result<(), crate::error::GraphValidationError>;
 }

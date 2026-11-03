@@ -1,4 +1,4 @@
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -39,7 +39,7 @@ pub struct AlphaPremultiply {
     pub params: AlphaPremultiplyParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
+    pub source: Option<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +67,6 @@ impl GpuCompileNode for AlphaPremultiply {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
         // The mode decides the output metadata, so it must be known at compile time.
         let Deferred::Value(mode) = &self.params.mode else {
@@ -82,8 +81,7 @@ impl GpuCompileNode for AlphaPremultiply {
         let operation = compiler::alpha_operation(self.id, mode)?;
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
-            &self.source,
-            port,
+            self.source,
             "alpha-premultiply",
             SHADER,
             std::mem::size_of::<compiler::AlphaPremultiplyParams>() as u64,

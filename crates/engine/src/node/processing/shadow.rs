@@ -1,5 +1,5 @@
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef, vector::paint::Paint,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
 
 use crate::gpu::{
@@ -55,22 +55,15 @@ pub struct Shadow {
     pub params: ShadowParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
+    pub source: Option<NodeId>,
 }
 
 impl GpuCompileNode for Shadow {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let source = ctx
-            .compile_bounded_port(&self.source)?
-            .into_raster(self.source.id, &self.source.port)?;
+        let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
         // The shadow is the source's data shifted by the offset and spread by the radius,
         // at their largest over the timeline.
         let params = &self.params;

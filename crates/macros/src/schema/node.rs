@@ -30,13 +30,11 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let input_static = format_ident!("__LUMEN_{}_INPUTS", ident.to_string().to_uppercase());
     let input_defs = inputs.iter().map(|input| {
         let name = &input.name;
-        let kind = port_kind_tokens(&input.kind);
         let optional = input.optional;
         let variadic = input.variadic;
         quote! {
             ::lumen_engine::node::InputPortDef {
                 name: #name,
-                kind: #kind,
                 optional: #optional,
                 variadic: #variadic,
             }
@@ -81,13 +79,13 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             })
         } else {
             quote!(#name => {
-                if !self.#field.is_empty() {
+                if self.#field.is_some() {
                     return Err(::lumen_engine::error::GraphValidationError::InputAlreadyConnected {
                         node_id: self.id,
                         port: #name.to_string(),
                     });
                 }
-                self.#field = source;
+                self.#field = Some(source);
                 Ok(())
             })
         }
@@ -95,9 +93,9 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let input_port_collectors = inputs.iter().map(|input| {
         let field = &input.field;
         if input.variadic {
-            quote!(ports.extend(self.#field.clone()))
+            quote!(ports.extend(self.#field.iter().copied().map(Some)))
         } else {
-            quote!(ports.push(self.#field.clone()))
+            quote!(ports.push(self.#field))
         }
     });
 
@@ -159,7 +157,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             fn set_input_json(
                 &mut self,
                 port: &str,
-                source: ::lumen_engine::node::PortRef,
+                source: ::lumen_engine::node::NodeId,
             ) -> ::core::result::Result<(), ::lumen_engine::error::GraphValidationError> {
                 match port {
                     #(#json_input_matches,)*
@@ -180,7 +178,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                 #input_static
             }
 
-            fn input_ports(&self) -> ::std::vec::Vec<::lumen_engine::node::PortRef> {
+            fn input_ports(&self) -> ::std::vec::Vec<::core::option::Option<::lumen_engine::node::NodeId>> {
                 let mut ports = ::std::vec::Vec::new();
                 #(#input_port_collectors;)*
                 ports

@@ -1,6 +1,6 @@
 use crate::error::RenderError;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -85,7 +85,7 @@ pub struct Transform {
     pub params: TransformParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
+    pub source: Option<NodeId>,
 }
 
 impl Transform {
@@ -114,12 +114,9 @@ impl GpuCompileNode for Transform {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
         self.reject_ignored_pivot()?;
-        let source = ctx
-            .compile_bounded_port(&self.source)?
-            .into_raster(self.source.id, &self.source.port)?;
+        let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
         let motion = TransformMotion {
             node_id: self.id,
             params: self.params.clone(),
@@ -132,8 +129,7 @@ impl GpuCompileNode for Transform {
         let domain = ctx.source_domain(bounds);
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
-            &self.source,
-            port,
+            self.source,
             "transform",
             SHADER,
             std::mem::size_of::<compiler::TransformParams>() as u64,

@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -28,7 +28,7 @@ pub struct Blur {
     #[params]
     pub params: BlurParamsDelegate,
     #[input()]
-    pub source: PortRef,
+    pub source: Option<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,15 +66,8 @@ impl GpuCompileNode for Blur {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let source = ctx
-            .compile_bounded_port(&self.source)?
-            .into_raster(self.source.id, &self.source.port)?;
+        let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
         // The blur spreads the source's data by the radius, up to its largest over the timeline.
         let bounds = ctx.source_bounds(
             compiler::SourceMotion::of(self.params.radius.is_expr(), &self.params),

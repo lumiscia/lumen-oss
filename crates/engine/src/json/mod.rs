@@ -128,7 +128,7 @@ fn parse_graph(
         }
     }
 
-    // Second pass: create connections and wire up PortRefs
+    // Second pass: write each connection into its target node
     for (index, conn_val) in connections_arr.iter().enumerate() {
         let conn_obj = conn_val
             .as_object()
@@ -140,11 +140,12 @@ fn parse_graph(
         )
         .with_context(|| format!("connection {index}"))?;
         let from_node = parse_node_id(conn_obj.get("from_node").context("missing `from_node`")?)?;
-        let from_port = conn_obj
-            .get("from_port")
-            .and_then(|v| v.as_str())
-            .unwrap_or("output")
-            .to_string();
+        // Every node has the one output, so `from_port` only has to name it.
+        if let Some(from_port) = conn_obj.get("from_port")
+            && from_port.as_str() != Some("output")
+        {
+            bail!("connection {index}: `from_port` must be `output`, got {from_port}");
+        }
         let to_node = parse_node_id(conn_obj.get("to_node").context("missing `to_node`")?)?;
         let to_port = conn_obj
             .get("to_port")
@@ -155,13 +156,10 @@ fn parse_graph(
         graph
             .connect(Connection {
                 from_node,
-                from_port: from_port.clone(),
                 to_node,
                 to_port: to_port.clone(),
             })
-            .with_context(|| {
-                format!("connecting {from_node}:{from_port} -> {to_node}:{to_port}")
-            })?;
+            .with_context(|| format!("connecting {from_node} -> {to_node}:{to_port}"))?;
     }
     Ok(graph)
 }
@@ -706,6 +704,30 @@ mod tests {
     }
 
     #[test]
+    fn a_connection_names_the_one_output_or_none() {
+        let composition = |from_port: Value| {
+            serde_json::json!({
+                "timeline": { "fps": 30, "duration_frames": 90 },
+                "render_settings": { "width": 16, "height": 16 },
+                "nodes": [
+                    { "id": 1, "type": "background" },
+                    { "id": 2, "type": "media_output" }
+                ],
+                "connections": [
+                    { "from_node": 1, "from_port": from_port, "to_node": 2, "to_port": "source" }
+                ]
+            })
+        };
+        assert!(parse_value(&composition(serde_json::json!("output"))).is_ok());
+        let error = parse_value(&composition(serde_json::json!("mask"))).unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .contains("connection 0: `from_port` must be `output`, got \"mask\""),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn audio_volume_must_be_a_finite_non_negative_number() {
         let parse_audio = |track_volume: Value, clip_volume: Value| {
             parse_value(&serde_json::json!({
@@ -855,13 +877,7 @@ mod tests {
         let comp = parse(json).expect("should parse");
         let opacity = comp.graph().nodes.get(&NodeId::new(2)).expect("opacity");
         assert!(matches!(opacity, crate::node::NodeKind::Opacity(_)));
-        assert_eq!(
-            opacity.input_ports(),
-            vec![crate::node::PortRef::new(
-                NodeId::new(1),
-                "output".to_string()
-            )]
-        );
+        assert_eq!(opacity.input_ports(), vec![Some(NodeId::new(1))]);
     }
 
     #[test]

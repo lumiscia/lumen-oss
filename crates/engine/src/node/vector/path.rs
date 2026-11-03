@@ -13,7 +13,7 @@ use crate::gpu::{
     compiler,
 };
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -112,15 +112,7 @@ pub struct Path {
 }
 
 impl GpuCompileNode for Path {
-    fn compile_gpu(
-        &self,
-        ctx: &mut CompileContext<'_>,
-        port: &PortRef,
-    ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
+    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<CompiledOutput> {
         let fixed_points = fixed_points(&self.params.data, &self.params.scale);
         // Opacity only hides what is drawn, so it is left out of the bounds.
         let opaque = PathParamsDelegate {

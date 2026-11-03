@@ -7,7 +7,7 @@ use crate::node::vector::{
     drawable::{DRAWABLE_SHADER, DrawableTransform, GpuDrawableMotion, GpuDrawableTransform},
     paint::{GpuPaint, PaintDelegate},
 };
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, Override, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, Override};
 
 use super::text::{
     CompiledText, DecorationParams, GlyphParams, NodeDecorations, Text, TextAlignmentVertical,
@@ -65,12 +65,7 @@ pub(crate) struct GpuTextPaint {
 pub(super) fn compile_text(
     ctx: &mut CompileContext<'_>,
     text: &Text,
-    port: &PortRef,
 ) -> crate::Result<CompiledOutput> {
-    if port.port != "output" {
-        return Err(ctx.missing_output(text.id, &port.port));
-    }
-
     let size = ctx.canvas_size();
     // Text that may move during the shutter is drawn still to a layer first, which is
     // then smeared over the shutter's taps into the output. Text with motion blur

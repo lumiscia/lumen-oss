@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -51,7 +51,7 @@ pub struct Levels {
     pub params: LevelsParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
+    pub source: Option<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,12 +90,10 @@ impl GpuCompileNode for Levels {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
-            &self.source,
-            port,
+            self.source,
             "levels",
             SHADER,
             std::mem::size_of::<compiler::LevelsParams>() as u64,

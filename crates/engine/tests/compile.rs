@@ -12,7 +12,7 @@ use lumen_engine::{
         VideoMetadata, collect_frame_requirements,
     },
     node::{
-        Deferred, NodeId, NodeKind, PortRef,
+        Deferred, NodeId, NodeKind,
         compositing::{merge::Merge, raster_multimerge::RasterMultiMerge},
         media_output::MediaOutput,
         processing::{
@@ -95,18 +95,14 @@ fn compile(composition: &Composition, frame: Option<u32>) -> CompiledComposition
     try_compile(composition, frame).unwrap()
 }
 
-fn port(node: u64) -> PortRef {
-    PortRef::new(NodeId::new(node), "output".to_string())
-}
-
 fn has_output(compiled: &CompiledComposition, node: u64) -> bool {
-    compiled.node_outputs.contains_key(&port(node))
+    compiled.node_outputs.contains_key(&NodeId::new(node))
 }
 
 fn raster(compiled: &CompiledComposition, node: u64) -> lumen_engine::gpu::RasterHandle {
-    compiled.node_outputs[&port(node)]
+    compiled.node_outputs[&NodeId::new(node)]
         .clone()
-        .into_raster(NodeId::new(node), "output")
+        .into_raster(NodeId::new(node))
         .unwrap()
 }
 
@@ -259,7 +255,7 @@ fn a_cycle_error_prints_the_cycle_and_not_the_nodes_it_feeds() {
         NodeKind::Blur(Blur {
             id: NodeId::new(id),
             params: Default::default(),
-            source: PortRef::new(NodeId::new(source), "output".to_string()),
+            source: Some(NodeId::new(source)),
         })
     };
     let mut graph = Graph::new();
@@ -283,7 +279,7 @@ fn a_missing_input_node_is_not_reported_as_a_cycle() {
         output,
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: PortRef::new(NodeId::new(999), "output".to_string()),
+            source: Some(NodeId::new(999)),
         }),
     );
     assert!(matches!(
@@ -299,24 +295,22 @@ fn cycles_are_rejected_at_build() {
     let first = NodeId::new(1);
     let second = NodeId::new(2);
     let output = NodeId::new(3);
-    let port = |id| PortRef::new(id, "output".to_string());
     let connection = |from, to| Connection {
         from_node: from,
-        from_port: "output".to_string(),
         to_node: to,
         to_port: "source".to_string(),
     };
     let exposure = |id, source| {
         NodeKind::Exposure(Exposure {
             id,
-            source: port(source),
+            source: Some(source),
             ..Exposure::default()
         })
     };
     let media_output = || {
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: port(first),
+            source: Some(first),
         })
     };
 
@@ -359,7 +353,7 @@ fn cycles_are_rejected_at_build() {
         first,
         NodeKind::TimeRemap(TimeRemap {
             id: first,
-            source: port(first),
+            source: Some(first),
             ..TimeRemap::default()
         }),
     );
@@ -372,7 +366,7 @@ fn cycles_are_rejected_at_build() {
         first,
         NodeKind::TimeRemap(TimeRemap {
             id: second,
-            source: port(first),
+            source: Some(first),
             ..TimeRemap::default()
         }),
     );
@@ -409,7 +403,6 @@ fn a_second_connection_to_a_single_input_is_rejected_and_a_variadic_input_append
     let connect = |graph: &mut Graph, from_node, to_port: &str| {
         graph.connect(Connection {
             from_node,
-            from_port: "output".to_string(),
             to_node: merge,
             to_port: to_port.to_string(),
         })
@@ -450,7 +443,6 @@ fn a_second_connection_to_a_single_input_is_rejected_and_a_variadic_input_append
         graph
             .connect(Connection {
                 from_node,
-                from_port: "output".to_string(),
                 to_node: multi,
                 to_port: "layers".to_string(),
             })
@@ -572,7 +564,7 @@ fn media_prediction_follows_direct_ports() {
         opacity,
         NodeKind::Opacity(Opacity {
             id: opacity,
-            source: port(1),
+            source: Some(NodeId::new(1)),
             ..Opacity::default()
         }),
     );
@@ -580,7 +572,7 @@ fn media_prediction_follows_direct_ports() {
         output,
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: port(2),
+            source: Some(NodeId::new(2)),
         }),
     );
     let composition = build(graph).unwrap_or_else(|errors| panic!("{errors:?}"));
@@ -917,7 +909,7 @@ fn bind_errors() {
                     params: AlphaPremultiplyParamsDelegate {
                         mode: Deferred::Expr(Expression::parse("\"unpremultiply\"").unwrap()),
                     },
-                    source: port(1),
+                    source: Some(NodeId::new(1)),
                 }),
             );
             convert
@@ -1070,7 +1062,7 @@ fn glyph_scope_crosses_functions() {
             NodeId::new(2),
             NodeKind::MediaOutput(MediaOutput {
                 id: NodeId::new(2),
-                source: port(1),
+                source: Some(NodeId::new(1)),
             }),
         );
         CompositionBuilder::new(
@@ -1264,7 +1256,7 @@ fn atlas_composition(nodes: impl FnOnce(&mut Graph) -> NodeId) -> Composition {
         output,
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: PortRef::new(last, "output".to_string()),
+            source: Some(last),
         }),
     );
     CompositionBuilder::new(
@@ -1332,8 +1324,8 @@ fn text_upload_repeats_until_it_is_marked_uploaded() {
             merge,
             NodeKind::Merge(lumen_engine::node::compositing::merge::Merge {
                 id: merge,
-                base: PortRef::new(shape, "output".to_string()),
-                overlay: PortRef::new(text, "output".to_string()),
+                base: Some(shape),
+                overlay: Some(text),
                 ..Default::default()
             }),
         );

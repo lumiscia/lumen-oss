@@ -13,7 +13,6 @@ use crate::node::vector::{
 };
 use crate::node::{
     Deferred, DeferredValue, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override,
-    PortRef,
 };
 
 use super::text_compile::{GpuTextPaint, TextStyleUniforms};
@@ -319,9 +318,8 @@ impl GpuCompileNode for Text {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        super::text_compile::compile_text(ctx, self, port)
+        super::text_compile::compile_text(ctx, self)
     }
 }
 

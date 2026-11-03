@@ -191,7 +191,6 @@ impl CompositionFixture for AnimatedShowcase {
         graph
             .connect(Connection {
                 from_node: background,
-                from_port: "output".to_string(),
                 to_node: merge_bg_glow,
                 to_port: "base".to_string(),
             })
@@ -199,7 +198,6 @@ impl CompositionFixture for AnimatedShowcase {
         graph
             .connect(Connection {
                 from_node: glow,
-                from_port: "output".to_string(),
                 to_node: merge_bg_glow,
                 to_port: "overlay".to_string(),
             })
@@ -207,7 +205,6 @@ impl CompositionFixture for AnimatedShowcase {
         graph
             .connect(Connection {
                 from_node: merge_bg_glow,
-                from_port: "output".to_string(),
                 to_node: merge_card,
                 to_port: "base".to_string(),
             })
@@ -215,7 +212,6 @@ impl CompositionFixture for AnimatedShowcase {
         graph
             .connect(Connection {
                 from_node: card,
-                from_port: "output".to_string(),
                 to_node: merge_card,
                 to_port: "overlay".to_string(),
             })
@@ -223,7 +219,6 @@ impl CompositionFixture for AnimatedShowcase {
         graph
             .connect(Connection {
                 from_node: merge_card,
-                from_port: "output".to_string(),
                 to_node: merge_headline,
                 to_port: "base".to_string(),
             })
@@ -231,7 +226,6 @@ impl CompositionFixture for AnimatedShowcase {
         graph
             .connect(Connection {
                 from_node: headline,
-                from_port: "output".to_string(),
                 to_node: merge_headline,
                 to_port: "overlay".to_string(),
             })
@@ -239,7 +233,6 @@ impl CompositionFixture for AnimatedShowcase {
         graph
             .connect(Connection {
                 from_node: merge_headline,
-                from_port: "output".to_string(),
                 to_node: merge_subhead,
                 to_port: "base".to_string(),
             })
@@ -247,7 +240,6 @@ impl CompositionFixture for AnimatedShowcase {
         graph
             .connect(Connection {
                 from_node: subhead,
-                from_port: "output".to_string(),
                 to_node: merge_subhead,
                 to_port: "overlay".to_string(),
             })
@@ -255,7 +247,6 @@ impl CompositionFixture for AnimatedShowcase {
         graph
             .connect(Connection {
                 from_node: merge_subhead,
-                from_port: "output".to_string(),
                 to_node: output,
                 to_port: "source".to_string(),
             })

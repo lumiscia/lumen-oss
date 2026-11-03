@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::node::PortRef;
 use crate::{
     error::{GraphValidationError, LumenError},
     node::{Node, NodeId, NodeKind},
@@ -12,7 +11,6 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connection {
     pub from_node: NodeId,
-    pub from_port: String,
     pub to_node: NodeId,
     pub to_port: String,
 }
@@ -33,50 +31,17 @@ impl Graph {
     pub fn connect(&mut self, connection: Connection) -> crate::Result<()> {
         let Connection {
             from_node,
-            from_port,
             to_node,
             to_port,
         } = connection;
-        let output_kind = self
-            .nodes
-            .get(&from_node)
-            .ok_or(GraphValidationError::MissingSourceNode { node_id: from_node })?
-            .output_port_defs()
-            .iter()
-            .find(|def| def.name == from_port)
-            .ok_or_else(|| GraphValidationError::MissingSourcePort {
-                node_id: from_node,
-                port: from_port.clone(),
-            })?
-            .kind;
+        if !self.nodes.contains_key(&from_node) {
+            return Err(GraphValidationError::MissingSourceNode { node_id: from_node }.into());
+        }
         let target = self
             .nodes
             .get_mut(&to_node)
             .ok_or(GraphValidationError::MissingTargetNode { node_id: to_node })?;
-        let input = target
-            .input_port_defs()
-            .iter()
-            .find(|def| def.name == to_port)
-            .ok_or_else(|| GraphValidationError::MissingTargetPort {
-                node_id: to_node,
-                port: to_port.clone(),
-            })?;
-        if input.kind != output_kind {
-            return Err(GraphValidationError::PortKindMismatch {
-                from_node,
-                from_port,
-                from_kind: output_kind,
-                to_node,
-                to_port,
-                expected_kind: input.kind,
-            }
-            .into());
-        }
-        Ok(wire_input_port(
-            target,
-            &to_port,
-            PortRef::new(from_node, from_port),
-        )?)
+        Ok(wire_input_port(target, &to_port, from_node)?)
     }
 
     pub fn validate(&self) -> Result<(), Vec<LumenError>> {
@@ -115,9 +80,9 @@ impl Graph {
             let mut wired = inputs.iter();
             for input in node.input_port_defs() {
                 let connected = if input.variadic {
-                    wired.by_ref().any(|source| !source.is_empty())
+                    wired.by_ref().any(Option::is_some)
                 } else {
-                    wired.next().is_some_and(|source| !source.is_empty())
+                    wired.next().is_some_and(Option::is_some)
                 };
                 if !connected && !input.optional {
                     errors.push(
@@ -131,14 +96,12 @@ impl Graph {
             }
 
             let node_sources = sources.entry(*key).or_default();
-            for source in inputs.iter().filter(|source| !source.is_empty()) {
+            for source in inputs.into_iter().flatten() {
                 // A missing source is its own validation error, not part of a cycle.
-                if self.nodes.contains_key(&source.id) {
-                    node_sources.push(source.id);
+                if self.nodes.contains_key(&source) {
+                    node_sources.push(source);
                 } else {
-                    errors.push(
-                        GraphValidationError::MissingSourceNode { node_id: source.id }.into(),
-                    );
+                    errors.push(GraphValidationError::MissingSourceNode { node_id: source }.into());
                 }
             }
         }
@@ -227,7 +190,7 @@ fn cycle_path(unordered: &HashSet<NodeId>, sources: &HashMap<NodeId, Vec<NodeId>
 fn wire_input_port(
     node: &mut NodeKind,
     to_port: &str,
-    source: PortRef,
+    source: NodeId,
 ) -> Result<(), GraphValidationError> {
     use crate::node::JsonNode;
 

@@ -198,12 +198,7 @@ impl GpuCompileNode for MediaIn {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &crate::node::PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
         let size = ctx
             .media()
             .and_then(|media| self.native_size(&ctx.expr_context(), media))

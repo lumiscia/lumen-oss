@@ -262,7 +262,6 @@ impl CompositionFixture for AntialiasingStress {
             graph
                 .connect(Connection {
                     from_node: layer,
-                    from_port: "output".to_string(),
                     to_node: merge,
                     to_port: "layers".to_string(),
                 })
@@ -271,7 +270,6 @@ impl CompositionFixture for AntialiasingStress {
         graph
             .connect(Connection {
                 from_node: merge,
-                from_port: "output".to_string(),
                 to_node: output,
                 to_port: "source".to_string(),
             })

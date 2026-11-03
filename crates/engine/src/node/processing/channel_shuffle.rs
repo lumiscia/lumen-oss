@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
@@ -76,7 +76,7 @@ pub struct ChannelShuffle {
     pub params: ChannelShuffleParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
+    pub source: Option<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,12 +115,10 @@ impl GpuCompileNode for ChannelShuffle {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
-            &self.source,
-            port,
+            self.source,
             "channel-shuffle",
             SHADER,
             std::mem::size_of::<compiler::ChannelShuffleParams>() as u64,
