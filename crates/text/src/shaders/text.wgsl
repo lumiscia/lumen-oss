@@ -346,6 +346,23 @@ fn median3(value: vec3<f32>) -> f32 {
     return max(min(value.r, value.g), min(max(value.r, value.g), value.b));
 }
 
+// Coverage at `texel` of the stroke `half_width` pixels to each side of `glyph`'s outline. A
+// stroke's field holds the true distance to the outline in texels in 16 bits split across red and
+// green, saturating at half its range, which is twice `px_range` times the power of two in the
+// instance's flags. The stroke reaches at most that less the widest antialiasing and a texel and
+// a half, keeping in sync with `field_reach` in `msdf.rs`, so texels that saturate stay uncovered.
+// Antialiasing follows the fill's and depends on the texel and pixel size alone, so crossing into
+// a wider range changes nothing else. A band narrower than its antialiasing fades out with its
+// width rather than keeping the half coverage at its centre.
+fn stroke_coverage(glyph: GlyphInstance, texel: vec2<f32>, half_width: f32, texels_per_pixel: f32, screen_px_range: f32) -> f32 {
+    let tier = (glyph.flags >> GLYPH_RANGE_SHIFT) & GLYPH_RANGE_MASK;
+    let range = 2.0 * globals.px_range * exp2(f32(tier));
+    let reach = min(half_width * texels_per_pixel, 0.5 * (range - globals.px_range) - 1.5);
+    let aa = 0.5 * globals.px_range / screen_px_range;
+    let distance = abs(range * (stroke_field(texel, glyph.uv_rect) - 0.5));
+    return clamp((reach + aa - distance) / (2.0 * aa), 0.0, 1.0) * min(reach / aa, 1.0);
+}
+
 // Coverage of `glyph` at the untransformed position `local`, sampled from another instance's
 // fragment whose texel moves `texel_width` per screen pixel and `lead_scale` per local pixel.
 fn member_coverage(glyph: GlyphInstance, local: vec2<f32>, texel_width: vec2<f32>, lead_scale: vec2<f32>, filtered: bool) -> f32 {
@@ -366,12 +383,7 @@ fn member_coverage(glyph: GlyphInstance, local: vec2<f32>, texel_width: vec2<f32
     let half_width = bitcast<f32>(paints[glyph.mode >> GLYPH_PAINT_SHIFT].paint.stroke);
     var coverage = 0.0;
     if (half_width > 0.0) {
-        let tier = (glyph.flags >> GLYPH_RANGE_SHIFT) & GLYPH_RANGE_MASK;
-        let range = 2.0 * globals.px_range * exp2(f32(tier));
-        let reach = min(half_width * scale.x, 0.5 * (range - globals.px_range) - 1.5);
-        let aa = 0.5 * globals.px_range / screen_px_range;
-        let distance = abs(range * (stroke_field(texel, glyph.uv_rect) - 0.5));
-        coverage = clamp((reach + aa - distance) / (2.0 * aa), 0.0, 1.0) * min(reach / aa, 1.0);
+        coverage = stroke_coverage(glyph, texel, half_width, scale.x, screen_px_range);
     } else {
         let field = textureSampleLevel(
             atlas_texture,
@@ -450,62 +462,54 @@ fn partnered_alpha(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>, lead
 }
 
 
+// The raster texel `in` draws: filtered when scaled or rotated, and otherwise mapped 1:1.
+fn raster_at(in: VertexOut, filtered: bool) -> vec4<f32> {
+    if (filtered) {
+        return raster_bilinear(in.texel, in.uv_rect);
+    }
+    return textureLoad(atlas_texture, vec2<i32>(floor(in.texel)), 0);
+}
+
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    // Raster glyphs map 1:1 onto atlas texels unless scaled or rotated. Distance fields
-    // are filtered, and sampled outside the branch because derivatives need uniform flow.
-    let raster = select(
-        textureLoad(atlas_texture, vec2<i32>(floor(in.texel)), 0),
-        raster_bilinear(in.texel, in.uv_rect),
-        drawable_is_linear(style.transform) || in.transformed != 0u,
-    );
-    let field = textureSample(
-        atlas_texture,
-        atlas_sampler,
-        in.texel / vec2<f32>(textureDimensions(atlas_texture)),
-    );
+    // Derivatives need uniform control flow, so this comes before every branch.
     let texel_width = fwidth(in.texel);
-    let screen_px_range = max(0.5 * dot(vec2<f32>(globals.px_range), 1.0 / texel_width), 1.0);
     // Paint follows the text, so it is evaluated at the untransformed pixel.
     let local = glyph_to_local(in, in.position.xy);
     let fill = glyphs[in.instance].mode >> GLYPH_PAINT_SHIFT;
-    let text_paint = glyph_paint(in, fill, local);
     if (in.mode == GLYPH_MODE_RECT) {
-        return text_paint * (rect_coverage(glyphs[in.instance], in.texel) * in.opacity);
+        return glyph_paint(in, fill, local) * (rect_coverage(glyphs[in.instance], in.texel) * in.opacity);
     }
     if ((glyphs[in.instance].flags >> GLYPH_CLUSTER_SHIFT) != 0u) {
         return cluster_color(in, local, texel_width);
     }
+    let text_paint = glyph_paint(in, fill, local);
+    let filtered = drawable_is_linear(style.transform) || in.transformed != 0u;
     // The atlas, the paint and the output are premultiplied. Opacity is applied once
     // the glyphs are composited, by the opacity pass below.
     if (in.mode == 1u) {
-        return raster * (in.opacity * text_paint.a);
+        return raster_at(in, filtered) * (in.opacity * text_paint.a);
     }
-    var coverage = raster.a;
+    var coverage = 0.0;
     if (in.mode == 2u) {
-        coverage = clamp(screen_px_range * (median3(field.rgb) - 0.5) + 0.5, 0.0, 1.0);
+        let screen_px_range = max(0.5 * dot(vec2<f32>(globals.px_range), 1.0 / texel_width), 1.0);
         let half_width = bitcast<f32>(paints[fill].paint.stroke);
         if (half_width > 0.0) {
-            // A stroke's field holds the true distance to the outline in texels in 16 bits split
-            // across red and green, saturating at half its range, which is twice `px_range`
-            // times the power of two in the instance's flags. The stroke reaches at most that
-            // less the widest antialiasing and a texel and a half, keeping in sync with
-            // `field_reach` in `msdf.rs`, so texels that saturate stay uncovered. Antialiasing
-            // follows the fill's and depends on the texel and pixel size alone, so crossing into
-            // a wider range changes nothing else. A band narrower than its antialiasing fades
-            // out with its width rather than keeping the half coverage at its centre.
-            let tier = (glyphs[in.instance].flags >> GLYPH_RANGE_SHIFT) & GLYPH_RANGE_MASK;
-            let range = 2.0 * globals.px_range * exp2(f32(tier));
             let texels_per_pixel = (in.uv_rect.z - in.uv_rect.x) / glyphs[in.instance].rect.z;
-            let reach = min(half_width * texels_per_pixel, 0.5 * (range - globals.px_range) - 1.5);
-            let aa = 0.5 * globals.px_range / screen_px_range;
-            let encoded = stroke_field(in.texel, in.uv_rect);
-            let distance = abs(range * (encoded - 0.5));
-            coverage = clamp((reach + aa - distance) / (2.0 * aa), 0.0, 1.0) * min(reach / aa, 1.0);
+            coverage = stroke_coverage(glyphs[in.instance], in.texel, half_width, texels_per_pixel, screen_px_range);
+        } else {
+            let field = textureSampleLevel(
+                atlas_texture,
+                atlas_sampler,
+                in.texel / vec2<f32>(textureDimensions(atlas_texture)),
+                0.0,
+            );
+            coverage = clamp(screen_px_range * (median3(field.rgb) - 0.5) + 0.5, 0.0, 1.0);
         }
+    } else {
+        coverage = raster_at(in, filtered).a;
     }
     let lead_scale = (in.uv_rect.zw - in.uv_rect.xy) / glyphs[in.instance].rect.zw;
-    let filtered = drawable_is_linear(style.transform) || in.transformed != 0u;
     let alpha = partnered_alpha(in, local, texel_width, lead_scale, filtered);
     return text_paint * (coverage * alpha);
 }

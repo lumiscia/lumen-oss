@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use cosmic_text::{
     Align, Attrs, AttrsList, Buffer, CacheKey, CacheKeyFlags, Family, FeatureTag, FontFeatures,
@@ -14,10 +15,8 @@ use crate::{DEFAULT_FONT_FAMILY, TextSystem};
 const FIT_SHAPES: usize = 12;
 /// Smallest factor a fit shrinks text by when its requested floor is not a positive number.
 const MIN_FIT_SCALE: f32 = 0.01;
-/// Most recent fits a text system keeps.
-const FIT_CACHE: usize = 32;
-/// Most recent measurements a text system keeps.
-const MEASUREMENT_CACHE: usize = 32;
+/// Most recently shaped requests a text system keeps.
+const SHAPE_CACHE: usize = 32;
 /// Pixels by which lines may pass a limit and still fit it.
 const FIT_TOLERANCE: f32 = 0.01;
 /// Stands in for the byte offset of an ellipsis' cluster, which is past every other.
@@ -25,50 +24,53 @@ const ELLIPSIS_CLUSTER: usize = usize::MAX;
 
 impl TextSystem {
     pub fn measure(&mut self, request: &TextLayoutRequest) -> TextMeasurement {
-        if let Some((_, measurement)) = self
-            .measurements
-            .iter()
-            .find(|(cached, _)| cached == request)
-        {
-            return *measurement;
-        }
-        let measurement = self.shape(request).measurement;
-        if self.measurements.len() == MEASUREMENT_CACHE {
-            self.measurements.remove(0);
-        }
-        self.measurements.push((request.clone(), measurement));
-        measurement
+        self.shape(request).measurement
     }
 
-    /// Shapes text without placing it, so it can be placed at many origins.
-    pub fn shape(&mut self, request: &TextLayoutRequest) -> ShapedText {
+    /// Shapes text without placing it, so it can be placed at many origins. Measurement, bounds
+    /// and drawing of the same text share one recent result.
+    pub fn shape(&mut self, request: &TextLayoutRequest) -> Arc<ShapedText> {
+        if let Some(shaped) = self.kept_shape(request) {
+            return shaped;
+        }
+        let shaped = Arc::new(self.shape_fitted(request));
+        if self.shapes.len() == SHAPE_CACHE {
+            self.shapes.remove(0);
+        }
+        self.shapes.push((request.clone(), Arc::clone(&shaped)));
+        shaped
+    }
+
+    /// Shapes text whose inputs just changed, reusing a kept shape without keeping a new one, so
+    /// text that changes every frame can't push out text that is measured every frame.
+    pub fn shape_changed(&mut self, request: &TextLayoutRequest) -> Arc<ShapedText> {
+        self.kept_shape(request)
+            .unwrap_or_else(|| Arc::new(self.shape_fitted(request)))
+    }
+
+    fn kept_shape(&self, request: &TextLayoutRequest) -> Option<Arc<ShapedText>> {
+        self.shapes
+            .iter()
+            .find(|(cached, _)| cached == request)
+            .map(|(_, shaped)| Arc::clone(shaped))
+    }
+
+    fn shape_fitted(&mut self, request: &TextLayoutRequest) -> ShapedText {
         let Some(min_scale) = request.min_fit_scale.filter(|_| request.is_limited()) else {
             return self.shape_lines(request, Wrap::WordOrGlyph, true);
         };
-        // Measurement, bounds and drawing each shape the same text, so they share its fit.
-        let cached = self.fits.iter().find(|(fitted, ..)| fitted == request);
-        let (scale, wrap, fitted) = match cached {
-            Some(&(_, scale, wrap)) => (scale, wrap, None),
-            None => {
-                let min_scale = if min_scale > 0.0 {
-                    min_scale.min(1.0)
-                } else {
-                    MIN_FIT_SCALE
-                };
-                let (scale, fitted) = self.fit(request, min_scale);
-                // Text that fits keeps its words whole, as the fit shaped them, even where it
-                // overflows by less than the fit's tolerance.
-                let wrap = if fitted.is_some() {
-                    Wrap::Word
-                } else {
-                    Wrap::WordOrGlyph
-                };
-                if self.fits.len() == FIT_CACHE {
-                    self.fits.remove(0);
-                }
-                self.fits.push((request.clone(), scale, wrap));
-                (scale, wrap, fitted)
-            }
+        let min_scale = if min_scale > 0.0 {
+            min_scale.min(1.0)
+        } else {
+            MIN_FIT_SCALE
+        };
+        let (scale, fitted) = self.fit(request, min_scale);
+        // Text that fits keeps its words whole, as the fit shaped them, even where it overflows
+        // by less than the fit's tolerance.
+        let wrap = if fitted.is_some() {
+            Wrap::Word
+        } else {
+            Wrap::WordOrGlyph
         };
         // A fit can leave more paragraphs than `max_lines`, which only a limited shape drops.
         let mut shaped = fitted
@@ -1109,63 +1111,34 @@ pub(crate) mod tests {
     use crate::{TextDecoration, TextDecorationKind, TextLineDecoration, TextLineStyle};
 
     #[test]
-    fn repeated_measurement_uses_cache_without_affecting_layout() {
+    fn changed_text_reuses_kept_shapes_without_pushing_them_out() {
         let mut system = TextSystem::new();
-        let request = TextLayoutRequest::new("Cached text");
-        let measurement = system.measure(&request);
-        assert_eq!(system.measure(&request), measurement);
-        assert_eq!(system.measurements.len(), 1);
+        let measured: Vec<_> = (0..SHAPE_CACHE)
+            .map(|index| TextLayoutRequest::new(format!("Measured {index}")))
+            .collect();
+        let kept: Vec<_> = measured.iter().map(|text| system.shape(text)).collect();
 
-        // A distinctive cached value proves a hit does not shape again.
-        let cached = TextMeasurement {
-            width: measurement.width + 1.0,
-            ..measurement
-        };
-        system.measurements[0].1 = cached;
-        assert_eq!(system.measure(&request), cached);
-        assert_eq!(system.measurements.len(), 1);
+        assert!(Arc::ptr_eq(&system.shape_changed(&measured[0]), &kept[0]));
+        system.shape_changed(&TextLayoutRequest::new("Animated"));
 
-        let layout = system.shape(&request).place([0.0; 2]);
-        assert!(!layout.glyphs.is_empty());
-    }
-
-    #[test]
-    fn measurement_cache_tracks_spacing_wrapping_limits_and_fit() {
-        let mut system = TextSystem::new();
-        let mut request =
-            TextLayoutRequest::from_spans(vec![span("Hello ", 40.0), span("world\nagain", 40.0)]);
-        request.max_width = Some(200.0);
-        request.max_lines = Some(2);
-        let original = system.measure(&request);
-        let mut changed = vec![request.clone(); 7];
-        changed[0].spans[0].letter_spacing = 8.0;
-        changed[1].max_width = Some(400.0);
-        changed[2].max_lines = Some(1);
-        changed[3].max_height = Some(48.0);
-        changed[4].min_fit_scale = Some(0.1);
-        changed[5].overflow = TextOverflow::Ellipsis;
-        changed[6].line_height = Some(60.0);
-        for changed in changed {
-            let measured = system.measure(&changed);
-            assert_eq!(measured, system.shape(&changed).measurement, "{changed:?}");
-            assert_ne!(measured, original, "{changed:?}");
-            assert_eq!(system.measure(&request), original);
+        for (text, kept) in measured.iter().zip(&kept) {
+            assert!(Arc::ptr_eq(&system.shape(text), kept));
         }
-        assert_eq!(system.measurements.len(), 8);
     }
 
     #[test]
-    fn measurement_cache_evicts_the_oldest_request() {
+    fn shape_cache_evicts_the_oldest_request() {
         let mut system = TextSystem::new();
         let first = TextLayoutRequest::new("First");
+        let shaped = system.shape(&first);
         system.measure(&first);
-        for index in 0..MEASUREMENT_CACHE {
+        assert!(Arc::ptr_eq(&system.shape(&first), &shaped));
+        for index in 0..SHAPE_CACHE {
             system.measure(&TextLayoutRequest::new(format!("Text {index}")));
         }
-        assert_eq!(system.measurements.len(), MEASUREMENT_CACHE);
-        assert!(system.measurements.iter().all(|(key, _)| *key != first));
-        assert_eq!(system.measure(&first), system.shape(&first).measurement);
-        assert_eq!(system.measurements.len(), MEASUREMENT_CACHE);
+        assert_eq!(system.shapes.len(), SHAPE_CACHE);
+        assert!(!Arc::ptr_eq(&system.shape(&first), &shaped));
+        assert_eq!(system.shapes.len(), SHAPE_CACHE);
     }
 
     #[test]
@@ -1851,9 +1824,6 @@ pub(crate) mod tests {
             request.min_fit_scale = None;
             request
         };
-        let again = system.shape(&request);
-        assert_eq!(again.measurement, shaped.measurement);
-        assert_eq!(system.fits.len(), 1);
         let plain = system.shape(&unfitted(scale));
         assert_eq!(plain.measurement, shaped.measurement);
         assert_eq!(plain.bounds, shaped.bounds);
@@ -1941,20 +1911,6 @@ pub(crate) mod tests {
         assert_eq!(shaped.glyphs.len(), 2);
         assert!(shaped.fit_scale < 0.01, "{}", shaped.fit_scale);
         assert!(shaped.measurement.width <= 15.01);
-    }
-
-    #[test]
-    fn a_cached_fit_shapes_as_the_fit_did() {
-        let mut system = TextSystem::new();
-        let mut request = TextLayoutRequest::from_spans(vec![span("HH", 40.0)]);
-        request.max_width = Some(17.0);
-        request.max_lines = Some(1);
-        request.min_fit_scale = Some(0.2);
-        let fitted = system.shape(&request);
-        let cached = system.shape(&request);
-        assert_eq!(fitted.counts.glyph, 2);
-        assert_eq!(cached.counts.glyph, 2);
-        assert_eq!(cached.measurement, fitted.measurement);
     }
 
     #[test]
