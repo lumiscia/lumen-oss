@@ -246,6 +246,19 @@ pub fn eval_number(
     value.as_f64().ok_or_else(|| wrong_type("a number", &value))
 }
 
+/// An expression's number as an integer param takes it: truncated toward zero, or an error when
+/// it is NaN or infinite.
+pub fn eval_int(expr: &Expression, ctx: &crate::expr::ExpressionContext<'_>) -> crate::Result<i64> {
+    let value = eval_number(expr, ctx)?;
+    if value.is_finite() {
+        Ok(value as i64)
+    } else {
+        Err(LumenError::evaluate(format!(
+            "{value} can't be used as an integer"
+        )))
+    }
+}
+
 fn eval_vec2(
     expr: &Expression,
     ctx: &crate::expr::ExpressionContext<'_>,
@@ -312,18 +325,6 @@ impl DeferredValue for f32 {
     }
 }
 
-/// An expression's number as an integer param takes it: truncated toward zero, or an error when
-/// it is NaN or infinite.
-fn truncated_int(value: f64) -> crate::Result<i64> {
-    if value.is_finite() {
-        Ok(value as i64)
-    } else {
-        Err(LumenError::evaluate(format!(
-            "{value} can't be used as an integer"
-        )))
-    }
-}
-
 impl DeferredValue for i64 {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
@@ -333,7 +334,7 @@ impl DeferredValue for i64 {
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => truncated_int(eval_number(expr, ctx)?),
+            Deferred::Expr(expr) => eval_int(expr, ctx),
         }
     }
 
@@ -359,7 +360,7 @@ impl DeferredValue for u32 {
     ) -> crate::Result<Self> {
         let value = match deferred {
             Deferred::Value(value) => i64::from(*value),
-            Deferred::Expr(expr) => truncated_int(eval_number(expr, ctx)?)?,
+            Deferred::Expr(expr) => eval_int(expr, ctx)?,
         };
         u32::try_from(value).map_err(|_| {
             LumenError::evaluate(format!("{value} is out of range for an unsigned integer"))
@@ -390,7 +391,7 @@ impl DeferredValue for u8 {
     ) -> crate::Result<Self> {
         let value = match deferred {
             Deferred::Value(value) => i64::from(*value),
-            Deferred::Expr(expr) => truncated_int(eval_number(expr, ctx)?)?,
+            Deferred::Expr(expr) => eval_int(expr, ctx)?,
         };
         u8::try_from(value)
             .map_err(|_| LumenError::evaluate(format!("{value} is out of range for 0 to 255")))
@@ -776,7 +777,10 @@ impl DeferredJsonValue for [f32; 2] {
 mod tests {
     use crate::{
         expr::{Expression, ExpressionContext},
-        node::{Deferred, NodeId, vector::paint::Paint},
+        node::{
+            Deferred, NodeId, PropertyValue,
+            vector::paint::{GradientSpread, Paint},
+        },
     };
 
     fn context() -> ExpressionContext<'static> {
@@ -811,6 +815,7 @@ mod tests {
                 eval::<i64>(source).err(),
                 eval::<u32>(source).err(),
                 eval::<u8>(source).err(),
+                eval::<GradientSpread>(source).err(),
             ] {
                 let error = error.expect(source).to_string();
                 assert!(
@@ -819,6 +824,9 @@ mod tests {
                 );
             }
         }
+        assert_eq!(PropertyValue::Float(f64::NAN).coerce_int(), None);
+        assert_eq!(PropertyValue::Float(f64::INFINITY).coerce_int(), None);
+        assert_eq!(PropertyValue::Float(2.9).coerce_int(), Some(2));
     }
 
     #[test]

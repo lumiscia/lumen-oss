@@ -224,7 +224,7 @@ pub(crate) fn expand_enum_delegate(
                     match deferred {
                         ::lumen_engine::node::Deferred::Value(value) => Ok(*value),
                         ::lumen_engine::node::Deferred::Expr(expr) => {
-                            let value = ::lumen_engine::node::eval_number(expr, ctx)? as i64;
+                            let value = ::lumen_engine::node::eval_int(expr, ctx)?;
                             Self::from_i64(value).ok_or_else(|| {
                                 ::lumen_engine::error::LumenError::evaluate(::std::format!(
                                     "{value} is not a value of {}",

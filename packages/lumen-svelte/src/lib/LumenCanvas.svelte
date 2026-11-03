@@ -64,8 +64,9 @@
             if (session !== nextSession) {
                 return;
             }
+            console.error("[LumenCanvas] attach", error);
             activePreview.update({
-                error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+                error: error instanceof Error ? error.message : String(error),
             });
         });
 

@@ -1743,14 +1743,6 @@ mod tests {
     }
 
     impl MediaStore for CountingStore {
-        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
-            None
-        }
-
-        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
-            None
-        }
-
         fn font_resolver_id(&self, family: &str) -> Option<String> {
             (family == "Known").then(|| "counting-store-test-font".to_string())
         }
@@ -1781,14 +1773,6 @@ mod tests {
     struct NoIdStore(Arc<AtomicU64>);
 
     impl MediaStore for NoIdStore {
-        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
-            None
-        }
-
-        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
-            None
-        }
-
         fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
             (family == "Known").then(|| {
                 Box::new(CountingResolver {
@@ -1821,14 +1805,6 @@ mod tests {
     struct OneIdStore(Arc<AtomicU64>);
 
     impl MediaStore for OneIdStore {
-        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
-            None
-        }
-
-        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
-            None
-        }
-
         fn font_resolver_id(&self, _: &str) -> Option<String> {
             Some("one-id-store-test-font".to_string())
         }

@@ -61,8 +61,9 @@ export function LumenCanvas({
       if (!active) {
         return;
       }
+      console.error("[LumenCanvas] attach", error);
       preview.update({
-        error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+        error: error instanceof Error ? error.message : String(error),
       });
     });
 

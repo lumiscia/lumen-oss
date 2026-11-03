@@ -3,6 +3,7 @@ mod clips;
 mod effects;
 mod geometry;
 mod harness;
+mod media;
 mod motion;
 mod operators;
 mod paint;

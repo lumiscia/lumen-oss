@@ -166,8 +166,11 @@ pub enum ExpressionError {
 
 #[derive(Debug, Error, Clone)]
 pub enum MediaError {
-    #[error("media source not found: {media_source}")]
-    SourceNotFound { media_source: String },
+    #[error("media source `{media_source}` not found: {details}")]
+    SourceNotFound {
+        media_source: String,
+        details: String,
+    },
     #[error("media decoding failed for {media_source}: {details}")]
     Decode {
         media_source: String,
@@ -183,6 +186,15 @@ pub enum MediaError {
     UnknownAudioTrack { clip: String, track: String },
 }
 
+impl MediaError {
+    pub fn source_not_found(source: &str, details: impl Into<String>) -> Self {
+        Self::SourceNotFound {
+            media_source: source.to_string(),
+            details: details.into(),
+        }
+    }
+}
+
 #[derive(Debug, Error, Clone)]
 pub enum RenderError {
     #[error("frame {frame} is out of range for a composition of {duration_frames} frames")]
@@ -195,26 +207,14 @@ pub enum RenderError {
     },
     #[error("node {node_id} is referenced but missing from the graph")]
     MissingNode { node_id: NodeId },
-    #[error("surface allocation failed for {width}x{height}")]
-    SurfaceAllocation { width: u32, height: u32 },
-    #[error("output of node {node_id} is missing")]
-    MissingNodeOutput { node_id: NodeId },
     #[error("output of node {node_id} has invalid type: expected {expected}, got {actual}")]
     InvalidNodeOutputType {
         node_id: NodeId,
         expected: &'static str,
         actual: &'static str,
     },
-    #[error("media output node {node_id} did not produce raster output")]
-    InvalidMediaOutputType { node_id: NodeId },
-    #[error("pixel readback failed for {width}x{height}")]
-    PixelReadbackFailed { width: u32, height: u32 },
-    #[error("all scratch surfaces are currently in use")]
-    ScratchSurfaceUnavailable,
     #[error("{backend} backend is busy")]
     BackendBusy { backend: &'static str },
-    #[error("render cancelled")]
-    Cancelled,
     #[error("GPU render failed: {details}")]
     Gpu { details: String },
 }

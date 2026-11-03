@@ -239,6 +239,7 @@ impl GpuCompileNode for MediaIn {
 
 impl MediaIn {
     /// The size of the media the node shows at `ctx`'s frame, which its texture is compiled to.
+    /// `None` when the media can't be opened, which binding the node reports.
     pub(crate) fn native_size(
         &self,
         ctx: &crate::expr::ExpressionContext<'_>,
@@ -246,14 +247,14 @@ impl MediaIn {
     ) -> Option<lumen_gpu::Size> {
         match resolve_for_context(self, ctx).ok()? {
             MediaInKind::Image { image_id } => {
-                let metadata = media.get_image_resolver(&image_id)?.metadata();
+                let metadata = media.get_image_resolver(&image_id).ok()?.metadata();
                 Some(lumen_gpu::Size::new(
                     metadata.width.max(1),
                     metadata.height.max(1),
                 ))
             }
             MediaInKind::Video { stream_id, .. } => {
-                let metadata = media.get_video_resolver(&stream_id)?.metadata();
+                let metadata = media.get_video_resolver(&stream_id).ok()?.metadata();
                 Some(lumen_gpu::Size::new(
                     metadata.width.max(1),
                     metadata.height.max(1),
@@ -289,11 +290,7 @@ impl GpuCompiledNode for CompiledMediaInput {
         let kind = resolve_for_context(&node, &ctx.expr_context())?;
         let (frame, key) = match kind {
             MediaInKind::Image { image_id } => {
-                let resolver = media.get_image_resolver(&image_id).ok_or_else(|| {
-                    MediaError::SourceNotFound {
-                        media_source: image_id.clone(),
-                    }
-                })?;
+                let resolver = media.get_image_resolver(&image_id)?;
                 let key = MediaTextureKey {
                     source: resolver.id().to_string(),
                     width: self.size.width,
@@ -307,11 +304,7 @@ impl GpuCompiledNode for CompiledMediaInput {
                 speed,
                 loop_mode,
             } => {
-                let resolver = media.get_video_resolver(&stream_id).ok_or_else(|| {
-                    MediaError::SourceNotFound {
-                        media_source: stream_id.clone(),
-                    }
-                })?;
+                let resolver = media.get_video_resolver(&stream_id)?;
                 let metadata = resolver.metadata();
                 let source_frame = map_to_source_frame(
                     ctx.frame_time(),
