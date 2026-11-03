@@ -21,16 +21,6 @@ struct MergeParams {
 @group(0) @binding(4) var output_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(5) var raw_mask_tex: texture_2d<f32>;
 
-// The canvas pixel `pixel` of a texture whose first texel is at `origin`.
-fn sample_or_transparent(tex: texture_2d<f32>, pixel: vec2<i32>, origin: vec2<i32>) -> vec4<f32> {
-    let coord = pixel - origin;
-    let size = vec2<i32>(textureDimensions(tex));
-    if (any(coord < vec2<i32>(0)) || any(coord >= size)) {
-        return vec4<f32>(0.0);
-    }
-    return textureLoad(tex, coord, 0);
-}
-
 const MASK_MODE_LUMA: u32 = 1u;
 const REC709_LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 

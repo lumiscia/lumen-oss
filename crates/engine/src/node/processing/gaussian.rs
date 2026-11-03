@@ -1,3 +1,4 @@
+use crate::gpu::compiler::Slot;
 use crate::gpu::{BoundFrame, CompileContext, RasterHandle, compiler};
 use crate::node::{NodeId, motion::MAX_BOUNDED_MAGNITUDE};
 
@@ -268,7 +269,7 @@ pub(crate) fn compile_passes_with(
     output: lumen_gpu::TextureDomain,
     options: GaussianOptions,
 ) -> GaussianPasses {
-    use lumen_gpu::wgpu::{ShaderStages, StorageTextureAccess, TextureFormat};
+    use lumen_gpu::wgpu::TextureFormat;
 
     let region = output.data_rect;
     let size = output.storage_size;
@@ -328,33 +329,26 @@ pub(crate) fn compile_passes_with(
                     inputs: &[lumen_gpu::TextureId],
                     target: lumen_gpu::TextureId,
                     target_size: lumen_gpu::Size| {
-        let unorm = target == output;
-        let (output_binding, format) = if unorm {
-            (6, TextureFormat::Rgba8Unorm)
+        let (output_binding, output_slot) = if target == output {
+            (6, Slot::Output)
         } else {
-            (5, TextureFormat::Rgba16Float)
+            (5, Slot::OutputFloat)
         };
-        let mut layout: Vec<_> = (0..inputs.len() as u32)
-            .map(|binding| lumen_gpu::BindingLayoutEntry::texture(binding, ShaderStages::COMPUTE))
+        let slots: Vec<_> = (0..inputs.len() as u32)
+            .map(|binding| (binding, Slot::Texture))
+            .chain([
+                (3, Slot::Uniform),
+                (4, Slot::Sampler),
+                (output_binding, output_slot),
+            ])
             .collect();
-        layout.extend([
-            lumen_gpu::BindingLayoutEntry::uniform(3, ShaderStages::COMPUTE),
-            lumen_gpu::BindingLayoutEntry::sampler(4, ShaderStages::COMPUTE),
-            lumen_gpu::BindingLayoutEntry::storage_texture(
-                output_binding,
-                ShaderStages::COMPUTE,
-                format,
-                StorageTextureAccess::WriteOnly,
-            ),
-        ]);
-        let program = builder.program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some(format!("{label}-gaussian-{entry}")),
-                shader: shader.clone(),
-                entry: entry.to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
-            },
-        ));
+        let program = compiler::compute_program_at(
+            builder,
+            &format!("{label}-gaussian-{entry}"),
+            &shader,
+            entry,
+            &slots,
+        );
         let mut bindings: Vec<_> = inputs
             .iter()
             .zip(0u32..)

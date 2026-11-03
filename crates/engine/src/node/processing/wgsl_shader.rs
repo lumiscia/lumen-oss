@@ -29,6 +29,7 @@ use crate::{
     },
 };
 
+use crate::gpu::compiler::Slot;
 use crate::gpu::{
     BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
@@ -154,17 +155,11 @@ impl GpuCompileNode for WgslShader {
             },
         );
 
-        let stage = lumen_gpu::wgpu::ShaderStages::COMPUTE;
-        let mut layout = vec![
-            lumen_gpu::BindingLayoutEntry::uniform(1, stage),
-            lumen_gpu::BindingLayoutEntry::storage_texture(
-                OUTPUT_BINDING,
-                stage,
-                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-            ),
-            lumen_gpu::BindingLayoutEntry::uniform(3, stage),
-            lumen_gpu::BindingLayoutEntry::sampler(4, stage),
+        let mut slots = vec![
+            (1, Slot::Uniform),
+            (OUTPUT_BINDING, Slot::Output),
+            (3, Slot::Uniform),
+            (4, Slot::Sampler),
         ];
         let mut bindings = vec![
             lumen_gpu::Binding::uniform(0, 1, params_buffer),
@@ -174,21 +169,20 @@ impl GpuCompileNode for WgslShader {
         ];
         for (index, input) in inputs.iter().enumerate() {
             let binding = input_binding(index);
-            layout.push(lumen_gpu::BindingLayoutEntry::texture(binding, stage));
+            slots.push((binding, Slot::Texture));
             bindings.push(lumen_gpu::Binding::sampled_texture(
                 0,
                 binding,
                 input.texture,
             ));
         }
-        let program = builder.program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some(format!("wgsl-shader:{}", self.id.0)),
-                shader,
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
-            },
-        ));
+        let program = compiler::compute_program_at(
+            builder,
+            &format!("wgsl-shader:{}", self.id.0),
+            &shader,
+            "cs_main",
+            &slots,
+        );
         builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("wgsl-shader:{}:apply", self.id.0)),
             program,

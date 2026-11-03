@@ -1,8 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams};
 
-use crate::gpu::{
-    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
-};
+use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -43,52 +41,19 @@ pub struct Exposure {
     pub source: Option<NodeId>,
 }
 
-#[derive(Debug, Clone)]
-struct CompiledExposure {
-    node_id: NodeId,
-    params: ExposureParamsDelegate,
-    buffer: lumen_gpu::BufferId,
-}
-
-impl GpuCompiledNode for CompiledExposure {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&DelegateEvalContext {
-            node_id: self.node_id,
-            expr: &ctx.expr_context(),
-        })?;
-        let params = compiler::ExposureParams {
-            exposure: params.exposure as f32,
-            contrast: params.contrast as f32,
-            offset: params.offset as f32,
-        };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
-    }
-}
-
 impl GpuCompileNode for Exposure {
     fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        let (source, texture, params) = ctx.compile_unary_filter(
+        ctx.unary_filter(
             self.id,
             self.source,
             "exposure",
             SHADER,
-            std::mem::size_of::<compiler::ExposureParams>() as u64,
-            compiler::FilterDomain::Source,
-        )?;
-        ctx.register_compiled_node(CompiledExposure {
-            node_id: self.id,
-            params: self.params.clone(),
-            buffer: params,
-        });
-        Ok(RasterHandle {
-            texture,
-            domain: source.domain,
-            bounds: source.bounds,
-        })
+            &self.params,
+            |params| compiler::ExposureParams {
+                exposure: params.exposure as f32,
+                contrast: params.contrast as f32,
+                offset: params.offset as f32,
+            },
+        )
     }
 }

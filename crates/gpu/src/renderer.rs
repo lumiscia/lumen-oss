@@ -330,6 +330,61 @@ impl Renderer {
             .map(|texture| texture.texture.as_ref())
     }
 
+    /// Copies the `size` texels at the origin of an `Rgba8` `texture` to the CPU, blocking until
+    /// the copy completes. Rows are tightly packed.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_texture_rgba8(&self, texture: &wgpu::Texture, size: Size) -> Result<Vec<u8>> {
+        let row = size.width as usize * 4;
+        let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lumen readback"),
+            size: (padded_row * size.height as usize).max(1) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("lumen readback encoder"),
+            });
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row as u32),
+                    rows_per_image: Some(size.height),
+                },
+            },
+            size.as_extent(),
+        );
+        self.queue.submit([encoder.finish()]);
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .context("GPU readback poll failed")?;
+        receiver
+            .recv()
+            .map_err(|_| anyhow!("GPU readback callback closed"))?
+            .context("GPU readback map failed")?;
+        let mapped = buffer
+            .slice(..)
+            .get_mapped_range()
+            .context("GPU readback map range failed")?;
+        Ok(mapped
+            .chunks(padded_row)
+            .flat_map(|padded| &padded[..row])
+            .copied()
+            .collect())
+    }
+
     pub fn texture_arc(&self, id: TextureId) -> Option<Arc<wgpu::Texture>> {
         self.textures
             .get(id.0 as usize)

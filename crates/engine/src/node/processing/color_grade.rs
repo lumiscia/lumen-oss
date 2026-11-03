@@ -2,6 +2,7 @@ use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
 };
 
+use crate::gpu::compiler::Slot;
 use crate::gpu::{
     BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
@@ -73,34 +74,16 @@ impl GpuCompileNode for ColorGrade {
             Some(format!("color-grade:{}:lut", self.id.0)),
             lumen_gpu::BufferDesc::storage(std::mem::size_of::<compiler::ColorGradeLut>() as u64),
         );
-        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some("color-grade".to_string()),
-                shader: SHADER.to_string(),
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::texture(
-                        0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage(
-                        2,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        true,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        3,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                ]),
-            },
-        ));
+        let program = ctx.compute_program(
+            "color-grade",
+            SHADER,
+            &[
+                Slot::Texture,
+                Slot::Uniform,
+                Slot::StorageRead,
+                Slot::Output,
+            ],
+        );
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("color-grade:{}:apply", self.id.0)),
             program,

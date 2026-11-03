@@ -2,12 +2,14 @@ use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, compositing::BlendMode,
 };
 
+use crate::gpu::compiler::Slot;
 use crate::gpu::{
     BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("../../gpu/shaders/sampling.wgsl"),
     include_str!("blend.wgsl"),
     include_str!("raster_multimerge.wgsl")
 );
@@ -107,33 +109,11 @@ impl GpuCompileNode for RasterMultiMerge {
             }),
         );
         let origin = |domain: &lumen_gpu::TextureDomain| [domain.data_rect.x, domain.data_rect.y];
-        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some("raster-multimerge".to_string()),
-                shader: SHADER.to_string(),
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::texture(
-                        0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::texture(
-                        1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        2,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        3,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                ]),
-            },
-        ));
+        let program = ctx.compute_program(
+            "raster-multimerge",
+            SHADER,
+            &[Slot::Texture, Slot::Texture, Slot::Uniform, Slot::Output],
+        );
 
         // Passes alternate between two textures. Each of the first two writes its whole
         // texture; after that a texture still holds the stack from two passes before, which

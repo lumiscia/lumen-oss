@@ -818,6 +818,17 @@ fn load_composition(path: &Path) -> Result<Composition> {
         .with_context(|| format!("failed to parse composition {}", path.display()))
 }
 
+fn read_texture(
+    renderer: &lumen_gpu::Renderer,
+    id: lumen_gpu::TextureId,
+    size: lumen_gpu::Size,
+) -> Result<Vec<u8>> {
+    let texture = renderer
+        .texture(id)
+        .ok_or_else(|| anyhow!("render output texture {id:?} is unavailable"))?;
+    renderer.read_texture_rgba8(texture, size)
+}
+
 /// Creates a renderer that hardware decode can share a device with, when decode is asked for and
 /// the hardware has it.
 fn create_renderer(media_store: &mut LocalMediaStore) -> Result<GpuCompositionRenderer> {
@@ -858,7 +869,7 @@ fn render_single_png(
         .render_frame(composition, frame, &*media_store)
         .with_context(|| format!("render failed at frame {frame}"))?;
     let size = rendered.domain.storage_size;
-    let mut pixels = read_texture_rgba8(renderer.gpu_renderer(), rendered.texture, size)
+    let mut pixels = read_texture(renderer.gpu_renderer(), rendered.texture, size)
         .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
     unpremultiply_rgba8(&mut pixels);
 
@@ -1002,7 +1013,7 @@ fn render_mp4(
             ));
         }
         let readback_started = Instant::now();
-        let pixels = read_texture_rgba8(
+        let pixels = read_texture(
             renderer.gpu_renderer(),
             raster.texture,
             raster.domain.storage_size,
@@ -1479,92 +1490,6 @@ fn audio_frame_from_buffer(buffer: &lumen_engine::audio::AudioBuffer) -> AudioFr
         samples: buffer.frames(),
         interleaved_f32: buffer.interleaved_f32(),
     }
-}
-
-fn read_texture_rgba8(
-    renderer: &lumen_gpu::Renderer,
-    id: lumen_gpu::TextureId,
-    size: lumen_gpu::Size,
-) -> Result<Vec<u8>> {
-    let bytes_per_pixel = 4;
-    let unpadded_bytes_per_row = size.width.saturating_mul(bytes_per_pixel);
-    let padded_bytes_per_row = align_to(
-        unpadded_bytes_per_row,
-        lumen_gpu::wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
-    );
-    let output_size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(size.height));
-    let output = renderer
-        .device
-        .create_buffer(&lumen_gpu::wgpu::BufferDescriptor {
-            label: Some("lumen-local readback"),
-            size: output_size.max(1),
-            usage: lumen_gpu::wgpu::BufferUsages::COPY_DST
-                | lumen_gpu::wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-    let mut encoder =
-        renderer
-            .device
-            .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
-                label: Some("lumen-local readback encoder"),
-            });
-    let texture = renderer
-        .texture(id)
-        .ok_or_else(|| anyhow!("render output texture {id:?} is unavailable"))?;
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        lumen_gpu::wgpu::TexelCopyBufferInfo {
-            buffer: &output,
-            layout: lumen_gpu::wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bytes_per_row),
-                rows_per_image: Some(size.height),
-            },
-        },
-        lumen_gpu::wgpu::Extent3d {
-            width: size.width,
-            height: size.height,
-            depth_or_array_layers: 1,
-        },
-    );
-    renderer.queue.submit([encoder.finish()]);
-
-    let slice = output.slice(..);
-    let (tx, rx) = mpsc::channel();
-    slice.map_async(lumen_gpu::wgpu::MapMode::Read, move |result| {
-        let _ = tx.send(result);
-    });
-    renderer
-        .device
-        .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())
-        .map_err(|error| anyhow!("GPU readback poll failed: {error}"))?;
-    rx.recv()
-        .map_err(|_| anyhow!("GPU readback channel closed"))?
-        .map_err(|error| anyhow!("GPU readback map failed: {error}"))?;
-
-    let mapped = slice
-        .get_mapped_range()
-        .map_err(|error| anyhow!("GPU readback map range failed: {error}"))?;
-    let mut pixels = vec![
-        0;
-        (size.width as usize)
-            .saturating_mul(size.height as usize)
-            .saturating_mul(bytes_per_pixel as usize)
-    ];
-    for row in 0..size.height as usize {
-        let src_start = row.saturating_mul(padded_bytes_per_row as usize);
-        let src_end = src_start.saturating_add(unpadded_bytes_per_row as usize);
-        let dst_start = row.saturating_mul(unpadded_bytes_per_row as usize);
-        let dst_end = dst_start.saturating_add(unpadded_bytes_per_row as usize);
-        pixels[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
-    }
-    drop(mapped);
-    output.unmap();
-    Ok(pixels)
-}
-
-fn align_to(value: u32, alignment: u32) -> u32 {
-    value.div_ceil(alignment) * alignment
 }
 
 /// PNG holds straight alpha, so colour is divided back out of premultiplied pixels. Fully

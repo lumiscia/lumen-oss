@@ -2,6 +2,7 @@ use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
 };
 
+use crate::gpu::compiler::Slot;
 use crate::gpu::{
     BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
@@ -93,33 +94,11 @@ impl GpuCompileNode for Resize {
                 (bounds, Some(bounds))
             }
         };
-        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some("resize".to_string()),
-                shader: SHADER.to_string(),
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::texture(
-                        0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        2,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        3,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                ]),
-            },
-        ));
+        let program = ctx.compute_program(
+            "resize",
+            SHADER,
+            &[Slot::Texture, Slot::Uniform, Slot::Output, Slot::Uniform],
+        );
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("resize:{}:apply", self.id.0)),
             program,

@@ -534,7 +534,7 @@ fn copy_texture_pass_copies_uploaded_texture_data() {
 
     let bytes = read_texture_rgba8(&renderer, destination, size);
     assert_eq!(&bytes[0..8], &[10, 20, 30, 255, 40, 50, 60, 255]);
-    assert_eq!(&bytes[256..264], &[70, 80, 90, 255, 100, 110, 120, 255]);
+    assert_eq!(&bytes[8..16], &[70, 80, 90, 255, 100, 110, 120, 255]);
 }
 
 #[test]
@@ -644,52 +644,5 @@ fn read_texture_rgba8(renderer: &Renderer, id: TextureId, size: Size) -> Vec<u8>
 }
 
 fn read_wgpu_texture_rgba8(renderer: &Renderer, texture: &wgpu::Texture, size: Size) -> Vec<u8> {
-    let bytes_per_pixel = 4;
-    let unpadded_bytes_per_row = size.width * bytes_per_pixel;
-    let padded_bytes_per_row = align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let output_size = padded_bytes_per_row as u64 * size.height as u64;
-    let output = renderer.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("lumen-gpu test readback"),
-        size: output_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = renderer
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("lumen-gpu test readback encoder"),
-        });
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &output,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bytes_per_row),
-                rows_per_image: Some(size.height),
-            },
-        },
-        wgpu::Extent3d {
-            width: size.width,
-            height: size.height,
-            depth_or_array_layers: 1,
-        },
-    );
-    renderer.queue.submit([encoder.finish()]);
-
-    let slice = output.slice(..);
-    let (tx, rx) = mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-    renderer
-        .device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .unwrap();
-    rx.recv().unwrap().unwrap();
-    let bytes = slice.get_mapped_range().unwrap().to_vec();
-    output.unmap();
-    bytes
-}
-
-fn align_to(value: u32, alignment: u32) -> u32 {
-    value.div_ceil(alignment) * alignment
+    renderer.read_texture_rgba8(texture, size).unwrap()
 }
