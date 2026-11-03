@@ -274,6 +274,49 @@ fn encodes_cuda_frames_with_nvenc_when_requested() {
     }
 }
 
+#[cfg(all(feature = "cuda", target_os = "linux"))]
+#[test]
+fn cuda_nvenc_keeps_each_frame_when_the_source_buffer_is_reused() {
+    use lumen_ffmpeg::{CudaDriver, EncodeMode, GpuBackend, GpuVideoInput};
+
+    if !hardware_test_enabled("LUMEN_FFMPEG_TEST_CUDA_NVENC", "CUDA NVENC") {
+        return;
+    }
+
+    let (width, height, count) = (640, 360, 120);
+    let driver = CudaDriver::load().expect("CUDA driver");
+    let context = driver.create_primary_context().expect("CUDA context");
+    let source = context
+        .allocate_rgba_frame(width, height)
+        .expect("CUDA frame allocation");
+
+    let path = temp_path("cuda_nvenc_order", "mp4");
+    let mut video = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::H264);
+    video.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
+    video.bit_rate = 4_000_000;
+    let mut encoder = create_encoder(&path, video, None);
+    for index in 0..count {
+        source.clear(index as u8 * 2).expect("CUDA frame clear");
+        let frame = source.as_video_frame(Some(index));
+        encoder
+            .write_gpu_frame(&GpuVideoInput::Cuda(&frame))
+            .expect("write CUDA frame");
+    }
+    encoder.finish().expect("finish CUDA encode");
+
+    let frames = decode_all_rgba(&path);
+    assert_eq!(frames.len(), count as usize);
+    for (index, frame) in frames.iter().enumerate() {
+        let expected = index as u8 * 2;
+        let [red, ..] = pixel(frame, width as usize / 2, height as usize / 2);
+        assert!(
+            red.abs_diff(expected) <= 6,
+            "frame {index} holds the content of another frame: red {red}, expected {expected}"
+        );
+    }
+    let _ = fs::remove_file(path);
+}
+
 #[test]
 fn decodes_and_resamples_audio_with_cli_fixture() {
     if Command::new("ffmpeg").arg("-version").output().is_err() {
