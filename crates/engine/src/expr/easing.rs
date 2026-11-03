@@ -256,6 +256,15 @@ mod tests {
             spring(0.3, 100.0, 2.0) > 1.0,
             "underdamped springs overshoot"
         );
+        let mut previous = 0.0;
+        for step in 1..=300 {
+            let x = spring(f64::from(step) * 0.01, 100.0, 20.0);
+            assert!(
+                x >= previous && x <= 1.0,
+                "critical damping is monotonic: {x}"
+            );
+            previous = x;
+        }
     }
 
     #[test]
@@ -283,16 +292,6 @@ mod tests {
                     "t = {t}, damping = {damping}: {x}"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn critically_damped_spring_is_monotonic() {
-        let mut previous = 0.0;
-        for step in 1..=300 {
-            let x = spring(f64::from(step) * 0.01, 100.0, 20.0);
-            assert!(x >= previous && x <= 1.0, "{x}");
-            previous = x;
         }
     }
 }

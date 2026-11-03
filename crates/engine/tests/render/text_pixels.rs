@@ -3,6 +3,7 @@
 
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::LazyLock;
 
 use lumen_engine::composition::Composition;
 use lumen_engine::gpu::{BoundFrame, GpuCompositionRenderer};
@@ -17,9 +18,12 @@ const INTER: &[u8] = include_bytes!("../../../text/assets/inter/InterVariable-La
 const COLR: &[u8] = include_bytes!("../../../text/assets/roboto/RobotoColrTest.ttf");
 
 pub fn media() -> TestMedia {
-    TestMedia::default()
-        .font("Inter", "text-inter", INTER)
-        .font("Roboto COLR Test", "text-colr", COLR)
+    static MEDIA: LazyLock<TestMedia> = LazyLock::new(|| {
+        TestMedia::default()
+            .font("Inter", "text-inter", INTER.to_vec())
+            .font("Roboto COLR Test", "text-colr", COLR.to_vec())
+    });
+    MEDIA.clone()
 }
 
 /// A one-node scene of text with `params`, over `base` params that `params` overrides.

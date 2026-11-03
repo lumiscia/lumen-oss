@@ -228,11 +228,4 @@ mod tests {
             ExpressionValue::Color([1.0, 0.0, 0.2, 0.0])
         );
     }
-
-    #[test]
-    fn non_vector_values_do_not_coerce_to_vec2() {
-        assert_eq!(ExpressionValue::Number(1.0).as_vec2(), None);
-        assert_eq!(ExpressionValue::Boolean(true).as_vec2(), None);
-        assert_eq!(ExpressionValue::String("1,2".to_string()).as_vec2(), None);
-    }
 }

@@ -4,6 +4,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, mpsc};
 
 use lumen_engine::{
@@ -12,7 +13,7 @@ use lumen_engine::{
     gpu::{BoundFrame, CompiledOutput, GpuCompositionRenderer},
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
-        VideoFrameResolver, VideoMetadata,
+        TextSession, VideoFrameResolver, VideoMetadata,
     },
     node::NodeKind,
 };
@@ -47,6 +48,11 @@ impl Gpu {
     /// A production renderer with empty plan caches on the shared device.
     pub fn renderer(&self) -> GpuCompositionRenderer {
         GpuCompositionRenderer::from_renderer(self.0.sibling())
+    }
+
+    /// A bare GPU renderer on the shared device, with no composition renderer around it.
+    pub fn bare(&self) -> lumen_gpu::Renderer {
+        self.0.sibling()
     }
 
     /// A renderer whose sources all fill the canvas and render on every frame.
@@ -116,7 +122,12 @@ impl From<Scene> for Composition {
 pub struct TestMedia {
     images: HashMap<String, Arc<CpuMediaFrame>>,
     numbered_video: Option<String>,
-    fonts: HashMap<String, TestFont>,
+    /// Font data and resolver ID by family.
+    fonts: HashMap<String, (String, Arc<Vec<u8>>)>,
+    /// Present once a font is added. Fonts load into it, so they reach only this media and its
+    /// clones, and not the process-wide session.
+    session: Option<Arc<TextSession>>,
+    font_requests: Arc<AtomicUsize>,
 }
 
 impl TestMedia {
@@ -138,23 +149,66 @@ impl TestMedia {
         self
     }
 
-    /// The font file `data` for text in `family`, which must be the family the file names.
-    /// Fonts are process-global and keyed by `resolver_id`, so use an id no other row does for
-    /// different data.
-    pub fn font(mut self, family: &str, resolver_id: &str, data: &'static [u8]) -> Self {
-        let font = TestFont {
-            id: resolver_id.to_string(),
-            data,
-        };
-        self.fonts.insert(family.to_string(), font);
+    /// Serves `data` as the font `family` under the resolver ID `id`. Use names no other row or
+    /// bundled font has, and an ID per distinct data.
+    pub fn font(mut self, family: &str, id: &str, data: Vec<u8>) -> Self {
+        self.session.get_or_insert_with(Default::default);
+        self.fonts
+            .insert(family.to_string(), (id.to_string(), Arc::new(data)));
         self
+    }
+
+    /// This media without its fonts, in the same text session. Text in a font only the original
+    /// serves falls back until a render through the original loads it.
+    pub fn without_fonts(&self) -> Self {
+        Self {
+            fonts: HashMap::new(),
+            ..self.clone()
+        }
+    }
+
+    /// How many times a font resolver was asked for, across this media and its clones.
+    pub fn font_requests(&self) -> usize {
+        self.font_requests.load(Ordering::Relaxed)
     }
 }
 
-#[derive(Debug, Clone)]
+/// Roboto Regular renamed to `family`, which has six letters as "Roboto" does, with glyphs
+/// `scale` times as large.
+pub fn roboto_scaled(family: &str, scale: u16) -> Vec<u8> {
+    assert_eq!(family.len(), "Roboto".len());
+    let mut data = lumen_text::ROBOTO_REGULAR_BYTES.to_vec();
+    let utf16 = |name: &str| {
+        name.encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>()
+    };
+    for (old, new) in [
+        (b"Roboto".to_vec(), family.as_bytes().to_vec()),
+        (utf16("Roboto"), utf16(family)),
+    ] {
+        for offset in 0..=data.len() - old.len() {
+            if data[offset..offset + old.len()] == old[..] {
+                data[offset..offset + old.len()].copy_from_slice(&new);
+            }
+        }
+    }
+    let table_count = u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize;
+    let head = data[12..12 + table_count * 16]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .find(|table| &table[..4] == b"head")
+        .unwrap();
+    let units_offset = u32::from_be_bytes(head[8..12].try_into().unwrap()) as usize + 18;
+    let units = u16::from_be_bytes(data[units_offset..units_offset + 2].try_into().unwrap());
+    data[units_offset..units_offset + 2].copy_from_slice(&(units / scale).to_be_bytes());
+    data
+}
+
 struct TestFont {
     id: String,
-    data: &'static [u8],
+    data: Arc<Vec<u8>>,
 }
 
 impl FontResolver for TestFont {
@@ -185,11 +239,20 @@ impl MediaStore for TestMedia {
     }
 
     fn font_resolver_id(&self, family: &str) -> Option<String> {
-        Some(self.fonts.get(family)?.id.clone())
+        Some(self.fonts.get(family)?.0.clone())
     }
 
     fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
-        Some(Box::new(self.fonts.get(family)?.clone()))
+        let (id, data) = self.fonts.get(family)?;
+        self.font_requests.fetch_add(1, Ordering::Relaxed);
+        Some(Box::new(TestFont {
+            id: id.clone(),
+            data: Arc::clone(data),
+        }))
+    }
+
+    fn text_session(&self) -> Option<&TextSession> {
+        self.session.as_deref()
     }
 }
 
@@ -294,6 +357,28 @@ pub fn render(
     }
 }
 
+/// Like `render`, and also returns the texture the frame was read from.
+pub fn render_held(
+    renderer: &mut GpuCompositionRenderer,
+    scene: &Composition,
+    at: f64,
+    media: &impl MediaStore,
+) -> (Frame, Arc<wgpu::Texture>) {
+    let raster = renderer
+        .render_frame_at(scene, at, media)
+        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+    let size = raster.domain.storage_size;
+    let gpu = renderer.gpu_renderer();
+    let texture = gpu.texture_arc(raster.texture).unwrap();
+    let frame = Frame {
+        at,
+        width: size.width,
+        height: size.height,
+        rgba: read_rgba8(gpu, &texture, size),
+    };
+    (frame, texture)
+}
+
 /// Like `render`, but hands the bound frame to `inspect` before it is drawn.
 pub fn render_inspecting(
     renderer: &mut GpuCompositionRenderer,
@@ -319,7 +404,7 @@ pub fn render_inspecting(
     }
 }
 
-fn read_rgba8(
+pub fn read_rgba8(
     gpu: &lumen_gpu::Renderer,
     texture: &wgpu::Texture,
     size: lumen_gpu::Size,
@@ -618,6 +703,25 @@ pub fn check_matching(cases: Vec<Case>, filter: Option<&str>) {
         "{} of {} rows failed:\n{}",
         failures.len(),
         cases.len(),
+        failures.join("\n")
+    );
+}
+
+/// Runs `run` on every named row, then panics listing the rows that failed and why. For rows that
+/// take the device themselves, so it must not be held.
+pub fn check_each<T>(rows: Vec<(&str, T)>, run: impl Fn(T)) {
+    let total = rows.len();
+    let failures: Vec<_> = rows
+        .into_iter()
+        .filter_map(|(name, row)| {
+            let error = catch_unwind(AssertUnwindSafe(|| run(row))).err()?;
+            Some(format!("  {name}: {}", panic_message(&*error)))
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} of {total} rows failed:\n{}",
+        failures.len(),
         failures.join("\n")
     );
 }
