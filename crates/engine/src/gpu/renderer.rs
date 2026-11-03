@@ -1381,7 +1381,7 @@ impl<'a> PlanKeyCollector<'a> {
             }
             NodeKind::Text(text) => {
                 let spans = match &text.params.content {
-                    TextContentDelegate::Spans(spans) => &spans.items[..],
+                    TextContentDelegate::Spans(spans) => &spans[..],
                     TextContentDelegate::Text(_) => &[],
                 };
                 let families = std::iter::once(&text.params.font_family)

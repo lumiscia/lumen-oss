@@ -1,13 +1,15 @@
+use serde_json::Value;
+
 use crate::{
     error::LumenError,
     expr::{Expression, ExpressionValue},
+    json::{StringParam, classify_string, integer_mismatch, integral_i64, try_parse_color},
 };
 
 use super::{
     clip_props::ClipProps,
-    delegate::{DelegateEvalContext, DelegateEvaluable, DelegateValue, Delegated, PropertyRead},
+    delegate::{DelegateEvalContext, DelegateEvaluable, Delegated, PropertyRead},
     ids::NodeId,
-    property::{PropertyExpression, PropertyValue},
     shader_uniforms::ShaderUniforms,
     vector,
 };
@@ -45,35 +47,6 @@ impl<T> Deferred<T> {
                 .map_err(|error| error.located(node_id, field)),
         }
     }
-
-    pub fn from_property_expression(
-        value: PropertyExpression,
-        node_id: NodeId,
-        property_path: &str,
-    ) -> crate::Result<Self>
-    where
-        T: ParamValue,
-    {
-        match value {
-            PropertyExpression::Value(value) => T::from_property_value(value)
-                .map(Self::Value)
-                .ok_or_else(|| {
-                    PropertyValue::invalid_type(
-                        node_id,
-                        property_path,
-                        T::property_kind_name(),
-                        "incompatible value",
-                    )
-                }),
-            PropertyExpression::Expr(expr) if T::ACCEPTS_EXPRESSIONS => Ok(Self::Expr(expr)),
-            PropertyExpression::Expr(_) => Err(PropertyValue::invalid_type(
-                node_id,
-                property_path,
-                T::property_kind_name(),
-                "expression",
-            )),
-        }
-    }
 }
 
 impl<T> From<T> for Deferred<T> {
@@ -82,65 +55,28 @@ impl<T> From<T> for Deferred<T> {
     }
 }
 
-impl<'de, T> serde::Deserialize<'de> for Deferred<T>
-where
-    T: DeferredJsonValue + ParamValue,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use crate::json::{StringParam, classify_string};
-
-        let mut value = serde_json::Value::deserialize(deserializer)?;
-        match value.as_str().and_then(classify_string) {
-            Some(StringParam::Expression(_)) if !T::ACCEPTS_EXPRESSIONS => {
-                return Err(serde::de::Error::custom(format!(
-                    "{} does not support expressions",
-                    T::property_kind_name()
-                )));
-            }
-            Some(StringParam::Expression(source)) => {
-                return Expression::parse(source)
-                    .map(Self::Expr)
-                    .map_err(serde::de::Error::custom);
-            }
-            Some(StringParam::EscapedLiteral(text)) => value = serde_json::Value::from(text),
-            None => {}
-        }
-        T::from_json_value(&value)
-            .map(Self::Value)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-pub trait DeferredJsonValue: Sized {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String>;
-}
-
+/// A literal a param can hold, converted directly to and from JSON and expression values.
 pub trait ParamValue: Clone {
     /// Whether `from_expression` can produce this type.
     const ACCEPTS_EXPRESSIONS: bool;
 
-    /// Whether a literal `value` holds expressions of its own.
-    fn has_expressions(_value: &Self) -> bool {
+    /// Whether this literal holds expressions of its own.
+    fn has_expressions(&self) -> bool {
         false
     }
+
+    /// Parses a literal, already told apart from an `=expression`. Errors name `path`.
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String>;
+
+    /// The JSON that parses to this literal.
+    fn to_json_value(&self) -> Value;
 
     /// This type from what an expression evaluated to.
     fn from_expression(value: ExpressionValue) -> crate::Result<Self>;
 
-    /// The JSON that parses to this literal.
-    fn to_json_value(&self) -> serde_json::Value;
-
     /// This literal as `node(id, 'param')` reads it, or `None` for a kind expressions have no
     /// value for, such as a paint.
     fn to_expression(&self) -> Option<ExpressionValue>;
-
-    fn from_property_value(value: PropertyValue) -> Option<Self>
-    where
-        Self: Sized;
-    fn property_kind_name() -> &'static str;
 }
 
 impl<T> DelegateEvaluable for Deferred<T>
@@ -149,49 +85,55 @@ where
 {
     type Evaluated = T;
 
+    const ACCEPTS_EXPRESSIONS: bool = T::ACCEPTS_EXPRESSIONS;
+
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
         Deferred::eval(self, ctx.node_id, "", ctx.expr)
     }
 
     fn has_expressions(&self) -> bool {
         match self {
-            Self::Value(value) => T::has_expressions(value),
+            Self::Value(value) => value.has_expressions(),
             Self::Expr(_) => true,
         }
     }
-}
 
-impl<T> DelegateValue for Deferred<T>
-where
-    T: ParamValue,
-{
-    const ACCEPTS_EXPRESSIONS: bool = T::ACCEPTS_EXPRESSIONS;
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        let escaped;
+        let literal = match value.as_str().and_then(classify_string) {
+            Some(StringParam::Expression(source)) => {
+                let expr = Expression::parse(source)
+                    .map_err(|error| format!("`{path}`: `={source}`: {error}"))?;
+                return if T::ACCEPTS_EXPRESSIONS {
+                    Ok(Self::Expr(expr))
+                } else {
+                    Err(crate::json::expression_unsupported(path))
+                };
+            }
+            Some(StringParam::EscapedLiteral(text)) => {
+                escaped = Value::from(text);
+                &escaped
+            }
+            None => value,
+        };
+        T::from_json_value(literal, path).map(Self::Value)
+    }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        match self {
-            Self::Expr(expr) => serde_json::Value::from(format!("={}", expr.source)),
+    fn to_json_value(&self) -> Option<Value> {
+        Some(match self {
+            Self::Expr(expr) => Value::from(format!("={}", expr.source)),
             Self::Value(value) => match value.to_json_value() {
-                serde_json::Value::String(text) if text.starts_with('=') => {
-                    serde_json::Value::from(format!("={text}"))
-                }
+                Value::String(text) if text.starts_with('=') => Value::from(format!("={text}")),
                 json => json,
             },
-        }
+        })
     }
 
-    fn read(&self) -> PropertyRead<'_> {
-        match self {
+    fn read(&self) -> Option<PropertyRead<'_>> {
+        Some(match self {
             Self::Expr(expr) => PropertyRead::Expr(expr),
             Self::Value(value) => PropertyRead::Value(value.to_expression()),
-        }
-    }
-
-    fn from_property_expression(
-        value: PropertyExpression,
-        node_id: NodeId,
-        property_path: &str,
-    ) -> crate::Result<Self> {
-        Deferred::from_property_expression(value, node_id, property_path)
+        })
     }
 }
 
@@ -263,77 +205,81 @@ fn color(value: ExpressionValue) -> crate::Result<[u8; 4]> {
 impl ParamValue for f64 {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        value
+            .as_f64()
+            .ok_or_else(|| format!("`{path}` expected float"))
+    }
+
+    fn to_json_value(&self) -> Value {
+        Value::from(*self)
+    }
+
     fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
         number(value)
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::from(*self)
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         Some(ExpressionValue::Number(*self))
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        value.coerce_float()
-    }
-
-    fn property_kind_name() -> &'static str {
-        "Float"
     }
 }
 
 impl ParamValue for f32 {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        f64::from_json_value(value, path).map(|value| value as f32)
+    }
+
+    fn to_json_value(&self) -> Value {
+        Value::from(f64::from(*self))
+    }
+
     fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
         number(value).map(|value| value as f32)
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::from(f64::from(*self))
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         Some(ExpressionValue::Number(f64::from(*self)))
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        value.coerce_float().map(|value| value as f32)
-    }
-
-    fn property_kind_name() -> &'static str {
-        "Float"
     }
 }
 
 impl ParamValue for i64 {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
-        truncated_int(value)
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        integral_i64(value).ok_or_else(|| format!("`{path}` {}", integer_mismatch(value)))
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::from(*self)
+    fn to_json_value(&self) -> Value {
+        Value::from(*self)
+    }
+
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        truncated_int(value)
     }
 
     fn to_expression(&self) -> Option<ExpressionValue> {
         Some(ExpressionValue::Number(*self as f64))
     }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        value.coerce_int()
-    }
-
-    fn property_kind_name() -> &'static str {
-        "Int"
-    }
 }
 
 impl ParamValue for u32 {
     const ACCEPTS_EXPRESSIONS: bool = true;
+
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        let value = i64::from_json_value(value, path)?;
+        u32::try_from(value).map_err(|_| {
+            format!(
+                "`{path}` must be an integer from 0 to {}, got {value}",
+                u32::MAX
+            )
+        })
+    }
+
+    fn to_json_value(&self) -> Value {
+        Value::from(*self)
+    }
 
     fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
         let value = truncated_int(value)?;
@@ -342,27 +288,23 @@ impl ParamValue for u32 {
         })
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::from(*self)
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         Some(ExpressionValue::Number(f64::from(*self)))
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        value
-            .coerce_int()
-            .and_then(|value| u32::try_from(value).ok())
-    }
-
-    fn property_kind_name() -> &'static str {
-        "UInt"
     }
 }
 
 impl ParamValue for u8 {
     const ACCEPTS_EXPRESSIONS: bool = true;
+
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        let value = i64::from_json_value(value, path)?;
+        u8::try_from(value)
+            .map_err(|_| format!("`{path}` must be an integer from 0 to 255, got {value}"))
+    }
+
+    fn to_json_value(&self) -> Value {
+        Value::from(*self)
+    }
 
     fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
         let value = truncated_int(value)?;
@@ -370,133 +312,102 @@ impl ParamValue for u8 {
             .map_err(|_| LumenError::evaluate(format!("{value} is out of range for 0 to 255")))
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::from(*self)
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         Some(ExpressionValue::Number(f64::from(*self)))
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        value
-            .coerce_int()
-            .and_then(|value| u8::try_from(value).ok())
-    }
-
-    fn property_kind_name() -> &'static str {
-        "U8"
     }
 }
 
 impl ParamValue for bool {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        value
+            .as_bool()
+            .or_else(|| value.as_i64().map(|value| value != 0))
+            .ok_or_else(|| format!("`{path}` expected bool"))
+    }
+
+    fn to_json_value(&self) -> Value {
+        Value::from(*self)
+    }
+
     fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
         Ok(value.as_bool())
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::from(*self)
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         Some(ExpressionValue::Boolean(*self))
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        value.coerce_bool()
-    }
-
-    fn property_kind_name() -> &'static str {
-        "Bool"
     }
 }
 
 impl ParamValue for String {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        value
+            .as_str()
+            .map(ToString::to_string)
+            .ok_or_else(|| format!("`{path}` expected string"))
+    }
+
+    fn to_json_value(&self) -> Value {
+        Value::from(self.as_str())
+    }
+
     fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
         Ok(value.as_string())
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::from(self.as_str())
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         Some(ExpressionValue::String(self.clone()))
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        value.coerce_string()
-    }
-
-    fn property_kind_name() -> &'static str {
-        "String"
     }
 }
 
 impl ParamValue for [u8; 4] {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        try_parse_color(value).map_err(|error| format!("`{path}` expected color: {error}"))
+    }
+
+    fn to_json_value(&self) -> Value {
+        Value::from(self.to_vec())
+    }
+
     fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
         color(value)
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::from(self.to_vec())
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         Some(ExpressionValue::color_from_u8(*self))
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        match value {
-            PropertyValue::Color(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    fn property_kind_name() -> &'static str {
-        "Color"
     }
 }
 
 impl ParamValue for vector::paint::Paint {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        vector::paint::Paint::from_json_value(value).map_err(|error| format!("`{path}`: {error}"))
+    }
+
+    fn to_json_value(&self) -> Value {
+        vector::paint::Paint::to_json_value(self)
+    }
+
     fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
         color(value).map(vector::paint::Paint::solid)
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        vector::paint::Paint::to_json_value(self)
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         None
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        match value {
-            PropertyValue::Paint(value) => Some(value),
-            PropertyValue::Color(value) => Some(vector::paint::Paint::solid(value)),
-            _ => None,
-        }
-    }
-
-    fn property_kind_name() -> &'static str {
-        "Paint"
     }
 }
 
 impl ParamValue for ShaderUniforms {
     const ACCEPTS_EXPRESSIONS: bool = false;
 
-    fn has_expressions(value: &Self) -> bool {
-        value.0.values().any(|value| match value {
+    fn has_expressions(&self) -> bool {
+        self.0.values().any(|value| match value {
             super::ShaderUniformValue::Expr(_) => true,
             super::ShaderUniformValue::Vector(components) => {
                 components.iter().any(Deferred::is_expr)
@@ -505,102 +416,99 @@ impl ParamValue for ShaderUniforms {
         })
     }
 
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        ShaderUniforms::from_json_value(value, path)
+    }
+
+    fn to_json_value(&self) -> Value {
+        ShaderUniforms::to_json_value(self)
+    }
+
     fn from_expression(_value: ExpressionValue) -> crate::Result<Self> {
         Err(LumenError::evaluate(
             "ShaderUniforms can't be an expression",
         ))
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        ShaderUniforms::to_json_value(self)
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         None
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        match value {
-            PropertyValue::ShaderUniforms(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    fn property_kind_name() -> &'static str {
-        "ShaderUniforms"
     }
 }
 
 impl ParamValue for ClipProps {
     const ACCEPTS_EXPRESSIONS: bool = false;
 
-    fn has_expressions(value: &Self) -> bool {
-        value
-            .0
+    fn has_expressions(&self) -> bool {
+        self.0
             .values()
             .any(|value| matches!(value, super::ClipPropValue::Expr(_)))
+    }
+
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        ClipProps::from_json_value(value, path)
+    }
+
+    fn to_json_value(&self) -> Value {
+        ClipProps::to_json_value(self)
     }
 
     fn from_expression(_value: ExpressionValue) -> crate::Result<Self> {
         Err(LumenError::evaluate("ClipProps can't be an expression"))
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        ClipProps::to_json_value(self)
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         None
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        match value {
-            PropertyValue::ClipProps(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    fn property_kind_name() -> &'static str {
-        "ClipProps"
     }
 }
 
 impl ParamValue for (f64, f64) {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        let items = value
+            .as_array()
+            .ok_or_else(|| format!("`{path}` expected [x, y]"))?;
+        if items.len() != 2 {
+            return Err(format!(
+                "`{path}` expected [x, y], got array of length {}",
+                items.len()
+            ));
+        }
+        let component = |index: usize| {
+            items[index]
+                .as_f64()
+                .ok_or_else(|| format!("`{path}[{index}]` expected number"))
+        };
+        Ok((component(0)?, component(1)?))
+    }
+
+    fn to_json_value(&self) -> Value {
+        Value::from(vec![self.0, self.1])
+    }
+
     fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
         vec2(value)
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::from(vec![self.0, self.1])
-    }
-
     fn to_expression(&self) -> Option<ExpressionValue> {
         Some(ExpressionValue::Vec2(*self))
-    }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        match value {
-            PropertyValue::Vec2(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    fn property_kind_name() -> &'static str {
-        "Vec2"
     }
 }
 
 impl ParamValue for [f32; 2] {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
-        vec2(value).map(|(x, y)| [x as f32, y as f32])
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        let (x, y) = <(f64, f64)>::from_json_value(value, path)?;
+        Ok([x as f32, y as f32])
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::from(vec![f64::from(self[0]), f64::from(self[1])])
+    fn to_json_value(&self) -> Value {
+        Value::from(vec![f64::from(self[0]), f64::from(self[1])])
+    }
+
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        vec2(value).map(|(x, y)| [x as f32, y as f32])
     }
 
     fn to_expression(&self) -> Option<ExpressionValue> {
@@ -609,122 +517,6 @@ impl ParamValue for [f32; 2] {
             f64::from(self[1]),
         )))
     }
-
-    fn from_property_value(value: PropertyValue) -> Option<Self> {
-        match value {
-            PropertyValue::Vec2((x, y)) => Some([x as f32, y as f32]),
-            _ => None,
-        }
-    }
-
-    fn property_kind_name() -> &'static str {
-        "Vec2"
-    }
-}
-
-impl DeferredJsonValue for f64 {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        value
-            .as_f64()
-            .or_else(|| value.as_i64().map(|value| value as f64))
-            .ok_or_else(|| "expected float".to_string())
-    }
-}
-
-impl DeferredJsonValue for f32 {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        f64::from_json_value(value).map(|value| value as f32)
-    }
-}
-
-impl DeferredJsonValue for i64 {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        crate::json::integral_i64(value).ok_or_else(|| crate::json::integer_mismatch(value))
-    }
-}
-
-impl DeferredJsonValue for u8 {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        let value = i64::from_json_value(value)?;
-        u8::try_from(value).map_err(|_| "expected u8".to_string())
-    }
-}
-
-impl DeferredJsonValue for u32 {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        let value = i64::from_json_value(value)?;
-        u32::try_from(value).map_err(|_| "expected u32".to_string())
-    }
-}
-
-impl DeferredJsonValue for bool {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        value
-            .as_bool()
-            .or_else(|| value.as_i64().map(|value| value != 0))
-            .ok_or_else(|| "expected bool".to_string())
-    }
-}
-
-impl DeferredJsonValue for String {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        value
-            .as_str()
-            .map(ToString::to_string)
-            .ok_or_else(|| "expected string".to_string())
-    }
-}
-
-impl DeferredJsonValue for [u8; 4] {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        crate::json::try_parse_color(value).map_err(|error| format!("expected color: {error}"))
-    }
-}
-
-impl DeferredJsonValue for vector::paint::Paint {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        vector::paint::Paint::from_json_value(value)
-    }
-}
-
-impl DeferredJsonValue for ShaderUniforms {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        ShaderUniforms::from_json_value(value, "uniforms")
-    }
-}
-
-impl DeferredJsonValue for ClipProps {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        ClipProps::from_json_value(value, "props")
-    }
-}
-
-impl DeferredJsonValue for (f64, f64) {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        let values = value
-            .as_array()
-            .ok_or_else(|| "expected vec2".to_string())?;
-        if values.len() != 2 {
-            return Err(format!(
-                "expected vec2, got array of length {}",
-                values.len()
-            ));
-        }
-        let x = values[0]
-            .as_f64()
-            .ok_or_else(|| "expected vec2 x number".to_string())?;
-        let y = values[1]
-            .as_f64()
-            .ok_or_else(|| "expected vec2 y number".to_string())?;
-        Ok((x, y))
-    }
-}
-
-impl DeferredJsonValue for [f32; 2] {
-    fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        let (x, y) = <(f64, f64)>::from_json_value(value)?;
-        Ok([x as f32, y as f32])
-    }
 }
 
 #[cfg(test)]
@@ -732,7 +524,7 @@ mod tests {
     use crate::{
         expr::{Expression, ExpressionContext},
         node::{
-            Deferred, NodeId, PropertyValue,
+            Deferred, DelegateEvaluable, NodeId, ParamValue,
             vector::paint::{GradientSpread, Paint},
         },
     };
@@ -752,7 +544,7 @@ mod tests {
 
     #[test]
     fn integer_targets_truncate_finite_results_and_reject_the_rest() {
-        fn eval<T: crate::node::ParamValue>(source: &str) -> crate::Result<T> {
+        fn eval<T: ParamValue>(source: &str) -> crate::Result<T> {
             Deferred::<T>::Expr(Expression::parse(source).unwrap()).eval(
                 NodeId::new(4),
                 "count",
@@ -778,9 +570,6 @@ mod tests {
                 );
             }
         }
-        assert_eq!(PropertyValue::Float(f64::NAN).coerce_int(), None);
-        assert_eq!(PropertyValue::Float(f64::INFINITY).coerce_int(), None);
-        assert_eq!(PropertyValue::Float(2.9).coerce_int(), Some(2));
     }
 
     #[test]
@@ -859,19 +648,12 @@ mod tests {
 
     #[test]
     fn paint_delegate_evaluates_colour_expressions() {
-        use crate::node::{
-            DelegateEvalContext, DelegateEvaluable, DelegateValue, PropertyExpression,
-            PropertyRead, vector::paint::PaintDelegate,
-        };
+        use crate::node::{DelegateEvalContext, PropertyRead, vector::paint::PaintDelegate};
 
-        let expression = Expression::parse("tween(#ff0000, #0000ff, 0, 24)").unwrap();
-        let delegate = PaintDelegate::from_property_expression(
-            PropertyExpression::Expr(expression),
-            NodeId::new(3),
-            "fill_paint",
-        )
-        .unwrap();
-        assert!(matches!(delegate.read(), PropertyRead::Expr(_)));
+        let delegate =
+            PaintDelegate::from_json_value(&"=tween(#ff0000, #0000ff, 0, 24)".into(), "fill_paint")
+                .unwrap();
+        assert!(matches!(delegate.read(), Some(PropertyRead::Expr(_))));
         let ctx = DelegateEvalContext {
             node_id: NodeId::new(3),
             expr: &context(),
@@ -883,13 +665,14 @@ mod tests {
     }
 
     #[test]
-    fn color_and_paint_accept_expressions_when_deserialized() {
-        let color = serde_json::from_value::<Deferred<[u8; 4]>>("=rgb(255, 0, 0)".into()).unwrap();
-        assert!(matches!(color, Deferred::Expr(_)));
-        let paint = serde_json::from_value::<Deferred<Paint>>("=#ff0000".into()).unwrap();
-        assert!(matches!(paint, Deferred::Expr(_)));
-        let literal = serde_json::from_value::<Deferred<Paint>>("#ff0000".into()).unwrap();
-        assert!(matches!(literal, Deferred::Value(_)));
+    fn color_and_paint_take_literals_and_expressions() {
+        let parse_paint = |json: &str| Deferred::<Paint>::from_json_value(&json.into(), "paint");
+        assert!(matches!(
+            Deferred::<[u8; 4]>::from_json_value(&"=rgb(255, 0, 0)".into(), "color"),
+            Ok(Deferred::Expr(_))
+        ));
+        assert!(matches!(parse_paint("=#ff0000"), Ok(Deferred::Expr(_))));
+        assert!(matches!(parse_paint("#ff0000"), Ok(Deferred::Value(_))));
     }
 
     #[test]
@@ -903,7 +686,7 @@ mod tests {
 
         let error = crate::json::parse(json).unwrap_err().to_string();
         assert!(
-            error.contains("property `width` on node 7 has invalid type: expected UInt"),
+            error.contains("node 7: `width` must be an integer from 0 to 4294967295, got -1"),
             "{error}"
         );
 
@@ -918,12 +701,26 @@ mod tests {
     }
 
     #[test]
-    fn deserializes_leading_equals_as_expression_or_escaped_literal() {
-        for (input, expected) in [("==wow", "=wow"), ("===", "==")] {
-            let deferred: Deferred<String> = serde_json::from_value(input.into()).unwrap();
-            assert!(matches!(deferred, Deferred::Value(ref s) if s == expected));
+    fn a_leading_equals_is_an_expression_and_two_escape_a_literal() {
+        let parse = |json: &str| Deferred::<String>::from_json_value(&json.into(), "text");
+        for (input, expected) in [("==wow", "=wow"), ("===", "=="), ("==", "=")] {
+            assert!(
+                matches!(parse(input), Ok(Deferred::Value(ref text)) if text == expected),
+                "{input}"
+            );
+            assert_eq!(
+                parse(input).unwrap().to_json_value(),
+                Some(input.into()),
+                "{input}"
+            );
         }
-        let deferred: Deferred<String> = serde_json::from_value("=frame".into()).unwrap();
-        assert!(matches!(deferred, Deferred::Expr(_)));
+        assert!(matches!(parse("=frame"), Ok(Deferred::Expr(_))));
+    }
+
+    #[test]
+    fn literal_kinds_reject_an_expression_by_name() {
+        let error = Deferred::<crate::node::ClipProps>::from_json_value(&"=frame".into(), "props")
+            .unwrap_err();
+        assert_eq!(error, "`props` does not support expressions");
     }
 }

@@ -11,7 +11,6 @@ mod kind;
 pub(crate) mod motion;
 mod param_type;
 mod ports;
-mod property;
 mod schema;
 mod shader_uniforms;
 
@@ -23,18 +22,16 @@ pub mod vector;
 
 pub use clip_props::{ClipPropValue, ClipProps};
 pub use deferred::Deferred;
-pub use deferred::DeferredJsonValue;
 pub use deferred::{ParamValue, truncated_int};
 pub use delegate::{
-    DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated, NodeParams,
-    OptionalDelegate, Override, PropertyRead,
+    DelegateEvalContext, DelegateEvaluable, Delegated, NodeParams, Override, PropertyRead,
+    field_path, nested_fields,
 };
 pub use ids::NodeId;
 pub use kind::NodeKind;
 pub use param_type::NodeParamType;
 pub use ports::InputPortDef;
 pub(crate) use ports::required_input;
-pub use property::{PropertyExpression, PropertyValue};
 pub use schema::JsonNode;
 pub use schema::{EnumDef, EnumOptionDef, NodeEnum};
 pub use schema::{NodeCategory, NodeSchemaDef, PropertyDef, PropertyKind};

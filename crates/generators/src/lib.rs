@@ -407,7 +407,7 @@ fn object_schema_json<P: NodeParams>(
     defs: &mut Map<String, Value>,
     value_schemas: &[(&str, Value)],
 ) -> Result<Value> {
-    let defaults = P::default().default_properties();
+    let defaults = P::default().json_properties();
     let mut fields = Map::new();
     let mut required = Vec::new();
     for property in &P::property_defs() {

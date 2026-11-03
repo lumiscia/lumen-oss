@@ -506,7 +506,7 @@ mod tests {
     use crate::{
         expr::ast::ExprNode,
         graph::Graph,
-        node::{NodeId, NodeKind, ParamValue, source::text::Text},
+        node::{DelegateEvaluable, NodeId, NodeKind, ParamValue, source::text::Text},
     };
 
     fn test_context() -> ExpressionContext<'static> {
@@ -1025,6 +1025,7 @@ mod tests {
                 "color": "=if(text_width(node(8)) > 10, #ff0000, #0000ff)",
                 "underline": { "paint": "=if(text_height(node(8)) > 10, #ff0000, #0000ff)" }
             }]),
+            "content",
         )
         .unwrap();
         let mut graph = Graph::new();
@@ -1058,6 +1059,7 @@ mod tests {
                 "text": "Morning",
                 "baseline_shift": "=text_height(node(8)) / 2"
             }]),
+            "content",
         )
         .unwrap();
         let mut graph = Graph::new();
