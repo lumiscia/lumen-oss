@@ -373,3 +373,24 @@ unsafe extern "C" fn free_device_owner(context: *mut sys::AVHWDeviceContext) {
         drop(unsafe { Box::from_raw(owner) });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nv12_layout_pads_rows_to_four_bytes_and_rounds_chroma_up() {
+        for (width, height, pitch, chroma_offset, size) in [
+            (640, 480, 640, 640 * 480, 640 * 720),
+            (642, 480, 644, 644 * 480, 644 * 720),
+            (2, 3, 4, 4 * 3, 4 * 5),
+        ] {
+            assert_eq!(VulkanVideoFrame::nv12_pitch(width), pitch);
+            assert_eq!(
+                VulkanVideoFrame::nv12_chroma_offset(width, height),
+                chroma_offset
+            );
+            assert_eq!(VulkanVideoFrame::nv12_size(width, height), size);
+        }
+    }
+}

@@ -951,12 +951,10 @@ impl GpuCompositionRenderer {
                 continue;
             }
 
-            let MediaFrame::CpuRgba(frame) = &upload.frame else {
-                return Err(RenderError::Gpu {
-                    details: "media frame backend is not supported by this GPU renderer build"
-                        .to_string(),
-                }
-                .into());
+            let frame = match &upload.frame {
+                MediaFrame::CpuRgba(frame) => frame,
+                #[cfg(feature = "ffmpeg")]
+                MediaFrame::GpuVideo(_) => unreachable!("GPU video frames are imported above"),
             };
 
             let Some(key) = &upload.key else {

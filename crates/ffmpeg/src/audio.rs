@@ -5,24 +5,14 @@ use crate::{
     ffi::{self, AvFrame, CodecContextGuard, sys},
     format::{InputContext, Packet, Rational},
 };
-use sys::{
-    AVRounding::AV_ROUND_UP,
-    AVSampleFormat::{AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_NONE, AV_SAMPLE_FMT_S16},
-};
+use sys::{AVRounding::AV_ROUND_UP, AVSampleFormat::AV_SAMPLE_FMT_FLT};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SampleFormat {
-    F32,
-    I16,
-    Unknown,
-}
-
+/// Interleaved f32 audio. `samples` counts frames, so `interleaved_f32` holds `samples * channels`
+/// values.
 #[derive(Debug, Clone)]
 pub struct AudioFrame {
     pub sample_rate: u32,
     pub channels: u16,
-    pub sample_format: SampleFormat,
-    pub pts: Option<i64>,
     pub samples: usize,
     pub interleaved_f32: Vec<f32>,
 }
@@ -31,7 +21,6 @@ pub struct AudioFrame {
 pub struct AudioResamplerConfig {
     pub sample_rate: u32,
     pub channels: u16,
-    pub sample_format: SampleFormat,
 }
 
 impl Default for AudioResamplerConfig {
@@ -39,7 +28,6 @@ impl Default for AudioResamplerConfig {
         Self {
             sample_rate: 48_000,
             channels: 2,
-            sample_format: SampleFormat::F32,
         }
     }
 }
@@ -182,7 +170,7 @@ impl AudioResampler {
                 sys::swr_alloc_set_opts2(
                     &mut resampler.ptr,
                     ptr::addr_of_mut!(dst_layout),
-                    config.sample_format.to_av_sample_format(),
+                    AV_SAMPLE_FMT_FLT,
                     config.sample_rate as i32,
                     ptr::addr_of_mut!(src_layout),
                     source.frame.sample_format(),
@@ -198,12 +186,6 @@ impl AudioResampler {
     }
 
     pub fn convert(&mut self, source: &DecodedAudioFrame) -> Result<AudioFrame> {
-        if self.config.sample_format != SampleFormat::F32 {
-            return Err(FfmpegError::new(
-                "AudioResampler::convert",
-                "only interleaved f32 output is currently exposed",
-            ));
-        }
         let input_samples = source.frame.nb_samples() as i64;
         let delay =
             unsafe { sys::swr_get_delay(self.ptr, (*source.frame.as_ptr()).sample_rate as i64) };
@@ -235,8 +217,6 @@ impl AudioResampler {
         Ok(AudioFrame {
             sample_rate: self.config.sample_rate,
             channels: self.config.channels,
-            sample_format: self.config.sample_format,
-            pts: source.pts(),
             samples,
             interleaved_f32: output,
         })
@@ -246,15 +226,5 @@ impl AudioResampler {
 impl Drop for AudioResampler {
     fn drop(&mut self) {
         unsafe { sys::swr_free(&mut self.ptr) };
-    }
-}
-
-impl SampleFormat {
-    fn to_av_sample_format(self) -> sys::AVSampleFormat {
-        match self {
-            Self::F32 => AV_SAMPLE_FMT_FLT,
-            Self::I16 => AV_SAMPLE_FMT_S16,
-            Self::Unknown => AV_SAMPLE_FMT_NONE,
-        }
     }
 }

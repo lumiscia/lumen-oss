@@ -15,7 +15,6 @@ pub enum MediaFrame {
     CpuRgba(Arc<CpuMediaFrame>),
     #[cfg(feature = "ffmpeg")]
     GpuVideo(Arc<GpuVideoMediaFrame>),
-    ExternalTexture(ExternalTextureFrame),
 }
 
 #[cfg(feature = "ffmpeg")]
@@ -29,20 +28,6 @@ impl GpuVideoMediaFrame {
     pub fn dimensions(&self) -> (u32, u32) {
         self.frame.dimensions()
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct ExternalTextureFrame {
-    pub width: u32,
-    pub height: u32,
-    pub format: lumen_gpu::wgpu::TextureFormat,
-    pub handle: ExternalTextureHandle,
-}
-
-#[derive(Debug, Clone)]
-pub enum ExternalTextureHandle {
-    WgpuTexture(Arc<lumen_gpu::wgpu::Texture>),
-    Platform(String),
 }
 
 #[derive(Debug, Clone, Copy, Default)]

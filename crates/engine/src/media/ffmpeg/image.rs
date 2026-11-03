@@ -82,7 +82,6 @@ impl FrameLruCache {
         let bytes = match &data {
             MediaFrame::CpuRgba(cpu) => cpu.rgba.len(),
             MediaFrame::GpuVideo(gpu) => gpu.frame.estimated_rgba_bytes() as usize,
-            MediaFrame::ExternalTexture(_) => 0,
         };
         self.order.retain(|cached| *cached != frame);
         self.order.push_back(frame);

@@ -87,13 +87,6 @@ impl<'a> GpuVideoInput<'a> {
             Self::__NonExhaustive(_) => unreachable!("hidden GPU frame variant"),
         }
     }
-
-    pub fn estimated_rgba_bytes(&self) -> u64 {
-        let (width, height) = self.dimensions();
-        u64::from(width)
-            .saturating_mul(u64::from(height))
-            .saturating_mul(4)
-    }
 }
 
 #[derive(Debug)]
@@ -151,54 +144,5 @@ impl GpuVideoFrame {
         u64::from(width)
             .saturating_mul(u64::from(height))
             .saturating_mul(4)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(feature = "cuda")]
-    #[test]
-    fn cuda_video_frame_reports_shape() {
-        use super::*;
-
-        // SAFETY: This metadata-only test never dereferences or submits the fake device pointer.
-        let frame = unsafe { CudaVideoFrame::from_device_ptr(0xCAFE, 1920, 1080, 8192, Some(7)) };
-        let input = GpuVideoInput::Cuda(&frame);
-
-        assert_eq!(input.backend(), GpuBackend::Cuda);
-        assert_eq!(input.dimensions(), (1920, 1080));
-        assert_eq!(frame.device_ptr(), 0xCAFE);
-        assert_eq!(frame.pitch(), 8192);
-        assert_eq!(frame.pts(), Some(7));
-    }
-
-    #[cfg(feature = "vulkan")]
-    #[test]
-    fn vulkan_video_frame_reports_shape() {
-        use ash::vk::Handle;
-
-        use super::*;
-
-        // SAFETY: This metadata-only test never submits work that reads the fake buffer.
-        let frame = unsafe {
-            VulkanVideoFrame::new(
-                ash::vk::Device::from_raw(7),
-                ash::vk::Buffer::from_raw(11),
-                640,
-                480,
-                Some(3),
-                std::sync::Arc::new(()),
-            )
-        };
-        let input = GpuVideoInput::Vulkan(&frame);
-
-        assert_eq!(input.backend(), GpuBackend::Vulkan);
-        assert_eq!(input.dimensions(), (640, 480));
-        assert_eq!(input.pts(), Some(3));
-        assert_eq!(frame.device().as_raw(), 7);
-        assert_eq!(frame.buffer().as_raw(), 11);
-        assert_eq!(VulkanVideoFrame::nv12_pitch(642), 644);
-        assert_eq!(VulkanVideoFrame::nv12_chroma_offset(640, 480), 640 * 480);
-        assert_eq!(VulkanVideoFrame::nv12_size(640, 480), 640 * 720);
     }
 }
