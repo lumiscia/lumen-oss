@@ -66,7 +66,7 @@ impl PropertyValue {
     pub(crate) fn coerce_int(&self) -> Option<i64> {
         match self {
             Self::Int(value) => Some(*value),
-            Self::Float(value) => Some(*value as i64),
+            Self::Float(value) => value.is_finite().then_some(*value as i64),
             Self::Bool(value) => Some(i64::from(*value)),
             Self::String(value) => value.parse().ok(),
             _ => None,

@@ -245,12 +245,15 @@ impl VideoEncoder {
             )
             .map_err(|mut error| {
                 // FFmpeg's Vulkan encoders only say why in their log, and return ENOSYS.
-                if encoder_name.ends_with("_vulkan") && error.code == Some(sys::AVERROR(libc::ENOSYS))
+                error.message = if encoder_name.ends_with("_vulkan")
+                    && error.code == Some(sys::AVERROR(libc::ENOSYS))
                 {
-                    error.message = format!(
+                    format!(
                         "the Vulkan device can't run `{encoder_name}`: it has no video encode queue or doesn't support encoding this codec"
-                    );
-                }
+                    )
+                } else {
+                    format!("encoder `{encoder_name}`: {}", error.message)
+                };
                 error
             })?;
             ffi::check(
