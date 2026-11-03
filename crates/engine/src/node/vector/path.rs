@@ -119,13 +119,14 @@ impl GpuCompileNode for Path {
             opacity: Deferred::value(1.0),
             ..self.params.clone()
         };
-        let (output, buffers) = compile_path_source(
-            ctx,
-            self.id,
-            "path",
-            fixed_points.as_ref().map_or(MAX_PATH_POINTS, Vec::len),
+        let point_capacity = fixed_points
+            .as_ref()
+            .map_or(MAX_PATH_POINTS, Vec::len)
+            .max(1);
+        let band_capacity = super::path_bands::band_capacity(point_capacity);
+        let bounds = ctx.source_bounds(
             compiler::SourceMotion::of(path_is_animated(&self.params), &self.params),
-            |expr, band_capacity| {
+            |expr| {
                 path_frame(
                     &opaque,
                     self.id,
@@ -133,63 +134,41 @@ impl GpuCompileNode for Path {
                     fixed_points.as_deref(),
                     band_capacity,
                 )
+                .map(|frame| Some(frame.uniforms.screen_bounds))
             },
         );
+        let domain = ctx.source_domain(bounds);
+        let source = ctx.compute_source(
+            self.id,
+            "path",
+            "rasterize",
+            PATH_SHADER,
+            std::mem::size_of::<PathUniforms>() as u64,
+            None,
+            [
+                (
+                    "points",
+                    (point_capacity * std::mem::size_of::<PathPoint>()) as u64,
+                ),
+                ("bands", (band_capacity * std::mem::size_of::<u32>()) as u64),
+            ],
+            domain,
+        );
+        let [points, bands] = source.storage;
         ctx.register_compiled_node(CompiledPath {
             node_id: self.id,
             params: self.params.clone(),
             fixed_points,
-            buffers,
+            buffers: PathBuffers {
+                params: source.params,
+                points,
+                bands,
+                band_capacity,
+                origin: domain_origin(domain),
+            },
         });
-        Ok(output)
+        Ok(source.output)
     }
-}
-
-/// Compiles a source rasterized by the path shader, sized to the screen bounds that
-/// `frame_at` gives over the frames it may draw. `frame_at` also takes the bands buffer's
-/// capacity.
-pub(super) fn compile_path_source<'a>(
-    ctx: &mut CompileContext<'_>,
-    node_id: NodeId,
-    label: &str,
-    point_capacity: usize,
-    motion: compiler::SourceMotion,
-    frame_at: impl Fn(&crate::expr::ExpressionContext<'_>, usize) -> crate::Result<PathFrame<'a>>,
-) -> (RasterHandle, PathBuffers) {
-    let point_capacity = point_capacity.max(1);
-    let band_capacity = super::path_bands::band_capacity(point_capacity);
-    let bounds = ctx.source_bounds(motion, |expr| {
-        frame_at(expr, band_capacity).map(|frame| Some(frame.uniforms.screen_bounds))
-    });
-    let domain = ctx.source_domain(bounds);
-    let source = ctx.compute_source(
-        node_id,
-        label,
-        "rasterize",
-        PATH_SHADER,
-        std::mem::size_of::<PathUniforms>() as u64,
-        None,
-        [
-            (
-                "points",
-                (point_capacity * std::mem::size_of::<PathPoint>()) as u64,
-            ),
-            ("bands", (band_capacity * std::mem::size_of::<u32>()) as u64),
-        ],
-        domain,
-    );
-    let [points, bands] = source.storage;
-    (
-        source.output,
-        PathBuffers {
-            params: source.params,
-            points,
-            bands,
-            point_capacity,
-            band_capacity,
-            origin: domain_origin(domain),
-        },
-    )
 }
 
 #[derive(Debug, Clone)]
@@ -386,7 +365,7 @@ fn fixed_points(data: &Deferred<String>, scale: &Deferred<(f64, f64)>) -> Option
 /// Flattens path data, coarsening `tolerance` until it fits `max_points`, and measures its
 /// contours. Empty data is empty geometry. The error says why data is malformed, has an
 /// out-of-range coordinate, or exceeds `max_points` even at the coarsest tolerance.
-fn parse_path_points(
+pub(super) fn parse_path_points(
     data: &str,
     tolerance: f32,
     max_points: usize,
@@ -402,25 +381,6 @@ fn parse_path_points(
         tolerance *= 2.0;
     }
     Err(format!("flattens to more than {max_points} points"))
-}
-
-/// Builds a single closed contour from polygon vertices.
-pub(super) fn closed_contour(vertices: &[[f32; 2]]) -> Vec<PathPoint> {
-    let mut points: Vec<_> = vertices
-        .iter()
-        .map(|&position| PathPoint {
-            position,
-            contour_start: 0,
-            flags: 0,
-            offset: 0.0,
-            _pad: 0.0,
-        })
-        .collect();
-    if let Some(last) = points.last_mut() {
-        last.flags = POINT_END | POINT_CLOSED;
-    }
-    normalize_contour_offsets(&mut points);
-    points
 }
 
 fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {

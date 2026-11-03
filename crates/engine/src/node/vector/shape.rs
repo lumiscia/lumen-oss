@@ -1,16 +1,12 @@
 use super::drawable::{DeferredTransform, DrawableMotion, DrawableTransform};
 use super::paint::Paint;
-use super::path::{PathFrame, compile_path_source};
-use super::renderer::{
-    MAX_PATH_POINTS, PathBuffers, PathUniforms, ShapeUniforms, domain_origin, style_flags,
-};
-use crate::error::RenderError;
+use super::renderer::{ShapeUniforms, domain_origin, style_flags};
 use crate::gpu::{
     BoundFrame, CompileContext, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 const SHAPE_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -29,7 +25,6 @@ pub enum ShapeGeometryKind {
     #[default]
     Rectangle = 0,
     Ellipse = 1,
-    Polygon = 2,
 }
 
 /// Produces a vector shape layer for GPU rasterization.
@@ -39,24 +34,16 @@ pub struct ShapeParams {
     #[meta(kind = "enum", enum_type = ShapeGeometryKind)]
     pub geometry_kind: ShapeGeometryKind,
     /// Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
-    /// wide. Ignored for polygon geometry.
+    /// wide.
     #[meta(min = 0, step = 1)]
     pub width: f64,
     /// Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
-    /// tall. Ignored for polygon geometry.
+    /// tall.
     #[meta(min = 0, step = 1)]
     pub height: f64,
     /// Corner radius for rectangle geometry.
     #[meta(min = 0, step = 1)]
     pub border_radius: f64,
-    /// Polygon vertices in pixels relative to `position`, as `x,y; x,y` (3 to 16384 points).
-    #[meta(
-        name = "Polygon points",
-        format = "point_list",
-        multiline,
-        recommended_rows = 3
-    )]
-    pub polygon_points: String,
     /// Shape origin in pixels.
     #[meta()]
     pub position: (f64, f64),
@@ -104,7 +91,6 @@ impl Default for ShapeParams {
             width: 1.0,
             height: 1.0,
             border_radius: 0.0,
-            polygon_points: String::new(),
             position: (0.0, 0.0),
             scale: (1.0, 1.0),
             rotation: 0.0,
@@ -132,64 +118,32 @@ pub struct Shape {
 
 impl GpuCompileNode for Shape {
     fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<RasterHandle> {
-        // Enum params are always constants, so the pipeline can be chosen here.
-        Ok(match self.params.geometry_kind {
-            ShapeGeometryKindDelegate::Polygon => compile_polygon_shape(ctx, self),
-            _ => compile_box_shape(ctx, self),
-        })
+        let bounds = ctx.source_bounds(
+            compiler::SourceMotion::of(shape_is_animated(&self.params), &self.params),
+            |expr| {
+                shape_frame(&self.params, self.id, expr)
+                    .map(|uniforms| Some(uniforms.screen_bounds))
+            },
+        );
+        let domain = ctx.source_domain(bounds);
+        let source = ctx.compute_source(
+            self.id,
+            "shape",
+            "rasterize",
+            SHAPE_SHADER,
+            std::mem::size_of::<ShapeUniforms>() as u64,
+            None,
+            [],
+            domain,
+        );
+        ctx.register_compiled_node(CompiledShape {
+            node_id: self.id,
+            params: self.params.clone(),
+            buffer: source.params,
+            origin: domain_origin(domain),
+        });
+        Ok(source.output)
     }
-}
-
-/// Compiles a rectangle or ellipse.
-fn compile_box_shape(ctx: &mut CompileContext<'_>, shape: &Shape) -> RasterHandle {
-    let bounds = ctx.source_bounds(
-        compiler::SourceMotion::of(shape_is_animated(&shape.params), &shape.params),
-        |expr| {
-            shape_frame(&shape.params, shape.id, expr).map(|uniforms| Some(uniforms.screen_bounds))
-        },
-    );
-    let domain = ctx.source_domain(bounds);
-    let source = ctx.compute_source(
-        shape.id,
-        "shape",
-        "rasterize",
-        SHAPE_SHADER,
-        std::mem::size_of::<ShapeUniforms>() as u64,
-        None,
-        [],
-        domain,
-    );
-    ctx.register_compiled_node(CompiledShape {
-        node_id: shape.id,
-        params: shape.params.clone(),
-        buffer: source.params,
-        origin: domain_origin(domain),
-    });
-    source.output
-}
-
-/// Rasterizes a polygon shape with the path shader, as one closed contour.
-fn compile_polygon_shape(ctx: &mut CompileContext<'_>, shape: &Shape) -> RasterHandle {
-    let point_capacity = polygon_point_capacity(&shape.params.polygon_points);
-    // Opacity only hides what is drawn, so it is left out of the bounds.
-    let opaque = ShapeParamsDelegate {
-        opacity: Deferred::value(1.0),
-        ..shape.params.clone()
-    };
-    let (output, buffers) = compile_path_source(
-        ctx,
-        shape.id,
-        "shape",
-        point_capacity,
-        compiler::SourceMotion::of(shape_is_animated(&shape.params), &shape.params),
-        |expr, band_capacity| polygon_frame(&opaque, shape.id, expr, point_capacity, band_capacity),
-    );
-    ctx.register_compiled_node(CompiledPolygonShape {
-        node_id: shape.id,
-        params: shape.params.clone(),
-        buffers,
-    });
-    output
 }
 
 #[derive(Debug, Clone)]
@@ -229,7 +183,6 @@ fn shape_frame(
 fn shape_is_animated(params: &ShapeParamsDelegate) -> bool {
     params.width.is_expr()
         || params.height.is_expr()
-        || params.polygon_points.is_expr()
         || params.position.is_expr()
         || params.scale.is_expr()
         || params.rotation.is_expr()
@@ -238,72 +191,6 @@ fn shape_is_animated(params: &ShapeParamsDelegate) -> bool {
         || params.fill_enabled.is_expr()
         || params.stroke_enabled.is_expr()
         || params.stroke_width.is_expr()
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CompiledPolygonShape {
-    pub(crate) node_id: NodeId,
-    pub(crate) params: ShapeParamsDelegate,
-    pub(crate) buffers: PathBuffers,
-}
-
-impl GpuCompiledNode for CompiledPolygonShape {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let frame = polygon_frame(
-            &self.params,
-            self.node_id,
-            &ctx.expr_context(),
-            self.buffers.point_capacity,
-            self.buffers.band_capacity,
-        )?;
-        self.buffers.write(bound, &frame);
-        Ok(())
-    }
-}
-
-/// Evaluates a polygon shape's uniforms, points and bands at the frame of `expr`.
-fn polygon_frame(
-    params: &ShapeParamsDelegate,
-    node_id: NodeId,
-    expr: &crate::expr::ExpressionContext<'_>,
-    point_capacity: usize,
-    band_capacity: usize,
-) -> crate::Result<PathFrame<'static>> {
-    let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
-    // Invalid or incomplete point lists draw nothing, so editing the field never fails the frame.
-    let vertices = parse_polygon_points(&evaluated.polygon_points).unwrap_or_default();
-    if vertices.len() > point_capacity {
-        return Err(RenderError::NodeEvaluation {
-            node_id,
-            node_kind: "Shape",
-            details: format!("polygon has more than {point_capacity} points"),
-        }
-        .into());
-    }
-    let points = super::path::closed_contour(&vertices);
-    let (x, y) = evaluated.position;
-    let uniforms = PathUniforms {
-        fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
-        stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
-        position: [x as f32, y as f32],
-        stroke_width: evaluated.stroke_width as f32,
-        flags: shape_flags(&evaluated),
-        trim_start: 0.0,
-        trim_end: 1.0,
-        ..bytemuck::Zeroable::zeroed()
-    };
-    let shutter = shape_shutter(params, &evaluated, node_id, expr)?;
-    Ok(PathFrame::new(
-        uniforms,
-        points.into(),
-        &drawable_transform(&evaluated),
-        shutter.as_ref(),
-        band_capacity,
-    ))
 }
 
 fn shape_uniforms(
@@ -382,46 +269,12 @@ fn drawable_transform(params: &ShapeParams) -> DrawableTransform {
     }
 }
 
-/// Points buffer capacity for a polygon: its vertex count when the list is constant, or
-/// `MAX_PATH_POINTS` when it may change per frame.
-fn polygon_point_capacity(polygon_points: &Deferred<String>) -> usize {
-    match polygon_points {
-        Deferred::Value(text) => parse_polygon_points(text)
-            .map_or(1, |vertices| vertices.len())
-            .min(MAX_PATH_POINTS),
-        Deferred::Expr(_) => MAX_PATH_POINTS,
-    }
-}
-
 fn shape_flags(params: &ShapeParams) -> u32 {
     style_flags(
         params.fill_enabled,
         params.stroke_enabled,
         params.edge_antialias,
     )
-}
-
-/// Parses `x,y` pairs separated by `;` into polygon vertices. Newlines are accepted as
-/// separators too, since the editor field is multiline. Returns `None` unless the list is
-/// well-formed and has at least 3 finite points.
-fn parse_polygon_points(text: &str) -> Option<Vec<[f32; 2]>> {
-    let vertices = text
-        .split([';', '\n'])
-        .map(str::trim)
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            let (x, y) = pair.split_once(',')?;
-            let coordinate = |value: &str| {
-                value
-                    .trim()
-                    .parse::<f32>()
-                    .ok()
-                    .filter(|value| value.is_finite())
-            };
-            Some([coordinate(x)?, coordinate(y)?])
-        })
-        .collect::<Option<Vec<_>>>()?;
-    (vertices.len() >= 3).then_some(vertices)
 }
 
 #[cfg(test)]
@@ -445,30 +298,6 @@ mod tests {
                 ..ShapeParams::default()
             };
             assert_eq!(shape_uniforms(&params, None).flags, 0, "width {width}");
-        }
-    }
-
-    #[test]
-    fn parses_semicolon_and_newline_separated_points() {
-        assert_eq!(
-            parse_polygon_points("0,0; 10.5, 0\n 5,-8;"),
-            Some(vec![[0.0, 0.0], [10.5, 0.0], [5.0, -8.0]])
-        );
-    }
-
-    #[test]
-    fn invalid_or_incomplete_points_draw_nothing() {
-        for text in [
-            "0,0; 1,0; 1",
-            "0,0; 1,0; 1,1,1",
-            "0,0; 1,0; inf,1",
-            "0,0; 1,1",
-            "",
-        ] {
-            assert!(
-                parse_polygon_points(text).is_none(),
-                "{text:?} should draw nothing"
-            );
         }
     }
 }

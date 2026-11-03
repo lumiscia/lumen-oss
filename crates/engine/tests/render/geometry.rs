@@ -64,21 +64,6 @@ fn has_alpha_above(frame: &Frame, limit: u8) -> bool {
 }
 
 fn shape_coverage() -> Vec<Case> {
-    let triangle = |points: &str| {
-        shape(
-            (16, 16),
-            json!({
-                "geometry_kind": "polygon", "polygon_points": points, "position": [2, 2],
-                "fill_paint": RED
-            }),
-        )
-    };
-    let inside_triangle = vec![(3, 3, RED), (10, 3, RED), (3, 10, RED), (6, 6, RED)];
-    let outside_triangle =
-        [(13, 13), (12, 8), (8, 12), (0, 0), (15, 15)].map(|(x, y)| (x, y, CLEAR));
-    let probes =
-        |inside: &[(u32, u32, [u8; 4])]| Expect::Probes([inside, &outside_triangle].concat());
-
     // A line 4 wide that crosses the canvas, with a stroke at width 0 or below it.
     let line = |stroke_width: f64| {
         path(
@@ -134,28 +119,6 @@ fn shape_coverage() -> Vec<Case> {
             fractional_width(0.25),
             Expect::Probes(vec![(1, 1, CLEAR), (2, 1, RED), (3, 1, CLEAR)]),
         ),
-        Case::new(
-            "polygon draws its points, not a rectangle",
-            triangle("0,0; 12,0; 0,12"),
-            probes(&inside_triangle),
-        ),
-        Case::new(
-            "polygon with invalid points draws nothing, and not the points before them",
-            shape(
-                (16, 16),
-                json!({
-                    "geometry_kind": "polygon", "position": [2, 2], "fill_paint": RED,
-                    "polygon_points": "=if(frame == 1, \"\", \"0,0; 12,0; 0,12\")"
-                }),
-            )
-            .frames(3),
-            Expect::PerFrame(vec![
-                probes(&inside_triangle),
-                Expect::Uniform(CLEAR),
-                probes(&inside_triangle),
-            ]),
-        )
-        .frames([0.0, 1.0, 2.0]),
         Case::new(
             "rounded rectangle clears its corners",
             shape(

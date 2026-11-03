@@ -123,7 +123,7 @@ pub(super) fn bin_path(
 
 #[cfg(test)]
 mod tests {
-    use super::super::path::point_bounds;
+    use super::super::path::{parse_path_points, point_bounds};
     use super::*;
     use bytemuck::Zeroable;
 
@@ -137,12 +137,16 @@ mod tests {
         }
     }
 
-    fn bin(vertices: &[[f32; 2]], capacity: usize) -> (PathUniforms, Vec<u32>) {
+    fn points_of(data: &str) -> Vec<PathPoint> {
+        parse_path_points(data, 0.25, 4096).unwrap()
+    }
+
+    fn bin(data: &str, capacity: usize) -> (PathUniforms, Vec<u32>) {
         let transform = identity();
         let mut uniforms = PathUniforms::zeroed();
         uniforms.flags = STYLE_FILL_ENABLED;
         uniforms.transform = transform.to_gpu();
-        let points = super::super::path::closed_contour(vertices);
+        let points = points_of(data);
         let data = bin_path(
             &mut uniforms,
             &points,
@@ -162,7 +166,7 @@ mod tests {
     #[test]
     fn lists_each_segment_in_the_bands_it_reaches() {
         // A tall triangle: its two slanted sides span every band, its base only the last.
-        let (uniforms, data) = bin(&[[0.0, 0.0], [10.0, 100.0], [-10.0, 100.0]], 4096);
+        let (uniforms, data) = bin("M 0 0 L 10 100 L -10 100 Z", 4096);
         let count = uniforms.band_count as usize;
         assert!(count > 1);
         assert_eq!(band(&data, 0), &[0, 2]);
@@ -182,7 +186,7 @@ mod tests {
     #[test]
     fn coarsens_bands_to_fit_capacity() {
         // Three bands would need 13 entries; one band lists each segment once.
-        let (uniforms, data) = bin(&[[0.0, 0.0], [10.0, 100.0], [-10.0, 100.0]], 8);
+        let (uniforms, data) = bin("M 0 0 L 10 100 L -10 100 Z", 8);
         assert_eq!(uniforms.band_count, 1);
         assert_eq!(data, [2, 3, 0, 1, 2]);
     }
@@ -196,7 +200,7 @@ mod tests {
         let mut uniforms = PathUniforms::zeroed();
         uniforms.flags = STYLE_FILL_ENABLED;
         uniforms.transform = transform.to_gpu();
-        let points = super::super::path::closed_contour(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+        let points = points_of("M 0 0 L 1 0 L 0 1 Z");
         assert!(
             bin_path(
                 &mut uniforms,
